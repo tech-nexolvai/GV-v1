@@ -8,10 +8,13 @@ and the override report (Q10) shows where.
 
 **What is listed: GV's standards, and only those** (#817, the admin's decision of 2026-10-02). A company
 standard is a parameter the rulebook gives a default — the back-offset minimum, the sink's front offset
-and clearance, the filler bounds. The rest are per project by Raj's own checklist ("Specified · G.C /
-Client · Project Specific": side panel, overhang, backsplash; the cabinet depth, carcass plus door; the
-field cut; the six cabinet width bounds, mandatory entries per job), and they are, by design, the ones
-with no default. A company value for one of those would apply to every job a number GV does not set.
+and clearance, the filler bounds, and since #991 the field cut: 1" per wall end, Raj's "1" is typical,
+customizable per project" (Q1), adopted as GV's standard by the admin on 2026-10-07, so an admin can
+change it here for every job and a project still overrides it. The rest are per project by Raj's own
+checklist ("Specified · G.C / Client · Project Specific": side panel, overhang, backsplash; the cabinet
+depth, carcass plus door; the six cabinet width bounds, mandatory entries per job), and they are, by
+design, the ones with no default. A company value for one of those would apply to every job a number GV
+does not set.
 Run scope is left out too: a sink's cut-sheet size is true for one review.
 
 **How a save is stored.** As a new version of the company (GLOBAL) layer that carries forward every

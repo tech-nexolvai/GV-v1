@@ -34,10 +34,14 @@ RULEBOOK = pathlib.Path(__file__).resolve().parent.parent / "rules" / "rulebook"
 
 
 def _publish_rulebook(session: object) -> int:
-    """Publish every authored rule that is not already published.
+    """Publish every authored rule version that is not already published.
 
-    Skips rules already present so the script can be run twice without minting a second definition
-    for the same rule id, which the unique index would refuse.
+    A rule already present under the authored **version** is skipped, so the script can be run twice.
+    A rule present only under **older** versions gets the new version as a further snapshot under its
+    existing definition (#991): skipping by rule id alone meant a bumped rule — `CT-WIDTH-001` 1.1.0 —
+    never reached a database that already held 1.0.1, and every check kept running the old text.
+    Older snapshots stay exactly as they were, so every finding that cites one stays reproducible;
+    the newest version is the one `SnapshotStore.latest` resolves.
     """
     import yaml
     from sqlalchemy import select
@@ -46,18 +50,29 @@ def _publish_rulebook(session: object) -> int:
     from rules.schema import Rule
     from rules.snapshot import publish
 
-    existing = {
-        rule_id for rule_id in session.execute(select(RuleDefinition.rule_id)).scalars()  # type: ignore[attr-defined]
+    definitions = {
+        definition.rule_id: definition
+        for definition in session.execute(select(RuleDefinition)).scalars()  # type: ignore[attr-defined]
+    }
+    versions = {
+        (rule_id, version)
+        for rule_id, version in session.execute(  # type: ignore[attr-defined]
+            select(RuleDefinition.rule_id, RuleSnapshot.version).join(
+                RuleSnapshot, RuleSnapshot.rule_definition_id == RuleDefinition.id
+            )
+        )
     }
     published = 0
     for path in sorted(RULEBOOK.glob("*.yaml")):
         rule = Rule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-        if rule.id in existing:
+        if (rule.id, rule.version) in versions:
             continue
         snapshot = publish(rule)
-        definition = RuleDefinition(rule_id=rule.id)
-        session.add(definition)  # type: ignore[attr-defined]
-        session.flush()  # type: ignore[attr-defined]
+        definition = definitions.get(rule.id)
+        if definition is None:
+            definition = RuleDefinition(rule_id=rule.id)
+            session.add(definition)  # type: ignore[attr-defined]
+            session.flush()  # type: ignore[attr-defined]
         session.add(  # type: ignore[attr-defined]
             RuleSnapshot(
                 rule_definition_id=definition.id,

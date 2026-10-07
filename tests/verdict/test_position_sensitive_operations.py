@@ -91,6 +91,13 @@ ORDER_INDIFFERENT: dict[str, dict[str, object]] = {
         "axis": "x",
     },
     "one_of": {"x": "drawer", "set": ("single_door", "drawer")},
+    # A row is a sum, however it is stated: the pieces and the cabinets-plus-fillers reach the same
+    # total in any order, so reading them in labelled order cannot change the width check (#991).
+    "row_total": {
+        "pieces": (_inch(2), _inch(30), _inch(36)),
+        "cabinets": (_inch(30), _inch(36)),
+        "fillers": (_inch(2), _inch(0)),
+    },
     # Each filler is held to the same bounds and the pair to one total, so which side is which never
     # reaches the answer: the vendor's swapped fillers get the same one either way round.
     "filler_distribution": {

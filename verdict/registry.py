@@ -78,6 +78,15 @@ class OperationSpec:
     operands: Mapping[str, Arity]
     fn: OperationFunction
     kind: OperationKind = OperationKind.VERDICT
+    optional: frozenset[str] = frozenset()
+    """Operands that may arrive as ``None``: "this rule input was not supplied" (#991).
+
+    For a derivation that chooses between two sources of the same quantity — a countertop row as
+    its pieces, or as its cabinets and fillers — and must itself decide what the absence of one
+    means. Only the engine produces the ``None``, and only for an operand bound to a rule *input*
+    nobody supplied (`verdict.engine.execute`); a missing parameter or intermediate is still
+    NOT_FOUND. Derivations only: a verdict operation with an absent operand has nothing to compare.
+    """
 
     def __post_init__(self) -> None:
         """Validate and defensively freeze registry metadata."""
@@ -103,6 +112,19 @@ class OperationSpec:
                 )
             frozen_operands[operand_name] = arity
         object.__setattr__(self, "operands", MappingProxyType(frozen_operands))
+
+        optional = frozenset(self.optional)
+        unknown = sorted(optional - set(frozen_operands))
+        if unknown:
+            raise RuleAuthoringError(
+                f"operation {self.name!r} marks unknown operand(s) {unknown!r} optional"
+            )
+        if optional and self.kind is not OperationKind.DERIVATION:
+            raise RuleAuthoringError(
+                f"operation {self.name!r} is a verdict operation, and only a derivation may take an "
+                "optional operand: an absent value is never something to compare"
+            )
+        object.__setattr__(self, "optional", optional)
 
 
 REGISTRY: Final[dict[str, OperationSpec]] = {}
@@ -151,6 +173,9 @@ def validate_operands(spec: OperationSpec, operands: Mapping[str, object]) -> No
         )
 
     for name, arity in spec.operands.items():
+        if operands[name] is None and name in spec.optional:
+            # "Not supplied", which only the engine produces and only for an optional operand (#991).
+            continue
         is_multiple = _is_multiple(operands[name])
         if arity is Arity.LIST and not is_multiple:
             raise RuleAuthoringError(

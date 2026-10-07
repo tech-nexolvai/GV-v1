@@ -121,6 +121,34 @@ def _resolve_binding(binding: DerivationBinding, values: Mapping[str, object]) -
     return tuple(values[name] for name in binding)
 
 
+def _not_supplied(
+    operand_name: str,
+    binding: DerivationBinding,
+    optional: frozenset[str],
+    rule: Rule,
+    operands: Mapping[str, VerdictOperand],
+) -> bool:
+    """Whether an optional derivation operand is bound to a rule input nobody supplied (#991).
+
+    The one case in which a derivation receives ``None`` rather than abstaining at once. Every
+    condition below is required, so the exception stays exactly as wide as its purpose:
+
+    - the operation itself declares the operand optional — reviewed code that then decides what the
+      absence means, never the rule text;
+    - the binding is a single **rule input** — a missing parameter or intermediate is still NOT_FOUND,
+      because those are values the rule needs, not one of two ways of stating the same quantity;
+    - the caller did not supply it. An input supplied *empty* is not this case: step 3 has already
+      returned the rule's ``on_missing`` for it, so a list emptied by a withdrawn reading can never be
+      mistaken for one nobody gave.
+    """
+    return (
+        operand_name in optional
+        and isinstance(binding, str)
+        and binding in rule.inputs
+        and binding not in operands
+    )
+
+
 def _derivation_trace(
     *,
     name: str,
@@ -347,7 +375,13 @@ def execute(
                 )
             try:
                 derivation_args = {
-                    operand_name: _resolve_binding(binding, resolved_values)
+                    operand_name: (
+                        None
+                        if _not_supplied(
+                            operand_name, binding, derivation_spec.optional, rule, operands
+                        )
+                        else _resolve_binding(binding, resolved_values)
+                    )
                     for operand_name, binding in derivation.operands.items()
                 }
             except KeyError as error:

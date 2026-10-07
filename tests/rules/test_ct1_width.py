@@ -22,6 +22,7 @@ from rules.semantic_types import SemanticType
 from rules.snapshot import publish
 from units.measurement import Measurement, Unit
 from verdict.engine import execute
+from verdict.finding import Finding
 from verdict.operands import EvidenceStatus, OperandValue, VerdictOperand
 from verdict.operations import register_all
 from verdict.operations.aggregate import sum as exact_sum
@@ -292,3 +293,239 @@ def test_many_operand_rejects_a_mutable_list() -> None:
     unsafe = cast(OperandValue, [_inch(21), _inch(18)])
     with pytest.raises(TypeError, match="immutable tuple"):
         _operand("cabinet_widths", unsafe)
+
+
+# ---------------------------------------------------------------------------
+# 1.1.0: every piece in the row, whatever its kind (#991)
+# ---------------------------------------------------------------------------
+
+#: A made-up row with the shape of the first real verdict: five pieces left to right — a filler, a
+#: cabinet with an eighth, a stacked 3/4 filler, a cabinet with a quarter, a filler — under a
+#: countertop with walls at both ends. No client value: the numbers are invented, the shape is not.
+SYNTHETIC_PIECES = (
+    Fraction(3),
+    Fraction(123, 8),  # 15 3/8
+    Fraction(3, 4),
+    Fraction(73, 4),  # 18 1/4
+    Fraction(3),
+)
+SYNTHETIC_ROW = Fraction(323, 8)  # 40 3/8
+SYNTHETIC_EXPECTED = Fraction(339, 8)  # 40 3/8 + 1 + 1 = 42 3/8
+SYNTHETIC_OVERALL = Fraction(165, 4)  # 41 1/4: the vendor's number, which is wrong
+
+
+def _inches(values: tuple[Fraction, ...]) -> tuple[Measurement, ...]:
+    return tuple(_inch(value, str(value)) for value in values)
+
+
+def _pieces_only(
+    overall: Fraction, pieces: tuple[Fraction, ...] = SYNTHETIC_PIECES
+) -> dict[str, VerdictOperand]:
+    return {
+        "countertop_width": _operand("countertop_width", _inch(overall, str(overall))),
+        "piece_widths": _operand("piece_widths", _inches(pieces)),
+    }
+
+
+def _run(
+    operands: dict[str, VerdictOperand],
+    wall_config: str = "back_left_right",
+    *,
+    ambiguous: dict[str, str] | None = None,
+) -> Finding:
+    return execute(
+        publish(_load_rule()),
+        operands,
+        {"field_cut": _field_cut()},
+        discriminators={"wall_config": wall_config},
+        ambiguous=ambiguous,
+    )
+
+
+def _row(finding: Finding) -> dict[str, object]:
+    row = _trace_derivation(finding, "row_width")
+    return dict(cast(tuple[tuple[str, object], ...], row["operation_intermediates"]))
+
+
+def test_version_1_1_0_reads_the_row_as_pieces_by_the_agreed_names() -> None:
+    """The coordination contract with the reader work, held exactly: one rename here and the
+    reader fills a field no rule reads."""
+    rule = _load_rule()
+    pieces = rule.inputs["piece_widths"]
+
+    assert rule.version == "1.1.0"
+    assert pieces.source.value == "SHOP"
+    assert pieces.semantic_type is SemanticType.COUNTERTOP_PIECE_WIDTH
+    assert pieces.semantic_type.value == "countertop_piece_width"
+    assert pieces.cardinality is Cardinality.MANY
+    assert pieces.scope.value == "same_assembly"
+    # The kind lists stay, so the Measure form and everything stored before keep working.
+    assert {"cabinet_widths", "filler_widths"} <= set(rule.inputs)
+
+
+def test_the_synthetic_five_piece_row_fails_exactly() -> None:
+    """Input: 3 + 15 3/8 + 3/4 + 18 1/4 + 3 with walls both ends and a 41 1/4 overall.
+    Output: FAIL, 41 1/4 against an exact 42 3/8 — no piece's kind was asked for."""
+    finding = _run(_pieces_only(SYNTHETIC_OVERALL))
+
+    assert finding.outcome is Outcome.FAIL
+    assert _trace_derivation(finding, "row_width")["operation"] == "row_total"
+    assert _trace_derivation(finding, "row_width")["result"] == Measurement(
+        SYNTHETIC_ROW, Unit.INCH, None
+    )
+    assert _trace_derivation(finding, "expected_width")["result"] == Measurement(
+        SYNTHETIC_EXPECTED, Unit.INCH, None
+    )
+    assert finding.reason == "41 1/4 in != 42 3/8 in"
+
+
+def test_pieces_that_add_up_pass_exactly() -> None:
+    finding = _run(_pieces_only(SYNTHETIC_EXPECTED))
+
+    assert finding.outcome is Outcome.PASS
+    assert _row(finding)["source"] == "pieces"
+
+
+def test_one_sixteenth_over_still_fails() -> None:
+    finding = _run(_pieces_only(SYNTHETIC_EXPECTED + Fraction(1, 16)))
+
+    assert finding.outcome is Outcome.FAIL
+
+
+@pytest.mark.parametrize("wall_config", ["back_only", "island"])
+def test_pieces_with_no_side_walls_take_no_field_cut(wall_config: str) -> None:
+    finding = _run(_pieces_only(SYNTHETIC_ROW), wall_config)
+
+    assert finding.outcome is Outcome.PASS
+    cut = _trace_derivation(finding, "field_cut_total")
+    assert cut["result"] == Measurement(Fraction(0), Unit.INCH, None)
+
+
+def test_without_pieces_the_cabinets_and_fillers_are_used_as_before() -> None:
+    """The fallback: 1.0.1's arithmetic, unchanged, when no piece list is given."""
+    finding = _run(_operands())
+
+    assert finding.outcome is Outcome.PASS
+    assert _row(finding)["source"] == "cabinets and fillers"
+    assert _trace_derivation(finding, "row_width")["result"] == Measurement(
+        WALL_TO_WALL_INCHES, Unit.INCH, None
+    )
+
+
+def test_pieces_and_kinds_that_agree_are_used_and_both_are_traced() -> None:
+    operands = _operands()
+    operands["piece_widths"] = _operand(
+        "piece_widths", _inches((*REAL_INCH_FILLERS, *REAL_INCH_CABINETS))
+    )
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.PASS
+    row = _row(finding)
+    assert row["piece_total"] == Measurement(WALL_TO_WALL_INCHES, Unit.INCH, None)
+    assert {"cabinet_total", "filler_total"} <= set(row)
+
+
+def test_pieces_and_kinds_that_disagree_go_to_the_reviewer() -> None:
+    """**Never pick one.** The pieces add up to the overall exactly — a PASS, had the pieces been
+    preferred — and the cabinets and fillers say otherwise. Output: REVIEW_REQUIRED, no trace."""
+    operands = _operands(THREE_WALL_OVERALL_INCHES + Fraction(1, 8))
+    operands["piece_widths"] = _operand(
+        "piece_widths", _inches((*REAL_INCH_FILLERS, *REAL_INCH_CABINETS, Fraction(1, 8)))
+    )
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+    assert finding.trace is None
+    assert "disagree" in finding.reason
+
+
+@pytest.mark.parametrize("given", ["cabinet_widths", "filler_widths"])
+def test_pieces_beside_half_a_kind_list_go_to_the_reviewer(given: str) -> None:
+    operands = _pieces_only(SYNTHETIC_EXPECTED)
+    operands[given] = _operand(given, _inches((Fraction(3),)))
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_an_empty_piece_list_is_not_found_even_with_cabinets_and_fillers() -> None:
+    """A list supplied empty — a run whose members were withdrawn — is missing, not "not given":
+    it never falls back to another source, and never passes."""
+    operands = _operands()
+    operands["piece_widths"] = _operand("piece_widths", ())
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.NOT_FOUND
+    assert finding.trace is None
+
+
+def test_an_unqualified_piece_list_is_review_even_with_cabinets_and_fillers() -> None:
+    operands = _operands()
+    operands["piece_widths"] = _operand(
+        "piece_widths",
+        _inches((*REAL_INCH_FILLERS, *REAL_INCH_CABINETS)),
+        status=EvidenceStatus.RAW_CANDIDATE,
+    )
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_withheld_pieces_never_fall_back_to_the_kinds() -> None:
+    """Pieces found but withheld as ambiguous (#826) abstain; the kind lists do not stand in."""
+    finding = _run(_operands(), ambiguous={"piece_widths": "They are on two drawings."})
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+    assert "piece_widths" in finding.reason
+
+
+@pytest.mark.parametrize("given", [(), ("cabinet_widths",), ("filler_widths",)])
+def test_no_complete_statement_of_the_row_is_not_found(given: tuple[str, ...]) -> None:
+    operands = {
+        name: operand
+        for name, operand in _operands().items()
+        if name == "countertop_width" or name in given
+    }
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.NOT_FOUND
+    assert finding.trace is None
+
+
+def test_a_missing_field_cut_is_still_not_found_with_pieces() -> None:
+    """The optional-operand exception covers rule inputs only: a missing setting still abstains."""
+    finding = execute(
+        publish(_load_rule()),
+        _pieces_only(SYNTHETIC_EXPECTED),
+        {},
+        discriminators={"wall_config": "back_left_right"},
+    )
+
+    assert finding.outcome is Outcome.NOT_FOUND
+    assert "field_cut" in finding.reason
+
+
+def test_a_millimetre_piece_goes_to_the_reviewer() -> None:
+    operands = _pieces_only(SYNTHETIC_EXPECTED)
+    operands["piece_widths"] = _operand("piece_widths", (_inch(3), _mm(457)))
+
+    finding = _run(operands)
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+
+
+def test_field_cut_has_a_company_standard_of_exactly_one_inch() -> None:
+    """Rule 10: a default of exactly 1 in, with a note that names it a company standard."""
+    field_cut = _load_rule().parameters["field_cut"]
+
+    assert field_cut.default == Quantity(value=1, unit=Unit.INCH)
+    assert field_cut.default is not None
+    assert isinstance(field_cut.default.value, Fraction)
+    assert field_cut.note is not None
+    assert field_cut.note.startswith("company standard 1 in")
