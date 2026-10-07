@@ -11,6 +11,10 @@ import yaml
 from eval.gold_set.schema import (
     DEFAULT_MANIFEST_PATH,
     GoldManifest,
+    GroundedCountertop,
+    GroundingInk,
+    GroundingStatus,
+    GroundTruth,
     ManifestLoadError,
     load_manifest,
 )
@@ -163,3 +167,103 @@ def test_loader_creates_missing_directories_without_inventing_a_manifest(tmp_pat
 def test_proprietary_case_directory_is_ignored_by_git() -> None:
     gitignore = (DEFAULT_MANIFEST_PATH.parents[2] / ".gitignore").read_text(encoding="utf-8")
     assert "eval/gold_set/cases/" in gitignore
+
+
+def _grounded_target(target_id: str, *, status: str = "present") -> dict[str, object]:
+    if status != "present":
+        return {
+            "target_id": target_id,
+            "page": 1,
+            "status": status,
+            **({"unscored_reason": "review key not complete"} if status == "unknown" else {}),
+        }
+    return {
+        "target_id": target_id,
+        "page": 1,
+        "status": status,
+        "object_id": f"object-{target_id}",
+        "view_id": "front-elevation",
+        "source_ink": "vendor",
+        "stone_box": {"x0": 10, "y0": 10, "x1": 90, "y1": 20},
+        "stone_ends": [[10, 15], [90, 15]],
+        "acceptable_piece_rows": [
+            {
+                "row_id": "pieces-a",
+                "view_id": "front-elevation",
+                "role": "pieces",
+                "box": {"x0": 10, "y0": 30, "x1": 90, "y1": 40},
+                "endpoints": [[10, 35], [90, 35]],
+                "labels": [
+                    {
+                        "span_id": "piece-0",
+                        "status": "linked",
+                        "label_id": "label-0",
+                        "ink": "vendor",
+                        "text": "8",
+                        "box": {"x0": 20, "y0": 31, "x1": 25, "y1": 36},
+                    }
+                ],
+            }
+        ],
+        "acceptable_overall_rows": [],
+    }
+
+
+def test_ground_truth_separates_target_rows_spans_and_ink() -> None:
+    target = GroundedCountertop.model_validate(_grounded_target("counter-a"))
+
+    assert target.status is GroundingStatus.PRESENT
+    assert target.acceptable_piece_rows[0].labels[0].ink is GroundingInk.VENDOR
+    assert target.acceptable_piece_rows[0].labels[0].span_id == "piece-0"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"stone_ends": [[10, 15], [10, 15]]},
+        {
+            "acceptable_piece_rows": [
+                {
+                    "row_id": "pieces-a",
+                    "view_id": "other",
+                    "role": "pieces",
+                    "box": {"x0": 1, "y0": 1, "x1": 9, "y1": 9},
+                    "endpoints": [[1, 2], [8, 2]],
+                }
+            ]
+        },
+        {"stone_box": {"x0": 1.5, "y0": 2, "x1": 9, "y1": 9}},
+    ],
+)
+def test_ground_truth_rejects_incomplete_or_lossy_geometry(change: dict[str, object]) -> None:
+    payload = _grounded_target("counter-a")
+    payload.update(change)
+
+    with pytest.raises(ValueError):
+        GroundedCountertop.model_validate(payload)
+
+
+def test_multiple_countertops_on_one_page_require_distinct_target_ids() -> None:
+    first = _grounded_target("counter-a")
+    second = _grounded_target("counter-b")
+    second["object_id"] = "object-counter-b"
+    truth = GroundTruth(
+        observations=(),
+        matches=(),
+        expected_findings=(),
+        grounded_countertops=(
+            GroundedCountertop.model_validate(first),
+            GroundedCountertop.model_validate(second),
+        ),
+    )
+
+    assert [target.target_id for target in truth.grounded_countertops] == ["counter-a", "counter-b"]
+
+
+def test_unknown_ground_truth_is_unscored_not_a_negative() -> None:
+    unknown = GroundedCountertop.model_validate(_grounded_target("counter-a", status="unknown"))
+    absent = GroundedCountertop.model_validate(_grounded_target("no-counter", status="absent"))
+
+    assert unknown.status is GroundingStatus.UNKNOWN
+    assert unknown.unscored_reason
+    assert absent.status is GroundingStatus.ABSENT

@@ -12,7 +12,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from datetime import date
+from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 import yaml  # type: ignore[import-untyped]  # PyYAML does not publish inline type information.
@@ -73,6 +75,188 @@ class ExpectedFinding(BaseModel):
     check: str = Field(min_length=1)
     outcome: Outcome
     reason: str = Field(min_length=1)
+
+
+class GroundingInk(StrEnum):
+    """Which layer owns a printed label, as independently reviewed from the source drawing."""
+
+    VENDOR = "vendor"
+    GV = "gv"
+    COVERED = "covered"
+    UNKNOWN = "unknown"
+
+
+class GroundingStatus(StrEnum):
+    """Whether the person established a countertop target or left the question unresolved."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+class GroundedBox(BaseModel):
+    """A reviewed box in integer pixels of the exact, hash-bound page rendering."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    x0: int = Field(ge=0)
+    y0: int = Field(ge=0)
+    x1: int = Field(gt=0)
+    y1: int = Field(gt=0)
+
+    @field_validator("x0", "y0", "x1", "y1", mode="before")
+    @classmethod
+    def _coordinate_is_exact_integer(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(  # noqa: TRY004 - Pydantic attaches the exact field path.
+                "ground truth pixel coordinates must be exact integers"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _positive_area(self) -> GroundedBox:
+        if self.x1 <= self.x0 or self.y1 <= self.y0:
+            raise ValueError("a grounded box must have positive width and height")
+        return self
+
+
+class GroundedLabel(BaseModel):
+    """A person-reviewed label-to-span link, kept separate from value correctness."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    span_id: str = Field(min_length=1)
+    status: Literal["linked", "missing", "unreadable", "covered", "unknown"]
+    label_id: str | None = None
+    ink: GroundingInk
+    text: str | None = None
+    box: GroundedBox | None = None
+
+    @model_validator(mode="after")
+    def _linked_label_has_identity(self) -> GroundedLabel:
+        if self.status == "linked" and (
+            self.label_id is None or self.text is None or self.box is None
+        ):
+            raise ValueError("a linked label needs its identity, printed text and reviewed box")
+        if self.ink is GroundingInk.COVERED and self.status != "covered":
+            raise ValueError("a covered source label must use status='covered'")
+        return self
+
+
+class GroundedRow(BaseModel):
+    """A human-reviewed dimension row and its labels for one physical countertop."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    row_id: str = Field(min_length=1)
+    view_id: str = Field(min_length=1)
+    role: Literal["pieces", "overall", "other"]
+    box: GroundedBox
+    endpoints: tuple[tuple[int, int], tuple[int, int]]
+    labels: tuple[GroundedLabel, ...] = ()
+
+    @field_validator("endpoints", mode="before")
+    @classmethod
+    def _endpoints_are_exact_integer_pairs(cls, value: object) -> object:
+        if (
+            not isinstance(value, (tuple, list))
+            or len(value) != 2
+            or any(
+                not isinstance(point, (tuple, list))
+                or len(point) != 2
+                or any(isinstance(axis, bool) or not isinstance(axis, int) for axis in point)
+                for point in value
+            )
+        ):
+            raise ValueError("row endpoints must be two exact integer pixel points")
+        return value
+
+    @model_validator(mode="after")
+    def _row_has_distinct_ends(self) -> GroundedRow:
+        if self.endpoints[0] == self.endpoints[1]:
+            raise ValueError("a row's two reviewed endpoints must be distinct")
+        if self.role == "other" and self.labels:
+            raise ValueError("an unrelated row cannot carry countertop label links")
+        return self
+
+
+class GroundedCountertop(BaseModel):
+    """Independent object, view, endpoint and row truth for evaluation only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    target_id: str = Field(min_length=1)
+    page: int = Field(ge=1)
+    status: GroundingStatus
+    object_id: str | None = None
+    view_id: str | None = None
+    source_ink: GroundingInk = GroundingInk.UNKNOWN
+    stone_box: GroundedBox | None = None
+    stone_ends: tuple[tuple[int, int], tuple[int, int]] | None = None
+    acceptable_piece_rows: tuple[GroundedRow, ...] = ()
+    acceptable_overall_rows: tuple[GroundedRow, ...] = ()
+    unscored_reason: str | None = None
+
+    @field_validator("page", mode="before")
+    @classmethod
+    def _page_is_exact_positive_integer(cls, value: object) -> object:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("ground-truth page must be a positive integer")
+        return value
+
+    @field_validator("stone_ends", mode="before")
+    @classmethod
+    def _stone_ends_are_exact_integer_pairs(cls, value: object) -> object:
+        if value is None:
+            return value
+        return GroundedRow._endpoints_are_exact_integer_pairs(value)
+
+    @model_validator(mode="after")
+    def _truth_is_explicit(self) -> GroundedCountertop:
+        if self.status is GroundingStatus.PRESENT:
+            if (
+                self.object_id is None
+                or self.view_id is None
+                or self.stone_box is None
+                or self.stone_ends is None
+                or self.source_ink is GroundingInk.UNKNOWN
+            ):
+                raise ValueError(
+                    "a present countertop needs reviewed identity, view, box, ends and ink"
+                )
+            if self.stone_ends[0] == self.stone_ends[1]:
+                raise ValueError("the reviewed stone's two ends must be distinct")
+            rows = (*self.acceptable_piece_rows, *self.acceptable_overall_rows)
+            if any(row.view_id != self.view_id for row in rows):
+                raise ValueError("accepted rows must belong to the reviewed countertop view")
+            if any(row.role != "pieces" for row in self.acceptable_piece_rows):
+                raise ValueError("acceptable_piece_rows may contain only piece rows")
+            if any(row.role != "overall" for row in self.acceptable_overall_rows):
+                raise ValueError("acceptable_overall_rows may contain only overall rows")
+            row_ids = [row.row_id for row in rows]
+            if len(row_ids) != len(set(row_ids)):
+                raise ValueError("accepted row ids must be unique within a target")
+            span_ids = [label.span_id for row in rows for label in row.labels]
+            if len(span_ids) != len(set(span_ids)):
+                raise ValueError("each reviewed span may appear in only one accepted row")
+            if self.unscored_reason is not None:
+                raise ValueError("present truth is scored and cannot carry an unscored reason")
+        elif any(
+            (
+                self.object_id,
+                self.view_id,
+                self.stone_box,
+                self.stone_ends,
+                self.acceptable_piece_rows,
+                self.acceptable_overall_rows,
+            )
+        ):
+            raise ValueError("absent or unknown truth cannot claim present-object geometry")
+        if self.status is GroundingStatus.ABSENT and self.unscored_reason is not None:
+            raise ValueError("absent truth is a scored negative, not an unscored unknown")
+        if self.status is GroundingStatus.UNKNOWN and not self.unscored_reason:
+            raise ValueError("unknown countertop truth needs an unscored reason")
+        return self
 
 
 #: Sources whose bytes exist and can therefore be hashed. `LITERAL` and `USER_INPUT` cannot: one is
@@ -172,6 +356,18 @@ class GroundTruth(BaseModel):
     observations: tuple[GoldObservation, ...]
     matches: tuple[GoldMatch, ...]
     expected_findings: tuple[ExpectedFinding, ...]
+    grounded_countertops: tuple[GroundedCountertop, ...] = ()
+
+    @model_validator(mode="after")
+    def _targets_are_uniquely_named(self) -> GroundTruth:
+        keys = [(target.page, target.target_id) for target in self.grounded_countertops]
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise ValueError(
+                "ground-truth targets must have unique (page, target_id) identities: "
+                f"{duplicates}"
+            )
+        return self
 
 
 class GoldCase(BaseModel):
@@ -214,6 +410,10 @@ def _hashable_sources_used(ground_truth: GroundTruth) -> set[OperandSource]:
     drawings were read — the association is the annotation.
     """
     used = {o.source for o in ground_truth.observations if o.source in HASHED_SOURCES}
+    if ground_truth.grounded_countertops:
+        # Object, row and ink ownership all refer to the shop drawing, even if there are no
+        # numeric observations yet (for example, an explicitly absent target).
+        used.add(OperandSource.SHOP)
     if ground_truth.matches:
         used |= {OperandSource.ARCH, OperandSource.SHOP}
     return used
