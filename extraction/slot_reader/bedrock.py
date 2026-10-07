@@ -40,8 +40,10 @@ from extraction.form_reader.bedrock import (
 )
 from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
+from extraction.product_context import product_context_line, with_product
 from extraction.slot_reader.seal import ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
+from vocabulary.semantic_types import ProductType
 
 __all__ = [
     "CROP_PROMPT",
@@ -49,6 +51,7 @@ __all__ = [
     "CropJob",
     "build_crop_request",
     "build_wall_request",
+    "crop_prompt_id",
     "read_crop",
     "read_crops_parallel",
     "read_walls",
@@ -74,6 +77,12 @@ CROP_PROMPT: Final = (
 )
 
 
+def crop_prompt_id(product: ProductType | None = None) -> str:
+    """The id a crop request is recorded under: `CROP_PROMPT_ID`, plus the product when the request
+    carried the product line (#994)."""
+    return with_product(CROP_PROMPT_ID, product)
+
+
 class _CropAnswer(BaseModel):
     """The answer's shape, checked strictly. Extra keys are ignored: nothing reads them."""
 
@@ -90,8 +99,14 @@ def _base_model_id(model_id: str) -> str:
     return model_id.removeprefix("us.").removeprefix("global.")
 
 
-def build_crop_request(*, model_id: str, crop_png: bytes, max_tokens: int) -> dict[str, Any]:
-    """One crop request: the picture first, then the question, as the form reader asks."""
+def build_crop_request(
+    *, model_id: str, crop_png: bytes, max_tokens: int, product: ProductType | None = None
+) -> dict[str, Any]:
+    """One crop request: the picture first, then the question, as the form reader asks.
+
+    With a product (#994) the drawing set's product is one plain line of its own between the
+    picture and the question. Without one the request is exactly as before.
+    """
     if not model_id.strip():
         raise ValueError("a crop reader model id must be stated")
     if not crop_png.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -105,6 +120,7 @@ def build_crop_request(*, model_id: str, crop_png: bytes, max_tokens: int) -> di
                 "role": "user",
                 "content": [
                     {"image": {"format": "png", "source": {"bytes": crop_png}}},
+                    *([] if product is None else [{"text": product_context_line(product)}]),
                     {"text": CROP_PROMPT},
                 ],
             }
@@ -126,10 +142,14 @@ def read_crop(
     page_index: int,
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
+    product: ProductType | None = None,
 ) -> ReaderAnswer:
     """Ask one reader about one crop; re-ask once on a malformed answer, then raise."""
+    prompt_id = crop_prompt_id(product)
     for attempt in range(2):
-        request = build_crop_request(model_id=model_id, crop_png=crop_png, max_tokens=max_tokens)
+        request = build_crop_request(
+            model_id=model_id, crop_png=crop_png, max_tokens=max_tokens, product=product
+        )
         if attempt:
             request["messages"][0]["content"].append(
                 {"text": "Your previous reply was malformed. Return the one JSON object only."}
@@ -141,8 +161,8 @@ def read_crop(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    CROP_PROMPT_ID,
-                    CROP_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     None,
                     None,
                     int((monotonic() - started) * 1000),
@@ -163,8 +183,8 @@ def read_crop(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    CROP_PROMPT_ID,
-                    CROP_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     input_tokens,
                     output_tokens,
                     elapsed,
@@ -182,8 +202,8 @@ def read_crop(
         record_attempt(
             AttemptUsage(
                 model_id,
-                CROP_PROMPT_ID,
-                CROP_PROMPT_ID,
+                prompt_id,
+                prompt_id,
                 input_tokens,
                 output_tokens,
                 elapsed,
@@ -383,6 +403,7 @@ def read_crops_parallel(
     max_throttle_retries: int,
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
+    product: ProductType | None = None,
 ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
@@ -432,6 +453,7 @@ def read_crops_parallel(
                         page_index=job.page_index,
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
+                        product=product,
                     )
                 return (job.key, job.model_id), answer
             except MalformedFormAnswer:

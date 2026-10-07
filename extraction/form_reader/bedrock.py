@@ -139,7 +139,7 @@ def build_converse_request(
         "role": "user",
         "content": [
             {"image": {"format": "png", "source": {"bytes": page_png}}},
-            {"text": page_prompt(page_index)},
+            {"text": page_prompt(page_index, prompt.product)},
         ],
     }
     request: dict[str, Any] = {

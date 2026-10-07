@@ -3054,6 +3054,10 @@
         "additionalProperties": false,
         "description": "A new reviewable drawing package.",
         "properties": {
+          "product_type": {
+            "$ref": "#/components/schemas/ProductType",
+            "description": "What product this drawing set is for, chosen by the reviewer (#994). Only the published checks for this product are run, and the readers are told it. Must be one of the values `GET /product-types` lists: a product with no published check is refused, because a set checked against nothing would look exactly like a clean one."
+          },
           "vendor": {
             "anyOf": [
               {
@@ -3068,6 +3072,9 @@
             "title": "Vendor"
           }
         },
+        "required": [
+          "product_type"
+        ],
         "title": "PackageCreate",
         "type": "object"
       },
@@ -3092,6 +3099,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "product_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductType"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "project_id": {
             "format": "uuid",
@@ -3118,6 +3135,7 @@
           "id",
           "project_id",
           "vendor",
+          "product_type",
           "created_at",
           "current_revision_id",
           "current_revision_number",
@@ -3665,6 +3683,38 @@
           "required_headers"
         ],
         "title": "PresignedUpload",
+        "type": "object"
+      },
+      "ProductType": {
+        "description": "What kind of thing a rule checks \u2014 the client's checklist, in one word.\n\nA controlled vocabulary rather than a free string (ADR-0007). The applicability resolver\nmatches this exactly and case-sensitively, so a free string would let ``\"Countertop\"`` or a\ntypo publish cleanly and then match nothing: a rule that exists, looks authored, and never\nfires. Validation at publish turns that into a loud authoring error instead.\n\nAdding a product type is a one-line change here, which is the point of keeping the\nvocabulary in one module.",
+        "enum": [
+          "countertop",
+          "cabinet"
+        ],
+        "title": "ProductType",
+        "type": "string"
+      },
+      "ProductTypeChoice": {
+        "description": "One product a drawing set may be for, as the upload screen offers it (#994).\n\nListed from the published rulebook rather than typed into the UI, so a product appears only\nonce there is at least one check for it.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "published_checks": {
+            "title": "Published Checks",
+            "type": "integer"
+          },
+          "value": {
+            "$ref": "#/components/schemas/ProductType"
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "published_checks"
+        ],
+        "title": "ProductTypeChoice",
         "type": "object"
       },
       "ProposedFieldOut": {
@@ -5715,6 +5765,32 @@
         ]
       }
     },
+    "/api/v1/product-types": {
+      "get": {
+        "description": "Every product the published rulebook has at least one check for, in vocabulary order (#994).\n\nThe upload screen's dropdown is filled from this, so it never offers a product that would be\nchecked against nothing, and a product appears the day its first rule is published. Empty when\nnothing is published \u2014 a real answer, and the upload screen says so.",
+        "operationId": "list_product_types_api_v1_product_types_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProductTypeChoice"
+                  },
+                  "title": "Response List Product Types Api V1 Product Types Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The products a drawing set may be for",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/accepted-work/{accepted_work_id}": {
       "get": {
         "description": "Whether accepted work has started, in plain English.\n\n**`started` is not `finished`.** This reports what the outbox knows \u2014 that the workflow was handed\nto the engine \u2014 and nothing about the outcome. For the result, read the package or its findings.\n\nWork belonging to another project is reported as not found, in the same words as work that does\nnot exist. A 403 would confirm it exists, which is what the boundary is for.",
@@ -6025,7 +6101,7 @@
         ]
       },
       "post": {
-        "description": "Create a package in this project, in state `CREATED`, with revision 1.\n\nTwo checks, because they answer different questions: `require_project_access` says the caller may\nsee this project at all, and `require_action` says creating a package is something their role may\ndo. Collapsing them would make \"any member of a project may create packages in it\" true by\naccident rather than by decision.\n\nThe package, its first revision and the revision's birth event are one transaction. A package with\nno revision would be a package nothing can be uploaded to, and it would look completely normal in\na list.\n\nA project that does not exist answers `404`, in the same words as a project the caller is not in.",
+        "description": "Create a package in this project, in state `CREATED`, with revision 1.\n\nTwo checks, because they answer different questions: `require_project_access` says the caller may\nsee this project at all, and `require_action` says creating a package is something their role may\ndo. Collapsing them would make \"any member of a project may create packages in it\" true by\naccident rather than by decision.\n\nThe package, its first revision and the revision's birth event are one transaction. A package with\nno revision would be a package nothing can be uploaded to, and it would look completely normal in\na list.\n\nA project that does not exist answers `404`, in the same words as a project the caller is not in.\n\n**The product must be one the published rulebook checks (#994).** The schema already refuses a\nvalue outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is\nfor. Such a set would be checked against nothing, and an empty findings list reads as a clean\none \u2014 so it is a `422` naming the problem, not a package that quietly runs no checks.",
         "operationId": "create_package_api_v1_projects__project_id__packages_post",
         "parameters": [
           {

@@ -227,7 +227,10 @@ def test_a_package_uploaded_through_the_ui_can_be_filled_by_a_model(
 
     client = _client(session, store)
 
-    created = client.post(f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "Apex"})
+    created = client.post(
+        f"/api/v1/projects/{PROJECT}/packages",
+        json={"vendor": "Apex", "product_type": "countertop"},
+    )
     assert created.status_code == 201, created.text
     package_id = created.json()["id"]
 
@@ -321,7 +324,8 @@ def test_the_worker_fills_the_form_before_a_reviewer_opens_it(
 
     client = _client(session, store)
     package_id = client.post(
-        f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "Apex"}
+        f"/api/v1/projects/{PROJECT}/packages",
+        json={"vendor": "Apex", "product_type": "countertop"},
     ).json()["id"]
     _upload(client, store, package_id, ARCH_DRAWING, "architectural")
     _upload(client, store, package_id, SHOP_DRAWING, "shop")
@@ -380,7 +384,8 @@ def test_a_second_proposal_replaces_the_first_on_the_form(
 
     client = _client(session, store)
     package_id = client.post(
-        f"/api/v1/projects/{PROJECT}/packages", json={"vendor": "Apex"}
+        f"/api/v1/projects/{PROJECT}/packages",
+        json={"vendor": "Apex", "product_type": "countertop"},
     ).json()["id"]
     _upload(client, store, package_id, ARCH_DRAWING, "architectural")
     _upload(client, store, package_id, SHOP_DRAWING, "shop")

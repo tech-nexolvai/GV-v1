@@ -2126,11 +2126,13 @@ def test_a_picture_cut_before_the_check_reads_not_checked_and_stays_append_only(
     _upgrade(postgres_engine)
     factory = session_factory(postgres_engine)
     try:
+        # The package, page, view and proposal are written at head and survive the downgrade: the
+        # ORM writes every mapped column, and `packages` gained one after 0061 (#994).
+        with unit_of_work(factory) as session:
+            proposal_id = _proposal(session, _view(session, _page(session))).id
         _migrate(postgres_engine, BEFORE_THE_CHECK, down=True)
         with unit_of_work(factory) as session:
             assert "shows_gv_marks" not in _columns(session)
-            proposal = _proposal(session, _view(session, _page(session)))
-            proposal_id = proposal.id
             # Written as the 0061 worker wrote it: the model now has a column this schema lacks.
             session.execute(
                 text(

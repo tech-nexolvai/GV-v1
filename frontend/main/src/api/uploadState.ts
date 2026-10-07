@@ -1,3 +1,30 @@
+import type { components } from './schema';
+
+/** A product a drawing set may be for (#994), as `GET /product-types` lists it. */
+export type ProductType = components['schemas']['ProductType'];
+export type ProductChoice = components['schemas']['ProductTypeChoice'];
+
+/** What the upload screen picks first when the API offers it: V1 reviews countertops. */
+export const DEFAULT_PRODUCT_TYPE: ProductType = 'countertop';
+
+/**
+ * The product to preselect: Countertop when the published rulebook offers it, otherwise the first
+ * product it does offer, and `null` when nothing is published — the form then cannot start, because
+ * a set checked against nothing would look exactly like a clean one.
+ */
+export function defaultProductType(choices: readonly ProductChoice[]): ProductType | null {
+  if (choices.some((choice) => choice.value === DEFAULT_PRODUCT_TYPE)) return DEFAULT_PRODUCT_TYPE;
+  return choices[0]?.value ?? null;
+}
+
+/** The body of `POST /projects/{id}/packages`: who sent the set and what it is for. */
+export function packageCreateBody(
+  vendor: string,
+  productType: ProductType,
+): components['schemas']['PackageCreate'] {
+  return { vendor: vendor || null, product_type: productType };
+}
+
 /** A package exists even though one of the later upload or extraction steps failed. */
 export class IncompletePackageUpload extends Error {
   readonly packageId: string;

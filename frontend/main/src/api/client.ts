@@ -306,12 +306,30 @@ async function send<T>(path: string, body: unknown): Promise<T> {
  * The server opens revision 1 and its birth event in the same transaction, so a created package is
  * always something values can be entered against.
  */
-export function createPackage(projectId: string, vendor: string | null) {
+export function createPackage(
+  projectId: string,
+  vendor: string | null,
+  productType: components['schemas']['ProductType'],
+) {
   type Body =
     paths['/api/v1/projects/{project_id}/packages']['post']['requestBody']['content']['application/json'];
   type Created =
     paths['/api/v1/projects/{project_id}/packages']['post']['responses']['201']['content']['application/json'];
-  return send<Created>(`/projects/${projectId}/packages`, { vendor } satisfies Body);
+  return send<Created>(`/projects/${projectId}/packages`, {
+    vendor,
+    product_type: productType,
+  } satisfies Body);
+}
+
+/**
+ * The products a drawing set may be for (#994): each product the published rulebook has at least
+ * one check for, with the words to show. The upload screen's dropdown is filled from this so it
+ * never offers a product nothing would check. Empty until a rulebook is published.
+ */
+export function listProductTypes() {
+  type Choices =
+    paths['/api/v1/product-types']['get']['responses']['200']['content']['application/json'];
+  return request<Choices>('/product-types');
 }
 
 /**

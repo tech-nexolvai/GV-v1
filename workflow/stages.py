@@ -87,7 +87,7 @@ from app.models.evidence import (
     line_key,
 )
 from app.models.matching import MatchCandidate as MatchCandidateRow
-from app.models.package import Package, PackageRevision
+from app.models.package import Package, PackageRevision, package_product
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
@@ -1986,9 +1986,16 @@ class DatabaseStages:
         data: bytes,
         task_run_id: UUID,
     ) -> int:
-        """Read shop pages as form proposals and persist only candidate-to-field links."""
+        """Read shop pages as form proposals and persist only candidate-to-field links.
+
+        Both readers are told the drawing set's product as one line of context when the reviewer
+        chose one (#994); the prompt id they are recorded under says so. A set with no product is
+        read exactly as before.
+        """
         runtime = self._form_reader
         assert runtime is not None
+        product = _revision_product(session, package_revision_id)
+        prompt = runtime.prompt.for_product(product)
         pages = list(
             session.scalars(
                 select(Page).where(Page.document_version_id == version_id).order_by(Page.index)
@@ -2070,6 +2077,7 @@ class DatabaseStages:
                 package_revision_id=package_revision_id,
                 pages=slot_pages,
                 task_run_id=task_run_id,
+                product=product,
             )
         if not images:
             return count
@@ -2085,7 +2093,7 @@ class DatabaseStages:
             max_throttle_retries=runtime.max_throttle_retries,
             retry_backoff_seconds=runtime.retry_backoff_seconds,
             record_attempt=recorder.record,
-            prompt=runtime.prompt,
+            prompt=prompt,
         )
         run = open_extraction_run(
             session,
@@ -2094,7 +2102,7 @@ class DatabaseStages:
             extractor_version="form-reader-v5-gv-mark-v1-ink-v1",
             config_hash=(
                 f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
-                f"prompt={runtime.prompt.prompt_id};gv_mark_guard=v1;ink=v1"
+                f"prompt={prompt.prompt_id};gv_mark_guard=v1;ink=v1"
             ),
             dpi=self._dpi,
         )
@@ -2105,7 +2113,7 @@ class DatabaseStages:
             extraction_run_id=run.id,
             reader_ids=runtime.reader_ids,
             readings=readings,
-            prompt_id=runtime.prompt.prompt_id,
+            prompt_id=prompt.prompt_id,
         )
         session.flush()
         return count
@@ -2187,10 +2195,15 @@ class DatabaseStages:
         package_revision_id: UUID,
         pages: Sequence[SlotPage],
         task_run_id: UUID,
+        product: ProductType | None = None,
     ) -> int:
-        """Read the slot pages (#987) and persist candidates and candidate-only proposals."""
-        runtime = self._slot_reader
-        assert runtime is not None
+        """Read the slot pages (#987) and persist candidates and candidate-only proposals.
+
+        `product` is the drawing set's product (#994): each crop reader is told it, and the run's
+        config hash and every proposal's prompt id record it.
+        """
+        assert self._slot_reader is not None
+        runtime = replace(self._slot_reader, product=product)
         recorder = ThreadSafeAttemptRecorder()
         results = read_slot_pages(pages, runtime=runtime, record_attempt=recorder.record)
         run = open_extraction_run(
@@ -2209,6 +2222,7 @@ class DatabaseStages:
             reader_ids=runtime.form.reader_ids,
             results=results,
             store=self._store,
+            prompt_id=runtime.prompt_id,
         )
         session.flush()
         return count
@@ -5921,6 +5935,7 @@ class DatabaseStages:
                 vendor=package.vendor,
                 findings=tuple(rendered_findings),
                 changed_values=changed_values,
+                product_type=package.product_type,
             )
         )
         composition_status: dict[str, object] = {
@@ -6093,21 +6108,33 @@ class DatabaseStages:
         countertop_subjects = countertop_scopes(session, package_revision_id)
         scoped_rules = frozenset({"CT-WIDTH-001", "CAB-FILLER-001"})
 
-        # **Every product type, not one.** The resolver keys candidates on an exact product-type
-        # match, so asking about countertops alone would leave the cabinet rules unrun — and unrun is
-        # indistinguishable from passing once the reviewer is looking at the list. A package carries
-        # no product type today (there is no column for it), and guessing one from the vendor or the
-        # filename would decide which checks apply by inference. Running the whole rulebook is the
-        # honest reading until a package can say what is in it: a cabinet rule against a countertop
-        # package abstains, which is visible, where omitting it is not.
+        # **The products the reviewer said this set is for, or every product (#994).** The resolver
+        # keys candidates on an exact product-type match. A package created before #994 says nothing
+        # about its product (NULL), and guessing one from the vendor or the file name would decide
+        # which checks apply by inference — so for those the whole rulebook runs, as it always did: a
+        # cabinet rule against a countertop set abstains, which is visible, where omitting it is not.
+        # A package whose reviewer chose a product at upload runs that product's rules only. This
+        # narrows which rules run and nothing else: a rule that runs gets exactly the inputs,
+        # parameters and arithmetic it got before, so no outcome of a rule that runs can change. The
+        # rules left out are listed in this run's summary, and the findings report's cover says only
+        # the chosen product's checks were run, so "not run" cannot be read as "passed".
         #
         # No discriminator can be established without extraction, so a rule that declares one
         # abstains rather than being resolved to a variant nobody read off a drawing.
         superseded = supersede_runs(session, package_revision_id)
 
+        selected_product = package_product(package)
+        in_scope = tuple(ProductType) if selected_product is None else (selected_product,)
+        not_in_scope = sorted(
+            rule_id
+            for rule_id in store.rule_ids()
+            if (latest := store.latest(rule_id)) is not None
+            and latest.rule.product_type not in in_scope
+        )
+
         written = 0
         skipped = 0
-        for product_type in ProductType:
+        for product_type in in_scope:
             resolution = resolve(
                 store,
                 CheckContext(
@@ -6339,7 +6366,9 @@ class DatabaseStages:
                     )
                     written += 1
 
-        if countertop_subjects is not None:
+        # The per-countertop width check is a countertop rule: it runs only when countertops are in
+        # scope, exactly as the resolver loop above runs it only for them.
+        if countertop_subjects is not None and ProductType.COUNTERTOP in in_scope:
             width_snapshot = store.latest("CT-WIDTH-001")
             if width_snapshot is not None:
                 if not countertop_subjects:
@@ -6473,11 +6502,22 @@ class DatabaseStages:
             "ran": True,
             "findings": written,
             "rules_published": len(store.rule_ids()),
+            "product_type": None if selected_product is None else selected_product.value,
+            "rules_not_in_scope": not_in_scope,
             "superseded_runs": superseded,
             "not_applicable": skipped,
             "automatic_types_qualified": 0 if typing is None else len(typing.qualified),
             "semantic_typing_review_required": 0 if typing is None else len(typing.review_required),
         }
+
+
+def _revision_product(session: Session, package_revision_id: UUID) -> ProductType | None:
+    """The product the reviewer said this revision's drawing set is for, or `None` (#994)."""
+    revision = session.get(PackageRevision, package_revision_id)
+    if revision is None:
+        return None
+    package = session.get(Package, revision.package_id)
+    return None if package is None else package_product(package)
 
 
 def _unresolved(snapshot: RuleSnapshot, abstention: Abstention) -> Finding:

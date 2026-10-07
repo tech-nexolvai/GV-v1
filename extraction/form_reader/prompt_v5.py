@@ -9,8 +9,11 @@ the public answer-layout section that the strict parser checks.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+from extraction.product_context import product_context_line, with_product
+from vocabulary.semantic_types import ProductType
 
 PROMPT_ID = "form-reader-v5"
 TEMPLATE_ID = "countertop-form-json-v5"
@@ -35,11 +38,18 @@ Use null for an absent overall or absent box. Empty strings are allowed only for
 SYSTEM_PROMPT_V5 = f"{BUILT_IN_GUIDANCE_V5}\n\n{OUTPUT_CONTRACT_V5}"
 
 
-def page_prompt(page_index: int) -> str:
-    """Supply a stable page identifier without asking the model to echo it into its answer."""
+def page_prompt(page_index: int, product: ProductType | None = None) -> str:
+    """Supply a stable page identifier without asking the model to echo it into its answer.
+
+    With a product (#994) the drawing set's product comes first, as one plain line of context; the
+    system text and the private guidance are unchanged. Without one the text is exactly as before.
+    """
     if isinstance(page_index, bool) or page_index < 0:
         raise ValueError("page_index must be a non-negative integer")
-    return f"Read the attached page image. Internal page index: {page_index}. Return JSON only."
+    request = f"Read the attached page image. Internal page index: {page_index}. Return JSON only."
+    if product is None:
+        return request
+    return f"{product_context_line(product)}\n{request}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +59,18 @@ class FormPrompt:
     system_text: str
     prompt_id: str
     template_id: str = TEMPLATE_ID
+    product: ProductType | None = None
+    """The drawing set's product, told to the reader as one line of each page request (#994).
+    Set only through :meth:`for_product`, which records it in ``prompt_id``."""
+
+    def for_product(self, product: ProductType | None) -> FormPrompt:
+        """These instructions for one drawing set: same system text, the product line on each page
+        request, and the product recorded in the prompt id. ``None`` returns them unchanged."""
+        if self.product is not None:
+            raise ValueError("this prompt already names a product")
+        if product is None:
+            return self
+        return replace(self, product=product, prompt_id=with_product(self.prompt_id, product))
 
 
 BUILT_IN_PROMPT = FormPrompt(system_text=SYSTEM_PROMPT_V5, prompt_id=PROMPT_ID)

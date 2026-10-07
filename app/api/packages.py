@@ -1,4 +1,4 @@
-"""Packages: create one, list them, read one (#205, C2.3).
+"""Packages: create one, list them, read one (#205, C2.3), and what a set may be for (#994).
 
 A package is the unit a reviewer signs off, so these three routes are the front door to everything
 else. They are short on purpose — backend §4.1 gives the control plane short work only, and there is
@@ -33,8 +33,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections import Counter
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -42,10 +43,12 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
-from app.auth import Action, Principal, require_action, require_project_access
+from app.auth import Action, Principal, Role, require_action, require_project_access, require_role
 from app.lifecycle import begin
 from app.models import Package, PackageRevision, PackageState, Project
-from app.schemas.packages import PackageCreate, PackageOut, PackagePage
+from app.schemas.packages import PackageCreate, PackageOut, PackagePage, ProductTypeChoice
+from app.verdicts.rulebook import snapshot_store
+from vocabulary.semantic_types import ProductType
 
 router = APIRouter(tags=["packages"])
 
@@ -61,6 +64,13 @@ NOT_FOUND_DETAIL = "Not found"
 #: first state event's sequence number used to live here too; it belongs to `app/lifecycle/states.py`
 #: now, along with everything else that knows how a package's history is numbered.
 FIRST_REVISION = 1
+
+#: The words the upload screen shows for each product (#994). Display only — the value sent and
+#: stored is the `ProductType` member. Every member must have one; a test enumerates them.
+PRODUCT_LABELS: Final[dict[ProductType, str]] = {
+    ProductType.COUNTERTOP: "Countertop",
+    ProductType.CABINET: "Cabinets",
+}
 
 ORDERING_DESCRIPTION = (
     "Newest first, then by id descending. The id is what makes the order total: two packages created "
@@ -113,6 +123,26 @@ def decode_cursor(raw: str) -> tuple[datetime, UUID]:
 
 
 # ---------------------------------------------------------------------------
+# The products a drawing set may be for
+# ---------------------------------------------------------------------------
+
+
+def published_products(session: Session) -> Counter[ProductType]:
+    """How many published rules check each product, at their effective version (#994).
+
+    Read from the same `snapshot_store` the check run reads (`workflow/stages.py`), so the choices
+    offered at upload are exactly the products a check run would find rules for.
+    """
+    store = snapshot_store(session)
+    counts: Counter[ProductType] = Counter()
+    for rule_id in store.rule_ids():
+        latest = store.latest(rule_id)
+        if latest is not None:
+            counts[latest.rule.product_type] += 1
+    return counts
+
+
+# ---------------------------------------------------------------------------
 # The query
 # ---------------------------------------------------------------------------
 
@@ -142,6 +172,7 @@ def _package_query(project_id: UUID) -> Select[Any]:
             Package.id,
             Package.project_id,
             Package.vendor,
+            Package.product_type,
             Package.created_at,
             PackageRevision.id.label("current_revision_id"),
             PackageRevision.revision_number.label("current_revision_number"),
@@ -189,11 +220,28 @@ def create_package(
     a list.
 
     A project that does not exist answers `404`, in the same words as a project the caller is not in.
+
+    **The product must be one the published rulebook checks (#994).** The schema already refuses a
+    value outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is
+    for. Such a set would be checked against nothing, and an empty findings list reads as a clean
+    one — so it is a `422` naming the problem, not a package that quietly runs no checks.
     """
     if session.scalar(select(Project.id).where(Project.id == project_id)) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
-    package = Package(project_id=project_id, vendor=body.vendor)
+    if body.product_type not in published_products(session):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"No checks are published for {PRODUCT_LABELS[body.product_type].lower()} drawing "
+                "sets yet, so a set for it could not be checked. Choose one of the products "
+                "`GET /product-types` lists."
+            ),
+        )
+
+    package = Package(
+        project_id=project_id, vendor=body.vendor, product_type=body.product_type.value
+    )
     session.add(package)
     revision = PackageRevision(
         package_id=package.id, revision_number=FIRST_REVISION, state=PackageState.CREATED
@@ -217,11 +265,41 @@ def create_package(
         id=package.id,
         project_id=package.project_id,
         vendor=package.vendor,
+        product_type=body.product_type,
         created_at=package.created_at,
         current_revision_id=revision.id,
         current_revision_number=revision.revision_number,
         state=revision.state,
     )
+
+
+@router.get(
+    "/product-types",
+    response_model=list[ProductTypeChoice],
+    summary="The products a drawing set may be for",
+)
+def list_product_types(
+    principal: Annotated[
+        Principal, Depends(require_role(Role.REVIEWER, Role.RULE_ADMIN, Role.ADMIN))
+    ],
+    session: Annotated[Session, Depends(get_session)],
+) -> list[ProductTypeChoice]:
+    """Every product the published rulebook has at least one check for, in vocabulary order (#994).
+
+    The upload screen's dropdown is filled from this, so it never offers a product that would be
+    checked against nothing, and a product appears the day its first rule is published. Empty when
+    nothing is published — a real answer, and the upload screen says so.
+    """
+    del principal  # the dependency is the check; the endpoint needs nothing from the caller
+
+    counts = published_products(session)
+    return [
+        ProductTypeChoice(
+            value=product, label=PRODUCT_LABELS[product], published_checks=counts[product]
+        )
+        for product in ProductType
+        if counts[product] > 0
+    ]
 
 
 @router.get(

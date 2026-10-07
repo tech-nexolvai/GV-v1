@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 from io import BytesIO
 from uuid import UUID
 
+import pytest
 from pypdf import PdfReader
 
 from reports.findings_pdf import FINDINGS_PDF_MEDIA_TYPE, FindingsPdfInput, write_findings_pdf
@@ -102,3 +104,31 @@ def test_an_absent_arch_or_shop_source_is_reported_not_inferred_from_order() -> 
 
     assert text.count("not recorded in the database") >= 2
     assert "51/2" not in text
+
+
+def _text(document: bytes) -> str:
+    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(document)).pages)
+
+
+def test_the_cover_says_which_product_was_checked_and_that_only_its_checks_ran() -> None:
+    """#994: a set the reviewer said is for countertops ran only countertop checks. The cover says
+    so, so a cabinet check that was not run can never be read as one that passed."""
+    source = replace(_source(_finding()), product_type="countertop")
+
+    text = _text(write_findings_pdf(source))
+
+    assert "DRAWING SET FOR COUNTERTOP" in text
+    assert "ONLY COUNTERTOP CHECKS WERE RUN" in text
+
+
+def test_a_set_with_no_product_keeps_exactly_the_old_cover() -> None:
+    """A package from before #994 ran every product's checks; its cover says nothing new."""
+    source = _source(_finding())
+
+    assert source.product_type is None
+    assert "DRAWING SET FOR" not in _text(write_findings_pdf(source))
+
+
+def test_a_blank_product_is_refused_rather_than_drawn() -> None:
+    with pytest.raises(ValueError, match="product_type"):
+        replace(_source(_finding()), product_type=" ")

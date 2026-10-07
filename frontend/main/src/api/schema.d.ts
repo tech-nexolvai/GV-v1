@@ -56,6 +56,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/product-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The products a drawing set may be for
+         * @description Every product the published rulebook has at least one check for, in vocabulary order (#994).
+         *
+         *     The upload screen's dropdown is filled from this, so it never offers a product that would be
+         *     checked against nothing, and a product appears the day its first rule is published. Empty when
+         *     nothing is published — a real answer, and the upload screen says so.
+         */
+        get: operations["list_product_types_api_v1_product_types_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/accepted-work/{accepted_work_id}": {
         parameters: {
             query?: never;
@@ -197,6 +221,11 @@ export interface paths {
          *     a list.
          *
          *     A project that does not exist answers `404`, in the same words as a project the caller is not in.
+         *
+         *     **The product must be one the published rulebook checks (#994).** The schema already refuses a
+         *     value outside the `ProductType` vocabulary; this refuses a vocabulary value no published rule is
+         *     for. Such a set would be checked against nothing, and an empty findings list reads as a clean
+         *     one — so it is a `422` naming the problem, not a package that quietly runs no checks.
          */
         post: operations["create_package_api_v1_projects__project_id__packages_post"];
         delete?: never;
@@ -3139,6 +3168,8 @@ export interface components {
          * @description A new reviewable drawing package.
          */
         PackageCreate: {
+            /** @description What product this drawing set is for, chosen by the reviewer (#994). Only the published checks for this product are run, and the readers are told it. Must be one of the values `GET /product-types` lists: a product with no published check is refused, because a set checked against nothing would look exactly like a clean one. */
+            product_type: components["schemas"]["ProductType"];
             /**
              * Vendor
              * @description Who supplied the drawings, if it is known. Left null rather than guessed — an invented vendor name is worse than an absent one, because it reads as a fact.
@@ -3171,6 +3202,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            product_type: components["schemas"]["ProductType"] | null;
             /**
              * Project Id
              * Format: uuid
@@ -3430,6 +3462,34 @@ export interface components {
             storage_key: string;
             /** Upload Url */
             upload_url: string;
+        };
+        /**
+         * ProductType
+         * @description What kind of thing a rule checks — the client's checklist, in one word.
+         *
+         *     A controlled vocabulary rather than a free string (ADR-0007). The applicability resolver
+         *     matches this exactly and case-sensitively, so a free string would let ``"Countertop"`` or a
+         *     typo publish cleanly and then match nothing: a rule that exists, looks authored, and never
+         *     fires. Validation at publish turns that into a loud authoring error instead.
+         *
+         *     Adding a product type is a one-line change here, which is the point of keeping the
+         *     vocabulary in one module.
+         * @enum {string}
+         */
+        ProductType: "countertop" | "cabinet";
+        /**
+         * ProductTypeChoice
+         * @description One product a drawing set may be for, as the upload screen offers it (#994).
+         *
+         *     Listed from the published rulebook rather than typed into the UI, so a product appears only
+         *     once there is at least one check for it.
+         */
+        ProductTypeChoice: {
+            /** Label */
+            label: string;
+            /** Published Checks */
+            published_checks: number;
+            value: components["schemas"]["ProductType"];
         };
         /**
          * ProposedFieldOut
@@ -4477,6 +4537,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationOut"][];
+                };
+            };
+        };
+    };
+    list_product_types_api_v1_product_types_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductTypeChoice"][];
                 };
             };
         };
