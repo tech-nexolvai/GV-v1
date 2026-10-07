@@ -12,7 +12,7 @@ A private, offline two-picture prototype asked two Bedrock vision makers narrow 
 
 ## Proposed architecture, subject to approval
 
-1. Create independent, person-confirmed gold labels for object ends, candidate row, span-to-label ownership and source-ink ownership. Missing annotations mean “unscored,” not “right.”
+1. Create independent, person-confirmed gold labels for object ends, candidate row, span-to-label ownership and source-ink ownership. This is a **finite evaluation set, not a production step on each uploaded page**. Missing annotations mean “unscored,” not “right.” In production, models and code process pages automatically and people see only unresolved exceptions; if exception volume stays high, coverage has not met the product goal.
 2. Build an immutable evidence packet for each question: high-resolution close-up containing target and ticks/leader, plus a full vendor view with the target visibly marked. Hash the exact image bytes, page transform, prompt/version and candidate IDs; link each raw model attempt to them.
 3. Ask a sequence of checkable questions: identify the object and its ends, compare every plausible row with those ends, then associate each marked span with its printed label. “Cannot tell” is a first-class answer. A page without a row candidate uses the existing whole-page path only for review suggestions.
 4. Code verifies geometric claims using independently calibrated linework/endpoint evidence. Two makers agreeing with each other is not geometric proof. No endpoint tolerance is approved in this record; it requires keyed measurement and an admin decision.
@@ -20,6 +20,8 @@ A private, offline two-picture prototype asked two Bedrock vision makers narrow 
 6. Show individually qualified pieces as proposals and ask the reviewer about unresolved links. A partial chain never yields an automatic PASS. Only an eligible, complete chain reaches the unchanged deterministic checker; a person signs off.
 
 Before any automatic form promotion, run the **real worker path** on a development set and a once-only held-out set. Report every stage's right/wrong/unmeasured counts, sealed-wrong values, complete chains, and critical false-PASS. Stop on a wrong object, row or value that could enter the form, or any critical false-PASS. Audit image hashes and every model attempt. Keep client drawings, crops, labels and values outside this public repository.
+
+Model choice must be based on the same complete-chain test, not isolated rankings. Test whether independent readers catch the code ranker's mistakes **without overturning its correct choices**, whether both readers make the same wrong selection, and whether no-object pages are correctly rejected. Compare a strict two-model configuration with task-specialized row and text readers. A model may be suitable for object/row questions while unsuitable for exact fraction copying, or vice versa. No pair is approved by this record.
 
 ## Build sequence if approved
 
