@@ -43,6 +43,7 @@ from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, Evidence
 from app.review.row_location import RowLocation, row_location
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
+from vocabulary.reviewer_reasons import finding_reviewer_reason
 
 router = APIRouter(tags=["findings"])
 NOT_FOUND_DETAIL = "Not found"
@@ -227,6 +228,7 @@ class FindingChain(BaseModel):
     scope_item_id: UUID | None = None
     scope_row_candidate_id: UUID | None = None
     row_location: RowLocation | None = None
+    reviewer_reason: str | None = None
     scope_label: str | None = None
     outcome: str
     severity: str
@@ -453,6 +455,9 @@ def _assemble(
         scope_item_id=finding.scope_item_id,
         scope_row_candidate_id=finding.scope_row_candidate_id,
         row_location=location,
+        reviewer_reason=finding_reviewer_reason(
+            finding.outcome, finding.reason or finding.trace.get("reason")
+        ),
         scope_label=finding.scope_label or "Package revision",
         outcome=finding.outcome,
         severity=finding.severity,

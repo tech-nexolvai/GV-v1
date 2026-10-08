@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.review import _session_is_in_project
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
 from app.models.signed_exports import (
@@ -127,7 +128,8 @@ def approve(
     nobody acted on is a check that did not happen, and approving around it would put a package's name
     to a question nobody answered.
     """
-    del project_id  # Scope is established by the dependency; the session id is globally unique.
+    if not _session_is_in_project(session, project_id, review_session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
     try:
         decision = approve_package(

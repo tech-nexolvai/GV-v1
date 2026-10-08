@@ -2241,6 +2241,17 @@
             "title": "Parameter Versions",
             "type": "object"
           },
+          "reviewer_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Reason"
+          },
           "row_location": {
             "anyOf": [
               {
@@ -2508,6 +2519,17 @@
                 "type": "null"
               }
             ]
+          },
+          "reviewer_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Reason"
           },
           "revision_number": {
             "title": "Revision Number",
@@ -4159,7 +4181,12 @@
         "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
         "properties": {
           "action": {
-            "$ref": "#/components/schemas/ReviewActionKind"
+            "enum": [
+              "confirm",
+              "dismiss"
+            ],
+            "title": "Action",
+            "type": "string"
           },
           "finding_id": {
             "format": "uuid",

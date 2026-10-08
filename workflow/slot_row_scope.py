@@ -140,7 +140,14 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
         roles[key] = role
 
     output: list[SlotRow] = []
-    for (page_index, rank), candidates in sorted(grouped.items()):
+    for (page_index, rank), candidates in sorted(
+        grouped.items(),
+        key=lambda entry: (
+            entry[0][0],
+            int(entry[0][1]) if entry[0][1].isdigit() else -1,
+            entry[0][1],
+        ),
+    ):
         anchors = [
             candidate for candidate in candidates if "slot:0" in (candidate.ambiguity_flags or [])
         ]

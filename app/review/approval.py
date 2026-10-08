@@ -24,10 +24,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.roles import Action, Principal
+from app.db.base import utc_now
 from app.lifecycle.states import transition
 from app.models.package import PackageRevision, PackageState, PackageStateEvent
-from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
+from app.models.review import (
+    Approval,
+    ApprovedFinding,
+    ReviewAction,
+    ReviewException,
+    ReviewSession,
+)
 from app.models.verdicts import CheckRun, Finding
+from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.requirements import BLOCKING_OUTCOMES, needs_note
 from app.review.session import complete_session
 
@@ -148,25 +156,60 @@ def _findings(db: Session, package_revision_id: UUID) -> tuple[Finding, ...]:
 
 
 def _unaddressed(db: Session, findings: tuple[Finding, ...]) -> tuple[UUID, ...]:
-    required = {
-        finding.id: finding.outcome for finding in findings if finding.outcome in BLOCKING_OUTCOMES
-    }
-    if not required:
+    """Only a real, still-valid decision clears a finding; a correction requires a rerun.
+
+    Even a correction with its proper ledger row cannot decide the old check. Nor can a later
+    confirm/except dismiss that pending rerun: only superseding the old run removes it from here.
+    This also protects a previously passing finding whose evidence was subsequently corrected.
+    """
+    by_id = {finding.id: finding for finding in findings}
+    if not by_id:
         return ()
-    latest = {}
+    required = {finding.id for finding in findings if finding.outcome in BLOCKING_OUTCOMES}
+    latest: dict[UUID, ReviewAction] = {}
+    corrected: set[UUID] = set()
     for action in db.scalars(
         select(ReviewAction)
-        .where(ReviewAction.finding_id.in_(required))
+        .where(ReviewAction.finding_id.in_(by_id))
         .order_by(ReviewAction.created_at, ReviewAction.id)
     ):
         latest[action.finding_id] = action
-    addressed = {
-        identity
-        for identity, action in latest.items()
-        if not needs_note(required[identity], action.action)
-        or bool(action.note and action.note.strip())
+        if action.action == "correct":
+            corrected.add(action.finding_id)
+    grants = {
+        grant.review_action_id: ExceptionGrant.from_stored(grant)
+        for grant in db.scalars(
+            select(ReviewException).where(
+                ReviewException.review_action_id.in_([action.id for action in latest.values()])
+            )
+        )
     }
-    return tuple(sorted(set(required) - addressed, key=str))
+    when = utc_now()
+    addressed: set[UUID] = set()
+    for identity, action in latest.items():
+        if identity in corrected:
+            continue
+        finding = by_id[identity]
+        if action.action in {"confirm", "dismiss"}:
+            if not needs_note(finding.outcome, action.action) or bool(
+                action.note and action.note.strip()
+            ):
+                addressed.add(identity)
+        elif (
+            action.action == "except"
+            and action.id in grants
+            and decide(
+                FindingRef(
+                    finding_id=identity,
+                    package_revision_id=finding.package_revision_id,
+                    item_id=finding.scope_item_id,
+                ),
+                (grants[action.id],),
+                when=when,
+            ).is_excepted
+        ):
+            addressed.add(identity)
+    return tuple(sorted((required | corrected) - addressed, key=str))
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +230,7 @@ def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
     if not findings:
         reason = "There are no findings to sign off. Run the checks first."
     elif blocked:
-        reason = f"{len(blocked)} findings still need a reviewer decision (and a note for an abstention)."
+        reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
     elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         reason = "The package is not awaiting review."
     return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason)

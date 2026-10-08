@@ -209,3 +209,31 @@ def test_pre_read_hold_explains_the_actual_row_hold(session: Session) -> None:
     rows = list_slot_rows(reviewer(), session, project, package).rows
     assert "tall appliance" in rows[0].held_reason
     assert "only one reader" not in rows[0].held_reason
+
+
+def test_row_labels_follow_numeric_rank_not_lexical_rank(session: Session) -> None:
+    from app.models import ObservationCandidate
+
+    project, package, anchors = _package_rows(session)
+    anchor = session.get(ObservationCandidate, anchors[0])
+    added = {}
+    for rank in (10, 2):
+        row = ObservationCandidate(
+            document_version_id=anchor.document_version_id,
+            page_id=anchor.page_id,
+            extraction_run_id=anchor.extraction_run_id,
+            raw_text="synthetic row",
+            polygon=anchor.polygon,
+            coordinate_space=anchor.coordinate_space,
+            ambiguity_flags=["slot-reader", "slot:0", f"row-rank:{rank}", "row-slot-count:1"],
+        )
+        session.add(row)
+        session.flush()
+        added[rank] = row.id
+    rows = [
+        row
+        for row in list_slot_rows(reviewer(), session, project, package).rows
+        if row.page_number == 1
+    ]
+    assert [row.row_id for row in rows] == [anchor.id, added[2], added[10]]
+    assert [row.label for row in rows] == [f"Countertop row 1.{n} on page 1" for n in (1, 2, 3)]

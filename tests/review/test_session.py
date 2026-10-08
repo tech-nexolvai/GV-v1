@@ -392,6 +392,7 @@ def test_an_action_takes_its_revision_from_the_finding(postgres_engine: Engine) 
             finding_id=finding.id,
             action=ReviewActionKind.DISMISS,
             actor="anant",
+            note="Synthetic detail is not applicable",
         )
         assert recorded.package_revision_id == finding.package_revision_id
 

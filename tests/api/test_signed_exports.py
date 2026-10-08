@@ -153,7 +153,7 @@ def test_legacy_explicit_request_publishes_all_three_and_never_changes_outcomes(
         assert (
             text.count("Not checked: dismissed as not checkable by reviewer ana@example.com") == 8
         )
-        assert "FAIL: confirmed by reviewer ana@example.com" in text
+        assert "FAIL: problem for the vendor, confirmed by reviewer ana@example.com" in text
         assert "Reason: Not checkable: synthetic source missing" in text
         assert str(approval.id) in text and "9 findings covered" in text
         assert "Signed off by ana@example.com" in text
@@ -167,7 +167,7 @@ def test_legacy_explicit_request_publishes_all_three_and_never_changes_outcomes(
         review_text.count("Not checked: dismissed as not checkable by reviewer ana@example.com")
         == 8
     )
-    assert "FAIL: confirmed by reviewer ana@example.com" in review_text
+    assert "FAIL: problem for the vendor, confirmed by reviewer ana@example.com" in review_text
     assert str(approval.id) in review_text and "9 findings covered" in review_text
     assert "PASS" not in review_text
     assert "LATER SETTING MUST NOT REPLACE PINNED REPORT" not in str(

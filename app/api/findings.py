@@ -77,6 +77,7 @@ from app.schemas.findings import (
     FindingPage,
 )
 from verdict.outcomes import Outcome, Severity
+from vocabulary.reviewer_reasons import finding_reviewer_reason
 from workflow.changed_values import ChangedValues, changed_values_for_revision
 
 router = APIRouter(tags=["findings"])
@@ -320,6 +321,7 @@ def _as_finding(row: Row[Any]) -> dict[str, Any]:
     tuple half first.
     """
     data = dict(row._mapping)
+    data["reviewer_reason"] = finding_reviewer_reason(data["outcome"], data.get("reason"))
     data["scope_label"] = data.get("scope_label") or "Package revision"
     kind = data.pop("reviewer_action_kind", None)
     actor = data.pop("reviewer_action_actor", None)

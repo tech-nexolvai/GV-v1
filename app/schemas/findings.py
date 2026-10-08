@@ -161,6 +161,7 @@ class FindingOut(BaseModel):
     scope_row_candidate_id: UUID | None = None
     row_location: RowLocation | None = None
     reason: str | None = None
+    reviewer_reason: str | None = None
     scope_label: str | None = None
     notes: list[str] | None = None
     """Persisted check provenance, including a person's scoped wall-layout choice."""

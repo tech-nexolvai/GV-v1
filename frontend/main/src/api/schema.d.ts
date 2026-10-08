@@ -2797,6 +2797,8 @@ export interface components {
             parameter_versions: {
                 [key: string]: string;
             };
+            /** Reviewer Reason */
+            reviewer_reason?: string | null;
             row_location?: components["schemas"]["RowLocation"] | null;
             rule_snapshot: components["schemas"]["RuleSnapshotRecord"];
             /** Scope Item Id */
@@ -2905,6 +2907,8 @@ export interface components {
             /** Reason */
             reason?: string | null;
             reviewer_action?: components["schemas"]["ReviewerActionOut"] | null;
+            /** Reviewer Reason */
+            reviewer_reason?: string | null;
             /** Revision Number */
             revision_number: number;
             row_location?: components["schemas"]["RowLocation"] | null;
@@ -3740,7 +3744,11 @@ export interface components {
          *     looking at, which is what makes the trail worth keeping.
          */
         RecordAction: {
-            action: components["schemas"]["ReviewActionKind"];
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "confirm" | "dismiss";
             /**
              * Finding Id
              * Format: uuid

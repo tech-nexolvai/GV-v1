@@ -5,4 +5,6 @@ NOTE_OUTCOMES = frozenset({"REVIEW_REQUIRED", "NOT_FOUND"})
 
 
 def needs_note(outcome: str, action: str) -> bool:
-    return outcome in NOTE_OUTCOMES and action in {"confirm", "dismiss"}
+    return (outcome in NOTE_OUTCOMES and action in {"confirm", "dismiss"}) or (
+        outcome == "FAIL" and action == "dismiss"
+    )

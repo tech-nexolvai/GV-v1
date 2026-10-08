@@ -15,6 +15,7 @@ Source: `docs/DESIGN_PRODUCT.md` §4 · Verification: `tests/api/test_review_api
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -67,7 +68,8 @@ class RecordAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     finding_id: UUID
-    action: ReviewActionKind
+    action: Literal[ReviewActionKind.CONFIRM, ReviewActionKind.DISMISS]
+    """Corrections and exceptions must use their own endpoints and record their terms."""
     note: str | None = Field(default=None, max_length=2000)
     """Why. Optional for a confirmation, and the thing a later reader most wants for anything else."""
 

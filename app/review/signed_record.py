@@ -20,7 +20,9 @@ class ReviewDisposition(BaseModel):
 
     def wording(self, outcome: str) -> str:
         who = f"by reviewer {self.reviewer} on {self.at.isoformat()}"
-        if self.action == "confirm" and outcome in {"REVIEW_REQUIRED", "NOT_FOUND"}:
+        if self.action == "confirm" and outcome == "FAIL":
+            heading = f"FAIL: problem for the vendor, confirmed {who}."
+        elif self.action == "confirm" and outcome in {"REVIEW_REQUIRED", "NOT_FOUND"}:
             heading = f"Checked by reviewer: OK — {who}. Recorded check remains {outcome}."
         elif self.action == "dismiss" and outcome in {"REVIEW_REQUIRED", "NOT_FOUND"}:
             heading = (
