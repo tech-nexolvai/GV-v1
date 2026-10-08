@@ -342,6 +342,9 @@ class ProposedReadingOut(BaseModel):
     candidate_id: UUID
     value: str
     page_index: int
+    #: Position in a many-valued form field. Sparse positions preserve a missing slot rather than
+    #: shifting the next sealed width into it.
+    position: int | None = None
     #: Which run of end-to-end dimensions this reading's line belongs to, where the drawing draws
     #: one. Present so a reviewer can see *why* an ordered run was accepted as one.
     chain_key: str | None = None
@@ -364,6 +367,9 @@ class ProposedFieldOut(BaseModel):
     #: on what grounds it is there, and "the geometry agrees" and "there was no geometry" are not
     #: the same grounds.
     placement_verified: bool = True
+    #: Number of drawing slots represented by this row, including unresolved gaps. Present for
+    #: partial slot-reader proposals so the form can keep empty boxes in their original positions.
+    expected_count: int | None = None
     values: tuple[ProposedReadingOut, ...]
 
 

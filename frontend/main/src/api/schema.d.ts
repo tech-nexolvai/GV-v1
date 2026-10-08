@@ -3496,6 +3496,8 @@ export interface components {
          * @description One field and the readings proposed to fill it, in drawing order.
          */
         ProposedFieldOut: {
+            /** Expected Count */
+            expected_count?: number | null;
             /** Field Key */
             field_key: string;
             /** Many */
@@ -3554,6 +3556,8 @@ export interface components {
             chain_position?: number | null;
             /** Page Index */
             page_index: number;
+            /** Position */
+            position?: number | null;
             /** Value */
             value: string;
         };

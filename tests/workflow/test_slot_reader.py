@@ -137,15 +137,20 @@ class FakeReaders:
         }
 
 
-def runtime(clients: FakeReaders, *, allow_stacked: bool = False) -> SlotReaderRuntime:
+def runtime(
+    clients: FakeReaders, *, allow_stacked: bool = False, claude_row_reader: bool = False
+) -> SlotReaderRuntime:
     from workflow.slot_reader import fraction_bar_from_environment
 
     form = FormReaderRuntime(
-        reader_ids=(KIMI, QWEN),
+        reader_ids=(OPUS, SONNET) if claude_row_reader else (KIMI, QWEN),
         clients=clients,
         rates=Rates(),  # type: ignore[arg-type]
-        calls_per_minute={KIMI: 6000, QWEN: 6000},
-        max_concurrent_calls=4,
+        calls_per_minute={
+            (OPUS if claude_row_reader else KIMI): 6000,
+            (SONNET if claude_row_reader else QWEN): 6000,
+        },
+        max_concurrent_calls=1 if claude_row_reader else 4,
         max_tokens=400,
         max_throttle_retries=0,
         retry_backoff_seconds=0.001,
@@ -157,6 +162,7 @@ def runtime(clients: FakeReaders, *, allow_stacked: bool = False) -> SlotReaderR
         row_settings=MEASURED_SETTINGS,
         fraction_bar=fraction_bar_from_environment(FRACTION_ENV),
         allow_stacked=allow_stacked,
+        claude_row_reader=claude_row_reader,
     )
 
 
@@ -202,7 +208,9 @@ def read(page: SlotPage, readers: FakeReaders, **options: Any) -> PageSlotResult
     (result,) = read_slot_pages(
         [page], runtime=runtime(readers, **options), record_attempt=attempts.append
     )
-    assert len(attempts) == len(readers.requests) + len(readers.wall_requests)
+    assert len(attempts) == (
+        len(readers.requests) + len(readers.wall_requests) + len(readers.row_requests)
+    )
     return result
 
 
@@ -386,6 +394,13 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
 PIECES = ('12"', '24"', '12"')
 OVERALL = '48"'
 TEXTS: dict[int | None, str] = {0: '12"', 1: '24"', 2: '12"', None: '48"'}
+FOUR_PIECE_TEXTS: dict[int | None, str] = {
+    0: '12"',
+    1: '12"',
+    2: '12"',
+    3: '12"',
+    None: '48"',
+}
 
 
 def text_labels() -> bytes:
@@ -401,6 +416,23 @@ def named_sheet(extra: bytes = b"") -> bytes:
     drawing += sheets.text(265, sheets.CHAIN_Y + 4, "B24")
     drawing += sheets.text(302, sheets.CHAIN_Y + 4, "Filler")
     return sheets.sheet(drawing + extra)
+
+
+def four_piece_sheet(*, covered_slot: int | None = None) -> bytes:
+    """A calibrated four-piece chain lets three sealed labels witness one held label."""
+    centers = (175.0, 225.0, 275.0, 325.0)
+    drawing = b"".join(sheets.text(x - 7, sheets.CHAIN_Y + 4, '12"') for x in centers)
+    drawing += sheets.text(243, sheets.OVERALL_Y + 4, '48"')
+    from tests.extraction.test_rows import _slash
+
+    marks = b"".join(_slash(x, sheets.CHAIN_Y) for x in (150, 200, 250, 300, 350))
+    marks += _slash(150, sheets.OVERALL_Y) + _slash(350, sheets.OVERALL_Y)
+    extra = (
+        b""
+        if covered_slot is None
+        else sheets.yellow_box(centers[covered_slot] - 7, sheets.CHAIN_Y + 3, 13, 7)
+    )
+    return sheets.sheet(drawing + extra, marks)
 
 
 def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_still_fill_the_width() -> (
@@ -448,12 +480,31 @@ def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
 
 
 def test_a_reader_that_differs_from_the_file_holds_the_piece_and_the_chain() -> None:
-    page = slot_page(named_sheet())
-    lookup = crops_to_texts(page, TEXTS | {1: '21"'})
-    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+    page = slot_page(four_piece_sheet())
+    indexed_crops = crops_to_texts(
+        page, {0: "slot-0", 1: "slot-1", 2: "slot-2", 3: "slot-3", None: "overall"}
+    )
+    middle_crop = next(png for png, position in indexed_crops.items() if position == "slot-1")
+    lookup = {
+        png: FOUR_PIECE_TEXTS[
+            None if position == "overall" else int(position.removeprefix("slot-"))
+        ]
+        for png, position in indexed_crops.items()
+    }
+    result = read(
+        page,
+        FakeReaders(
+            lambda model, png: '13"' if model == OPUS and png == middle_crop else lookup[png]
+        ),
+        claude_row_reader=True,
+    )
 
     assert result.slots[1].outcome.reason_code == "readers-differ"
-    assert result.mapping.proposals == ()
+    assert [(proposal.position, proposal.slot_index) for proposal in result.mapping.proposals] == [
+        (0, 0),
+        (2, 2),
+        (3, 3),
+    ]
 
 
 def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> None:
@@ -860,7 +911,9 @@ def test_dishwasher_can_name_a_piece_without_holding_its_row() -> None:
 
 
 def test_other_words_still_go_to_the_person() -> None:
-    result = agreed(glyph_page(), TEXTS | {0: '12" Panel'})
+    page = glyph_page()
+    lookup = crops_to_texts(page, TEXTS | {0: '12" Panel'})
+    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
     assert result.slots[0].outcome.reason_code == "not-plain"
     assert result.mapping.proposals == ()
 
@@ -1001,9 +1054,14 @@ def _scaffold(session: Any) -> tuple[Any, Any, Any, Any]:
 
 
 def _read_persisted(
-    session: Any, data: bytes, readers: Callable[[SlotPage], FakeReaders], **persist: Any
+    session: Any,
+    data: bytes,
+    readers: Callable[[SlotPage], FakeReaders],
+    *,
+    claude_row_reader: bool = False,
+    **persist: Any,
 ) -> tuple[Any, Any, PageSlotResult, int]:
-    from workflow.slot_reader import persist_slot_readings
+    from workflow.slot_reader import CLAUDE_SPAN_PROMPT_ID, CROP_PROMPT_ID, persist_slot_readings
 
     revision, version, page_row, run = _scaffold(session)
     page = slot_page(data)
@@ -1016,14 +1074,17 @@ def _read_persisted(
         ink=page.ink,
     )
     (result,) = read_slot_pages(
-        [page], runtime=runtime(readers(page)), record_attempt=lambda _a: None
+        [page],
+        runtime=runtime(readers(page), claude_row_reader=claude_row_reader),
+        record_attempt=lambda _a: None,
     )
     count = persist_slot_readings(
         session,
         package_revision_id=revision.id,
         extraction_run_id=run.id,
-        reader_ids=(KIMI, QWEN),
+        reader_ids=(OPUS, SONNET) if claude_row_reader else (KIMI, QWEN),
         results=[result],
+        prompt_id=CLAUDE_SPAN_PROMPT_ID if claude_row_reader else CROP_PROMPT_ID,
         **persist,
     )
     return revision, run, result, count
@@ -1148,14 +1209,26 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     from app.models.evidence import MeasurementProposal
 
     def readers(page: SlotPage) -> FakeReaders:
-        lookup = crops_to_texts(page, TEXTS)
+        indexed = crops_to_texts(
+            page,
+            {0: "slot-0", 1: "slot-1", 2: "slot-2", 3: "slot-3", None: "overall"},
+        )
+        lookup = {
+            png: FOUR_PIECE_TEXTS[
+                None if position == "overall" else int(position.removeprefix("slot-"))
+            ]
+            for png, position in indexed.items()
+        }
         return FakeReaders(lambda _model, png: lookup[png])
 
     revision, run, result, count = _read_persisted(
-        session, named_sheet(sheets.yellow_box(241, sheets.CHAIN_Y + 3, 13, 7)), readers
+        session,
+        four_piece_sheet(covered_slot=1),
+        readers,
+        claude_row_reader=True,
     )
 
-    assert count == 5  # three slots, the overall and the row's walls
+    assert count == 6  # four slots, the overall and the row's walls
     by_slot = _by_slot(session, run)
     assert {
         key: by_slot[f"slot:{key.removeprefix('slot:')}"].id for key in result.owner_candidate_ids
@@ -1167,19 +1240,35 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert covered.semantic_guess is None
     assert "ink:covered" in covered.ambiguity_flags
     first = by_slot["slot:0"]
-    assert "kind:filler" in first.ambiguity_flags
+    assert "row-partial" in first.ambiguity_flags
+    assert "row-slot-count:4" in first.ambiguity_flags
     assert any(flag.startswith("slot-box:") for flag in first.ambiguity_flags)
     assert any(flag.startswith("crop-box:") for flag in first.ambiguity_flags)
-    assert first.corroboration_status is None, "sealed but held back: not offered"
-    assert first.value_numerator == 12 and first.review_reason is not None
+    assert first.corroboration_status == "CORROBORATED", "the sealed piece is shown as a proposal"
+    assert first.value_numerator == 12 and first.review_reason is None
     overall = by_slot["slot:overall"]
     assert overall.corroboration_status is None and overall.value_numerator == 48
     assert overall.review_reason is not None and overall.review_reason.startswith("held back")
 
     proposals = session.scalars(
-        select(MeasurementProposal).where(MeasurementProposal.package_revision_id == revision.id)
+        select(MeasurementProposal)
+        .where(MeasurementProposal.package_revision_id == revision.id)
+        .order_by(MeasurementProposal.field_key, MeasurementProposal.position)
     ).all()
-    assert proposals == [], "a held chain links nothing to the form"
+    assert [(proposal.field_key, proposal.position) for proposal in proposals] == [
+        (PIECE_FIELD, 0),
+        (PIECE_FIELD, 2),
+        (PIECE_FIELD, 3),
+    ], "sealed neighbors are proposed in their original slots; the missing slot stays blank"
+    from app.api.measurements import _stored_proposal_out
+    from tests.workflow.test_stages import _publish_rulebook
+
+    _publish_rulebook(session)
+    api_field = next(
+        field for field in _stored_proposal_out(session, revision) if field.field_key == PIECE_FIELD
+    )
+    assert api_field.expected_count == 4
+    assert [reading.position for reading in api_field.values] == [0, 2, 3]
 
 
 def test_a_fully_sealed_row_links_every_piece_in_order_and_a_veto_is_kept_as_a_suggestion(

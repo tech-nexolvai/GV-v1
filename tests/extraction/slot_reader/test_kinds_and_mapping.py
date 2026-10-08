@@ -16,7 +16,6 @@ from extraction.slot_reader.mapping import (
     FILLER_FIELD,
     OVERALL_FIELD,
     PIECE_FIELD,
-    WHAT_IS_IT,
     PieceReading,
     map_row,
 )
@@ -130,21 +129,18 @@ def test_a_fully_sealed_row_offers_every_piece_whatever_its_kind() -> None:
     assert mapping.held == ()
 
 
-def test_an_unknown_piece_under_no_sealed_overall_still_asks_what_it_is() -> None:
+def test_non_claude_reader_keeps_the_legacy_hold_for_an_unknown_piece() -> None:
     mapping = map_row(
         None,
         pieces((sealed('1"'), FILLER), (sealed('3/4"'), UNKNOWN), (sealed('18"'), CABINET)),
         row_ambiguity=None,
     )
     assert mapping.proposals == ()
-    held = dict(mapping.held)
-    assert held[1].startswith(WHAT_IS_IT)
-    assert "piece 2" in held[0] and "piece 2" in held[2]
+    assert 1 in {index for index, _ in mapping.held}
 
 
-def test_the_overall_is_never_offered_without_its_whole_chain() -> None:
-    """A wall-to-wall line can coincide with the chain's ends (#987's first verification run): the
-    overall never goes alone, so one unsealed piece holds it and every piece back."""
+def test_non_claude_reader_keeps_the_legacy_all_or_nothing_chain() -> None:
+    """Partial proposals are reserved for the explicitly enabled Claude reader."""
     mapping = map_row(
         sealed('120"'),
         pieces((sealed('24"'), CABINET), (REVIEW, UNKNOWN), (sealed('24"'), CABINET)),
@@ -152,6 +148,7 @@ def test_the_overall_is_never_offered_without_its_whole_chain() -> None:
     )
     assert mapping.proposals == ()
     assert dict(mapping.held)[None].startswith("held back: piece 2 under this overall")
+    assert 1 not in dict(mapping.held), "unsealed readings already carry their own review reason"
 
 
 def test_no_piece_widths_without_a_sealed_overall() -> None:
@@ -176,15 +173,31 @@ def test_a_held_row_offers_nothing_and_says_why() -> None:
     assert dict(mapping.held) == {None: reason, 0: reason, 1: reason}
 
 
-def test_a_missing_slot_reading_is_never_a_shorter_sum() -> None:
-    """One slot unsealed: no piece is offered, so no saved form can add up a shorter chain."""
+def test_claude_reader_proposes_sealed_pieces_in_their_original_positions() -> None:
+    """A useful proposal is shown, but the missing neighbour cannot shift the later width left."""
+    mapping = map_row(
+        sealed('36"'),
+        pieces((sealed('1"'), FILLER), (REVIEW, CABINET), (sealed('18"'), CABINET)),
+        row_ambiguity=None,
+        allow_partial_proposals=True,
+    )
+    assert [
+        (proposal.field_key, proposal.position, proposal.slot_index)
+        for proposal in mapping.proposals
+    ] == [
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 2, 2),
+    ]
+    assert {index for index, _ in mapping.held} == {None, 1}
+
+
+def test_partial_proposals_are_not_enabled_by_default() -> None:
     mapping = map_row(
         sealed('36"'),
         pieces((sealed('1"'), FILLER), (REVIEW, CABINET), (sealed('18"'), CABINET)),
         row_ambiguity=None,
     )
     assert mapping.proposals == ()
-    assert {index for index, _ in mapping.held} == {None, 0, 2}
 
 
 def test_pieces_adding_up_never_changes_what_is_offered() -> None:

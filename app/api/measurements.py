@@ -602,6 +602,7 @@ def _stored_proposal_out(
 
     grouped: dict[str, list[ProposedReadingOut]] = {}
     verified: dict[str, bool] = {}
+    expected_counts: dict[str, int] = {}
     for row in rows:
         found = candidates.get(row.candidate_id)
         if found is None or row.field_key not in by_key:
@@ -621,8 +622,21 @@ def _stored_proposal_out(
                     f"{candidate.unit}"
                 ),
                 page_index=page_index,
+                position=row.position,
             )
         )
+        if row.field_key == "SHOP:countertop_piece_width":
+            count = next(
+                (
+                    int(flag.removeprefix("row-slot-count:"))
+                    for flag in candidate.ambiguity_flags
+                    if flag.startswith("row-slot-count:")
+                    and flag.removeprefix("row-slot-count:").isdigit()
+                ),
+                None,
+            )
+            if count is not None:
+                expected_counts[row.field_key] = max(expected_counts.get(row.field_key, 0), count)
 
     return tuple(
         ProposedFieldOut(
@@ -631,6 +645,8 @@ def _stored_proposal_out(
             source=by_key[key].source,
             many=by_key[key].many,
             placement_verified=verified[key],
+            expected_count=expected_counts.get(key)
+            or (max((reading.position or 0 for reading in values), default=-1) + 1),
             values=tuple(values),
         )
         for key, values in sorted(grouped.items())
@@ -1451,15 +1467,17 @@ def propose_measurements(
                 name=by_key[proposal.field_key].name,
                 source=by_key[proposal.field_key].source,
                 many=by_key[proposal.field_key].many,
+                expected_count=len(proposal.candidate_ids),
                 values=tuple(
                     ProposedReadingOut(
                         candidate_id=UUID(candidate_id),
                         value=by_id[candidate_id].value,
                         page_index=by_id[candidate_id].page - 1,
+                        position=position,
                         chain_key=by_id[candidate_id].chain_key,
                         chain_position=by_id[candidate_id].order,
                     )
-                    for candidate_id in proposal.candidate_ids
+                    for position, candidate_id in enumerate(proposal.candidate_ids)
                 ),
             )
             for proposal in proposed
