@@ -36,7 +36,7 @@ from eval.form_first_safety import (
 from extraction.form_reader.bedrock import _extract_json_object
 from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_ID,
-    COUNTER_BREAK_PROMPT_ID,
+    COUNTER_BREAK_PROMPT_IDS,
     CROP_PROMPT_ID,
     ROW_PROMPT_IDS,
 )
@@ -113,12 +113,12 @@ def audit_saved_attempts(
         row
         for row in attempts
         if row.prompt_id
-        in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS, COUNTER_BREAK_PROMPT_ID}
+        in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS, *COUNTER_BREAK_PROMPT_IDS}
     )
     label_attempts = sum(row.prompt_id in label_prompts for row in relevant)
     wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
     row_attempts = sum(row.prompt_id in ROW_PROMPT_IDS for row in relevant)
-    counter_break_attempts = sum(row.prompt_id == COUNTER_BREAK_PROMPT_ID for row in relevant)
+    counter_break_attempts = sum(row.prompt_id in COUNTER_BREAK_PROMPT_IDS for row in relevant)
 
     def result(complete: bool, reason: str | None) -> AttemptAudit:
         return AttemptAudit(
@@ -171,7 +171,7 @@ def audit_saved_attempts(
             or not isinstance(parsed.get("why"), str)
         ):
             return result(False, "a successful row-choice attempt cannot be parsed")
-        elif row.prompt_id == COUNTER_BREAK_PROMPT_ID and (
+        elif row.prompt_id in COUNTER_BREAK_PROMPT_IDS and (
             parsed is None
             or not isinstance(parsed.get("contains_tall_appliance"), bool)
             or not isinstance(parsed.get("why"), str)
@@ -318,7 +318,7 @@ def product_case_for_page(
                         CLAUDE_SPAN_PROMPT_ID,
                         WALL_PROMPT_ID,
                         *ROW_PROMPT_IDS,
-                        COUNTER_BREAK_PROMPT_ID,
+                        *COUNTER_BREAK_PROMPT_IDS,
                     )
                 ),
             )
@@ -494,6 +494,18 @@ def product_case_for_page(
         reason = "saved proposals do not cover every slot of the selected row"
     if row_wall_run_mismatch:
         reason = "wall layout and width proposals cite different extraction runs"
+    check_hold = next(
+        (
+            flag.removeprefix("check-hold:")
+            for candidate in all_page_candidates
+            for flag in candidate.ambiguity_flags or ()
+            if flag.startswith("check-hold:")
+        ),
+        None,
+    )
+    if check_hold is not None:
+        # The product reads this row but does not check it (the stone does not end at the walls).
+        reason = f"the width check does not apply to this row ({check_hold})"
     return SafetyCase(case_id, truth, proposed, audit.complete, reason), audit
 
 

@@ -503,3 +503,30 @@ def test_an_unclear_view_is_never_a_plan() -> None:
     clients = FakeClients(lambda _request: reply(walls(view="section")))
     answer = run(clients, [CropJob("walls", KIMI, 0, PNG, VIEW)])[("walls", KIMI)]
     assert isinstance(answer, WallAnswer) and answer.view == "other"
+
+
+def test_counter_break_answer_carries_where_the_stone_ends() -> None:
+    model = "anthropic.claude-opus-5-5"
+    view = encode_png(4, 2, bytes(24))
+    answers = read_crops_parallel(
+        [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
+        clients=FakeClients(
+            lambda _request: reply(
+                {
+                    "contains_tall_appliance": False,
+                    "stone_ends": "into_walls",
+                    "why": "stone runs into pockets",
+                }
+            )
+        ),
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        max_concurrent_calls=1,
+        max_tokens=100,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.001,
+        record_attempt=lambda _attempt: None,
+    )
+    answer = answers[("p0:counter-break", model)]
+    assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "into_walls"
+    assert '"stone_ends"' in COUNTER_BREAK_PROMPT

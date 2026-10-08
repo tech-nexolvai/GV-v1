@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, aliased
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from vocabulary.check_holds import CHECK_HOLD_REASONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +189,17 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
                     flag == "row-ambiguous" or flag == "row-partial" or flag.startswith("row-hold:")
                     for flag in (candidate.ambiguity_flags or [])
                 )
+            ),
+            None,
+        ) or next(
+            # Readings stand but the width arithmetic does not apply (the stone does not end at
+            # the walls): no automatic check, whatever the reviewer types or chooses.
+            (
+                CHECK_HOLD_REASONS.get(code, code)
+                for candidate in candidates
+                for flag in candidate.ambiguity_flags or ()
+                if flag.startswith("check-hold:")
+                for code in (flag.removeprefix("check-hold:"),)
             ),
             None,
         )

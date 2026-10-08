@@ -1,0 +1,36 @@
+"""Why a countertop row is read but not checked: its stone does not end at the walls.
+
+Shared by the reader (`extraction/slot_reader/`), which flags the row `check-hold:<code>`, and by the
+row-scoped check (`workflow/slot_row_scope.py`), which shows the reason and abstains. Kept here,
+outside `extraction/`, because the control plane may reach the second and never the first
+(`tests/api/test_no_heavy_work.py`).
+
+Raj's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops at
+full-height fillers or panels, they take it; where it runs into wall pockets, the pocket detail
+decides (GV-Brain "Field cut - when it applies", 2026-10-08). The readings stand either way; only
+the width check's arithmetic does not apply.
+"""
+
+from __future__ import annotations
+
+from typing import Final
+
+STONE_SHORT_OF_ENDS: Final = (
+    "stone-short-of-ends",
+    (
+        "the stone stops at fillers or panels before the row's ends; the field cut belongs to "
+        "them, so the reviewer checks the stone width"
+    ),
+)
+STONE_INTO_WALLS: Final = (
+    "stone-into-walls",
+    (
+        "the stone runs into the walls (pockets); the check needs the pocket detail, so the "
+        "reviewer checks it"
+    ),
+)
+
+#: Code → the reviewer's words, for every check hold.
+CHECK_HOLD_REASONS: Final = {
+    code: reason for code, reason in (STONE_SHORT_OF_ENDS, STONE_INTO_WALLS)
+}
