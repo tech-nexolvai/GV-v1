@@ -4,6 +4,7 @@ import type { Finding } from '../../data/types';
 import { OutcomeBadge, SeverityDot } from '../ui/Badge';
 import { OutcomeIcon } from '../ui/OutcomeIcon.js';
 import { createDecisionSaver, type DecisionSaveResult, type SimpleReviewAction } from './decisionSave.js';
+import { actionNeedsNote } from '../output/reviewerResults.js';
 import './FindingCard.css';
 
 function readableLabel(value: string): string {
@@ -26,6 +27,8 @@ interface FindingCardProps {
   isSelected: boolean;
   /** The table row has its own disclosure; the first opening must reveal the detail too. */
   defaultExpanded?: boolean;
+  /** Server readiness, not the existence of an action, decides whether review is finished. */
+  needsDecision?: boolean;
   onViewEvidence: (finding: Finding) => void;
   onAction: (findingId: string, action: SimpleReviewAction, note?: string) => Promise<DecisionSaveResult>;
   /**
@@ -45,6 +48,7 @@ export function FindingCard({
   finding,
   isSelected,
   defaultExpanded = false,
+  needsDecision,
   onViewEvidence,
   onAction,
   onCorrect,
@@ -64,10 +68,14 @@ export function FindingCard({
 
   const hasAction = finding.reviewer_action !== null;
   const needsNote = finding.outcome === 'REVIEW_REQUIRED' || finding.outcome === 'NOT_FOUND';
+  const requiresRerun = finding.reviewer_action === 'correct';
+  const unresolved = needsDecision ?? (!hasAction || requiresRerun || (
+    needsNote && !finding.reviewer_note?.trim()
+  ));
 
   function submitAction(action: SimpleReviewAction) {
     if (isSaving) return;
-    if (needsNote) { setPending(action); setSaveError(null); return; }
+    if (actionNeedsNote(finding.outcome, action)) { setPending(action); setSaveError(null); return; }
     void saveDecision(() => onAction(finding.id, action), {
       busy: setIsSaving, error: setSaveError, saved: () => {},
     });
@@ -75,7 +83,7 @@ export function FindingCard({
 
   return (
     <div
-      className={`finding-card finding-card--${finding.outcome.toLowerCase().replace('_', '-')} ${isSelected ? 'finding-card--selected' : ''} ${hasAction ? 'finding-card--actioned' : ''}`}
+      className={`finding-card finding-card--${finding.outcome.toLowerCase().replace('_', '-')} ${isSelected ? 'finding-card--selected' : ''} ${hasAction && !unresolved ? 'finding-card--actioned' : ''}`}
       aria-label={`${finding.check_id}: ${finding.name} — ${finding.outcome}`}
     >
       {/* ── Header row ──────────────────────────────────── */}
@@ -251,7 +259,7 @@ export function FindingCard({
                 <ExternalLink size={10} />
               </button>
 
-              {!hasAction && finding.outcome !== 'PASS' && finding.outcome !== 'NO_APPLICABLE_RULE' && (
+              {unresolved && !requiresRerun && finding.outcome !== 'PASS' && finding.outcome !== 'NO_APPLICABLE_RULE' && (
                 <div className="finding-card__reviewer-actions" aria-busy={isSaving}>
                     <button
                       className="btn btn--reviewer"
@@ -292,7 +300,7 @@ export function FindingCard({
                   });
                 }}>
                   <label htmlFor={`note-${finding.id}`}>
-                    {pending === 'confirm' ? 'What did you check?' : 'Why is this not checkable?'} (required)
+                    {pending === 'confirm' ? 'What did you check?' : finding.outcome === 'FAIL' ? 'Why are you dismissing this failure?' : 'Why is this not checkable?'} (required)
                   </label>
                   <textarea id={`note-${finding.id}`} required value={reason} disabled={isSaving}
                     onChange={event => setReason(event.target.value)} rows={3} autoFocus />
@@ -394,10 +402,13 @@ export function FindingCard({
                 </form>
               )}
 
+              {unresolved && <p className="finding-card__reason" role="status">
+                {requiresRerun ? 'Correction recorded. Run checks again before reviewing the new finding or signing off.' : 'This finding still needs your decision. Add a note when required; a reading confirmation alone does not finish the review.'}
+              </p>}
               {hasAction && (
                 <div className="finding-card__actioned-label">
-                  <CheckCircle size={11} />
-                  <div><strong>Reviewer decision: {needsNote && finding.reviewer_action === 'confirm' ? 'Checked: OK' : needsNote && finding.reviewer_action === 'dismiss' ? 'Not checkable' : finding.reviewer_action}</strong>
+                  {!unresolved && <CheckCircle size={11} />}
+                  <div><strong>{unresolved ? `Recorded action: ${finding.reviewer_action} — review not complete` : `Reviewer decision: ${needsNote && finding.reviewer_action === 'confirm' ? 'Checked: OK' : needsNote && finding.reviewer_action === 'dismiss' ? 'Not checkable' : finding.reviewer_action}`}</strong>
                     <p>{finding.reviewed_by ?? 'Reviewer recorded'}{finding.reviewed_at ? ` · ${new Date(finding.reviewed_at).toLocaleString()}` : ''}</p>
                     {finding.reviewer_note && <p>{finding.reviewer_note}</p>}
                     <small>Recorded check unchanged: {finding.outcome.replaceAll('_', ' ')}</small>

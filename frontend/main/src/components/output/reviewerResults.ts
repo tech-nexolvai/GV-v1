@@ -23,11 +23,26 @@ export async function collectFindingPages<T extends { id: string }>(
   return result;
 }
 
+export function actionNeedsNote(outcome: Outcome, action: SimpleReviewAction): boolean {
+  return outcome === 'REVIEW_REQUIRED' || outcome === 'NOT_FOUND' || (outcome === 'FAIL' && action === 'dismiss');
+}
+
 export function decisionPayload(id: string, outcome: Outcome, action: SimpleReviewAction, note?: string) {
-  if ((outcome === 'REVIEW_REQUIRED' || outcome === 'NOT_FOUND') && !note?.trim()) {
+  if (actionNeedsNote(outcome, action) && !note?.trim()) {
     throw new Error('Write a note explaining your decision.');
   }
   return { finding_id: id, action, ...(note?.trim() ? { note: note.trim() } : {}) };
+}
+
+export function wallSourceLabel(source: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    'vendor-drawing-clues': 'From vendor drawing clues',
+    'drawing-and-readers': 'Drawing clues with a suggested wall end — needs your confirmation',
+    readers: 'Suggested wall layout — needs your confirmation',
+    'between-panels': 'Stone between side panels — no end field cut proposed; needs your confirmation',
+    reviewer: 'Chosen by the reviewer',
+  };
+  return source ? labels[source] ?? 'Wall source not recognised — review the layout' : 'Wall source not recorded';
 }
 
 export function canSignOff(readiness: { can_approve: boolean; blocking_findings: number } | null): boolean {

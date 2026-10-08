@@ -28,7 +28,7 @@ export function toFinding(listed: Listed): Finding {
     scope_row_candidate_id: listed.scope_row_candidate_id,
     row_location: listed.row_location,
     package_revision_id: listed.package_revision_id,
-    reason: listed.reason ?? undefined,
+    reason: listed.reviewer_reason ?? listed.reason ?? undefined,
     scope_label: listed.scope_label,
     notes: listed.notes ?? [],
     // The rule id until the snapshot's human name is on the wire. Better a real identifier than a
@@ -116,7 +116,7 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     ...finding,
     row_location: chain.row_location ?? finding.row_location,
     scope_row_candidate_id: chain.scope_row_candidate_id ?? finding.scope_row_candidate_id,
-    reason: source.kind === 'abstention' ? (source.reason ?? finding.reason) : finding.reason,
+    reason: chain.reviewer_reason ?? finding.reason ?? (source.kind === 'abstention' ? source.reason ?? undefined : undefined),
     recorded_operands: recordedOperands,
     trace,
     arch_evidence: _evidenceFor(evidence, 'ARCH'),

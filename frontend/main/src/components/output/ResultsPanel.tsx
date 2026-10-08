@@ -4,7 +4,7 @@ import type { ApprovalReadiness, SlotReaderRow } from '../../api/client';
 import { FindingCard } from '../chat/FindingCard';
 import { OutcomeIcon } from '../ui/OutcomeIcon';
 import type { DecisionSaveResult, SimpleReviewAction } from '../chat/decisionSave';
-import { resultGroups } from './reviewerResults';
+import { resultGroups, wallSourceLabel } from './reviewerResults';
 import './ResultsPanel.css';
 
 const RESULT_LABELS = {
@@ -41,7 +41,7 @@ export function ResultsPanel({ findings, rows, readiness, selected, busy, onRefr
           {row && <details className="results-panel__row-values"><summary>Current row values and wall layout</summary>
             <p>Saved row state. The recorded check below changes only when checks run again.</p>
             <dl>{row.values.map(value => <div key={value.key}><dt>{value.label}</dt><dd>{value.value ?? 'Needs a value'}{value.source ? ` · ${value.source}` : ''}</dd></div>)}
-              <div><dt>Wall layout</dt><dd>{row.wall_config ? row.wall_config.replaceAll('_', ' ') : row.wall_source === 'vendor-drawing-clues' ? row.wall_proposal?.replaceAll('_', ' ') : 'Not confirmed'} · {row.confirmed_by ? `reviewer ${row.confirmed_by}` : row.wall_source ?? 'not recorded'}</dd></div>
+              <div><dt>Wall layout</dt><dd>{row.wall_config ? row.wall_config.replaceAll('_', ' ') : row.wall_source === 'vendor-drawing-clues' ? row.wall_proposal?.replaceAll('_', ' ') : 'Not confirmed'} · {row.confirmed_by ? `reviewer ${row.confirmed_by}` : wallSourceLabel(row.wall_source)}</dd></div>
             </dl>
           </details>}
           <div className="results-panel__links">
@@ -49,7 +49,7 @@ export function ResultsPanel({ findings, rows, readiness, selected, busy, onRefr
             {finding.scope_row_candidate_id && <button type="button" className="btn btn--ghost" onClick={() => onOpenRow(finding.scope_row_candidate_id!)}>Open countertop card</button>}
             {!finding.row_location && !finding.shop_evidence && !finding.arch_evidence && <small>No stored drawing location for this check.</small>}
           </div>
-          <FindingCard finding={finding} defaultExpanded isSelected={selected === finding.id} onViewEvidence={onViewEvidence} onAction={onAction} onCorrect={onCorrect} onExcept={onExcept} />
+          <FindingCard finding={finding} needsDecision={readiness ? blockers.has(finding.id) : undefined} defaultExpanded isSelected={selected === finding.id} onViewEvidence={onViewEvidence} onAction={onAction} onCorrect={onCorrect} onExcept={onExcept} />
         </article>;
       })}
     </section>)}

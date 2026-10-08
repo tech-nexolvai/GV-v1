@@ -716,6 +716,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             }))}
             selectedFinding={selectedFindingId}
             recordedFindingCount={findings.length}
+            blockingFindingIds={readiness?.blocking_finding_ids}
             onViewEvidence={handleViewEvidence}
             onAction={handleAction}
             onCorrect={handleCorrect}
