@@ -36,6 +36,7 @@ from eval.form_first_safety import (
 from extraction.form_reader.bedrock import _extract_json_object
 from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_ID,
+    COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT_ID,
     ROW_PROMPT_IDS,
 )
@@ -44,8 +45,9 @@ from rules.parameters import ParameterSet, resolve_all
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation
 from workflow.changed_values import layered_parameter_sets
-from workflow.layout_proposals import reader_sealed_wall_config
+from workflow.layout_proposals import reader_sealed_wall_config, slot_reader_wall_for_page
 from workflow.measurements import run_parameters_for
+from workflow.part_operands import countertop_scopes, current_wall_layout
 
 OVERALL_FIELD = "SHOP:countertop_overall_width"
 PIECE_FIELD = "SHOP:countertop_piece_width"
@@ -65,6 +67,7 @@ class AttemptAudit:
     complete: bool
     reason: str | None
     row_attempts: int = 0
+    counter_break_attempts: int = 0
 
 
 def _answer(raw: str | None) -> dict[str, Any] | None:
@@ -109,15 +112,23 @@ def audit_saved_attempts(
     relevant = tuple(
         row
         for row in attempts
-        if row.prompt_id in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS}
+        if row.prompt_id
+        in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS, COUNTER_BREAK_PROMPT_ID}
     )
     label_attempts = sum(row.prompt_id in label_prompts for row in relevant)
     wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
     row_attempts = sum(row.prompt_id in ROW_PROMPT_IDS for row in relevant)
+    counter_break_attempts = sum(row.prompt_id == COUNTER_BREAK_PROMPT_ID for row in relevant)
 
     def result(complete: bool, reason: str | None) -> AttemptAudit:
         return AttemptAudit(
-            len(relevant), label_attempts, wall_attempts, complete, reason, row_attempts
+            len(relevant),
+            label_attempts,
+            wall_attempts,
+            complete,
+            reason,
+            row_attempts,
+            counter_break_attempts,
         )
 
     if not relevant:
@@ -160,6 +171,12 @@ def audit_saved_attempts(
             or not isinstance(parsed.get("why"), str)
         ):
             return result(False, "a successful row-choice attempt cannot be parsed")
+        elif row.prompt_id == COUNTER_BREAK_PROMPT_ID and (
+            parsed is None
+            or not isinstance(parsed.get("contains_tall_appliance"), bool)
+            or not isinstance(parsed.get("why"), str)
+        ):
+            return result(False, "a successful counter-break attempt cannot be parsed")
     if expected - observed:
         return result(False, "a sealed label is not backed by a stored reader answer")
 
@@ -296,7 +313,13 @@ def product_case_for_page(
                 ExtractionRun.extractor_version.startswith("slot-reader"),
                 ModelInvocation.reader_page_index == page_number - 1,
                 ModelInvocation.prompt_id.in_(
-                    (CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID, WALL_PROMPT_ID, *ROW_PROMPT_IDS)
+                    (
+                        CROP_PROMPT_ID,
+                        CLAUDE_SPAN_PROMPT_ID,
+                        WALL_PROMPT_ID,
+                        *ROW_PROMPT_IDS,
+                        COUNTER_BREAK_PROMPT_ID,
+                    )
                 ),
             )
             .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
@@ -348,8 +371,56 @@ def product_case_for_page(
     attempts = tuple(
         session.scalars(select(ModelInvocation).where(ModelInvocation.extraction_run_id == run_id))
     )
-    layout = reader_sealed_wall_config(session, package_revision_id)
-    wall_layout = None if layout is None else layout.value
+    row_wall = slot_reader_wall_for_page(session, package_revision_id, page_number - 1)
+    wall_candidate = None
+    row_wall_run_mismatch = False
+    if row_wall is not None and row_wall.candidate_id is not None:
+        wall_candidate = session.get(ObservationCandidate, row_wall.candidate_id)
+        if wall_candidate is None or wall_candidate.extraction_run_id != run_id:
+            row_wall_run_mismatch = True
+    scopes = countertop_scopes(session, package_revision_id)
+    page_scopes = tuple(scope for scope in (scopes or ()) if scope.page_index == page_number - 1)
+    manual_wall = (
+        current_wall_layout(session, page_scopes[0].item_id) if len(page_scopes) == 1 else None
+    )
+    wall_layout_used = False
+    if row_wall is not None and row_wall.row_held:
+        wall_layout = None
+    elif manual_wall is not None:
+        wall_layout = manual_wall.value
+    elif row_wall is not None:
+        wall_layout = None
+        if (
+            not row_wall_run_mismatch
+            and row_wall.selected
+            and not row_wall.held
+            and not row_wall.row_held
+            and row_wall.layout is not None
+            and row_wall.source in {"vendor-drawing-clues", "drawing-and-readers"}
+            and len(page_scopes) <= 1
+        ):
+            wall_layout = row_wall.layout
+        elif (
+            row_wall.selected
+            and not row_wall.held
+            and not row_wall.row_held
+            and row_wall.layout is not None
+            and row_wall.source == "readers"
+            and len(page_scopes) == 1
+            and manual_wall is not None
+        ):
+            # Kept explicit for auditability; the reviewer choice above is the value used.
+            wall_layout = manual_wall.value
+        wall_layout_used = (
+            wall_layout is not None
+            and manual_wall is None
+            and row_wall.source in {"readers", "drawing-and-readers"}
+        )
+    else:
+        # Preserve the pre-row path only when this page has no slot-reader row answer at all.
+        legacy_layout = reader_sealed_wall_config(session, package_revision_id)
+        wall_layout = None if legacy_layout is None else legacy_layout.value
+        wall_layout_used = legacy_layout is not None and legacy_layout.extraction_run_id == run_id
     wall_candidates = tuple(
         (page_index, candidate)
         for page_index, candidate in session.execute(
@@ -358,6 +429,7 @@ def product_case_for_page(
             .join(Page, Page.id == ObservationCandidate.page_id)
             .where(
                 ObservationCandidate.extraction_run_id == run_id,
+                Page.index == page_number - 1,
                 ObservationCandidate.raw_text.startswith("walls: "),
             )
         )
@@ -367,7 +439,7 @@ def product_case_for_page(
         candidates,
         page_index=page_number - 1,
         model_ids=model_ids,
-        wall_layout_used=layout is not None and layout.extraction_run_id == run_id,
+        wall_layout_used=wall_layout_used,
         wall_candidates=wall_candidates,
     )
 
@@ -420,7 +492,7 @@ def product_case_for_page(
     reason = None if audit.complete else audit.reason
     if not _complete_slot_row(all_page_candidates, tuple(position for position, _value in pieces)):
         reason = "saved proposals do not cover every slot of the selected row"
-    if layout is not None and layout.extraction_run_id != run_id:
+    if row_wall_run_mismatch:
         reason = "wall layout and width proposals cite different extraction runs"
     return SafetyCase(case_id, truth, proposed, audit.complete, reason), audit
 

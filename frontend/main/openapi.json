@@ -1327,6 +1327,16 @@
               }
             ],
             "description": "Null when no tolerance is stated, so nothing can be suggested."
+          },
+          "wall_layout_proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WallLayoutProposalOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -5602,6 +5612,25 @@
           "views"
         ],
         "title": "ViewsOut",
+        "type": "object"
+      },
+      "WallLayoutProposalOut": {
+        "description": "A page-row suggestion; it becomes a decision only when the person confirms the run.",
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "title": "WallLayoutProposalOut",
         "type": "object"
       },
       "app__schemas__distribution__QuantityOut": {

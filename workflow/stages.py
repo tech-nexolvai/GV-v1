@@ -290,7 +290,12 @@ from workflow.form_reader import (
 )
 from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
-from workflow.layout_proposals import discriminator_note, record_layout_proposal
+from workflow.layout_proposals import (
+    discriminator_note,
+    record_layout_proposal,
+    slot_reader_has_rows,
+    slot_reader_wall_for_page,
+)
 from workflow.measurements import run_parameters_for
 from workflow.part_operands import (
     CountertopScope,
@@ -6132,6 +6137,7 @@ class DatabaseStages:
         )
 
         countertop_subjects = countertop_scopes(session, package_revision_id)
+        has_slot_reader_rows = slot_reader_has_rows(session, package_revision_id)
         partial_claude_row = (
             _latest_claude_row_is_partial(session, package_revision_id)
             if countertop_subjects is None
@@ -6342,7 +6348,23 @@ class DatabaseStages:
                             snapshot_id=applicable.snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )
-                    elif rule_id == "CT-WIDTH-001" and partial_claude_row:
+                    elif (
+                        not scoped
+                        and rule_id == "CT-WIDTH-001"
+                        and countertop_subjects is None
+                        and has_slot_reader_rows
+                    ):
+                        finding = Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=applicable.snapshot.rule.severity,
+                            reason=(
+                                "Confirm each countertop's run before checking page-specific widths."
+                            ),
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                    elif not scoped and rule_id == "CT-WIDTH-001" and partial_claude_row:
                         finding = Finding(
                             rule_id=rule_id,
                             outcome=Outcome.REVIEW_REQUIRED,
@@ -6442,7 +6464,30 @@ class DatabaseStages:
                     own_layout = current_wall_layout(session, subject.item_id)
                     layout = own_layout.value if own_layout is not None else None
                     provenance = own_layout.provenance if own_layout is not None else None
-                    if layout is None and len(countertop_subjects) == 1:
+                    row_layout = slot_reader_wall_for_page(
+                        session, package_revision_id, subject.page_index
+                    )
+                    same_page_count = sum(
+                        other.page_index == subject.page_index for other in countertop_subjects
+                    )
+                    row_answer_owns_layout = row_layout is not None and (
+                        row_layout.held or not row_layout.selected or row_layout.layout is not None
+                    )
+                    if (
+                        layout is None
+                        and row_layout is not None
+                        and row_layout.selected
+                        and not row_layout.held
+                        and row_layout.layout is not None
+                        and row_layout.source in {"vendor-drawing-clues", "drawing-and-readers"}
+                        and same_page_count == 1
+                    ):
+                        layout = row_layout.layout
+                        provenance = (
+                            f"Wall layout: {wall_layout_name(layout)}, established by vendor "
+                            "drawing clues for this countertop row."
+                        )
+                    if layout is None and row_layout is None and len(countertop_subjects) == 1:
                         revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
                         if revision_layout is not None:
                             layout = revision_layout
@@ -6490,12 +6535,28 @@ class DatabaseStages:
                             snapshot_id=width_snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )
+                    elif row_layout is not None and row_layout.row_held:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason=(
+                                row_layout.reason
+                                or "This countertop row is held for reviewer confirmation."
+                            ),
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
                     elif layout is None:
                         finding = Finding(
                             rule_id="CT-WIDTH-001",
                             outcome=Outcome.REVIEW_REQUIRED,
                             severity=width_snapshot.rule.severity,
-                            reason="Choose the wall layout for this countertop before checking its width.",
+                            reason=(
+                                row_layout.reason
+                                if row_answer_owns_layout and row_layout and row_layout.reason
+                                else "Choose the wall layout for this countertop before checking its width."
+                            ),
                             snapshot_id=width_snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )

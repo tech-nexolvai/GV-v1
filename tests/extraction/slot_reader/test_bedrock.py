@@ -17,10 +17,14 @@ from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ModelPacer
 from extraction.slot_reader.anthropic import BatchSpendGuard
 from extraction.slot_reader.bedrock import (
+    COUNTER_BREAK_PROMPT,
+    COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT,
     ROW_PROMPT,
+    CounterBreakAnswer,
     CropJob,
     RowChoiceAnswer,
+    build_counter_break_request,
     build_crop_request,
     build_row_request,
     build_wall_request,
@@ -79,7 +83,10 @@ class Rates:
 
 class AnthropicRates:
     def rate_for(self, model_id: str) -> object | None:
-        if model_id != "anthropic.claude-opus-5-5":
+        if model_id not in {
+            "anthropic.claude-opus-5-5",
+            "anthropic.claude-sonnet-5-5",
+        }:
             return None
         return type(
             "Rate",
@@ -288,6 +295,44 @@ def test_row_question_uses_the_same_read_pool_result_shape() -> None:
     )
 
     assert answers == {("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row")}
+
+
+def test_counter_break_question_is_a_hold_only_two_picture_question() -> None:
+    model = "anthropic.claude-sonnet-5-5"
+    view = encode_png(4, 2, bytes(24))
+    request = build_counter_break_request(
+        model_id=model, row_png=PNG, view_png=view, max_tokens=100
+    )
+    content = request["messages"][0]["content"]
+    assert content[0]["image"]["source"]["bytes"] == view
+    assert content[1]["image"]["source"]["bytes"] == PNG
+    assert content[2]["text"] == COUNTER_BREAK_PROMPT
+    assert "does not approve the row" in COUNTER_BREAK_PROMPT
+
+    attempts: list[AttemptUsage] = []
+    answers = read_crops_parallel(
+        [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
+        clients=FakeClients(
+            lambda _request: reply(
+                {"contains_tall_appliance": True, "why": "a tall outlined bay is present"}
+            )
+        ),
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        max_concurrent_calls=1,
+        max_tokens=100,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.001,
+        record_attempt=attempts.append,
+    )
+    assert answers == {
+        ("p0:counter-break", model): CounterBreakAnswer(
+            model, True, "a tall outlined bay is present"
+        )
+    }
+    assert len(attempts) == 1
+    assert attempts[0].prompt_id == COUNTER_BREAK_PROMPT_ID
+    assert attempts[0].raw_response_text is not None
 
 
 def test_each_reader_attempt_retains_its_exact_question_packet() -> None:

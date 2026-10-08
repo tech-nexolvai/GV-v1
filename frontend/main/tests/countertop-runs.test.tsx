@@ -38,6 +38,7 @@ const countertop: RunCountertop = {
     edge_tolerance: '0.004',
   },
   decision: null,
+  wall_layout_proposal: null,
 };
 
 const drawing: RunDrawing = {
@@ -100,6 +101,25 @@ assert.match(html, />Not this countertop&#x27;s run<\/button>/);
 assert.equal((html.match(/role="group"/g) ?? []).length, 1);
 assert.doesNotMatch(html, /aria-pressed="true"/);
 
+// Reader-only walls are visible and preselected for this one countertop, but the choice remains
+// a required human run decision. Nothing is saved merely because the select has a value.
+const readerWallSuggestion: RunCountertop = {
+  ...countertop,
+  wall_layout_proposal: { value: 'back_left_right', source: 'readers' },
+};
+const suggestedLayoutHtml = renderToStaticMarkup(
+  <CountertopRunsList
+    runs={{ ...runs, drawings: [{ ...drawing, countertops: [readerWallSuggestion] }] }}
+    saving={null}
+    onConfirm={() => undefined}
+    onWithdraw={() => undefined}
+  />,
+);
+assert.match(suggestedLayoutHtml, /Suggested from the drawing readers/);
+assert.match(suggestedLayoutHtml, /Confirm this run to use it/);
+assert.match(suggestedLayoutHtml, /<option value="back_left_right" selected="">Walls at both ends/);
+assert.match(suggestedLayoutHtml, /type="button"[^>]*>Confirm this run<\/button>/);
+
 // Ticking a different set of parts makes it a correction, whatever order they were ticked in.
 assert.equal(isTheSuggestion(countertop, ['right', 'left']), true);
 assert.equal(isTheSuggestion(countertop, ['left']), false);
@@ -150,7 +170,7 @@ const staleHtml = renderToStaticMarkup(
 );
 assert.match(staleHtml, /role="status">A part in this run was taken back/);
 assert.match(staleHtml, /Nothing left to decide\./);
-assert.match(staleHtml, /<option value="" selected="">Choose this countertop&#x27;s wall layout<\/option>/);
+assert.match(staleHtml, /<option value="back_left_right" selected="">Walls at both ends<\/option>/);
 
 // A withdrawal is the pressed answer.
 const withdrawn: RunCountertop = {

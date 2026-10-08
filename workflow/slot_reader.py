@@ -45,8 +45,10 @@ from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_ID,
+    COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT_ID,
     ROW_PROMPT_ID,
+    CounterBreakAnswer,
     CropJob,
     RowChoiceAnswer,
     crop_prompt_id,
@@ -858,7 +860,10 @@ def read_slot_pages(
 
     def run_jobs(
         items: Sequence[CropJob],
-    ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
+    ) -> dict[
+        tuple[str, str],
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None,
+    ]:
         return read_crops_parallel(
             items,
             clients=runtime.form.clients,
@@ -1006,6 +1011,33 @@ def read_slot_pages(
             )
             wall_candidate_ids[page.page_index] = uuid4()
             row_png, view_png = wall_pictures_for[0], wall_pictures_for[1]
+            if runtime.claude_row_reader:
+                counter_break_key = _counter_break_key(page.page_index)
+                counter_break_packet = (
+                    _question_packet(
+                        page,
+                        question_id=counter_break_key,
+                        candidate_id=wall_candidate_ids[page.page_index],
+                        prompt_id=COUNTER_BREAK_PROMPT_ID,
+                        full_view_png=view_png,
+                        close_up_png=row_png,
+                        store=store,
+                    )
+                    if runtime.question_packets
+                    else None
+                )
+                jobs.extend(
+                    CropJob(
+                        counter_break_key,
+                        model,
+                        page.page_index,
+                        row_png,
+                        view_png,
+                        counter_break_question=True,
+                        question_packet=counter_break_packet,
+                    )
+                    for model in readers
+                )
             if code_outcome is not None:
                 continue
             wall_packet = (
@@ -1059,6 +1091,17 @@ def read_slot_pages(
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
         overall = None if plan.overall is None else owner_result(plan.overall, len(plan.slots))
         hold = _counter_break_row_hold(page, plan, slots, runtime)
+        line_answers = tuple(
+            answer
+            for model in readers
+            if isinstance(
+                answer := answers.get((_counter_break_key(page.page_index), model)),
+                CounterBreakAnswer,
+            )
+        )
+        if hold is None and any(answer.contains_tall_appliance for answer in line_answers):
+            # Positive-only: this answer can hold a row, never clear an existing hold.
+            hold = counter_break_hold(("REFRIGERATOR",))
         if hold is None:
             source_texts = [
                 label.text
@@ -1158,6 +1201,10 @@ def read_slot_pages(
 
 def _walls_key(page_index: int) -> str:
     return f"p{page_index}:walls"
+
+
+def _counter_break_key(page_index: int) -> str:
+    return f"p{page_index}:counter-break"
 
 
 def _row_key(page_index: int) -> str:

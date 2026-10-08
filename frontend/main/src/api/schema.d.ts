@@ -2302,6 +2302,7 @@ export interface components {
             number: number | null;
             /** @description Null when no tolerance is stated, so nothing can be suggested. */
             suggestion: components["schemas"]["SuggestionOut"] | null;
+            wall_layout_proposal?: components["schemas"]["WallLayoutProposalOut"] | null;
         };
         /**
          * DecideEvidence
@@ -4425,6 +4426,16 @@ export interface components {
         ViewsOut: {
             /** Views */
             views: components["schemas"]["ViewOut"][];
+        };
+        /**
+         * WallLayoutProposalOut
+         * @description A page-row suggestion; it becomes a decision only when the person confirms the run.
+         */
+        WallLayoutProposalOut: {
+            /** Source */
+            source: string;
+            /** Value */
+            value: string;
         };
         /**
          * QuantityOut

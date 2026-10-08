@@ -99,6 +99,44 @@ def test_row_choice_attempt_is_audited_even_without_label_proposals() -> None:
     assert result.row_attempts == 1
 
 
+def test_counter_break_attempt_is_audited_as_a_hold_only_answer() -> None:
+    result = audit_saved_attempts(
+        (
+            _attempt(
+                MODELS[0],
+                prompt_id="claude-counter-break-v1",
+                raw='{"contains_tall_appliance":true,"why":"outlined tall bay"}',
+            ),
+        ),
+        (),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert result.complete
+    assert result.counter_break_attempts == 1
+
+
+def test_unparseable_counter_break_attempt_is_unaccounted() -> None:
+    result = audit_saved_attempts(
+        (
+            _attempt(
+                MODELS[0],
+                prompt_id="claude-counter-break-v1",
+                raw='{"contains_tall_appliance":"yes","why":"uncertain"}',
+            ),
+        ),
+        (),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert not result.complete
+    assert result.reason == "a successful counter-break attempt cannot be parsed"
+
+
 def test_missing_or_unparseable_raw_answer_is_unaccounted() -> None:
     result = audit_saved_attempts(
         (_attempt(MODELS[0]), _attempt(MODELS[1], raw=None)),
@@ -353,9 +391,22 @@ def test_product_projection_reads_exact_saved_row_and_settings(
 
     monkeypatch.setattr(
         product,
-        "reader_sealed_wall_config",
-        lambda *_args: SimpleNamespace(value="back_only", extraction_run_id=run_id),
+        "slot_reader_wall_for_page",
+        lambda *_args: SimpleNamespace(
+            candidate_id=None,
+            selected=True,
+            layout="back_only",
+            source="vendor-drawing-clues",
+            held=False,
+            row_held=False,
+        ),
     )
+    monkeypatch.setattr(
+        product,
+        "reader_sealed_wall_config",
+        lambda *_args: pytest.fail("a page-owned answer must not use revision-wide reader walls"),
+    )
+    monkeypatch.setattr(product, "countertop_scopes", lambda *_args: None)
     monkeypatch.setattr(product, "_field_cut", lambda *_args: Fraction(1))
 
     case, audit = product.product_case_for_page(

@@ -51,6 +51,8 @@ class PartOperands:
 class CountertopScope:
     item_id: UUID
     label: str
+    page_id: UUID
+    page_index: int
 
 
 @dataclass(frozen=True)
@@ -110,7 +112,7 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
     if decided is None:
         return None
     rows = session.execute(
-        select(DrawingItem.id, Page.index)
+        select(DrawingItem.id, Page.id, Page.index)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
         .join(Page, Page.id == DrawingView.page_id)
         .join(
@@ -124,19 +126,23 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
             DrawingView.role == ViewRole.SHOP.value,
         )
     ).all()
-    placed = [(page_index, live_part(session, item_id)) for item_id, page_index in rows]
+    placed = [
+        (page_id, page_index, live_part(session, item_id)) for item_id, page_id, page_index in rows
+    ]
     ordered = sorted(
-        ((page_index, part) for page_index, part in placed if part is not None),
-        key=lambda entry: (entry[0], entry[1].left, entry[1].top, str(entry[1].item_id)),
+        ((page_id, page_index, part) for page_id, page_index, part in placed if part is not None),
+        key=lambda entry: (entry[1], entry[2].left, entry[2].top, str(entry[2].item_id)),
     )
     counts: dict[int, int] = {}
     scopes: list[CountertopScope] = []
-    for page_index, part in ordered:
+    for page_id, page_index, part in ordered:
         counts[page_index] = counts.get(page_index, 0) + 1
         scopes.append(
             CountertopScope(
                 item_id=part.item_id,
                 label=f"Countertop on page {page_index + 1}, item {counts[page_index]}",
+                page_id=page_id,
+                page_index=page_index,
             )
         )
     return tuple(scopes)

@@ -28,14 +28,14 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.document import PackageRevisionDocument
+from app.models.document import PackageRevisionDocument, Page
 from app.models.evidence import (
     EvidenceArtifact,
     LayoutConfirmation,
     LayoutProposal,
     ObservationCandidate,
 )
-from app.models.runs import ExtractionRun
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.semantic_types import SemanticType
 
 __all__ = [
@@ -49,11 +49,14 @@ __all__ = [
     "WALL_CANDIDATE_TEXT",
     "WALL_READER_FLAG",
     "ReaderSealedLayout",
+    "SlotReaderWall",
     "confirmed_discriminators",
     "discriminator_note",
     "reader_sealed_wall_config",
     "record_layout_confirmation",
     "record_layout_proposal",
+    "slot_reader_has_rows",
+    "slot_reader_wall_for_page",
     "stored_layout_proposals",
 ]
 
@@ -191,6 +194,146 @@ class ReaderSealedLayout:
     model_id: str
     prompt_id: str
     extraction_run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class SlotReaderWall:
+    """Latest selected slot-reader row and its page-owned wall answer, if any.
+
+    A layout from positive vendor drawing clues may be used for that row. A readers-only layout
+    remains a proposal until `CountertopRunDecision.wall_config` records a reviewer's choice.
+    """
+
+    selected: bool
+    layout: str | None
+    source: str | None
+    held: bool
+    row_held: bool
+    reason: str | None
+    candidate_id: UUID | None
+
+
+def _latest_slot_reader_candidates(
+    session: Session, package_revision_id: UUID
+) -> tuple[tuple[int, ObservationCandidate], ...]:
+    """Candidates from the newest slot-reader extraction, scoped to this revision only."""
+    latest_run = session.execute(
+        select(ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(
+            WorkflowRun.package_revision_id == package_revision_id,
+            ExtractionRun.extractor_version.like("slot-reader%"),
+        )
+        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if latest_run is None:
+        return ()
+    rows = session.execute(
+        select(Page.index, ObservationCandidate)
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .where(ObservationCandidate.extraction_run_id == latest_run)
+        .order_by(Page.index, ObservationCandidate.id)
+    ).all()
+    return tuple(
+        (page_index, candidate)
+        for page_index, candidate in rows
+        if any(
+            flag == "slot-reader" or flag == "slot-reader-row-choice" or flag == WALL_READER_FLAG
+            for flag in (candidate.ambiguity_flags or [])
+        )
+    )
+
+
+def slot_reader_has_rows(session: Session, package_revision_id: UUID) -> bool:
+    """Whether the newest slot-reader pass owns any page-row decisions in this revision."""
+    return any(
+        "slot-reader" in (candidate.ambiguity_flags or [])
+        or "slot-reader-row-choice" in (candidate.ambiguity_flags or [])
+        for _page_index, candidate in _latest_slot_reader_candidates(session, package_revision_id)
+    )
+
+
+def slot_reader_wall_for_page(
+    session: Session, package_revision_id: UUID, page_index: int
+) -> SlotReaderWall | None:
+    """Return the newest selected page row and its wall result; never a revision-wide answer."""
+    page_rows = [
+        candidate
+        for candidate_page, candidate in _latest_slot_reader_candidates(
+            session, package_revision_id
+        )
+        if candidate_page == page_index
+    ]
+    row_candidates = [
+        candidate
+        for candidate in page_rows
+        if "slot-reader" in (candidate.ambiguity_flags or [])
+        or "slot-reader-row-choice" in (candidate.ambiguity_flags or [])
+    ]
+    if not row_candidates:
+        return None
+
+    choices = {
+        int(flag.removeprefix("row-choice:"))
+        for candidate in row_candidates
+        for flag in (candidate.ambiguity_flags or [])
+        if flag.startswith("row-choice:") and flag.removeprefix("row-choice:").isdigit()
+    }
+    explicit = any(
+        "slot-reader-row-choice" in (candidate.ambiguity_flags or [])
+        for candidate in row_candidates
+    )
+    selected = len(choices) == 1 and next(iter(choices)) > 0 if explicit else True
+    held_candidate = next(
+        (
+            candidate
+            for candidate in row_candidates
+            if any(
+                flag == "row-ambiguous" or flag.startswith("row-hold:")
+                for flag in (candidate.ambiguity_flags or [])
+            )
+        ),
+        None,
+    )
+    wall_candidate = next(
+        (
+            candidate
+            for candidate in page_rows
+            if WALL_READER_FLAG in (candidate.ambiguity_flags or [])
+            and candidate.raw_text.startswith(WALL_CANDIDATE_TEXT)
+        ),
+        None,
+    )
+    layout: str | None = None
+    source: str | None = None
+    reason: str | None = None
+    if wall_candidate is not None:
+        flags = wall_candidate.ambiguity_flags or []
+        layout_flag = next((flag for flag in flags if flag.startswith(WALLS_SEALED_FLAG)), None)
+        layout = None if layout_flag is None else layout_flag.removeprefix(WALLS_SEALED_FLAG)
+        source_flag = next((flag for flag in flags if flag.startswith("wall-source:")), None)
+        source = None if source_flag is None else source_flag.removeprefix("wall-source:")
+        reason = wall_candidate.review_reason
+    wall_held = wall_candidate is not None and any(
+        flag.startswith(WALLS_HELD_FLAG) for flag in (wall_candidate.ambiguity_flags or [])
+    )
+    if not selected:
+        reason = reason or "No countertop row was selected on this page."
+    elif held_candidate is not None:
+        reason = (
+            held_candidate.review_reason or reason or "The selected countertop row needs review."
+        )
+    return SlotReaderWall(
+        selected=selected,
+        layout=layout,
+        source=source,
+        held=held_candidate is not None or wall_held or not selected,
+        row_held=held_candidate is not None or not selected,
+        reason=reason,
+        candidate_id=None if wall_candidate is None else wall_candidate.id,
+    )
 
 
 def reader_sealed_wall_config(
