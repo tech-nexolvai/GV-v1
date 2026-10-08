@@ -219,7 +219,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         if observation is None:
             return SlotRowCheck(
                 False,
-                "The overall label cannot be qualified as vendor evidence.",
+                "The overall label has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected.",
                 layout,
                 None,
                 wall_note,
@@ -273,7 +273,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         if observation is None:
             return SlotRowCheck(
                 False,
-                f"Piece {position + 1} cannot be qualified as vendor evidence.",
+                f"Piece {position + 1} has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected.",
                 layout,
                 None,
                 wall_note,

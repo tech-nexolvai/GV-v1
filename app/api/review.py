@@ -47,6 +47,7 @@ from app.review.session import (
     NoSuchFinding,
     NoSuchPackageRevision,
     NoSuchReviewSession,
+    ReviewNeedsANote,
     RevisionSuperseded,
     SessionAlreadyComplete,
     complete_session,
@@ -81,7 +82,12 @@ _CONFLICT = (RevisionSuperseded, SessionAlreadyComplete, ActionOutsideTheSession
 #: Refusals about the *terms* a reviewer stated, rather than about what they may reach. A missing
 #: reason, an expiry already past and a finding-scoped exception naming another finding are all
 #: things the caller can fix by sending something else, which is what 422 means.
-_UNPROCESSABLE = (ExceptionNeedsAReason, ExceptionAlreadyOver, ExceptionScopeMismatch)
+_UNPROCESSABLE = (
+    ExceptionNeedsAReason,
+    ExceptionAlreadyOver,
+    ExceptionScopeMismatch,
+    ReviewNeedsANote,
+)
 _NOT_FOUND = (NoSuchPackageRevision, NoSuchReviewSession, NoSuchFinding)
 
 
