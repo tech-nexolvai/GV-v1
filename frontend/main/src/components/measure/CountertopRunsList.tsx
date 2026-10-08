@@ -108,7 +108,12 @@ function CountertopRow({
   onWithdraw: (countertop: RunCountertop) => void;
 }) {
   const [selected, setSelected] = useState<string[]>(() => startingSelection(countertop));
-  const [wallConfig, setWallConfig] = useState('');
+  const [wallSelection, setWallSelection] = useState<{ value: string } | null>(null);
+  const wallConfig =
+    countertop.decision?.wall_config ??
+    wallSelection?.value ??
+    countertop.wall_layout_proposal?.value ??
+    '';
   const suggestion = countertop.suggestion;
   const decision = countertop.decision;
   const name = countertop.number === null ? 'A countertop' : `Countertop, part ${countertop.number}`;
@@ -175,7 +180,14 @@ function CountertopRow({
       </fieldset>
       <label className="countertop-runs__layout">
         Wall layout for this countertop (required)
-        <select value={wallConfig} disabled={pending} onChange={(event) => setWallConfig(event.target.value)} required>
+        <select
+          value={wallConfig}
+          disabled={pending}
+          onChange={(event) => {
+            setWallSelection({ value: event.target.value });
+          }}
+          required
+        >
           <option value="">Choose this countertop&apos;s wall layout</option>
           {wallLayoutChoices.map((choice) => (
             <option key={choice} value={choice}>
@@ -183,6 +195,12 @@ function CountertopRow({
             </option>
           ))}
         </select>
+        {countertop.wall_layout_proposal && (
+          <span className="countertop-runs__layout-hint" role="status">
+            Suggested from {countertop.wall_layout_proposal.source === 'readers' ? 'the drawing readers' : 'drawing clues'}:
+            {' '}{wallLayoutLabel(countertop.wall_layout_proposal.value)}. Confirm this run to use it.
+          </span>
+        )}
         {wallConfig === '' && <span className="countertop-runs__layout-hint">Choose a layout before confirming this run. Nothing is selected for you.</span>}
       </label>
       <div

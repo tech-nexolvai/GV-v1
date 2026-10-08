@@ -22,11 +22,14 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     Numeric,
     String,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Connection
@@ -533,6 +536,55 @@ class MeasurementProposal(Base, TimestampedUUID, Immutable):
         ),
         # A position is an index into a run, so it starts at zero and counts up.
         CheckConstraint("position >= 0", name="position_not_negative"),
+    )
+
+
+class SlotRowReviewDecision(Base, TimestampedUUID, Immutable):
+    """A person's wall choice and missing widths for one selected slot-reader row.
+
+    The row is anchored to its first piece candidate, not to the revision. A correction is a new
+    immutable snapshot that supersedes the previous one; neither a wall choice nor a typed value
+    can therefore drift to another page or a later extraction.
+    """
+
+    __tablename__ = "slot_row_review_decisions"
+
+    row_candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    wall_config: Mapped[str | None] = mapped_column(String(32), default=None)
+    measurements: Mapped[dict[str, object]] = mapped_column(JSONB)
+    confirmed_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(
+            "wall_config IS NULL OR wall_config IN ('back_left_right', 'back_only', 'island')",
+            name="slot_row_review_wall_config",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(measurements) = 'object'", name="slot_row_review_measurements_object"
+        ),
+        CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="slot_row_review_actor_not_blank"),
+        UniqueConstraint("id", "row_candidate_id", name="uq_slot_row_review_id_row"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "row_candidate_id"],
+            ["slot_row_review_decisions.id", "slot_row_review_decisions.row_candidate_id"],
+            name="fk_slot_row_review_supersedes_same_row",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_slot_row_review_root",
+            "row_candidate_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
+        Index(
+            "uq_slot_row_review_superseded_once",
+            "supersedes_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NOT NULL"),
+        ),
     )
 
 

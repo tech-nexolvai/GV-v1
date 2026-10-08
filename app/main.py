@@ -151,6 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         review,
         reviewer_chat,
         rules,
+        slot_rows,
     )
 
     app.include_router(packages.router, prefix=API_PREFIX)
@@ -171,6 +172,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
     # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
     app.include_router(countertop_runs.router, prefix=API_PREFIX)
+    # A slot-reader wall choice or missing width belongs to one selected row, not the revision.
+    app.include_router(slot_rows.router, prefix=API_PREFIX)
     # Which confirmed reading is each confirmed part's width: suggested by the computer, confirmed,
     # corrected or taken back by a person, one part at a time (#913).
     app.include_router(reading_parts.router, prefix=API_PREFIX)

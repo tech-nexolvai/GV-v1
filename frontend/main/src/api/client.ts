@@ -864,6 +864,56 @@ export function withdrawCountertopRun(projectId: string, packageId: string, coun
   );
 }
 
+export type SlotReaderRowValue = {
+  key: string;
+  label: string;
+  position: number | null;
+  value: string | null;
+  suggestion: string | null;
+  source: string;
+  review_reason: string | null;
+  needs_value: boolean;
+};
+
+export type SlotReaderRow = {
+  row_id: string;
+  page_number: number;
+  label: string;
+  piece_count: number;
+  held_reason: string | null;
+  values: SlotReaderRowValue[];
+  wall_proposal: string | null;
+  wall_source: string | null;
+  wall_reason: string | null;
+  wall_layout_choices: string[];
+  decision_id: string | null;
+  confirmed_by: string | null;
+  decided_at: string | null;
+  wall_config: string | null;
+};
+
+export function listSlotReaderRows(projectId: string, packageId: string) {
+  return request<{ rows: SlotReaderRow[] }>(
+    `/projects/${projectId}/packages/${packageId}/slot-rows`,
+  );
+}
+
+export function reviewSlotReaderRow(
+  projectId: string,
+  packageId: string,
+  rowId: string,
+  input: { wall_config?: string | null; measurements?: Record<string, string> },
+) {
+  return request<SlotReaderRow>(
+    `/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/review`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 /**
  * Each confirmed part of this package, the confirmed reading the computer suggests is its width,
  * the readings a person may pick instead, and what a person decided (#913). Listing writes nothing:

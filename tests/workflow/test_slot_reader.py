@@ -88,12 +88,18 @@ class FakeReaders:
             "row": 1,
             "why": "the candidate follows the front elevation",
         },
+        counter_break: Callable[[str], Mapping[str, object]] = lambda _model: {
+            "contains_tall_appliance": False,
+            "why": "no tall unit is drawn in the marked span",
+        },
     ) -> None:
         self.read = read
         self.walls = walls
         self.row = row
+        self.counter_break = counter_break
         self.requests: list[tuple[str, bytes]] = []
         self.wall_requests: list[tuple[str, bytes, bytes]] = []
+        self.counter_break_requests: list[tuple[str, bytes, bytes]] = []
         self.row_requests: list[tuple[str, bytes]] = []
         self.lock = threading.Lock()
 
@@ -110,6 +116,18 @@ class FakeReaders:
                 self.row_requests.append((model, pictures[0]))
             return {
                 "output": {"message": {"content": [{"text": json.dumps(dict(self.row(model)))}]}},
+                "usage": {"inputTokens": 20, "outputTokens": 9},
+            }
+        is_counter_break_question = any(
+            "hold-only safety question" in part.get("text", "") for part in content
+        )
+        if is_counter_break_question:
+            with self.lock:
+                self.counter_break_requests.append((model, pictures[0], pictures[1]))
+            return {
+                "output": {
+                    "message": {"content": [{"text": json.dumps(dict(self.counter_break(model)))}]}
+                },
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
         is_wall_question = any("wall" in part.get("text", "").lower() for part in content)
@@ -227,7 +245,10 @@ def read(page: SlotPage, readers: FakeReaders, **options: Any) -> PageSlotResult
         [page], runtime=runtime(readers, **options), record_attempt=attempts.append
     )
     assert len(attempts) == (
-        len(readers.requests) + len(readers.wall_requests) + len(readers.row_requests)
+        len(readers.requests)
+        + len(readers.wall_requests)
+        + len(readers.row_requests)
+        + len(readers.counter_break_requests)
     )
     return result
 
@@ -866,6 +887,61 @@ def test_vendor_counter_break_word_inside_a_slot_span_holds_the_whole_row(word: 
     assert result.mapping.held
 
 
+def test_claude_line_question_holds_a_line_drawn_tall_appliance() -> None:
+    # The synthetic vendor appliance is only a rectangle made from strokes; there is no text token
+    # for the existing ink/text-layer guard to match.
+    appliance_lines = b"0.3 w 205 535 m 245 535 l 245 590 l 205 590 l h S\n"
+    page = slot_page(sheets.sheet(sheets.text_labels() + appliance_lines))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(
+        lambda _model, png: lookup[png],
+        counter_break=lambda model: {
+            "contains_tall_appliance": model == OPUS,
+            "why": "a tall outlined unit crosses the marked span",
+        },
+    )
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+    attempts: list[AttemptUsage] = []
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
+
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.mapping.proposals == ()
+    assert {model for model, _row, _view in readers.counter_break_requests} == {OPUS, SONNET}
+    assert len(readers.counter_break_requests) == 2
+    assert sum(attempt.prompt_id == "claude-counter-break-v1" for attempt in attempts) == 2
+
+
+def test_claude_line_question_two_no_answers_leave_the_row_unchanged() -> None:
+    page = slot_page(sheets.sheet(text_labels()))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png])
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+
+    assert result.row_hold is None
+    assert result.mapping.proposals
+
+
 def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
     page = slot_page(sheets.sheet(sheets.text_labels(('12"', '24" RANGE', '12"'), OVERALL)))
     lookup = crops_to_texts(page, TEXTS | {1: '24" RANGE'})
@@ -1206,7 +1282,12 @@ def _by_slot(session: Any, run: Any) -> dict[str, Any]:
         if "wall-reader" in row.ambiguity_flags:
             found["walls"] = row
             continue
-        found[next(flag for flag in row.ambiguity_flags if flag.startswith("slot:"))] = row
+        slot_flag = next(
+            (flag for flag in row.ambiguity_flags if flag.startswith("slot:")),
+            None,
+        )
+        if slot_flag is not None:
+            found[slot_flag] = row
     return found
 
 
@@ -1309,7 +1390,7 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
 ) -> None:
     from sqlalchemy import select
 
-    from app.models.evidence import MeasurementProposal
+    from app.models.evidence import MeasurementProposal, ObservationCandidate
 
     def readers(page: SlotPage) -> FakeReaders:
         indexed = claude_crops_to_texts(
@@ -1349,6 +1430,20 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert any(flag.startswith("crop-box:") for flag in first.ambiguity_flags)
     assert first.corroboration_status == "CORROBORATED", "the sealed piece is shown as a proposal"
     assert first.value_numerator == 12 and first.review_reason is None
+    assert {flag for flag in first.ambiguity_flags if flag.startswith("reader-id:")} == {
+        f"reader-id:{OPUS}",
+        f"reader-id:{SONNET}",
+    }
+    supports = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-support"]),
+        )
+    ).all()
+    assert len(supports) == 6, "each of the three accepted values retains both independent answers"
+    assert all(
+        any(flag.startswith("supports:") for flag in row.ambiguity_flags) for row in supports
+    )
     overall = by_slot["slot:overall"]
     assert overall.corroboration_status is None and overall.value_numerator == 48
     assert overall.review_reason is not None and overall.review_reason.startswith("held back")
@@ -1534,6 +1629,32 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
+
+
+def test_slot_reader_wall_answers_are_selected_from_the_page_only(
+    session: Any, tmp_path: Any
+) -> None:
+    from storage.local import LocalStore
+    from workflow.layout_proposals import slot_reader_has_rows, slot_reader_wall_for_page
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        return FakeReaders(lambda _model, png: lookup[png], walls=lambda _model: BOTH_WALLS)
+
+    revision, _run, _result, _count = _read_persisted(
+        session,
+        sheets.sheet(sheets.glyph_labels()),
+        readers,
+        store=LocalStore(tmp_path / "artifacts"),
+    )
+
+    assert slot_reader_has_rows(session, revision.id)
+    page_zero = slot_reader_wall_for_page(session, revision.id, 0)
+    assert page_zero is not None
+    assert page_zero.selected and not page_zero.held and not page_zero.row_held
+    assert page_zero.layout == "back_left_right"
+    assert page_zero.source == "readers"
+    assert slot_reader_wall_for_page(session, revision.id, 1) is None
 
 
 def test_walls_the_readers_do_not_settle_propose_nothing(session: Any, tmp_path: Any) -> None:

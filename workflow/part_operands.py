@@ -51,6 +51,8 @@ class PartOperands:
 class CountertopScope:
     item_id: UUID
     label: str
+    page_id: UUID
+    page_index: int
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,50 @@ def current_wall_layout(session: Session, countertop_item_id: UUID) -> WallLayou
     )
 
 
+def manual_wall_layout_for_check(
+    *,
+    confirmed_layout: str | None,
+    revision_layout: str | None,
+    slot_reader_rows_exist: bool,
+    single_countertop: bool,
+) -> str | None:
+    """Choose only a manual run's own wall answer, with the legacy fallback for old sets.
+
+    A page-level slot-reader row belongs to that row, not to an unrelated hand-confirmed run.
+    Revision-wide wall settings remain available only to legacy revisions that have no slot-reader
+    rows, and only for a single countertop.
+    """
+    if confirmed_layout is not None:
+        return confirmed_layout
+    if slot_reader_rows_exist or not single_countertop:
+        return None
+    return revision_layout
+
+
+def manual_run_pages(session: Session, revision_id: UUID) -> set[int]:
+    """Pages with any recorded manual run decision, including withdrawn decisions.
+
+    A withdrawal is not permission to fall through to an automatic row on the same page.
+    """
+    return set(
+        session.scalars(
+            select(Page.index)
+            .join(DrawingView, DrawingView.page_id == Page.id)
+            .join(DrawingItem, DrawingItem.drawing_view_id == DrawingView.id)
+            .join(
+                CountertopRunDecision,
+                CountertopRunDecision.countertop_item_id == DrawingItem.id,
+            )
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision_id)
+            .distinct()
+        ).all()
+    )
+
+
 def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopScope, ...] | None:
     """Current confirmed vendor countertops, or None for the untouched legacy form path.
 
@@ -110,7 +156,7 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
     if decided is None:
         return None
     rows = session.execute(
-        select(DrawingItem.id, Page.index)
+        select(DrawingItem.id, Page.id, Page.index)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
         .join(Page, Page.id == DrawingView.page_id)
         .join(
@@ -124,19 +170,23 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
             DrawingView.role == ViewRole.SHOP.value,
         )
     ).all()
-    placed = [(page_index, live_part(session, item_id)) for item_id, page_index in rows]
+    placed = [
+        (page_id, page_index, live_part(session, item_id)) for item_id, page_id, page_index in rows
+    ]
     ordered = sorted(
-        ((page_index, part) for page_index, part in placed if part is not None),
-        key=lambda entry: (entry[0], entry[1].left, entry[1].top, str(entry[1].item_id)),
+        ((page_id, page_index, part) for page_id, page_index, part in placed if part is not None),
+        key=lambda entry: (entry[1], entry[2].left, entry[2].top, str(entry[2].item_id)),
     )
     counts: dict[int, int] = {}
     scopes: list[CountertopScope] = []
-    for page_index, part in ordered:
+    for page_id, page_index, part in ordered:
         counts[page_index] = counts.get(page_index, 0) + 1
         scopes.append(
             CountertopScope(
                 item_id=part.item_id,
                 label=f"Countertop on page {page_index + 1}, item {counts[page_index]}",
+                page_id=page_id,
+                page_index=page_index,
             )
         )
     return tuple(scopes)
@@ -305,8 +355,7 @@ def part_operands(
         qualified = seal(found[0], label)
         if isinstance(qualified, GateRefusal):
             return refuse(
-                prefix + f"{label}'s width was withheld by the evidence gate: "
-                f"{qualified.detail}.",
+                prefix + f"{label}'s width was withheld by the evidence gate: {qualified.detail}.",
                 ambiguous=reading.status == "CONFLICTING",
             )
         qualified = replace(qualified, evidence_observation_id=str(reading.id))

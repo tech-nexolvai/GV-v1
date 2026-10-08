@@ -20,6 +20,7 @@ from app.models import (
     CountertopRun,
     CountertopRunDecision,
     DrawingView,
+    MeasurementProposal,
     Package,
     PackageRevisionDocument,
     Page,
@@ -29,7 +30,9 @@ from app.models import (
     RuleSnapshot,
     ViewRole,
 )
+from app.models.evidence import ObservationCandidate
 from app.models.parameters import to_rows
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import Finding
 from app.verdicts.rulebook import snapshot_store
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
@@ -44,7 +47,10 @@ from verdict.operands import EvidenceStatus, VerdictOperand
 from vocabulary.part_kinds import PartKind
 from workflow.countertop_runs import confirm_countertop_run, live_run_rows, withdraw_countertop_run
 from workflow.evidence_operands import evidence_operands
-from workflow.part_operands import part_operands
+from workflow.part_operands import (
+    countertop_scopes,
+    part_operands,
+)
 from workflow.parts import confirm_part, withdraw_part
 from workflow.reading_parts import confirm_reading_part, withdraw_reading_part
 from workflow.stages import DatabaseStages
@@ -196,6 +202,11 @@ def _legacy_null_layout(session: Session, assembly: Assembly) -> CountertopRunDe
     """A migrated confirmation: append a current decision with no pre-0064 layout field."""
     previous = assembly.decision
     assert previous is not None and previous.run_id is not None
+    return _null_wall_layout(session, previous)
+
+
+def _null_wall_layout(session: Session, previous: CountertopRunDecision) -> CountertopRunDecision:
+    assert previous.run_id is not None
     run_id = uuid4()
     legacy = CountertopRunDecision(
         countertop_item_id=previous.countertop_item_id,
@@ -224,6 +235,143 @@ def _legacy_null_layout(session: Session, assembly: Assembly) -> CountertopRunDe
         )
     session.flush()
     return legacy
+
+
+def _slot_reader_extraction_run(session: Session, revision_id: UUID) -> ExtractionRun:
+    """One synthetic latest extraction to own row and wall candidates across pages."""
+    workflow = WorkflowRun(package_revision_id=revision_id, engine_run_id=str(uuid4()))
+    session.add(workflow)
+    session.flush()
+    task = TaskRun(
+        workflow_run_id=workflow.id,
+        idempotency_key=str(uuid4()),
+        task_type="extract",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(task)
+    session.flush()
+    extraction = ExtractionRun(
+        task_run_id=task.id,
+        extractor="extraction.form_reader",
+        extractor_version="slot-reader-v1-test",
+        config_hash="synthetic-slot-wall",
+    )
+    session.add(extraction)
+    session.flush()
+
+    return extraction
+
+
+def _slot_reader_wall_candidate(
+    session: Session,
+    *,
+    extraction: ExtractionRun,
+    page: Page,
+    layout: str | None,
+    source: str | None,
+    held: bool = False,
+    row_held: bool = False,
+) -> None:
+    """Synthetic page-owned row and wall candidates in the latest extraction."""
+    session.add(
+        ObservationCandidate(
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            extraction_run_id=extraction.id,
+            raw_text="",
+            polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+            coordinate_space="image",
+            ambiguity_flags=[
+                "slot-reader",
+                "row-choice:1",
+                *(["row-hold:counter-break"] if row_held else []),
+            ],
+            review_reason="The selected row includes a tall appliance." if row_held else None,
+        )
+    )
+    flags = ["wall-reader"]
+    if held:
+        flags.append("walls-held:reader-disagreement")
+    elif layout:
+        flags.append(f"walls-sealed:{layout}")
+    if source:
+        flags.append(f"wall-source:{source}")
+    session.add(
+        ObservationCandidate(
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            extraction_run_id=extraction.id,
+            raw_text=f"walls: {layout or 'for the person'}",
+            polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+            coordinate_space="image",
+            ambiguity_flags=flags,
+            review_reason="The readers did not settle this page's layout." if held else None,
+        )
+    )
+    session.flush()
+
+
+def _second_page_countertop(session: Session, assembly: Assembly) -> tuple[UUID, Page]:
+    page = Page(
+        document_version_id=assembly.page.document_version_id,
+        index=1,
+        content_hash="b" * 64,
+        width_pt=400,
+        height_pt=100,
+        rotation=0,
+        has_vector_text=True,
+        render_failed=False,
+    )
+    session.add(page)
+    session.flush()
+    view = DrawingView(page_id=page.id, tag="SECOND SYNTHETIC", region=REGION)
+    session.add(view)
+    session.flush()
+    confirm_view_role(session, view=view, role=ViewRole.SHOP, actor="reviewer")
+    specs: list[tuple[PartKind, str, str, int]] = [
+        (PartKind.COUNTERTOP, "0.20", "0.80", 41),
+        (PartKind.FILLER, "0.20", "0.25", 2),
+        (PartKind.CABINET, "0.25", "0.45", 17),
+        (PartKind.CABINET, "0.45", "0.75", 19),
+        (PartKind.FILLER, "0.75", "0.80", 3),
+    ]
+    items: list[UUID] = []
+    for kind, left, right, value in specs:
+        _proposal, item_id = _confirmed(session, view, kind, left, right)
+        items.append(item_id)
+        observation = CanonicalObservation(
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            document_role="SHOP",
+            coordinate_space="stored",
+            polygon=[[left, "0.30"], [right, "0.30"], [right, "0.31"], [left, "0.31"]],
+            semantic_type=kind.item_type.value,
+            value_numerator=value,
+            value_denominator=1,
+            unit="in",
+            status="HUMAN_CONFIRMED",
+            authority="AUTHORITATIVE",
+        )
+        session.add(observation)
+        session.flush()
+        confirm_reading_part(
+            session,
+            observation_id=observation.id,
+            item_id=item_id,
+            edge_tolerance=None,
+            actor="reviewer",
+        )
+    decision = confirm_countertop_run(
+        session,
+        countertop_item_id=items[0],
+        member_item_ids=items[1:],
+        edge_tolerance=Decimal(0),
+        actor="reviewer",
+        wall_config="back_only",
+    )
+    _null_wall_layout(session, decision)
+    return items[0], page
 
 
 def _second_complete_run(session: Session, assembly: Assembly) -> tuple[UUID, list[UUID]]:
@@ -355,6 +503,106 @@ def test_withdrawn_run_is_refused_by_each_selection_layer(
 
     rows = list(session.scalars(live_run_rows().where(CountertopRun.run_id == old_run_id)))
     assert rows == []
+
+
+@pytest.mark.parametrize("slot_row_present", [True, False])
+def test_manual_run_wall_layout_never_borrows_a_slot_row_wall(
+    slot_row_present: bool,
+) -> None:
+    from workflow.part_operands import manual_wall_layout_for_check
+
+    # A manual countertop may use its own confirmed run wall. A revision-wide legacy setting is
+    # only available to an old package with no slot-reader rows at all.
+    assert manual_wall_layout_for_check(
+        confirmed_layout=None,
+        revision_layout="back_only",
+        slot_reader_rows_exist=slot_row_present,
+        single_countertop=True,
+    ) == (None if slot_row_present else "back_only")
+    assert (
+        manual_wall_layout_for_check(
+            confirmed_layout="island",
+            revision_layout="back_only",
+            slot_reader_rows_exist=True,
+            single_countertop=True,
+        )
+        == "island"
+    )
+
+
+def test_withdrawn_manual_run_keeps_its_page_out_of_slot_checks(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    withdrawn = withdraw_countertop_run(
+        session, countertop_item_id=assembly.parts[0], actor="reviewer"
+    )
+    countertop_proposal = session.get(PartProposal, assembly.proposals[0])
+    assert countertop_proposal is not None
+    withdraw_part(session, proposal=countertop_proposal, actor="reviewer")
+    # The withdrawn run, rather than a still-live countertop item, must exclude this page.
+    assert countertop_scopes(session, assembly.revision.id) == ()
+    assert withdrawn.decision == "withdrawn"
+    assert withdrawn.run_id is None
+    assert session.get(CountertopRunDecision, withdrawn.id) is withdrawn
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    slot_candidates: list[ObservationCandidate] = []
+    for slot, field, value in (
+        ("0", "SHOP:countertop_piece_width", 20),
+        ("overall", "SHOP:countertop_overall_width", 40),
+    ):
+        candidate = ObservationCandidate(
+            document_version_id=assembly.page.document_version_id,
+            page_id=assembly.page.id,
+            extraction_run_id=extraction.id,
+            raw_text=f'{value}"',
+            value_numerator=value,
+            value_denominator=1,
+            unit="in",
+            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+            coordinate_space="image",
+            ambiguity_flags=[
+                "slot-reader",
+                f"slot:{slot}",
+                "row-rank:1",
+                "row-slot-count:1",
+                "ink:vendor",
+            ],
+        )
+        session.add(candidate)
+        session.flush()
+        slot_candidates.append(candidate)
+        session.add(
+            MeasurementProposal(
+                package_revision_id=assembly.revision.id,
+                page_number=1,
+                proposal_id=uuid4(),
+                field_key=field,
+                position=0,
+                candidate_id=candidate.id,
+                placement_verified=True,
+                model_id="synthetic-reader-pair",
+                prompt_id="withdrawn-run-scope-test",
+            )
+        )
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_left_right",
+        source="vendor-drawing-clues",
+    )
+
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+    row_findings = list(
+        session.scalars(
+            select(Finding).where(
+                Finding.package_revision_id == assembly.revision.id,
+                Finding.scope_row_candidate_id == slot_candidates[0].id,
+            )
+        )
+    )
+    assert row_findings == []
 
 
 def test_complete_run_order_and_every_reading_provenance(
@@ -493,6 +741,14 @@ def test_own_layout_precedes_a_conflicting_revision_wide_choice(
     session: Session, store: LocalStore
 ) -> None:
     assembly = Assembly(session, store)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_only",
+        source="vendor-drawing-clues",
+    )
     DatabaseStages(store, discriminators={"wall_config": "back_only"}, operands={}).run_checks(
         session, assembly.revision.id
     )
@@ -501,6 +757,181 @@ def test_own_layout_precedes_a_conflicting_revision_wide_choice(
     assert finding.variant == "back_left_right"
     assert "chosen by reviewer" in " ".join(finding.notes)
     assert "revision-wide choice" not in " ".join(finding.notes)
+
+
+def test_reader_only_layout_waits_for_that_countertops_confirmation(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_left_right",
+        source="readers",
+    )
+
+    DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_left_right"},
+        operands={},
+    ).run_checks(session, assembly.revision.id)
+
+    finding = _finding(session, assembly.revision, RULE)
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert "choose the wall layout" in finding.reason.lower()
+    assert finding.variant is None
+
+
+@pytest.mark.parametrize("source", ["vendor-drawing-clues", "drawing-and-readers"])
+def test_manual_countertops_do_not_borrow_page_owned_drawing_layouts(
+    session: Session, store: LocalStore, source: str
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    second_item, second_page = _second_page_countertop(session, assembly)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_left_right",
+        source=source,
+    )
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=second_page,
+        layout="back_only",
+        source=source,
+    )
+
+    DatabaseStages(
+        store,
+        # The set-level choice conflicts with page 1 and must be ignored on both row-owned pages.
+        discriminators={"wall_config": "back_only"},
+        operands={},
+    ).run_checks(session, assembly.revision.id)
+
+    live = list(
+        session.scalars(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == assembly.revision.id,
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id == RULE,
+            )
+        )
+    )
+    by_subject = {row.scope_item_id: row for row in live}
+    assert set(by_subject) == {assembly.parts[0], second_item}
+    assert by_subject[assembly.parts[0]].variant is None
+    assert by_subject[second_item].variant is None
+    assert by_subject[assembly.parts[0]].outcome == "REVIEW_REQUIRED"
+    assert by_subject[second_item].outcome == "REVIEW_REQUIRED"
+    assert "choose the wall layout" in by_subject[assembly.parts[0]].reason.lower()
+    assert "choose the wall layout" in by_subject[second_item].reason.lower()
+
+
+def test_confirming_one_reader_layout_does_not_confirm_another_countertop(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    second_item, second_page = _second_page_countertop(session, assembly)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_only",
+        source="readers",
+    )
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=second_page,
+        layout="back_only",
+        source="readers",
+    )
+
+    DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_only"},
+        operands={},
+    ).run_checks(session, assembly.revision.id)
+
+    live = list(
+        session.scalars(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == assembly.revision.id,
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id == RULE,
+            )
+        )
+    )
+    by_subject = {row.scope_item_id: row for row in live}
+    assert by_subject[assembly.parts[0]].outcome == "PASS"
+    assert "chosen by reviewer" in " ".join(by_subject[assembly.parts[0]].notes)
+    assert by_subject[second_item].outcome == "REVIEW_REQUIRED"
+    assert by_subject[second_item].variant is None
+    assert "choose the wall layout" in by_subject[second_item].reason.lower()
+
+
+def test_a_held_page_row_cannot_fall_back_to_the_revision_layout(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    _legacy_null_layout(session, assembly)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout=None,
+        source=None,
+        held=True,
+    )
+
+    DatabaseStages(
+        store,
+        discriminators={"wall_config": "back_left_right"},
+        operands={},
+    ).run_checks(session, assembly.revision.id)
+
+    finding = _finding(session, assembly.revision, RULE)
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.variant is None
+    assert finding.reason == "Choose the wall layout for this countertop before checking its width."
+
+
+def test_manual_run_uses_its_confirmed_layout_despite_a_held_ai_row(
+    session: Session, store: LocalStore
+) -> None:
+    assembly = Assembly(session, store)
+    extraction = _slot_reader_extraction_run(session, assembly.revision.id)
+    _slot_reader_wall_candidate(
+        session,
+        extraction=extraction,
+        page=assembly.page,
+        layout="back_left_right",
+        source="vendor-drawing-clues",
+        row_held=True,
+    )
+
+    DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
+
+    finding = _finding(session, assembly.revision, RULE)
+    assert finding.outcome == "PASS"
+    assert finding.variant == "back_left_right"
 
 
 def test_a_corrected_layout_replaces_the_old_one_and_withdrawal_removes_it(

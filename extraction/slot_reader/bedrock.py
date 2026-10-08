@@ -52,17 +52,23 @@ if TYPE_CHECKING:
 __all__ = [
     "CLAUDE_SPAN_PROMPT",
     "CLAUDE_SPAN_PROMPT_ID",
+    "COUNTER_BREAK_PROMPT",
+    "COUNTER_BREAK_PROMPT_ID",
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
+    "CounterBreakAnswer",
     "CropJob",
     "RowChoiceAnswer",
+    "build_counter_break_request",
     "build_crop_request",
     "build_row_request",
     "build_wall_request",
     "crop_prompt_id",
+    "parse_stored_reader_answer",
+    "read_counter_break",
     "read_crop",
     "read_crops_parallel",
     "read_row_choice",
@@ -74,6 +80,13 @@ ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
+COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v1"
+
+
+def parse_stored_reader_answer(text: str) -> Mapping[str, Any]:
+    """Parse one append-only stored reply through the same JSON boundary as live calls."""
+    return _extract_json_object(text)
+
 
 ROW_PROMPT: Final = (
     "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "
@@ -89,6 +102,16 @@ ROW_PROMPT: Final = (
     "Numbers in red or inside yellow boxes are the reviewer's markup, not the vendor's. Reply "
     'with ONLY a JSON object: {"row": <number, or 0 if none of the boxes is it>, '
     '"why": "<one short sentence>"}'
+)
+
+COUNTER_BREAK_PROMPT: Final = (
+    "Picture 1 is the vendor's full drawing view. Picture 2 is the same view close around the "
+    "marked countertop span. Look only inside the marked span. Is a tall appliance or tall unit "
+    "drawn there, such as a refrigerator, oven or wall-oven tower, pantry, or tall cabinet? "
+    "Answer yes only when the drawing lines show it physically occupies that span. Do not infer "
+    "from a text label outside the span. This is a hold-only safety question: a yes sends the row "
+    "to the reviewer; a no does not approve the row. Return only this JSON: "
+    '{"contains_tall_appliance": true|false, "why": "short visual reason"}'
 )
 
 CROP_PROMPT: Final = (
@@ -156,6 +179,13 @@ class _RowChoiceReply(BaseModel):
 class RowChoiceAnswer:
     model_id: str
     row: int
+    why: str
+
+
+@dataclass(frozen=True, slots=True)
+class CounterBreakAnswer:
+    model_id: str
+    contains_tall_appliance: bool
     why: str
 
 
@@ -237,6 +267,134 @@ def build_row_request(*, model_id: str, page_png: bytes, max_tokens: int) -> dic
     else:
         request["inferenceConfig"]["temperature"] = 0
     return request
+
+
+class _CounterBreakReply(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    contains_tall_appliance: StrictBool
+    why: StrictStr
+
+
+def build_counter_break_request(
+    *, model_id: str, row_png: bytes, view_png: bytes, max_tokens: int
+) -> dict[str, Any]:
+    """Ask whether the selected row span contains a drawn tall-appliance bay; never read a value."""
+    if not model_id.strip():
+        raise ValueError("a counter-break reader model id must be stated")
+    if not (row_png.startswith(_PNG_SIGNATURE) and view_png.startswith(_PNG_SIGNATURE)):
+        raise ValueError("a counter-break reader is shown PNGs")
+    if isinstance(max_tokens, bool) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": view_png}}},
+                    {"image": {"format": "png", "source": {"bytes": row_png}}},
+                    {"text": COUNTER_BREAK_PROMPT},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return request
+
+
+def read_counter_break(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    row_png: bytes,
+    view_png: bytes,
+    page_index: int,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+    question_packet: Mapping[str, object] | None = None,
+) -> CounterBreakAnswer:
+    """Ask once, re-asking only malformed JSON; a yes can only withhold the row."""
+    for attempt in range(2):
+        request = build_counter_break_request(
+            model_id=model_id, row_png=row_png, view_png=view_png, max_tokens=max_tokens
+        )
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    COUNTER_BREAK_PROMPT_ID,
+                    COUNTER_BREAK_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
+        try:
+            raw = _response_text(response)
+            parsed = _CounterBreakReply.model_validate(_extract_json_object(raw))
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    COUNTER_BREAK_PROMPT_ID,
+                    COUNTER_BREAK_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "counter-break answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                COUNTER_BREAK_PROMPT_ID,
+                COUNTER_BREAK_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
+                question_packet=question_packet,
+            )
+        )
+        return CounterBreakAnswer(
+            model_id=model_id,
+            contains_tall_appliance=parsed.contains_tall_appliance,
+            why=parsed.why[:300],
+        )
+    raise AssertionError("unreachable")
 
 
 def read_row_choice(
@@ -607,6 +765,7 @@ class CropJob:
     view_png: bytes | None = None
     wall_question: bool = False
     row_question: bool = False
+    counter_break_question: bool = False
     candidate_count: int | None = None
     grounded_claude: bool = False
     question_packet: Mapping[str, object] | None = None
@@ -627,7 +786,7 @@ def read_crops_parallel(
     spend_cap_usd: Decimal | None = None,
     spend_guard: BatchSpendGuard | None = None,
     pacer: ModelPacer | None = None,
-) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
+) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
     Label crops and wall questions share one pool, one pacer and one concurrency cap, so asking
@@ -661,7 +820,10 @@ def read_crops_parallel(
 
     def invoke(
         job: CropJob,
-    ) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None]:
+    ) -> tuple[
+        tuple[str, str],
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None,
+    ]:
         for throttle_attempt in range(max_throttle_retries + 1):
             shared_pacer.wait(job.model_id)
             try:
@@ -673,7 +835,7 @@ def read_crops_parallel(
                     )
 
                     client = SpendLimitedClient(client, spend_guard)
-                answer: ReaderAnswer | WallAnswer | RowChoiceAnswer
+                answer: ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer
                 if job.row_question:
                     count = job.candidate_count
                     if isinstance(count, bool) or not isinstance(count, int):
@@ -684,6 +846,21 @@ def read_crops_parallel(
                         page_png=job.png,
                         page_index=job.page_index,
                         candidate_count=count,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                        question_packet=job.question_packet,
+                    )
+                elif job.counter_break_question:
+                    if job.view_png is None:
+                        raise ValueError(
+                            "a counter-break question must include its full vendor view"
+                        )
+                    answer = read_counter_break(
+                        client,
+                        model_id=job.model_id,
+                        row_png=job.png,
+                        view_png=job.view_png,
+                        page_index=job.page_index,
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
                         question_packet=job.question_packet,
@@ -731,7 +908,9 @@ def read_crops_parallel(
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))
         raise AssertionError("unreachable")
 
-    answers: dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | None] = {}
+    answers: dict[
+        tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None
+    ] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
         futures = [executor.submit(invoke, job) for job in jobs]
         for future in as_completed(futures):

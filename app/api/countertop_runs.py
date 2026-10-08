@@ -46,6 +46,7 @@ from app.models import CountertopRunDecision
 from vocabulary.part_kinds import PartKind
 from vocabulary.semantic_types import SemanticType
 from workflow.countertop_runs import published_wall_layouts
+from workflow.layout_proposals import slot_reader_wall_for_page
 
 router = APIRouter(tags=["countertop runs"])
 
@@ -134,6 +135,13 @@ class RunDecisionOut(BaseModel):
     """The layout this person chose for this run; null for withdrawals or legacy decisions."""
 
 
+class WallLayoutProposalOut(BaseModel):
+    """A page-row suggestion; it becomes a decision only when the person confirms the run."""
+
+    value: str
+    source: str
+
+
 class CountertopOut(BaseModel):
     """One confirmed countertop and its run."""
 
@@ -144,6 +152,7 @@ class CountertopOut(BaseModel):
         description="Null when no tolerance is stated, so nothing can be suggested."
     )
     decision: RunDecisionOut | None
+    wall_layout_proposal: WallLayoutProposalOut | None = None
 
 
 class RunDrawingOut(BaseModel):
@@ -200,17 +209,36 @@ def _part_out(entry: PickablePart) -> RunPartOut:
     )
 
 
-def _countertop_out(drawing: DrawingRuns, listed: ListedCountertop) -> CountertopOut:
+def _countertop_out(
+    session: Session,
+    revision_id: UUID,
+    drawing: DrawingRuns,
+    listed: ListedCountertop,
+) -> CountertopOut:
     numbers = {entry.part.item_id: entry.number for entry in drawing.parts}
-    proposal = listed.proposal
+    run_proposal = listed.proposal
     decision = listed.decision
+    row_wall = (
+        slot_reader_wall_for_page(session, revision_id, drawing.page_index)
+        if len(drawing.countertops) == 1
+        else None
+    )
+    wall_layout_proposal = (
+        WallLayoutProposalOut(value=row_wall.layout, source=row_wall.source)
+        if row_wall is not None
+        and row_wall.selected
+        and not row_wall.held
+        and row_wall.layout is not None
+        and row_wall.source is not None
+        else None
+    )
     return CountertopOut(
         countertop_item_id=listed.countertop.part.item_id,
         number=listed.countertop.number,
         code=listed.countertop.code,
         suggestion=(
             None
-            if proposal is None
+            if run_proposal is None
             else SuggestionOut(
                 members=[
                     SuggestedMemberOut(
@@ -220,7 +248,7 @@ def _countertop_out(drawing: DrawingRuns, listed: ListedCountertop) -> Counterto
                         position=member.position + 1,
                         signal=member.signal,
                     )
-                    for member in proposal.members
+                    for member in run_proposal.members
                 ],
                 left_out=[
                     LeftOutOut(
@@ -229,13 +257,14 @@ def _countertop_out(drawing: DrawingRuns, listed: ListedCountertop) -> Counterto
                         kind=entry.part.kind,
                         reason=entry.reason,
                     )
-                    for entry in proposal.left_out
+                    for entry in run_proposal.left_out
                 ],
-                warnings=list(proposal.warnings),
-                edge_tolerance=str(proposal.edge_tolerance),
+                warnings=list(run_proposal.warnings),
+                edge_tolerance=str(run_proposal.edge_tolerance),
             )
         ),
         decision=None if decision is None else _decision_out(decision, listed),
+        wall_layout_proposal=wall_layout_proposal,
     )
 
 
@@ -263,7 +292,7 @@ def _decision_out(decision: CountertopRunDecision, listed: ListedCountertop) -> 
     )
 
 
-def _drawing_out(drawing: DrawingRuns) -> RunDrawingOut:
+def _drawing_out(session: Session, revision_id: UUID, drawing: DrawingRuns) -> RunDrawingOut:
     return RunDrawingOut(
         view_id=drawing.view.id,
         page_index=drawing.page_index,
@@ -271,18 +300,23 @@ def _drawing_out(drawing: DrawingRuns) -> RunDrawingOut:
         can_confirm=drawing.refusal is None,
         why_not=None if drawing.refusal is None else drawing.refusal.detail,
         parts=[_part_out(entry) for entry in drawing.parts],
-        countertops=[_countertop_out(drawing, listed) for listed in drawing.countertops],
+        countertops=[
+            _countertop_out(session, revision_id, drawing, listed) for listed in drawing.countertops
+        ],
     )
 
 
 def _listed(
-    session: Session, revision_id: UUID, countertop_item_id: UUID, tolerance: Decimal | None
+    session: Session,
+    revision_id: UUID,
+    countertop_item_id: UUID,
+    tolerance: Decimal | None,
 ) -> CountertopOut:
     """The countertop as the list now shows it, read back after a decision was committed."""
     for drawing in revision_runs(session, revision_id, edge_tolerance=tolerance):
         for listed in drawing.countertops:
             if listed.countertop.part.item_id == countertop_item_id:
-                return _countertop_out(drawing, listed)
+                return _countertop_out(session, revision_id, drawing, listed)
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
 
@@ -340,7 +374,7 @@ def list_runs(
         why_not=None if tolerance is not None else NO_TOLERANCE,
         wall_layout_choices=list(published_wall_layouts(session)),
         drawings=[
-            _drawing_out(drawing)
+            _drawing_out(session, revision.id, drawing)
             for drawing in revision_runs(session, revision.id, edge_tolerance=tolerance)
         ],
     )
