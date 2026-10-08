@@ -797,16 +797,19 @@ def read_slot_pages(
                 if runtime.question_packets
                 else None
             )
-            row_jobs.append(
+            # Both readers are asked the same question with the same picture; a row is used only
+            # when they name the same one (`_agreed_row`).
+            row_jobs.extend(
                 CropJob(
                     key=_row_key(page.page_index),
-                    model_id=readers[0],
+                    model_id=model,
                     page_index=page.page_index,
                     png=numbered_png,
                     row_question=True,
                     candidate_count=len(candidates),
                     question_packet=packet,
                 )
+                for model in readers
             )
     shared_spend_guard = None
     shared_pacer = ModelPacer(runtime.form.calls_per_minute)
@@ -851,9 +854,11 @@ def read_slot_pages(
                 f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
                 f"at {page.rendered.dpi} dpi"
             )
-        page_row_answer = row_answers.get((_row_key(page.page_index), readers[0]))
-        row_choice = page_row_answer if isinstance(page_row_answer, RowChoiceAnswer) else None
-        row_number = None if row_choice is None else row_choice.row
+        row_choice, row_number = _agreed_row(
+            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
+            if runtime.claude_row_reader and page.page_index in row_ids
+            else []
+        )
         candidates = page_rows[page.page_index].candidates[:6]
         selected_row = (
             candidates[row_number - 1]
@@ -1715,6 +1720,37 @@ def persist_slot_readings(
         walls=wall_rows,
     )
     return count
+
+
+def _agreed_row(
+    answers: Sequence[ReaderAnswer | WallAnswer | RowChoiceAnswer | None],
+) -> tuple[RowChoiceAnswer | None, int | None]:
+    """The row every reader named, or a "no row" answer that says why there is none.
+
+    One reader's row choice is not enough: the same page went to the countertop row on one run
+    and to a table inside a reviewer's notes box on the next (proof runs 2026-10-08). A row is
+    used only when every reader answered and all named the same number; a missing answer or a
+    disagreement becomes row 0, which sends the page to the reviewer with the reason. Two "no
+    row" answers stay no row. Nothing here can make a row more likely to be used.
+    """
+    if not answers:
+        return None, None
+    choices = [answer for answer in answers if isinstance(answer, RowChoiceAnswer)]
+    rows = {choice.row for choice in choices}
+    if len(choices) == len(answers) and len(rows) == 1:
+        return choices[0], choices[0].row
+    said = ", ".join(f"{_short_model(choice.model_id)} row {choice.row}" for choice in choices)
+    missing = len(answers) - len(choices)
+    why = (
+        f"the readers chose different rows ({said}); the reviewer chooses"
+        if len(rows) > 1
+        else f"{missing} reader(s) gave no row answer ({said or 'none'}); the reviewer chooses"
+    )
+    return RowChoiceAnswer(" + ".join(c.model_id for c in choices) or "none", 0, why), 0
+
+
+def _short_model(model_id: str) -> str:
+    return model_id.removeprefix("anthropic.").removeprefix("claude-")
 
 
 def _persist_unselected_row_choice(
