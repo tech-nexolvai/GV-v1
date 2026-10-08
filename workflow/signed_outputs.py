@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.visual_countertops import _countertop_results_for_revision
+from app.models.package import PackageRevision
 from app.models.review import Approval
 from app.models.signed_exports import (
     ApprovalExportBundle,
@@ -83,6 +85,13 @@ def generate_signed_outputs(
         )
         for finding, run, rule, definition in rows
     )
+    revision = db.get(PackageRevision, payload.package_revision_id)
+    if revision is None:
+        raise SignedExportRefused("approved revision is not available")
+    countertop_results = _countertop_results_for_revision(db, revision.package_id, revision)
+    countertop_labels = tuple(
+        f"Page {item.page_number} — {item.label}" for item in countertop_results.items
+    )
     redline = render_evidence_grounded_redline(
         db,
         store,
@@ -90,6 +99,7 @@ def generate_signed_outputs(
         findings=tuple((f, r, d.rule_id, s.snapshot_id) for f, r, s, d in rows),
         changed_values=payload.changed_values,
         signed_review=payload.review,
+        countertop_labels=countertop_labels,
     )
     if redline.artifact is None:
         raise SignedExportRefused(f"signed drawing unavailable: {redline.reason}")
@@ -99,12 +109,14 @@ def generate_signed_outputs(
             revision_number=payload.revision_number,
             vendor=payload.vendor,
             findings=findings,
+            countertop_results=countertop_results.items,
             changed_values=payload.changed_values,
             signed_review=payload.review,
         )
     )
     workbook = write_stored_workbook(
         findings,
+        countertop_results=countertop_results.items,
         changed_values=payload.changed_values,
         signed_review=payload.review,
         signoff=WorkbookSignoff(

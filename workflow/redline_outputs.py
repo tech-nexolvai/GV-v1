@@ -71,6 +71,7 @@ def render_evidence_grounded_redline(
     findings: Sequence[tuple[FindingRow, CheckRun, str, str]],
     changed_values: ChangedValues | None = None,
     signed_review: SignedReview | None = None,
+    countertop_labels: Sequence[str] = (),
 ) -> RedlineOutput:
     """Render one internal redline only when a finding has a typed, stored location.
 
@@ -119,6 +120,7 @@ def render_evidence_grounded_redline(
                 )
             ),
             signed_review=signed_review,
+            countertop_labels=countertop_labels,
         ),
         None,
     )

@@ -457,6 +457,7 @@ def render_redline(
     clearance: VendorClearance | None = None,
     changed_values: ChangedValues | None = None,
     signed_review: SignedReview | None = None,
+    countertop_labels: Sequence[str] = (),
 ) -> StoredArtifact:
     """Overlay the findings onto the source pages and store the result.
 
@@ -482,6 +483,10 @@ def render_redline(
         raise TypeError("mode must be a ReportMode")
     if not isinstance(store, ArtifactStore):
         raise TypeError("store must implement the ArtifactStore protocol")
+    if isinstance(countertop_labels, str) or any(
+        not isinstance(label, str) or not label.strip() for label in countertop_labels
+    ):
+        raise TypeError("countertop_labels must be a sequence of non-empty strings")
 
     if clearance is not None and not isinstance(clearance, VendorClearance):
         raise TypeError("clearance must be a VendorClearance")
@@ -504,7 +509,15 @@ def render_redline(
 
     marks, unplaced, marked = _place(package, findings)
     document = _compose(
-        package, reader, marks, findings, marked, unplaced, clearance, changed_values
+        package,
+        reader,
+        marks,
+        findings,
+        marked,
+        unplaced,
+        clearance,
+        changed_values,
+        countertop_labels,
     )
     if signed_review is not None:
         if clearance is None or signed_review.approval_id != clearance.approval_id:
@@ -698,6 +711,7 @@ def _compose(
     unplaced: Sequence[Unplaced],
     clearance: VendorClearance | None,
     changed_values: ChangedValues | None,
+    countertop_labels: Sequence[str],
 ) -> bytes:
     """Merge the overlays onto the original pages and append the summary pages.
 
@@ -721,7 +735,14 @@ def _compose(
 
     pages_with_marks = frozenset(index for index, page_marks in marks.items() if page_marks)
     summary = _listing(
-        package, findings, marked, unplaced, pages_with_marks, clearance, changed_values
+        package,
+        findings,
+        marked,
+        unplaced,
+        pages_with_marks,
+        clearance,
+        changed_values,
+        countertop_labels,
     )
     for listing in PdfReader(BytesIO(summary)).pages:
         writer.add_page(listing)
@@ -1102,6 +1123,7 @@ def _listing(
     pages_with_marks: frozenset[int],
     clearance: VendorClearance | None,
     changed_values: ChangedValues | None,
+    countertop_labels: Sequence[str],
 ) -> bytes:
     """Render the appended pages that account for every finding not on the drawing.
 
@@ -1138,6 +1160,12 @@ def _listing(
         f"{total_findings - marked} not marked, and listed below."
     )
     line("")
+
+    if countertop_labels:
+        line("Countertops in this report", font="Helvetica-Bold", size=12.0)
+        for label in countertop_labels:
+            paragraph(label)
+        line("")
 
     if clearance is not None:
         line("Approved by", font="Helvetica-Bold", size=12.0)

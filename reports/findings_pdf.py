@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from io import BytesIO
 from typing import Final
 from uuid import UUID
@@ -27,8 +28,10 @@ from reportlab.lib.pagesizes import A4  # type: ignore[import-untyped]
 from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
+from app.schemas.visual_ui import CountertopResultOut, ExactValueOut
 from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding
+from verdict.outcomes import Outcome
 from workflow.changed_values import ChangedValues
 
 __all__ = ["FINDINGS_PDF_MEDIA_TYPE", "FindingsPdfInput", "write_findings_pdf"]
@@ -57,6 +60,7 @@ class FindingsPdfInput:
     revision_number: int
     vendor: str | None
     findings: tuple[StoredFinding, ...]
+    countertop_results: tuple[CountertopResultOut, ...] = ()
     changed_values: ChangedValues | None = None
     signed_review: SignedReview | None = None
     product_type: str | None = None
@@ -84,6 +88,10 @@ class FindingsPdfInput:
             raise ValueError("findings must be a non-empty tuple")
         if not all(isinstance(finding, StoredFinding) for finding in self.findings):
             raise TypeError("findings must contain only StoredFinding values")
+        if not isinstance(self.countertop_results, tuple) or not all(
+            isinstance(result, CountertopResultOut) for result in self.countertop_results
+        ):
+            raise TypeError("countertop_results must contain CountertopResultOut values")
 
 
 def _text(value: object, *, absent: str = NOT_RECORDED) -> str:
@@ -132,6 +140,130 @@ def _counts(findings: Sequence[StoredFinding]) -> tuple[int, int, int]:
     failed = sum(finding.outcome == "FAIL" for finding in findings)
     review = len(findings) - passed - failed
     return (passed, failed, review)
+
+
+def _exact_fraction(value: ExactValueOut | None) -> Fraction | None:
+    if value is None:
+        return None
+    try:
+        return Fraction(int(value.numerator), int(value.denominator))
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _draw_countertop_strip(
+    canvas: Canvas, result: CountertopResultOut, *, x: float, y: float, width: float
+) -> None:
+    """Draw a proportional, presentation-only strip from exact API values."""
+    left_wall = result.wall_layout.config == "back_left_right"
+    right_wall = result.wall_layout.config == "back_left_right"
+    wall_width = 14.0
+    inner_x = x + (wall_width if left_wall else 0.0)
+    inner_width = width - (wall_width if left_wall else 0.0) - (wall_width if right_wall else 0.0)
+    inner_width = max(inner_width, 20.0)
+    values = [_exact_fraction(piece.value) for piece in result.pieces]
+    weights = [max(float(value), 1.0) if value is not None else 18.0 for value in values]
+    total_weight = sum(weights) or 1.0
+    canvas.setStrokeColorRGB(_BLACK, _BLACK, _BLACK)
+    canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
+    if result.wall_layout.config in {"back_only", "back_left_right"}:
+        canvas.setLineWidth(0.7)
+        canvas.line(inner_x, y + 29, inner_x + inner_width, y + 29)
+    if left_wall:
+        canvas.rect(x, y + 7, wall_width - 2, 16, fill=0, stroke=1)
+        for offset in (2, 6, 10):
+            canvas.line(x + offset, y + 8, x + min(offset + 8, wall_width - 2), y + 22)
+    if right_wall:
+        right_x = x + width - wall_width + 2
+        canvas.rect(right_x, y + 7, wall_width - 2, 16, fill=0, stroke=1)
+        for offset in (2, 6, 10):
+            canvas.line(right_x + offset, y + 8, right_x + min(offset + 8, wall_width - 2), y + 22)
+    if result.field_cut_count and result.field_cut_per_end is not None:
+        for end_x in (
+            (inner_x,) if result.field_cut_count == 1 else (inner_x, inner_x + inner_width)
+        ):
+            canvas.line(end_x, y + 27, end_x, y + 34)
+            canvas.setFont(_BODY_FONT, 6)
+            canvas.drawCentredString(end_x, y + 25, f"+{result.field_cut_per_end.display}")
+    cursor = inner_x
+    piece_y = y + 7
+    piece_height = 16.0
+    for piece, value, weight in zip(result.pieces, values, weights, strict=True):
+        piece_width = inner_width * weight / total_weight
+        kind = (piece.kind or "").casefold()
+        appliance = "appliance" in kind
+        if appliance:
+            canvas.setDash(3, 2)
+        canvas.rect(cursor, piece_y, piece_width, piece_height, fill=0, stroke=1)
+        canvas.setDash()
+        if "filler" in kind:
+            hatch_x = cursor + 2
+            while hatch_x < cursor + piece_width - 1:
+                canvas.line(
+                    hatch_x,
+                    piece_y + 1,
+                    min(hatch_x + piece_height, cursor + piece_width - 1),
+                    piece_y + piece_height - 1,
+                )
+                hatch_x += 5
+        display = "?" if piece.value is None else piece.value.display
+        canvas.setFont(_BODY_FONT, 6.5)
+        canvas.drawCentredString(cursor + piece_width / 2, y - 4, display)
+        cursor += piece_width
+    if result.hold is not None or result.outcome is None:
+        canvas.saveState()
+        canvas.setDash(2, 2)
+        hatch = inner_x
+        while hatch < inner_x + inner_width:
+            canvas.line(
+                hatch, piece_y, min(hatch + 16, inner_x + inner_width), piece_y + piece_height
+            )
+            hatch += 8
+        canvas.restoreState()
+    if result.printed_overall is not None:
+        canvas.line(inner_x, y + 39, inner_x, y + 34)
+        canvas.line(inner_x, y + 36, inner_x + inner_width, y + 36)
+        canvas.line(inner_x + inner_width, y + 39, inner_x + inner_width, y + 34)
+        canvas.setFont(_BODY_FONT, 7)
+        canvas.drawCentredString(
+            inner_x + inner_width / 2, y + 41, f"Printed {result.printed_overall.display}"
+        )
+    if result.expected_total is not None:
+        canvas.line(inner_x, y + 1, inner_x, y - 3)
+        canvas.line(inner_x, y - 1, inner_x + inner_width, y - 1)
+        canvas.line(inner_x + inner_width, y + 1, inner_x + inner_width, y - 3)
+        canvas.setFont(_BODY_FONT, 7)
+        canvas.drawCentredString(
+            inner_x + inner_width / 2, y - 12, f"Needed {result.expected_total.display}"
+        )
+    if result.delta is not None:
+        delta = _exact_fraction(result.delta)
+        if delta == 0:
+            canvas.setFont(_BOLD_FONT, 8)
+            canvas.drawRightString(x + width, y - 25, 'Difference 0"')
+            mark_x = x + width - 69
+            canvas.line(mark_x, y - 22, mark_x + 2, y - 24)
+            canvas.line(mark_x + 2, y - 24, mark_x + 6, y - 18)
+        else:
+            canvas.setFont(_BOLD_FONT, 8)
+            difference = f"Difference {result.delta.display}"
+            canvas.drawRightString(x + width, y - 25, difference)
+            mark_x = x + width - stringWidth(difference, _BOLD_FONT, 8) - 9
+            canvas.line(mark_x, y - 23, mark_x + 5, y - 18)
+            canvas.line(mark_x, y - 18, mark_x + 5, y - 23)
+
+
+def _countertop_heading(result: CountertopResultOut) -> str:
+    return f"PAGE {result.page_number} — {result.label}"
+
+
+def _countertop_strip_y(top: float, detail_line_count: int) -> float:
+    """Place the strip below every wrapped detail line with a small visual gap."""
+    if detail_line_count < 1:
+        raise ValueError("a countertop card needs at least one detail line")
+    last_detail_y = top - 31 - (detail_line_count - 1) * 9
+    # Strip labels extend 48 points above and 25 below its baseline.
+    return last_detail_y - 56
 
 
 def _wrapped(value: str, *, width: float, font: str, size: float) -> tuple[str, ...]:
@@ -372,9 +504,116 @@ class _Document:
         self._footer()
         self.canvas.showPage()
 
+    def _countertops(self) -> None:
+        results = self.source.countertop_results
+        if not results:
+            return
+
+        def new_page(continued: bool = False) -> None:
+            if self.page_number:
+                self._footer()
+                self.canvas.showPage()
+            self.page_number += 1
+            self.y = _PAGE_HEIGHT - _MARGIN
+            self.canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
+            self.canvas.rect(_MARGIN, self.y - 28, _CONTENT_WIDTH, 28, fill=1, stroke=0)
+            self.canvas.setFillColorRGB(_WHITE, _WHITE, _WHITE)
+            self.canvas.setFont(_BOLD_FONT, 11)
+            title = "COUNTERTOPS — CONTINUED" if continued else "COUNTERTOPS"
+            self.canvas.drawString(_MARGIN + 12, self.y - 18, title)
+            self.canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
+            self.y -= 48
+
+        new_page()
+        for result in sorted(results, key=lambda item: item.page_number):
+            details = [
+                f"Wall layout: {_text(result.wall_layout.label)} ({result.wall_layout.source})",
+                f"Field cut: {_text(None if result.field_cut_per_end is None else result.field_cut_per_end.display)} per end x {_text(result.field_cut_count)}",
+            ]
+            if result.reviewer_decision is None:
+                details.append(
+                    "Decision: automatic recorded result"
+                    if result.outcome is not None
+                    else "Decision: no reviewer action recorded"
+                )
+            else:
+                decision = result.reviewer_decision
+                details.append(
+                    f"Decision: {decision.action} by {decision.actor} on {decision.time.isoformat()}"
+                )
+                if decision.note:
+                    details.append(f"Reviewer note: {decision.note}")
+            if result.hold is not None:
+                details.append(f"Hold: {result.hold.reason}")
+            detail_lines = tuple(
+                line
+                for detail in details
+                for line in _wrapped(detail, width=_CONTENT_WIDTH - 16, font=_BODY_FONT, size=7)
+            )
+            strip_y = _countertop_strip_y(self.y, len(detail_lines))
+            card_bottom = strip_y - 34
+            card_height = self.y - card_bottom
+            if self.y - card_height < 48:
+                new_page(continued=True)
+                strip_y = _countertop_strip_y(self.y, len(detail_lines))
+                card_bottom = strip_y - 34
+            top = self.y
+            self.canvas.setStrokeColorRGB(_BLACK, _BLACK, _BLACK)
+            self.canvas.rect(
+                _MARGIN, card_bottom, _CONTENT_WIDTH, top - card_bottom, fill=0, stroke=1
+            )
+            self.canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
+            self.canvas.setFont(_BOLD_FONT, 9)
+            self.canvas.drawString(_MARGIN + 8, top - 17, _countertop_heading(result))
+            status_text = (
+                result.outcome.value if result.outcome is not None else "REVIEW — no recorded check"
+            )
+            self.canvas.setFont(_BODY_FONT, 8)
+            self.canvas.drawRightString(_PAGE_WIDTH - _MARGIN - 8, top - 17, status_text)
+            glyph_x = _PAGE_WIDTH - _MARGIN - 13
+            glyph_y = top - 14
+            self.canvas.setLineWidth(1.3)
+            if result.outcome is Outcome.PASS:
+                self.canvas.line(glyph_x - 3, glyph_y, glyph_x - 1, glyph_y - 2)
+                self.canvas.line(glyph_x - 1, glyph_y - 2, glyph_x + 3, glyph_y + 3)
+            elif result.outcome is Outcome.FAIL:
+                self.canvas.line(glyph_x - 2, glyph_y - 2, glyph_x + 2, glyph_y + 2)
+                self.canvas.line(glyph_x - 2, glyph_y + 2, glyph_x + 2, glyph_y - 2)
+            elif result.outcome is Outcome.REVIEW_REQUIRED:
+                self.canvas.line(glyph_x, glyph_y + 4, glyph_x - 4, glyph_y - 3)
+                self.canvas.line(glyph_x - 4, glyph_y - 3, glyph_x + 4, glyph_y - 3)
+                self.canvas.line(glyph_x + 4, glyph_y - 3, glyph_x, glyph_y + 4)
+                self.canvas.setFont(_BOLD_FONT, 6)
+                self.canvas.drawCentredString(glyph_x, glyph_y - 1, "!")
+            elif result.outcome is Outcome.NOT_FOUND:
+                self.canvas.setDash(2, 1)
+                self.canvas.rect(glyph_x - 4, glyph_y - 4, 8, 8, fill=0, stroke=1)
+                self.canvas.setDash()
+                self.canvas.setFont(_BOLD_FONT, 6)
+                self.canvas.drawCentredString(glyph_x, glyph_y - 2, "?")
+            elif result.outcome is Outcome.NO_APPLICABLE_RULE:
+                self.canvas.setDash(2, 1)
+                self.canvas.line(glyph_x, glyph_y + 4, glyph_x + 4, glyph_y)
+                self.canvas.line(glyph_x + 4, glyph_y, glyph_x, glyph_y - 4)
+                self.canvas.line(glyph_x, glyph_y - 4, glyph_x - 4, glyph_y)
+                self.canvas.line(glyph_x - 4, glyph_y, glyph_x, glyph_y + 4)
+                self.canvas.setDash()
+            self.canvas.setFont(_BODY_FONT, 7)
+            for index, line in enumerate(detail_lines):
+                self.canvas.drawString(_MARGIN + 8, top - 31 - (index * 9), line)
+            _draw_countertop_strip(
+                self.canvas,
+                result,
+                x=_MARGIN + 8,
+                y=strip_y,
+                width=_CONTENT_WIDTH - 16,
+            )
+            self.y = card_bottom - 12
+
     def build(self) -> bytes:
         self.cover()
         self.changed_values()
+        self._countertops()
         self._new_findings_page()
         for index, finding in enumerate(self.source.findings, start=1):
             self._finding(index, finding)
