@@ -249,6 +249,21 @@ def test_changed_values_refusal_is_on_the_redline_summary_not_the_drawing(
     assert UNAVAILABLE not in pages[0][0]
 
 
+def test_redline_summary_lists_countertop_labels(tmp_path: Path) -> None:
+    artifact = render_redline(
+        _package(),
+        [_finding(refs=(_reference(),))],
+        ReportMode.INTERNAL,
+        LocalStore(tmp_path),
+        countertop_labels=("Page 2 — Countertop row A", "Page 5 — Countertop row B"),
+    )
+
+    text = _text(tmp_path, artifact.key)
+    assert "Countertops in this report" in text
+    assert "Page 2 — Countertop row A" in text
+    assert "Page 5 — Countertop row B" in text
+
+
 def _content_stream(store_root: Path, key: str, index: int = 0) -> str:
     """The original drawing operators and the separate vector overlay operators."""
     with LocalStore(store_root).get(key) as handle:

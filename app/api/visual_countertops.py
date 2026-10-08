@@ -277,6 +277,13 @@ def countertop_results(
     ).scalar_one_or_none()
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return _countertop_results_for_revision(session, package_id, revision)
+
+
+def _countertop_results_for_revision(
+    session: Session, package_id: UUID, revision: PackageRevision
+) -> CountertopResultsOut:
+    """Shared projection used by the read API and the signed report writer."""
     rows = slot_rows(session, revision.id)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
@@ -432,4 +439,4 @@ def countertop_results(
     return CountertopResultsOut(package_id=package_id, revision_id=revision.id, items=tuple(items))
 
 
-__all__ = ["countertop_results", "router"]
+__all__ = ["_countertop_results_for_revision", "countertop_results", "router"]

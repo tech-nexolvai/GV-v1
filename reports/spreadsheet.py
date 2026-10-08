@@ -50,6 +50,7 @@ import re
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
 from fractions import Fraction
 from io import BytesIO
 from typing import Final
@@ -61,6 +62,7 @@ from openpyxl.cell.cell import Cell  # type: ignore[import-untyped]
 from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-untyped]
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
+from app.schemas.visual_ui import CountertopResultOut, ExactValueOut
 from reports.signed_review import SignedReview
 from units.measurement import Measurement
 from verdict.finding import Finding
@@ -92,6 +94,29 @@ FINDINGS_SHEET: Final = "Findings"
 OPERANDS_SHEET: Final = "Operands"
 SUMMARY_SHEET: Final = "Review Summary"
 PROJECT_VALUES_SHEET: Final = "Project Values"
+COUNTERTOPS_SHEET: Final = "Countertops"
+COUNTERTOP_COLUMNS: Final = (
+    "page",
+    "label",
+    "outcome",
+    "printed_overall",
+    "printed_overall_in",
+    "pieces",
+    "expected_total",
+    "expected_total_in",
+    "difference",
+    "difference_in",
+    "field_cut_per_end",
+    "field_cut_per_end_in",
+    "field_cut_count",
+    "wall_layout",
+    "wall_source",
+    "decision",
+    "reviewer",
+    "decision_time",
+    "reviewer_note",
+    "hold_reason",
+)
 
 _BLACK: Final = "000000"
 _WHITE: Final = "FFFFFF"
@@ -394,6 +419,106 @@ def _write_sheet(
     sheet.freeze_panes = "A2"
 
 
+def _numeric_inches(value: ExactValueOut | None) -> Decimal | None:
+    """Return a numeric inch cell only when the exact rational has a finite decimal form."""
+    if value is None:
+        return None
+    try:
+        numerator = int(value.numerator)
+        denominator = int(value.denominator)
+    except (TypeError, ValueError):
+        return None
+    if denominator == 0:
+        return None
+    remaining = abs(denominator)
+    for factor in (2, 5):
+        while remaining % factor == 0:
+            remaining //= factor
+    if remaining != 1:
+        return None
+    with localcontext() as context:
+        context.prec = max(40, len(str(abs(numerator))) + len(str(abs(denominator))) + 10)
+        return Decimal(numerator) / Decimal(denominator)
+
+
+def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tuple[object, ...]:
+    decision = result.reviewer_decision
+    pieces = (
+        "; ".join(
+            f"{piece.index + 1}: {piece.value.display if piece.value else '?'}"
+            f" ({piece.kind or 'kind not recorded'}; {piece.source})"
+            for piece in result.pieces
+        )
+        or "none recorded"
+    )
+    return (
+        result.page_number,
+        result.label,
+        result.outcome.value if result.outcome is not None else "NOT CHECKED",
+        "" if result.printed_overall is None else result.printed_overall.display,
+        _numeric_inches(result.printed_overall),
+        pieces,
+        "" if result.expected_total is None else result.expected_total.display,
+        _numeric_inches(result.expected_total),
+        "" if result.delta is None else result.delta.display,
+        _numeric_inches(result.delta),
+        "" if result.field_cut_per_end is None else result.field_cut_per_end.display,
+        _numeric_inches(result.field_cut_per_end),
+        result.field_cut_count,
+        result.wall_layout.label or "not established",
+        result.wall_layout.source,
+        "" if decision is None else decision.action,
+        "" if decision is None else decision.actor,
+        "" if decision is None else decision.time.isoformat(),
+        "" if decision is None or decision.note is None else decision.note,
+        "" if result.hold is None else result.hold.reason,
+        *(
+            _numeric_inches(result.pieces[index].value) if index < len(result.pieces) else None
+            for index in range(maximum_pieces)
+        ),
+    )
+
+
+def _write_countertops_sheet(workbook: Workbook, results: Sequence[CountertopResultOut]) -> None:
+    sheet = workbook.create_sheet(COUNTERTOPS_SHEET)
+    sheet.sheet_view.showGridLines = False
+    maximum_pieces = max((len(result.pieces) for result in results), default=0)
+    headings = (*COUNTERTOP_COLUMNS, *(f"piece_{index + 1}_in" for index in range(maximum_pieces)))
+    for index, heading in enumerate(headings, start=1):
+        cell = sheet.cell(row=1, column=index, value=heading)
+        cell.font = Font(name="Courier New", bold=True, color=_WHITE)
+        cell.fill = PatternFill("solid", fgColor=_BLACK)
+        cell.number_format = TEXT_FORMAT
+        sheet.column_dimensions[get_column_letter(index)].width = 25
+    numeric_columns = {
+        1,
+        5,
+        8,
+        10,
+        12,
+        13,
+        *(range(len(COUNTERTOP_COLUMNS) + 1, len(headings) + 1)),
+    }
+    for row_index, result in enumerate(
+        sorted(results, key=lambda item: (item.page_number, item.label)), start=2
+    ):
+        for column, value in enumerate(
+            _countertop_row(result, maximum_pieces=maximum_pieces), start=1
+        ):
+            cell = sheet.cell(row=row_index, column=column)
+            if column in numeric_columns and isinstance(value, (int, Decimal)):
+                cell.value = value
+                cell.number_format = "0.########"
+            else:
+                cell.value = exact_text(value)
+                cell.number_format = TEXT_FORMAT
+            cell.font = Font(name="Courier New")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if row_index % 2 == 0:
+                cell.fill = PatternFill("solid", fgColor=_LIGHT_GRAY)
+    sheet.freeze_panes = "A2"
+
+
 @dataclass(frozen=True, slots=True)
 class StoredFinding:
     """One finding exactly as the database holds it, for the export a worker produces.
@@ -641,6 +766,7 @@ def write_stored_workbook(
     signoff: WorkbookSignoff | None = None,
     changed_values: ChangedValues | None = None,
     signed_review: SignedReview | None = None,
+    countertop_results: Sequence[CountertopResultOut] = (),
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -652,6 +778,10 @@ def write_stored_workbook(
     for finding in findings:
         if not isinstance(finding, StoredFinding):
             raise TypeError("findings must contain only StoredFinding values")
+    if isinstance(countertop_results, str) or not isinstance(countertop_results, Sequence):
+        raise TypeError("countertop_results must be a sequence of CountertopResultOut values")
+    if not all(isinstance(result, CountertopResultOut) for result in countertop_results):
+        raise TypeError("countertop_results must contain only CountertopResultOut values")
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -694,6 +824,8 @@ def write_stored_workbook(
         OPERAND_COLUMNS,
         [row for finding in findings for row in _stored_operand_rows(finding)],
     )
+    if countertop_results:
+        _write_countertops_sheet(workbook, countertop_results)
 
     out = BytesIO()
     workbook.save(out)
