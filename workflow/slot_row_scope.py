@@ -126,18 +126,60 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
     ).all()
     grouped: dict[tuple[int, str], list[ObservationCandidate]] = {}
     roles: dict[tuple[int, str], str] = {}
+    walls: dict[tuple[UUID, str], ObservationCandidate] = {}
     for page_index, candidate, role in records:
         flags = set(candidate.ambiguity_flags or [])
-        if "slot-reader" not in flags:
-            continue
         rank = next(
             (flag.removeprefix("row-rank:") for flag in flags if flag.startswith("row-rank:")), None
         )
+        if rank is not None and candidate.raw_text.startswith("walls: "):
+            walls[(candidate.page_id, rank)] = candidate
+        if "slot-reader" not in flags:
+            continue
         if rank is None:
             continue
         key = (page_index, rank)
         grouped.setdefault(key, []).append(candidate)
         roles[key] = role
+
+    # Load the two append-only side tables once for the whole run. The former per-row proposal,
+    # wall and decision lookups made a 20-row package issue 60 extra queries.
+    candidate_ids = {candidate.id for candidates in grouped.values() for candidate in candidates}
+    proposals_by_candidate = (
+        {
+            proposal.candidate_id: proposal
+            for proposal in session.scalars(
+                select(MeasurementProposal).where(
+                    MeasurementProposal.package_revision_id == revision_id,
+                    MeasurementProposal.candidate_id.in_(candidate_ids),
+                )
+            ).all()
+        }
+        if candidate_ids
+        else {}
+    )
+    anchors_by_key = {
+        key: next(
+            candidate for candidate in candidates if "slot:0" in (candidate.ambiguity_flags or [])
+        )
+        for key, candidates in grouped.items()
+        if sum("slot:0" in (candidate.ambiguity_flags or []) for candidate in candidates) == 1
+    }
+    anchor_ids = [anchor.id for anchor in anchors_by_key.values()]
+    later_decision = aliased(SlotRowReviewDecision)
+    decisions_by_anchor = (
+        {
+            decision.row_candidate_id: decision
+            for decision in session.scalars(
+                select(SlotRowReviewDecision).where(
+                    SlotRowReviewDecision.row_candidate_id.in_(anchor_ids),
+                    ~exists().where(later_decision.supersedes_id == SlotRowReviewDecision.id),
+                )
+            ).all()
+        }
+        if anchor_ids
+        else {}
+    )
 
     output: list[SlotRow] = []
     for (page_index, rank), candidates in sorted(
@@ -163,28 +205,12 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
         if len(count_flags) != 1 or not next(iter(count_flags)).isdigit():
             continue
         piece_count = int(next(iter(count_flags)))
-        latest_proposals = session.scalars(
-            select(MeasurementProposal).where(
-                MeasurementProposal.package_revision_id == revision_id,
-                MeasurementProposal.candidate_id.in_([candidate.id for candidate in candidates]),
-            )
-        ).all()
-        proposals = {proposal.candidate_id: proposal for proposal in latest_proposals}
-        wall = (
-            session.execute(
-                select(ObservationCandidate).where(
-                    ObservationCandidate.extraction_run_id == run_id,
-                    ObservationCandidate.page_id == anchor.page_id,
-                    ObservationCandidate.raw_text.startswith("walls: "),
-                )
-            )
-            .scalars()
-            .all()
-        )
-        wall_candidate = next(
-            (item for item in wall if f"row-rank:{rank}" in (item.ambiguity_flags or [])),
-            None,
-        )
+        proposals = {
+            candidate.id: proposals_by_candidate[candidate.id]
+            for candidate in candidates
+            if candidate.id in proposals_by_candidate
+        }
+        wall_candidate = walls.get((anchor.page_id, rank))
         held = next(
             (
                 candidate.review_reason
@@ -226,7 +252,7 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
                 held or "This row needs a reviewer decision.",
             )
         between_panels = not has_row_hold and check_holds == {STONE_SHORT_OF_ENDS[0]}
-        decision = latest_row_decision(session, anchor.id)
+        decision = decisions_by_anchor.get(anchor.id)
         # Only an explicit wall choice on this exact row can clear this one check hold.
         # A typed value, another row's choice, or another hold cannot release it.
         if not (between_panels and decision is not None and decision.wall_config is not None):

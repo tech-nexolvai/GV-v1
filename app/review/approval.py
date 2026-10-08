@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -162,29 +163,48 @@ def _unaddressed(db: Session, findings: tuple[Finding, ...]) -> tuple[UUID, ...]
     confirm/except dismiss that pending rerun: only superseding the old run removes it from here.
     This also protects a previously passing finding whose evidence was subsequently corrected.
     """
-    by_id = {finding.id: finding for finding in findings}
-    if not by_id:
+    finding_ids = {finding.id for finding in findings}
+    if not finding_ids:
         return ()
-    required = {finding.id for finding in findings if finding.outcome in BLOCKING_OUTCOMES}
+    actions = tuple(
+        db.scalars(
+            select(ReviewAction)
+            .where(ReviewAction.finding_id.in_(finding_ids))
+            .order_by(ReviewAction.created_at, ReviewAction.id)
+        ).all()
+    )
     latest: dict[UUID, ReviewAction] = {}
-    corrected: set[UUID] = set()
-    for action in db.scalars(
-        select(ReviewAction)
-        .where(ReviewAction.finding_id.in_(by_id))
-        .order_by(ReviewAction.created_at, ReviewAction.id)
-    ):
+    for action in actions:
         latest[action.finding_id] = action
-        if action.action == "correct":
-            corrected.add(action.finding_id)
     grants = {
         grant.review_action_id: ExceptionGrant.from_stored(grant)
         for grant in db.scalars(
             select(ReviewException).where(
                 ReviewException.review_action_id.in_([action.id for action in latest.values()])
             )
-        )
+        ).all()
     }
-    when = utc_now()
+    return _unaddressed_from_records(findings, actions, grants, when=utc_now())
+
+
+def _unaddressed_from_records(
+    findings: tuple[Finding, ...] | list[Finding],
+    actions: tuple[ReviewAction, ...] | list[ReviewAction],
+    grants: dict[UUID, ExceptionGrant],
+    *,
+    when: datetime,
+) -> tuple[UUID, ...]:
+    """Shared decision rule for single-revision and batched readiness reads."""
+    by_id = {finding.id: finding for finding in findings}
+    if not by_id:
+        return ()
+    required = {finding.id for finding in findings if finding.outcome in BLOCKING_OUTCOMES}
+    latest: dict[UUID, ReviewAction] = {}
+    corrected: set[UUID] = set()
+    for action in actions:
+        latest[action.finding_id] = action
+        if action.action == "correct":
+            corrected.add(action.finding_id)
     addressed: set[UUID] = set()
     for identity, action in latest.items():
         if identity in corrected:
@@ -234,6 +254,75 @@ def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
     elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         reason = "The package is not awaiting review."
     return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason)
+
+
+def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID, ApprovalReadiness]:
+    """The same readiness rule for a page of revisions, using a bounded query plan.
+
+    This is used by the Documents summary so the screen's decision count cannot drift from sign-off
+    readiness and does not issue one readiness query per package.
+    """
+    if not revision_ids:
+        return {}
+    findings_by_revision: dict[UUID, list[Finding]] = {identity: [] for identity in revision_ids}
+    found = db.scalars(
+        select(Finding)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .where(Finding.package_revision_id.in_(revision_ids), CheckRun.superseded_at.is_(None))
+        .order_by(Finding.created_at, Finding.id)
+    ).all()
+    finding_by_id: dict[UUID, Finding] = {}
+    for finding in found:
+        findings_by_revision[finding.package_revision_id].append(finding)
+        finding_by_id[finding.id] = finding
+    actions: list[ReviewAction] = []
+    if finding_by_id:
+        actions = list(
+            db.scalars(
+                select(ReviewAction)
+                .where(ReviewAction.finding_id.in_(finding_by_id))
+                .order_by(ReviewAction.created_at, ReviewAction.id)
+            ).all()
+        )
+    latest_actions: dict[UUID, ReviewAction] = {}
+    for action in actions:
+        latest_actions[action.finding_id] = action
+    grants = {}
+    action_ids = [action.id for action in latest_actions.values()]
+    if action_ids:
+        grants = {
+            grant.review_action_id: ExceptionGrant.from_stored(grant)
+            for grant in db.scalars(
+                select(ReviewException).where(ReviewException.review_action_id.in_(action_ids))
+            ).all()
+        }
+    revisions = {
+        revision.id: revision
+        for revision in db.scalars(
+            select(PackageRevision).where(PackageRevision.id.in_(revision_ids))
+        ).all()
+    }
+    when = utc_now()
+    result: dict[UUID, ApprovalReadiness] = {}
+    for revision_id, findings in findings_by_revision.items():
+        revision_findings = tuple(findings)
+        revision_finding_ids = {finding.id for finding in findings}
+        revision_actions = tuple(
+            action for action in actions if action.finding_id in revision_finding_ids
+        )
+        blocked = _unaddressed_from_records(revision_findings, revision_actions, grants, when=when)
+        revision = revisions.get(revision_id)
+        reason = None
+        if not findings:
+            reason = "There are no findings to sign off. Run the checks first."
+        elif blocked:
+            reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+        elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
+            reason = "The package is not awaiting review."
+        result[revision_id] = ApprovalReadiness(
+            revision_id, reason is None, len(blocked), blocked, reason
+        )
+    return result
 
 
 def approve_package(

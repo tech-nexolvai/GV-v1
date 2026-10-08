@@ -71,6 +71,7 @@ def _package_rows(
     overall_override: int | None = None,
     piece_count: int = 1,
     widths_add_up: bool = False,
+    rows_per_page: int = 1,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
@@ -135,87 +136,93 @@ def _package_rows(
     session.flush()
 
     anchors: dict[int, UUID] = {}
-    for page_index, rank in ((0, "1"), (1, "2")):
-        slots = [
-            (str(position), "SHOP:countertop_piece_width", 20 + page_index + position)
-            for position in range(piece_count)
-        ]
-        # The published company standard adds one inch at each of the two wall ends.
-        overall = sum(value for _, _, value in slots) + 2 if widths_add_up else 40 + page_index
-        if page_index == 0 and overall_override is not None:
-            overall = overall_override
-        slots.append(("overall", "SHOP:countertop_overall_width", overall))
-        for slot, field, numerator in slots:
-            candidate = ObservationCandidate(
+    for page_index in (0, 1):
+        for row_offset in range(rows_per_page):
+            rank = str(row_offset * 2 + page_index + 1)
+            slots = [
+                (str(position), "SHOP:countertop_piece_width", 20 + page_index + position)
+                for position in range(piece_count)
+            ]
+            # The published company standard adds one inch at each of the two wall ends.
+            overall = sum(value for _, _, value in slots) + 2 if widths_add_up else 40 + page_index
+            if page_index == 0 and row_offset == 0 and overall_override is not None:
+                overall = overall_override
+            slots.append(("overall", "SHOP:countertop_overall_width", overall))
+            for slot, field, numerator in slots:
+                candidate = ObservationCandidate(
+                    document_version_id=version.id,
+                    page_id=pages[page_index].id,
+                    extraction_run_id=extraction.id,
+                    raw_text=f"{numerator} inch",
+                    value_numerator=numerator,
+                    value_denominator=1,
+                    unit="in",
+                    polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
+                    coordinate_space="image",
+                    ambiguity_flags=[
+                        "slot-reader",
+                        f"slot:{slot}",
+                        f"row-rank:{rank}",
+                        f"row-slot-count:{piece_count}",
+                        "ink:vendor",
+                        *(["row-hold:synthetic held row"] if page_index == held_page else []),
+                        *(
+                            ["check-hold:stone-short-of-ends"]
+                            if check_hold_all or page_index == check_hold_page
+                            else []
+                        ),
+                        *(
+                            [extra_hold]
+                            if page_index == 0 and row_offset == 0 and extra_hold is not None
+                            else []
+                        ),
+                    ],
+                    review_reason="synthetic held row" if page_index == held_page else None,
+                    corroboration_status=(
+                        None
+                        if unsealed_all or (page_index == unsealed_page and slot == "0")
+                        else "CORROBORATED"
+                    ),
+                    corroboration_lane=(
+                        None
+                        if unsealed_all or (page_index == unsealed_page and slot == "0")
+                        else "SECOND_READER"
+                    ),
+                )
+                session.add(candidate)
+                session.flush()
+                if slot == "0":
+                    anchors.setdefault(page_index, candidate.id)
+                session.add(
+                    MeasurementProposal(
+                        package_revision_id=revision.id,
+                        page_number=page_index + 1,
+                        proposal_id=uuid4(),
+                        field_key=field,
+                        position=0 if slot == "overall" else int(slot),
+                        candidate_id=candidate.id,
+                        placement_verified=True,
+                        model_id="synthetic-reader-pair",
+                        prompt_id="synthetic-slot-test",
+                    )
+                )
+            wall = ObservationCandidate(
                 document_version_id=version.id,
                 page_id=pages[page_index].id,
                 extraction_run_id=extraction.id,
-                raw_text=f"{numerator} inch",
-                value_numerator=numerator,
-                value_denominator=1,
-                unit="in",
+                raw_text="walls: back_left_right",
                 polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
                 coordinate_space="image",
                 ambiguity_flags=[
-                    "slot-reader",
-                    f"slot:{slot}",
+                    "wall-reader",
                     f"row-rank:{rank}",
-                    f"row-slot-count:{piece_count}",
-                    "ink:vendor",
+                    "walls-sealed:back_left_right",
+                    f"wall-source:{wall_source}",
                     *(["row-hold:synthetic held row"] if page_index == held_page else []),
-                    *(
-                        ["check-hold:stone-short-of-ends"]
-                        if check_hold_all or page_index == check_hold_page
-                        else []
-                    ),
-                    *([extra_hold] if page_index == 0 and extra_hold is not None else []),
                 ],
                 review_reason="synthetic held row" if page_index == held_page else None,
-                corroboration_status=(
-                    None
-                    if unsealed_all or (page_index == unsealed_page and slot == "0")
-                    else "CORROBORATED"
-                ),
-                corroboration_lane=(
-                    None
-                    if unsealed_all or (page_index == unsealed_page and slot == "0")
-                    else "SECOND_READER"
-                ),
             )
-            session.add(candidate)
-            session.flush()
-            if slot == "0":
-                anchors[page_index] = candidate.id
-            session.add(
-                MeasurementProposal(
-                    package_revision_id=revision.id,
-                    page_number=page_index + 1,
-                    proposal_id=uuid4(),
-                    field_key=field,
-                    position=0 if slot == "overall" else int(slot),
-                    candidate_id=candidate.id,
-                    placement_verified=True,
-                    model_id="synthetic-reader-pair",
-                    prompt_id="synthetic-slot-test",
-                )
-            )
-        wall = ObservationCandidate(
-            document_version_id=version.id,
-            page_id=pages[page_index].id,
-            extraction_run_id=extraction.id,
-            raw_text="walls: back_left_right",
-            polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
-            coordinate_space="image",
-            ambiguity_flags=[
-                "wall-reader",
-                f"row-rank:{rank}",
-                "walls-sealed:back_left_right",
-                f"wall-source:{wall_source}",
-                *(["row-hold:synthetic held row"] if page_index == held_page else []),
-            ],
-            review_reason="synthetic held row" if page_index == held_page else None,
-        )
-        session.add(wall)
+            session.add(wall)
     session.flush()
     return project.id, package.id, anchors
 

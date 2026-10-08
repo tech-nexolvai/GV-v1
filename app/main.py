@@ -146,12 +146,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         measurements,
         operations,
         packages,
+        packages_summary,
         page_pictures,
         reading_parts,
         review,
         reviewer_chat,
         rules,
         slot_rows,
+        usage,
+        visual_countertops,
     )
 
     app.include_router(packages.router, prefix=API_PREFIX)
@@ -179,6 +182,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reading_parts.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
+    app.include_router(visual_countertops.router, prefix=API_PREFIX)
+    app.include_router(packages_summary.router, prefix=API_PREFIX)
+    app.include_router(usage.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)
     app.include_router(distribution.router, prefix=API_PREFIX)
     # The versioned export downstream consumers read (#224, D1.3). Same prefix as the rest, so the shape a
