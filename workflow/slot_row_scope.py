@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, aliased
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from vocabulary.check_holds import CHECK_HOLD_REASONS
+from vocabulary.check_holds import CHECK_HOLD_REASONS, STONE_SHORT_OF_ENDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +43,7 @@ class SlotRow:
     wall_candidate: ObservationCandidate | None
     decision: SlotRowReviewDecision | None
     held_reason: str | None
+    wall_confirmation_allowed: bool
 
     @property
     def label(self) -> str:
@@ -191,18 +192,27 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
                 )
             ),
             None,
-        ) or next(
-            # Readings stand but the width arithmetic does not apply (the stone does not end at
-            # the walls): no automatic check, whatever the reviewer types or chooses.
-            (
-                CHECK_HOLD_REASONS.get(code, code)
-                for candidate in candidates
-                for flag in candidate.ambiguity_flags or ()
-                if flag.startswith("check-hold:")
-                for code in (flag.removeprefix("check-hold:"),)
-            ),
-            None,
         )
+        check_holds = {
+            flag.removeprefix("check-hold:")
+            for candidate in candidates
+            for flag in candidate.ambiguity_flags or ()
+            if flag.startswith("check-hold:")
+        }
+        has_row_hold = any(
+            flag in {"row-ambiguous", "row-partial"} or flag.startswith("row-hold:")
+            for candidate in candidates
+            for flag in candidate.ambiguity_flags or ()
+        )
+        between_panels = not has_row_hold and check_holds == {STONE_SHORT_OF_ENDS[0]}
+        decision = latest_row_decision(session, anchor.id)
+        # Only an explicit wall choice on this exact row can clear this one check hold.
+        # A typed value, another row's choice, or another hold cannot release it.
+        if not (between_panels and decision is not None and decision.wall_config is not None):
+            held = held or next(
+                (CHECK_HOLD_REASONS.get(code, code) for code in sorted(check_holds)), None
+            )
+        is_vendor = roles[(page_index, rank)] == "shop"
         output.append(
             SlotRow(
                 anchor=anchor,
@@ -211,12 +221,9 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
                 candidates=tuple(candidates),
                 proposals=proposals,
                 wall_candidate=wall_candidate,
-                decision=latest_row_decision(session, anchor.id),
-                held_reason=(
-                    held
-                    if roles[(page_index, rank)] == "shop"
-                    else "This is not the vendor drawing."
-                ),
+                decision=decision,
+                held_reason=held if is_vendor else "This is not the vendor drawing.",
+                wall_confirmation_allowed=is_vendor and (held is None or between_panels),
             )
         )
     return tuple(output)

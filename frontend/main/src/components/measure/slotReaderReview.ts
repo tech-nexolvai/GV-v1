@@ -15,7 +15,7 @@ export function slotReaderReviewPayload(
     Object.entries(valueDrafts ?? {}).filter(([, value]) => value.trim() !== ''),
   );
   return {
-    ...(wallDraft !== undefined && wallDraft !== '' && wallDraft !== row.wall_config
+    ...(row.wall_source !== 'between-panels' && wallDraft !== undefined && wallDraft !== '' && wallDraft !== row.wall_config
       ? { wall_config: wallDraft }
       : {}),
     ...(Object.keys(measurements).length ? { measurements } : {}),
@@ -26,6 +26,7 @@ export function shouldOfferRowWallControl(row: SlotReaderRow): boolean {
   return (
     row.wall_source === 'readers' ||
     row.wall_source === 'drawing-and-readers' ||
+    row.wall_source === 'between-panels' ||
     !row.wall_proposal ||
     row.wall_config !== null
   );

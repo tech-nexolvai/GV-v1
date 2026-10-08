@@ -5111,6 +5111,10 @@
             ],
             "title": "Wall Config"
           },
+          "wall_confirmation_allowed": {
+            "title": "Wall Confirmation Allowed",
+            "type": "boolean"
+          },
           "wall_layout_choices": {
             "items": {
               "type": "string"
@@ -5158,6 +5162,7 @@
           "label",
           "piece_count",
           "held_reason",
+          "wall_confirmation_allowed",
           "values",
           "wall_proposal",
           "wall_source",

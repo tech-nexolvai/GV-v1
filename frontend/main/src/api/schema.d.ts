@@ -4234,6 +4234,8 @@ export interface components {
             values: components["schemas"]["SlotRowValueOut"][];
             /** Wall Config */
             wall_config: string | null;
+            /** Wall Confirmation Allowed */
+            wall_confirmation_allowed: boolean;
             /** Wall Layout Choices */
             wall_layout_choices: string[];
             /** Wall Proposal */

@@ -881,6 +881,7 @@ export type SlotReaderRow = {
   label: string;
   piece_count: number;
   held_reason: string | null;
+  wall_confirmation_allowed: boolean;
   values: SlotReaderRowValue[];
   wall_proposal: string | null;
   wall_source: string | null;

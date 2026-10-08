@@ -66,6 +66,9 @@ def _package_rows(
     wall_source: str = "readers",
     held_page: int | None = None,
     check_hold_page: int | None = None,
+    check_hold_all: bool = False,
+    extra_hold: str | None = None,
+    overall_override: int | None = None,
     piece_count: int = 1,
     widths_add_up: bool = False,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
@@ -139,6 +142,8 @@ def _package_rows(
         ]
         # The published company standard adds one inch at each of the two wall ends.
         overall = sum(value for _, _, value in slots) + 2 if widths_add_up else 40 + page_index
+        if page_index == 0 and overall_override is not None:
+            overall = overall_override
         slots.append(("overall", "SHOP:countertop_overall_width", overall))
         for slot, field, numerator in slots:
             candidate = ObservationCandidate(
@@ -158,7 +163,12 @@ def _package_rows(
                     f"row-slot-count:{piece_count}",
                     "ink:vendor",
                     *(["row-hold:synthetic held row"] if page_index == held_page else []),
-                    *(["check-hold:stone-short-of-ends"] if page_index == check_hold_page else []),
+                    *(
+                        ["check-hold:stone-short-of-ends"]
+                        if check_hold_all or page_index == check_hold_page
+                        else []
+                    ),
+                    *([extra_hold] if page_index == 0 and extra_hold is not None else []),
                 ],
                 review_reason="synthetic held row" if page_index == held_page else None,
                 corroboration_status=(
@@ -787,3 +797,131 @@ def test_a_row_whose_stone_does_not_end_at_the_walls_is_never_checked(
     assert by_row[anchors[0]].outcome == "REVIEW_REQUIRED"
     assert "stone stops at fillers" in (by_row[anchors[0]].reason or "")
     assert by_row[anchors[1]].outcome == "PASS", by_row[anchors[1]].reason
+
+
+@pytest.mark.parametrize("overall, expected", [(41, "PASS"), (42, "FAIL")])
+def test_between_panels_requires_its_own_explicit_wall_choice(
+    session: Session, tmp_path: Path, overall: int, expected: str
+) -> None:
+    project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        wall_source="vendor-drawing-clues",
+        check_hold_all=True,
+        overall_override=overall,
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all()
+    for candidate in candidates:
+        _reader_support(session, candidate)
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    rows = list_slot_rows(principal, session, project_id, package_id).rows
+    assert rows[0].wall_proposal == "back_only"
+    assert rows[0].wall_source == "between-panels"
+    assert rows[0].wall_confirmation_allowed
+    assert rows[0].held_reason is not None
+    assert rows[0].wall_config is None
+    first = _run_current_checks(session, package_id, tmp_path)
+    assert all(finding.outcome == "REVIEW_REQUIRED" for finding in first)
+    assert session.query(SlotRowReviewDecision).count() == 0
+
+    saved = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_only"),
+    )
+    assert saved.held_reason is None
+    assert saved.wall_config == "back_only"
+    assert saved.confirmed_by == principal.id
+    second = _run_current_checks(session, package_id, tmp_path)
+    by_row = {finding.scope_row_candidate_id: finding for finding in second}
+    assert by_row[anchors[0]].outcome == expected, by_row[anchors[0]].reason
+    assert by_row[anchors[1]].outcome == "REVIEW_REQUIRED"
+
+    # A correction is row-local; withdrawing the wall choice reinstates the hold.
+    changed = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_left_right"),
+    )
+    assert changed.wall_config == "back_left_right"
+    assert changed.held_reason is None
+    cleared = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config=None),
+    )
+    assert cleared.held_reason is not None
+    third = _run_current_checks(session, package_id, tmp_path)
+    assert all(finding.outcome == "REVIEW_REQUIRED" for finding in third)
+
+
+@pytest.mark.parametrize(
+    "extra_hold",
+    [
+        "check-hold:stone-into-walls",
+        "row-hold:counter-break",
+        "row-ambiguous",
+        "row-partial",
+    ],
+)
+def test_between_panels_never_unlocks_another_hold(session: Session, extra_hold: str) -> None:
+    project_id, package_id, anchors = _package_rows(
+        session, check_hold_page=0, extra_hold=extra_hold
+    )
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    rows = list_slot_rows(principal, session, project_id, package_id).rows
+    assert not rows[0].wall_confirmation_allowed
+    with pytest.raises(HTTPException) as refused:
+        review_slot_row(
+            principal,
+            principal,
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(wall_config="back_only"),
+        )
+    assert refused.value.status_code == 409
+    assert session.query(SlotRowReviewDecision).count() == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        SlotRowReviewIn(),
+        SlotRowReviewIn(wall_config=None),
+        SlotRowReviewIn(measurements={"piece_widths:0": "19 in"}),
+        SlotRowReviewIn(wall_config="back_only", measurements={"piece_widths:0": "19 in"}),
+    ],
+)
+def test_between_panels_hold_accepts_only_an_explicit_wall_decision(
+    session: Session, body: SlotRowReviewIn
+) -> None:
+    project_id, package_id, anchors = _package_rows(session, check_hold_page=0, unsealed_page=0)
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    with pytest.raises(HTTPException) as refused:
+        review_slot_row(principal, principal, session, project_id, package_id, anchors[0], body)
+    assert refused.value.status_code == 409
+    assert session.query(SlotRowReviewDecision).count() == 0
