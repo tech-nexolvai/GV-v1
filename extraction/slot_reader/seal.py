@@ -62,6 +62,7 @@ _QUOTES: Final = {
     "′": "'",
     "ʹ": "'",
 }
+_CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
 def normalise_text(text: str) -> str:
@@ -83,15 +84,18 @@ class ReaderAnswer:
     no_dimension: bool
     stacked: bool
     combined: bool
+    belongs: bool = True
 
     @property
     def usable(self) -> bool:
-        return self.readable and not self.no_dimension and bool(self.text.strip())
+        return self.belongs and self.readable and not self.no_dimension and bool(self.text.strip())
 
 
 class LabelState(StrEnum):
     SEALED = "sealed"
     """Two different sources gave the identical text, it is a plain dimension, no guard fired."""
+    PROVISIONAL = "provisional"
+    """The approved Claude pair agrees; workflow still needs a drawn-length witness."""
     NOT_A_DIMENSION = "not_a_dimension"
     """A word, a tag or a symbol: both sources say there is no dimension here."""
     REVIEW = "review"
@@ -145,6 +149,7 @@ def seal_label(
     stacked_by_bar: bool,
     allow_stacked: bool,
     row_ambiguity: str | None,
+    allow_claude_pair: bool = False,
 ) -> LabelOutcome:
     """Seal one label's reading, or say why the person decides.
 
@@ -155,15 +160,16 @@ def seal_label(
     `ink` is `None` when the page's ink could not be read, which holds a reading back.
     """
     sources: list[tuple[str, str, bool]] = []  # (source, text, usable)
+    claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
     if label.lane is Lane.TEXT:
-        if len(answers) > 1:
+        if len(answers) > 1 and not claude_pair:
             raise ValueError("a text label is read by the file's text and one reader")
         if label.text is None:
             raise ValueError("a text-lane label has the file's text")
         sources.append((TEXT_LAYER, label.text, True))
     elif len(answers) == 2:
         makers = {_maker(answer.model_id) for answer in answers}
-        if UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2:
+        if not claude_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
             raise ValueError(
                 "a glyph label is sealed only by two readers of known, different makers"
             )
@@ -206,9 +212,11 @@ def seal_label(
     # The file's own text saying "a word or a tag" is a fact whatever ink it sits on; two readers
     # saying "no dimension" counts only when both were asked.
     a_word = label.lane is Lane.TEXT and _is_a_word(label)
-    no_dimension = a_word or (len(answers) == 2 and all(answer.no_dimension for answer in answers))
+    no_dimension = a_word or (
+        len(answers) == 2 and all(answer.no_dimension or not answer.belongs for answer in answers)
+    )
     agreed: str | None = None
-    if len(sources) == 2 and all(usable for _, _, usable in sources) and texts[0] == texts[1]:
+    if len(sources) >= 2 and all(usable for _, _, usable in sources) and len(set(texts)) == 1:
         agreed = texts[0]
 
     # What the person is shown to check: the last source's text where it is a plain dimension —
@@ -277,9 +285,9 @@ def seal_label(
     if value is None:
         return review("not-plain", "the label has words or a sum; review the value")
     return LabelOutcome(
-        state=LabelState.SEALED,
-        value=value,
-        suggestion=None,
+        state=LabelState.PROVISIONAL if claude_pair else LabelState.SEALED,
+        value=None if claude_pair else value,
+        suggestion=value if claude_pair else None,
         sealed_text=agreed,
         reason_code=None,
         reason=None,

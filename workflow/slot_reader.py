@@ -43,6 +43,7 @@ from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
 from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import (
+    CLAUDE_SPAN_PROMPT_ID,
     CROP_PROMPT_ID,
     ROW_PROMPT_ID,
     CropJob,
@@ -171,7 +172,7 @@ class SlotReaderRuntime:
     @property
     def prompt_id(self) -> str:
         """The crop prompt's recorded identity, naming the product when the requests carry it."""
-        return crop_prompt_id(self.product)
+        return CLAUDE_SPAN_PROMPT_ID if self.claude_row_reader else crop_prompt_id(self.product)
 
     @property
     def text_lane_reader(self) -> str:
@@ -807,7 +808,9 @@ def read_slot_pages(
                     # either needs the reader to print the same text before it counts.
                     if plain_dimension(printed) is None and expand_label(printed) is None:
                         continue
-                    wanted: tuple[str, ...] = (runtime.text_lane_reader,)
+                    wanted: tuple[str, ...] = (
+                        readers if runtime.claude_row_reader else (runtime.text_lane_reader,)
+                    )
                 else:
                     wanted = readers
                 png = _crop_png(page.rendered, crop_px)
@@ -829,6 +832,7 @@ def read_slot_pages(
                             page.page_index,
                             png,
                             view_png,
+                            grounded_claude=runtime.claude_row_reader,
                             question_packet=packet,
                         )
                         for model in wanted
@@ -1067,17 +1071,20 @@ def _counter_break_row_hold(
 def _drawn(owner: OwnerResult) -> DrawnReading | None:
     """A sealed owner's value beside its drawn length, exactly; `None` when it did not seal."""
     outcome = owner.outcome
-    if outcome.state is not LabelState.SEALED or outcome.value is None:
+    if outcome.state not in {LabelState.SEALED, LabelState.PROVISIONAL}:
         return None
     if outcome.label_index is None:
         return None
     label = owner.labels[outcome.label_index]
+    value = label.outcome.value
+    if outcome.state is LabelState.PROVISIONAL:
+        value = label.outcome.suggestion
+    if value is None:
+        return None
     drawn = Fraction(owner.owner.x1 - owner.owner.x0)
     if drawn <= 0:
         return None
-    return DrawnReading(
-        owner.owner.index, outcome.value.exact, drawn, "stacked" in label.outcome.flags
-    )
+    return DrawnReading(owner.owner.index, value.exact, drawn, "stacked" in label.outcome.flags)
 
 
 def _veto_by_drawn_length(
@@ -1091,36 +1098,78 @@ def _veto_by_drawn_length(
     pieces = [reading for owner in slots if (reading := _drawn(owner)) is not None]
     whole = None if overall is None else _drawn(overall)
     vetoes = drawn_length_vetoes(pieces, whole)
-    if not vetoes:
-        return slots, overall, ()
 
-    def held(owner: OwnerResult) -> OwnerResult:
-        reason = vetoes.get(owner.owner.index)
-        if reason is None or owner.outcome.label_index is None:
-            return owner
+    def finalize(
+        owner: OwnerResult, *, code: str | None = None, reason: str | None = None
+    ) -> OwnerResult:
         position = owner.outcome.label_index
+        if position is None:
+            return owner
         chosen = owner.labels[position]
+        candidate_value = (
+            chosen.outcome.suggestion
+            if owner.outcome.state is LabelState.PROVISIONAL
+            else chosen.outcome.value
+        )
+        state = LabelState.REVIEW if code is not None else LabelState.SEALED
         label_outcome = replace(
             chosen.outcome,
-            state=LabelState.REVIEW,
-            value=None,
-            suggestion=chosen.outcome.value,
-            reason_code="drawn-length",
+            state=state,
+            value=None if code is not None else candidate_value,
+            suggestion=candidate_value if code is not None else None,
+            reason_code=code,
             reason=reason,
-            flags=(*chosen.outcome.flags, "drawn-length"),
+            flags=(*chosen.outcome.flags, *((code,) if code is not None else ())),
         )
         labels = list(owner.labels)
         labels[position] = replace(chosen, outcome=label_outcome)
         return replace(
             owner,
             labels=tuple(labels),
-            outcome=OwnerOutcome(LabelState.REVIEW, None, position, "drawn-length", reason),
+            outcome=OwnerOutcome(
+                state,
+                None if code is not None else candidate_value,
+                position,
+                code,
+                reason,
+            ),
         )
 
-    held_slots = tuple(held(owner) for owner in slots)
-    held_overall = None if overall is None else (held(overall) if None in vetoes else overall)
-    order = [owner.owner.index for owner in slots] + [None]
-    return held_slots, held_overall, tuple(index for index in order if index in vetoes)
+    def has_length_witness(owner: OwnerResult) -> bool:
+        index = owner.owner.index
+        sources = [
+            reading
+            for reading in pieces
+            if not reading.stacked and (index is None or reading.index != index)
+        ]
+        return len(sources) >= 2
+
+    def checked(owner: OwnerResult) -> OwnerResult:
+        if owner.outcome.state is LabelState.PROVISIONAL:
+            reason = vetoes.get(owner.owner.index)
+            if reason is not None:
+                return finalize(owner, code="drawn-length", reason=reason)
+            if not has_length_witness(owner):
+                return finalize(
+                    owner,
+                    code="drawn-length-unverified",
+                    reason=(
+                        "the drawing did not provide enough other dimensions to check this reading"
+                    ),
+                )
+            return finalize(owner)
+        reason = vetoes.get(owner.owner.index)
+        return owner if reason is None else finalize(owner, code="drawn-length", reason=reason)
+
+    held_slots = tuple(checked(owner) for owner in slots)
+    held_overall = None if overall is None else checked(overall)
+    order = [owner.owner.index for owner in held_slots] + [None]
+    held_indices = {
+        owner.owner.index
+        for owner in (*held_slots, *((held_overall,) if held_overall is not None else ()))
+        if owner.outcome.reason_code in {"drawn-length", "drawn-length-unverified"}
+    }
+    return held_slots, held_overall, tuple(index for index in order if index in held_indices)
 
 
 def _owner_result(
@@ -1153,6 +1202,7 @@ def _owner_result(
             and _stacked_by_bar(label, height, runtime.fraction_bar),
             allow_stacked=runtime.allow_stacked,
             row_ambiguity=plan.ambiguity,
+            allow_claude_pair=runtime.claude_row_reader,
         )
         labels.append(LabelResult(label, sealed, box_px, crop_px))
     outcome = owner_outcome([item.outcome for item in labels])
