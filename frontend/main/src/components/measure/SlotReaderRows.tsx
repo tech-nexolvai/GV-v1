@@ -7,6 +7,7 @@ import {
   type SlotReaderRow,
 } from '../../api/client';
 import { projectId } from '../../api/config';
+import { shouldOfferRowWallControl, slotReaderReviewPayload } from './slotReaderReview.js';
 import './SlotReaderRows.css';
 
 /** One reviewer decision per slot-reader row; no value or wall choice is revision-wide. */
@@ -37,22 +38,14 @@ export function SlotReaderRows({ packageId, refresh }: { packageId: string; refr
   }, [attempt, packageId, refresh]);
 
   async function save(row: SlotReaderRow) {
-    const values = Object.fromEntries(
-      Object.entries(valueDrafts[row.row_id] ?? {}).filter(([, value]) => value.trim() !== ''),
-    );
-    const selectedWall = wallDrafts[row.row_id] ?? row.wall_config ?? (
-      row.wall_source === 'readers' ? row.wall_proposal ?? '' : ''
-    );
-    const confirmsReaderWall = row.wall_source === 'readers' && selectedWall !== '';
-    const changesWall = selectedWall !== '' && selectedWall !== row.wall_config;
-    if (Object.keys(values).length === 0 && !confirmsReaderWall && !changesWall) return;
+    const payload = slotReaderReviewPayload(row, wallDrafts[row.row_id], valueDrafts[row.row_id]);
+    if (!payload.wall_config && !payload.measurements) return;
 
     setSaving(row.row_id);
     setFeedback((current) => ({ ...current, [row.row_id]: '' }));
     try {
       await reviewSlotReaderRow(projectId(), packageId, row.row_id, {
-        ...(confirmsReaderWall || changesWall ? { wall_config: selectedWall } : {}),
-        ...(Object.keys(values).length ? { measurements: values } : {}),
+        ...payload,
       });
       setValueDrafts((current) => ({ ...current, [row.row_id]: {} }));
       setFeedback((current) => ({ ...current, [row.row_id]: 'Saved for this countertop row.' }));
@@ -90,12 +83,14 @@ export function SlotReaderRows({ packageId, refresh }: { packageId: string; refr
       </p>
       {rows.map((row) => {
         const selectedWall = wallDrafts[row.row_id] ?? row.wall_config ?? (
-          row.wall_source === 'readers' ? row.wall_proposal ?? '' : ''
+          row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers'
+            ? row.wall_proposal ?? ''
+            : ''
         );
-        const confirmsReaderWall = row.wall_source === 'readers' && selectedWall !== '' && row.wall_config === null;
         const hasTypedDraft = Object.values(valueDrafts[row.row_id] ?? {}).some((value) => value.trim() !== '');
+        const payload = slotReaderReviewPayload(row, wallDrafts[row.row_id], valueDrafts[row.row_id]);
         const canSave = !row.held_reason && saving !== row.row_id && (
-          hasTypedDraft || confirmsReaderWall || (selectedWall !== '' && selectedWall !== row.wall_config)
+          hasTypedDraft || payload.wall_config !== undefined
         );
         return (
           <article className="slot-reader-rows__row" key={row.row_id}>
@@ -142,7 +137,7 @@ export function SlotReaderRows({ packageId, refresh }: { packageId: string; refr
                 Wall layout from drawing clues: {row.wall_proposal.replaceAll('_', ' ')}. This is the row&apos;s check input.
               </p>
             )}
-            {(row.wall_source === 'readers' || !row.wall_proposal || row.wall_config !== null) && (
+            {shouldOfferRowWallControl(row) && (
               <label className="slot-reader-rows__wall">
                 Wall layout for this row
                 <select
@@ -155,12 +150,26 @@ export function SlotReaderRows({ packageId, refresh }: { packageId: string; refr
                     <option value={choice} key={choice}>{choice.replaceAll('_', ' ')}</option>
                   ))}
                 </select>
-                {row.wall_source === 'readers' && row.wall_proposal && row.wall_config === null && (
-                  <small>Suggested by the readers. Save to confirm this choice for this row.</small>
+                {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers') && row.wall_proposal && row.wall_config === null && (
+                  <small>Suggested partly or fully by the readers. Choose it for this row before saving it.</small>
                 )}
                 {row.wall_reason && <small>{row.wall_reason}</small>}
               </label>
             )}
+            {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers') &&
+              row.wall_proposal && row.wall_config === null && wallDrafts[row.row_id] === undefined && (
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  disabled={Boolean(row.held_reason) || saving === row.row_id}
+                  onClick={() => setWallDrafts((current) => ({
+                    ...current,
+                    [row.row_id]: selectedWall,
+                  }))}
+                >
+                  Use this wall layout for this row
+                </button>
+              )}
             <div className="slot-reader-rows__actions">
               <button type="button" className="btn btn--sm btn--primary" disabled={!canSave} onClick={() => void save(row)}>
                 {saving === row.row_id ? 'Saving…' : 'Save this row'}

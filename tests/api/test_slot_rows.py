@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -16,8 +17,10 @@ from app.api.slot_rows import SlotRowReviewIn, list_slot_rows, review_slot_row
 from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.models import (
+    CanonicalObservation,
     Document,
     DocumentVersion,
+    EvidenceSupportingCandidate,
     MeasurementProposal,
     ObservationCandidate,
     Package,
@@ -29,8 +32,16 @@ from app.models import (
 )
 from app.models.document import DocumentKind, Page
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from app.models.verdicts import CheckRun, Finding, VerdictInput
+from evidence.canonical import Authority, EvidenceStatus
+from evidence.corroborate import independence_key
+from extraction.slot_reader.labels import plain_dimension
+from rules.semantic_types import SemanticType
+from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
+from workflow.slot_row_evidence import _canonical_for_candidate
+from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -48,7 +59,13 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 
 
 def _package_rows(
-    session: Session, *, unsealed_page: int | None = None
+    session: Session,
+    *,
+    unsealed_page: int | None = None,
+    unsealed_all: bool = False,
+    wall_source: str = "readers",
+    held_page: int | None = None,
+    piece_count: int = 1,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
@@ -111,11 +128,12 @@ def _package_rows(
 
     anchors: dict[int, UUID] = {}
     for page_index, rank in ((0, "1"), (1, "2")):
-        row_candidates: list[ObservationCandidate] = []
-        for slot, field, numerator in (
-            ("0", "SHOP:countertop_piece_width", 20 + page_index),
-            ("overall", "SHOP:countertop_overall_width", 40 + page_index),
-        ):
+        slots = [
+            (str(position), "SHOP:countertop_piece_width", 20 + page_index + position)
+            for position in range(piece_count)
+        ]
+        slots.append(("overall", "SHOP:countertop_overall_width", 40 + page_index))
+        for slot, field, numerator in slots:
             candidate = ObservationCandidate(
                 document_version_id=version.id,
                 page_id=pages[page_index].id,
@@ -130,28 +148,33 @@ def _package_rows(
                     "slot-reader",
                     f"slot:{slot}",
                     f"row-rank:{rank}",
-                    "row-slot-count:1",
+                    f"row-slot-count:{piece_count}",
                     "ink:vendor",
+                    *(["row-hold:synthetic held row"] if page_index == held_page else []),
                 ],
+                review_reason="synthetic held row" if page_index == held_page else None,
                 corroboration_status=(
-                    None if page_index == unsealed_page and slot == "0" else "CORROBORATED"
+                    None
+                    if unsealed_all or (page_index == unsealed_page and slot == "0")
+                    else "CORROBORATED"
                 ),
                 corroboration_lane=(
-                    None if page_index == unsealed_page and slot == "0" else "SECOND_READER"
+                    None
+                    if unsealed_all or (page_index == unsealed_page and slot == "0")
+                    else "SECOND_READER"
                 ),
             )
             session.add(candidate)
             session.flush()
             if slot == "0":
                 anchors[page_index] = candidate.id
-            row_candidates.append(candidate)
             session.add(
                 MeasurementProposal(
                     package_revision_id=revision.id,
                     page_number=page_index + 1,
                     proposal_id=uuid4(),
                     field_key=field,
-                    position=0,
+                    position=0 if slot == "overall" else int(slot),
                     candidate_id=candidate.id,
                     placement_verified=True,
                     model_id="synthetic-reader-pair",
@@ -169,8 +192,10 @@ def _package_rows(
                 "wall-reader",
                 f"row-rank:{rank}",
                 "walls-sealed:back_left_right",
-                "wall-source:readers",
+                f"wall-source:{wall_source}",
+                *(["row-hold:synthetic held row"] if page_index == held_page else []),
             ],
+            review_reason="synthetic held row" if page_index == held_page else None,
         )
         session.add(wall)
     session.flush()
@@ -266,3 +291,386 @@ def test_typed_missing_width_is_saved_only_on_the_selected_row(session: Session)
     assert by_page[2].decision_id is None
     assert by_page[2].wall_config is None
     assert session.query(SlotRowReviewDecision).count() == 1
+
+
+def test_reviewer_can_correct_a_typed_width_with_a_new_immutable_snapshot(
+    session: Session,
+) -> None:
+    project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
+    principal = Principal(
+        id="anant (synthetic test)",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({project_id}),
+    )
+    first = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(
+            wall_config="back_left_right",
+            measurements={"piece_widths:0": "21 in"},
+        ),
+    )
+    prior_id = first.decision_id
+
+    corrected = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(measurements={"piece_widths:0": "22 in"}),
+    )
+
+    piece = next(value for value in corrected.values if value.key == "piece_widths:0")
+    assert piece.value == "22 in"
+    assert corrected.decision_id != prior_id
+    decisions = (
+        session.query(SlotRowReviewDecision).order_by(SlotRowReviewDecision.created_at).all()
+    )
+    assert len(decisions) == 2
+    assert decisions[-1].supersedes_id == prior_id
+
+
+def _run_current_checks(session: Session, package_id: UUID, root: Path) -> list[Finding]:
+    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
+    DatabaseStages(
+        store=LocalStore(root=root / "store", ticket_secret=b"synthetic-test")
+    ).run_checks(session, revision.id)
+    return list(
+        session.execute(
+            select(Finding)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .where(
+                Finding.package_revision_id == revision.id,
+                Finding.scope_row_candidate_id.is_not(None),
+                CheckRun.superseded_at.is_(None),
+            )
+        ).scalars()
+    )
+
+
+def _save_all_row_widths(
+    session: Session,
+    project_id: UUID,
+    package_id: UUID,
+    row_id: UUID,
+    *,
+    wall_config: str | None = None,
+) -> None:
+    principal = Principal(
+        id="anant (synthetic test)",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({project_id}),
+    )
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        row_id,
+        SlotRowReviewIn(
+            wall_config=wall_config,
+            measurements={"countertop_width": "40 in", "piece_widths:0": "20 in"},
+        ),
+    )
+
+
+def test_end_to_end_drawing_clue_row_fails_with_its_own_scope(
+    session: Session, tmp_path: Path
+) -> None:
+    project_id, package_id, anchors = _package_rows(
+        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+    )
+    _save_all_row_widths(session, project_id, package_id, anchors[0])
+    rows = list_slot_rows(
+        Principal(
+            id="anant (synthetic test)",
+            roles=frozenset({Role.REVIEWER}),
+            projects=frozenset({project_id}),
+        ),
+        session,
+        project_id,
+        package_id,
+    ).rows
+    assert rows[0].wall_source == "vendor-drawing-clues"
+
+    findings = _run_current_checks(session, package_id, tmp_path)
+    first_row = next(
+        finding for finding in findings if finding.scope_row_candidate_id == anchors[0]
+    )
+    assert first_row.outcome == "FAIL", first_row.reason
+    assert first_row.scope_label == "Countertop row on page 1"
+    assert first_row.scope_item_id is None
+
+
+def test_end_to_end_reader_wall_is_review_until_confirmed_for_that_row(
+    session: Session, tmp_path: Path
+) -> None:
+    project_id, package_id, anchors = _package_rows(
+        session, unsealed_all=True, wall_source="readers"
+    )
+    _save_all_row_widths(session, project_id, package_id, anchors[0])
+    first = _run_current_checks(session, package_id, tmp_path)
+    row_finding = next(finding for finding in first if finding.scope_row_candidate_id == anchors[0])
+    assert row_finding.outcome == "REVIEW_REQUIRED"
+    assert (
+        not row_finding.reason
+        or "choose" in row_finding.reason.lower()
+        or "confirm" in row_finding.reason.lower()
+    )
+
+    principal = Principal(
+        id="anant (synthetic test)",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({project_id}),
+    )
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_left_right"),
+    )
+    second = _run_current_checks(session, package_id, tmp_path)
+    row_finding = next(
+        finding for finding in second if finding.scope_row_candidate_id == anchors[0]
+    )
+    assert row_finding.outcome == "FAIL"
+
+
+def test_end_to_end_held_row_never_runs_arithmetic(session: Session, tmp_path: Path) -> None:
+    _project_id, package_id, anchors = _package_rows(
+        session, unsealed_all=True, wall_source="vendor-drawing-clues", held_page=0
+    )
+    findings = _run_current_checks(session, package_id, tmp_path)
+    held = next(finding for finding in findings if finding.scope_row_candidate_id == anchors[0])
+    assert held.outcome == "REVIEW_REQUIRED"
+    assert "held" in (held.reason or "").lower()
+
+
+def _canonical_with_reader_support(
+    session: Session,
+    candidate: ObservationCandidate,
+    *,
+    semantic: SemanticType,
+    value_numerator: int | None = None,
+    parent_supported: bool = False,
+) -> CanonicalObservation:
+    assert candidate.value_numerator is not None
+    numerator = candidate.value_numerator if value_numerator is None else value_numerator
+    supporters: list[ObservationCandidate] = []
+    for reader_id in ("amazon.qwen3-vl", "moonshotai.kimi-k3"):
+        support = ObservationCandidate(
+            document_version_id=candidate.document_version_id,
+            page_id=candidate.page_id,
+            extraction_run_id=candidate.extraction_run_id,
+            raw_text=f'{candidate.value_numerator}"',
+            value_numerator=candidate.value_numerator,
+            value_denominator=1,
+            unit="in",
+            polygon=candidate.polygon,
+            coordinate_space="image",
+            ambiguity_flags=[
+                "slot-reader-support",
+                f"supports:{candidate.id}",
+                f"reader-id:{reader_id}",
+            ],
+        )
+        session.add(support)
+        supporters.append(support)
+    session.flush()
+    observation = CanonicalObservation(
+        document_version_id=candidate.document_version_id,
+        page_id=candidate.page_id,
+        document_role="SHOP",
+        polygon=[["0", "0"], ["1", "0"], ["1", "1"], ["0", "1"]],
+        coordinate_space="stored",
+        semantic_type=semantic.value,
+        value_numerator=numerator,
+        value_denominator=1,
+        unit="in",
+        status=(
+            EvidenceStatus.HUMAN_CONFIRMED.value
+            if parent_supported
+            else EvidenceStatus.CORROBORATED.value
+        ),
+        authority=Authority.AUTHORITATIVE.value,
+        evidence_crop_uri=None,
+    )
+    session.add(observation)
+    session.flush()
+    supported = [candidate] if parent_supported else supporters
+    session.add_all(
+        EvidenceSupportingCandidate(
+            canonical_observation_id=observation.id,
+            candidate_id=support.id,
+            role="primary" if index == 0 else "corroborating",
+        )
+        for index, support in enumerate(supported)
+    )
+    session.flush()
+    return observation
+
+
+def test_child_supported_canonical_is_reused_without_duplicate(session: Session) -> None:
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    existing = _canonical_with_reader_support(
+        session, candidate, semantic=SemanticType.COUNTERTOP_PIECE_WIDTH
+    )
+    supporters = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == candidate.extraction_run_id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-support"]),
+        )
+    ).all()
+    assert len(supporters) == 2
+    assert all(plain_dimension(item.raw_text, allow_explicit_mm=True) for item in supporters)
+    assert all(item.polygon == candidate.polygon for item in supporters)
+    assert all(
+        item.value_numerator == candidate.value_numerator
+        and item.value_denominator == candidate.value_denominator
+        and item.unit == candidate.unit
+        and f"supports:{candidate.id}" in (item.ambiguity_flags or [])
+        for item in supporters
+    )
+    assert {
+        independence_key("bedrock-slot-reader", item.ambiguity_flags[-1].removeprefix("reader-id:"))
+        for item in supporters
+    } == {
+        "vendor:amazon",
+        "vendor:moonshot",
+    }
+    assert existing.document_version_id == candidate.document_version_id
+    assert existing.page_id == candidate.page_id
+    assert existing.value_numerator == candidate.value_numerator
+    assert existing.value_denominator == candidate.value_denominator
+    assert existing.unit == "in"
+    assert existing.status == EvidenceStatus.CORROBORATED.value
+
+    result = _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+    assert result is not None and result.id == existing.id
+    assert session.query(CanonicalObservation).count() == 1
+
+
+def test_mismatched_existing_canonical_refuses_row_without_creating_duplicate(
+    session: Session,
+) -> None:
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    _canonical_with_reader_support(
+        session,
+        candidate,
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+        value_numerator=999,
+    )
+
+    result = _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+    assert result is None
+    assert session.query(CanonicalObservation).count() == 1
+
+
+def test_mismatched_canonical_becomes_row_review_without_crashing_stage(
+    session: Session, tmp_path: Path
+) -> None:
+    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    anchor = session.get(ObservationCandidate, anchors[0])
+    assert anchor is not None
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == anchor.extraction_run_id,
+            ObservationCandidate.page_id == anchor.page_id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"]),
+        )
+    ).all()
+    for candidate in candidates:
+        slot = next(
+            flag.removeprefix("slot:")
+            for flag in (candidate.ambiguity_flags or [])
+            if flag.startswith("slot:")
+        )
+        _canonical_with_reader_support(
+            session,
+            candidate,
+            semantic=(
+                SemanticType.COUNTERTOP_OVERALL_WIDTH
+                if slot == "overall"
+                else SemanticType.COUNTERTOP_PIECE_WIDTH
+            ),
+            value_numerator=999 if candidate.id == anchor.id else None,
+            parent_supported=True,
+        )
+    canonical_count = session.query(CanonicalObservation).count()
+
+    findings = _run_current_checks(session, package_id, tmp_path)
+
+    row_finding = next(item for item in findings if item.scope_row_candidate_id == anchor.id)
+    assert row_finding.outcome == "REVIEW_REQUIRED"
+    assert "cannot be qualified" in (row_finding.reason or "").lower()
+    assert session.query(CanonicalObservation).count() == canonical_count
+
+
+def test_all_piece_width_inputs_cite_their_own_observation_and_parent_confirmation_is_safe(
+    session: Session, tmp_path: Path
+) -> None:
+    _project_id, package_id, anchors = _package_rows(
+        session, piece_count=2, wall_source="vendor-drawing-clues"
+    )
+    anchor = session.get(ObservationCandidate, anchors[0])
+    assert anchor is not None
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == anchor.extraction_run_id,
+            ObservationCandidate.page_id == anchor.page_id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"]),
+        )
+    ).all()
+    expected: dict[str, UUID] = {}
+    for candidate in candidates:
+        flags = set(candidate.ambiguity_flags or ())
+        slot = next(flag.removeprefix("slot:") for flag in flags if flag.startswith("slot:"))
+        semantic = (
+            SemanticType.COUNTERTOP_OVERALL_WIDTH
+            if slot == "overall"
+            else SemanticType.COUNTERTOP_PIECE_WIDTH
+        )
+        observation = _canonical_with_reader_support(
+            session, candidate, semantic=semantic, parent_supported=True
+        )
+        if slot != "overall":
+            expected[f"piece_widths[{slot}]"] = observation.id
+
+    findings = _run_current_checks(session, package_id, tmp_path)
+    finding = next(item for item in findings if item.scope_row_candidate_id == anchors[0])
+    assert finding.outcome == "FAIL"
+    inputs = session.scalars(
+        select(VerdictInput).where(VerdictInput.check_run_id == finding.check_run_id)
+    ).all()
+    actual = {
+        item.operand_name: item.canonical_observation_id
+        for item in inputs
+        if item.operand_name.startswith("piece_widths[")
+    }
+    assert actual == expected

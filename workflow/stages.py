@@ -294,13 +294,14 @@ from workflow.layout_proposals import (
     discriminator_note,
     record_layout_proposal,
     slot_reader_has_rows,
-    slot_reader_wall_for_page,
 )
 from workflow.measurements import run_parameters_for
 from workflow.part_operands import (
     CountertopScope,
     countertop_scopes,
     current_wall_layout,
+    manual_run_pages,
+    manual_wall_layout_for_check,
     wall_layout_name,
 )
 from workflow.part_pictures import (
@@ -5529,8 +5530,7 @@ class DatabaseStages:
                     "items": role_summary.total_items,
                     "candidates": 0,
                     "reason": (
-                        "matching needs confirmed architectural and shop views; missing: "
-                        f"{missing}"
+                        f"matching needs confirmed architectural and shop views; missing: {missing}"
                     ),
                 }
             views = revision_views(session, package_revision_id)
@@ -5555,7 +5555,7 @@ class DatabaseStages:
                 "items": len({item.item_id for item, _ in items}),
                 "candidates": 0,
                 "reason": (
-                    "matching needs confirmed architectural and shop views; missing: " f"{missing}"
+                    f"matching needs confirmed architectural and shop views; missing: {missing}"
                 ),
             }
 
@@ -6466,7 +6466,9 @@ class DatabaseStages:
         # A slot row can use only its own complete values and its own drawing-clue wall layout, or a
         # wall/value decision explicitly saved against that row.
         manual_subjects = countertop_subjects or ()
-        manually_scoped_pages = {subject.page_index for subject in manual_subjects}
+        manually_scoped_pages = {
+            subject.page_index for subject in manual_subjects
+        } | manual_run_pages(session, package_revision_id)
         if (
             countertop_subjects is not None or slot_row_subjects
         ) and ProductType.COUNTERTOP in in_scope:
@@ -6569,40 +6571,20 @@ class DatabaseStages:
                         scope_item_id=subject.item_id,
                     )
                     own_layout = current_wall_layout(session, subject.item_id)
-                    layout = own_layout.value if own_layout is not None else None
                     provenance = own_layout.provenance if own_layout is not None else None
-                    row_layout = slot_reader_wall_for_page(
-                        session, package_revision_id, subject.page_index
+                    revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
+                    layout = manual_wall_layout_for_check(
+                        confirmed_layout=None if own_layout is None else own_layout.value,
+                        revision_layout=revision_layout,
+                        slot_reader_rows_exist=has_slot_reader_rows,
+                        single_countertop=len(manual_subjects) == 1,
                     )
-                    same_page_count = sum(
-                        other.page_index == subject.page_index for other in manual_subjects
-                    )
-                    row_answer_owns_layout = row_layout is not None and (
-                        row_layout.held or not row_layout.selected or row_layout.layout is not None
-                    )
-                    if (
-                        layout is None
-                        and row_layout is not None
-                        and row_layout.selected
-                        and not row_layout.held
-                        and row_layout.layout is not None
-                        and row_layout.source in {"vendor-drawing-clues", "drawing-and-readers"}
-                        and same_page_count == 1
-                    ):
-                        layout = row_layout.layout
-                        provenance = (
-                            f"Wall layout: {wall_layout_name(layout)}, established by vendor "
-                            "drawing clues for this countertop row."
-                        )
-                    if layout is None and row_layout is None and len(manual_subjects) == 1:
-                        revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
-                        if revision_layout is not None:
-                            layout = revision_layout
-                            provenance = discriminator_note(
-                                SemanticType.WALL_CONFIG.value,
-                                layout,
-                                self._discriminator_sources.get(SemanticType.WALL_CONFIG.value),
-                            ) or (f"Wall layout: {wall_layout_name(layout)}, revision-wide choice.")
+                    if own_layout is None and layout is not None:
+                        provenance = discriminator_note(
+                            SemanticType.WALL_CONFIG.value,
+                            layout,
+                            self._discriminator_sources.get(SemanticType.WALL_CONFIG.value),
+                        ) or (f"Wall layout: {wall_layout_name(layout)}, revision-wide choice.")
                     discriminators = dict(self._discriminators)
                     # A revision-wide value must never leak into either of two live countertops.
                     discriminators.pop(SemanticType.WALL_CONFIG.value, None)
@@ -6642,28 +6624,12 @@ class DatabaseStages:
                             snapshot_id=width_snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )
-                    elif row_layout is not None and row_layout.row_held:
-                        finding = Finding(
-                            rule_id="CT-WIDTH-001",
-                            outcome=Outcome.REVIEW_REQUIRED,
-                            severity=width_snapshot.rule.severity,
-                            reason=(
-                                row_layout.reason
-                                or "This countertop row is held for reviewer confirmation."
-                            ),
-                            snapshot_id=width_snapshot.snapshot_id,
-                            engine_version=ENGINE_VERSION,
-                        )
                     elif layout is None:
                         finding = Finding(
                             rule_id="CT-WIDTH-001",
                             outcome=Outcome.REVIEW_REQUIRED,
                             severity=width_snapshot.rule.severity,
-                            reason=(
-                                row_layout.reason
-                                if row_answer_owns_layout and row_layout and row_layout.reason
-                                else "Choose the wall layout for this countertop before checking its width."
-                            ),
+                            reason="Choose the wall layout for this countertop before checking its width.",
                             snapshot_id=width_snapshot.snapshot_id,
                             engine_version=ENGINE_VERSION,
                         )

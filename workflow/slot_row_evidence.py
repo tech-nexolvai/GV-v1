@@ -208,12 +208,12 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
 
     operands: dict[str, VerdictOperand] = {}
     observation_ids: list[UUID] = []
-    if None in candidates_by_position:
-        candidate = candidates_by_position[None]
+    overall_candidate = candidates_by_position.get(None)
+    if overall_candidate is not None and candidate_is_sealed(overall_candidate):
         observation = _canonical_for_candidate(
             session,
-            candidate,
-            proposal_fields[candidate.id],
+            overall_candidate,
+            proposal_fields[overall_candidate.id],
             semantic=SemanticType.COUNTERTOP_OVERALL_WIDTH,
         )
         if observation is None:
@@ -232,15 +232,36 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         operands["countertop_width"] = operand
         observation_ids.append(observation.id)
     else:
-        assert decision is not None
+        if decision is None or None not in values:
+            return SlotRowCheck(
+                False,
+                "The overall width is not sealed or saved by a reviewer for this row.",
+                layout,
+                None,
+                wall_note,
+                {},
+                (),
+            )
         operands["countertop_width"] = _human_operand("countertop_width", values[None], decision.id)
 
     piece_operands: list[Measurement] = []
-    piece_observation_id: UUID | None = None
+    piece_sources: list[tuple[Measurement, UUID | None, UUID | None, EvidenceStatus]] = []
     for position in range(row.piece_count):
         selected_candidate = candidates_by_position.get(position)
         if selected_candidate is None or not candidate_is_sealed(selected_candidate):
-            piece_operands.append(values[position])
+            if decision is None or position not in values:
+                return SlotRowCheck(
+                    False,
+                    f"Piece {position + 1} is not sealed or saved by a reviewer for this row.",
+                    layout,
+                    None,
+                    wall_note,
+                    {},
+                    (),
+                )
+            measurement = values[position]
+            piece_operands.append(measurement)
+            piece_sources.append((measurement, None, decision.id, EvidenceStatus.HUMAN_CONFIRMED))
             continue
         field = proposal_fields[selected_candidate.id]
         observation = _canonical_for_candidate(
@@ -271,43 +292,34 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
                 (),
             )
         piece_operands.append(operand.value)
-        piece_observation_id = piece_observation_id or observation.id
+        piece_sources.append((operand.value, observation.id, None, EvidenceStatus.CORROBORATED))
         observation_ids.append(observation.id)
 
     if not piece_operands or any(not isinstance(value, Measurement) for value in piece_operands):
         return SlotRowCheck(
             False, "Every piece width is required for this row.", layout, None, wall_note, {}, ()
         )
-    human_piece = any(candidates_by_position.get(i) is None for i in range(row.piece_count))
+    human_piece = any(source[3] is EvidenceStatus.HUMAN_CONFIRMED for source in piece_sources)
     decision_id = None if decision is None or not human_piece else str(decision.id)
     operands["piece_widths"] = VerdictOperand(
         name="piece_widths",
         value=tuple(piece_operands),
-        status=(
-            EvidenceStatus.HUMAN_CONFIRMED
-            if decision_id
-            and any(
-                candidate is None
-                for candidate in (candidates_by_position.get(i) for i in range(row.piece_count))
-            )
-            else EvidenceStatus.CORROBORATED
-        ),
+        status=EvidenceStatus.HUMAN_CONFIRMED if human_piece else EvidenceStatus.CORROBORATED,
         source=DocumentRole.SHOP.value,
-        evidence_observation_id=(
-            None
-            if decision_id
-            else (None if piece_observation_id is None else str(piece_observation_id))
-        ),
-        row_review_decision_id=(
-            decision_id
-            if decision_id
-            and any(
-                candidate is None
-                for candidate in (candidates_by_position.get(i) for i in range(row.piece_count))
-            )
-            else None
-        ),
+        # A tuple has multiple independent origins; the indexed audit operands below preserve each.
+        evidence_observation_id=None,
+        row_review_decision_id=decision_id,
     )
+    for position, (measurement, observation_id, review_id, status) in enumerate(piece_sources):
+        name = f"piece_widths[{position}]"
+        operands[name] = VerdictOperand(
+            name=name,
+            value=measurement,
+            status=status,
+            source=DocumentRole.SHOP.value,
+            evidence_observation_id=None if observation_id is None else str(observation_id),
+            row_review_decision_id=None if review_id is None else str(review_id),
+        )
     return SlotRowCheck(True, None, layout, None, wall_note, operands, tuple(observation_ids))
 
 
@@ -372,19 +384,6 @@ def _canonical_for_candidate(
         return None
     assert candidate.value_numerator is not None
     assert candidate.value_denominator is not None and candidate.value_denominator > 0
-    existing = session.execute(
-        select(CanonicalObservation)
-        .join(
-            EvidenceSupportingCandidate,
-            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
-        )
-        .where(
-            EvidenceSupportingCandidate.candidate_id == candidate.id,
-            CanonicalObservation.semantic_type == semantic.value,
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing
     supports = session.scalars(
         select(ObservationCandidate).where(
             ObservationCandidate.extraction_run_id == candidate.extraction_run_id
@@ -435,6 +434,47 @@ def _canonical_for_candidate(
     ):
         return None
 
+    # The canonical is supported by the two per-reader child candidates, not necessarily by the
+    # row's aggregate candidate. Check both shapes: older human confirmation can support the parent
+    # directly, while the automatic lane records each reader child. A stale or mismatched canonical
+    # is a row-level refusal, never an exception that aborts the entire check stage.
+    support_ids = [support.id for _reader_id, support in raw_by_reader]
+    existing_rows = (
+        session.execute(
+            select(CanonicalObservation)
+            .join(
+                EvidenceSupportingCandidate,
+                EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+            )
+            .where(
+                EvidenceSupportingCandidate.candidate_id.in_({candidate.id, *support_ids}),
+                CanonicalObservation.semantic_type == semantic.value,
+            )
+            .distinct()
+            .order_by(CanonicalObservation.created_at, CanonicalObservation.id)
+        )
+        .scalars()
+        .all()
+    )
+    if existing_rows:
+        if len(existing_rows) != 1:
+            return None
+        existing = existing_rows[0]
+        if (
+            existing.document_version_id != candidate.document_version_id
+            or existing.page_id != candidate.page_id
+            or existing.value_numerator != candidate.value_numerator
+            or existing.value_denominator != candidate.value_denominator
+            or existing.unit != Unit.INCH.value
+            or existing.status
+            not in {
+                EvidenceStatus.CORROBORATED.value,
+                EvidenceStatus.HUMAN_CONFIRMED.value,
+            }
+        ):
+            return None
+        return existing
+
     page = session.get(Page, candidate.page_id)
     extraction = session.get(ExtractionRun, candidate.extraction_run_id)
     if page is None or extraction is None:
@@ -465,7 +505,6 @@ def _canonical_for_candidate(
         Unit.INCH,
         candidate.raw_text,
     )
-    support_ids = [support.id for _reader_id, support in raw_by_reader]
     stored_points = tuple(
         transform.to_stored(ImagePoint(int(point[0]), int(point[1]))) for point in candidate.polygon
     )

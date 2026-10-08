@@ -244,6 +244,14 @@ def record_finding(
                     else session.get(ObservationCandidate, UUID(parent_id))
                 )
                 if (
+                    supporter.page_id == candidate.page_id
+                    and supporter.extraction_run_id == candidate.extraction_run_id
+                    and row_rank in supporter_flags
+                    and "slot-reader" in supporter_flags
+                ):
+                    same_row = True
+                    break
+                if (
                     parent is not None
                     and parent.page_id == candidate.page_id
                     and parent.extraction_run_id == candidate.extraction_run_id

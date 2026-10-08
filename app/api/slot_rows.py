@@ -245,17 +245,21 @@ def review_slot_row(
         )
     current = latest_row_decision(session, row_id)
     listed = _row_out(session, row, layouts)
-    existing = {value.key for value in listed.values if not value.needs_value}
-    if set(body.measurements) & existing:
+    locked = {
+        value.key for value in listed.values if not value.needs_value and value.source != "reviewer"
+    }
+    if set(body.measurements) & locked:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="A saved width can only be entered for a value this row still needs.",
+            detail="A reader-sealed width cannot be replaced here; correct only a reviewer-entered width.",
         )
-    allowed_missing = {value.key for value in listed.values if value.needs_value}
-    if set(body.measurements) - allowed_missing:
+    allowed_editable = {
+        value.key for value in listed.values if value.needs_value or value.source == "reviewer"
+    }
+    if set(body.measurements) - allowed_editable:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="A width can only be entered for a missing value in this row.",
+            detail="A width can only be entered for a missing value or corrected reviewer value in this row.",
         )
 
     normalized: dict[str, object] = {}
