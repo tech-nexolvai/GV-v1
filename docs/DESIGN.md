@@ -727,3 +727,35 @@ D2, D3, D4 or D7, the interface is sketched but must not be implemented until th
 | D3 severity | `Severity`, the critical false-PASS metric |
 | D4 product spec | `OperandSource.PRODUCT_SPEC` |
 | D7 no applicable rule | `Outcome.NO_APPLICABLE_RULE`, applicability resolver |
+
+## 7. CI test orchestration (issue #1009)
+
+CI orchestration is owned by **`.github/workflows/ci.yml`**. It is not application code and has no
+runtime import permissions or public application API. The workflow keeps formatting, lint, type,
+frontend and safety checks as required checks, while the complete pytest suite runs in a four-job
+matrix. Each matrix job owns its own PostgreSQL service and database; workers never share a test
+database or schema.
+
+The test-only dependency **`pytest-split`** is declared in the `dev` extra in `pyproject.toml`. Its
+public interface is the pytest CLI, not a GV wrapper:
+
+```text
+pytest -q --splits 4 --group <1..4> \\
+  --splitting-algorithm least_duration --durations-path .test_durations
+```
+
+`.test_durations` is a checked-in, non-sensitive map from pytest node IDs to observed test durations.
+It is used only to balance scheduling; it does not select which tests exist. The first timing seed is
+produced by a complete, unsplit CI run and reviewed before it is added. Until that seed exists, the
+plugin's equal-duration fallback still partitions the full collected suite. CI must retain a
+collect-only coverage check that proves the four selected node-ID sets are pairwise disjoint and
+their union equals the unsplit collection. An empty group or a mismatch fails CI.
+
+There is no cross-run cache of PostgreSQL data or schemas. The existing pytest database fixture
+migrates a schema once per pytest session and resets its data between tests; each matrix job has its
+own database, so extension placement and test state cannot race across jobs. Local diagnostics may
+still run the suite without `--splits` against a dedicated test database.
+
+The split count is initially four. It may be raised only after the complete matrix passes and its
+measured wall time, runner availability and database load show a safe benefit. No shard may be
+made optional, excluded, or allowed to succeed on pytest's “no tests collected” exit code.
