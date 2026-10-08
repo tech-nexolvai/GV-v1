@@ -155,7 +155,8 @@ describe('drawing viewer: what is shown', () => {
 // ── The viewer on screen ──────────────────────────────────────
 
 const calls: { method: string; url: string }[] = [];
-const png = () => new Response(new Blob(['png'], { type: 'image/png' }), { status: 200, headers: { 'Content-Type': 'image/png' } });
+// Raw bytes, not jsdom's Blob: how Node's Response takes a jsdom Blob differs between Node versions.
+const png = () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'Content-Type': 'image/png' } });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 let notReady = new Set<number>();
 
@@ -194,12 +195,12 @@ function open(target: ViewerTarget, onClose = vi.fn(), rows: CountertopResult[] 
 
 /** jsdom does not load images: report a natural size as the browser would. */
 async function loadPicture(w = 2000, h = 1000) {
-  // Looked up directly: a role query over the whole sheet is slow in jsdom.
+  // Looked up directly: a role query over the whole sheet is slow in jsdom. CI runners are slower.
   const img = await waitFor(() => {
     const found = document.querySelector<HTMLImageElement>('[data-slot="drawing-page"] img');
-    if (!found) throw new Error('no page picture yet');
+    if (!found) throw new Error(`no page picture yet; the canvas says: ${document.querySelector('[data-slot="drawing-canvas"]')?.textContent || '(nothing)'}`);
     return found;
-  });
+  }, { timeout: 5000 });
   expect(img.alt).toMatch(/^Vendor drawing, page \d+$/);
   Object.defineProperty(img, 'naturalWidth', { value: w, configurable: true });
   Object.defineProperty(img, 'naturalHeight', { value: h, configurable: true });
@@ -210,7 +211,8 @@ async function loadPicture(w = 2000, h = 1000) {
 const pageBox = () => document.querySelector<HTMLElement>('[data-slot="drawing-page"]')!;
 const zoomLevel = () => document.querySelector('[data-slot="zoom-level"]')!.textContent;
 
-describe('drawing viewer: on screen', () => {
+// CI runners are several times slower than a laptop; the waits above allow for it.
+describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
   it('draws the outline at its stored polygon over the page picture, and zooming keeps it there', async () => {
     open(targetFromRow(A));
     await loadPicture();
@@ -257,7 +259,7 @@ describe('drawing viewer: on screen', () => {
     expect(faint.getAttribute('points')).toBe('0.1,0.1 0.3,0.1 0.3,0.2 0.1,0.2');
     fireEvent.click(faint);
     expect(onTargetChange).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'b', tone: 'pass' }));
-    expect(await screen.findByRole('heading', { name: 'Synthetic countertop b' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Synthetic countertop b' }, { timeout: 5000 })).toBeTruthy();
     fireEvent.click(document.querySelector('[data-other-button="a"]')!);
     expect(onTargetChange).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'a' }));
   });
@@ -267,7 +269,7 @@ describe('drawing viewer: on screen', () => {
     await loadPicture();
     const strip = screen.getByRole('navigation', { name: 'Pages' });
     fireEvent.click(within(strip).getByRole('button', { name: /^Page 7:/ }));
-    expect(await screen.findByText('Picture of page 7 not ready')).toBeTruthy();
+    expect(await screen.findByText('Picture of page 7 not ready', undefined, { timeout: 5000 })).toBeTruthy();
     notReady.delete(7);
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await loadPicture();
@@ -279,7 +281,7 @@ describe('drawing viewer: on screen', () => {
   it('shows the crops side panel with each exact value printed over its crop; picking one marks its spot', async () => {
     open(targetFromRow(A));
     await loadPicture();
-    await waitFor(() => expect(document.querySelectorAll('[data-slot="crop-value"]')).toHaveLength(3));
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="crop-value"]')).toHaveLength(3), { timeout: 5000 });
     expect([...document.querySelectorAll('[data-slot="crop-value"]')].map((n) => n.textContent)).toEqual(['42"', '20 1/2"', '20"']);
     fireEvent.click(document.querySelector('[data-reading-crop="obs-p0"]')!);
     expect(document.querySelector('[data-reading="obs-p0"]')!.getAttribute('stroke-width')).toBe('2');
@@ -288,7 +290,7 @@ describe('drawing viewer: on screen', () => {
 
   it('a held row shows one line with a "?" instead of crops, and its hold reason in the header', async () => {
     open(targetFromRow(C));
-    expect(await screen.findByText('The check did not run')).toBeTruthy();
+    expect(await screen.findByText('The check did not run', undefined, { timeout: 5000 })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Why: The check did not run' })).toBeTruthy();
     expect(screen.getByText('Held: Synthetic hold reason.')).toBeTruthy();
     expect(document.querySelectorAll('[data-reading-crop]')).toHaveLength(0);
@@ -297,7 +299,7 @@ describe('drawing viewer: on screen', () => {
   it('a result with no stored location says so and fetches no picture', async () => {
     const target = targetFromFinding({ id: 'f', name: 'rule', scope_label: 'Synthetic check', outcome: 'NOT_FOUND', row_location: null, shop_evidence: null, arch_evidence: null });
     open(target, vi.fn(), []);
-    expect(await screen.findByText('No stored location')).toBeTruthy();
+    expect(await screen.findByText('No stored location', undefined, { timeout: 5000 })).toBeTruthy();
     expect(calls.some((c) => c.url.includes('/picture'))).toBe(false);
   });
 });
