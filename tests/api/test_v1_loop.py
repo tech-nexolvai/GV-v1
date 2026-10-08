@@ -480,7 +480,7 @@ def _address_every_abstention(
     review_session_id = opened.json()["id"]
 
     for finding in findings:
-        if finding["outcome"] != "REVIEW_REQUIRED":
+        if finding["outcome"] not in {"FAIL", "REVIEW_REQUIRED", "NOT_FOUND"}:
             continue
         recorded = client.post(
             f"/api/v1/projects/{PROJECT}/review-sessions/{review_session_id}/actions",

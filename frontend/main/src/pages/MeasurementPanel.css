@@ -1337,6 +1337,7 @@ select.value-input {
 }
 .field-review__pictures img {
   max-width: 100%;
+}
 
 /* The drawing on the left, the form on the right (admin, 2026-10-06). */
 .page-drawing {
@@ -1378,7 +1379,4 @@ select.value-input {
     overflow: auto;
   }
 }
-} /* Closes `.field-review__pictures img {` (line ~1338), which was never closed: browsers closed it
-     at the end of the file, so every rule after it is nested inside it and does not match. Kept
-     exactly as browsers read it today (#1029 changes no look); fixing it is a separate change. */
 } /* @layer legacy */

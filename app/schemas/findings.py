@@ -28,6 +28,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.review import ReviewActionKind
+from app.review.row_location import RowLocation
 from verdict.outcomes import Outcome, Severity
 
 #: V1's uniform action flag comes first; later severity tiers follow when the client adopts them.
@@ -157,6 +158,10 @@ class FindingOut(BaseModel):
     check_run_id: UUID
     package_revision_id: UUID
     scope_item_id: UUID | None = None
+    scope_row_candidate_id: UUID | None = None
+    row_location: RowLocation | None = None
+    reason: str | None = None
+    reviewer_reason: str | None = None
     scope_label: str | None = None
     notes: list[str] | None = None
     """Persisted check provenance, including a person's scoped wall-layout choice."""

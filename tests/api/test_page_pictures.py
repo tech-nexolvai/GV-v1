@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -58,3 +58,13 @@ def test_any_page_of_a_package_can_be_shown_as_a_picture(
     assert shown.content.startswith(b"\x89PNG")
     assert client.post(f"{base}/pictures").json() == {"queued": False}
     assert client.get(f"{base}/9/picture").status_code == 404
+    # An exact finding location must never fall back to a different file's same-numbered page.
+    assert client.get(f"{base}/1/picture?document_version_id={uuid4()}").status_code == 404
+    from sqlalchemy import select
+
+    from app.models import Page
+
+    page = session.scalars(select(Page)).one()
+    exact = client.get(f"{base}/1/picture?document_version_id={page.document_version_id}")
+    assert exact.status_code == 200
+    assert exact.content == shown.content

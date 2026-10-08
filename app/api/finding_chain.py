@@ -40,8 +40,10 @@ from app.models import (
     VerdictInput,
 )
 from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind, EvidenceSupportingCandidate
+from app.review.row_location import RowLocation, row_location
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
+from vocabulary.reviewer_reasons import finding_reviewer_reason
 
 router = APIRouter(tags=["findings"])
 NOT_FOUND_DETAIL = "Not found"
@@ -224,6 +226,9 @@ class FindingChain(BaseModel):
 
     finding_id: UUID
     scope_item_id: UUID | None = None
+    scope_row_candidate_id: UUID | None = None
+    row_location: RowLocation | None = None
+    reviewer_reason: str | None = None
     scope_label: str | None = None
     outcome: str
     severity: str
@@ -402,7 +407,14 @@ def build_chain(
     the duplication this function was extracted to avoid.
     """
     if operand_rows is not None:
-        return _assemble(finding, run, snapshot, definition, operand_rows)
+        return _assemble(
+            finding,
+            run,
+            snapshot,
+            definition,
+            operand_rows,
+            row_location(session, finding.scope_row_candidate_id),
+        )
 
     fetched = session.execute(
         select(VerdictInput, CanonicalObservation, Page)
@@ -421,6 +433,7 @@ def build_chain(
         snapshot,
         definition,
         [(row[0], row[1], row[2]) for row in fetched],
+        row_location(session, finding.scope_row_candidate_id),
     )
 
 
@@ -430,15 +443,22 @@ def _assemble(
     snapshot: RuleSnapshot,
     definition: RuleDefinition,
     operand_rows: Sequence[tuple[VerdictInput, CanonicalObservation | None, Page | None]],
+    location: RowLocation | None,
 ) -> FindingChain:
     """Render the chain from rows, whoever fetched them. One place, so the two paths cannot diverge."""
     operands = tuple(
         _operand_record(verdict_input, observation, page)
         for verdict_input, observation, page in operand_rows
     )
+    reason = finding.reason or finding.trace.get("reason")
     return FindingChain(
         finding_id=finding.id,
         scope_item_id=finding.scope_item_id,
+        scope_row_candidate_id=finding.scope_row_candidate_id,
+        row_location=location,
+        reviewer_reason=finding_reviewer_reason(
+            finding.outcome, reason if isinstance(reason, str) else None
+        ),
         scope_label=finding.scope_label or "Package revision",
         outcome=finding.outcome,
         severity=finding.severity,

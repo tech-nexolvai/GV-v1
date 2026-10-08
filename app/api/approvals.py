@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.review import _session_is_in_project
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
 from app.models.signed_exports import (
@@ -38,6 +39,7 @@ from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
     ApprovalNotAuthorised,
     ApprovalRefused,
+    approval_readiness,
     approve_package,
 )
 from app.review.publication import UnapprovedContent, sign_off
@@ -57,6 +59,35 @@ class ApprovalOut(BaseModel):
     approved_by: str
     findings_approved: int
     state: str
+
+
+class ApprovalReadinessOut(BaseModel):
+    revision_id: UUID
+    can_approve: bool
+    blocking_findings: int
+    blocking_finding_ids: tuple[UUID, ...]
+    reason: str | None
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/approval-readiness",
+    response_model=ApprovalReadinessOut,
+)
+def get_approval_readiness(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> ApprovalReadinessOut:
+    revision = _revision(session, project_id, package_id)
+    result = approval_readiness(session, revision.id)
+    return ApprovalReadinessOut(
+        revision_id=result.revision_id,
+        can_approve=result.can_approve,
+        blocking_findings=result.blocking_findings,
+        blocking_finding_ids=result.blocking_finding_ids,
+        reason=result.reason,
+    )
 
 
 def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
@@ -97,7 +128,8 @@ def approve(
     nobody acted on is a check that did not happen, and approving around it would put a package's name
     to a question nobody answered.
     """
-    del project_id  # Scope is established by the dependency; the session id is globally unique.
+    if not _session_is_in_project(session, project_id, review_session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
     try:
         decision = approve_package(

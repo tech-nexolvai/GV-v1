@@ -8,7 +8,8 @@ import pytest
 from reports.signed_review import ReviewDisposition, SignedReview, SignedReviewFinding
 
 
-def test_pdf_and_workbook_include_the_same_record() -> None:
+@pytest.mark.parametrize("outcome", ["NOT_FOUND", "FAIL"])
+def test_pdf_and_workbook_include_the_same_record(outcome: str) -> None:
     from io import BytesIO
 
     from openpyxl import load_workbook
@@ -21,7 +22,7 @@ def test_pdf_and_workbook_include_the_same_record() -> None:
     finding = SignedReviewFinding(
         finding_id=uuid4(),
         rule_id="CHECK-1",
-        outcome="NOT_FOUND",
+        outcome=outcome,
         actions=(
             ReviewDisposition(
                 action_id=uuid4(),
@@ -37,7 +38,7 @@ def test_pdf_and_workbook_include_the_same_record() -> None:
     )
     stored = StoredFinding(
         rule_id="CHECK-1",
-        outcome="NOT_FOUND",
+        outcome=outcome,
         severity="FLAG",
         snapshot_id="snapshot",
         engine_version="test",
@@ -53,14 +54,14 @@ def test_pdf_and_workbook_include_the_same_record() -> None:
         )
     )
     text = " ".join(" ".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages).split())
-    assert "Not checked: dismissed by reviewer reviewer" in text
+    assert finding.wording in text
     assert "Source missing" in text
     assert str(review.approval_id) in text
     book = load_workbook(BytesIO(write_stored_workbook((stored,), signed_review=review)))
     text = " ".join(str(c.value) for sheet in book for row in sheet for c in row if c.value)
     assert finding.wording in text
     assert str(review.approval_id) in text
-    assert book["Findings"]["B2"].value == "NOT_FOUND"
+    assert book["Findings"]["B2"].value == outcome
 
 
 def test_dismissal_is_not_a_pass_or_a_checked_result() -> None:
@@ -75,7 +76,8 @@ def test_dismissal_is_not_a_pass_or_a_checked_result() -> None:
         finding_id=uuid4(), rule_id="CHECK-1", outcome="NOT_FOUND", actions=(action,)
     )
     assert finding.wording == (
-        "Not checked: dismissed by reviewer reviewer on 2026-01-01T00:00:00+00:00. "
+        "Not checked: dismissed as not checkable by reviewer reviewer on 2026-01-01T00:00:00+00:00. "
+        "Recorded check remains NOT_FOUND. "
         "Reason: Required source not supplied."
     )
     assert finding.outcome == "NOT_FOUND"

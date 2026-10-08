@@ -56,6 +56,7 @@ from app.models.review import (
     ReviewSession,
 )
 from app.models.verdicts import Finding
+from app.review.requirements import needs_note
 
 __all__ = [
     "ActionOutsideTheSession",
@@ -125,6 +126,10 @@ class ExceptionNeedsAReason(ReviewRefused):
     review, and the reason is the sentence a future reader needs most. The database refuses an empty
     string; this refuses whitespace too, and says why rather than raising an integrity error.
     """
+
+
+class ReviewNeedsANote(ReviewRefused):
+    """An abstention decision must explain what the reviewer checked or could not check."""
 
 
 class ExceptionAlreadyOver(ReviewRefused):
@@ -310,6 +315,9 @@ def record_action(
             f"{review_session_id}. A session reviewing one package cannot carry an action on a "
             "finding from another, or the record would misstate what was reviewed."
         )
+
+    if needs_note(finding.outcome, kind.value) and (note is None or not note.strip()):
+        raise ReviewNeedsANote("Add a note explaining this reviewer decision before saving it.")
 
     recorded = ReviewAction(
         review_session_id=review_session.id,

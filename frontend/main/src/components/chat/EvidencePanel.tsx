@@ -12,9 +12,10 @@ interface EvidencePanelProps {
   loading?: boolean;
   error?: string;
   onClose: () => void;
+  onShowDrawing?: () => void;
 }
 
-export function EvidencePanel({ finding, projectId, packageId, loading = false, error, onClose }: EvidencePanelProps) {
+export function EvidencePanel({ finding, projectId, packageId, loading = false, error, onClose, onShowDrawing }: EvidencePanelProps) {
   const recordedOperands = finding.recorded_operands ?? [];
   const hasMappedCrop = Boolean(finding.arch_evidence || finding.shop_evidence);
   const hasUnmappedStoredCrop = !hasMappedCrop && recordedOperands.some(
@@ -83,6 +84,7 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
 
       {/* Scrollable body */}
       <div className="evidence-panel__body">
+        {onShowDrawing && (finding.row_location || finding.shop_evidence || finding.arch_evidence) && <button className="btn btn--subtle" onClick={onShowDrawing}>Show on drawing</button>}
 
         {loading && (
           <div className="evidence-panel__state" role="status">

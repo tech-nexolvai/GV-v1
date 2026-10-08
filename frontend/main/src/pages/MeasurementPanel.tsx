@@ -281,10 +281,18 @@ export function MeasurementPanel({
   packageId: selectedPackageId,
   onDone,
   onChoosePackage,
+  onChecksQueued,
+  targetRow,
+  onTargetReached,
+  onReviewRow,
 }: {
   packageId?: string;
   onDone?: (packageId: string) => void;
   onChoosePackage?: () => void;
+  onChecksQueued?: () => void;
+  targetRow?: string | null;
+  onTargetReached?: () => void;
+  onReviewRow?: (rowId: string) => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [selectedPageNumber, setSelectedPageNumber] = useState(1);
@@ -876,6 +884,7 @@ export function MeasurementPanel({
       if (!(await saveVisibleValues())) return;
       const response = await requestChecks(projectId(), packageId, choices);
       setAccepted(response.accepted_id);
+      onChecksQueued?.();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : String(caught));
     } finally {
@@ -1049,7 +1058,7 @@ export function MeasurementPanel({
         <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} />
       )}
       {packageId && (
-        <SlotReaderRows packageId={packageId} refresh={reload + partsDecided + readingsConfirmed} />
+        <SlotReaderRows packageId={packageId} refresh={reload + partsDecided + readingsConfirmed} targetRow={targetRow} onTargetReached={onTargetReached} onReviewRow={onReviewRow} />
       )}
 
       {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and

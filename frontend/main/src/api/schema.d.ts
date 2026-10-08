@@ -254,6 +254,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/approval-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Approval Readiness */
+        get: operations["get_approval_readiness_api_v1_projects__project_id__packages__package_id__approval_readiness_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/candidates": {
         parameters: {
             query?: never;
@@ -1835,6 +1852,22 @@ export interface components {
             /** State */
             state: string;
         };
+        /** ApprovalReadinessOut */
+        ApprovalReadinessOut: {
+            /** Blocking Finding Ids */
+            blocking_finding_ids: string[];
+            /** Blocking Findings */
+            blocking_findings: number;
+            /** Can Approve */
+            can_approve: boolean;
+            /** Reason */
+            reason: string | null;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+        };
         /**
          * AssemblyInput
          * @description The ordered cabinet/filler assembly used to derive the design width.
@@ -2764,11 +2797,16 @@ export interface components {
             parameter_versions: {
                 [key: string]: string;
             };
+            /** Reviewer Reason */
+            reviewer_reason?: string | null;
+            row_location?: components["schemas"]["RowLocation"] | null;
             rule_snapshot: components["schemas"]["RuleSnapshotRecord"];
             /** Scope Item Id */
             scope_item_id?: string | null;
             /** Scope Label */
             scope_label?: string | null;
+            /** Scope Row Candidate Id */
+            scope_row_candidate_id?: string | null;
             /** Severity */
             severity: string;
             /** Trace */
@@ -2866,9 +2904,14 @@ export interface components {
             };
             /** Product Type */
             product_type: string;
+            /** Reason */
+            reason?: string | null;
             reviewer_action?: components["schemas"]["ReviewerActionOut"] | null;
+            /** Reviewer Reason */
+            reviewer_reason?: string | null;
             /** Revision Number */
             revision_number: number;
+            row_location?: components["schemas"]["RowLocation"] | null;
             /** Rule Id */
             rule_id: string;
             /** Rule Snapshot Hash */
@@ -2884,6 +2927,8 @@ export interface components {
             scope_item_id?: string | null;
             /** Scope Label */
             scope_label?: string | null;
+            /** Scope Row Candidate Id */
+            scope_row_candidate_id?: string | null;
             severity: components["schemas"]["Severity"];
         };
         /**
@@ -3699,7 +3744,11 @@ export interface components {
          *     looking at, which is what makes the trail worth keeping.
          */
         RecordAction: {
-            action: components["schemas"]["ReviewActionKind"];
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "confirm" | "dismiss";
             /**
              * Finding Id
              * Format: uuid
@@ -3988,6 +4037,28 @@ export interface components {
             /** Parameters */
             parameters: components["schemas"]["StoredValue"][];
         };
+        /** RowLocation */
+        RowLocation: {
+            /**
+             * Coordinate Space
+             * @default stored
+             */
+            coordinate_space: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /**
+             * Page Id
+             * Format: uuid
+             */
+            page_id: string;
+            /** Page Number */
+            page_number: number;
+            /** Polygon */
+            polygon: string[][];
+        };
         /**
          * RuleOut
          * @description One rule, as it stands today: its effective snapshot and whether it could be released.
@@ -4230,6 +4301,7 @@ export interface components {
              * Format: uuid
              */
             row_id: string;
+            row_location?: components["schemas"]["RowLocation"] | null;
             /** Values */
             values: components["schemas"]["SlotRowValueOut"][];
             /** Wall Config */
@@ -4912,6 +4984,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PackageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_approval_readiness_api_v1_projects__project_id__packages__package_id__approval_readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalReadinessOut"];
                 };
             };
             /** @description Validation Error */
@@ -5687,7 +5791,9 @@ export interface operations {
     };
     page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get: {
         parameters: {
-            query?: never;
+            query?: {
+                document_version_id?: string | null;
+            };
             header?: never;
             path: {
                 project_id: string;

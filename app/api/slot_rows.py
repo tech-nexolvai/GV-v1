@@ -23,9 +23,11 @@ from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.models import ObservationCandidate, SlotRowReviewDecision
+from app.review.row_location import RowLocation, row_location
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from vocabulary.check_holds import STONE_SHORT_OF_ENDS
+from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
 from workflow.countertop_runs import published_wall_layouts
 from workflow.slot_row_scope import (
@@ -55,6 +57,7 @@ class SlotRowOut(BaseModel):
     page_number: int
     label: str
     piece_count: int
+    row_location: RowLocation | None = None
     held_reason: str | None
     wall_confirmation_allowed: bool
     values: list[SlotRowValueOut]
@@ -149,7 +152,11 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
                 ),
                 source="reviewer" if saved_exact is not None else "slot reader" if sealed else "",
                 review_reason=(
-                    None if selected_candidate is None else selected_candidate.review_reason
+                    None
+                    if selected_candidate is None
+                    else reviewer_reason(
+                        selected_candidate.ambiguity_flags or (), selected_candidate.review_reason
+                    )
                 ),
                 needs_value=exact is None,
             )
@@ -182,6 +189,7 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
         row_id=row.anchor.id,
         page_number=row.page_number,
         label=row.label,
+        row_location=row_location(session, row.anchor.id),
         piece_count=row.piece_count,
         held_reason=row.held_reason,
         wall_confirmation_allowed=row.wall_confirmation_allowed,

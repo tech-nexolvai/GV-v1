@@ -9,6 +9,12 @@
   background: var(--bg-surface);
 }
 
+.review-page__readiness { padding:10px 20px; margin:0; font-size:12px; background:var(--bg-base); border-bottom:1px solid var(--border-subtle); }
+.review-page__measure-container[hidden] { display:none; }
+.review-page__tabs { flex-wrap:wrap; }
+.review-page__changed-values { flex-shrink:0; }
+.review-page__changed-values > summary { padding:12px 20px; cursor:pointer; font-size:12px; }
+
 /* ── Header bar ───────────────────────────────────────────── */
 .review-page__header {
   display: flex;
