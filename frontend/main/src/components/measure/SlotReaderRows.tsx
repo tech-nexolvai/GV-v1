@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 
 import {
   ApiError,
+  getCountertopResults,
   listSlotReaderRows,
   reviewSlotReaderRow,
+  type CountertopResult,
   type SlotReaderRow,
 } from '../../api/client';
+import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { projectId } from '../../api/config';
 import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, type SlotReaderReviewPayload } from './slotReaderReview.js';
 import './SlotReaderRows.css';
@@ -19,6 +22,9 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // The countertop picture for each row (#1043), from the same countertop-results the dashboard
+  // reads. Optional: if it cannot be loaded, the card keeps its text list of widths.
+  const [pictures, setPictures] = useState<Map<string, CountertopResult>>(new Map());
 
   useEffect(() => {
     let live = true;
@@ -32,6 +38,9 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
       .catch((caught: unknown) => {
         if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
       });
+    getCountertopResults(projectId(), packageId)
+      .then((result) => { if (live) setPictures(new Map(result.items.map((item) => [item.row_id, item]))); })
+      .catch(() => { if (live) setPictures(new Map()); });
     return () => {
       live = false;
     };
@@ -103,10 +112,12 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
               <h3>Page {row.page_number}: {row.label}</h3>
               <span>{row.piece_count} pieces</span>
             </header>
+            {pictures.has(row.row_id) && <CountertopStrip row={pictures.get(row.row_id)!} size="full" showHoldReason={false} className="slot-reader-rows__picture" />}
             {row.held_reason && <p className="slot-reader-rows__hold" role="status">Needs review: {row.held_reason}</p>}
             {row.held_reason && onReviewRow && <button type="button" className="btn btn--subtle" onClick={() => onReviewRow(row.row_id)}>Record a decision in Results</button>}
             <ul className="slot-reader-rows__values">
-              {row.values.map((item) => (
+              {/* With the picture shown, the read-only widths are in it; only the inputs stay listed. */}
+              {row.values.filter((item) => item.needs_value || !pictures.has(row.row_id)).map((item) => (
                 <li key={item.key}>
                   {item.needs_value ? (
                     <label>
