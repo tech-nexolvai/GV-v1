@@ -224,6 +224,31 @@ def test_the_overall_wider_than_its_pieces_is_a_finding_not_a_loss() -> None:
     assert PIECES_DO_NOT_TILE in row.findings
 
 
+def test_a_labelled_overall_beats_a_nearer_unlabelled_outline_with_the_same_ends() -> None:
+    """Input: the printed overall sits 18 pt above the chain with its label; the countertop's
+    own outline, ticked at the same two ends, sits 10 pt below with no label. Outcome: the
+    labelled line is the overall. A client page (proof run 2026-10-08) had exactly this and the
+    nearer outline won, so the overall's label was never read."""
+    printed = _line(50, ROW_Y + 18, 350) + _slash(50, ROW_Y + 18) + _slash(350, ROW_Y + 18)
+    outline = _line(50, ROW_Y - 10, 350) + _vertical(50, ROW_Y - 13, ROW_Y - 7)
+    outline += _vertical(350, ROW_Y - 13, ROW_Y - 7)
+    row = _only_candidate(_rows(CHAIN + LABELS + printed + _text(195, ROW_Y + 22, "72") + outline))
+
+    assert row.overall is not None
+    assert row.overall.y == Decimal(300) - Decimal(ROW_Y + 18)
+    assert row.overall.labels[0].text == "72"
+
+
+def test_with_no_labelled_candidate_the_nearest_coincident_line_is_still_the_overall() -> None:
+    """Unchanged behaviour when nothing is labelled: the nearest line with the chain's ends."""
+    near = _line(50, ROW_Y - 10, 350) + _slash(50, ROW_Y - 10) + _slash(350, ROW_Y - 10)
+    farther = _line(50, ROW_Y + 18, 350) + _slash(50, ROW_Y + 18) + _slash(350, ROW_Y + 18)
+    row = _only_candidate(_rows(CHAIN + LABELS + near + farther))
+
+    assert row.overall is not None
+    assert row.overall.y == Decimal(300) - Decimal(ROW_Y - 10)
+
+
 def test_a_coincident_line_far_from_the_chain_is_not_its_overall() -> None:
     """Input: the two-tick line sits 60 pt from the chain. Outcome: no overall — a run's outline
     or a wall-to-wall line, which E1 saw matched by its ends alone."""

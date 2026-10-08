@@ -378,24 +378,40 @@ def _crop_png(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
     return encode_png(right - left, bottom - top, _crop_rgb(rendered, box))
 
 
+#: The prototype's full view was a 110 dpi render (bake `full_test_anthropic.py`, 2026-10-08).
+_PROTOTYPE_VIEW_DPI: Final = 110
+#: The prototype's close-up margin past each end: 50 px at 300 dpi (12 pt), or 15% of the span.
+_CLOSE_UP_MARGIN_PT: Final = Decimal(12)
+_CLOSE_UP_MARGIN_FRACTION: Final = Decimal("0.15")
+_ZERO_PT: Final = Decimal(0)
+
+
 def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
-    """The full vendor page with only the chosen span boxed; the box never supplies a value."""
+    """The full vendor page with only the chosen span boxed; the box never supplies a value.
+
+    The box is drawn at the prototype's size *as the reader sees it*: the prototype marked a
+    110 dpi page (3 px past each end, 14 px above and below, 4 px thick) and shrank it to 1800 px.
+    The product marks its 300 dpi render and shrinks it the same way, so every length scales by
+    dpi/110; unscaled, the mark on a narrow piece shrank to under a pixel (proof run 2026-10-08).
+    """
+    scale = Fraction(page.rendered.dpi, _PROTOTYPE_VIEW_DPI)
     first = page.rows.to_pixels(owner.x0, owner.line_y)
     second = page.rows.to_pixels(owner.x1, owner.line_y)
     left, right = sorted((first[0], second[0]))
     center_y = (first[1] + second[1]) // 2
+    pad_x, pad_y = round(3 * scale), round(14 * scale)
     outline = (
-        max(0, left),
-        max(0, center_y - 14),
-        min(page.rendered.width_px, max(left + 1, right)),
-        min(page.rendered.height_px, center_y + 14),
+        max(0, left - pad_x),
+        max(0, center_y - pad_y),
+        min(page.rendered.width_px, max(left + 1, right + pad_x)),
+        min(page.rendered.height_px, center_y + pad_y),
     )
     return _marked_png(
         page.rendered,
         (0, 0, page.rendered.width_px, page.rendered.height_px),
         ends_x=(),
         line=None,
-        thickness=max(2, page.rendered.dpi // 120),
+        thickness=max(2, round(4 * scale)),
         max_side=1800,
         outline=outline,
         mark_color=bytes((255, 0, 0)),
@@ -407,15 +423,27 @@ def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
 
     The span is the candidate's tick-to-tick label band, not an AI-provided location. Replacing
     discovered labels is Claude-only; the original plan is retained separately for text guards.
+
+    The close-up reaches past the span's ends as the prototype's did (at least 50 px at 300 dpi,
+    or 15% of the span, a side): a narrow piece's label is wider than the piece, and a close-up
+    cut at its ticks showed the readers only "1/2" of a printed 1 1/2 (proof run 2026-10-08).
+    Which span is meant stays the full view's red box, never the close-up's edges.
     """
     if plan.row is None:
         return plan
 
     def one_span(owner: PlannedOwner) -> PlannedOwner:
         band = owner.band
+        margin = max(_CLOSE_UP_MARGIN_PT, _CLOSE_UP_MARGIN_FRACTION * (band.x1 - band.x0))
+        crop = Box(
+            max(_ZERO_PT, band.x0 - margin),
+            band.top,
+            min(page.rows.ink.width, band.x1 + margin),
+            band.bottom,
+        )
         label = PlannedLabel(
             box=band,
-            crop=band,
+            crop=crop,
             lane=Lane.GLYPHS,
             text=None,
             text_stacked=False,
