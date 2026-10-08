@@ -99,7 +99,9 @@ class Settings(BaseSettings):
     )
     claude_reader_model_rpm: dict[str, int] = Field(default_factory=dict)
     claude_reader_timeout_seconds: int = Field(default=180, ge=1)
-    claude_reader_budget_usd: Decimal = Field(default=Decimal("2.00"), gt=0, le=2)
+    # Per drawing set. The admin raised it on 2026-10-08: at $2 the cap's worst-case reservation
+    # refused the last calls of a $1.72 run; cost is optimised later. $5 is the hard ceiling.
+    claude_reader_budget_usd: Decimal = Field(default=Decimal("2.50"), gt=0, le=5)
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False
@@ -199,9 +201,9 @@ class Settings(BaseSettings):
             self.anthropic_api_key is None or not self.anthropic_api_key.get_secret_value().strip()
         ):
             raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
-        if self.claude_reader_enabled and self.claude_reader_budget_usd > Decimal("2.00"):
+        if self.claude_reader_enabled and self.claude_reader_budget_usd > Decimal("5.00"):
             raise ValueError(
-                "GV_CLAUDE_READER_BUDGET_USD must not exceed the approved $2 per-set cap"
+                "GV_CLAUDE_READER_BUDGET_USD must not exceed the approved $5 per-set ceiling"
             )
         if self.slot_reader_enabled and not self.form_reader_enabled:
             raise ValueError(

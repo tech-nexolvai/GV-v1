@@ -738,7 +738,7 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
     )
     assert claude_enabled is not None and claude_enabled.question_packets is True
     assert claude_enabled.allow_stacked is True
-    assert claude_enabled.spend_cap_usd == Decimal("2.00")
+    assert claude_enabled.spend_cap_usd == Decimal("2.50")
     assert claude_enabled.form.max_concurrent_calls == 8
     assert claude_enabled.form.reader_ids == (
         "anthropic.claude-opus-5-5",
@@ -918,7 +918,7 @@ def test_claude_line_question_holds_a_line_drawn_tall_appliance() -> None:
     assert result.mapping.proposals == ()
     assert {model for model, _row, _view in readers.counter_break_requests} == {OPUS, SONNET}
     assert len(readers.counter_break_requests) == 2
-    assert sum(attempt.prompt_id == "claude-counter-break-v1" for attempt in attempts) == 2
+    assert sum(attempt.prompt_id == "claude-counter-break-v2" for attempt in attempts) == 2
 
 
 def test_claude_line_question_two_no_answers_leave_the_row_unchanged() -> None:
@@ -1935,3 +1935,118 @@ def test_row_picture_tags_stand_beside_their_boxes_at_the_prototypes_size() -> N
     height = max(y for _, y in tag) - min(y for _, y in tag) + 1
     expected = 48 * page.rendered.dpi / 150 / shrink
     assert height >= 0.8 * expected
+
+
+def _claude_line_read(counter_break: Callable[[str], Mapping[str, object]]) -> PageSlotResult:
+    page = slot_page(sheets.sheet(sheets.text_labels()))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png], counter_break=counter_break)
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    return result
+
+
+def test_a_stone_stopping_short_of_the_row_ends_goes_to_the_reviewer() -> None:
+    """Stone between full-height fillers: the fillers take the field cut, so the width check's
+    arithmetic does not apply (GV-Brain field-cut note, 2026-10-08). One reader is enough."""
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "short_of_ends" if model == SONNET else "to_walls",
+            "why": "stone sits between full-height fillers",
+        }
+    )
+
+    assert result.row_hold is None, "the readings stand"
+    assert result.check_hold is not None and result.check_hold.code == "stone-short-of-ends"
+    assert result.mapping.proposals, "the numbers are still offered to the reviewer"
+
+
+def test_a_stone_running_into_the_walls_goes_to_the_reviewer() -> None:
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "into_walls" if model == OPUS else "unsure",
+            "why": "stone runs into pockets in both walls",
+        }
+    )
+
+    assert result.row_hold is None
+    assert result.check_hold is not None and result.check_hold.code == "stone-into-walls"
+    assert result.mapping.proposals
+
+
+def test_a_stone_ending_at_the_walls_is_not_held() -> None:
+    result = _claude_line_read(
+        lambda _model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "to_walls",
+            "why": "stone runs over the fillers to both walls",
+        }
+    )
+
+    assert result.row_hold is None and result.check_hold is None
+    assert result.mapping.proposals
+
+
+def _fake_rows(
+    row_x: tuple[int, int], wall_x: tuple[int, int], words: tuple[str, ...]
+) -> tuple[Any, Any]:
+    from types import SimpleNamespace
+
+    label = SimpleNamespace(lines=words)
+    wall_row = SimpleNamespace(
+        slots=(),
+        overall=SimpleNamespace(x0=Decimal(wall_x[0]), x1=Decimal(wall_x[1]), labels=(label,)),
+    )
+    page = SimpleNamespace(
+        rows=SimpleNamespace(
+            candidates=SimpleNamespace(rows=SimpleNamespace(candidates=(wall_row,), rejected=()))
+        )
+    )
+    plan = SimpleNamespace(row=SimpleNamespace(x0=Decimal(row_x[0]), x1=Decimal(row_x[1])))
+    return page, plan
+
+
+def test_a_wall_to_wall_line_inside_the_row_means_the_stone_runs_into_the_walls() -> None:
+    """Code's own clue, whatever the readers say: the vendor's "wall to wall" line sits inside
+    both ends of the stone's row, so the stone runs past the wall faces."""
+    from workflow.slot_reader import _stone_end_hold
+
+    page, plan = _fake_rows((100, 400), (130, 370), ("915", "[36]", "wall to wall"))
+    hold = _stone_end_hold(page, plan, ())
+
+    assert hold is not None and hold.code == "stone-into-walls"
+
+
+def test_a_wall_to_wall_line_reaching_the_row_ends_is_not_a_pocket() -> None:
+    from workflow.slot_reader import _stone_end_hold
+
+    page, plan = _fake_rows((100, 400), (100, 400), ("wall to wall",))
+    assert _stone_end_hold(page, plan, ()) is None
+    page, plan = _fake_rows((100, 400), (130, 400), ("wall to wall",))
+    assert _stone_end_hold(page, plan, ()) is None, "inside one end only is not a pocket at both"
+
+
+def test_the_claude_reader_budget_is_two_fifty_by_default_and_five_at_most() -> None:
+    """The admin raised the per-set cap on 2026-10-08 (at $2 the worst-case reservation refused
+    the last calls of a $1.72 run); $5 stays the hard ceiling."""
+    from pydantic import ValidationError
+
+    url = "postgresql+psycopg://x@localhost/x"
+    assert Settings(database_url=url).claude_reader_budget_usd == Decimal("2.50")
+    assert (
+        Settings(database_url=url, claude_reader_budget_usd=Decimal(5)).claude_reader_budget_usd
+        == 5
+    )
+    with pytest.raises(ValidationError):
+        Settings(database_url=url, claude_reader_budget_usd=Decimal("5.01"))

@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, ValidationError
 
@@ -54,6 +54,7 @@ __all__ = [
     "CLAUDE_SPAN_PROMPT_ID",
     "COUNTER_BREAK_PROMPT",
     "COUNTER_BREAK_PROMPT_ID",
+    "COUNTER_BREAK_PROMPT_IDS",
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
     "ROW_PROMPT",
@@ -80,7 +81,9 @@ ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
-COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v1"
+COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
+#: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
+COUNTER_BREAK_PROMPT_IDS: Final = frozenset({COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v1"})
 
 
 def parse_stored_reader_answer(text: str) -> Mapping[str, Any]:
@@ -109,9 +112,15 @@ COUNTER_BREAK_PROMPT: Final = (
     "marked countertop span. Look only inside the marked span. Is a tall appliance or tall unit "
     "drawn there, such as a refrigerator, oven or wall-oven tower, pantry, or tall cabinet? "
     "Answer yes only when the drawing lines show it physically occupies that span. Do not infer "
-    "from a text label outside the span. This is a hold-only safety question: a yes sends the row "
-    "to the reviewer; a no does not approve the row. Return only this JSON: "
-    '{"contains_tall_appliance": true|false, "why": "short visual reason"}'
+    "from a text label outside the span. Also say where the STONE TOP itself ends at the span's "
+    'two ends: "to_walls" if the stone runs over the end pieces up to the walls; '
+    '"short_of_ends" if the stone stops before an end, between full-height fillers, panels '
+    'or tall units that rise past it; "into_walls" if the stone runs past the wall faces into '
+    'the walls (a pocket or recess); "no_stone" if no stone top is drawn; otherwise '
+    '"unsure". This is a hold-only safety question: an appliance or a stone that does not end '
+    "at the walls sends the row to the reviewer; a no does not approve the row. Return only this JSON: "
+    '{"contains_tall_appliance": true|false, "stone_ends": "to_walls|short_of_ends|into_walls|'
+    'no_stone|unsure", "why": "short visual reason"}'
 )
 
 CROP_PROMPT: Final = (
@@ -187,6 +196,9 @@ class CounterBreakAnswer:
     model_id: str
     contains_tall_appliance: bool
     why: str
+    stone_ends: str = "unsure"
+    """Where the stone top ends at the span's ends (v2): `to_walls`, `short_of_ends`,
+    `into_walls`, `no_stone` or `unsure`. Hold-only, like the appliance answer."""
 
 
 def _base_model_id(model_id: str) -> str:
@@ -273,6 +285,7 @@ class _CounterBreakReply(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     contains_tall_appliance: StrictBool
+    stone_ends: Literal["to_walls", "short_of_ends", "into_walls", "no_stone", "unsure"] = "unsure"
     why: StrictStr
 
 
@@ -393,6 +406,7 @@ def read_counter_break(
             model_id=model_id,
             contains_tall_appliance=parsed.contains_tall_appliance,
             why=parsed.why[:300],
+            stone_ends=parsed.stone_ends,
         )
     raise AssertionError("unreachable")
 

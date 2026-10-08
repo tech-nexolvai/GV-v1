@@ -55,7 +55,12 @@ from extraction.slot_reader.bedrock import (
     read_crops_parallel,
 )
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
-from extraction.slot_reader.labels import RowHold, counter_break_hold, expand_label, row_hold
+from extraction.slot_reader.labels import (
+    RowHold,
+    counter_break_hold,
+    expand_label,
+    row_hold,
+)
 from extraction.slot_reader.mapping import PieceReading, SlotMapping, map_row
 from extraction.slot_reader.runs import (
     E2_CROP_SETTINGS,
@@ -89,6 +94,7 @@ from extraction.slot_reader.walls import (
     seal_walls,
     wall_pictures,
 )
+from vocabulary.check_holds import STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.semantic_types import ProductType
 from workflow.form_reader import FormReaderRuntime
 from workflow.layout_proposals import (
@@ -275,7 +281,7 @@ def configured_slot_reader(
         ),
         question_packets=claude_enabled,
         spend_cap_usd=(
-            getattr(settings, "claude_reader_budget_usd", Decimal("2.00"))
+            getattr(settings, "claude_reader_budget_usd", Decimal("2.50"))
             if claude_enabled
             else None
         ),
@@ -353,6 +359,9 @@ class PageSlotResult:
     mapping: SlotMapping
     row_hold: RowHold | None = None
     """Field-cut, VIF or a vendor-layer counter-break phrase: the row waits (#992)."""
+    check_hold: RowHold | None = None
+    """The readings stand but the width check does not apply: the stone does not end at the walls
+    (`_stone_end_hold`). Its readings are still offered; only the automatic check abstains."""
     vetoed: tuple[int | None, ...] = ()
     """Sealed readings the drawn length rejected (#992), by slot (`None` for the overall)."""
     walls: PageWalls | None = None
@@ -1102,6 +1111,11 @@ def read_slot_pages(
         if hold is None and any(answer.contains_tall_appliance for answer in line_answers):
             # Positive-only: this answer can hold a row, never clear an existing hold.
             hold = counter_break_hold(("REFRIGERATOR",))
+        check_hold = (
+            _stone_end_hold(page, plan, line_answers)
+            if hold is None and runtime.claude_row_reader
+            else None
+        )
         if hold is None:
             source_texts = [
                 label.text
@@ -1181,6 +1195,7 @@ def read_slot_pages(
                 overall=overall,
                 mapping=mapping,
                 row_hold=hold,
+                check_hold=check_hold,
                 vetoed=vetoed,
                 walls=walls,
                 owner_candidate_ids=owner_candidate_ids[page.page_index],
@@ -1201,6 +1216,53 @@ def read_slot_pages(
 
 def _walls_key(page_index: int) -> str:
     return f"p{page_index}:walls"
+
+
+#: How far inside the row's ends a "wall to wall" line must sit to mean the stone runs past the
+#: walls, in page points: more than a stroke or a tick's width, so two lines drawn to the same
+#: wall face never trigger it.
+_WALL_TO_WALL_INSET_PT: Final = Decimal(1)
+
+
+def _stone_end_hold(
+    page: SlotPage, plan: SlotPlan, answers: Sequence[CounterBreakAnswer]
+) -> RowHold | None:
+    """Hold a row whose stone does not end at the walls; the field cut is not the stone's there.
+
+    Raj's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops
+    at full-height fillers or panels, they take it; where it runs into wall pockets, the pocket
+    detail decides (GV-Brain "Field cut - when it applies", 2026-10-08). Either way the width
+    check's arithmetic would not apply, so the row goes to the reviewer. Hold-only: nothing here
+    can clear a hold or approve a row.
+
+    Code first: a line the vendor labels "wall to wall" that sits inside both ends of the row
+    means the stone runs past the wall faces. Then either reader saying the stone stops short of
+    an end, or runs into the walls.
+    """
+    row = plan.row
+    if row is None:
+        return None
+    rows = page.rows.candidates.rows
+    for other in (*rows.candidates, *(rejected for rejected in rows.rejected)):
+        spans: list[tuple[Decimal, Decimal, tuple[str, ...]]] = [
+            (slot.x0, slot.x1, label.lines) for slot in other.slots for label in slot.labels
+        ]
+        if other.overall is not None:
+            spans.extend(
+                (other.overall.x0, other.overall.x1, label.lines) for label in other.overall.labels
+            )
+        for x0, x1, lines in spans:
+            words = " ".join(lines).lower()
+            if "wall to wall" not in words and "wall-to-wall" not in words:
+                continue
+            if row.x0 + _WALL_TO_WALL_INSET_PT < x0 and x1 < row.x1 - _WALL_TO_WALL_INSET_PT:
+                return RowHold(*STONE_INTO_WALLS, " ".join(lines))
+    said = {answer.stone_ends for answer in answers}
+    if "into_walls" in said:
+        return RowHold(*STONE_INTO_WALLS, "a reader: the stone runs into the walls")
+    if "short_of_ends" in said:
+        return RowHold(*STONE_SHORT_OF_ENDS, "a reader: the stone stops before the row's ends")
+    return None
 
 
 def _counter_break_key(page_index: int) -> str:
@@ -1729,6 +1791,8 @@ def persist_slot_readings(
                 flags.append("row-ambiguous")
             if result.row_hold is not None:
                 flags.append(f"row-hold:{result.row_hold.code}")
+            if result.check_hold is not None:
+                flags.append(f"check-hold:{result.check_hold.code}")
             if owner.kind is not None:
                 flags.append(f"kind:{owner.kind.kind.value}")
                 flags.append(f"kind-evidence:{owner.kind.evidence}")
@@ -1832,7 +1896,7 @@ def persist_slot_readings(
 
 
 def _agreed_row(
-    answers: Sequence[ReaderAnswer | WallAnswer | RowChoiceAnswer | None],
+    answers: Sequence[ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None],
 ) -> tuple[RowChoiceAnswer | None, int | None]:
     """The row every reader named, or a "no row" answer that says why there is none.
 

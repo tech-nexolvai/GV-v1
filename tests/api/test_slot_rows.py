@@ -65,6 +65,7 @@ def _package_rows(
     unsealed_all: bool = False,
     wall_source: str = "readers",
     held_page: int | None = None,
+    check_hold_page: int | None = None,
     piece_count: int = 1,
     widths_add_up: bool = False,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
@@ -157,6 +158,7 @@ def _package_rows(
                     f"row-slot-count:{piece_count}",
                     "ink:vendor",
                     *(["row-hold:synthetic held row"] if page_index == held_page else []),
+                    *(["check-hold:stone-short-of-ends"] if page_index == check_hold_page else []),
                 ],
                 review_reason="synthetic held row" if page_index == held_page else None,
                 corroboration_status=(
@@ -757,3 +759,31 @@ def test_all_piece_width_inputs_cite_their_own_observation_and_parent_confirmati
         for item in inputs
         if item.operand_name.startswith("piece_widths[")
     )
+
+
+def test_a_row_whose_stone_does_not_end_at_the_walls_is_never_checked(
+    session: Session, tmp_path: Path
+) -> None:
+    """A complete row with drawing-clue walls would PASS; flagged `check-hold:` (the stone stops
+    at fillers before the ends, so the field cut is theirs) it stays with the reviewer, with the
+    reason, and the other row still checks."""
+    _project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        check_hold_page=0,
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all()
+    for candidate in candidates:
+        _reader_support(session, candidate)
+
+    findings = _run_current_checks(session, package_id, tmp_path)
+    by_row = {finding.scope_row_candidate_id: finding for finding in findings}
+    assert by_row[anchors[0]].outcome == "REVIEW_REQUIRED"
+    assert "stone stops at fillers" in (by_row[anchors[0]].reason or "")
+    assert by_row[anchors[1]].outcome == "PASS", by_row[anchors[1]].reason
