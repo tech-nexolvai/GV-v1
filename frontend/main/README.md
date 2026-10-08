@@ -63,6 +63,30 @@ phone) and a comparison of every element's computed style against `main`. The re
 - Both the outcome colours and the sans face were decided by the admin on 2026-10-08 for the
   redesigned screens. Setting `--font-ui` to the mono face would return to an all-typewriter screen.
 
+## Where a review stands (#1034)
+
+`src/lib/review-stage.ts` → `reviewStage(facts)` is the one place that says which of the six steps a
+review is on (Upload → Reading → Checks → Decisions → Sign off → Report) and what the single next
+action is. It reads only recorded facts:
+- package state;
+- the live run's finding count;
+- the approval-readiness answer;
+- signed-export status;
+- two in-session flags: checks just queued, and values saved after the last run (the API records
+  no time for values).
+
+Several places read it, so they always agree:
+- the review stepper (`components/review/review-stepper.tsx`);
+- the header's primary button (`components/review/next-action.tsx`, placed through `HeaderActions`);
+- the Documents cards (`pages/documentNextStep.ts`).
+
+Unknown facts stay unknown. A readiness answer that has not loaded shows no count, never 0. Every
+state is unit-tested in `tests/vitest/review-stage.test.ts`.
+
+The shell is shadcn's Sidebar (`components/shell/app-sidebar.tsx`, collapse remembered under
+`gv-sidebar-collapsed`) and a top bar (`components/shell/app-topbar.tsx`). The top bar carries the
+breadcrumb, the screen's title extras (`HeaderTitleExtra`) and its actions (`HeaderActions`).
+
 ## Imports
 
 - **New code** uses the `@/` alias (`@/components/ui/button`, `@/lib/utils`). It is set in

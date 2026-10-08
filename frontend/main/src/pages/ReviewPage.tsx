@@ -3,17 +3,16 @@ import { ChatThread } from '../components/chat/ChatThread';
 import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
-import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
-import { SignedDownloads } from '../components/output/SignedDownloads';
 import { ResultsPanel } from '../components/output/ResultsPanel';
 import { DrawingResultPanel } from '../components/output/DrawingResultPanel';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
-import { StatusBadge } from '../components/ui/StatusBadge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
   getApprovalReadiness,
+  getSignedExports,
+  prepareSignedExports,
   listSlotReaderRows,
   getChangedValues,
   askReviewerChat,
@@ -36,23 +35,39 @@ import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { ArrowLeft, CheckSquare } from 'lucide-react';
-import { ReviewPackageDetails } from './ReviewPackageDetails';
+import { HeaderActions, HeaderTitleExtra } from '../components/shell/ShellHeader';
+import { reviewStage, type NextActionKind } from '@/lib/review-stage';
+import { ReviewStepper } from '@/components/review/review-stepper';
+import { NextActionButton, type SecondaryAction } from '@/components/review/next-action';
+import { ChangedValuesBadge } from '@/components/review/changed-values-badge';
+import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
+import { ChangedValuesPanel } from '@/components/output/ChangedValuesPanel';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { PackageStatusBadge } from '@/components/ui/package-status-badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { recordReviewDecision } from './recordReviewDecision';
 import './ReviewPage.css';
+
+/** States in which the server is reading or checking on its own; the stepper follows them (#1034). */
+const PROCESSING_STATES = new Set([
+  'UPLOADING', 'UPLOADED', 'INGESTING', 'EXTRACTING', 'MATCHING', 'VALIDATING_EVIDENCE',
+  'RUNNING_CHECKS', 'GENERATING_OUTPUTS', 'FAILED_RETRYABLE',
+]);
 
 interface ReviewPageProps {
   sessionId: string;
   onEvidenceChange: (panel: React.ReactNode) => void;
   onBackToDocuments: () => void;
-  /** Reports the vendor once the package has loaded, for the header title. */
-  onTitleChange?: (title: string) => void;
+  /** Reports the vendor and revision once the package has loaded, for the header breadcrumb. */
+  onTitleChange?: (title: string, revision: number | null) => void;
+  /** Reports how many findings still need the reviewer, so the sidebar shows the live count. */
+  onNeedYouChange?: (count: number | null) => void;
   onPackageChanged?: () => void;
   initialMessage?: string;
   onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, onPackageChanged, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, onNeedYouChange, onPackageChanged, initialMessage, onMessageConsumed }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -105,6 +120,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // The narration models a reviewer may pick, and the current choice ('' = deployment default).
   const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
+  // #1034: values saved in this session after the last check run (the API records no time for values).
+  const [valuesChangedSinceRun, setValuesChangedSinceRun] = useState(false);
+  // The Results filter, held here so "Review N items" can open it on what needs the reviewer.
+  const [onlyNeedsMe, setOnlyNeedsMe] = useState(true);
+  const [recordIdsOpen, setRecordIdsOpen] = useState(false);
+  const [projectValuesOpen, setProjectValuesOpen] = useState(false);
+  // Signed-export status after approval, for the Report step and the Download action.
+  const [exportsStatus, setExportsStatus] = useState<'not_requested' | 'preparing' | 'ready' | 'failed' | null>(null);
+  const [exportsError, setExportsError] = useState<string | null>(null);
+  const [exportsVersion, setExportsVersion] = useState(0);
+  const [preparingExports, setPreparingExports] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,10 +153,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
   // The header shows the vendor, which is what a reviewer calls a document set.
   const loadedVendor = remote.status === 'ready' ? remote.data.detail.vendor ?? 'Untitled document set' : null;
+  const loadedRevision = remote.status === 'ready' ? remote.data.detail.current_revision_number : null;
   useEffect(() => {
-    if (loadedVendor !== null) onTitleChange?.(loadedVendor);
+    if (loadedVendor !== null) onTitleChange?.(loadedVendor, loadedRevision);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedVendor]);
+  }, [loadedVendor, loadedRevision]);
+
+  // The sidebar shows this review's live "need you" count, not the one it loaded earlier.
+  const blockingCount = readiness?.blocking_findings ?? null;
+  useEffect(() => {
+    if (blockingCount !== null) onNeedYouChange?.(blockingCount);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockingCount]);
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
   // are not thrown away every time this re-renders.
@@ -153,6 +187,34 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     // The interval refreshes saved data only; it never remounts Measurements or its drafts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waitingForChecks, packageId]);
+
+  // While the server is reading or checking, re-read the saved state every few seconds so the
+  // stepper moves on by itself (#1034). Read-only: the same refresh the Refresh button runs.
+  const liveState = recordedStatus ?? (remote.status === 'ready' ? remote.data.detail.state : null);
+  const serverBusy = liveState !== null && PROCESSING_STATES.has(liveState);
+  useEffect(() => {
+    if (!serverBusy || waitingForChecks) return;
+    const timer = window.setInterval(() => void refreshResults(), 5000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverBusy, waitingForChecks, packageId]);
+
+  // After approval: whether the signed files are ready, re-asked while they are being prepared.
+  const isApproved = approved || liveState === 'APPROVED';
+  useEffect(() => {
+    if (!isApproved) return;
+    let current = true;
+    getSignedExports(projectId(), packageId).then(
+      (answer) => { if (current) { setExportsStatus(answer.status); setExportsError(null); } },
+      (error: unknown) => { if (current) { setExportsStatus(null); setExportsError(error instanceof Error ? error.message : String(error)); } },
+    );
+    return () => { current = false; };
+  }, [isApproved, packageId, exportsVersion]);
+  useEffect(() => {
+    if (exportsStatus !== 'preparing') return;
+    const timer = window.setTimeout(() => setExportsVersion((n) => n + 1), 4000);
+    return () => window.clearTimeout(timer);
+  }, [exportsStatus, exportsVersion]);
 
   async function refreshResults() {
     if (refreshPending.current) return;
@@ -178,6 +240,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   }
 
   function checksQueued() {
+    setValuesChangedSinceRun(false);
     checksBaseline.current = findings.map(f => f.id).sort().join(',');
     setReadiness(null); setWaitingForChecks(true); setActiveTab('results');
   }
@@ -592,83 +655,116 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
     revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
-  const actioned = findings.filter(f => f.reviewer_action !== null).length;
+  const stage = reviewStage({
+    state: pkg.status,
+    findingsTotal: findings.length,
+    checksQueued: waitingForChecks,
+    valuesChangedSinceRun,
+    readiness: readiness ? { blockingFindings: readiness.blocking_findings, canApprove: readiness.can_approve, reason: readiness.reason } : null,
+    exports: exportsStatus,
+  });
+  const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks;
+
+  /** The header's one action. Each kind runs the same handler the page already had. */
+  function act(kind: NextActionKind) {
+    if (kind === 'run-checks') {
+      // Run checks lives on the Measurements form, which saves the visible values first. Take the
+      // reviewer there rather than queue a run that skips that save.
+      setMeasureVisited(true);
+      setActiveTab('measure');
+      window.setTimeout(() => {
+        const button = document.getElementById('measure-run-checks');
+        button?.scrollIntoView({ block: 'center' });
+        button?.focus();
+      }, 50);
+    } else if (kind === 'review') {
+      setOnlyNeedsMe(true);
+      setActiveTab('results');
+      window.setTimeout(() => document.getElementById('results-title')?.focus(), 50);
+    } else if (kind === 'sign-off') {
+      void handleSignOff();
+    } else if (kind === 'prepare-report') {
+      void prepareReport();
+    } else if (kind === 'download-report') {
+      void handleDownload('pdf');
+    }
+  }
+
+  async function prepareReport() {
+    setPreparingExports(true);
+    setExportsError(null);
+    try {
+      await prepareSignedExports(projectId(), packageId);
+      setExportsVersion((n) => n + 1);
+    } catch (error) {
+      setExportsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreparingExports(false);
+    }
+  }
+
+  const secondary: SecondaryAction[] = [
+    { id: 'refresh', label: refreshing ? 'Refreshing results…' : 'Refresh results', disabled: refreshing, onSelect: () => void refreshResults() },
+    ...(stage.next.kind === 'download-report'
+      ? [
+          { id: 'workbook', label: 'Download workbook', disabled: downloadState.status === 'loading', onSelect: () => void handleDownload('workbook') },
+          { id: 'redline', label: 'Download redline', disabled: downloadState.status === 'loading', onSelect: () => void handleDownload('redline') },
+        ]
+      : []),
+    ...(isApproved && stage.next.kind !== 'download-report'
+      ? [{ id: 'report-status', label: 'Check report status', onSelect: () => setExportsVersion((n) => n + 1) }]
+      : []),
+    { id: 'project-values', label: 'Project values', onSelect: () => setProjectValuesOpen(true) },
+    { id: 'record-ids', label: 'Record IDs', onSelect: () => setRecordIdsOpen(true) },
+  ];
 
   return (
     <div className="review-page">
-      {/* Package header bar */}
-      <div className="review-page__header">
-        <div className="review-page__header-left">
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm review-page__back"
-            onClick={onBackToDocuments}
-            aria-label="Back to documents"
-          >
-            <ArrowLeft size={13} />
-            <span>Documents</span>
-          </button>
-          <div className="review-page__pkg-info">
-            <span className="review-page__pkg-vendor">{pkg.vendor}</span>
-            <div className="review-page__pkg-meta">
-              <span className="review-page__pkg-summary">
-                Reviewer package{pkg.revision === null ? '' : ` · Revision ${pkg.revision}`}
-              </span>
-            </div>
-          </div>
-          <StatusBadge status={pkg.status} />
-          <ReviewPackageDetails packageId={pkg.id} projectId={pkg.project}>
-            <ReviewProgress status={pkg.status} />
-          </ReviewPackageDetails>
-        </div>
+      <HeaderTitleExtra>
+        <PackageStatusBadge status={pkg.status} />
+      </HeaderTitleExtra>
+      <HeaderActions>
+        {/* From tablet width up; on a phone the same table opens from "More actions". */}
+        <span className="hidden md:inline-flex">
+          <ChangedValuesBadge
+            state={changedValues.status}
+            value={changedValues.status === 'ready' ? changedValues.data : null}
+            currentRevisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
+          />
+        </span>
+        <NextActionButton
+          action={stage.next}
+          onAct={act}
+          busyLabel={stage.next.kind === 'sign-off' && isSigningOff ? 'Signing off…' : stage.next.kind === 'prepare-report' && preparingExports ? 'Requesting…' : null}
+          extraDisabled={stage.next.kind === 'sign-off' ? signOffBlocked : stage.next.kind === 'download-report' ? downloadState.status === 'loading' : stage.next.kind === 'prepare-report' ? preparingExports : false}
+          secondary={secondary}
+        />
+      </HeaderActions>
+      <Dialog open={projectValuesOpen} onOpenChange={setProjectValuesOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogTitle className="sr-only">Project values</DialogTitle>
+          <ChangedValuesPanel
+            state={changedValues.status}
+            value={changedValues.status === 'ready' ? changedValues.data : null}
+            currentRevisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
+          />
+        </DialogContent>
+      </Dialog>
+      <RecordIdsDialog
+        open={recordIdsOpen}
+        onOpenChange={setRecordIdsOpen}
+        packageId={pkg.id}
+        projectId={pkg.project}
+        revisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
+      />
 
-        <div className="review-page__header-right">
-          <div className="review-page__progress">
-            <span className="review-page__progress-text">
-              {actioned} / {findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length} reviewed
-            </span>
-            <div className="review-page__progress-bar">
-              <div
-                className="review-page__progress-fill"
-                style={{
-                  width: `${findings.length > 0
-                    ? (actioned / Math.max(1, findings.filter(f => f.outcome !== 'PASS' && f.outcome !== 'NO_APPLICABLE_RULE').length)) * 100
-                    : 0}%`
-                }}
-              />
-            </div>
-          </div>
+      <ReviewStepper steps={stage.steps} />
 
-          {/* Wired now. It had no handler at all, and its only guard was `needsAction > 0`, so on a
-              package with no findings it rendered fully enabled — the one state in which signing off
-              means attesting to a review that never ran. Both are conditions here. */}
-          {!(approved || pkg.status === 'APPROVED') && <button
-            className="btn btn--action"
-            onClick={handleSignOff}
-            disabled={
-              isSigningOff ||
-              !canSignOff(readiness) || waitingForChecks
-            }
-            data-tooltip={
-              readiness?.reason ?? 'Sign off this package'
-            }
-          >
-            <CheckSquare size={14} />
-            {session?.completed_at != null ? 'Signed off' : isSigningOff ? 'Signing off…' : 'Sign Off'}
-          </button>}
-
-          {/* The handoff. Shown once the package is approved, because that is what the endpoint
-              requires — a review that left the building unsigned is one nobody stands behind
-              (ADR-0010). Before then the workbook exists and is deliberately unreachable. */}
-          {(approved || pkg.status === 'APPROVED') && (
-            <SignedDownloads projectId={projectId()} packageId={packageId} download={(format) => void handleDownload(format)} receipt={downloadState} />
-          )}
-        </div>
-      </div>
-
-      {!(approved || pkg.status === 'APPROVED') && <p className="review-page__readiness" role="status">
-        {waitingForChecks ? 'Checks queued. Results will refresh when the worker finishes.' : readiness?.reason ?? (canSignOff(readiness) ? 'All required decisions are recorded. Ready to sign off.' : 'Checking sign-off requirements…')}
-      </p>}
+      {/* Download receipts and export problems, said where the reviewer is looking. */}
+      {downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
+      {downloadState.status === 'started' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Download started. Check your browser downloads.</p>}
+      {downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
+      {exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
 
       {/* A write that failed, said out loud. The row has already been put back, so without this the
           reviewer would see their tick disappear and have no idea why — and might reasonably assume
@@ -679,12 +775,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           <p>{actionError}</p>
         </div>
       )}
-
-      <details className="review-page__changed-values"><summary>Changed values for this check run</summary><ChangedValuesPanel
-        state={changedValues.status}
-        value={changedValues.status === 'ready' ? changedValues.data : null}
-        currentRevisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
-      /></details>
 
       {/* View Tabs */}
       <div className="review-page__tabs">
@@ -704,6 +794,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       </div>
 
       {activeTab === 'results' && <ResultsPanel findings={findings} rows={rows} readiness={readiness} selected={selectedFindingId} busy={refreshing}
+        onlyNeedsMe={onlyNeedsMe} onOnlyNeedsMeChange={setOnlyNeedsMe}
         onRefresh={() => void refreshResults()} onShowDrawing={showDrawing} onOpenRow={openRow} onViewEvidence={handleViewEvidence}
         onAction={handleAction} onCorrect={handleCorrect} onExcept={handleExcept} />}
       {activeTab === 'chat' && (
@@ -740,6 +831,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             onChoosePackage={onBackToDocuments}
             onDone={() => { setActiveTab('results'); void refreshResults(); }}
             onChecksQueued={checksQueued}
+            onValuesSaved={() => { if (findings.length > 0) setValuesChangedSinceRun(true); }}
             targetRow={activeTab === 'measure' ? targetRow : null}
             onTargetReached={() => setTargetRow(null)}
             onReviewRow={(rowId) => { setActiveTab('results'); setTimeout(() => document.getElementById(`result-${findings.find(f => f.scope_row_candidate_id === rowId)?.id}`)?.scrollIntoView({ block: 'center' }), 0); }}
@@ -750,78 +842,23 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   );
 }
 
-const REVIEW_STEPS = ['Upload', 'Confirm / type', 'Run checks', 'Review', 'Sign off', 'Download'] as const;
-
-function ReviewProgress({ status }: { status: PackageStatus }) {
-  const completed = status === 'APPROVED' ? 5 : status === 'AWAITING_REVIEW' ? 3 : 0;
-  const failed = status === 'FAILED_PERMANENT' || status === 'FAILED_RETRYABLE';
-  return (
-    <div className="review-path" aria-label="Human-operated review progress">
-      <span className="review-path__label">{failed ? 'Workflow needs attention' : 'Human-operated path'}</span>
-      <ol className="review-path__steps">
-        {REVIEW_STEPS.map((step, index) => (
-          <li key={step} className={index < completed ? 'review-path__step review-path__step--done' : index === completed && !failed ? 'review-path__step review-path__step--current' : 'review-path__step'}>
-            {step}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
 function ReviewSkeleton() {
   return (
-    <div className="review-page review-page--loading" style={{ opacity: 0.85 }}>
-      {/* Header skeleton */}
-      <div className="review-page__header" style={{ borderBottomColor: 'var(--border-subtle)' }}>
-        <div className="review-page__header-left">
-          <div className="skeleton" style={{ width: '80px', height: '18px' }} />
-          <div className="skeleton" style={{ width: '120px', height: '14px', marginLeft: 'var(--space-3)' }} />
-          <div className="skeleton" style={{ width: '60px', height: '18px', marginLeft: 'var(--space-3)' }} />
-        </div>
-        <div className="review-page__header-right">
-          <div className="skeleton" style={{ width: '100px', height: '14px' }} />
-          <div className="skeleton" style={{ width: '80px', height: '32px' }} />
-        </div>
+    <div className="review-page review-page--loading" data-tw aria-busy="true" aria-label="Loading the review">
+      <div className="flex items-center gap-3 border-b px-4 py-3 sm:px-6">
+        {[0, 1, 2, 3, 4, 5].map((step) => (
+          <div key={step} className="flex flex-1 items-center gap-2">
+            <Skeleton className="size-6 shrink-0 rounded-full" />
+            <Skeleton className="hidden h-3 w-16 lg:block" />
+          </div>
+        ))}
       </div>
-
-      {/* Thread skeleton */}
-      <div className="chat-thread" style={{ gap: 'var(--space-8)' }}>
-        {/* User prompt skeleton */}
-        <div className="chat-message chat-message--user">
-          <div className="chat-message__avatar">
-            <div className="skeleton" style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
-          </div>
-          <div className="chat-message__content">
-            <div className="skeleton" style={{ width: '140px', height: '24px', borderRadius: 'var(--radius-md) var(--radius-sm) var(--radius-md) var(--radius-md)' }} />
-          </div>
-        </div>
-
-        {/* System response skeleton */}
-        <div className="chat-message">
-          <div className="chat-message__avatar">
-            <div className="skeleton" style={{ width: '28px', height: '28px', borderRadius: 'var(--radius-md)' }} />
-          </div>
-          <div className="chat-message__content" style={{ gap: 'var(--space-4)' }}>
-            <div className="skeleton" style={{ width: '420px', height: '16px' }} />
-            <div className="skeleton" style={{ width: '280px', height: '16px' }} />
-            
-            {/* Finding cards skeletons */}
-            <div className="chat-message__findings" style={{ marginTop: 'var(--space-3)' }}>
-              <div className="skeleton" style={{ width: '80px', height: '12px', marginBottom: 'var(--space-2)' }} />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-                {[1, 2, 3].map(i => (
-                  <div key={i} className="skeleton" style={{ width: '100%', height: '38px', borderRadius: 'var(--radius-md)' }} />
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Input bar skeleton */}
-      <div className="chat-input-area" style={{ borderTopColor: 'var(--border-subtle)' }}>
-        <div className="skeleton" style={{ width: '100%', height: '48px', borderRadius: 'var(--radius-xl)' }} />
+      <div className="flex flex-col gap-3 px-4 py-6 sm:px-6">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-4 w-64" />
+        {[0, 1, 2].map((row) => (
+          <Skeleton key={row} className="h-24 w-full" />
+        ))}
       </div>
     </div>
   );

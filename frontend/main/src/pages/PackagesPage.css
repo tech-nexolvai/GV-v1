@@ -14,8 +14,6 @@
 .document-card__results { margin-top: var(--space-5); padding-block: var(--space-4); border-top: 1px solid var(--border-subtle); }
 .document-card__results-heading { font-size: var(--text-sm); font-weight: var(--weight-medium); margin-bottom: var(--space-3); }
 .document-card__count-note { color: var(--text-body); font-size: var(--text-sm); line-height: 1.6; margin-bottom: var(--space-3); }
-.document-card__guidance { font-size: var(--text-sm); line-height: 1.7; color: var(--text-body); margin-bottom: var(--space-4); overflow-wrap: anywhere; }
-.document-card__guidance strong { color: var(--text-primary); margin-right: var(--space-2); }
 .packages-table__results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: var(--space-3); }
 .packages-table__result { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: var(--text-base); line-height: 1.5; }
 .document-result__count { font-size: var(--text-xl); font-weight: var(--weight-semi); margin-right: var(--space-1); }

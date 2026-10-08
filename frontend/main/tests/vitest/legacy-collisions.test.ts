@@ -28,14 +28,17 @@ function walk(dir: string): string[] {
   });
 }
 
-/** Files written before the redesign: everything except shadcn/ui, its helpers and the UI kit. */
+/**
+ * Code written the old way. Every legacy stylesheet counts. A .ts/.tsx file counts unless it imports
+ * through the `@/` alias, which only new-style code uses (#1030): such a file has adopted Tailwind,
+ * so its utility class names are meant (#1034 moves the review header and the Documents cards over).
+ * The danger this test guards is a legacy file wearing a utility's name by accident.
+ */
 function isLegacy(file: string): boolean {
   const rel = path.relative(SRC, file).split(path.sep).join('/');
-  if (rel.startsWith('styles/') || rel.startsWith('lib/') || rel.startsWith('hooks/')) return false;
-  if (rel.startsWith('pages/ui-kit/') || rel.startsWith('components/data-table/')) return false;
-  // shadcn files are kebab-case lower-case; legacy components are PascalCase or camelCase.
-  if (rel.startsWith('components/ui/') && /^[a-z0-9-]+\.tsx$/.test(path.basename(rel))) return false;
-  return true;
+  if (rel.startsWith('styles/')) return false;
+  if (file.endsWith('.css')) return true;
+  return !/from ['"]@\//.test(fs.readFileSync(file, 'utf8'));
 }
 
 function legacyClassNames(): Set<string> {
