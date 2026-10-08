@@ -25,6 +25,7 @@ from app.auth.roles import Action
 from app.models import ObservationCandidate, SlotRowReviewDecision
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from vocabulary.check_holds import STONE_SHORT_OF_ENDS
 from vocabulary.semantic_types import SemanticType
 from workflow.countertop_runs import published_wall_layouts
 from workflow.slot_row_scope import (
@@ -55,6 +56,7 @@ class SlotRowOut(BaseModel):
     label: str
     piece_count: int
     held_reason: str | None
+    wall_confirmation_allowed: bool
     values: list[SlotRowValueOut]
     wall_proposal: str | None
     wall_source: str | None
@@ -165,12 +167,24 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
         wall_proposal_value = None
         reason = reason or "The readers did not agree on this row's wall layout."
 
+    if row.wall_confirmation_allowed and any(
+        f"check-hold:{STONE_SHORT_OF_ENDS[0]}" in (candidate.ambiguity_flags or ())
+        for candidate in row.candidates
+    ):
+        wall_proposal_value = "back_only"
+        source = "between-panels"
+        reason = (
+            "The stone sits between side panels, so the panels take the field cut — "
+            "confirm 'no field cut at the ends' (back only)."
+        )
+
     return SlotRowOut(
         row_id=row.anchor.id,
         page_number=row.page_number,
         label=row.label,
         piece_count=row.piece_count,
         held_reason=row.held_reason,
+        wall_confirmation_allowed=row.wall_confirmation_allowed,
         values=values,
         wall_proposal=wall_proposal_value,
         wall_source=source,
@@ -232,7 +246,9 @@ def review_slot_row(
 ) -> SlotRowOut:
     revision = _revision(session, project_id, package_id)
     row = _current_row(session, revision.id, row_id)
-    if row.held_reason is not None:
+    if row.held_reason is not None and not (
+        row.wall_confirmation_allowed and body.wall_config is not None and not body.measurements
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This row cannot be checked until the hold is resolved: {row.held_reason}",
