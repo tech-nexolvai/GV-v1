@@ -18,6 +18,7 @@ and a page that reads as having no dimensions.
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 from decimal import Decimal
 from fractions import Fraction
@@ -1775,3 +1776,98 @@ def test_no_character_of_a_label_refused_this_way_is_read_twice(
 ) -> None:
     """#894's invariant holds for every label this rule sets aside."""
     assert _characters_read_twice(_GAPS[shape][0], monkeypatch) == []
+
+
+def _pdf_from(objects: list[bytes]) -> bytes:
+    """A PDF from hand-written objects, numbered from 1, with a real cross-reference table."""
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += str(number).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+    start = len(out)
+    out += b"xref\n0 " + str(len(objects) + 1).encode() + b"\n0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        b"trailer\n<< /Size "
+        + str(len(objects) + 1).encode()
+        + b" /Root 1 0 R >>\nstartxref\n"
+        + str(start).encode()
+        + b"\n%%EOF\n"
+    )
+    return bytes(out)
+
+
+def _stream(body: bytes, attrs: bytes = b"") -> bytes:
+    return (
+        b"<< /Length " + str(len(body)).encode() + attrs + b" >>\nstream\n" + body + b"\nendstream"
+    )
+
+
+def _form_page(form: bytes) -> bytes:
+    """One page whose own stream is only `/Fm1 Do`; the drawing is in the form it names."""
+    return _pdf_from(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100]"
+                b" /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>"
+            ),
+            _stream(b"/Fm1 Do"),
+            _stream(form, b" /Type /XObject /Subtype /Form /BBox [0 0 200 100]"),
+        ]
+    )
+
+
+def _stamp_page(appearance: bytes) -> bytes:
+    """One page drawn by a stamp annotation, which points back at its page with `/P`."""
+    return _pdf_from(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100]"
+                b" /Contents 4 0 R /Annots [5 0 R] >>"
+            ),
+            _stream(b"q Q"),
+            b"<< /Type /Annot /Subtype /Stamp /Rect [0 0 200 100] /P 3 0 R /AP << /N 6 0 R >> >>",
+            _stream(appearance, b" /Type /XObject /Subtype /Form /BBox [0 0 200 100]"),
+        ]
+    )
+
+
+def _fingerprint(data: bytes) -> str:
+    return hashlib.sha256(read_pages(data)[0].content).hexdigest()
+
+
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def test_a_pages_fingerprint_is_never_empty_data() -> None:
+    """Until 2026-10-08 every page of every file hashed as empty data: the reader called a method
+    a pdfminer page does not have, and a broad `except` hid it."""
+    assert _fingerprint(_pdf(b"0 0 m 10 10 l S")) != EMPTY_SHA256
+
+
+def test_pages_whose_streams_match_but_whose_forms_differ_have_different_fingerprints() -> None:
+    first = _fingerprint(_form_page(b"0 0 m 10 10 l S"))
+    second = _fingerprint(_form_page(b"0 0 m 20 20 l S"))
+
+    assert EMPTY_SHA256 not in (first, second)
+    assert first != second
+
+
+def test_a_stamp_drawn_page_is_identified_by_its_stamp() -> None:
+    """Both client sets draw the vendor's sheet as a flattened stamp annotation."""
+    first = _fingerprint(_stamp_page(b"0 0 m 10 10 l S"))
+    second = _fingerprint(_stamp_page(b"0 0 m 20 20 l S"))
+
+    assert EMPTY_SHA256 not in (first, second)
+    assert first != second
+
+
+def test_the_fingerprint_is_the_same_on_every_read() -> None:
+    data = _stamp_page(b"0 0 m 10 10 l S")
+    assert _fingerprint(data) == _fingerprint(data)
