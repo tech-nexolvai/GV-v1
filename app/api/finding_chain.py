@@ -450,13 +450,14 @@ def _assemble(
         _operand_record(verdict_input, observation, page)
         for verdict_input, observation, page in operand_rows
     )
+    reason = finding.reason or finding.trace.get("reason")
     return FindingChain(
         finding_id=finding.id,
         scope_item_id=finding.scope_item_id,
         scope_row_candidate_id=finding.scope_row_candidate_id,
         row_location=location,
         reviewer_reason=finding_reviewer_reason(
-            finding.outcome, finding.reason or finding.trace.get("reason")
+            finding.outcome, reason if isinstance(reason, str) else None
         ),
         scope_label=finding.scope_label or "Package revision",
         outcome=finding.outcome,
