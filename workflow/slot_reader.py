@@ -190,7 +190,7 @@ class SlotReaderRuntime:
             f"fraction_bar={self.fraction_bar.config_hash};"
             f"walls={self.wall_settings.config_hash};"
             "rules=drawn-length-veto,label-expansion,counter-break"
-            f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=512' if self.claude_row_reader else ''}"
+            f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=3000' if self.claude_row_reader else ''}"
         )
 
     @property
@@ -259,7 +259,9 @@ def configured_slot_reader(
             # The shared spend guard reserves atomically before every call, so the two readers can
             # use the same bounded worker pool. Per-model RPM remains independently paced.
             max_concurrent_calls=8,
-            max_tokens=512,
+            # Claude thinks before it answers: 512 cut replies off mid-JSON (proof run 2026-10-08:
+            # 23 truncated or empty answers). Row choice and walls need ~3000; spans fit well inside.
+            max_tokens=3000,
         )
     return SlotReaderRuntime(
         form=form,
@@ -843,6 +845,14 @@ def read_slot_pages(
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
         page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
         owner_candidate_ids[page.page_index] = page_candidate_ids
+        # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
+        # never become a proposal, so it is not read at paid prices; the hold is applied below
+        # exactly as before. Claude path only.
+        held_before_reading = (
+            runtime.claude_row_reader
+            and plan.row is not None
+            and _counter_break_row_hold(page, plan, (), runtime) is not None
+        )
         for owner in owners:
             for position, label in enumerate(owner.labels):
                 key = _key(page.page_index, owner.index, position)
@@ -850,6 +860,8 @@ def read_slot_pages(
                 crop_px = _pixels(page.rows, label.crop, page.rendered)
                 ink = None if page.ink is None else page.ink.at(crop_px)
                 crops[key] = (box_px, crop_px, ink)
+                if held_before_reading:
+                    continue
                 if not runtime.claude_row_reader and (
                     _hard_guarded(label, ink) or not label.has_digit
                 ):
@@ -908,7 +920,9 @@ def read_slot_pages(
                         )
                         for model in wanted
                     )
-        wall_pictures_for = _wall_job_pictures(page, plan, runtime.wall_settings)
+        wall_pictures_for = (
+            None if held_before_reading else _wall_job_pictures(page, plan, runtime.wall_settings)
+        )
         if wall_pictures_for is not None:
             code_clues = _code_wall_clues(page, plan, wall_pictures_for)
             code_outcome = code_wall_outcome(code_clues, row_ambiguity=plan.ambiguity)
@@ -1023,11 +1037,16 @@ def read_slot_pages(
                     )
                 )
             )
+            code_clues = (
+                _read_wall_clues(slots, asked.code_clues)
+                if runtime.claude_row_reader and asked.code_outcome is None
+                else asked.code_clues
+            )
             wall_outcome = asked.code_outcome or seal_walls(
                 wall_answers,
                 hatch=asked.hatch,
                 row_ambiguity=plan.ambiguity,
-                code_clues=asked.code_clues,
+                code_clues=code_clues,
                 allow_claude_pair=runtime.claude_row_reader,
             )
             walls = PageWalls(
@@ -1037,7 +1056,7 @@ def read_slot_pages(
                 view_box_px=asked.view_box_px,
                 answers=wall_answers,
                 hatch=asked.hatch,
-                code_clues=asked.code_clues,
+                code_clues=code_clues,
                 outcome=wall_outcome,
             )
         results.append(
@@ -1231,6 +1250,36 @@ def _code_wall_clues(
     return CodeWallClues(left=left or None, right=right or None)
 
 
+_WALL_WORD: Final = re.compile(r"\b(?:filler|field\s+cut|wall)\b", re.IGNORECASE)
+
+
+def _read_wall_clues(slots: tuple[OwnerResult, ...], clues: CodeWallClues) -> CodeWallClues:
+    """Raj's row-end rule again, on the end labels the two readers sealed.
+
+    `_code_wall_clues` reads only the file's own text, and a vendor that draws its words as lines
+    hides every "Filler" from it (proof run 2026-10-08: a filler sum at both ends of a row, sealed
+    by both readers, while the walls went to the person). A sealed reading on vendor ink, after
+    the drawn-length veto, is evidence of the same standing as the file's text. Only positive
+    clues are added: an end without the word stays whatever the drawing already said.
+    """
+    if len(slots) < 2:
+        return clues
+    left, right = clues.left, clues.right
+    for owner, side in ((slots[0], "left"), (slots[-1], "right")):
+        position = owner.outcome.label_index
+        if owner.outcome.state is not LabelState.SEALED or position is None:
+            continue
+        outcome = owner.labels[position].outcome
+        if outcome.ink is not InkClass.VENDOR or not outcome.sealed_text:
+            continue
+        if _WALL_WORD.search(outcome.sealed_text):
+            if side == "left":
+                left = True
+            else:
+                right = True
+    return CodeWallClues(left=left, right=right)
+
+
 def _counter_break_row_hold(
     page: SlotPage,
     plan: SlotPlan,
@@ -1249,7 +1298,7 @@ def _counter_break_row_hold(
         for label in slot.labels
         if label.outcome.ink is InkClass.VENDOR and label.label.text
     ]
-    if page.ink is not None and plan.row is not None and slots:
+    if page.ink is not None and plan.row is not None:
         row = plan.row
         slack = runtime.wall_settings.frame_slack_pt
         frames = [

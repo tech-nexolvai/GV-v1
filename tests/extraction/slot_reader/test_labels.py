@@ -88,10 +88,10 @@ def test_plain_dimensions_are_unchanged() -> None:
 
 
 def test_claude_can_parse_an_explicit_mm_inch_pair_without_relaxing_legacy() -> None:
-    text = "457 mm [18]"
+    text = "305 mm [12]"
     assert plain_dimension(text) is None
     parsed = plain_dimension(text, allow_explicit_mm=True)
-    assert parsed is not None and parsed.exact == Fraction(18) and parsed.unit is Unit.INCH
+    assert parsed is not None and parsed.exact == Fraction(12) and parsed.unit is Unit.INCH
 
 
 def test_field_cut_and_vif_hold_the_row_with_the_admins_reasons() -> None:
@@ -109,3 +109,11 @@ def test_field_cut_is_named_before_vif_and_neither_hides_in_a_word() -> None:
     assert both is not None and both.code == "field-cut-included"
     assert row_hold(["VIFS", "MOTIVIF", '12"', "FIELD CUT"]) is None
     assert row_hold([]) is None
+
+
+def test_a_sum_with_filler_written_without_a_space_expands() -> None:
+    """A vendor prints `4"+1"Filler` with no space before the word; both readers copy it so."""
+    from fractions import Fraction
+
+    expanded = expand_label('4"+1"Filler')
+    assert expanded is not None and expanded.value.exact == Fraction(5)

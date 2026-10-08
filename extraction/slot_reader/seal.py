@@ -23,9 +23,11 @@ Source: issues #987, #992 · Verification: `tests/extraction/slot_reader/test_se
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 from typing import Final
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
@@ -270,6 +272,8 @@ def seal_label(
     hold = row_hold([agreed])
     if hold is not None:
         return review(hold.code, hold.reason, keep_suggestion=False)
+    if claude_pair and mm_corroborates_inch(agreed) is False:
+        return review("mm-inch-disagree", "the label's millimetre and inch halves disagree")
     value = plain_dimension(agreed, allow_explicit_mm=claude_pair)
     if (
         value is not None
@@ -301,11 +305,54 @@ def seal_label(
     )
 
 
+#: A metric label with its inch value in brackets, as these vendors print it: `305 [12]`,
+#: `38 [1 1/2]`, `18 [3/4]`, with or without `mm` and an inch mark.
+_BARE_DUAL: Final = re.compile(
+    r"\s*(?P<mm>[0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*\[\s*"
+    r"(?P<inch>[0-9]+(?:\s+[0-9]+/[0-9]+)?|[0-9]+/[0-9]+)\s*\"?\s*\]\s*",
+    re.IGNORECASE,
+)
+_MM_PER_INCH: Final = Fraction(254, 10)
+
+
 def _is_explicit_mm_dual(text: str) -> bool:
-    """A printed mm [inch] dual label is a supported dimension, not an ambiguous worded label."""
+    """A printed mm [inch] dual label is a supported dimension, not an ambiguous worded label.
+
+    Both forms count: `305 mm [12"]` and the bare `305 [12]` the vendors actually print. Two
+    numbers in one label is what makes a reader call it "combined"; for this form that is no reason
+    to hold it — the inch half is the value (Raj Q12) and the mm half is checked against it.
+    """
     from extraction.slot_reader.labels import _MM_DUAL
 
-    return _MM_DUAL.fullmatch(text) is not None
+    return _MM_DUAL.fullmatch(text) is not None or _BARE_DUAL.fullmatch(text) is not None
+
+
+def mm_corroborates_inch(text: str) -> bool | None:
+    """Whether a dual label's mm half agrees with its inch half; `None` if it is not a dual label.
+
+    The inch is authoritative and the mm only corroborates it (CLAUDE.md, Raj Q12). The vendor's
+    inch is the mm rounded to its own fraction, so the allowance is half that fraction's step plus
+    half a millimetre: `562 [22 1/8]` (561.98 mm) agrees, `305 [10]` does not. A disagreement is a
+    misread or a vendor slip, and either way the person looks.
+    """
+    match = _BARE_DUAL.fullmatch(text)
+    if match is None:
+        return None
+    millimetres = Fraction(match.group("mm"))
+    inch_text = match.group("inch").split()
+    inches = Fraction(0)
+    step = Fraction(1)
+    for part in inch_text:
+        if "/" in part:
+            numerator, denominator = part.split("/")
+            if int(denominator) == 0:
+                return False
+            inches += Fraction(int(numerator), int(denominator))
+            step = Fraction(1, int(denominator))
+        else:
+            inches += Fraction(int(part))
+    allowance = _MM_PER_INCH * step / 2 + Fraction(1, 2)
+    return abs(millimetres - inches * _MM_PER_INCH) <= allowance
 
 
 @dataclass(frozen=True, slots=True)

@@ -717,7 +717,7 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
         "anthropic.claude-opus-5-5",
         "anthropic.claude-sonnet-5-5",
     )
-    assert claude_enabled.form.max_tokens == 512
+    assert claude_enabled.form.max_tokens == 3000
     assert set(FRACTION_BAR_ENV) == set(FRACTION_ENV)
 
 
@@ -1613,3 +1613,43 @@ def test_two_positive_drawing_wall_clues_skip_the_reader_question(monkeypatch: A
     assert result.walls.outcome.config == "back_left_right"
     assert result.walls.outcome.source == "vendor-drawing-clues"
     assert clients.wall_requests == []
+
+
+def _claude_walls_read(texts: Mapping[int | None, str]) -> PageSlotResult:
+    page = glyph_page()
+    lookup = claude_crops_to_texts(page, texts)
+    readers = FakeReaders(
+        lambda _model, png: lookup.get(png, '2"'), walls=lambda _model: UNSURE_WALLS
+    )
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    return result
+
+
+def test_a_filler_both_readers_sealed_at_each_row_end_settles_the_walls() -> None:
+    """Proof run 2026-10-08: a vendor draws its "Filler" sums as lines, so the file's text has no
+    "Filler"; the sealed readings are the only place the drawing's own clue shows up."""
+    result = _claude_walls_read(TEXTS | {0: '10"+2"Filler', 2: '10"+2"Filler'})
+
+    assert [slot.outcome.state for slot in result.slots][::2] == [LabelState.SEALED] * 2
+    assert result.walls is not None
+    assert result.walls.code_clues.left is True and result.walls.code_clues.right is True
+    assert result.walls.outcome.config == "back_left_right"
+    assert result.walls.outcome.source == "vendor-drawing-clues"
+
+
+def test_a_filler_read_at_one_end_only_leaves_the_walls_to_the_person() -> None:
+    result = _claude_walls_read(TEXTS | {0: '10"+2"Filler'})
+
+    assert result.walls is not None
+    assert result.walls.code_clues.left is True and result.walls.code_clues.right is None
+    assert result.walls.outcome.config is None

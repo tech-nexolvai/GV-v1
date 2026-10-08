@@ -60,7 +60,7 @@ _MM_DUAL: Final = re.compile(
 #: One part of a sum, or the total of equal shares: a number written with its inch mark.
 _INCH_PART: Final = r"[0-9][0-9 /.\-]*\""
 _SUM: Final = re.compile(
-    rf"(?P<parts>{_INCH_PART}(?:\s*\+\s*{_INCH_PART})+)(?:\s+(?P<word>[A-Za-z]+))?"
+    rf"(?P<parts>{_INCH_PART}(?:\s*\+\s*{_INCH_PART})+)(?:\s*(?P<word>[A-Za-z]+))?"
 )
 _SHARES: Final = re.compile(
     rf"(?P<total>{_INCH_PART})\s*\(\s*(?P<count>[0-9]+)\s*EQ\s*\)", re.IGNORECASE

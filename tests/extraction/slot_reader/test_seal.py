@@ -127,13 +127,41 @@ def test_approved_claude_pair_is_provisional_until_the_drawing_witness_runs() ->
 
 
 def test_claude_pair_parses_explicit_mm_inch_label_but_legacy_does_not() -> None:
-    answers = (answer(OPUS, "457 mm [18]"), answer(SONNET, "457 mm [18]"))
-    legacy = seal(answers=(answer(KIMI, "457 mm [18]"), answer(QWEN, "457 mm [18]")))
+    answers = (answer(OPUS, "305 mm [12]"), answer(SONNET, "305 mm [12]"))
+    legacy = seal(answers=(answer(KIMI, "305 mm [12]"), answer(QWEN, "305 mm [12]")))
     assert legacy.state is LabelState.REVIEW and legacy.reason_code == "not-plain"
 
     claude = seal(answers=answers, allow_claude_pair=True)
     assert claude.state is LabelState.PROVISIONAL
-    assert claude.suggestion is not None and claude.suggestion.exact == Fraction(18)
+    assert claude.suggestion is not None and claude.suggestion.exact == Fraction(12)
+
+
+@pytest.mark.parametrize(
+    ("text", "inches"),
+    [("305 [12]", Fraction(12)), ("25 [1]", Fraction(1)), ("70 [2 3/4]", Fraction(11, 4))],
+)
+def test_claude_pair_parses_the_bare_mm_inch_form_even_when_both_call_it_combined(
+    text: str, inches: Fraction
+) -> None:
+    """Proof run 2026-10-08: every bare mm [inch] label was held as "words or a sum"
+    because both readers ticked "combined" (two numbers) and only the `mm`-spelt form was allowed.
+    """
+    answers = (answer(OPUS, text, combined=True), answer(SONNET, text, combined=True))
+    outcome = seal(answers=answers, allow_claude_pair=True)
+    assert outcome.state is LabelState.PROVISIONAL
+    assert outcome.suggestion is not None and outcome.suggestion.exact == inches
+
+
+def test_claude_pair_holds_a_dual_label_whose_mm_and_inch_halves_disagree() -> None:
+    answers = (answer(OPUS, "305 [10]"), answer(SONNET, "305 [10]"))
+    outcome = seal(answers=answers, allow_claude_pair=True)
+    assert outcome.state is LabelState.REVIEW
+    assert outcome.reason_code == "mm-inch-disagree"
+
+
+def test_the_legacy_pair_still_holds_a_bare_mm_inch_label_called_combined() -> None:
+    answers = (answer(KIMI, "305 [12]", combined=True), answer(QWEN, "305 [12]", combined=True))
+    assert seal(answers=answers).state is LabelState.REVIEW
 
 
 @pytest.mark.parametrize(
