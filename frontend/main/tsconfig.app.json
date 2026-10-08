@@ -20,7 +20,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* `@/…` → src/… for new code (shadcn/ui and what is built on it); see README.md */
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src"]
 }

@@ -1,3 +1,4 @@
+@layer legacy {
 .packages-page { min-width: 0; }
 .packages-page__pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-4); font-size: var(--text-sm); }
 .packages-page__pagination > div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
@@ -38,3 +39,4 @@
 .packages-page__notice p, .packages-page__notice details { margin-top: var(--space-2); }
 .packages-page__notice summary { cursor: pointer; }
 .packages-page__notice ul { padding-left: var(--space-5); }
+} /* @layer legacy */

@@ -1,3 +1,4 @@
+@layer legacy {
 .usage-page {
   min-width: 0;
 }
@@ -220,3 +221,4 @@
   .usage-breakdown__pct { grid-column: 2; grid-row: 1; }
   .usage-breakdown__count { grid-column: 3; grid-row: 1; text-align: right; }
 }
+} /* @layer legacy */

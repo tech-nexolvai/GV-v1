@@ -13,7 +13,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-export type Page = 'review' | 'documents' | 'rulebook' | 'settings' | 'usage';
+/** `ui-kit` is the component reference (#1029): reachable by URL only, not in the sidebar. */
+export type Page = 'review' | 'documents' | 'rulebook' | 'settings' | 'usage' | 'ui-kit';
 
 export interface Route {
   page: Page;
@@ -21,9 +22,9 @@ export interface Route {
   packageId: string | null;
 }
 
-const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', 'usage'];
+const PAGES: readonly Page[] = ['review', 'documents', 'rulebook', 'settings', 'usage', 'ui-kit'];
 
-/** Recognised routes are review, documents, rulebook, settings, and usage; unknown or malformed routes open the review start. */
+/** Recognised routes are review, documents, rulebook, settings, usage and ui-kit; unknown or malformed routes open the review start. */
 export function parseRoute(hash: string): Route {
   let parts: string[];
   try {

@@ -1,3 +1,4 @@
+@layer legacy {
 .rulebook-page {
   min-width: 0;
 }
@@ -251,3 +252,4 @@
   .rulebook-detail__header,
   .rulebook-detail__body { padding: var(--space-4); }
 }
+} /* @layer legacy */

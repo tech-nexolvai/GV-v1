@@ -1,3 +1,4 @@
+@layer legacy {
 /*
  * The measurement form.
  *
@@ -1378,3 +1379,4 @@ select.value-input {
     overflow: auto;
   }
 }
+} /* @layer legacy */

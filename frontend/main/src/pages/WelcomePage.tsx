@@ -12,7 +12,7 @@
 
 import { ArrowUpRight } from 'lucide-react';
 import { NewReviewForm } from '../components/upload/NewReviewForm';
-import { StatusBadge } from '../components/ui/Badge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { listPackages } from '../api/client';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';

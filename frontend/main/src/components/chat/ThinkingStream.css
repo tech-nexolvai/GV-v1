@@ -1,3 +1,4 @@
+@layer legacy {
 .thinking {
   display: inline-flex;
   align-items: center;
@@ -22,3 +23,4 @@
 @media (prefers-reduced-motion: reduce) {
   .thinking__pulse { animation: none; }
 }
+} /* @layer legacy */

@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    ASSIGNMENT PROGRESS
    What the screen shows while a model decides which reading fills which field.
@@ -239,3 +240,4 @@
   font-size: var(--text-xs);
   color: var(--text-faint);
 }
+} /* @layer legacy */

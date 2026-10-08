@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { downloadEvidenceCrop } from '../../api/client';
-import { OutcomeBadge } from '../ui/Badge';
+import { OutcomeBadge } from '../ui/StatusBadge';
 import './EvidencePanel.css';
 
 interface EvidencePanelProps {

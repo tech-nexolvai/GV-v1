@@ -1,3 +1,4 @@
+@layer legacy {
 /* ── FindingCard ──────────────────────────────────────────── */
 .finding-card {
   border: 1px solid var(--border-default);
@@ -358,3 +359,4 @@
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
+} /* @layer legacy */

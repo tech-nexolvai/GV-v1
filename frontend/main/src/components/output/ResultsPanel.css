@@ -1,3 +1,4 @@
+@layer legacy {
 .results-panel { overflow: auto; padding: 24px; flex: 1; min-height: 0; }
 .results-panel__header, .results-panel__identity { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; }
 .results-panel h2 { font-size:24px; margin:0 0 8px; }
@@ -24,3 +25,4 @@
 .finding-card__actioned-label p { margin:6px 0; }
 .finding-card__problem-label { font-size:11px; align-self:center; }
 @media (max-width:640px) { .results-panel { padding:14px; } .results-panel__result { padding:10px; } .results-panel__header button { width:100%; } .results-panel__row-values dl > div { grid-template-columns:1fr; gap:2px; } }
+} /* @layer legacy */

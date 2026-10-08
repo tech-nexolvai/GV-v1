@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    SIDEBAR — ChatGPT-style: new review, the reviews list grouped by date, settings at the foot.
    A full column on desktop, a 56px icon rail when collapsed, a drawer under 768px.
@@ -227,3 +228,4 @@
   .sidebar,
   .sidebar[data-collapsed='true'] { transition: none; }
 }
+} /* @layer legacy */

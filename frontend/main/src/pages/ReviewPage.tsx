@@ -9,7 +9,7 @@ import { ResultsPanel } from '../components/output/ResultsPanel';
 import { DrawingResultPanel } from '../components/output/DrawingResultPanel';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
-import { StatusBadge } from '../components/ui/Badge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,

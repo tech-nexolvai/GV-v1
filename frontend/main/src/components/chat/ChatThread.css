@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    CHAT THREAD
    ============================================================ */
@@ -384,3 +385,4 @@
 @media (prefers-reduced-motion: reduce) {
   .summary__seg { animation: none; }
 }
+} /* @layer legacy */

@@ -186,6 +186,12 @@ jobs:
       - name: Component tests
         run: npm run test:components
 
+      # The new shadcn/ui components, clicked and opened in jsdom (Vitest), plus the guards that keep
+      # Tailwind from touching the legacy pages: every old stylesheet stays in the legacy layer, no
+      # old class name becomes a utility, and the new colour tokens meet contrast (#1029).
+      - name: Interactive component tests
+        run: npm run test:ui
+
       - name: Build
         run: ./node_modules/.bin/vite build
 

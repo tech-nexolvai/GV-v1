@@ -1,3 +1,4 @@
+@layer legacy {
 /* ── Evidence Panel ───────────────────────────────────────── */
 .evidence-panel {
   height: 100%;
@@ -306,3 +307,4 @@
   color: var(--text-faint);
   font-family: var(--font-mono);
 }
+} /* @layer legacy */

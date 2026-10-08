@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ChevronRight, FileSearch, ExternalLink, CheckCircle, TriangleAlert } from 'lucide-react';
 import type { Finding } from '../../data/types';
-import { OutcomeBadge, SeverityDot } from '../ui/Badge';
+import { OutcomeBadge, SeverityDot } from '../ui/StatusBadge';
 import { OutcomeIcon } from '../ui/OutcomeIcon.js';
 import { createDecisionSaver, type DecisionSaveResult, type SimpleReviewAction } from './decisionSave.js';
 import { actionNeedsNote } from '../output/reviewerResults.js';

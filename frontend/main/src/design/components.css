@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    GV COMPONENT STYLES — V3 (monochrome)
    Buttons, badges, inputs, cards, tooltips and the upload dialog, shared by every screen.
@@ -524,3 +525,4 @@ a:focus-visible,
   .badge--processing::before { animation: none; }
   [data-tooltip]::after { transition: none; }
 }
+} /* @layer legacy */

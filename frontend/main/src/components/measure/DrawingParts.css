@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    PARTS OF EACH DRAWING (#882)
    The computer's suggested parts, one row each, for a person to decide one at a time.
@@ -297,3 +298,4 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
 }
+} /* @layer legacy */

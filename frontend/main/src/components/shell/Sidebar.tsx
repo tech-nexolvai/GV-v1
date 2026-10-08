@@ -16,7 +16,7 @@ import { projectId } from '../../api/config';
 import { useAsync } from '../../api/useAsync';
 import type { Page } from '../../app/route';
 import type { Theme } from '../../app/theme';
-import { StatusBadge } from '../ui/Badge';
+import { StatusBadge } from '../ui/StatusBadge';
 import './Sidebar.css';
 
 type PackageItem = PackagePage['items'][number];
