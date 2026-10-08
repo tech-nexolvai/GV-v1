@@ -34,7 +34,11 @@ from eval.form_first_safety import (
     published_ct_width_snapshot,
 )
 from extraction.form_reader.bedrock import _extract_json_object
-from extraction.slot_reader.bedrock import CROP_PROMPT_ID
+from extraction.slot_reader.bedrock import (
+    CLAUDE_SPAN_PROMPT_ID,
+    CROP_PROMPT_ID,
+    ROW_PROMPT_ID,
+)
 from extraction.slot_reader.walls import WALL_PROMPT_ID
 from rules.parameters import ParameterSet, resolve_all
 from units.normalise import UnitNormalisationError, normalise_to_inches
@@ -60,6 +64,7 @@ class AttemptAudit:
     wall_attempts: int
     complete: bool
     reason: str | None
+    row_attempts: int = 0
 
 
 def _answer(raw: str | None) -> dict[str, Any] | None:
@@ -100,12 +105,18 @@ def audit_saved_attempts(
     compared as a multiset, not assigned to a guessed crop. This is an audit of the persisted
     answers, not a claim that the current schema proves the identity of each image sent.
     """
-    relevant = tuple(row for row in attempts if row.prompt_id in {CROP_PROMPT_ID, WALL_PROMPT_ID})
-    label_attempts = sum(row.prompt_id == CROP_PROMPT_ID for row in relevant)
+    label_prompts = {CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID}
+    relevant = tuple(
+        row for row in attempts if row.prompt_id in {*label_prompts, WALL_PROMPT_ID, ROW_PROMPT_ID}
+    )
+    label_attempts = sum(row.prompt_id in label_prompts for row in relevant)
     wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
+    row_attempts = sum(row.prompt_id == ROW_PROMPT_ID for row in relevant)
 
     def result(complete: bool, reason: str | None) -> AttemptAudit:
-        return AttemptAudit(len(relevant), label_attempts, wall_attempts, complete, reason)
+        return AttemptAudit(
+            len(relevant), label_attempts, wall_attempts, complete, reason, row_attempts
+        )
 
     if not relevant:
         return result(False, "no stored slot-reader attempts")
@@ -114,7 +125,12 @@ def audit_saved_attempts(
         or row.reader_attempt_number is None
         or row.reader_attempt_number < 1
         or row.model_id not in model_ids
-        or (row.outcome in {"ok", "rejected"} and row.private_raw_response is None)
+        or (row.outcome == "ok" and row.private_raw_response is None)
+        or (
+            row.outcome == "rejected"
+            and row.private_raw_response is None
+            and not row.rejection_reason
+        )
         for row in relevant
     ):
         return result(False, "a stored reader attempt lacks page, model, number, or raw answer")
@@ -126,14 +142,22 @@ def audit_saved_attempts(
         return result(False, "a sealed proposal has no recorded reader text")
     observed: Counter[tuple[str, str]] = Counter()
     for row in relevant:
-        if row.prompt_id != CROP_PROMPT_ID or row.reader_page_index != page_index:
+        if row.reader_page_index != page_index:
             continue
         if row.outcome != "ok":
             continue
         parsed = _answer(row.private_raw_response)
-        if parsed is None or not isinstance(parsed.get("text"), str):
-            return result(False, "a successful label attempt cannot be parsed")
-        observed[(row.model_id, parsed["text"])] += 1
+        if row.prompt_id in label_prompts:
+            if parsed is None or not isinstance(parsed.get("text"), str):
+                return result(False, "a successful label attempt cannot be parsed")
+            observed[(row.model_id, parsed["text"])] += 1
+        elif row.prompt_id == ROW_PROMPT_ID and (
+            parsed is None
+            or isinstance(parsed.get("row"), bool)
+            or not isinstance(parsed.get("row"), int)
+            or not isinstance(parsed.get("why"), str)
+        ):
+            return result(False, "a successful row-choice attempt cannot be parsed")
     if expected - observed:
         return result(False, "a sealed label is not backed by a stored reader answer")
 
@@ -269,7 +293,9 @@ def product_case_for_page(
                 WorkflowRun.package_revision_id == package_revision_id,
                 ExtractionRun.extractor_version.startswith("slot-reader"),
                 ModelInvocation.reader_page_index == page_number - 1,
-                ModelInvocation.prompt_id.in_((CROP_PROMPT_ID, WALL_PROMPT_ID)),
+                ModelInvocation.prompt_id.in_(
+                    (CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID, WALL_PROMPT_ID, ROW_PROMPT_ID)
+                ),
             )
             .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
             .limit(1)

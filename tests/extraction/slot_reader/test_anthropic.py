@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from io import BytesIO
 from typing import Self
@@ -199,14 +200,14 @@ class FakeCountedClient:
         self.generated = 0
 
     def count_input_tokens(self, **_kwargs: object) -> int:
-        return self.input_tokens
+        raise AssertionError("the Claude slot path must not make a count_tokens request")
 
     def converse(self, **_kwargs: object) -> dict[str, object]:
         self.generated += 1
         return {"usage": {"inputTokens": self.input_tokens, "outputTokens": self.output_tokens}}
 
 
-def test_spend_guard_refuses_before_generation_when_parallel_reservation_exceeds_cap() -> None:
+def test_spend_guard_uses_a_fixed_estimate_and_refuses_before_generation_over_cap() -> None:
     guard = BatchSpendGuard(Decimal("0.01"), FakeRates())
     client = FakeCountedClient(input_tokens=100, output_tokens=5)
     limited = SpendLimitedClient(client, guard)
@@ -215,3 +216,36 @@ def test_spend_guard_refuses_before_generation_when_parallel_reservation_exceeds
         limited.converse(**REQUEST)
 
     assert client.generated == 0
+
+
+def test_concurrent_claude_calls_reserve_atomically_before_generation() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    counter_lock = threading.Lock()
+
+    class SlowClient(FakeCountedClient):
+        def converse(self, **_kwargs: object) -> dict[str, object]:
+            with counter_lock:
+                self.generated += 1
+            entered.set()
+            assert release.wait(timeout=2)
+            return {"usage": {"inputTokens": 10, "outputTokens": 5}}
+
+    client = SlowClient(input_tokens=10, output_tokens=5)
+    guard = BatchSpendGuard(Decimal("0.03"), FakeRates())
+    limited = SpendLimitedClient(client, guard)
+    request = {**REQUEST, "inferenceConfig": {"maxTokens": 128}}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(limited.converse, **request) for _ in range(2)]
+        assert entered.wait(timeout=2)
+        release.set()
+        results: list[object] = []
+        for future in futures:
+            try:
+                results.append(future.result(timeout=2))
+            except SpendCapExceeded as error:
+                results.append(error)
+
+    assert client.generated == 1
+    assert sum(isinstance(result, SpendCapExceeded) for result in results) == 1

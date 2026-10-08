@@ -29,6 +29,7 @@ def _attempt(
         prompt_id=prompt_id,
         private_raw_response=raw,
         outcome=outcome,
+        rejection_reason=("malformed_response" if outcome == "rejected" else None),
         reader_page_index=page,
         reader_attempt_number=number,
     )
@@ -63,6 +64,41 @@ def test_both_saved_label_answers_complete_the_audit() -> None:
     assert result.label_attempts == 2
 
 
+def test_claude_span_attempts_back_sealed_labels() -> None:
+    result = audit_saved_attempts(
+        (
+            _attempt(MODELS[0], prompt_id="claude-slot-span-v1"),
+            _attempt(MODELS[1], prompt_id="claude-slot-span-v1"),
+        ),
+        (_candidate(),),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert result.complete
+    assert result.label_attempts == 2
+
+
+def test_row_choice_attempt_is_audited_even_without_label_proposals() -> None:
+    result = audit_saved_attempts(
+        (
+            _attempt(
+                MODELS[0],
+                prompt_id="slot-row-choice-v1",
+                raw='{"row":8,"why":"selected a code candidate"}',
+            ),
+        ),
+        (),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert result.complete
+    assert result.row_attempts == 1
+
+
 def test_missing_or_unparseable_raw_answer_is_unaccounted() -> None:
     result = audit_saved_attempts(
         (_attempt(MODELS[0]), _attempt(MODELS[1], raw=None)),
@@ -74,6 +110,34 @@ def test_missing_or_unparseable_raw_answer_is_unaccounted() -> None:
 
     assert not result.complete
     assert result.reason is not None
+
+
+def test_rejected_attempt_without_raw_body_is_accounted_by_rejection_reason() -> None:
+    rejected = _attempt(MODELS[0], raw=None, outcome="rejected")
+    result = audit_saved_attempts(
+        (rejected, _attempt(MODELS[0], number=2), _attempt(MODELS[1])),
+        (_candidate(),),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert result.complete
+    assert result.attempts == 3
+
+
+def test_rejected_attempt_without_raw_body_or_reason_is_unaccounted() -> None:
+    rejected = _attempt(MODELS[0], raw=None, outcome="rejected")
+    rejected.rejection_reason = None
+    result = audit_saved_attempts(
+        (rejected, _attempt(MODELS[0], number=2), _attempt(MODELS[1])),
+        (_candidate(),),
+        page_index=1,
+        model_ids=MODELS,
+        wall_layout_used=False,
+    )
+
+    assert not result.complete
 
 
 def test_repeated_equal_labels_require_a_separate_stored_answer_per_crop() -> None:
