@@ -738,7 +738,7 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
     )
     assert claude_enabled is not None and claude_enabled.question_packets is True
     assert claude_enabled.allow_stacked is True
-    assert claude_enabled.spend_cap_usd == Decimal("2.00")
+    assert claude_enabled.spend_cap_usd == Decimal("2.50")
     assert claude_enabled.form.max_concurrent_calls == 8
     assert claude_enabled.form.reader_ids == (
         "anthropic.claude-opus-5-5",
@@ -2035,3 +2035,18 @@ def test_a_wall_to_wall_line_reaching_the_row_ends_is_not_a_pocket() -> None:
     assert _stone_end_hold(page, plan, ()) is None
     page, plan = _fake_rows((100, 400), (130, 400), ("wall to wall",))
     assert _stone_end_hold(page, plan, ()) is None, "inside one end only is not a pocket at both"
+
+
+def test_the_claude_reader_budget_is_two_fifty_by_default_and_five_at_most() -> None:
+    """The admin raised the per-set cap on 2026-10-08 (at $2 the worst-case reservation refused
+    the last calls of a $1.72 run); $5 stays the hard ceiling."""
+    from pydantic import ValidationError
+
+    url = "postgresql+psycopg://x@localhost/x"
+    assert Settings(database_url=url).claude_reader_budget_usd == Decimal("2.50")
+    assert (
+        Settings(database_url=url, claude_reader_budget_usd=Decimal(5)).claude_reader_budget_usd
+        == 5
+    )
+    with pytest.raises(ValidationError):
+        Settings(database_url=url, claude_reader_budget_usd=Decimal("5.01"))

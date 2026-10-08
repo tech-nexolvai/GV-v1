@@ -281,7 +281,7 @@ def configured_slot_reader(
         ),
         question_packets=claude_enabled,
         spend_cap_usd=(
-            getattr(settings, "claude_reader_budget_usd", Decimal("2.00"))
+            getattr(settings, "claude_reader_budget_usd", Decimal("2.50"))
             if claude_enabled
             else None
         ),
