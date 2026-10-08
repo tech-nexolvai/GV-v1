@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from app.models.document import Document, DocumentVersion, PackageRevisionDocume
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from vocabulary.check_holds import CHECK_HOLD_REASONS, STONE_SHORT_OF_ENDS
+from vocabulary.reviewer_reasons import reviewer_reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +45,12 @@ class SlotRow:
     decision: SlotRowReviewDecision | None
     held_reason: str | None
     wall_confirmation_allowed: bool
+    row_number: int | None = None
 
     @property
     def label(self) -> str:
+        if self.row_number is not None:
+            return f"Countertop row {self.page_number}.{self.row_number} on page {self.page_number}"
         return f"Countertop row on page {self.page_number}"
 
 
@@ -204,6 +208,16 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
             for candidate in candidates
             for flag in candidate.ambiguity_flags or ()
         )
+        if has_row_hold:
+            held = reviewer_reason(
+                (
+                    flag
+                    for candidate in candidates
+                    for flag in candidate.ambiguity_flags or ()
+                    if not flag.startswith("check-hold:")
+                ),
+                held or "This row needs a reviewer decision.",
+            )
         between_panels = not has_row_hold and check_holds == {STONE_SHORT_OF_ENDS[0]}
         decision = latest_row_decision(session, anchor.id)
         # Only an explicit wall choice on this exact row can clear this one check hold.
@@ -226,7 +240,15 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
                 wall_confirmation_allowed=is_vendor and (held is None or between_panels),
             )
         )
-    return tuple(output)
+    counts = {
+        number: sum(row.page_number == number for row in output)
+        for number in {row.page_number for row in output}
+    }
+    numbered: list[SlotRow] = []
+    for row in output:
+        number = 1 + sum(previous.page_number == row.page_number for previous in numbered)
+        numbered.append(replace(row, row_number=number if counts[row.page_number] > 1 else None))
+    return tuple(numbered)
 
 
 def candidate_value(candidate: ObservationCandidate) -> Fraction | None:

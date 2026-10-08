@@ -2,8 +2,8 @@
 
 The service selects findings from PostgreSQL rather than accepting an approval manifest from the
 caller.  An approval therefore records the exact immutable finding rows that existed for the package
-revision at sign-off.  A ``REVIEW_REQUIRED`` finding needs at least one explicit review action before
-approval; silence is never treated as resolution.
+revision at sign-off. FAIL, REVIEW_REQUIRED and NOT_FOUND each need an explicit review action before
+approval; silence is never treated as resolution. Confirming or dismissing an abstention needs a note.
 
 Both decisions use :func:`app.lifecycle.states.transition`, the sole package-state writer.  That
 keeps approval unreachable from processing, failure and other side states.  Nothing here commits:
@@ -25,9 +25,10 @@ from sqlalchemy.orm import Session
 
 from app.auth.roles import Action, Principal
 from app.lifecycle.states import transition
-from app.models.package import PackageState, PackageStateEvent
+from app.models.package import PackageRevision, PackageState, PackageStateEvent
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.verdicts import CheckRun, Finding
+from app.review.requirements import BLOCKING_OUTCOMES, needs_note
 from app.review.session import complete_session
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -64,7 +65,7 @@ class NoFindingsToApprove(ApprovalRefused):
 
 
 class UnaddressedReviewRequired(ApprovalRefused):
-    """At least one abstaining finding has no explicit reviewer action."""
+    """At least one blocking finding has no valid explicit reviewer action."""
 
 
 class DriverFindingRequired(ApprovalRefused):
@@ -147,21 +148,55 @@ def _findings(db: Session, package_revision_id: UUID) -> tuple[Finding, ...]:
 
 
 def _unaddressed(db: Session, findings: tuple[Finding, ...]) -> tuple[UUID, ...]:
-    required = {finding.id for finding in findings if finding.outcome == REVIEW_REQUIRED}
+    required = {
+        finding.id: finding.outcome for finding in findings if finding.outcome in BLOCKING_OUTCOMES
+    }
     if not required:
         return ()
-    addressed = set(
-        db.scalars(
-            select(ReviewAction.finding_id).where(ReviewAction.finding_id.in_(required))
-        ).all()
-    )
-    return tuple(sorted(required - addressed, key=str))
+    latest = {}
+    for action in db.scalars(
+        select(ReviewAction)
+        .where(ReviewAction.finding_id.in_(required))
+        .order_by(ReviewAction.created_at, ReviewAction.id)
+    ):
+        latest[action.finding_id] = action
+    addressed = {
+        identity
+        for identity, action in latest.items()
+        if not needs_note(required[identity], action.action)
+        or bool(action.note and action.note.strip())
+    }
+    return tuple(sorted(set(required) - addressed, key=str))
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalReadiness:
+    revision_id: UUID
+    can_approve: bool
+    blocking_findings: int
+    blocking_finding_ids: tuple[UUID, ...]
+    reason: str | None
+
+
+def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
+    """The live finding set and lifecycle, shared by the screen and the approval write."""
+    findings = _findings(db, revision_id)
+    blocked = _unaddressed(db, findings)
+    revision = db.get(PackageRevision, revision_id)
+    reason = None
+    if not findings:
+        reason = "There are no findings to sign off. Run the checks first."
+    elif blocked:
+        reason = f"{len(blocked)} findings still need a reviewer decision (and a note for an abstention)."
+    elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
+        reason = "The package is not awaiting review."
+    return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason)
 
 
 def approve_package(
     db: Session, *, principal: Principal, review_session_id: UUID
 ) -> ApprovalDecision:
-    """Approve the server-selected finding set after every abstention was explicitly addressed."""
+    """Approve the server-selected finding set after every blocking result was addressed."""
     _authorise(principal)
     review = _review(db, review_session_id)
     findings = _findings(db, review.package_revision_id)
@@ -174,7 +209,7 @@ def approve_package(
     if unresolved:
         listed = ", ".join(str(finding_id) for finding_id in unresolved)
         raise UnaddressedReviewRequired(
-            f"REVIEW REQUIRED findings must each be explicitly addressed before approval: {listed}"
+            f"FAIL, REVIEW REQUIRED and NOT FOUND findings must each be explicitly addressed before approval: {listed}"
         )
 
     approval = Approval(package_revision_id=review.package_revision_id, approved_by=principal.id)

@@ -66,6 +66,7 @@ from app.models import (
     RuleSnapshot,
 )
 from app.review.exceptions import ExceptionGrant, FindingRef, decide
+from app.review.row_location import row_location
 from app.review.session import exceptions_for_revision
 from app.schemas.findings import (
     OUTCOME_ORDER,
@@ -255,6 +256,8 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             Finding.check_run_id,
             Finding.package_revision_id,
             Finding.scope_item_id,
+            Finding.scope_row_candidate_id,
+            Finding.reason,
             Finding.scope_label,
             Finding.notes,
             Finding.outcome,
@@ -539,6 +542,8 @@ def list_findings(
     # model that expects named fields is the sort of thing that works until a library decides to
     # treat the tuple half first. The mapping is unambiguous.
     items = [FindingOut.model_validate(_as_finding(row)) for row in page]
+    for item in items:
+        item.row_location = row_location(session, item.scope_row_candidate_id)
     # Decided here rather than in SQL: whether an exception still applies depends on the clock, and
     # `app/review/exceptions.py` enforces expiry at the moment of reading for exactly that reason.
     _exception_annotations(session, items, when=datetime.now(UTC))

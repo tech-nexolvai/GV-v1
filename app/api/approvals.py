@@ -38,6 +38,7 @@ from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
     ApprovalNotAuthorised,
     ApprovalRefused,
+    approval_readiness,
     approve_package,
 )
 from app.review.publication import UnapprovedContent, sign_off
@@ -57,6 +58,35 @@ class ApprovalOut(BaseModel):
     approved_by: str
     findings_approved: int
     state: str
+
+
+class ApprovalReadinessOut(BaseModel):
+    revision_id: UUID
+    can_approve: bool
+    blocking_findings: int
+    blocking_finding_ids: tuple[UUID, ...]
+    reason: str | None
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/approval-readiness",
+    response_model=ApprovalReadinessOut,
+)
+def get_approval_readiness(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+) -> ApprovalReadinessOut:
+    revision = _revision(session, project_id, package_id)
+    result = approval_readiness(session, revision.id)
+    return ApprovalReadinessOut(
+        revision_id=result.revision_id,
+        can_approve=result.can_approve,
+        blocking_findings=result.blocking_findings,
+        blocking_finding_ids=result.blocking_finding_ids,
+        reason=result.reason,
+    )
 
 
 def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:

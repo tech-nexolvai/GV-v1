@@ -79,6 +79,14 @@ def test_approval_pins_the_server_selected_finding_rows(postgres_engine: Engine)
         second = _finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="anant")
 
+        for finding in (first, second):
+            record_action(
+                db,
+                review_session_id=review.id,
+                finding_id=finding.id,
+                action=ReviewActionKind.CONFIRM,
+                actor="anant",
+            )
         decision = approve_package(db, principal=reviewer(), review_session_id=review.id)
 
         assert set(decision.finding_ids) == {first.id, second.id}
@@ -192,9 +200,16 @@ def test_approval_from_a_side_state_is_impossible(postgres_engine: Engine) -> No
     factory = session_factory(postgres_engine)
     with factory.begin() as db:
         revision = _revision(db, state=PackageState.NEEDS_INPUT)
-        _finding(db, revision)
+        finding = _finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="anant")
 
+        record_action(
+            db,
+            review_session_id=review.id,
+            finding_id=finding.id,
+            action=ReviewActionKind.CONFIRM,
+            actor="anant",
+        )
         with pytest.raises(IllegalTransition, match="NEEDS_INPUT"):
             approve_package(db, principal=reviewer(), review_session_id=review.id)
 

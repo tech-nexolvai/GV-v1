@@ -718,7 +718,7 @@ def test_mismatched_canonical_becomes_row_review_without_crashing_stage(
 
     row_finding = next(item for item in findings if item.scope_row_candidate_id == anchor.id)
     assert row_finding.outcome == "REVIEW_REQUIRED"
-    assert "cannot be qualified" in (row_finding.reason or "").lower()
+    assert "conflicting or duplicate saved evidence" in (row_finding.reason or "").lower()
     assert session.query(CanonicalObservation).count() == canonical_count
 
 

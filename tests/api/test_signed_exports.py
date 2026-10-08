@@ -150,7 +150,9 @@ def test_legacy_explicit_request_publishes_all_three_and_never_changes_outcomes(
         response = client.get(base + "/" + endpoint)
         assert response.status_code == 200, response.text
         text = _text(response.content)
-        assert text.count("Not checked: dismissed by reviewer ana@example.com") == 8
+        assert (
+            text.count("Not checked: dismissed as not checkable by reviewer ana@example.com") == 8
+        )
         assert "FAIL: confirmed by reviewer ana@example.com" in text
         assert "Reason: Not checkable: synthetic source missing" in text
         assert str(approval.id) in text and "9 findings covered" in text
@@ -161,7 +163,10 @@ def test_legacy_explicit_request_publishes_all_three_and_never_changes_outcomes(
     assert response.status_code == 200
     book = load_workbook(io.BytesIO(response.content))
     review_text = " ".join(str(c.value or "") for row in book["Signed review"] for c in row)
-    assert review_text.count("Not checked: dismissed by reviewer ana@example.com") == 8
+    assert (
+        review_text.count("Not checked: dismissed as not checkable by reviewer ana@example.com")
+        == 8
+    )
     assert "FAIL: confirmed by reviewer ana@example.com" in review_text
     assert str(approval.id) in review_text and "9 findings covered" in review_text
     assert "PASS" not in review_text

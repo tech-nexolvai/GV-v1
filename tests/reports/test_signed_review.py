@@ -53,7 +53,7 @@ def test_pdf_and_workbook_include_the_same_record() -> None:
         )
     )
     text = " ".join(" ".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages).split())
-    assert "Not checked: dismissed by reviewer reviewer" in text
+    assert "Not checked: dismissed as not checkable by reviewer reviewer" in text
     assert "Source missing" in text
     assert str(review.approval_id) in text
     book = load_workbook(BytesIO(write_stored_workbook((stored,), signed_review=review)))
@@ -75,7 +75,8 @@ def test_dismissal_is_not_a_pass_or_a_checked_result() -> None:
         finding_id=uuid4(), rule_id="CHECK-1", outcome="NOT_FOUND", actions=(action,)
     )
     assert finding.wording == (
-        "Not checked: dismissed by reviewer reviewer on 2026-01-01T00:00:00+00:00. "
+        "Not checked: dismissed as not checkable by reviewer reviewer on 2026-01-01T00:00:00+00:00. "
+        "Recorded check remains NOT_FOUND. "
         "Reason: Required source not supplied."
     )
     assert finding.outcome == "NOT_FOUND"

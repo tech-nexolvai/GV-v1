@@ -245,6 +245,51 @@
         "title": "ApprovalOut",
         "type": "object"
       },
+      "ApprovalReadinessOut": {
+        "properties": {
+          "blocking_finding_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Blocking Finding Ids",
+            "type": "array"
+          },
+          "blocking_findings": {
+            "title": "Blocking Findings",
+            "type": "integer"
+          },
+          "can_approve": {
+            "title": "Can Approve",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "can_approve",
+          "blocking_findings",
+          "blocking_finding_ids",
+          "reason"
+        ],
+        "title": "ApprovalReadinessOut",
+        "type": "object"
+      },
       "AssemblyInput": {
         "additionalProperties": false,
         "description": "The ordered cabinet/filler assembly used to derive the design width.",
@@ -2196,6 +2241,16 @@
             "title": "Parameter Versions",
             "type": "object"
           },
+          "row_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "rule_snapshot": {
             "$ref": "#/components/schemas/RuleSnapshotRecord"
           },
@@ -2221,6 +2276,18 @@
               }
             ],
             "title": "Scope Label"
+          },
+          "scope_row_candidate_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Row Candidate Id"
           },
           "severity": {
             "title": "Severity",
@@ -2421,6 +2488,17 @@
             "title": "Product Type",
             "type": "string"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "reviewer_action": {
             "anyOf": [
               {
@@ -2434,6 +2512,16 @@
           "revision_number": {
             "title": "Revision Number",
             "type": "integer"
+          },
+          "row_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rule_id": {
             "title": "Rule Id",
@@ -2474,6 +2562,18 @@
               }
             ],
             "title": "Scope Label"
+          },
+          "scope_row_candidate_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Row Candidate Id"
           },
           "severity": {
             "$ref": "#/components/schemas/Severity"
@@ -4578,6 +4678,47 @@
         "title": "ReviewerEntryOut",
         "type": "object"
       },
+      "RowLocation": {
+        "properties": {
+          "coordinate_space": {
+            "default": "stored",
+            "title": "Coordinate Space",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "page_id": {
+            "format": "uuid",
+            "title": "Page Id",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "polygon": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Polygon",
+            "type": "array"
+          }
+        },
+        "required": [
+          "page_id",
+          "document_version_id",
+          "page_number",
+          "polygon"
+        ],
+        "title": "RowLocation",
+        "type": "object"
+      },
       "RuleOut": {
         "additionalProperties": false,
         "description": "One rule, as it stands today: its effective snapshot and whether it could be released.",
@@ -5092,6 +5233,16 @@
             "format": "uuid",
             "title": "Row Id",
             "type": "string"
+          },
+          "row_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "values": {
             "items": {
@@ -6526,6 +6677,59 @@
         "summary": "Read one package",
         "tags": [
           "packages"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/approval-readiness": {
+      "get": {
+        "operationId": "get_approval_readiness_api_v1_projects__project_id__packages__package_id__approval_readiness_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalReadinessOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Approval Readiness",
+        "tags": [
+          "approvals"
         ]
       }
     },

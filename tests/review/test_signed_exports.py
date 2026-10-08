@@ -64,8 +64,16 @@ def test_snapshot_hash_is_verified(postgres_engine: Engine) -> None:
     _upgrade(postgres_engine)
     with session_factory(postgres_engine).begin() as db:
         revision = _revision(db)
-        _finding(db, revision)
+        finding = _finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="reviewer")
+        record_action(
+            db,
+            review_session_id=review.id,
+            finding_id=finding.id,
+            action=ReviewActionKind.CONFIRM,
+            actor="reviewer",
+            note="Checked source",
+        )
         approval = approve_package(
             db, principal=reviewer("reviewer"), review_session_id=review.id
         ).approval
@@ -90,8 +98,16 @@ def test_resealed_review_cannot_rejudge_or_relabel_a_finding(
     _upgrade(postgres_engine)
     with session_factory(postgres_engine).begin() as db:
         revision = _revision(db)
-        _finding(db, revision)
+        finding = _finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="reviewer")
+        record_action(
+            db,
+            review_session_id=review.id,
+            finding_id=finding.id,
+            action=ReviewActionKind.CONFIRM,
+            actor="reviewer",
+            note="Checked source",
+        )
         approval = approve_package(
             db, principal=reviewer("reviewer"), review_session_id=review.id
         ).approval
@@ -142,8 +158,16 @@ def test_snapshot_binding_refuses_substitution(postgres_engine: Engine, change: 
     _upgrade(postgres_engine)
     with session_factory(postgres_engine).begin() as db:
         revision = _revision(db)
-        _finding(db, revision)
+        finding = _finding(db, revision)
         review = open_session(db, package_revision_id=revision.id, reviewer="reviewer")
+        record_action(
+            db,
+            review_session_id=review.id,
+            finding_id=finding.id,
+            action=ReviewActionKind.CONFIRM,
+            actor="reviewer",
+            note="Checked source",
+        )
         approval = approve_package(
             db, principal=reviewer("reviewer"), review_session_id=review.id
         ).approval
