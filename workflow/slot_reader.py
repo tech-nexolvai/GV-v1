@@ -380,6 +380,8 @@ def _crop_png(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
 
 #: The prototype's full view was a 110 dpi render (bake `full_test_anthropic.py`, 2026-10-08).
 _PROTOTYPE_VIEW_DPI: Final = 110
+#: The prototype's numbered-rows picture was a 150 dpi render (bake `make_rows.py`, 2026-10-08).
+_PROTOTYPE_ROWS_DPI: Final = 150
 #: The prototype's close-up margin past each end: 50 px at 300 dpi (12 pt), or 15% of the span.
 _CLOSE_UP_MARGIN_PT: Final = Decimal(12)
 _CLOSE_UP_MARGIN_FRACTION: Final = Decimal("0.15")
@@ -601,10 +603,15 @@ def _marked_png(
     outline: tuple[int, int, int, int] | None = None,
     mark_color: bytes = _MAGENTA,
     numbered_outlines: Sequence[tuple[tuple[int, int, int, int], bytes, int]] = (),
+    badge_scale: int | None = None,
+    badge_beside: bool = False,
 ) -> bytes:
     """A crop of the render with the row marked (E3's pictures), shrunk to `max_side` at most.
 
     `ends_x` are page-pixel columns drawn top to bottom; `line` is `(x0, x1, y)` in page pixels.
+    A numbered outline's badge is drawn `badge_scale` pixels per font dot; with `badge_beside`
+    it stands just left of its box, centred on it and clear of earlier badges, so it never
+    covers the row's own labels.
     """
     left, top, right, bottom = box
     width, height = right - left, bottom - top
@@ -632,17 +639,35 @@ def _marked_png(
         paint(x0 - left, y1 - top - thickness, x1 - left, y1 - top)
         paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top)
         paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top)
+    placed_badges: list[tuple[int, int, int, int]] = []
     for (x0, y0, x1, y1), colour, number in numbered_outlines:
         paint(x0 - left, y0 - top, x1 - left, y0 - top + thickness, colour)
         paint(x0 - left, y1 - top - thickness, x1 - left, y1 - top, colour)
         paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top, colour)
         paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top, colour)
-        scale = max(2, rendered.dpi // 72)
-        badge_left = max(0, x0 - left + thickness)
-        badge_top = max(0, y0 - top + thickness)
+        scale = badge_scale or max(2, rendered.dpi // 72)
         glyph = _DIGIT_PIXELS[str(number)]
         badge_width = len(glyph[0]) * scale + 2 * scale
         badge_height = len(glyph) * scale + 2 * scale
+        if badge_beside:
+            badge_top = max(0, (y0 + y1) // 2 - top - badge_height // 2)
+            badge_left = x0 - left - scale - badge_width
+            while badge_left >= 0 and any(
+                badge_left < other_x1
+                and other_x0 < badge_left + badge_width
+                and badge_top < other_y1
+                and other_y0 < badge_top + badge_height
+                for other_x0, other_y0, other_x1, other_y1 in placed_badges
+            ):
+                badge_left -= badge_width + scale
+            if badge_left < 0:
+                badge_left = max(0, x0 - left + thickness)
+        else:
+            badge_left = max(0, x0 - left + thickness)
+            badge_top = max(0, y0 - top + thickness)
+        placed_badges.append(
+            (badge_left, badge_top, badge_left + badge_width, badge_top + badge_height)
+        )
         paint(badge_left, badge_top, badge_left + badge_width, badge_top + badge_height, colour)
         for glyph_y, glyph_row in enumerate(glyph):
             for glyph_x, pixel in enumerate(glyph_row):
@@ -664,10 +689,19 @@ def _marked_png(
 
 
 def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandidate, ...]]:
-    """Show the top six code-ranked candidate dimension lines, each in a distinct numbered box."""
+    """Show the top six code-ranked candidate dimension lines, each in a distinct numbered box.
+
+    Drawn at the prototype's size as the reader sees it (bake `make_rows.py`, 2026-10-08: a
+    150 dpi page, boxes 5 px thick reaching 6 px past the ends and 14 px above and below, and a
+    48 px number tag just left of each box), scaled by dpi/150. The product had drawn 2 px boxes
+    and a 3x5-dot number inside the box, then shrunk the page about 3x: a reader named the right
+    row by its words but gave another box's number (proof run 2026-10-08).
+    """
     candidates = page.rows.candidates.rows.candidates[:6]
     if not candidates:
         return _crop_png(page.rendered, (0, 0, page.rendered.width_px, page.rendered.height_px)), ()
+    scale = Fraction(page.rendered.dpi, _PROTOTYPE_ROWS_DPI)
+    pad_x, pad_y = round(6 * scale), round(14 * scale)
     outlines: list[tuple[tuple[int, int, int, int], bytes, int]] = []
     for number, row in enumerate(candidates, start=1):
         first = page.rows.to_pixels(row.x0, row.y)
@@ -677,10 +711,10 @@ def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandid
         outlines.append(
             (
                 (
-                    max(0, x0 - 8),
-                    max(0, center_y - 18),
-                    min(page.rendered.width_px, x1 + 8),
-                    min(page.rendered.height_px, center_y + 18),
+                    max(0, x0 - pad_x),
+                    max(0, center_y - pad_y),
+                    min(page.rendered.width_px, x1 + pad_x),
+                    min(page.rendered.height_px, center_y + pad_y),
                 ),
                 _ROW_COLOURS[number - 1],
                 number,
@@ -692,9 +726,11 @@ def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandid
         full_page,
         ends_x=(),
         line=None,
-        thickness=max(2, page.rendered.dpi // 120),
+        thickness=max(2, round(5 * scale)),
         max_side=1800,
         numbered_outlines=outlines,
+        badge_scale=max(2, round(48 * scale / 7)),
+        badge_beside=True,
     )
     return image, candidates
 
@@ -797,16 +833,19 @@ def read_slot_pages(
                 if runtime.question_packets
                 else None
             )
-            row_jobs.append(
+            # Both readers are asked the same question with the same picture; a row is used only
+            # when they name the same one (`_agreed_row`).
+            row_jobs.extend(
                 CropJob(
                     key=_row_key(page.page_index),
-                    model_id=readers[0],
+                    model_id=model,
                     page_index=page.page_index,
                     png=numbered_png,
                     row_question=True,
                     candidate_count=len(candidates),
                     question_packet=packet,
                 )
+                for model in readers
             )
     shared_spend_guard = None
     shared_pacer = ModelPacer(runtime.form.calls_per_minute)
@@ -851,9 +890,11 @@ def read_slot_pages(
                 f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
                 f"at {page.rendered.dpi} dpi"
             )
-        page_row_answer = row_answers.get((_row_key(page.page_index), readers[0]))
-        row_choice = page_row_answer if isinstance(page_row_answer, RowChoiceAnswer) else None
-        row_number = None if row_choice is None else row_choice.row
+        row_choice, row_number = _agreed_row(
+            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
+            if runtime.claude_row_reader and page.page_index in row_ids
+            else []
+        )
         candidates = page_rows[page.page_index].candidates[:6]
         selected_row = (
             candidates[row_number - 1]
@@ -1715,6 +1756,37 @@ def persist_slot_readings(
         walls=wall_rows,
     )
     return count
+
+
+def _agreed_row(
+    answers: Sequence[ReaderAnswer | WallAnswer | RowChoiceAnswer | None],
+) -> tuple[RowChoiceAnswer | None, int | None]:
+    """The row every reader named, or a "no row" answer that says why there is none.
+
+    One reader's row choice is not enough: the same page went to the countertop row on one run
+    and to a table inside a reviewer's notes box on the next (proof runs 2026-10-08). A row is
+    used only when every reader answered and all named the same number; a missing answer or a
+    disagreement becomes row 0, which sends the page to the reviewer with the reason. Two "no
+    row" answers stay no row. Nothing here can make a row more likely to be used.
+    """
+    if not answers:
+        return None, None
+    choices = [answer for answer in answers if isinstance(answer, RowChoiceAnswer)]
+    rows = {choice.row for choice in choices}
+    if len(choices) == len(answers) and len(rows) == 1:
+        return choices[0], choices[0].row
+    said = ", ".join(f"{_short_model(choice.model_id)} row {choice.row}" for choice in choices)
+    missing = len(answers) - len(choices)
+    why = (
+        f"the readers chose different rows ({said}); the reviewer chooses"
+        if len(rows) > 1
+        else f"{missing} reader(s) gave no row answer ({said or 'none'}); the reviewer chooses"
+    )
+    return RowChoiceAnswer(" + ".join(c.model_id for c in choices) or "none", 0, why), 0
+
+
+def _short_model(model_id: str) -> str:
+    return model_id.removeprefix("anthropic.").removeprefix("claude-")
 
 
 def _persist_unselected_row_choice(

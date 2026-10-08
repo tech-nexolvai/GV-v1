@@ -37,7 +37,7 @@ from extraction.form_reader.bedrock import _extract_json_object
 from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_ID,
     CROP_PROMPT_ID,
-    ROW_PROMPT_ID,
+    ROW_PROMPT_IDS,
 )
 from extraction.slot_reader.walls import WALL_PROMPT_ID
 from rules.parameters import ParameterSet, resolve_all
@@ -107,11 +107,13 @@ def audit_saved_attempts(
     """
     label_prompts = {CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID}
     relevant = tuple(
-        row for row in attempts if row.prompt_id in {*label_prompts, WALL_PROMPT_ID, ROW_PROMPT_ID}
+        row
+        for row in attempts
+        if row.prompt_id in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS}
     )
     label_attempts = sum(row.prompt_id in label_prompts for row in relevant)
     wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
-    row_attempts = sum(row.prompt_id == ROW_PROMPT_ID for row in relevant)
+    row_attempts = sum(row.prompt_id in ROW_PROMPT_IDS for row in relevant)
 
     def result(complete: bool, reason: str | None) -> AttemptAudit:
         return AttemptAudit(
@@ -151,7 +153,7 @@ def audit_saved_attempts(
             if parsed is None or not isinstance(parsed.get("text"), str):
                 return result(False, "a successful label attempt cannot be parsed")
             observed[(row.model_id, parsed["text"])] += 1
-        elif row.prompt_id == ROW_PROMPT_ID and (
+        elif row.prompt_id in ROW_PROMPT_IDS and (
             parsed is None
             or isinstance(parsed.get("row"), bool)
             or not isinstance(parsed.get("row"), int)
@@ -294,7 +296,7 @@ def product_case_for_page(
                 ExtractionRun.extractor_version.startswith("slot-reader"),
                 ModelInvocation.reader_page_index == page_number - 1,
                 ModelInvocation.prompt_id.in_(
-                    (CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID, WALL_PROMPT_ID, ROW_PROMPT_ID)
+                    (CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID, WALL_PROMPT_ID, *ROW_PROMPT_IDS)
                 ),
             )
             .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())

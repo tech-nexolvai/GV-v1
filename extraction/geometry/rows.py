@@ -1318,4 +1318,14 @@ def _rejection(
         return "a slot thinner than a stroke"
     if Decimal(labelled) < settings.candidate_labelled_fraction * Decimal(count):
         return f"only {labelled} of {count} slots have a label"
+    first = [slot.label for slot in slots if slot.label is not None]
+    if first and all(
+        label.kind is LabelKind.TEXT
+        and not any(character.isdigit() for line in label.lines for character in line)
+        for label in first
+    ):
+        # A row of `EQ | EQ` centres a tap or a handle; it states no width. A reader once chose
+        # one lying on the stone over the real piece row (proof run 2026-10-08). Labels drawn
+        # as paths have no text to check and are never dropped by this.
+        return "no label has a number: a centring or note line, not a row of widths"
     return None

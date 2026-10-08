@@ -327,8 +327,10 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
         and result.row_choice.why == "box 2 follows the front elevation"
     )
     assert result.row_candidate_ids and len(result.row_candidate_ids) == 2
-    assert [model for model, _image in readers.row_requests] == [OPUS]
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    asked = sorted(model for model, _image in readers.row_requests)
+    assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
+    assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -477,7 +479,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
@@ -1716,3 +1718,99 @@ def test_the_full_view_mark_stays_visible_after_the_picture_is_shrunk() -> None:
         thickness += 1
     shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
     assert thickness >= round(4 * page.rendered.dpi / 110 / shrink) - 1
+
+
+def _two_row_claude_read(row: Callable[[str], Mapping[str, object]]) -> PageSlotResult:
+    page = slot_page(named_sheet())
+    first = page.rows.candidates.rows.candidates[0]
+    second = replace(first, rank=2)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, second), rejected=()),
+            ),
+        ),
+    )
+    readers = FakeReaders(lambda _model, _png: '2"', row=row)
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    return result
+
+
+def test_readers_naming_different_rows_send_the_page_to_the_reviewer() -> None:
+    """One reader's row is not enough: on a client page one run picked the countertop row and
+    the next a table in a reviewer's notes box (proof runs 2026-10-08)."""
+    result = _two_row_claude_read(
+        lambda model: {"row": 2 if model == OPUS else 1, "why": "this one"}
+    )
+
+    assert result.plan.row is None
+    assert result.row_choice_number == 0
+    assert result.row_choice is not None
+    assert "different rows" in result.row_choice.why
+    assert "opus-5-5 row 2" in result.row_choice.why and "sonnet-5-5 row 1" in result.row_choice.why
+    assert result.slots == () and result.overall is None
+    assert not result.mapping.proposals
+
+
+def test_a_reader_with_no_row_answer_sends_the_page_to_the_reviewer() -> None:
+    result = _two_row_claude_read(
+        lambda model: {"row": 2, "why": "box 2"} if model == OPUS else {"why": "no number"}
+    )
+
+    assert result.plan.row is None
+    assert result.row_choice_number == 0
+    assert result.row_choice is not None and "no row answer" in result.row_choice.why
+    assert not result.mapping.proposals
+
+
+def test_readers_agreeing_on_no_row_keep_the_page_for_the_reviewer() -> None:
+    result = _two_row_claude_read(lambda _model: {"row": 0, "why": "none is the countertop"})
+
+    assert result.plan.row is None
+    assert result.row_choice_number == 0
+    assert not result.mapping.proposals
+
+
+def test_row_picture_tags_stand_beside_their_boxes_at_the_prototypes_size() -> None:
+    """A reader named the right row by its words but gave another box's number when the tags
+    were 3x5 dots inside the boxes, shrunk about 3x (proof run 2026-10-08). Each tag is now a
+    filled square just left of its box, about 48 px tall at 150 dpi as the prototype drew it."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from workflow.slot_reader import _ROW_COLOURS, _numbered_rows_png
+
+    page = slot_page(named_sheet())
+    png, candidates = _numbered_rows_png(page)
+    view = Image.open(BytesIO(png)).convert("RGB")
+    shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
+    pixels = view.load()
+    assert pixels is not None and candidates
+
+    colour = tuple(_ROW_COLOURS[0])
+    filled = [
+        (x, y)
+        for y in range(view.height)
+        for x in range(view.width)
+        if all(abs(a - b) <= 40 for a, b in zip(pixels[x, y][:3], colour, strict=True))
+    ]
+    first = candidates[0]
+    box_left = min(
+        page.rows.to_pixels(first.x0, first.y)[0], page.rows.to_pixels(first.x1, first.y)[0]
+    )
+    tag = [(x, y) for x, y in filled if x < (box_left / shrink) - 1]
+    assert tag, "the tag stands left of its box, clear of the row's labels"
+    height = max(y for _, y in tag) - min(y for _, y in tag) + 1
+    expected = 48 * page.rendered.dpi / 150 / shrink
+    assert height >= 0.8 * expected
