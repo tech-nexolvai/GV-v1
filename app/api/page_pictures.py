@@ -13,7 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
-from sqlalchemy import case, select
+from sqlalchemy import case, select, true
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
@@ -54,7 +54,7 @@ def _page(
             (
                 Page.document_version_id == document_version_id
                 if document_version_id is not None
-                else True
+                else true()
             ),
         )
         .order_by(case((Document.kind == DocumentKind.SHOP.value, 0), else_=1), Document.id)
