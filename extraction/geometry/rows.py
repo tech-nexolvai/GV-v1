@@ -42,6 +42,7 @@ Verification: `tests/extraction/geometry/test_rows.py`
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, fields
@@ -91,6 +92,9 @@ _TWO = Decimal(2)
 PIECES_DO_NOT_TILE = "pieces do not tile the overall"
 LABEL_TOUCHES_EDGE = "a label touches the drawing or page edge"
 LABEL_IS_STACKED = "a label is a stacked fraction"
+FEET_AND_INCHES_ROW = "feet-and-inches: the architect's drawing, not the vendor's"
+INSIDE_ARCHITECT_DRAWING = "inside the architect's drawing"
+_FEET_AND_INCHES = re.compile(r"^\s*\d+\s*['’′]\s*-?\s*\d+(?:\s+\d+\s*/\s*\d+)?\s*[\"″]?\s*$")
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +214,7 @@ class PageInk:
     curves: tuple[InkCurve, ...]
     characters: tuple[InkCharacter, ...]
     drawing_boxes: tuple[Box, ...]
+    architect_boxes: tuple[StoredBox, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1242,7 +1247,16 @@ def build_rows(ink: PageInk, settings: RowSettings, *, place: Placement) -> Page
             findings.append(LABEL_TOUCHES_EDGE)
         if any(label.stacked for label in first_labels):
             findings.append(LABEL_IS_STACKED)
-        rejected = _rejection(row, slots, labelled, settings)
+        rejected = _rejection(
+            row,
+            slots,
+            labelled,
+            settings,
+            overall=overall,
+            architect_boxes=ink.architect_boxes,
+            row_start=place(row.ticks[0], y),
+            row_end=place(row.ticks[-1], y),
+        )
         built.append(
             (
                 row,
@@ -1303,7 +1317,15 @@ def _band(x0: Decimal, x1: Decimal, y: Decimal, ink: PageInk, reach: Decimal) ->
 
 
 def _rejection(
-    row: _Row, slots: Sequence[Slot], labelled: int, settings: RowSettings
+    row: _Row,
+    slots: Sequence[Slot],
+    labelled: int,
+    settings: RowSettings,
+    *,
+    overall: OverallRow | None,
+    architect_boxes: Sequence[StoredBox],
+    row_start: StoredPoint,
+    row_end: StoredPoint,
 ) -> str | None:
     """Why a row is not a candidate, or `None`. Plain words, so a screen can show them as they are."""
     count = len(slots)
@@ -1328,4 +1350,31 @@ def _rejection(
         # one lying on the stone over the real piece row (proof run 2026-10-08). Labels drawn
         # as paths have no text to check and are never dropped by this.
         return "no label has a number: a centring or note line, not a row of widths"
+    text_labels_by_region = {
+        (label.box, label.text): label.text
+        for slot in slots
+        for label in slot.labels
+        if label.kind is LabelKind.TEXT and label.text is not None
+    }
+    if overall is not None:
+        text_labels_by_region.update(
+            {
+                (label.box, label.text): label.text
+                for label in overall.labels
+                if label.kind is LabelKind.TEXT and label.text is not None
+            }
+        )
+    text_labels = tuple(text_labels_by_region.values())
+    if text_labels and sum(
+        _FEET_AND_INCHES.fullmatch(text) is not None for text in text_labels
+    ) * 2 > len(text_labels):
+        return FEET_AND_INCHES_ROW
+    if any(
+        box.left <= row_start.x <= box.right
+        and box.left <= row_end.x <= box.right
+        and box.top <= row_start.y <= box.bottom
+        and box.top <= row_end.y <= box.bottom
+        for box in architect_boxes
+    ):
+        return INSIDE_ARCHITECT_DRAWING
     return None
