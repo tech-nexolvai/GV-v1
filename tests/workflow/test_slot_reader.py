@@ -407,7 +407,11 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
-    assert all(owner.labels[0].crop == owner.band for owner in result.plan.slots)
+    assert all(owner.labels[0].box == owner.band for owner in result.plan.slots)
+    assert all(
+        owner.labels[0].crop.x0 <= owner.band.x0 and owner.labels[0].crop.x1 >= owner.band.x1
+        for owner in result.plan.slots
+    )
 
 
 def test_claude_zero_row_choice_holds_the_page_for_the_reviewer() -> None:
@@ -1653,3 +1657,62 @@ def test_a_filler_read_at_one_end_only_leaves_the_walls_to_the_person() -> None:
     assert result.walls is not None
     assert result.walls.code_clues.left is True and result.walls.code_clues.right is None
     assert result.walls.outcome.config is None
+
+
+def test_claude_close_up_reaches_past_a_narrow_pieces_ticks() -> None:
+    """A 1 1/2 panel's label is wider than the panel; cut at its ticks the readers saw only
+    "1/2" (proof run 2026-10-08). The close-up reaches 12 pt (50 px at 300 dpi) or 15% of the
+    span past each end, as the prototype's did, and stops at the page edge."""
+    from workflow.slot_reader import _claude_span_plan
+
+    page = glyph_page()
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    span = _claude_span_plan(page, plan)
+    for owner in (*span.slots, *((span.overall,) if span.overall else ())):
+        band, crop = owner.band, owner.labels[0].crop
+        margin = max(Decimal(12), Decimal("0.15") * (band.x1 - band.x0))
+        assert crop.x0 == max(Decimal(0), band.x0 - margin)
+        assert crop.x1 == min(page.rows.ink.width, band.x1 + margin)
+        assert (crop.top, crop.bottom) == (band.top, band.bottom)
+        assert owner.labels[0].box == band, "which span is meant never moves"
+
+
+def test_the_full_view_mark_stays_visible_after_the_picture_is_shrunk() -> None:
+    """The prototype's mark was 4 px thick on a 110 dpi page. The product marks a higher-dpi
+    render and shrinks it, so the line must be drawn 4 * dpi/110 thick to look the same; the old
+    fixed 2 px line faded to under a pixel on a 300 dpi page (proof run 2026-10-08)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from workflow.slot_reader import _span_view_png
+
+    page = glyph_page()
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    view = Image.open(BytesIO(_span_view_png(page, plan.slots[0]))).convert("RGB")
+    pixels = view.load()
+    assert pixels is not None
+
+    def red(x: int, y: int) -> bool:
+        r, g, b = pixels[x, y][:3]
+        return r >= 200 and g <= 60 and b <= 60
+
+    marked = [(x, y) for y in range(view.height) for x in range(view.width) if red(x, y)]
+    assert marked, "the span is boxed in red"
+    left = min(x for x, _ in marked)
+    middle = (min(y for _, y in marked) + max(y for _, y in marked)) // 2
+    thickness = 0
+    while left + thickness < view.width and red(left + thickness, middle):
+        thickness += 1
+    shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
+    assert thickness >= round(4 * page.rendered.dpi / 110 / shrink) - 1

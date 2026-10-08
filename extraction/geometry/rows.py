@@ -47,6 +47,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, fields
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
+from functools import partial
 from itertools import pairwise
 
 from evidence.coordinates import StoredPoint
@@ -1047,14 +1048,56 @@ def _overlap(first: Box, second: Box) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _has_own_label(
+    other: _Row,
+    *,
+    chain_labels: frozenset[Box],
+    lines: Sequence[_TextLine],
+    clusters: Sequence[GlyphCluster],
+    row_ys: Sequence[Decimal],
+    ink: PageInk,
+    settings: RowSettings,
+    place: Placement,
+) -> bool:
+    """A label over `other`'s span that is not one of the chain's own slot labels.
+
+    A line close to the chain sees the chain's labels within reach too; those say nothing about
+    whether `other` is a printed dimension.
+    """
+    return any(
+        label.box not in chain_labels
+        for label in _labels(
+            other.ticks[0],
+            other.ticks[-1],
+            other.run.y,
+            lines=lines,
+            clusters=clusters,
+            row_ys=row_ys,
+            ink=ink,
+            settings=settings,
+            place=place,
+        )
+    )
+
+
 def _overall_for(
-    row: _Row, rows: Sequence[_Row], settings: RowSettings
+    row: _Row,
+    rows: Sequence[_Row],
+    settings: RowSettings,
+    *,
+    labelled: Callable[[_Row], bool] = lambda _other: False,
 ) -> tuple[_Row, Tiling, Decimal, Decimal] | None:
     """The two-tick row that states this chain's whole width, if the drawing has one.
 
     Coincident ends first — the nearest row above or below whose two ticks sit on the chain's ends.
     Failing that, a two-tick row that is wider than the chain and encloses it, by at most the
     allowed fraction a side: the pieces do not tile it, and that is reported, not hidden.
+
+    **Within either kind, a line carrying its own label beats a nearer one without** (`labelled`).
+    A countertop's outline is ticked at the same two ends as its printed overall and can sit
+    closer to the chain; only the printed line has a number on it. A client page (proof run
+    2026-10-08) had the outline 15 px nearer, and the overall's label was never read. With no
+    labelled candidate, the nearest still wins, as before.
 
     Within reach either way. A drawing puts the overall a few points from its chain; a two-tick
     line far away whose ends happen to coincide is the cabinet run's own outline or a wall-to-wall
@@ -1070,7 +1113,7 @@ def _overall_for(
             and len(other.ticks) == 2
             and settings.same_row_pt < abs(other.run.y - y) <= settings.overall_reach_pt
         ),
-        key=lambda other: (abs(other.run.y - y), other.run.y),
+        key=lambda other: (not labelled(other), abs(other.run.y - y), other.run.y),
     )
     for other in others:
         if abs(other.ticks[0] - x0) <= end and abs(other.ticks[-1] - x1) <= end:
@@ -1148,7 +1191,21 @@ def build_rows(ink: PageInk, settings: RowSettings, *, place: Placement) -> Page
             )
         findings: list[str] = []
         overall: OverallRow | None = None
-        found = _overall_for(row, rows, settings)
+        found = _overall_for(
+            row,
+            rows,
+            settings,
+            labelled=partial(
+                _has_own_label,
+                chain_labels=frozenset(label.box for slot in slots for label in slot.labels),
+                lines=lines,
+                clusters=clusters,
+                row_ys=row_ys,
+                ink=ink,
+                settings=settings,
+                place=place,
+            ),
+        )
         if found is not None:
             other, tiling, left_excess, right_excess = found
             ox0, ox1, oy = other.ticks[0], other.ticks[-1], other.run.y
