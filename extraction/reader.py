@@ -426,22 +426,81 @@ def _rotation(value: object) -> int:
     return normalised
 
 
-def _content_bytes(page: Any) -> bytes:
-    """The page's content stream, which `build_manifest` hashes to identify the page.
+#: How deep a page's resources are followed. Real drawings nest forms a few levels; a cap keeps a
+#: malformed file from recursing without end (references are also never followed twice).
+_CONTENT_DEPTH_LIMIT: Final = 32
+#: Keys that point back up the tree (an annotation's page, a node's parent). Following them would
+#: fold the whole document into every page's fingerprint.
+_BACK_LINKS: Final = frozenset({"P", "Parent"})
 
-    Best-effort by design: the hash exists so a re-read of the same page is recognisable, and a page
-    whose stream cannot be reached still has a size, a rotation and a character count worth
-    reporting. `b""` is explicitly allowed by `RawPage`.
+
+def _content_bytes(page: Any) -> bytes:
+    """What the page draws, as bytes `build_manifest` hashes to identify the page.
+
+    The page's content streams, its annotations (their appearance streams carry the drawing on
+    both client sets: the vendor's sheet is a flattened stamp) and, recursively, every resource
+    they can draw: forms, images, fonts, patterns. Neither part alone identifies a page; on one
+    client set every page's stream is the same `/Fm1 Do`. Back-links (`/P`, `/Parent`) are not
+    followed, or every page would carry the whole document. The serialisation is deterministic
+    (dictionary keys sorted, every value tagged and length-framed) and each indirect object is
+    visited once.
+
+    Best-effort by design: a page whose drawing cannot be reached still has a size, a rotation and
+    a character count worth reporting, and `b""` is explicitly allowed by `RawPage`. It must stay the
+    exception: until 2026-10-08 this called a method a pdfminer page does not have, every page of
+    every file hashed as empty data, and the broad `except` hid it.
     """
     try:
-        contents = page.page_obj.get_data()
-    except Exception:  # noqa: BLE001 - any failure to reach the stream is the same answer
-        # Deliberately broad. The hash exists so a re-read of the same page is recognisable, and a
-        # page whose stream cannot be reached still has a size, a rotation and a character count
-        # worth reporting. Enumerating the ways a malformed stream can fail would be a list that a
-        # new pdfminer release lengthens.
+        from pdfminer.pdftypes import PDFObjRef, PDFStream
+        from pdfminer.psparser import PSLiteral
+
+        out = bytearray()
+        seen: set[int] = set()
+
+        def frame(tag: bytes, payload: bytes) -> None:
+            out.extend(tag + len(payload).to_bytes(8, "big") + payload)
+
+        def walk(value: object, depth: int) -> None:
+            if depth > _CONTENT_DEPTH_LIMIT:
+                frame(b"X", b"")
+                return
+            if isinstance(value, PDFObjRef):
+                if value.objid in seen:
+                    frame(b"R", str(value.objid).encode())
+                    return
+                seen.add(value.objid)
+                walk(value.resolve(), depth + 1)
+            elif isinstance(value, PDFStream):
+                frame(b"S", b"")
+                walk(value.attrs, depth + 1)
+                frame(b"B", value.get_data())
+            elif isinstance(value, dict):
+                frame(b"D", str(len(value)).encode())
+                for key in sorted(value, key=str):
+                    frame(b"K", str(key).encode())
+                    if str(key) in _BACK_LINKS:
+                        continue
+                    walk(value[key], depth + 1)
+            elif isinstance(value, (list, tuple)):
+                frame(b"L", str(len(value)).encode())
+                for item in value:
+                    walk(item, depth + 1)
+            elif isinstance(value, PSLiteral):
+                frame(b"N", str(value.name).encode())
+            elif isinstance(value, bytes):
+                frame(b"Y", value)
+            else:
+                frame(b"V", repr(value).encode())
+
+        obj = page.page_obj
+        walk(list(obj.contents), 0)
+        walk(obj.resources, 0)
+        walk(obj.annots, 0)
+    except Exception:  # noqa: BLE001 - any failure to reach the drawing is the same answer
+        # Deliberately broad: enumerating the ways a malformed stream can fail would be a list that
+        # a new pdfminer release lengthens. `test_reader` pins that real pages do not land here.
         return b""
-    return contents if isinstance(contents, bytes) else b""
+    return bytes(out)
 
 
 def read_pages(data: bytes) -> tuple[RawPage, ...]:
