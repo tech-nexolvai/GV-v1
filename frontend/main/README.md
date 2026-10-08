@@ -103,6 +103,17 @@ A row's bucket is what the record says (needs you, then PASS / FAIL / not checka
 choice appears only under "Decided by". Decisions go through the review page's existing handlers.
 The Decide dialog uses the same note rule as the finding card (`actionNeedsNote`).
 
+**The countertop picture** (`components/results/CountertopStrip.tsx`, layout in
+`lib/countertop-strip.ts`, #1043) draws one countertop result from the shared spec (vault: "V1 backend -
+everything left (Codex)", section 4), which the signed PDF follows too:
+- pieces to scale, with the printed overall above and the needed total below;
+- field-cut caps only at walled ends, wall blocks and the back-wall line;
+- the difference beside it.
+
+Labels are the API's exact text; floats only place boxes. With any width missing it is drawn "not to
+scale"; with no pieces, or a non-exact value, it is not drawn at all. It has two sizes: `compact` in
+the Results row details and `full` in the Measurements countertop card.
+
 **Legacy islands.** A legacy component shown inside new UI (the chat and the drawing panel in shadcn
 Sheets) is wrapped in an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.

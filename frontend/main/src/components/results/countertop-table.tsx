@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WallGlyph } from './wall-glyph';
-import { CountertopStrip } from './countertop-strip';
+import { CountertopStrip } from './CountertopStrip';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
