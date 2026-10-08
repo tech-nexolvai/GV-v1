@@ -190,7 +190,7 @@ class SlotReaderRuntime:
             f"fraction_bar={self.fraction_bar.config_hash};"
             f"walls={self.wall_settings.config_hash};"
             "rules=drawn-length-veto,label-expansion,counter-break"
-            f"{',claude-row-v1' if self.claude_row_reader else ''}"
+            f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=512' if self.claude_row_reader else ''}"
         )
 
     @property
@@ -256,10 +256,10 @@ def configured_slot_reader(
             reader_ids=model_ids,
             clients=clients,
             calls_per_minute=dict(rpm),
-            # One in-flight paid request means the batch reservation cannot be oversubscribed by
-            # concurrent calls. The two models are still independently paced.
-            max_concurrent_calls=1,
-            max_tokens=max(form.max_tokens, 3000),
+            # The shared spend guard reserves atomically before every call, so the two readers can
+            # use the same bounded worker pool. Per-model RPM remains independently paced.
+            max_concurrent_calls=8,
+            max_tokens=512,
         )
     return SlotReaderRuntime(
         form=form,
@@ -397,6 +397,44 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
         max_side=1800,
         outline=outline,
         mark_color=bytes((255, 0, 0)),
+    )
+
+
+def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
+    """Give Claude exactly one code-defined label span per chosen slot, even if OCR found 0 or >1.
+
+    The span is the candidate's tick-to-tick label band, not an AI-provided location. Replacing
+    discovered labels is Claude-only; the original plan is retained separately for text guards.
+    """
+    if plan.row is None:
+        return plan
+
+    def one_span(owner: PlannedOwner) -> PlannedOwner:
+        band = owner.band
+        label = PlannedLabel(
+            box=band,
+            crop=band,
+            lane=Lane.GLYPHS,
+            text=None,
+            text_stacked=False,
+            has_digit=True,
+            touches_edge=(
+                band.x0 <= 0
+                or band.top <= 0
+                or band.x1 >= page.rows.ink.width
+                or band.bottom >= page.rows.ink.height
+            ),
+            ambiguous_slot=False,
+            crowded=False,
+            ticks_in_crop=True,
+            path_boxes=(),
+        )
+        return replace(owner, labels=(label,))
+
+    return replace(
+        plan,
+        slots=tuple(one_span(owner) for owner in plan.slots),
+        overall=None if plan.overall is None else one_span(plan.overall),
     )
 
 
@@ -769,7 +807,7 @@ def read_slot_pages(
         )
 
     row_answers = run_jobs(row_jobs) if row_jobs else {}
-    planned: list[tuple[SlotPage, SlotPlan, RowChoiceAnswer | None, int | None]] = []
+    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None]] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
     walls_asked: dict[int, WallQuestion] = {}
@@ -792,7 +830,7 @@ def read_slot_pages(
             if row_number is not None and 0 < row_number <= len(candidates)
             else None
         )
-        plan = plan_slots(
+        source_plan = plan_slots(
             page.rows.candidates.rows,
             page.rows.ink,
             settings=runtime.crop_settings,
@@ -800,7 +838,8 @@ def read_slot_pages(
             selected_row=selected_row,
             row_choice_made=runtime.claude_row_reader and bool(candidates),
         )
-        planned.append((page, plan, row_choice, row_number))
+        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
+        planned.append((page, plan, source_plan, row_choice, row_number))
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
         page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
         owner_candidate_ids[page.page_index] = page_candidate_ids
@@ -811,7 +850,9 @@ def read_slot_pages(
                 crop_px = _pixels(page.rows, label.crop, page.rendered)
                 ink = None if page.ink is None else page.ink.at(crop_px)
                 crops[key] = (box_px, crop_px, ink)
-                if _hard_guarded(label, ink) or not label.has_digit:
+                if not runtime.claude_row_reader and (
+                    _hard_guarded(label, ink) or not label.has_digit
+                ):
                     continue
                 if label.lane is Lane.TEXT:
                     if label.text is None:
@@ -827,8 +868,13 @@ def read_slot_pages(
                 else:
                     wanted = readers
                 png = _crop_png(page.rendered, crop_px)
+                view_png = (
+                    _span_view_png(page, owner)
+                    if runtime.claude_row_reader or runtime.question_packets
+                    else None
+                )
                 if runtime.question_packets:
-                    view_png = _span_view_png(page, owner)
+                    assert view_png is not None
                     packet = _question_packet(
                         page,
                         question_id=key,
@@ -851,7 +897,17 @@ def read_slot_pages(
                         for model in wanted
                     )
                 else:
-                    jobs.extend(CropJob(key, model, page.page_index, png) for model in wanted)
+                    jobs.extend(
+                        CropJob(
+                            key,
+                            model,
+                            page.page_index,
+                            png,
+                            view_png=view_png,
+                            grounded_claude=runtime.claude_row_reader,
+                        )
+                        for model in wanted
+                    )
         wall_pictures_for = _wall_job_pictures(page, plan, runtime.wall_settings)
         if wall_pictures_for is not None:
             code_clues = _code_wall_clues(page, plan, wall_pictures_for)
@@ -901,7 +957,7 @@ def read_slot_pages(
         key: answer for key, answer in answers.items() if isinstance(answer, ReaderAnswer)
     }
     results: list[PageSlotResult] = []
-    for page, plan, row_choice, row_number in planned:
+    for page, plan, source_plan, row_choice, row_number in planned:
 
         def owner_result(
             owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
@@ -921,7 +977,21 @@ def read_slot_pages(
         overall = None if plan.overall is None else owner_result(plan.overall, len(plan.slots))
         hold = _counter_break_row_hold(page, plan, slots, runtime)
         if hold is None:
-            hold = row_hold(_row_texts([*slots, *((overall,) if overall is not None else ())]))
+            source_texts = [
+                label.text
+                for owner in (
+                    *source_plan.slots,
+                    *((source_plan.overall,) if source_plan.overall else ()),
+                )
+                for label in owner.labels
+                if label.text
+            ]
+            hold = row_hold(
+                [
+                    *_row_texts([*slots, *((overall,) if overall is not None else ())]),
+                    *source_texts,
+                ]
+            )
         slots, overall, vetoed = _veto_by_drawn_length(slots, overall)
         mapping = map_row(
             None if overall is None else overall.outcome,
@@ -1280,28 +1350,13 @@ def _veto_by_drawn_length(
             ),
         )
 
-    def has_length_witness(owner: OwnerResult) -> bool:
-        index = owner.owner.index
-        sources = [
-            reading
-            for reading in pieces
-            if not reading.stacked and (index is None or reading.index != index)
-        ]
-        return len(sources) >= 2
-
     def checked(owner: OwnerResult) -> OwnerResult:
         if owner.outcome.state is LabelState.PROVISIONAL:
             reason = vetoes.get(owner.owner.index)
             if reason is not None:
                 return finalize(owner, code="drawn-length", reason=reason)
-            if not has_length_witness(owner):
-                return finalize(
-                    owner,
-                    code="drawn-length-unverified",
-                    reason=(
-                        "the drawing did not provide enough other dimensions to check this reading"
-                    ),
-                )
+            # No derived scale means no drawn-length evidence either way. This check is reject-only:
+            # it can veto a clear misfit, never hold a reading merely because scale is unavailable.
             return finalize(owner)
         reason = vetoes.get(owner.owner.index)
         return owner if reason is None else finalize(owner, code="drawn-length", reason=reason)
@@ -1312,7 +1367,7 @@ def _veto_by_drawn_length(
     held_indices = {
         owner.owner.index
         for owner in (*held_slots, *((held_overall,) if held_overall is not None else ()))
-        if owner.outcome.reason_code in {"drawn-length", "drawn-length-unverified"}
+        if owner.outcome.reason_code == "drawn-length"
     }
     return held_slots, held_overall, tuple(index for index in order if index in held_indices)
 

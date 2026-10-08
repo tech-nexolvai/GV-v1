@@ -224,7 +224,7 @@ def seal_label(
     second = sources[-1] if sources else None
     suggestion = None
     if hard is None and second is not None and second[2]:
-        suggestion = plain_dimension(normalise_text(second[1]))
+        suggestion = plain_dimension(normalise_text(second[1]), allow_explicit_mm=claude_pair)
 
     def review(code: str, reason: str, keep_suggestion: bool = True) -> LabelOutcome:
         return LabelOutcome(
@@ -258,7 +258,7 @@ def seal_label(
     if (
         label.lane is Lane.TEXT
         and not answers
-        and plain_dimension(normalise_text(label.text or "")) is None
+        and plain_dimension(normalise_text(label.text or ""), allow_explicit_mm=claude_pair) is None
     ):
         return review("not-plain", "the label has words or a sum; review the value")
     if len(sources) < 2:
@@ -270,8 +270,12 @@ def seal_label(
     hold = row_hold([agreed])
     if hold is not None:
         return review(hold.code, hold.reason, keep_suggestion=False)
-    value = plain_dimension(agreed)
-    if value is not None and any(answer.combined for answer in answers):
+    value = plain_dimension(agreed, allow_explicit_mm=claude_pair)
+    if (
+        value is not None
+        and any(answer.combined for answer in answers)
+        and not (claude_pair and _is_explicit_mm_dual(agreed))
+    ):
         # A reader saw words or a sum the agreed text does not show: the crop holds more than the
         # label both copied, and which is the piece's width is the person's call.
         value = None
@@ -295,6 +299,13 @@ def seal_label(
         flags=tuple(flags),
         reader_texts=reader_texts,
     )
+
+
+def _is_explicit_mm_dual(text: str) -> bool:
+    """A printed mm [inch] dual label is a supported dimension, not an ambiguous worded label."""
+    from extraction.slot_reader.labels import _MM_DUAL
+
+    return _MM_DUAL.fullmatch(text) is not None
 
 
 @dataclass(frozen=True, slots=True)

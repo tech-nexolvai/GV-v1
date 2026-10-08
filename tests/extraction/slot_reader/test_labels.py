@@ -87,6 +87,13 @@ def test_plain_dimensions_are_unchanged() -> None:
     assert plain_dimension('4"+1"') is None
 
 
+def test_claude_can_parse_an_explicit_mm_inch_pair_without_relaxing_legacy() -> None:
+    text = "457 mm [18]"
+    assert plain_dimension(text) is None
+    parsed = plain_dimension(text, allow_explicit_mm=True)
+    assert parsed is not None and parsed.exact == Fraction(18) and parsed.unit is Unit.INCH
+
+
 def test_field_cut_and_vif_hold_the_row_with_the_admins_reasons() -> None:
     included = row_hold(['12"', '30" (INCLUDING  FIELD CUT)'])
     assert included is not None and included.code == "field-cut-included"

@@ -20,6 +20,10 @@ MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_VERSION = "2023-06-01"
 MODEL_PREFIX = "anthropic."
+# A deliberately fixed, preflight input estimate for the bounded two-image span request. It avoids
+# an extra provider round-trip per reading; the batch lock reserves this estimate and the full
+# output allowance before any generation call begins.
+ESTIMATED_INPUT_TOKENS_PER_CALL = 2048
 
 
 class AnthropicRequestError(RuntimeError):
@@ -44,11 +48,11 @@ class _Reservation:
 
 
 class BatchSpendGuard:
-    """Thread-safe batch cap using provider token counts and a conservative input reserve.
+    """Thread-safe batch cap using a conservative fixed input estimate.
 
-    Output is reserved at its full configured maximum. Input is reserved at twice the provider's
-    token-count estimate because image tokenization is an estimate, not an invoice. Failed calls
-    retain their reservation: a lost response must not make budget appear available again.
+    Output is reserved at its full configured maximum. Input is reserved at twice the per-call
+    estimate to allow for image-tokenization variance. Failed calls retain their reservation: a
+    lost response must not make budget appear available again.
     """
 
     def __init__(self, maximum_usd: Decimal, rates: object) -> None:
@@ -70,8 +74,8 @@ class BatchSpendGuard:
         output_rate = getattr(rate, "output_per_1k_tokens", None)
         if not isinstance(input_rate, Decimal) or not isinstance(output_rate, Decimal):
             raise TypeError(f"Claude reader has no usable stated price for {model_id}")
-        # `count_tokens` is an estimate; double its input count, while reserving the entire output
-        # limit. This intentionally prefers a false refusal (more human review) over overspending.
+        # Double the bounded input estimate and reserve the entire output limit. This intentionally
+        # prefers a false refusal (more human review) over overspending.
         amount = (
             Decimal(input_tokens * 2) * input_rate + Decimal(output_limit) * output_rate
         ) / 1000
@@ -118,10 +122,6 @@ class SpendLimitedClient:
         self._guard = guard
 
     def converse(self, **kwargs: Any) -> Mapping[str, Any]:
-        count_tokens = getattr(self._client, "count_input_tokens", None)
-        if not callable(count_tokens):
-            raise SpendCapExceeded("Claude spend cap requires the provider token-count endpoint")
-        input_tokens = count_tokens(**kwargs)
         output_config = kwargs.get("inferenceConfig")
         output_limit = (
             output_config.get("maxTokens") if isinstance(output_config, Mapping) else None
@@ -133,7 +133,7 @@ class SpendLimitedClient:
             or not isinstance(output_limit, int)
         ):
             raise TypeError("Claude request is missing its model id or output-token bound")
-        reservation = self._guard.reserve(model_id, input_tokens, output_limit)
+        reservation = self._guard.reserve(model_id, ESTIMATED_INPUT_TOKENS_PER_CALL, output_limit)
         response = self._client.converse(**kwargs)
         if not isinstance(response, Mapping):
             raise TypeError("Claude client returned a malformed response")

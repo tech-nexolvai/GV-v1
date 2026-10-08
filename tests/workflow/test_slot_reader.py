@@ -130,6 +130,7 @@ class FakeReaders:
             "combined": False,
             "readable": True,
             "no_dimension": not text,
+            "belongs": bool(text),
         }
         return {
             "output": {"message": {"content": [{"text": json.dumps(payload)}]}},
@@ -194,13 +195,30 @@ def crops_to_texts(page: SlotPage, texts: Mapping[int | None, str]) -> dict[byte
         row_settings=MEASURED_SETTINGS,
     )
     found: dict[bytes, str] = {}
-    for owner in (*plan.slots, plan.overall):
-        assert owner is not None
+    for owner in (*plan.slots, *((plan.overall,) if plan.overall is not None else ())):
         for label in owner.labels:
             png = _crop_png(page.rendered, _pixels(page.rows, label.crop, page.rendered))
             if label.text is None or any(ch.isdigit() for ch in label.text):
                 found[png] = texts.get(owner.index, "")
     return found
+
+
+def claude_crops_to_texts(page: SlotPage, texts: Mapping[int | None, str]) -> dict[bytes, str]:
+    from workflow.slot_reader import _claude_span_plan
+
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    span_plan = _claude_span_plan(page, plan)
+    return {
+        _crop_png(
+            page.rendered, _pixels(page.rows, owner.labels[0].crop, page.rendered)
+        ): texts.get(owner.index, "")
+        for owner in (*span_plan.slots, *((span_plan.overall,) if span_plan.overall else ()))
+    }
 
 
 def read(page: SlotPage, readers: FakeReaders, **options: Any) -> PageSlotResult:
@@ -286,7 +304,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
             ),
         ),
     )
-    text_by_crop = crops_to_texts(page, TEXTS)
+    text_by_crop = claude_crops_to_texts(page, TEXTS)
     readers = FakeReaders(
         lambda _model, png: text_by_crop.get(png, '2"'),
         row=lambda _model: {"row": 2, "why": "box 2 follows the front elevation"},
@@ -314,6 +332,82 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
+
+
+def test_claude_selected_row_without_overall_still_reads_and_offers_its_pieces() -> None:
+    page = slot_page(named_sheet())
+    candidate = replace(page.rows.candidates.rows.candidates[0], overall=None)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(candidate,), rejected=()),
+            ),
+        ),
+    )
+    span_lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: span_lookup.get(png, '2"'))
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+
+    assert result.plan.row is candidate
+    assert result.plan.ambiguity is None
+    assert result.overall is None
+    assert all(slot.outcome.state is LabelState.SEALED for slot in result.slots)
+    assert result.mapping.proposals
+    assert all(proposal.field_key == PIECE_FIELD for proposal in result.mapping.proposals)
+
+
+def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_duplicated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import workflow.slot_reader as slot_workflow
+
+    page = slot_page(named_sheet())
+    source = slot_workflow.plan_slots
+
+    def sparse_plan(*args: Any, **kwargs: Any) -> Any:
+        plan = source(*args, **kwargs)
+        slots = list(plan.slots)
+        slots[0] = replace(slots[0], labels=())
+        if len(slots) > 1 and slots[1].labels:
+            slots[1] = replace(slots[1], labels=slots[1].labels * 2)
+        return replace(plan, slots=tuple(slots))
+
+    monkeypatch.setattr(slot_workflow, "plan_slots", sparse_plan)
+    readers = FakeReaders(lambda _model, _png: '2"')
+    base = runtime(readers)
+    configured = replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+    )
+    attempts: list[AttemptUsage] = []
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
+
+    owner_count = len(result.plan.slots) + (result.plan.overall is not None)
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v1"]
+    assert len(readers.requests) == owner_count * 2
+    assert len(label_attempts) == owner_count * 2
+    assert all(len(owner.labels) == 1 for owner in result.plan.slots)
+    assert all(owner.labels[0].crop == owner.band for owner in result.plan.slots)
 
 
 def test_claude_zero_row_choice_holds_the_page_for_the_reviewer() -> None:
@@ -460,7 +554,7 @@ def test_text_labels_seal_on_the_file_and_one_reader_and_unnamed_pieces_still_fi
 def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
     page = slot_page(named_sheet())
     lookup = crops_to_texts(page, TEXTS)
-    result = read(page, FakeReaders(lambda _model, png: lookup[png]))
+    result = read(page, FakeReaders(lambda _model, png: lookup.get(png, '12"')))
 
     assert [slot.kind.kind.value for slot in result.slots if slot.kind] == [
         "filler",
@@ -481,10 +575,10 @@ def test_a_named_sealed_chain_fills_the_form_left_to_right() -> None:
 
 def test_a_reader_that_differs_from_the_file_holds_the_piece_and_the_chain() -> None:
     page = slot_page(four_piece_sheet())
-    indexed_crops = crops_to_texts(
+    indexed_crops = claude_crops_to_texts(
         page, {0: "slot-0", 1: "slot-1", 2: "slot-2", 3: "slot-3", None: "overall"}
     )
-    middle_crop = next(png for png, position in indexed_crops.items() if position == "slot-1")
+    middle_crop = [png for png, position in indexed_crops.items() if position == "slot-1"][-1]
     lookup = {
         png: FOUR_PIECE_TEXTS[
             None if position == "overall" else int(position.removeprefix("slot-"))
@@ -520,7 +614,10 @@ def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> Non
     assert middle.outcome.reason is not None
     assert middle.outcome.reason.startswith("covered by reviewer markup")
     assert middle.outcome.value is None
-    assert len(readers.requests) == 3, "the covered label costs no call"
+    covered_crop = _crop_png(page.rendered, middle.labels[0].crop_px)
+    assert covered_crop not in {
+        png for _model, png in readers.requests
+    }, "the covered label itself costs no call"
     assert result.mapping.proposals == ()
 
 
@@ -615,12 +712,12 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
     assert claude_enabled is not None and claude_enabled.question_packets is True
     assert claude_enabled.allow_stacked is True
     assert claude_enabled.spend_cap_usd == Decimal("2.00")
-    assert claude_enabled.form.max_concurrent_calls == 1
+    assert claude_enabled.form.max_concurrent_calls == 8
     assert claude_enabled.form.reader_ids == (
         "anthropic.claude-opus-5-5",
         "anthropic.claude-sonnet-5-5",
     )
-    assert claude_enabled.form.max_tokens == 3000
+    assert claude_enabled.form.max_tokens == 512
     assert set(FRACTION_BAR_ENV) == set(FRACTION_ENV)
 
 
@@ -1209,7 +1306,7 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     from app.models.evidence import MeasurementProposal
 
     def readers(page: SlotPage) -> FakeReaders:
-        indexed = crops_to_texts(
+        indexed = claude_crops_to_texts(
             page,
             {0: "slot-0", 1: "slot-1", 2: "slot-2", 3: "slot-3", None: "overall"},
         )
@@ -1322,7 +1419,7 @@ def test_a_fully_sealed_row_links_every_piece_in_order_and_a_veto_is_kept_as_a_s
     )
 
 
-def test_claude_proposals_need_a_drawn_length_witness_before_they_are_sealed() -> None:
+def test_claude_drawn_length_is_reject_only_when_no_scale_can_be_derived() -> None:
     from extraction.geometry.rows import Box
     from extraction.ink import InkClass
     from extraction.slot_reader.runs import Lane, PlannedLabel, PlannedOwner
@@ -1370,12 +1467,12 @@ def test_claude_proposals_need_a_drawn_length_witness_before_they_are_sealed() -
             (),
         )
 
-    # With no independent dimensions, even unanimous model text remains only a reviewer proposal.
+    # With no independent dimensions, the drawn-length check has no evidence and cannot hold it.
     only_one = provisional_owner(0, "10")
-    held, _, _ = _veto_by_drawn_length((only_one,), None)
-    assert held[0].outcome.state is LabelState.REVIEW
-    assert held[0].outcome.reason_code == "drawn-length-unverified"
-    assert held[0].outcome.value is None
+    accepted, _, vetoed = _veto_by_drawn_length((only_one,), None)
+    assert accepted[0].outcome.state is LabelState.SEALED
+    assert accepted[0].outcome.value is not None
+    assert vetoed == ()
 
     # Three agreeing, proportionate dimensions provide a deterministic witness.
     proportionate = tuple(provisional_owner(index, "10") for index in range(3))

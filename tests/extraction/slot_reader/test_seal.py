@@ -126,6 +126,35 @@ def test_approved_claude_pair_is_provisional_until_the_drawing_witness_runs() ->
         seal(answers=(answer(OPUS, '2"'), answer(SONNET, '2"')))
 
 
+def test_claude_pair_parses_explicit_mm_inch_label_but_legacy_does_not() -> None:
+    answers = (answer(OPUS, "457 mm [18]"), answer(SONNET, "457 mm [18]"))
+    legacy = seal(answers=(answer(KIMI, "457 mm [18]"), answer(QWEN, "457 mm [18]")))
+    assert legacy.state is LabelState.REVIEW and legacy.reason_code == "not-plain"
+
+    claude = seal(answers=answers, allow_claude_pair=True)
+    assert claude.state is LabelState.PROVISIONAL
+    assert claude.suggestion is not None and claude.suggestion.exact == Fraction(18)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"), [('4"+1"', Fraction(5)), ('96"(6 EQ)', Fraction(96))]
+)
+def test_claude_pair_expands_only_the_approved_exact_label_forms(
+    text: str, expected: Fraction
+) -> None:
+    outcome = seal(
+        answers=(
+            answer(OPUS, text, combined=True),
+            answer(SONNET, text, combined=True),
+        ),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.PROVISIONAL
+    assert outcome.suggestion is not None and outcome.suggestion.exact == expected
+    assert any(flag.startswith("expanded:") for flag in outcome.flags)
+
+
 def test_claude_pair_disagreement_stays_with_the_reviewer() -> None:
     outcome = seal(
         answers=(answer(OPUS, '2"'), answer(SONNET, '3"')),

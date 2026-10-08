@@ -683,7 +683,9 @@ def read_crops_parallel(
                         question_packet=job.question_packet,
                     )
                 elif job.wall_question or (
-                    job.view_png is not None and job.question_packet is None
+                    job.view_png is not None
+                    and job.question_packet is None
+                    and not job.grounded_claude
                 ):
                     if job.view_png is None:
                         raise ValueError("a wall question packet must include its full vendor view")
