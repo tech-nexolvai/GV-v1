@@ -69,76 +69,9 @@
   background: var(--status-fail-bg);
 }
 
-/* ── No evidence ──────────────────────────────────────────── */
+/* ── No evidence (one line; the reason is behind "?", #1045) ── */
 .evidence-panel__no-evidence {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  padding: var(--space-8);
-  text-align: center;
-  color: var(--text-muted);
-}
-
-.evidence-panel__no-evidence-icon {
-  opacity: 0.3;
-}
-
-.evidence-panel__no-evidence-sub {
-  font-size: var(--text-sm);
-  color: var(--text-faint);
-  max-width: 34ch;
-  line-height: var(--leading-normal);
-}
-
-.evidence-panel__no-evidence-ops {
-  margin-top: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--text-body);
-}
-
-.evidence-panel__no-evidence-code {
-  display: inline-block;
-  max-width: 34ch;
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px dashed var(--border-subtle);
-  background: var(--bg-elevated);
-  color: var(--text-body);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  white-space: pre-wrap;
-  text-align: left;
-  line-height: var(--leading-loose);
-}
-
-.evidence-panel__no-evidence-guidance {
-  max-width: 34ch;
-  margin: 0;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-subtle);
-  font-size: var(--text-xs);
-  color: var(--text-body);
-  line-height: var(--leading-normal);
-}
-
-.evidence-panel__no-evidence-guide-list {
-  max-width: 34ch;
-  margin: 0;
-  padding-left: 1.2rem;
-  text-align: left;
-  color: var(--text-faint);
-  font-size: var(--text-xs);
-  line-height: var(--leading-loose);
-}
-
-.evidence-panel__empty-back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
+  padding: var(--space-2) 0;
 }
 
 /* ── PDF Pane ─────────────────────────────────────────────── */

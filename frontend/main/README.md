@@ -114,8 +114,20 @@ Labels are the API's exact text; floats only place boxes. With any width missing
 scale"; with no pieces, or a non-exact value, it is not drawn at all. It has two sizes: `compact` in
 the Results row details and `full` in the Measurements countertop card.
 
-**Legacy islands.** A legacy component shown inside new UI (the chat and the drawing panel in shadcn
-Sheets) is wrapped in an element with `data-legacy`. Tailwind's scoped reset stops there, and the
+**Show on drawing** (`components/drawing/`, maths in `lib/drawing-viewer.ts`, #1045) is one viewer for
+a countertop row or a finding. It opens as a side Sheet on desktop and a full-screen Dialog on a phone,
+and its code loads the first time it is opened.
+- The page picture with the stored outline. Outlines, other countertops and reading spots sit in an SVG
+  whose viewBox is the page's own 0–1 square over the picture, so zoom and pan cannot move them off it.
+- Zoom and pan (buttons, wheel, pinch, drag), "Fit", "Find outline", a page strip, and keys
+  (+ − 0 F ← →, Esc).
+- The countertop picture and the stored crops, each with its exact value printed over it.
+
+It only reads. A picture that is not rendered yet is shown as "not ready"; the viewer never asks the
+worker to render anything.
+
+**Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
+an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.
 
 ## Imports
