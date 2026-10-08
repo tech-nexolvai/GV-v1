@@ -118,6 +118,46 @@
         "title": "AddPartIn",
         "type": "object"
       },
+      "AgreementFactsOut": {
+        "properties": {
+          "both_readers_agreed_on_row": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Both Readers Agreed On Row"
+          },
+          "code_clue_used": {
+            "title": "Code Clue Used",
+            "type": "boolean"
+          },
+          "values_agreed": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Values Agreed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "both_readers_agreed_on_row",
+          "values_agreed",
+          "code_clue_used"
+        ],
+        "title": "AgreementFactsOut",
+        "type": "object"
+      },
       "ApplicabilityOut": {
         "additionalProperties": false,
         "description": "What a rule applies to: one discriminator and its branches, or everything of its type.",
@@ -1394,6 +1434,237 @@
         "title": "CountertopOut",
         "type": "object"
       },
+      "CountertopPieceOut": {
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "source": {
+            "enum": [
+              "sealed",
+              "typed",
+              "missing"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "value",
+          "source"
+        ],
+        "title": "CountertopPieceOut",
+        "type": "object"
+      },
+      "CountertopResultOut": {
+        "properties": {
+          "agreement": {
+            "$ref": "#/components/schemas/AgreementFactsOut"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_total": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "field_cut_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field Cut Count"
+          },
+          "field_cut_per_end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HoldOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "needs_decision": {
+            "title": "Needs Decision",
+            "type": "boolean"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "pieces": {
+            "items": {
+              "$ref": "#/components/schemas/CountertopPieceOut"
+            },
+            "title": "Pieces",
+            "type": "array"
+          },
+          "printed_overall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviewer_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewerDecisionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "row_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wall_layout": {
+            "$ref": "#/components/schemas/WallLayoutOut"
+          }
+        },
+        "required": [
+          "finding_id",
+          "row_id",
+          "page_number",
+          "label",
+          "row_location",
+          "outcome",
+          "reviewer_decision",
+          "needs_decision",
+          "printed_overall",
+          "pieces",
+          "field_cut_per_end",
+          "field_cut_count",
+          "expected_total",
+          "delta",
+          "wall_layout",
+          "agreement",
+          "hold"
+        ],
+        "title": "CountertopResultOut",
+        "type": "object"
+      },
+      "CountertopResultsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CountertopResultOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "items"
+        ],
+        "title": "CountertopResultsOut",
+        "type": "object"
+      },
       "DecideEvidence": {
         "additionalProperties": false,
         "description": "Confirm or correct one observation behind one finding.\n\n**`correct` carries the corrected value; `confirm` must not.** A confirmation that accepted a\nvalue would be indistinguishable from a correction that happened to agree, and the correction\nrate (`D5.4`) counts the difference. The pairing is validated here rather than trusted.\n\nThe value is **as typed**, with its unit, exactly as `MeasurementEntry` takes a reviewer's\nreading. The server parses it \u2014 `25.5\"` and `25 1/2\"` are the same value, and the reviewer\nshould not have to know which spelling this accepts.",
@@ -1854,6 +2125,30 @@
           "evidence"
         ],
         "title": "ExactOperand",
+        "type": "object"
+      },
+      "ExactValueOut": {
+        "description": "An exact rational and its reviewer-facing inch notation.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "display"
+        ],
+        "title": "ExactValueOut",
         "type": "object"
       },
       "ExceptionOut": {
@@ -2721,6 +3016,24 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HoldOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "reason"
+        ],
+        "title": "HoldOut",
+        "type": "object"
+      },
       "LayoutProposalOut": {
         "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
         "properties": {
@@ -3061,6 +3374,49 @@
         "title": "MeasurementEntry",
         "type": "object"
       },
+      "ModelUsageOut": {
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "failed_calls": {
+            "title": "Failed Calls",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "failed_calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls",
+          "model"
+        ],
+        "title": "ModelUsageOut",
+        "type": "object"
+      },
       "OpaqueTraceOut": {
         "description": "A trace this API does not recognise, handed over intact.\n\n**Not an error and not a silent empty object.** A recompute is compared against what the engine\nrecorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A\nreader gets the content and is told plainly that it was not understood.",
         "properties": {
@@ -3186,6 +3542,39 @@
         ],
         "title": "Outcome",
         "type": "string"
+      },
+      "OutcomeCountsOut": {
+        "properties": {
+          "fail": {
+            "title": "Fail",
+            "type": "integer"
+          },
+          "no_rule": {
+            "title": "No Rule",
+            "type": "integer"
+          },
+          "not_found": {
+            "title": "Not Found",
+            "type": "integer"
+          },
+          "pass": {
+            "title": "Pass",
+            "type": "integer"
+          },
+          "review": {
+            "title": "Review",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pass",
+          "fail",
+          "review",
+          "not_found",
+          "no_rule"
+        ],
+        "title": "OutcomeCountsOut",
+        "type": "object"
       },
       "PackageCreate": {
         "additionalProperties": false,
@@ -3317,6 +3706,167 @@
           "ordering"
         ],
         "title": "PackagePage",
+        "type": "object"
+      },
+      "PackageReadingTimeOut": {
+        "properties": {
+          "duration_ms": {
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "first_call_at": {
+            "format": "date-time",
+            "title": "First Call At",
+            "type": "string"
+          },
+          "last_call_at": {
+            "format": "date-time",
+            "title": "Last Call At",
+            "type": "string"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "run_id",
+          "first_call_at",
+          "last_call_at",
+          "duration_ms"
+        ],
+        "title": "PackageReadingTimeOut",
+        "type": "object"
+      },
+      "PackageSummaryItemOut": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "needs_decision": {
+            "title": "Needs Decision",
+            "type": "integer"
+          },
+          "outcomes": {
+            "$ref": "#/components/schemas/OutcomeCountsOut"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "product_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Type"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "signed_exports_ready": {
+            "title": "Signed Exports Ready",
+            "type": "boolean"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "revision_number",
+          "vendor",
+          "product_type",
+          "state",
+          "created_at",
+          "updated_at",
+          "outcomes",
+          "needs_decision",
+          "approved",
+          "signed_exports_ready"
+        ],
+        "title": "PackageSummaryItemOut",
+        "type": "object"
+      },
+      "PackageSummaryPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackageSummaryItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "limit"
+        ],
+        "title": "PackageSummaryPageOut",
         "type": "object"
       },
       "PagePicturesQueuedOut": {
@@ -4616,6 +5166,42 @@
         "title": "ReviewerChatRequest",
         "type": "object"
       },
+      "ReviewerDecisionOut": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "time": {
+            "format": "date-time",
+            "title": "Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "note",
+          "actor",
+          "time"
+        ],
+        "title": "ReviewerDecisionOut",
+        "type": "object"
+      },
       "ReviewerEntry": {
         "additionalProperties": false,
         "description": "Everything one reviewer submission carries.\n\nEvery part is optional so a reviewer can set the project's parameters once and then enter\nmeasurements per package without resending them.",
@@ -5849,6 +6435,176 @@
         "title": "UploadRequest",
         "type": "object"
       },
+      "UsageGroupOut": {
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "day": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day"
+          },
+          "failed_calls": {
+            "title": "Failed Calls",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelUsageOut"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "failed_calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls",
+          "models"
+        ],
+        "title": "UsageGroupOut",
+        "type": "object"
+      },
+      "UsageOut": {
+        "properties": {
+          "from": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "group_by": {
+            "enum": [
+              "day",
+              "package"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/UsageGroupOut"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "package_reading_times": {
+            "items": {
+              "$ref": "#/components/schemas/PackageReadingTimeOut"
+            },
+            "title": "Package Reading Times",
+            "type": "array"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotalsOut"
+          }
+        },
+        "required": [
+          "to",
+          "group_by",
+          "totals",
+          "groups",
+          "package_reading_times"
+        ],
+        "title": "UsageOut",
+        "type": "object"
+      },
+      "UsageTotalsOut": {
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "failed_calls": {
+            "title": "Failed Calls",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "failed_calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls"
+        ],
+        "title": "UsageTotalsOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -6056,6 +6812,50 @@
           "views"
         ],
         "title": "ViewsOut",
+        "type": "object"
+      },
+      "WallLayoutOut": {
+        "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "source": {
+            "enum": [
+              "drawing clues",
+              "both readers",
+              "reviewer",
+              "between panels",
+              "not established"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config",
+          "label",
+          "source"
+        ],
+        "title": "WallLayoutOut",
         "type": "object"
       },
       "WallLayoutProposalOut": {
@@ -6650,6 +7450,77 @@
         "summary": "Create a package and its first revision",
         "tags": [
           "packages"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages-summary": {
+      "get": {
+        "operationId": "packages_summary_api_v1_projects__project_id__packages_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageSummaryPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize packages for the Documents table",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },
@@ -7285,6 +8156,59 @@
         "summary": "Ask for the checks to be run against this package",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-results": {
+      "get": {
+        "operationId": "countertop_results_api_v1_projects__project_id__packages__package_id__countertop_results_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountertopResultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read structured countertop results for the live check run",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },
@@ -10087,6 +11011,97 @@
         "summary": "Accept one specific deviation, until a date",
         "tags": [
           "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/usage": {
+      "get": {
+        "operationId": "project_usage_api_v1_projects__project_id__usage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "enum": [
+                "day",
+                "package"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read project AI usage",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },

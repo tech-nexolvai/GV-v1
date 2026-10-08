@@ -4,8 +4,8 @@ from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.evidence.sides import reading_transform
 from app.models import ObservationCandidate, Page
@@ -23,29 +23,87 @@ class RowLocation(BaseModel):
 
 def row_location(db: Session, row_id: UUID | None) -> RowLocation | None:
     """Never borrow another page/run's boxes or invent a missing transform."""
-    anchor = None if row_id is None else db.get(ObservationCandidate, row_id)
-    if anchor is None:
-        return None
-    rank = next(
-        (flag for flag in anchor.ambiguity_flags or () if flag.startswith("row-rank:")), None
+    return None if row_id is None else row_locations(db, (row_id,)).get(row_id)
+
+
+def row_locations(db: Session, row_ids: tuple[UUID, ...]) -> dict[UUID, RowLocation]:
+    """Resolve many row outlines with one bounded query plan, rather than four queries per row."""
+    if not row_ids:
+        return {}
+    anchor = aliased(ObservationCandidate)
+    requested_pairs = (
+        select(
+            anchor.page_id.label("page_id"),
+            anchor.document_version_id.label("document_version_id"),
+            anchor.extraction_run_id.label("extraction_run_id"),
+        )
+        .where(anchor.id.in_(row_ids))
+        .distinct()
+        .subquery()
     )
-    if rank is None:
-        return None
-    page = db.get(Page, anchor.page_id)
-    run = db.get(ExtractionRun, anchor.extraction_run_id)
-    if page is None or run is None:
-        return None
+    records = db.execute(
+        select(ObservationCandidate, Page, ExtractionRun)
+        .join(
+            requested_pairs,
+            and_(
+                ObservationCandidate.page_id == requested_pairs.c.page_id,
+                ObservationCandidate.document_version_id == requested_pairs.c.document_version_id,
+                ObservationCandidate.extraction_run_id == requested_pairs.c.extraction_run_id,
+            ),
+        )
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+    ).all()
+    by_row: dict[UUID, tuple[ObservationCandidate, Page, ExtractionRun]] = {}
+    by_pair: dict[tuple[UUID, UUID, UUID], list[ObservationCandidate]] = {}
+    requested = set(row_ids)
+    for candidate, page, run in records:
+        key = (candidate.page_id, candidate.document_version_id, candidate.extraction_run_id)
+        by_pair.setdefault(key, []).append(candidate)
+        if candidate.id in requested:
+            by_row[candidate.id] = (candidate, page, run)
+
+    output: dict[UUID, RowLocation] = {}
+    for row_id, (anchor_candidate, page, run) in by_row.items():
+        rank = next(
+            (
+                flag
+                for flag in anchor_candidate.ambiguity_flags or ()
+                if flag.startswith("row-rank:")
+            ),
+            None,
+        )
+        if rank is None:
+            continue
+        key = (anchor_candidate.page_id, anchor_candidate.document_version_id, run.id)
+        location = _location_from_candidates(
+            anchor_candidate,
+            page,
+            run,
+            by_pair[key],
+            rank,
+        )
+        if location is not None:
+            output[row_id] = location
+    return output
+
+
+def _location_from_candidates(
+    anchor: ObservationCandidate,
+    page: Page,
+    run: ExtractionRun,
+    candidates: list[ObservationCandidate],
+    rank: str,
+) -> RowLocation | None:
+    rank = (
+        next((flag for flag in anchor.ambiguity_flags or () if flag.startswith("row-rank:")), None)
+        or rank
+    )
     transform = reading_transform(page, run)
     if transform is None:
         return None
     points: list[StoredPoint] = []
-    for candidate in db.scalars(
-        select(ObservationCandidate).where(
-            ObservationCandidate.page_id == anchor.page_id,
-            ObservationCandidate.document_version_id == anchor.document_version_id,
-            ObservationCandidate.extraction_run_id == anchor.extraction_run_id,
-        )
-    ):
+    for candidate in candidates:
         flags = candidate.ambiguity_flags or ()
         if "slot-reader" not in flags or rank not in flags:
             continue

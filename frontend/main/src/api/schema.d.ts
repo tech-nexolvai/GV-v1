@@ -234,6 +234,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Summarize packages for the Documents table */
+        get: operations["packages_summary_api_v1_projects__project_id__packages_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}": {
         parameters: {
             query?: never;
@@ -469,6 +486,23 @@ export interface paths {
          *     separation `DESIGN_PLATFORM.md` §4.2 asks for.
          */
         post: operations["request_checks_api_v1_projects__project_id__packages__package_id__checks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read structured countertop results for the live check run */
+        get: operations["countertop_results_api_v1_projects__project_id__packages__package_id__countertop_results_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1482,6 +1516,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read project AI usage */
+        get: operations["project_usage_api_v1_projects__project_id__usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -1787,6 +1838,15 @@ export interface components {
                 components["schemas"]["EndIn"]
             ];
             kind: components["schemas"]["PartKind"];
+        };
+        /** AgreementFactsOut */
+        AgreementFactsOut: {
+            /** Both Readers Agreed On Row */
+            both_readers_agreed_on_row: boolean | null;
+            /** Code Clue Used */
+            code_clue_used: boolean;
+            /** Values Agreed */
+            values_agreed: (boolean | null)[];
         };
         /**
          * ApplicabilityOut
@@ -2371,6 +2431,64 @@ export interface components {
             suggestion: components["schemas"]["SuggestionOut"] | null;
             wall_layout_proposal?: components["schemas"]["WallLayoutProposalOut"] | null;
         };
+        /** CountertopPieceOut */
+        CountertopPieceOut: {
+            /** Index */
+            index: number;
+            /** Kind */
+            kind?: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "sealed" | "typed" | "missing";
+            value: components["schemas"]["ExactValueOut"] | null;
+        };
+        /** CountertopResultOut */
+        CountertopResultOut: {
+            agreement: components["schemas"]["AgreementFactsOut"];
+            delta: components["schemas"]["ExactValueOut"] | null;
+            expected_total: components["schemas"]["ExactValueOut"] | null;
+            /** Field Cut Count */
+            field_cut_count: number | null;
+            field_cut_per_end: components["schemas"]["ExactValueOut"] | null;
+            /** Finding Id */
+            finding_id: string | null;
+            hold: components["schemas"]["HoldOut"] | null;
+            /** Label */
+            label: string;
+            /** Needs Decision */
+            needs_decision: boolean;
+            outcome: components["schemas"]["Outcome"] | null;
+            /** Page Number */
+            page_number: number;
+            /** Pieces */
+            pieces: components["schemas"]["CountertopPieceOut"][];
+            printed_overall: components["schemas"]["ExactValueOut"] | null;
+            reviewer_decision: components["schemas"]["ReviewerDecisionOut"] | null;
+            /**
+             * Row Id
+             * Format: uuid
+             */
+            row_id: string;
+            row_location: components["schemas"]["RowLocation"] | null;
+            wall_layout: components["schemas"]["WallLayoutOut"];
+        };
+        /** CountertopResultsOut */
+        CountertopResultsOut: {
+            /** Items */
+            items: components["schemas"]["CountertopResultOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+        };
         /**
          * DecideEvidence
          * @description Confirm or correct one observation behind one finding.
@@ -2600,6 +2718,18 @@ export interface components {
             numerator: string;
             /** Unit */
             unit: string;
+        };
+        /**
+         * ExactValueOut
+         * @description An exact rational and its reviewer-facing inch notation.
+         */
+        ExactValueOut: {
+            /** Denominator */
+            denominator: string;
+            /** Display */
+            display: string;
+            /** Numerator */
+            numerator: string;
         };
         /**
          * ExceptionOut
@@ -2997,6 +3127,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HoldOut */
+        HoldOut: {
+            /** Code */
+            code: string;
+            /** Reason */
+            reason: string;
+        };
         /**
          * LayoutProposalOut
          * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
@@ -3160,6 +3297,23 @@ export interface components {
              */
             values?: string[] | null;
         };
+        /** ModelUsageOut */
+        ModelUsageOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Failed Calls */
+            failed_calls: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Model */
+            model: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
         /**
          * OpaqueTraceOut
          * @description A trace this API does not recognise, handed over intact.
@@ -3248,6 +3402,19 @@ export interface components {
          * @enum {string}
          */
         Outcome: "PASS" | "FAIL" | "NOT_FOUND" | "REVIEW_REQUIRED" | "NO_APPLICABLE_RULE";
+        /** OutcomeCountsOut */
+        OutcomeCountsOut: {
+            /** Fail */
+            fail: number;
+            /** No Rule */
+            no_rule: number;
+            /** Not Found */
+            not_found: number;
+            /** Pass */
+            pass: number;
+            /** Review */
+            review: number;
+        };
         /**
          * PackageCreate
          * @description A new reviewable drawing package.
@@ -3314,6 +3481,83 @@ export interface components {
             next_cursor?: string | null;
             /** Ordering */
             ordering: string;
+        };
+        /** PackageReadingTimeOut */
+        PackageReadingTimeOut: {
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * First Call At
+             * Format: date-time
+             */
+            first_call_at: string;
+            /**
+             * Last Call At
+             * Format: date-time
+             */
+            last_call_at: string;
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+        };
+        /** PackageSummaryItemOut */
+        PackageSummaryItemOut: {
+            /** Approved */
+            approved: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Needs Decision */
+            needs_decision: number;
+            outcomes: components["schemas"]["OutcomeCountsOut"];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /** Product Type */
+            product_type: string | null;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Revision Number */
+            revision_number: number;
+            /** Signed Exports Ready */
+            signed_exports_ready: boolean;
+            /** State */
+            state: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Vendor */
+            vendor: string | null;
+        };
+        /** PackageSummaryPageOut */
+        PackageSummaryPageOut: {
+            /** Items */
+            items: components["schemas"]["PackageSummaryItemOut"][];
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /** PagePicturesQueuedOut */
         PagePicturesQueuedOut: {
@@ -3991,6 +4235,20 @@ export interface components {
             /** Question */
             question: string;
         };
+        /** ReviewerDecisionOut */
+        ReviewerDecisionOut: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** Note */
+            note: string | null;
+            /**
+             * Time
+             * Format: date-time
+             */
+            time: string;
+        };
         /**
          * ReviewerEntry
          * @description Everything one reviewer submission carries.
@@ -4538,6 +4796,59 @@ export interface components {
              */
             sha256: string;
         };
+        /** UsageGroupOut */
+        UsageGroupOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Day */
+            day?: string | null;
+            /** Failed Calls */
+            failed_calls: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Models */
+            models: components["schemas"]["ModelUsageOut"][];
+            /** Output Tokens */
+            output_tokens: number;
+            /** Package Id */
+            package_id?: string | null;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /** UsageOut */
+        UsageOut: {
+            /** From */
+            from?: string | null;
+            /**
+             * Group By
+             * @enum {string}
+             */
+            group_by: "day" | "package";
+            /** Groups */
+            groups: components["schemas"]["UsageGroupOut"][];
+            /** Package Reading Times */
+            package_reading_times: components["schemas"]["PackageReadingTimeOut"][];
+            /** To */
+            to: string | null;
+            totals: components["schemas"]["UsageTotalsOut"];
+        };
+        /** UsageTotalsOut */
+        UsageTotalsOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Failed Calls */
+            failed_calls: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -4601,6 +4912,18 @@ export interface components {
         ViewsOut: {
             /** Views */
             views: components["schemas"]["ViewOut"][];
+        };
+        /** WallLayoutOut */
+        WallLayoutOut: {
+            /** Config */
+            config: string | null;
+            /** Label */
+            label: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "drawing clues" | "both readers" | "reviewer" | "between panels" | "not established";
         };
         /**
          * WallLayoutProposalOut
@@ -4965,6 +5288,40 @@ export interface operations {
             };
         };
     };
+    packages_summary_api_v1_projects__project_id__packages_summary_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackageSummaryPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_package_api_v1_projects__project_id__packages__package_id__get: {
         parameters: {
             query?: never;
@@ -5294,6 +5651,38 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    countertop_results_api_v1_projects__project_id__packages__package_id__countertop_results_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountertopResultsOut"];
                 };
             };
             /** @description Validation Error */
@@ -6783,6 +7172,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewExceptionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_usage_api_v1_projects__project_id__usage_get: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+                group_by?: "day" | "package";
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageOut"];
                 };
             };
             /** @description Validation Error */
