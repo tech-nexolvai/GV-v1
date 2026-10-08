@@ -5783,7 +5783,9 @@ export interface operations {
     };
     page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get: {
         parameters: {
-            query?: never;
+            query?: {
+                document_version_id?: string | null;
+            };
             header?: never;
             path: {
                 project_id: string;

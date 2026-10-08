@@ -37,7 +37,9 @@ class PagePicturesQueuedOut(BaseModel):
     queued: bool
 
 
-def _page(session: Session, revision_id: UUID, page_number: int) -> Page | None:
+def _page(
+    session: Session, revision_id: UUID, page_number: int, document_version_id: UUID | None = None
+) -> Page | None:
     """Page `page_number` (1-based); the shop drawing's when two documents have that page."""
     return session.scalars(
         select(Page)
@@ -49,6 +51,11 @@ def _page(session: Session, revision_id: UUID, page_number: int) -> Page | None:
         .where(
             PackageRevisionDocument.package_revision_id == revision_id,
             Page.index == page_number - 1,
+            (
+                Page.document_version_id == document_version_id
+                if document_version_id is not None
+                else True
+            ),
         )
         .order_by(case((Document.kind == DocumentKind.SHOP.value, 0), else_=1), Document.id)
         .limit(1)
@@ -72,10 +79,11 @@ def page_picture(
     project_id: UUID,
     package_id: UUID,
     page_number: int,
+    document_version_id: UUID | None = None,
 ) -> Response:
     """The stored picture of page `page_number`, or 404 while the worker has not rendered it."""
     revision = _revision(session, project_id, package_id)
-    page = _page(session, revision.id, page_number)
+    page = _page(session, revision.id, page_number, document_version_id)
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     picture = recorded_page_picture(session, page.id)

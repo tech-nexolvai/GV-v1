@@ -8255,6 +8255,23 @@
               "title": "Page Number",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "document_version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Document Version Id"
+            }
           }
         ],
         "responses": {
