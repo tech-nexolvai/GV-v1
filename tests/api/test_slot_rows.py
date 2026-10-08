@@ -66,6 +66,7 @@ def _package_rows(
     wall_source: str = "readers",
     held_page: int | None = None,
     piece_count: int = 1,
+    widths_add_up: bool = False,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
@@ -102,6 +103,8 @@ def _package_rows(
             height_pt=Decimal(792),
             rotation=0,
             has_vector_text=True,
+            media_box=["0", "0", "612", "792"],
+            crop_box=["0", "0", "612", "792"],
         )
         session.add(page)
         pages[index] = page
@@ -122,6 +125,7 @@ def _package_rows(
         extractor="extraction.form_reader",
         extractor_version="slot-reader-v1-test",
         config_hash="synthetic-test",
+        dpi=150,
     )
     session.add(extraction)
     session.flush()
@@ -132,7 +136,9 @@ def _package_rows(
             (str(position), "SHOP:countertop_piece_width", 20 + page_index + position)
             for position in range(piece_count)
         ]
-        slots.append(("overall", "SHOP:countertop_overall_width", 40 + page_index))
+        # The published company standard adds one inch at each of the two wall ends.
+        overall = sum(value for _, _, value in slots) + 2 if widths_add_up else 40 + page_index
+        slots.append(("overall", "SHOP:countertop_overall_width", overall))
         for slot, field, numerator in slots:
             candidate = ObservationCandidate(
                 document_version_id=version.id,
@@ -456,16 +462,74 @@ def test_end_to_end_held_row_never_runs_arithmetic(session: Session, tmp_path: P
     assert "held" in (held.reason or "").lower()
 
 
-def _canonical_with_reader_support(
+@pytest.mark.parametrize("wall_source", ["vendor-drawing-clues", "readers"])
+def test_end_to_end_sealed_row_passes_only_with_its_own_qualified_walls(
+    session: Session, tmp_path: Path, wall_source: str
+) -> None:
+    project_id, package_id, anchors = _package_rows(
+        session, piece_count=2, widths_add_up=True, wall_source=wall_source
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all()
+    for candidate in candidates:
+        _reader_support(session, candidate)
+    assert session.query(SlotRowReviewDecision).count() == 0
+    assert session.query(CanonicalObservation).count() == 0
+
+    first = _run_current_checks(session, package_id, tmp_path)
+    assert {finding.scope_row_candidate_id for finding in first} == set(anchors.values())
+    if wall_source == "vendor-drawing-clues":
+        assert all(finding.outcome == "PASS" for finding in first)
+        assert session.query(SlotRowReviewDecision).count() == 0
+    else:
+        assert all(finding.outcome == "REVIEW_REQUIRED" for finding in first)
+        assert all("wall layout" in (finding.reason or "").lower() for finding in first)
+        principal = Principal(
+            id="synthetic reviewer",
+            roles=frozenset({Role.REVIEWER}),
+            projects=frozenset({project_id}),
+        )
+        review_slot_row(
+            principal,
+            principal,
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(wall_config="back_left_right"),
+        )
+        second = _run_current_checks(session, package_id, tmp_path)
+        by_row = {finding.scope_row_candidate_id: finding for finding in second}
+        assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
+        assert by_row[anchors[1]].outcome == "REVIEW_REQUIRED"
+        decision = session.query(SlotRowReviewDecision).one()
+        assert not decision.measurements
+        first = [by_row[anchors[0]]]
+
+    for finding in first:
+        assert finding.scope_item_id is None
+        assert finding.scope_label is not None
+        inputs = session.scalars(
+            select(VerdictInput).where(VerdictInput.check_run_id == finding.check_run_id)
+        ).all()
+        assert {item.operand_name for item in inputs} == {
+            "countertop_width",
+            "piece_widths[0]",
+            "piece_widths[1]",
+        }
+        assert all(item.evidence_status == EvidenceStatus.CORROBORATED.value for item in inputs)
+        assert all(item.canonical_observation_id is not None for item in inputs)
+        assert all(item.slot_row_review_decision_id is None for item in inputs)
+
+
+def _reader_support(
     session: Session,
     candidate: ObservationCandidate,
-    *,
-    semantic: SemanticType,
-    value_numerator: int | None = None,
-    parent_supported: bool = False,
-) -> CanonicalObservation:
+) -> list[ObservationCandidate]:
     assert candidate.value_numerator is not None
-    numerator = candidate.value_numerator if value_numerator is None else value_numerator
     supporters: list[ObservationCandidate] = []
     for reader_id in ("amazon.qwen3-vl", "moonshotai.kimi-k3"):
         support = ObservationCandidate(
@@ -487,6 +551,20 @@ def _canonical_with_reader_support(
         session.add(support)
         supporters.append(support)
     session.flush()
+    return supporters
+
+
+def _canonical_with_reader_support(
+    session: Session,
+    candidate: ObservationCandidate,
+    *,
+    semantic: SemanticType,
+    value_numerator: int | None = None,
+    parent_supported: bool = False,
+) -> CanonicalObservation:
+    assert candidate.value_numerator is not None
+    numerator = candidate.value_numerator if value_numerator is None else value_numerator
+    supporters = _reader_support(session, candidate)
     observation = CanonicalObservation(
         document_version_id=candidate.document_version_id,
         page_id=candidate.page_id,
@@ -674,3 +752,8 @@ def test_all_piece_width_inputs_cite_their_own_observation_and_parent_confirmati
         if item.operand_name.startswith("piece_widths[")
     }
     assert actual == expected
+    assert all(
+        item.evidence_status == EvidenceStatus.HUMAN_CONFIRMED.value
+        for item in inputs
+        if item.operand_name.startswith("piece_widths[")
+    )

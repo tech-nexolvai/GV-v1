@@ -48,8 +48,7 @@ from vocabulary.part_kinds import PartKind
 from workflow.countertop_runs import confirm_countertop_run, live_run_rows, withdraw_countertop_run
 from workflow.evidence_operands import evidence_operands
 from workflow.part_operands import (
-    manual_run_pages,
-    manual_wall_layout_for_check,
+    countertop_scopes,
     part_operands,
 )
 from workflow.parts import confirm_part, withdraw_part
@@ -510,6 +509,8 @@ def test_withdrawn_run_is_refused_by_each_selection_layer(
 def test_manual_run_wall_layout_never_borrows_a_slot_row_wall(
     slot_row_present: bool,
 ) -> None:
+    from workflow.part_operands import manual_wall_layout_for_check
+
     # A manual countertop may use its own confirmed run wall. A revision-wide legacy setting is
     # only available to an old package with no slot-reader rows at all.
     assert manual_wall_layout_for_check(
@@ -533,7 +534,17 @@ def test_withdrawn_manual_run_keeps_its_page_out_of_slot_checks(
     session: Session, store: LocalStore
 ) -> None:
     assembly = Assembly(session, store)
-    withdraw_countertop_run(session, countertop_item_id=assembly.parts[0], actor="reviewer")
+    withdrawn = withdraw_countertop_run(
+        session, countertop_item_id=assembly.parts[0], actor="reviewer"
+    )
+    countertop_proposal = session.get(PartProposal, assembly.proposals[0])
+    assert countertop_proposal is not None
+    withdraw_part(session, proposal=countertop_proposal, actor="reviewer")
+    # The withdrawn run, rather than a still-live countertop item, must exclude this page.
+    assert countertop_scopes(session, assembly.revision.id) == ()
+    assert withdrawn.decision == "withdrawn"
+    assert withdrawn.run_id is None
+    assert session.get(CountertopRunDecision, withdrawn.id) is withdrawn
     extraction = _slot_reader_extraction_run(session, assembly.revision.id)
     slot_candidates: list[ObservationCandidate] = []
     for slot, field, value in (
@@ -582,7 +593,6 @@ def test_withdrawn_manual_run_keeps_its_page_out_of_slot_checks(
         source="vendor-drawing-clues",
     )
 
-    assert assembly.page.index in manual_run_pages(session, assembly.revision.id)
     DatabaseStages(store, operands={}).run_checks(session, assembly.revision.id)
     row_findings = list(
         session.scalars(

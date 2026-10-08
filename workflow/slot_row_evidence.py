@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID, uuid4
@@ -229,7 +229,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         operand = seal(_domain_observation(session, observation), "countertop_width")
         if isinstance(operand, GateRefusal):
             return SlotRowCheck(False, operand.detail, layout, None, wall_note, {}, ())
-        operands["countertop_width"] = operand
+        operands["countertop_width"] = replace(operand, evidence_observation_id=str(observation.id))
         observation_ids.append(observation.id)
     else:
         if decision is None or None not in values:
@@ -292,7 +292,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
                 (),
             )
         piece_operands.append(operand.value)
-        piece_sources.append((operand.value, observation.id, None, EvidenceStatus.CORROBORATED))
+        piece_sources.append((operand.value, observation.id, None, operand.status))
         observation_ids.append(observation.id)
 
     if not piece_operands or any(not isinstance(value, Measurement) for value in piece_operands):
