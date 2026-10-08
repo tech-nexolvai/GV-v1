@@ -51,9 +51,18 @@ export function AppTopbar({
               const last = index === crumbs.length - 1;
               return (
                 <Fragment key={`${index}-${crumb.label}`}>
-                  <BreadcrumbItem className={last ? 'min-w-0' : 'hidden shrink-0 md:inline-flex'}>
+                  {/* The name (second-to-last of three) gives way first; "Revision N" is never cut. */}
+                  <BreadcrumbItem
+                    className={
+                      last
+                        ? crumbs.length > 2 ? 'shrink-0' : 'min-w-0'
+                        : index === crumbs.length - 2 && crumbs.length > 2
+                          ? 'hidden min-w-0 md:inline-flex'
+                          : 'hidden shrink-0 md:inline-flex'
+                    }
+                  >
                     {last || !crumb.onSelect ? (
-                      <BreadcrumbPage className="truncate font-medium">{crumb.label}</BreadcrumbPage>
+                      <BreadcrumbPage className="truncate font-medium" title={crumb.label}>{crumb.label}</BreadcrumbPage>
                     ) : (
                       <BreadcrumbLink asChild>
                         <button type="button" onClick={crumb.onSelect} className="whitespace-nowrap">

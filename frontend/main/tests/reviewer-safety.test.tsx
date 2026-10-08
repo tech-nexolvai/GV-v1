@@ -10,24 +10,26 @@ import { decisionPayload } from '../src/components/output/reviewerResults.js';
 // Load the actual components through Vite, including CSS and import.meta.env, not copies.
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 try {
-  const { ResultsPanel } = await server.ssrLoadModule('/src/components/output/ResultsPanel.tsx');
+  // The Results tab is the countertop table since #1039; these safety properties moved with it.
+  const { CountertopTable } = await server.ssrLoadModule('/src/components/results/countertop-table.tsx');
+  const { WallGlyph } = await server.ssrLoadModule('/src/components/results/wall-glyph.tsx');
   const { toFinding, withChain } = await server.ssrLoadModule('/src/api/findings.ts');
   const finding: Finding = {
     id: 'synthetic-finding', check_id: 'CHECK-1', name: 'Synthetic check', severity: 'FLAG',
     outcome: 'NOT_FOUND', reviewer_action: 'confirm', reviewer_note: null,
     scope_row_candidate_id: 'synthetic-row',
   };
-  const callbacks = {
-    onViewEvidence: () => {}, onAction: async () => ({ saved: true }),
-    onCorrect: async () => ({ saved: true }), onExcept: async () => ({ saved: true }),
+  const synthetic = {
+    finding_id: 'synthetic-finding', row_id: 'synthetic-row', page_number: 3, label: 'Synthetic countertop',
+    row_location: null, outcome: 'NOT_FOUND', needs_decision: true, printed_overall: null, pieces: [],
+    field_cut_per_end: null, field_cut_count: null, expected_total: null, delta: null, hold: null,
+    reviewer_decision: { action: 'confirm', actor: 'synthetic reviewer', note: null, time: '2026-10-09T10:00:00Z' },
+    wall_layout: { config: null, label: null, source: 'not established' },
+    agreement: { both_readers_agreed_on_row: null, code_clue_used: false, values_agreed: [] },
   };
-  function results(item: Finding, blocked: boolean, rows: object[] = []) {
-    return renderToStaticMarkup(createElement(ResultsPanel, {
-      ...callbacks, findings: [item], rows, selected: null, busy: false,
-      onRefresh: () => {}, onShowDrawing: () => {}, onOpenRow: () => {},
-      readiness: { can_approve: !blocked, blocking_findings: blocked ? 1 : 0,
-        blocking_finding_ids: blocked ? [item.id] : [] },
-    }));
+  const actions = { onShowDrawing: () => {}, onOpenCard: () => {}, onDecide: () => {}, canDecide: (row: { needs_decision: boolean }) => row.needs_decision };
+  function results(row: object) {
+    return renderToStaticMarkup(createElement(CountertopTable, { rows: [{ ...synthetic, ...row }], actions }));
   }
   await test('FAIL dismissal needs a note; confirmation stays one click', () => {
     for (const note of [undefined, '', '  ']) {
@@ -37,16 +39,24 @@ try {
     assert.equal(decisionPayload('one', 'FAIL', 'dismiss', 'Not applicable').note, 'Not applicable');
   });
   await test('an evidence-only confirmation cannot hide the still-required review buttons', () => {
-    const html = results(finding, true);
-    assert.match(html, />Not checkable<\/button>/);
-    assert.match(html, />Checked: OK<\/button>/);
-    assert.doesNotMatch(html, /Reviewer decision: Checked: OK/);
+    const html = results({});
+    assert.match(html, />Decide<\/button>/);
+    assert.match(html, /Pending/);
+    assert.doesNotMatch(html, /Checked: OK/, 'a confirmation that did not finish the review never reads as a decision');
   });
   await test('an expired exception keeps review controls available', () => {
-    assert.match(results({ ...finding, outcome: 'FAIL', reviewer_action: 'except' }, true), />Dismiss<\/button>/);
+    const html = results({ outcome: 'FAIL', reviewer_decision: { ...synthetic.reviewer_decision, action: 'except' } });
+    assert.match(html, />Decide<\/button>/);
+    assert.doesNotMatch(html, /Exception/);
   });
   await test('a correction explains that checks must run again', () => {
-    assert.match(results({ ...finding, outcome: 'FAIL', reviewer_action: 'correct' }, true), /run (the )?checks again/i);
+    assert.match(results({ outcome: 'FAIL', reviewer_decision: { ...synthetic.reviewer_decision, action: 'correct' } }), /run (the )?checks again/i);
+  });
+  await test('a finished decision is shown as the reviewer\'s, never as the check\'s result', () => {
+    const html = results({ needs_decision: false });
+    assert.match(html, /Checked: OK/);
+    assert.match(html, /Not found|Waiting on a value/, 'the recorded outcome badge stays');
+    assert.doesNotMatch(html, />Decide<\/button>/);
   });
   await test('the chat card also restores unresolved review controls', () => {
     // Chat uses the same tested card, mounted when its table disclosure is opened.
@@ -55,13 +65,13 @@ try {
     assert.match(readFileSync('src/pages/ReviewPage.tsx', 'utf8'), /blockingFindingIds=\{readiness\?\.blocking_finding_ids\}/);
   });
   await test('wall sources are reviewer words, not storage codes', () => {
-    for (const source of ['vendor-drawing-clues', 'drawing-and-readers', 'readers', 'reviewer', 'between-panels']) {
-      const html = results(finding, true, [{ row_id: 'synthetic-row', values: [],
-        wall_config: null, wall_proposal: 'back_only', wall_source: source }]);
-      assert.doesNotMatch(html, new RegExp(` · ${source}<`));
-      if (source === 'vendor-drawing-clues') assert.match(html, /drawing clues/i);
-      if (source === 'drawing-and-readers' || source === 'readers') assert.match(html, /needs (your )?confirmation/i);
-      if (source === 'between-panels') assert.match(html, /side panels/i);
+    for (const source of ['drawing clues', 'both readers', 'reviewer', 'between panels', 'not established']) {
+      const html = renderToStaticMarkup(createElement(WallGlyph, { layout: { config: 'back_only', label: 'back wall only', source } }));
+      assert.doesNotMatch(html, /vendor-drawing-clues|wall-source:|walls-sealed:/);
+      if (source === 'drawing clues') assert.match(html, /drawing/);
+      if (source === 'both readers') assert.match(html, /AIs/);
+      if (source === 'between panels') assert.match(html, /side panels/i);
+      if (source === 'not established') assert.match(html, /countertop card/i);
     }
   });
   await test('plain missing-input reasons survive both list and evidence loading', () => {

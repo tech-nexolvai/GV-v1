@@ -5,7 +5,10 @@ import { drawingPoints } from './reviewerResults';
 import './DrawingResultPanel.css';
 
 /** Exact immutable document version; never substitute a same-numbered page from another file. */
-export function DrawingResultPanel({ finding, projectId, packageId, onClose }: { finding: Finding; projectId: string; packageId: string; onClose: () => void }) {
+/** What the panel needs to place a result: a name, and a row outline or evidence location. */
+export type DrawingTarget = Pick<Finding, 'name' | 'scope_label' | 'row_location' | 'shop_evidence' | 'arch_evidence'>;
+
+export function DrawingResultPanel({ finding, projectId, packageId, onClose }: { finding: DrawingTarget; projectId: string; packageId: string; onClose: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);

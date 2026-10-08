@@ -7,11 +7,15 @@
    never the legacy pages, which were styled against their own reset (src/index.css) and would
    shift by pixels under Tailwind's (measured: 50 of 72 page screenshots changed).
 
+   A legacy component placed inside new UI (chat or the drawing panel inside a shadcn Sheet, #1039)
+   is wrapped in an element with `data-legacy`: the reset stops there, and the legacy element rules
+   in src/index.css apply again inside it.
+
    When every page has moved to the new components, delete this file and import
    'tailwindcss/preflight.css' layer(base) in tailwind.css instead. To refresh after a Tailwind
    upgrade, copy the new preflight.css in and re-apply the change above. */
 
-@scope ([data-slot], [data-tw]) {
+@scope ([data-slot], [data-tw]) to ([data-legacy]) {
 /*
   1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
   2. Remove default margins and padding

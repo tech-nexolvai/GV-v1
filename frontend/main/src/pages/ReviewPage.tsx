@@ -3,17 +3,23 @@ import { ChatThread } from '../components/chat/ChatThread';
 import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
-import { ResultsPanel } from '../components/output/ResultsPanel';
-import { DrawingResultPanel } from '../components/output/DrawingResultPanel';
+import { DrawingResultPanel, type DrawingTarget } from '../components/output/DrawingResultPanel';
+import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
+import type { BulkResult } from '@/components/results/other-checks';
+import { recordEach, type Filter } from '@/lib/countertop-results';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
+import { MessageSquare } from 'lucide-react';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
   getApprovalReadiness,
+  getCountertopResults,
   getSignedExports,
   prepareSignedExports,
-  listSlotReaderRows,
   getChangedValues,
   askReviewerChat,
   streamReviewerChat,
@@ -29,7 +35,7 @@ import {
   downloadRedline,
   downloadReport,
 } from '../api/client';
-import type { ReviewSession, ReviewerChatReply, ApprovalReadiness, SlotReaderRow } from '../api/client';
+import type { ReviewSession, ReviewerChatReply, ApprovalReadiness, CountertopResult } from '../api/client';
 import { explanationUnavailable, factsMessage, replyMessage, withStreamStage } from '../components/chat/chatReply';
 import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
@@ -74,11 +80,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const remote = useAsync(async () => {
     const project = projectId();
     const detail = await getPackage(project, packageId);
-    const [found, sessions, readiness, rows] = await Promise.all([
+    const [found, sessions, readiness] = await Promise.all([
       loadFindings(project, packageId, detail.current_revision_id),
       listReviewSessions(project),
       getApprovalReadiness(project, packageId),
-      listSlotReaderRows(project, packageId),
     ]);
 
     // The reviewer's own open sitting over *this* revision, if they already have one. A session is
@@ -88,7 +93,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       (item) =>
         item.package_revision_id === detail.current_revision_id && item.completed_at === null,
     );
-    return { detail, found, session: open ?? null, readiness, rows: rows.rows };
+    return { detail, found, session: open ?? null, readiness };
   }, [packageId]);
   const [resultsVersion, setResultsVersion] = useState(0);
   const changedValues = useAsync(
@@ -100,11 +105,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [activeTab, setActiveTab] = useState<'results' | 'chat' | 'measure'>(initialMessage ? 'chat' : 'results');
+  // The review opens on Results (#1039); chat lives in a side sheet.
+  const [activeTab, setActiveTab] = useState<'results' | 'measure'>('results');
+  const [chatOpen, setChatOpen] = useState(Boolean(initialMessage));
+  const [drawingTarget, setDrawingTarget] = useState<DrawingTarget | null>(null);
+  // The countertop results (#1035), loaded beside the findings; earlier rows stay on screen while a
+  // refresh is in flight, so the table never flashes back to a skeleton.
+  const [countertops, setCountertops] = useState<CountertopsState>({ status: 'loading' });
+  const [countertopsVersion, setCountertopsVersion] = useState(0);
   const [measureVisited, setMeasureVisited] = useState(false);
   const [targetRow, setTargetRow] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<ApprovalReadiness | null>(null);
-  const [rows, setRows] = useState<SlotReaderRow[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const refreshPending = useRef(false);
   const [waitingForChecks, setWaitingForChecks] = useState(false);
@@ -123,7 +134,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // #1034: values saved in this session after the last check run (the API records no time for values).
   const [valuesChangedSinceRun, setValuesChangedSinceRun] = useState(false);
   // The Results filter, held here so "Review N items" can open it on what needs the reviewer.
-  const [onlyNeedsMe, setOnlyNeedsMe] = useState(true);
+  const [resultsFilter, setResultsFilter] = useState<Filter | null>(null);
   const [recordIdsOpen, setRecordIdsOpen] = useState(false);
   const [projectValuesOpen, setProjectValuesOpen] = useState(false);
   // Signed-export status after approval, for the Report step and the Download action.
@@ -172,11 +183,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     if (remote.status === 'ready') {
       // This copies a freshly fetched package into locally editable review state.  Actions below
       // optimistically update it, so deriving it directly from `remote` would erase reviewer work.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFindings(remote.data.found);
       setSession(remote.data.session);
       setReadiness(remote.data.readiness);
-      setRows(remote.data.rows);
     }
   }, [remote]);
 
@@ -216,6 +225,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     return () => window.clearTimeout(timer);
   }, [exportsStatus, exportsVersion]);
 
+  useEffect(() => {
+    let current = true;
+    getCountertopResults(projectId(), packageId).then(
+      (answer) => { if (current) setCountertops({ status: 'ready', rows: answer.items }); },
+      (error: unknown) => {
+        if (!current) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setCountertops((previous) => (previous.status === 'ready' ? previous : { status: 'error', error: message }));
+      },
+    );
+    return () => { current = false; };
+  }, [packageId, countertopsVersion]);
+
   async function refreshResults() {
     if (refreshPending.current) return;
     refreshPending.current = true;
@@ -223,11 +245,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     setReadiness(null);
     try {
       const detail = await getPackage(projectId(), packageId);
-      const [fresh, ready, rowList] = await Promise.all([
+      const [fresh, ready] = await Promise.all([
         loadFindings(projectId(), packageId, detail.current_revision_id),
-        getApprovalReadiness(projectId(), packageId), listSlotReaderRows(projectId(), packageId),
+        getApprovalReadiness(projectId(), packageId),
       ]);
-      setFindings(fresh); setRows(rowList.rows); setRecordedStatus(detail.state as PackageStatus);
+      setFindings(fresh); setRecordedStatus(detail.state as PackageStatus);
+      setCountertopsVersion(n => n + 1);
       const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
       const finished = changed && detail.state === 'AWAITING_REVIEW';
       const failed = detail.state.startsWith('FAILED') || detail.state === 'CANCELLED';
@@ -252,6 +275,33 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   function showDrawing(finding: Finding) {
     setSelectedFindingId(finding.id); selectedFindingRef.current = finding.id;
     onEvidenceChange(<DrawingResultPanel key={finding.id} finding={finding} projectId={projectId()} packageId={packageId} onClose={() => { onEvidenceChange(null); setSelectedFindingId(null); selectedFindingRef.current = null; }} />);
+  }
+
+  /** A countertop row on its drawing page, in a side sheet (#1039). */
+  function showRowOnDrawing(row: CountertopResult) {
+    setDrawingTarget({ name: row.label, scope_label: row.label, row_location: row.row_location, shop_evidence: null, arch_evidence: null });
+  }
+
+  /**
+   * "Mark not checkable" on several findings at once (#1039): one note, the same payload rule and
+   * the same endpoint as a single decision, one call per finding, then one refresh.
+   */
+  async function handleBulkDismiss(ids: string[], note: string): Promise<BulkResult> {
+    setActionError(null);
+    let current: ReviewSession;
+    try {
+      current = await ensureSession();
+    } catch (error) {
+      return { saved: 0, failed: ids.map((id) => ({ id, error: error instanceof Error ? error.message : String(error) })) };
+    }
+    const result: BulkResult = await recordEach(ids, async (id) => {
+      const finding = findings.find((f) => f.id === id);
+      if (!finding) throw new Error('This finding is no longer in the current result list.');
+      await recordReviewAction(projectId(), current.id, decisionPayload(id, finding.outcome, 'dismiss', note));
+    });
+    setReadiness(null);
+    await refreshResults();
+    return result;
   }
 
   /**
@@ -678,9 +728,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         button?.focus();
       }, 50);
     } else if (kind === 'review') {
-      setOnlyNeedsMe(true);
+      setResultsFilter('needs-you');
       setActiveTab('results');
-      window.setTimeout(() => document.getElementById('results-title')?.focus(), 50);
+      window.setTimeout(() => document.querySelector<HTMLElement>('[data-slot="countertop-table"] tr[data-row-id]')?.focus(), 80);
     } else if (kind === 'sign-off') {
       void handleSignOff();
     } else if (kind === 'prepare-report') {
@@ -724,6 +774,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         <PackageStatusBadge status={pkg.status} />
       </HeaderTitleExtra>
       <HeaderActions>
+        <Button variant="ghost" size="sm" onClick={() => setChatOpen(true)} aria-label="Open chat">
+          <MessageSquare /> <span className="hidden xl:inline">Chat</span>
+        </Button>
         {/* From tablet width up; on a phone the same table opens from "More actions". */}
         <span className="hidden md:inline-flex">
           <ChangedValuesBadge
@@ -776,54 +829,89 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </div>
       )}
 
-      {/* View Tabs */}
-      <div className="review-page__tabs">
-        <button className={`btn ${activeTab === 'results' ? 'btn--primary' : 'btn--ghost'}`} onClick={() => setActiveTab('results')}>Results{readiness ? ` · ${readiness.blocking_findings} need you` : ''}</button>
-        <button 
-          className={`btn ${activeTab === 'chat' ? 'btn--primary' : 'btn--ghost'}`}
-          onClick={() => setActiveTab('chat')}
+      <div data-tw className="flex items-center gap-2 border-b bg-background px-4 py-2 font-sans sm:px-6">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            if (value === 'measure') setMeasureVisited(true);
+            setActiveTab(value as 'results' | 'measure');
+          }}
         >
-          Chat & Findings
-        </button>
-        <button 
-          className={`btn ${activeTab === 'measure' ? 'btn--primary' : 'btn--ghost'}`}
-          onClick={() => { setMeasureVisited(true); setActiveTab('measure'); }}
-        >
-          Measurements
-        </button>
+          <TabsList>
+            <TabsTrigger value="results">
+              Results
+              {readiness !== null && readiness.blocking_findings > 0 && (
+                <span className="num rounded-full bg-outcome-review-bg px-1.5 text-xs text-outcome-review-fg">{readiness.blocking_findings}</span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="measure">Measurements</TabsTrigger>
+          </TabsList>
+        </Tabs>
       </div>
 
-      {activeTab === 'results' && <ResultsPanel findings={findings} rows={rows} readiness={readiness} selected={selectedFindingId} busy={refreshing}
-        onlyNeedsMe={onlyNeedsMe} onOnlyNeedsMeChange={setOnlyNeedsMe}
-        onRefresh={() => void refreshResults()} onShowDrawing={showDrawing} onOpenRow={openRow} onViewEvidence={handleViewEvidence}
-        onAction={handleAction} onCorrect={handleCorrect} onExcept={handleExcept} />}
-      {activeTab === 'chat' && (
-        <>
-          {/* Messages */}
-          <ChatThread
-            messages={messages.map(m => ({
-              ...m,
-              findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
-            }))}
-            selectedFinding={selectedFindingId}
-            recordedFindingCount={findings.length}
-            blockingFindingIds={readiness?.blocking_finding_ids}
-            onViewEvidence={handleViewEvidence}
-            onAction={handleAction}
-            onCorrect={handleCorrect}
-            onExcept={handleExcept}
+      {activeTab === 'results' && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ResultsDashboard
+            countertops={countertops}
+            findings={findings}
+            blockingIds={readiness ? new Set(readiness.blocking_finding_ids) : null}
+            busy={refreshing}
+            filter={resultsFilter}
+            onFilterChange={setResultsFilter}
+            onRetry={() => { setCountertops({ status: 'loading' }); setCountertopsVersion((n) => n + 1); }}
+            onRefresh={() => void refreshResults()}
+            handlers={{ onAction: handleAction, onCorrect: handleCorrect, onExcept: handleExcept }}
+            onBulkDismiss={handleBulkDismiss}
+            onShowDrawing={showRowOnDrawing}
+            onOpenCard={(row) => openRow(row.row_id)}
           />
-
-          {/* Input */}
-          <ChatInput
-            onSend={handleSend}
-            disabled={isProcessing}
-            models={chatModels}
-            selectedModel={selectedModel}
-            onSelectModel={setSelectedModel}
-          />
-        </>
+        </div>
       )}
+
+      {/* Chat, beside the results rather than instead of them (#1039). A legacy island: the chat
+          keeps its own styles inside the shadcn sheet. */}
+      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
+        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
+          <SheetHeader className="border-b">
+            <SheetTitle>Chat</SheetTitle>
+            <SheetDescription>Ask about this review in plain words.</SheetDescription>
+          </SheetHeader>
+          <div data-legacy className="flex min-h-0 flex-1 flex-col bg-[var(--bg-base)]">
+            <ChatThread
+              messages={messages.map(m => ({
+                ...m,
+                findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
+              }))}
+              selectedFinding={selectedFindingId}
+              recordedFindingCount={findings.length}
+              blockingFindingIds={readiness?.blocking_finding_ids}
+              onViewEvidence={handleViewEvidence}
+              onAction={handleAction}
+              onCorrect={handleCorrect}
+              onExcept={handleExcept}
+            />
+            <ChatInput
+              onSend={handleSend}
+              disabled={isProcessing}
+              models={chatModels}
+              selectedModel={selectedModel}
+              onSelectModel={setSelectedModel}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={drawingTarget !== null} onOpenChange={(open) => !open && setDrawingTarget(null)}>
+        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-3xl [&>button:last-child]:hidden">
+          <SheetTitle className="sr-only">Countertop on its drawing</SheetTitle>
+          <SheetDescription className="sr-only">The page picture with the recorded row outline.</SheetDescription>
+          {drawingTarget && (
+            <div data-legacy className="h-full min-h-0">
+              <DrawingResultPanel finding={drawingTarget} projectId={projectId()} packageId={packageId} onClose={() => setDrawingTarget(null)} />
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
       {measureVisited && (
         <div className="review-page__measure-container" hidden={activeTab !== 'measure'}>
           <MeasurementPanel
@@ -834,7 +922,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             onValuesSaved={() => { if (findings.length > 0) setValuesChangedSinceRun(true); }}
             targetRow={activeTab === 'measure' ? targetRow : null}
             onTargetReached={() => setTargetRow(null)}
-            onReviewRow={(rowId) => { setActiveTab('results'); setTimeout(() => document.getElementById(`result-${findings.find(f => f.scope_row_candidate_id === rowId)?.id}`)?.scrollIntoView({ block: 'center' }), 0); }}
+            onReviewRow={(rowId) => { setResultsFilter('all'); setActiveTab('results'); setTimeout(() => { const row = document.querySelector<HTMLElement>(`[data-slot="countertop-table"] tr[data-row-id="${rowId}"]`); row?.scrollIntoView({ block: 'center' }); row?.focus(); }, 80); }}
           />
         </div>
       )}

@@ -1,0 +1,181 @@
+/**
+ * Reading the countertop results (#1035) for the dashboard (#1039). Pure functions only.
+ *
+ * **Numbers are never computed here.** Every value shown comes from the API's exact
+ * `{numerator, denominator, display}`; the numerator is read only to tell a zero, negative or
+ * positive difference apart for its colour and sign — never to do arithmetic.
+ *
+ * **A reviewer's decision is never shown as the check's result.** A row's bucket is what the record
+ * says: still needs someone → "needs-you"; otherwise the recorded outcome (PASS, FAIL, or "not
+ * checkable" when the automatic check could not decide). Who decided is a separate column.
+ */
+import type { CountertopResult, ExactValue } from '@/api/client';
+import type { Finding } from '@/data/types';
+
+export type Bucket = 'needs-you' | 'fail' | 'pass' | 'not-checkable';
+export type Filter = 'all' | 'needs-you' | 'fail' | 'pass' | 'held' | 'automatic';
+
+export function bucketOf(row: Pick<CountertopResult, 'needs_decision' | 'outcome'>): Bucket {
+  if (row.needs_decision) return 'needs-you';
+  if (row.outcome === 'PASS') return 'pass';
+  if (row.outcome === 'FAIL') return 'fail';
+  return 'not-checkable';
+}
+
+export const BUCKET_LABEL: Record<Bucket, string> = {
+  'needs-you': 'Needs you',
+  fail: 'FAIL',
+  pass: 'PASS',
+  'not-checkable': 'Not checkable',
+};
+
+const BUCKET_ORDER: Record<Bucket, number> = { 'needs-you': 0, fail: 1, pass: 2, 'not-checkable': 3 };
+
+/** Needs you → FAIL → PASS → not checkable, then page, then label. Returns a new array. */
+export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'outcome' | 'page_number' | 'label'>>(rows: readonly T[]): T[] {
+  return [...rows].sort(
+    (a, b) =>
+      BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] ||
+      a.page_number - b.page_number ||
+      a.label.localeCompare(b.label),
+  );
+}
+
+export function matchesFilter(row: CountertopResult, filter: Filter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'held') return row.hold !== null;
+  if (filter === 'automatic') return row.outcome === 'PASS' || row.outcome === 'FAIL';
+  return bucketOf(row) === filter;
+}
+
+export interface Kpis {
+  countertops: number;
+  /** Decided by the checks themselves: a recorded PASS or FAIL. */
+  automatic: number;
+  needsYou: number;
+  pass: number;
+  fail: number;
+  held: number;
+}
+
+export function kpis(rows: readonly CountertopResult[]): Kpis {
+  return {
+    countertops: rows.length,
+    automatic: rows.filter((r) => r.outcome === 'PASS' || r.outcome === 'FAIL').length,
+    needsYou: rows.filter((r) => r.needs_decision).length,
+    pass: rows.filter((r) => r.outcome === 'PASS').length,
+    fail: rows.filter((r) => r.outcome === 'FAIL').length,
+    held: rows.filter((r) => r.hold !== null).length,
+  };
+}
+
+export function bucketCounts(rows: readonly CountertopResult[]): Record<Bucket, number> {
+  const counts: Record<Bucket, number> = { 'needs-you': 0, fail: 0, pass: 0, 'not-checkable': 0 };
+  for (const row of rows) counts[bucketOf(row)] += 1;
+  return counts;
+}
+
+/** The filter a reviewer lands on: what needs them, when anything does. */
+export function defaultFilter(rows: readonly CountertopResult[]): Filter {
+  return rows.some((r) => r.needs_decision) ? 'needs-you' : 'all';
+}
+
+/** The sign of an exact value, read from its numerator (never computed). */
+export function signOf(value: ExactValue): -1 | 0 | 1 {
+  const n = value.numerator.trim();
+  if (/^-?0+$/.test(n)) return 0;
+  return n.startsWith('-') ? -1 : 1;
+}
+
+/**
+ * A difference as a reviewer reads it: the API's own display with a true minus sign, and a plus on
+ * an overrun so "+1/2"" and "1/2"" can never be confused. Null (held, unchecked) is "—".
+ */
+export function formatDelta(delta: ExactValue | null): { text: string; sign: -1 | 0 | 1 | null } {
+  if (delta === null) return { text: '—', sign: null };
+  const sign = signOf(delta);
+  const display = delta.display.trim();
+  if (sign < 0) return { text: `−${display.replace(/^-/, '')}`, sign };
+  if (sign > 0) return { text: display.startsWith('+') ? display : `+${display}`, sign };
+  return { text: display, sign };
+}
+
+/** Which walls a layout has, for the glyph; null when the layout is not established. */
+export function wallsOf(config: string | null): { back: boolean; left: boolean; right: boolean } | null {
+  if (config === 'back_left_right') return { back: true, left: true, right: true };
+  if (config === 'back_only') return { back: true, left: false, right: false };
+  if (config === 'island') return { back: false, left: false, right: false };
+  // The rulebook publishes only these three layouts (rules/rulebook/ct_width_001.yaml); anything
+  // else is shown as not established rather than drawn from a guess.
+  return null;
+}
+
+/** Where the wall layout came from, in one word. */
+export const WALL_SOURCE_WORD: Record<CountertopResult['wall_layout']['source'], string> = {
+  'drawing clues': 'drawing',
+  'both readers': 'AIs',
+  reviewer: 'reviewer',
+  'between panels': 'panels',
+  'not established': 'not set',
+};
+
+/** The same, said in full for a tooltip and screen readers. */
+export const WALL_SOURCE_TITLE: Record<CountertopResult['wall_layout']['source'], string> = {
+  'drawing clues': 'Read from the vendor drawing’s clues',
+  'both readers': 'Both AI readers agreed',
+  reviewer: 'Chosen by a reviewer',
+  'between panels': 'Stone between side panels',
+  'not established': 'Not established — choose it on the countertop card',
+};
+
+/** "Ana Lima" → "AL"; "reviewer@x" → "RE". */
+export function initials(actor: string): string {
+  const words = actor.replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (words[0] ?? '?').slice(0, 2).toUpperCase();
+}
+
+/** "confirm" / "dismiss" / … in the words the decision buttons use. */
+export function decisionWords(action: string, outcome: CountertopResult['outcome']): string {
+  const abstention = outcome === 'REVIEW_REQUIRED' || outcome === 'NOT_FOUND' || outcome === null;
+  if (action === 'confirm') return abstention ? 'Checked: OK' : 'Confirmed';
+  if (action === 'dismiss') return abstention ? 'Not checkable' : 'Dismissed';
+  if (action === 'correct') return 'Corrected';
+  if (action === 'except') return 'Exception';
+  return action;
+}
+
+/** Abstentions still waiting on someone: the only findings the bulk "not checkable" may touch. */
+export function bulkEligible(findings: readonly Finding[], blocking: ReadonlySet<string>): Finding[] {
+  return findings.filter((f) => blocking.has(f.id) && (f.outcome === 'NOT_FOUND' || f.outcome === 'REVIEW_REQUIRED'));
+}
+
+/**
+ * An exact value as a number, for ordering rows only — never shown, never used in a result. A
+ * missing value sorts last.
+ */
+export function sortValue(value: ExactValue | null): number {
+  if (value === null) return Number.POSITIVE_INFINITY;
+  return Number(value.numerator) / Number(value.denominator);
+}
+
+/**
+ * Record the same decision on several findings, one call each, in order (#1039 bulk "not
+ * checkable"). A failure is collected, never thrown, so one refused finding cannot hide whether
+ * the others were saved.
+ */
+export async function recordEach(
+  ids: readonly string[],
+  record: (id: string) => Promise<void>,
+): Promise<{ saved: number; failed: { id: string; error: string }[] }> {
+  const result = { saved: 0, failed: [] as { id: string; error: string }[] };
+  for (const id of ids) {
+    try {
+      await record(id);
+      result.saved += 1;
+    } catch (error) {
+      result.failed.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
+}
