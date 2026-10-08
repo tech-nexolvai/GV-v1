@@ -15,8 +15,9 @@ interface ChatThreadProps {
   messages: ChatMessage[];
   selectedFinding: string | null;
   recordedFindingCount: number;
+  blockingFindingIds?: readonly string[];
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
+  onAction: (findingId: string, action: SimpleReviewAction, note?: string) => Promise<DecisionSaveResult>;
   onCorrect: (findingId: string, correctedValue: string) => Promise<DecisionSaveResult>;
   onExcept: (findingId: string, reason: string, expiresAt: string) => Promise<DecisionSaveResult>;
 }
@@ -25,6 +26,7 @@ export function ChatThread({
   messages,
   selectedFinding,
   recordedFindingCount,
+  blockingFindingIds,
   onViewEvidence,
   onAction,
   onCorrect,
@@ -156,6 +158,7 @@ export function ChatThread({
                   renderDetail={(finding) => (
                     <FindingCard
                       finding={finding}
+                      needsDecision={blockingFindingIds?.includes(finding.id)}
                       isSelected={selectedFinding === finding.id}
                       defaultExpanded
                       onViewEvidence={onViewEvidence}

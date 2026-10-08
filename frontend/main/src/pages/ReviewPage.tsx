@@ -5,11 +5,16 @@ import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
 import { SignedDownloads } from '../components/output/SignedDownloads';
+import { ResultsPanel } from '../components/output/ResultsPanel';
+import { DrawingResultPanel } from '../components/output/DrawingResultPanel';
+import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
 import { StatusBadge } from '../components/ui/Badge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,
+  getApprovalReadiness,
+  listSlotReaderRows,
   getChangedValues,
   askReviewerChat,
   streamReviewerChat,
@@ -25,7 +30,7 @@ import {
   downloadRedline,
   downloadReport,
 } from '../api/client';
-import type { ReviewSession, ReviewerChatReply } from '../api/client';
+import type { ReviewSession, ReviewerChatReply, ApprovalReadiness, SlotReaderRow } from '../api/client';
 import { explanationUnavailable, factsMessage, replyMessage, withStreamStage } from '../components/chat/chatReply';
 import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings, withChain } from '../api/findings';
@@ -53,10 +58,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
   const remote = useAsync(async () => {
     const project = projectId();
-    const [detail, found, sessions] = await Promise.all([
-      getPackage(project, packageId),
-      loadFindings(project, packageId),
+    const detail = await getPackage(project, packageId);
+    const [found, sessions, readiness, rows] = await Promise.all([
+      loadFindings(project, packageId, detail.current_revision_id),
       listReviewSessions(project),
+      getApprovalReadiness(project, packageId),
+      listSlotReaderRows(project, packageId),
     ]);
 
     // The reviewer's own open sitting over *this* revision, if they already have one. A session is
@@ -66,18 +73,27 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       (item) =>
         item.package_revision_id === detail.current_revision_id && item.completed_at === null,
     );
-    return { detail, found, session: open ?? null };
+    return { detail, found, session: open ?? null, readiness, rows: rows.rows };
   }, [packageId]);
+  const [resultsVersion, setResultsVersion] = useState(0);
   const changedValues = useAsync(
     () => getChangedValues(projectId(), packageId),
-    [packageId],
+    [packageId, resultsVersion],
   );
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [activeTab, setActiveTab] = useState<'chat' | 'measure'>('chat');
+  const [activeTab, setActiveTab] = useState<'results' | 'chat' | 'measure'>(initialMessage ? 'chat' : 'results');
+  const [measureVisited, setMeasureVisited] = useState(false);
+  const [targetRow, setTargetRow] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<ApprovalReadiness | null>(null);
+  const [rows, setRows] = useState<SlotReaderRow[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshPending = useRef(false);
+  const [waitingForChecks, setWaitingForChecks] = useState(false);
+  const checksBaseline = useRef('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -125,8 +141,55 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setFindings(remote.data.found);
       setSession(remote.data.session);
+      setReadiness(remote.data.readiness);
+      setRows(remote.data.rows);
     }
   }, [remote]);
+
+  useEffect(() => {
+    if (!waitingForChecks) return;
+    const timer = window.setInterval(() => void refreshResults(), 2000);
+    return () => window.clearInterval(timer);
+    // The interval refreshes saved data only; it never remounts Measurements or its drafts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingForChecks, packageId]);
+
+  async function refreshResults() {
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    setRefreshing(true);
+    setReadiness(null);
+    try {
+      const detail = await getPackage(projectId(), packageId);
+      const [fresh, ready, rowList] = await Promise.all([
+        loadFindings(projectId(), packageId, detail.current_revision_id),
+        getApprovalReadiness(projectId(), packageId), listSlotReaderRows(projectId(), packageId),
+      ]);
+      setFindings(fresh); setRows(rowList.rows); setRecordedStatus(detail.state as PackageStatus);
+      const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
+      const finished = changed && detail.state === 'AWAITING_REVIEW';
+      const failed = detail.state.startsWith('FAILED') || detail.state === 'CANCELLED';
+      if (!waitingForChecks || finished || failed) setReadiness(ready);
+      if (finished || failed) setWaitingForChecks(false);
+      setResultsVersion(n => n + 1);
+    } catch (error) {
+      setActionError(`Saved results could not be refreshed. Sign-off is disabled until they load: ${error instanceof Error ? error.message : String(error)}`);
+    } finally { refreshPending.current = false; setRefreshing(false); }
+  }
+
+  function checksQueued() {
+    checksBaseline.current = findings.map(f => f.id).sort().join(',');
+    setReadiness(null); setWaitingForChecks(true); setActiveTab('results');
+  }
+
+  function openRow(rowId: string) {
+    setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
+  }
+
+  function showDrawing(finding: Finding) {
+    setSelectedFindingId(finding.id); selectedFindingRef.current = finding.id;
+    onEvidenceChange(<DrawingResultPanel key={finding.id} finding={finding} projectId={projectId()} packageId={packageId} onClose={() => { onEvidenceChange(null); setSelectedFindingId(null); selectedFindingRef.current = null; }} />);
+  }
 
   /**
    * The sitting these decisions belong to, opened on the first one rather than on arrival.
@@ -135,7 +198,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * and a session is a record that a review happened. Looking is not reviewing.
    */
   async function ensureSession(): Promise<ReviewSession> {
-    if (session !== null) return session;
+    if (session !== null && session.completed_at === null) return session;
     if (remote.status !== 'ready') throw new Error('The package is still loading.');
 
     const opened = await openReviewSession(
@@ -278,6 +341,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         finding={finding}
         projectId={projectId()}
         packageId={packageId}
+        onShowDrawing={() => showDrawing(finding)}
         loading
         onClose={() => {
           selectedFindingRef.current = null;
@@ -303,6 +367,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           finding={enriched}
           projectId={projectId()}
           packageId={packageId}
+          onShowDrawing={() => showDrawing(enriched)}
           onClose={() => {
             selectedFindingRef.current = null;
             setSelectedFindingId(null);
@@ -318,6 +383,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           finding={finding}
           projectId={projectId()}
           packageId={packageId}
+          onShowDrawing={() => showDrawing(finding)}
           error={`Evidence could not be loaded — ${message}`}
           onClose={() => {
             selectedFindingRef.current = null;
@@ -342,12 +408,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   async function handleAction(
     findingId: string,
     action: SimpleReviewAction,
+    note?: string,
   ): Promise<DecisionSaveResult> {
     setActionError(null);
-    return recordReviewDecision(findingId, action, async () => {
+    const finding = findings.find(f => f.id === findingId);
+    if (!finding) return { saved: false, error: 'This finding is no longer in the current result list. Refresh it.' };
+    setReadiness(null);
+    const result = await recordReviewDecision(findingId, action, async () => {
       const current = await ensureSession();
-      await recordReviewAction(projectId(), current.id, { finding_id: findingId, action });
+      await recordReviewAction(projectId(), current.id, decisionPayload(findingId, finding.outcome, action, note));
     }, setFindings);
+    await refreshResults();
+    return result;
   }
 
   /**
@@ -392,6 +464,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct' } : f)),
       );
+      await refreshResults();
       return { saved: true };
     } catch (error) {
       return { saved: false, error: `That correction was not recorded — ${error instanceof Error ? error.message : String(error)}` };
@@ -419,6 +492,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setFindings(prev =>
         prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except' } : f)),
       );
+      await refreshResults();
       return { saved: true };
     } catch (error) {
       return { saved: false, error: `That exception was not granted — ${error instanceof Error ? error.message : String(error)}` };
@@ -439,18 +513,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * the server check is what makes that a rule rather than a hint.
    */
   async function handleSignOff() {
-    if (session === null || isSigningOff) return;
+    if (!canSignOff(readiness) || isSigningOff) return;
     setActionError(null);
     setIsSigningOff(true);
     try {
-      await approvePackage(projectId(), session.id);
+      const current = await ensureSession();
+      await approvePackage(projectId(), current.id);
       setApproved(true); // The approval was acknowledged, even if a subsequent read fails.
       onPackageChanged?.();
       // Re-read rather than assume: approval completes the sitting server-side, and the package
       // state a moment ago is not the one the download button should be reading.
       try {
         const [detail, sitting] = await Promise.all([
-          getPackage(projectId(), packageId), completeSessionState(session.id),
+          getPackage(projectId(), packageId), completeSessionState(current.id),
         ]);
         setRecordedStatus(detail.state as PackageStatus);
         setApproved(detail.state === 'APPROVED');
@@ -518,11 +593,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
   const actioned = findings.filter(f => f.reviewer_action !== null).length;
-  const needsAction = findings.filter(f =>
-    f.reviewer_action === null &&
-    f.outcome !== 'PASS' &&
-    f.outcome !== 'NO_APPLICABLE_RULE'
-  ).length;
 
   return (
     <div className="review-page">
@@ -577,23 +647,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             onClick={handleSignOff}
             disabled={
               isSigningOff ||
-              findings.length === 0 ||
-              needsAction > 0 ||
-              session === null ||
-              session.completed_at !== null
+              !canSignOff(readiness) || waitingForChecks
             }
             data-tooltip={
-              findings.length === 0
-                ? 'There are no findings to sign off on'
-                : needsAction > 0
-                ? needsAction === 1
-                  ? '1 finding still needs review'
-                  : `${needsAction} findings still need review`
-                : session === null
-                ? 'Review a finding first — that is what opens the sitting this signs off'
-                : session.completed_at !== null
-                ? 'This sitting is already signed off'
-                : 'Sign off this package'
+              readiness?.reason ?? 'Sign off this package'
             }
           >
             <CheckSquare size={14} />
@@ -609,6 +666,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </div>
       </div>
 
+      {!(approved || pkg.status === 'APPROVED') && <p className="review-page__readiness" role="status">
+        {waitingForChecks ? 'Checks queued. Results will refresh when the worker finishes.' : readiness?.reason ?? (canSignOff(readiness) ? 'All required decisions are recorded. Ready to sign off.' : 'Checking sign-off requirements…')}
+      </p>}
+
       {/* A write that failed, said out loud. The row has already been put back, so without this the
           reviewer would see their tick disappear and have no idea why — and might reasonably assume
           they had mis-clicked rather than that nothing was saved. */}
@@ -619,14 +680,15 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </div>
       )}
 
-      <ChangedValuesPanel
+      <details className="review-page__changed-values"><summary>Changed values for this check run</summary><ChangedValuesPanel
         state={changedValues.status}
         value={changedValues.status === 'ready' ? changedValues.data : null}
         currentRevisionId={remote.status === 'ready' ? remote.data.detail.current_revision_id : null}
-      />
+      /></details>
 
       {/* View Tabs */}
       <div className="review-page__tabs">
+        <button className={`btn ${activeTab === 'results' ? 'btn--primary' : 'btn--ghost'}`} onClick={() => setActiveTab('results')}>Results{readiness ? ` · ${readiness.blocking_findings} need you` : ''}</button>
         <button 
           className={`btn ${activeTab === 'chat' ? 'btn--primary' : 'btn--ghost'}`}
           onClick={() => setActiveTab('chat')}
@@ -635,13 +697,16 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </button>
         <button 
           className={`btn ${activeTab === 'measure' ? 'btn--primary' : 'btn--ghost'}`}
-          onClick={() => setActiveTab('measure')}
+          onClick={() => { setMeasureVisited(true); setActiveTab('measure'); }}
         >
           Measurements
         </button>
       </div>
 
-      {activeTab === 'chat' ? (
+      {activeTab === 'results' && <ResultsPanel findings={findings} rows={rows} readiness={readiness} selected={selectedFindingId} busy={refreshing}
+        onRefresh={() => void refreshResults()} onShowDrawing={showDrawing} onOpenRow={openRow} onViewEvidence={handleViewEvidence}
+        onAction={handleAction} onCorrect={handleCorrect} onExcept={handleExcept} />}
+      {activeTab === 'chat' && (
         <>
           {/* Messages */}
           <ChatThread
@@ -651,6 +716,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             }))}
             selectedFinding={selectedFindingId}
             recordedFindingCount={findings.length}
+            blockingFindingIds={readiness?.blocking_finding_ids}
             onViewEvidence={handleViewEvidence}
             onAction={handleAction}
             onCorrect={handleCorrect}
@@ -666,12 +732,17 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             onSelectModel={setSelectedModel}
           />
         </>
-      ) : (
-        <div className="review-page__measure-container">
+      )}
+      {measureVisited && (
+        <div className="review-page__measure-container" hidden={activeTab !== 'measure'}>
           <MeasurementPanel
             packageId={packageId}
             onChoosePackage={onBackToDocuments}
-            onDone={() => setActiveTab('chat')}
+            onDone={() => { setActiveTab('results'); void refreshResults(); }}
+            onChecksQueued={checksQueued}
+            targetRow={activeTab === 'measure' ? targetRow : null}
+            onTargetReached={() => setTargetRow(null)}
+            onReviewRow={(rowId) => { setActiveTab('results'); setTimeout(() => document.getElementById(`result-${findings.find(f => f.scope_row_candidate_id === rowId)?.id}`)?.scrollIntoView({ block: 'center' }), 0); }}
           />
         </div>
       )}
