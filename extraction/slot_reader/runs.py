@@ -510,9 +510,11 @@ def plan_slots(
         if selected_row not in rows.candidates[:6]:
             raise ValueError("the row reader may select only one of the first six code candidates")
         row = selected_row
-        ambiguity = (
-            "the selected row has no overall width" if selected_row.overall is None else None
-        )
+        # A Claude row choice is a choice among code-generated candidates, not a request for the
+        # row to also contain an overall. Piece spans remain useful without an overall; the
+        # mapping/check boundary simply has no overall operand and therefore cannot produce a
+        # countertop-width verdict.
+        ambiguity = None
     else:
         row, ambiguity = choose_row(rows)
     if row is None:

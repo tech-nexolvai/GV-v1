@@ -108,6 +108,7 @@ type LayoutProposal = {
   model_id: string;
   prompt_id: string;
   confirmed: boolean;
+  requires_confirmation: boolean;
 };
 type Discriminator = {
   name: string;
@@ -1700,9 +1701,8 @@ export function MeasurementPanel({
         <section className="enter-values__section">
           <h2>Layout</h2>
           <p className="enter-values__hint">
-            What the drawing shows. Proposed answers are pre-selected with the crop that supports
-            them. A blank field means the reader abstained, so choose the value from the drawing or
-            leave it unstated.
+            What the drawing shows. A model-only suggestion stays unselected until you choose it;
+            code-identified drawing clues may pre-select a value. Leave uncertain layouts unstated.
           </p>
           {Object.keys(layoutChoiceDefaults(needed.discriminators)).length > 0 && (
             <p className="layout-confirm-note" role="status">
@@ -1720,7 +1720,14 @@ export function MeasurementPanel({
                 <label className="value-label" htmlFor={`d-${discriminator.name}`}>
                   {discriminator.name}
                   {discriminator.proposal ? (
-                    <span className="value-origin value-origin--proposed">proposed</span>
+                    <span className="value-origin value-origin--proposed">
+                      {discriminator.name === 'wall_config' &&
+                      discriminator.proposal.requires_confirmation
+                        ? 'needs your confirmation'
+                        : discriminator.proposal.prompt_id === 'slot-walls-drawing-clues-v1'
+                          ? 'drawing clue'
+                          : 'proposed'}
+                    </span>
                   ) : (
                     <span className="value-origin value-origin--empty">needs you</span>
                   )}
@@ -1994,7 +2001,7 @@ function LayoutProposalCrop({
         src={state.url}
         alt={`Plan-view crop for ${discriminatorName}: ${proposal.value}`}
       />
-      <figcaption>Read from the plan view</figcaption>
+      <figcaption>Evidence picture for this proposed layout</figcaption>
     </figure>
   );
 }

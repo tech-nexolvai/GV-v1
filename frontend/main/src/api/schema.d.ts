@@ -2936,6 +2936,11 @@ export interface components {
             model_id: string;
             /** Prompt Id */
             prompt_id: string;
+            /**
+             * Requires Confirmation
+             * @default true
+             */
+            requires_confirmation: boolean;
             /** Value */
             value: string;
         };

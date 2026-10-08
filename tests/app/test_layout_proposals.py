@@ -44,7 +44,7 @@ from rules.schema import Rule
 from rules.snapshot import publish
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from workflow.layout_proposals import record_layout_proposal
+from workflow.layout_proposals import DRAWING_CLUE_WALL_PROMPT_ID, record_layout_proposal
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -252,6 +252,7 @@ def test_required_inputs_returns_the_layout_proposal_beside_choices(session: Ses
         "model_id": "amazon.nova-lite-v1:0",
         "prompt_id": "layout-discriminator-v1",
         "confirmed": False,
+        "requires_confirmation": True,
     }
 
 
@@ -342,7 +343,13 @@ READERS = "us.moonshotai.kimi-k3 + qwen.qwen3-vl-235b-a22b"
 
 
 def _wall_run(
-    session: Session, revision_id: UUID, rows: list[str | None], *, propose: str | None
+    session: Session,
+    revision_id: UUID,
+    rows: list[str | None],
+    *,
+    propose: str | None,
+    prompt_id: str = "slot-walls-v1",
+    model_id: str = READERS,
 ) -> LayoutProposal | None:
     """One slot-reader run's wall candidates — a sealed layout per row, or `None` for a row that
     went to the person — and, when asked, the readers' layout proposal from that run."""
@@ -409,8 +416,8 @@ def _wall_run(
             discriminator_name="wall_config",
             proposed_value=propose,
             crop_artifact_id=artifacts[0],
-            model_id=READERS,
-            prompt_id="slot-walls-v1",
+            model_id=model_id,
+            prompt_id=prompt_id,
         )
     session.commit()
     return proposal
@@ -426,7 +433,7 @@ def _requested(session: Session, package_id: UUID, body: dict[str, Any] | None =
     return entry.payload
 
 
-def test_the_check_request_uses_the_layout_two_readers_agreed_on_and_says_so(
+def test_an_ai_only_wall_layout_stays_a_proposal_until_the_reviewer_selects_it(
     session: Session,
 ) -> None:
     _publish_rulebook(session)
@@ -435,16 +442,53 @@ def test_the_check_request_uses_the_layout_two_readers_agreed_on_and_says_so(
         session, revision_id, ["back_left_right", "back_left_right"], propose="back_left_right"
     )
     assert proposal is not None
+    from app.api.measurements import _stored_layout_proposal_out
+
+    revision = session.get(PackageRevision, revision_id)
+    assert revision is not None
+    proposal_out = _stored_layout_proposal_out(session, revision)["wall_config"]
+    assert proposal_out.requires_confirmation is True
+
+    unconfirmed = _requested(session, package_id)
+    assert unconfirmed["discriminators"] == {}
+    assert unconfirmed["discriminator_sources"] == {}
+    assert session.execute(select(LayoutConfirmation)).scalars().all() == []
+
+    payload = _requested(
+        session, package_id, {"discriminators": {"wall_config": "back_left_right"}}
+    )
+    assert payload["discriminators"] == {"wall_config": "back_left_right"}
+    assert payload["discriminator_sources"] == {"wall_config": "reviewer"}
+    assert len(session.execute(select(LayoutConfirmation)).scalars().all()) == 1
+
+
+def test_the_check_request_identifies_a_code_backed_wall_layout(session: Session) -> None:
+    _publish_rulebook(session)
+    package_id, revision_id, _crop = _package_with_crop(session)
+    proposal = _wall_run(
+        session,
+        revision_id,
+        ["back_left_right"],
+        propose="back_left_right",
+        prompt_id=DRAWING_CLUE_WALL_PROMPT_ID,
+        model_id="deterministic:vendor-drawing-clues",
+    )
+    assert proposal is not None
 
     payload = _requested(session, package_id)
 
     assert payload["discriminators"] == {"wall_config": "back_left_right"}
-    source = payload["discriminator_sources"]["wall_config"]
-    assert source.startswith("two AI readers agreed:")
-    assert READERS in source and str(proposal.id) in source
-    assert (
-        session.execute(select(LayoutConfirmation)).scalars().all() == []
-    ), "the readers' value is not recorded as anyone's confirmation"
+    assert payload["discriminator_sources"]["wall_config"] == (
+        f"vendor drawing clues (proposal {proposal.id})"
+    )
+
+    from app.api.measurements import _stored_layout_proposal_out
+
+    proposal_out = _stored_layout_proposal_out(
+        session,
+        session.get(PackageRevision, revision_id),  # type: ignore[arg-type]
+    )["wall_config"]
+    assert proposal_out.requires_confirmation is False
 
 
 def test_a_value_the_reviewer_states_always_wins(session: Session) -> None:

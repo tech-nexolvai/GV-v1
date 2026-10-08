@@ -52,11 +52,15 @@ __all__ = [
 #: A plain dimension: digits, spaces, a fraction slash, inch and foot marks, a dash, a decimal
 #: point, and the brackets of an mm [inch] pair. Anything else is words, a sum or a count.
 _PLAIN: Final = re.compile(r"[0-9 /\"'\-.\[\]]+")
+_MM_DUAL: Final = re.compile(
+    r"\s*[0-9]+(?:\.[0-9]+)?\s*mm\s*\[\s*[0-9]+(?:\s+[0-9]+/[0-9]+)?\s*\]\s*",
+    re.IGNORECASE,
+)
 
 #: One part of a sum, or the total of equal shares: a number written with its inch mark.
 _INCH_PART: Final = r"[0-9][0-9 /.\-]*\""
 _SUM: Final = re.compile(
-    rf"(?P<parts>{_INCH_PART}(?:\s*\+\s*{_INCH_PART})+)(?:\s+(?P<word>[A-Za-z]+))?"
+    rf"(?P<parts>{_INCH_PART}(?:\s*\+\s*{_INCH_PART})+)(?:\s*(?P<word>[A-Za-z]+))?"
 )
 _SHARES: Final = re.compile(
     rf"(?P<total>{_INCH_PART})\s*\(\s*(?P<count>[0-9]+)\s*EQ\s*\)", re.IGNORECASE
@@ -85,13 +89,17 @@ COUNTER_BREAK: Final = (
 )
 
 
-def plain_dimension(text: str) -> Measurement | None:
+def plain_dimension(text: str, *, allow_explicit_mm: bool = False) -> Measurement | None:
     """The exact value of a plain dimension's text, or `None` where it is not one.
 
     `None` for text with anything but the characters of a dimension, for a compound, and for text
     `units/` cannot give a unit — a bare `30` is not assumed to be inches.
     """
-    if not text or _PLAIN.fullmatch(text) is None or is_compound(text):
+    if (
+        not text
+        or (_PLAIN.fullmatch(text) is None and not (allow_explicit_mm and _MM_DUAL.fullmatch(text)))
+        or is_compound(text)
+    ):
         return None
     try:
         notation, _millimetres = canonical_notation(text)

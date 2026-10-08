@@ -2610,6 +2610,11 @@
             "title": "Prompt Id",
             "type": "string"
           },
+          "requires_confirmation": {
+            "default": true,
+            "title": "Requires Confirmation",
+            "type": "boolean"
+          },
           "value": {
             "title": "Value",
             "type": "string"

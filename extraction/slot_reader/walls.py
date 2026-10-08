@@ -41,12 +41,14 @@ __all__ = [
     "E3_WALL_SETTINGS",
     "WALL_PROMPT",
     "WALL_PROMPT_ID",
+    "CodeWallClues",
     "HatchSeen",
     "Side",
     "WallAnswer",
     "WallOutcome",
     "WallPictures",
     "WallSettings",
+    "code_wall_outcome",
     "hatch_at",
     "seal_walls",
     "wall_pictures",
@@ -119,10 +121,45 @@ class WallOutcome:
     """The side both readers agreed on; `None` where they did not."""
     right: Side | None
     behind: Side | None
+    source: str | None = None
+    """`vendor-drawing-clues`, `drawing-and-readers`, or `readers`; never human confirmation."""
+
+
+@dataclass(frozen=True, slots=True)
+class CodeWallClues:
+    """Positive vendor-drawing evidence at either end; absence is unknown, never an open wall."""
+
+    left: bool | None = None
+    right: bool | None = None
+
+    @property
+    def has_evidence(self) -> bool:
+        return self.left is True or self.right is True
+
+
+_NO_CODE_WALL_CLUES: Final = CodeWallClues()
+
+
+def code_wall_outcome(clues: CodeWallClues, *, row_ambiguity: str | None) -> WallOutcome | None:
+    """Code may settle both affirmative wall ends; it never infers an open end from absence."""
+    if row_ambiguity is not None or clues.left is not True or clues.right is not True:
+        return None
+    return WallOutcome(
+        BACK_LEFT_RIGHT,
+        None,
+        None,
+        Side.YES,
+        Side.YES,
+        None,
+        source="vendor-drawing-clues",
+    )
 
 
 def _maker(model_id: str) -> str:
     return independence_key("bedrock-slot-reader", model_id)
+
+
+_CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
 def _agreed(first: Side, second: Side) -> Side | None:
@@ -134,6 +171,8 @@ def seal_walls(
     *,
     hatch: HatchSeen | None,
     row_ambiguity: str | None,
+    code_clues: CodeWallClues = _NO_CODE_WALL_CLUES,
+    allow_claude_pair: bool = False,
 ) -> WallOutcome:
     """The row's wall layout when two makers agree and nothing objects; otherwise why not.
 
@@ -152,9 +191,15 @@ def seal_walls(
     def held(code: str, reason: str) -> WallOutcome:
         return WallOutcome(None, code, reason, left, right, behind)
 
+    if row_ambiguity is None:
+        code_outcome = code_wall_outcome(code_clues, row_ambiguity=None)
+        if code_outcome is not None:
+            return code_outcome
+
     if len(answers) == 2:
         makers = {_maker(answer.model_id) for answer in answers}
-        if UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2:
+        claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
+        if not claude_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
             return held(
                 "reader-independence",
                 "the wall answers are not from two known, different makers; reviewer must choose",
@@ -170,11 +215,20 @@ def seal_walls(
                     "hatch-contradiction",
                     f"code sees a wall hatch at the {side} end, but a reader says no wall there",
                 )
-    if left is Side.YES and right is Side.YES:
-        return WallOutcome(BACK_LEFT_RIGHT, None, None, left, right, behind)
+    if code_clues.left is True and any(answer.left is Side.NO for answer in answers):
+        return held("code-reader-conflict", "vendor drawing clues show a wall at the left end")
+    if code_clues.right is True and any(answer.right is Side.NO for answer in answers):
+        return held("code-reader-conflict", "vendor drawing clues show a wall at the right end")
+    resolved_left = Side.YES if code_clues.left is True else left
+    resolved_right = Side.YES if code_clues.right is True else right
+    source = "drawing-and-readers" if code_clues.has_evidence else "readers"
+    if resolved_left is Side.YES and resolved_right is Side.YES:
+        return WallOutcome(
+            BACK_LEFT_RIGHT, None, None, resolved_left, resolved_right, behind, source
+        )
     if left is Side.NO and right is Side.NO:
         if behind is Side.YES and all(answer.view == "plan" for answer in answers):
-            return WallOutcome(BACK_ONLY, None, None, left, right, behind)
+            return WallOutcome(BACK_ONLY, None, None, left, right, behind, "readers")
         return held(
             "back-wall-unknown",
             "no wall at either end, and the drawing does not show whether there is a back wall",
