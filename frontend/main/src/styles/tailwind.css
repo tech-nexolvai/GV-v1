@@ -1,0 +1,255 @@
+/* ============================================================
+   Tailwind v4 + shadcn/ui entry (#1029)
+
+   Cascade layers, lowest priority first:
+
+     theme      Tailwind's theme variables
+     base       Tailwind's preflight reset, scoped to new UI only (preflight-scoped.css), + tokens
+     legacy     every hand-written stylesheet that existed before this (each file wraps itself in
+                `@layer legacy { … }`; tests/vitest/legacy-css-layer.test.ts keeps it that way)
+     components shadcn/ui component-level rules, if any
+     utilities  Tailwind utilities — the classes shadcn components are built from
+
+   Why `legacy` sits ABOVE `base`: the existing pages were styled against their own reset
+   (src/index.css), not Tailwind's preflight. Putting legacy above it means every rule the old CSS
+   already wrote keeps winning, so those pages look exactly as before. Why it sits BELOW
+   `utilities`: wherever a new component uses a utility class, the utility wins over an old
+   element rule such as `button { background: none }`.
+
+   Token-name collisions. The legacy tokens use names Tailwind also uses (--font-sans, --text-sm,
+   --radius-md, --shadow-sm, --ease-out, --tracking-*, --leading-*, --color-primary). The legacy
+   layer overrides those names on :root, so the old CSS keeps its own values. Tailwind is imported
+   with `theme(inline)` and the shadcn mapping below is `@theme inline`, so every utility carries
+   its value directly instead of reading a variable — the legacy values can never leak into a
+   Tailwind class, and Tailwind can never change a legacy one.
+   ============================================================ */
+
+@layer theme, base, legacy, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme) theme(inline);
+/* Tailwind's reset, scoped to new UI only — see the file for why. */
+@import './preflight-scoped.css' layer(base);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import 'tw-animate-css';
+
+/* Only scan the code that can use utilities: new components and pages, never the legacy CSS. */
+@source not '../**/*.css';
+
+/* Legacy class names that are also Tailwind utility names. Tailwind would otherwise generate the
+   utility and it would restyle the legacy element (`text-muted` is used by the old pages with its
+   own meaning). New code uses `text-muted-foreground`. tests/vitest/legacy-collisions.test.ts lists
+   every collision and fails on a new one. */
+@source not inline('text-muted');
+
+/* Dark mode is the existing switch: data-theme="dark" on <html> (index.html, src/app/theme.ts).
+   It also works on any subtree, which is how the UI kit shows both themes side by side. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ── shadcn/ui tokens, from the existing greys ───────────────────────────────── */
+@layer base {
+  :root,
+  [data-theme='light'] {
+    --background: #ffffff;
+    --foreground: #0d0d0d;
+    --card: #ffffff;
+    --card-foreground: #0d0d0d;
+    --popover: #ffffff;
+    --popover-foreground: #0d0d0d;
+    --primary: #0d0d0d;
+    --primary-foreground: #ffffff;
+    --secondary: #f4f4f4;
+    --secondary-foreground: #0d0d0d;
+    --muted: #f4f4f4;
+    --muted-foreground: #5d5d5d;
+    --accent: #ececec;
+    --accent-foreground: #0d0d0d;
+    --destructive: #b91c1c;
+    --border: #e5e5e5;
+    --input: #8a8a8a; /* control outlines: 3.4:1 on white, over the 3:1 WCAG asks of controls */
+    --ring: #0d0d0d;
+    --radius: 0.625rem;
+
+    /* Charts are grey by default; outcome charts use the outcome colours below. */
+    --chart-1: #0d0d0d;
+    --chart-2: #5d5d5d;
+    --chart-3: #8a8a8a;
+    --chart-4: #b4b4b4;
+    --chart-5: #d4d4d4;
+
+    --sidebar: #f9f9f9;
+    --sidebar-foreground: #0d0d0d;
+    --sidebar-primary: #0d0d0d;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #ececec;
+    --sidebar-accent-foreground: #0d0d0d;
+    --sidebar-border: #e5e5e5;
+    --sidebar-ring: #0d0d0d;
+
+    /* Outcome colours (proposal for the admin, on by default). Never shown without the outcome's
+       glyph (OutcomeIcon) and word: colour adds speed, it never carries the meaning alone.
+       -fg is text/icon on -bg or on the page (≥ 4.5:1 on both); the bare token is a fill for
+       charts and bars (≥ 3:1 on the page). Measured in tests/vitest/ui-tokens.test.ts. */
+    --outcome-pass: #16a34a;
+    --outcome-pass-fg: #15803d;
+    --outcome-pass-bg: #f0fdf4;
+    --outcome-fail: #dc2626;
+    --outcome-fail-fg: #b91c1c;
+    --outcome-fail-bg: #fef2f2;
+    --outcome-review: #d97706;
+    --outcome-review-fg: #a14a06;
+    --outcome-review-bg: #fffbeb;
+    --outcome-missing: #8a8a8a;
+    --outcome-missing-fg: #525252;
+    --outcome-missing-bg: #f4f4f4;
+
+    /* Typography (proposal for the admin, on by default): a sans for words, a mono for numbers,
+       dimensions and ids. Set --font-ui to the mono to go back to an all-typewriter screen. */
+    --font-ui: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-num: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  [data-theme='dark'] {
+    --background: #161616;
+    --foreground: #f2f2f2;
+    --card: #1c1c1c;
+    --card-foreground: #f2f2f2;
+    --popover: #1c1c1c;
+    --popover-foreground: #f2f2f2;
+    --primary: #f2f2f2;
+    --primary-foreground: #0d0d0d;
+    --secondary: #232323;
+    --secondary-foreground: #f2f2f2;
+    --muted: #232323;
+    --muted-foreground: #b4b4b4;
+    --accent: #262626;
+    --accent-foreground: #f2f2f2;
+    --destructive: #f87171;
+    --border: #2a2a2a;
+    --input: #7a7a7a;
+    --ring: #f2f2f2;
+
+    --chart-1: #f2f2f2;
+    --chart-2: #b4b4b4;
+    --chart-3: #8a8a8a;
+    --chart-4: #5d5d5d;
+    --chart-5: #3a3a3a;
+
+    --sidebar: #0f0f0f;
+    --sidebar-foreground: #f2f2f2;
+    --sidebar-primary: #f2f2f2;
+    --sidebar-primary-foreground: #0d0d0d;
+    --sidebar-accent: #262626;
+    --sidebar-accent-foreground: #f2f2f2;
+    --sidebar-border: #2a2a2a;
+    --sidebar-ring: #f2f2f2;
+
+    --outcome-pass: #22c55e;
+    --outcome-pass-fg: #4ade80;
+    --outcome-pass-bg: #0f2a1a;
+    --outcome-fail: #ef4444;
+    --outcome-fail-fg: #f87171;
+    --outcome-fail-bg: #2e1414;
+    --outcome-review: #f59e0b;
+    --outcome-review-fg: #fbbf24;
+    --outcome-review-bg: #2b210a;
+    --outcome-missing: #8a8a8a;
+    --outcome-missing-fg: #b4b4b4;
+    --outcome-missing-bg: #232323;
+  }
+
+  /* shadcn's `* { border-color; outline-color }` base rule lives in preflight-scoped.css, scoped to
+     new UI. `body { bg; color }` is deliberately absent: the legacy layer owns the page background
+     and font until a page is moved over. */
+}
+
+/* Variables the components set for themselves at run time: Radix measures the select trigger, the
+   sidebar and toggle group set theirs inline. The fallbacks here never win where the component sets
+   its own; they exist so every var() in src has a definition (tests/test_frontend_tokens.py). */
+@layer base {
+  :root {
+    --radix-select-trigger-width: auto;
+    --radix-select-trigger-height: auto;
+    --sidebar-width-icon: 3rem;
+    --gap: 0;
+  }
+}
+
+/* ── Map the tokens into Tailwind's namespaces ───────────────────────────────── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-outcome-pass: var(--outcome-pass);
+  --color-outcome-pass-fg: var(--outcome-pass-fg);
+  --color-outcome-pass-bg: var(--outcome-pass-bg);
+  --color-outcome-fail: var(--outcome-fail);
+  --color-outcome-fail-fg: var(--outcome-fail-fg);
+  --color-outcome-fail-bg: var(--outcome-fail-bg);
+  --color-outcome-review: var(--outcome-review);
+  --color-outcome-review-fg: var(--outcome-review-fg);
+  --color-outcome-review-bg: var(--outcome-review-bg);
+  --color-outcome-missing: var(--outcome-missing);
+  --color-outcome-missing-fg: var(--outcome-missing-fg);
+  --color-outcome-missing-bg: var(--outcome-missing-bg);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-num);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Numbers, dimensions and ids: the mono face with even-width digits, so columns line up and
+   1/l and 0/O never blur. Usage: <span className="num">25 1/4"</span>. */
+@utility num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Overlays render in a portal under <body>, which still carries the legacy font. Give them the
+   UI font so a dialog matches the page that opened it. */
+@layer components {
+  :where(
+      [data-slot='dialog-content'],
+      [data-slot='sheet-content'],
+      [data-slot='popover-content'],
+      [data-slot='dropdown-menu-content'],
+      [data-slot='tooltip-content'],
+      [data-slot='hover-card-content'],
+      [data-slot='select-content'],
+      [data-sonner-toaster]
+    ) {
+    font-family: var(--font-ui);
+  }
+}

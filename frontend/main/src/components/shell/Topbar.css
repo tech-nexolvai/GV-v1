@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    HEADER — title left, Graniti centred, the screen's actions right.
    Three columns with equal outer tracks, so the brand sits on the true centre line however long
@@ -98,3 +99,4 @@
   .topbar { padding: 0 var(--space-3); gap: var(--space-2); }
   .topbar__menu { display: inline-flex; }
 }
+} /* @layer legacy */

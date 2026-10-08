@@ -4,6 +4,7 @@
 @import './design/tokens.css';
 @import './design/motion.css';
 @import './components/output/output.css';
+@layer legacy {
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -37,6 +38,11 @@ body {
   overflow: hidden;
 }
 
+/* Element defaults for the legacy pages. Scoped with a lower boundary so they stop at new UI:
+   shadcn/ui elements (every one has a data-slot) and blocks marked data-tw get Tailwind's scoped
+   reset instead (src/styles/preflight-scoped.css). The legacy pages contain neither, so for them
+   nothing changes (#1029). */
+@scope (body) to ([data-slot], [data-tw]) {
 /* ── Typography base ─────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading);
@@ -82,6 +88,7 @@ code, pre {
 }
 
 ul, ol { list-style: none; }
+}
 
 /* ── Scrollbars ──────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -236,4 +243,4 @@ ul, ol { list-style: none; }
   .col-mob-full { grid-column: span 4 / span 4; }
   .col-mob-half { grid-column: span 2 / span 2; }
 }
-
+} /* @layer legacy */

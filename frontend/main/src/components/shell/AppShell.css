@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    APP SHELL — sidebar | (header / screen + evidence on demand)
    ============================================================ */
@@ -157,3 +158,4 @@
   .shell__evidence,
   .shell__scrim { animation: none; }
 }
+} /* @layer legacy */

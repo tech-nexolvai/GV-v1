@@ -1,3 +1,4 @@
+@layer legacy {
 /*
  * Elevation drawing. Colour carries meaning and nothing else:
  *   review colour  = a part the correction changed
@@ -436,3 +437,4 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-message__narrating-dot { animation: none; }
 }
+} /* @layer legacy */

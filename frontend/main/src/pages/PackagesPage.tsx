@@ -2,7 +2,7 @@ import { Plus, ArrowRight } from 'lucide-react';
 import { useEffect, useReducer, useState } from 'react';
 import { listPackages, getFindingCounts, listReviewSessions } from '../api/client';
 import { projectId } from '../api/config';
-import { StatusBadge } from '../components/ui/Badge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
 import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows } from './documentRows';
 import { DocumentResults } from './DocumentResults';

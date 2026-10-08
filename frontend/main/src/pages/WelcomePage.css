@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    START SCREEN — a heading and the composer, centred like an empty chat.
    ============================================================ */
@@ -105,3 +106,4 @@
   .welcome__heading { font-size: var(--text-2xl); }
   .welcome__recent-date { display: none; }
 }
+} /* @layer legacy */

@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    STREAMING TEXT
    The caret and the reveal state for an answer arriving.
@@ -43,3 +44,4 @@
     animation: none;
   }
 }
+} /* @layer legacy */

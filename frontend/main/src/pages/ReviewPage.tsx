@@ -6,7 +6,7 @@ import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { ChangedValuesPanel } from '../components/output/ChangedValuesPanel';
 import { SignedDownloads } from '../components/output/SignedDownloads';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
-import { StatusBadge } from '../components/ui/Badge';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import type { Finding, ChatMessage, PackageStatus } from '../data/types';
 import {
   getPackage,

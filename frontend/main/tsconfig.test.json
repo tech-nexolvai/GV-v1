@@ -15,7 +15,12 @@
     "skipLibCheck": true,
     "strict": true,
     "outDir": "./node_modules/.tmp/chat-render-test",
-    "rootDir": "."
+    "rootDir": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
   },
   "include": [
     "tests/**/*.ts",
@@ -47,6 +52,14 @@
     "src/components/measure/settingSources.ts",
     "src/components/settings/CompanySettingsList.tsx",
     "src/components/settings/companySettings.ts",
-    "src/components/upload/ProductTypeField.tsx"
-  ]
+    "src/components/upload/ProductTypeField.tsx",
+    "src/components/ui/outcome-badge.tsx"
+  ],
+  "exclude": [
+    "tests/vitest/**"
+  ],
+  "tsc-alias": {
+    "resolveFullPaths": true,
+    "verbose": false
+  }
 }

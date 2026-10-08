@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import babel from '@rolldown/plugin-babel'
+import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath, URL } from 'node:url'
 
 // https://vite.dev/config/
 // One target for both proxied prefixes, so they cannot drift apart and send half the traffic to a
@@ -13,8 +15,13 @@ const api = {
 export default defineConfig({
   plugins: [
     react(),
-    babel({ presets: [reactCompilerPreset()] })
+    babel({ presets: [reactCompilerPreset()] }),
+    tailwindcss(),
   ],
+  resolve: {
+    // `@/…` is for new code (shadcn/ui and what is built on it). Existing files keep relative imports.
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+  },
   server: {
     // The client calls `/api/v1/...` relative, so in development that has to reach the API rather
     // than the dev server. A proxy instead of an absolute base URL on purpose: same-origin means no

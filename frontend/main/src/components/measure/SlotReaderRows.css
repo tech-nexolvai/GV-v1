@@ -1,3 +1,4 @@
+@layer legacy {
 .slot-reader-rows__row {
   border: 1px solid var(--border-subtle, #d9d9d9);
   border-radius: 12px;
@@ -80,3 +81,4 @@
     flex-direction: column;
   }
 }
+} /* @layer legacy */

@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    GV DESIGN TOKENS — V3 (monochrome, ChatGPT-style)
    Graniti Vicentia Review Platform
@@ -305,3 +306,4 @@
   --gradient-brand: linear-gradient(0deg, #f2f2f2, #f2f2f2);
   --gradient-sheen: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.10) 50%, transparent 80%);
 }
+} /* @layer legacy */

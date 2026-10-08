@@ -1,3 +1,4 @@
+@layer legacy {
 .review-page {
   display: flex;
   flex-direction: column;
@@ -290,3 +291,4 @@
   /* Keep the pinned report reachable without consuming the entire phone review viewport. */
   .review-page__changed-values { margin: var(--space-2) var(--space-3); max-height: 7rem; }
 }
+} /* @layer legacy */

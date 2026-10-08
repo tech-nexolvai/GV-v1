@@ -1,3 +1,4 @@
+@layer legacy {
 /* ============================================================
    MOTION SYSTEM
    Graniti Vicentia Review Platform
@@ -313,3 +314,4 @@
     animation: none;
   }
 }
+} /* @layer legacy */

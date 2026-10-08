@@ -1,3 +1,4 @@
+@layer legacy {
 /* Supporting pages share the existing 4px spacing scale: 24px inset, 32px between sections. */
 .page-frame {
   flex: 1;
@@ -31,3 +32,4 @@
 @media (pointer: coarse) {
   .page-frame button, .page-frame input, .page-frame select { min-height: 44px; }
 }
+} /* @layer legacy */

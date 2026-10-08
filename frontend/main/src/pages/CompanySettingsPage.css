@@ -1,3 +1,4 @@
+@layer legacy {
 .company-settings-page {
   min-width: 0;
 }
@@ -82,3 +83,4 @@
   .company-settings__facts { flex-basis: 100%; }
   .company-settings__input { flex: 1 1 100%; max-width: none; font-size: 16px; }
 }
+} /* @layer legacy */

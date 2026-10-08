@@ -1,3 +1,4 @@
+@layer legacy {
 .readings {
   max-width: 60rem;
   margin: 0 auto;
@@ -205,3 +206,4 @@
     grid-template-columns: 1fr;
   }
 }
+} /* @layer legacy */

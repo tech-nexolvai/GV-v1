@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
@@ -13,12 +13,16 @@ import { projectId } from './api/config';
 import { readDocumentPosition, saveDocumentPosition } from './pages/documentPosition';
 import './design/components.css';
 
+// Loaded on demand: the kit pulls in charts and tables no reviewer screen needs yet.
+const UiKitPage = lazy(() => import('./pages/ui-kit/UiKitPage'));
+
 const PAGE_TITLES: Record<Page, string> = {
   review: 'New review',
   documents: 'Documents',
   rulebook: 'Rulebook',
   settings: 'Company settings',
   usage: 'Usage',
+  'ui-kit': 'UI kit',
 };
 
 export default function App() {
@@ -65,6 +69,15 @@ export default function App() {
   function newReview() {
     setEvidencePanel(null);
     navigate({ page: 'review', packageId: null });
+  }
+
+  // The component reference renders on its own, outside the legacy shell.
+  if (route.page === 'ui-kit') {
+    return (
+      <Suspense fallback={null}>
+        <UiKitPage />
+      </Suspense>
+    );
   }
 
   return (
