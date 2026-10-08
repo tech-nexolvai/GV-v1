@@ -52,6 +52,8 @@ from workflow.slot_reader import (
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
 KIMI = "us.moonshotai.kimi-k3"
+OPUS = "anthropic.claude-opus-5-5"
+SONNET = "anthropic.claude-sonnet-5-5"
 DPI = 150
 FRACTION_ENV = {
     "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT": "0.3",
@@ -82,11 +84,17 @@ class FakeReaders:
         self,
         read: Callable[[str, bytes], str],
         walls: Callable[[str], Mapping[str, str]] = lambda _model: UNSURE_WALLS,
+        row: Callable[[str], Mapping[str, object]] = lambda _model: {
+            "row": 1,
+            "why": "the candidate follows the front elevation",
+        },
     ) -> None:
         self.read = read
         self.walls = walls
+        self.row = row
         self.requests: list[tuple[str, bytes]] = []
         self.wall_requests: list[tuple[str, bytes, bytes]] = []
+        self.row_requests: list[tuple[str, bytes]] = []
         self.lock = threading.Lock()
 
     def for_current_thread(self) -> FakeReaders:
@@ -96,6 +104,14 @@ class FakeReaders:
         model = kwargs["modelId"]
         content = kwargs["messages"][0]["content"]
         pictures = [part["image"]["source"]["bytes"] for part in content if "image" in part]
+        is_row_question = any("Numbered coloured boxes" in part.get("text", "") for part in content)
+        if is_row_question:
+            with self.lock:
+                self.row_requests.append((model, pictures[0]))
+            return {
+                "output": {"message": {"content": [{"text": json.dumps(dict(self.row(model)))}]}},
+                "usage": {"inputTokens": 20, "outputTokens": 9},
+            }
         is_wall_question = any("wall" in part.get("text", "").lower() for part in content)
         if is_wall_question:
             with self.lock:
@@ -246,6 +262,123 @@ def test_claude_packet_mode_stores_both_exact_images_and_page_transform() -> Non
             digest = image_info["sha256"]
             assert isinstance(key, str) and isinstance(digest, str)
             assert hashlib.sha256(store.objects[key]).hexdigest() == digest
+
+
+def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading() -> None:
+    page = slot_page(named_sheet())
+    first = page.rows.candidates.rows.candidates[0]
+    second = replace(first, rank=2)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, second), rejected=()),
+            ),
+        ),
+    )
+    text_by_crop = crops_to_texts(page, TEXTS)
+    readers = FakeReaders(
+        lambda _model, png: text_by_crop.get(png, '2"'),
+        row=lambda _model: {"row": 2, "why": "box 2 follows the front elevation"},
+    )
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    attempts: list[AttemptUsage] = []
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
+
+    assert result.plan.row is second
+    assert result.row_choice_number == 2
+    assert (
+        result.row_choice is not None
+        and result.row_choice.why == "box 2 follows the front elevation"
+    )
+    assert result.row_candidate_ids and len(result.row_candidate_ids) == 2
+    assert [model for model, _image in readers.row_requests] == [OPUS]
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    assert row_attempt.raw_response_text is not None
+    assert row_attempt.question_packet is None
+    assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
+
+
+def test_claude_zero_row_choice_holds_the_page_for_the_reviewer() -> None:
+    page = slot_page(named_sheet())
+    readers = FakeReaders(
+        lambda _model, _png: '2"',
+        row=lambda _model: {"row": 0, "why": "none of the candidate rows is the countertop"},
+    )
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+
+    assert result.plan.row is None
+    assert (
+        result.plan.ambiguity
+        == "the row reader selected no candidate; the reviewer must choose the row"
+    )
+    assert result.row_choice_number == 0
+    assert result.row_choice is not None
+    assert result.slots == () and result.overall is None
+    assert not result.mapping.proposals
+
+
+def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -> None:
+    class MemoryStore:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+
+        def put(self, key: str, data: BytesIO, *, content_type: str) -> SimpleNamespace:
+            assert content_type == "image/png"
+            content = data.read()
+            self.objects[key] = content
+            return SimpleNamespace(sha256=hashlib.sha256(content).hexdigest())
+
+    page = slot_page(named_sheet())
+    page = replace(
+        page,
+        transform=PageTransform(
+            dpi=DPI,
+            rotation=0,
+            media_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+            crop_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+        ),
+    )
+    store = MemoryStore()
+    readers = FakeReaders(lambda _model, _png: '2"')
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True, question_packets=True)
+    attempts: list[AttemptUsage] = []
+
+    (result,) = read_slot_pages(
+        [page], runtime=configured, record_attempt=attempts.append, store=store
+    )
+
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    packet = row_attempt.question_packet
+    assert packet is not None
+    assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
+    assert packet["candidate_count"] == len(result.row_candidate_ids)
+    image = packet["images"]["numbered_vendor_view"]
+    assert hashlib.sha256(store.objects[image["storage_key"]]).hexdigest() == image["sha256"]
+    assert result.row_choice_png == store.objects[image["storage_key"]]
 
 
 #: Drawn to scale, as a shop drawing is: the sheet's slots are 50, 100 and 50 points long, so at
@@ -911,6 +1044,70 @@ def _by_slot(session: Any, run: Any) -> dict[str, Any]:
             continue
         found[next(flag for flag in row.ambiguity_flags if flag.startswith("slot:"))] = row
     return found
+
+
+def test_a_claude_zero_choice_persists_a_review_reason_and_numbered_picture(session: Any) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import EvidenceArtifact, ObservationCandidate
+    from workflow.slot_reader import persist_slot_readings
+
+    class MemoryStore:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+
+        def put(self, key: str, data: BytesIO, *, content_type: str) -> SimpleNamespace:
+            assert content_type == "image/png"
+            content = data.read()
+            self.objects[key] = content
+            return SimpleNamespace(sha256=hashlib.sha256(content).hexdigest())
+
+    revision, version, page_row, run = _scaffold(session)
+    source_page = slot_page(named_sheet())
+    page = replace(
+        source_page,
+        page_id=page_row.id,
+        document_version_id=version.id,
+    )
+    readers = FakeReaders(
+        lambda _model, _png: '2"',
+        row=lambda _model: {"row": 0, "why": "none of the numbered rows is the countertop"},
+    )
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    store = MemoryStore()
+
+    count = persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+        store=store,
+    )
+    candidate = session.scalar(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-row-choice"]),
+        )
+    )
+    assert candidate is not None
+    artifact = session.scalar(
+        select(EvidenceArtifact).where(EvidenceArtifact.candidate_id == candidate.id)
+    )
+
+    assert count == 1
+    assert candidate.value_numerator is None and candidate.value_denominator is None
+    assert candidate.review_reason == "none of the numbered rows is the countertop"
+    assert "row-choice:0" in candidate.ambiguity_flags
+    assert artifact is not None and store.objects
+    assert hashlib.sha256(store.objects[artifact.storage_key]).hexdigest() == artifact.sha256
 
 
 def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:

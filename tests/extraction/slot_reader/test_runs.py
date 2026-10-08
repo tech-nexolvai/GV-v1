@@ -138,6 +138,44 @@ def test_a_tie_with_the_second_row_is_never_picked_silently() -> None:
     assert why is None
 
 
+def test_a_model_may_select_only_one_of_the_first_six_ranked_candidates() -> None:
+    page = sheets.sheet(sheets.text_labels())
+    rows_and_ink = page_rows_and_ink(page, 0, dpi=DPI, settings=MEASURED_SETTINGS)
+    first = rows_and_ink.candidates.rows.candidates[0]
+    second = replace(first, rank=2)
+    rows = PageRows(candidates=(first, second), rejected=())
+
+    plan = plan_slots(
+        rows,
+        rows_and_ink.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+        selected_row=second,
+        row_choice_made=True,
+    )
+    assert plan.row is second and plan.ambiguity is None
+
+    held = plan_slots(
+        rows,
+        rows_and_ink.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+        row_choice_made=True,
+    )
+    assert held.row is None and "reviewer" in (held.ambiguity or "")
+
+    unnumbered = replace(second, rank=7)
+    with pytest.raises(ValueError, match="first six"):
+        plan_slots(
+            rows,
+            rows_and_ink.ink,
+            settings=E2_CROP_SETTINGS,
+            row_settings=MEASURED_SETTINGS,
+            selected_row=unnumbered,
+            row_choice_made=True,
+        )
+
+
 def _leaves(value: object) -> list[object]:
     if is_dataclass(value) and not isinstance(value, type):
         return [leaf for field in fields(value) for leaf in _leaves(getattr(value, field.name))]
