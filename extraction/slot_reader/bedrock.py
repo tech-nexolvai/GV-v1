@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from decimal import Decimal
 from time import monotonic
 from typing import Any, Final
 
@@ -100,17 +101,24 @@ def _base_model_id(model_id: str) -> str:
 
 
 def build_crop_request(
-    *, model_id: str, crop_png: bytes, max_tokens: int, product: ProductType | None = None
+    *,
+    model_id: str,
+    crop_png: bytes,
+    max_tokens: int,
+    product: ProductType | None = None,
+    full_view_png: bytes | None = None,
 ) -> dict[str, Any]:
-    """One crop request: the picture first, then the question, as the form reader asks.
+    """One slot question: whole marked vendor view, close-up, then the question.
 
     With a product (#994) the drawing set's product is one plain line of its own between the
     picture and the question. Without one the request is exactly as before.
     """
     if not model_id.strip():
         raise ValueError("a crop reader model id must be stated")
-    if not crop_png.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError("a crop reader is shown a PNG")
+    if not crop_png.startswith(b"\x89PNG\r\n\x1a\n") or (
+        full_view_png is not None and not full_view_png.startswith(b"\x89PNG\r\n\x1a\n")
+    ):
+        raise ValueError("a slot reader is shown PNG pictures")
     if isinstance(max_tokens, bool) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive integer")
     request: dict[str, Any] = {
@@ -119,6 +127,11 @@ def build_crop_request(
             {
                 "role": "user",
                 "content": [
+                    *(
+                        []
+                        if full_view_png is None
+                        else [{"image": {"format": "png", "source": {"bytes": full_view_png}}}]
+                    ),
                     {"image": {"format": "png", "source": {"bytes": crop_png}}},
                     *([] if product is None else [{"text": product_context_line(product)}]),
                     {"text": CROP_PROMPT},
@@ -143,12 +156,18 @@ def read_crop(
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
     product: ProductType | None = None,
+    full_view_png: bytes | None = None,
+    question_packet: Mapping[str, object] | None = None,
 ) -> ReaderAnswer:
     """Ask one reader about one crop; re-ask once on a malformed answer, then raise."""
     prompt_id = crop_prompt_id(product)
     for attempt in range(2):
         request = build_crop_request(
-            model_id=model_id, crop_png=crop_png, max_tokens=max_tokens, product=product
+            model_id=model_id,
+            crop_png=crop_png,
+            max_tokens=max_tokens,
+            product=product,
+            full_view_png=full_view_png,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -170,6 +189,7 @@ def read_crop(
                     type(error).__name__,
                     page_index,
                     attempt_number=attempt + 1,
+                    question_packet=question_packet,
                 )
             )
             raise
@@ -192,6 +212,7 @@ def read_crop(
                     page_index=page_index,
                     raw_response_text=raw,
                     attempt_number=attempt + 1,
+                    question_packet=question_packet,
                 )
             )
             if attempt:
@@ -211,6 +232,7 @@ def read_crop(
                 page_index=page_index,
                 raw_response_text=raw,
                 attempt_number=attempt + 1,
+                question_packet=question_packet,
             )
         )
         return ReaderAnswer(
@@ -301,6 +323,7 @@ def read_walls(
     page_index: int,
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
+    question_packet: Mapping[str, object] | None = None,
 ) -> WallAnswer:
     """Ask one reader about one row's walls; re-ask once on a malformed answer, then raise.
 
@@ -330,6 +353,7 @@ def read_walls(
                     type(error).__name__,
                     page_index,
                     attempt_number=attempt + 1,
+                    question_packet=question_packet,
                 )
             )
             raise
@@ -352,6 +376,7 @@ def read_walls(
                     page_index=page_index,
                     raw_response_text=raw,
                     attempt_number=attempt + 1,
+                    question_packet=question_packet,
                 )
             )
             if attempt:
@@ -371,6 +396,7 @@ def read_walls(
                 page_index=page_index,
                 raw_response_text=raw,
                 attempt_number=attempt + 1,
+                question_packet=question_packet,
             )
         )
         return answer
@@ -381,8 +407,8 @@ def read_walls(
 class CropJob:
     """One reader, one crop. `key` is the caller's, to put the answer back where it belongs.
 
-    With `view_png`, the job is a row's wall question (#992): `png` is the row picture and
-    `view_png` the whole vendor view; the answer is a `WallAnswer`.
+    For a label question, `png` is the close-up and `view_png` the marked full vendor view. A wall
+    question sets `wall_question=True` and uses the same two-image shape with its own prompt.
     """
 
     key: str
@@ -390,6 +416,8 @@ class CropJob:
     page_index: int
     png: bytes
     view_png: bytes | None = None
+    wall_question: bool = False
+    question_packet: Mapping[str, object] | None = None
 
 
 def read_crops_parallel(
@@ -404,6 +432,7 @@ def read_crops_parallel(
     retry_backoff_seconds: float,
     record_attempt: Callable[[AttemptUsage], None],
     product: ProductType | None = None,
+    spend_cap_usd: Decimal | None = None,
 ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
@@ -429,36 +458,58 @@ def read_crops_parallel(
         raise ValueError(f"missing per-model pacing limits for: {', '.join(sorted(missing))}")
     require_priced_readers(readers, rates)
     pacer = ModelPacer(calls_per_minute)
+    spend_guard = None
+    if spend_cap_usd is not None:
+        from extraction.slot_reader.anthropic import BatchSpendGuard
+
+        spend_guard = BatchSpendGuard(spend_cap_usd, rates)  # type: ignore[arg-type]
 
     def invoke(job: CropJob) -> tuple[tuple[str, str], ReaderAnswer | WallAnswer | None]:
         for throttle_attempt in range(max_throttle_retries + 1):
             pacer.wait(job.model_id)
             try:
+                client = clients.for_current_thread()
+                if spend_guard is not None:
+                    from extraction.slot_reader.anthropic import (
+                        SpendCapExceeded,
+                        SpendLimitedClient,
+                    )
+
+                    client = SpendLimitedClient(client, spend_guard)
                 answer: ReaderAnswer | WallAnswer
-                if job.view_png is not None:
+                if job.wall_question or (job.view_png is not None and job.question_packet is None):
+                    if job.view_png is None:
+                        raise ValueError("a wall question packet must include its full vendor view")
                     answer = read_walls(
-                        clients.for_current_thread(),
+                        client,
                         model_id=job.model_id,
                         row_png=job.png,
                         view_png=job.view_png,
                         page_index=job.page_index,
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
+                        question_packet=job.question_packet,
                     )
                 else:
                     answer = read_crop(
-                        clients.for_current_thread(),
+                        client,
                         model_id=job.model_id,
                         crop_png=job.png,
                         page_index=job.page_index,
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
                         product=product,
+                        full_view_png=job.view_png,
+                        question_packet=job.question_packet,
                     )
                 return (job.key, job.model_id), answer
             except MalformedFormAnswer:
                 return (job.key, job.model_id), None
             except Exception as error:
+                from extraction.slot_reader.anthropic import SpendCapExceeded
+
+                if isinstance(error, SpendCapExceeded):
+                    return (job.key, job.model_id), None
                 if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
                     raise
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))

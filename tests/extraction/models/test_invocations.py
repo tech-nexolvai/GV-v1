@@ -275,6 +275,24 @@ def test_absent_context_binds_as_sql_null_not_json_null() -> None:
     assert getattr(column_type, "none_as_null", False) is True
 
 
+def test_reader_question_packet_is_json_and_private() -> None:
+    packet = {
+        "question_id": "page-0-span-0",
+        "candidate_ids": ["page-0-span-0"],
+        "images": {
+            "full_view": {"sha256": "a" * 64, "storage_key": "reader/full.png"},
+            "close_up": {"sha256": "b" * 64, "storage_key": "reader/close.png"},
+        },
+        "page_transform": {"dpi": 150, "rotation": 0},
+    }
+
+    invocation = _built(uuid4(), reader_question_packet=packet)
+
+    assert invocation.reader_question_packet == packet
+    assert "reader_question_packet" in ModelInvocation.__table__.c
+    assert "full_view" not in repr(invocation)
+
+
 def test_rejected_invocation_must_name_the_local_rejection_reason() -> None:
     """Input: rejected call with no reason. Outcome: rejection. Why: paid abstentions need a cause."""
 
@@ -314,6 +332,29 @@ def test_the_exact_bounded_context_is_persisted_with_the_invocation(
         assert stored is not None
         assert stored.assembled_context == context.as_record()
         assert stored.bound_pt == Decimal("12.00")
+
+
+def test_the_exact_reader_question_packet_is_persisted_with_the_invocation(
+    postgres_engine: Engine,
+) -> None:
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    packet = {
+        "question_id": "page-0-span-0",
+        "candidate_ids": ["page-0-span-0"],
+        "images": {
+            "full_view": {"sha256": "a" * 64, "storage_key": "reader/full.png"},
+            "close_up": {"sha256": "b" * 64, "storage_key": "reader/close.png"},
+        },
+        "page_transform": {"dpi": 150, "rotation": 0},
+    }
+    with unit_of_work(factory) as session:
+        stored_id = _record(session, _persist_context(session), reader_question_packet=packet).id
+
+    with unit_of_work(factory) as session:
+        stored = session.get(ModelInvocation, stored_id)
+        assert stored is not None
+        assert stored.reader_question_packet == packet
 
 
 # ---------------------------------------------------------------------------

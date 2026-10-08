@@ -7,17 +7,22 @@ naming and mapping. No network, no client drawing, no client value.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from decimal import Decimal
+from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from app.config import Settings
+from evidence.coordinates import PageTransform
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, PageRows
 from extraction.ink import read_page_ink
@@ -91,14 +96,15 @@ class FakeReaders:
         model = kwargs["modelId"]
         content = kwargs["messages"][0]["content"]
         pictures = [part["image"]["source"]["bytes"] for part in content if "image" in part]
-        if len(pictures) == 2:
+        is_wall_question = any("wall" in part.get("text", "").lower() for part in content)
+        if is_wall_question:
             with self.lock:
                 self.wall_requests.append((model, pictures[0], pictures[1]))
             return {
                 "output": {"message": {"content": [{"text": json.dumps(dict(self.walls(model)))}]}},
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
-        png = pictures[0]
+        png = pictures[-1]
         with self.lock:
             self.requests.append((model, png))
         text = self.read(model, png)
@@ -182,6 +188,64 @@ def read(page: SlotPage, readers: FakeReaders, **options: Any) -> PageSlotResult
     )
     assert len(attempts) == len(readers.requests) + len(readers.wall_requests)
     return result
+
+
+def test_claude_packet_mode_stores_both_exact_images_and_page_transform() -> None:
+    class MemoryStore:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+
+        def put(self, key: str, data: BytesIO, *, content_type: str) -> SimpleNamespace:
+            assert content_type == "image/png"
+            content = data.read()
+            self.objects[key] = content
+            return SimpleNamespace(sha256=hashlib.sha256(content).hexdigest())
+
+    page = replace(
+        slot_page(named_sheet()),
+        transform=PageTransform(
+            dpi=DPI,
+            rotation=0,
+            media_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+            crop_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+        ),
+    )
+    lookup = crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '2"'))
+    attempts: list[AttemptUsage] = []
+    store = MemoryStore()
+
+    results = read_slot_pages(
+        [page],
+        runtime=replace(runtime(readers), question_packets=True),
+        record_attempt=attempts.append,
+        store=store,
+    )
+
+    assert results and attempts
+    result = results[0]
+    expected_candidate_ids = {str(value) for value in result.owner_candidate_ids.values()}
+    if result.wall_candidate_id is not None:
+        expected_candidate_ids.add(str(result.wall_candidate_id))
+    for attempt in attempts:
+        packet = attempt.question_packet
+        assert packet is not None
+        assert packet["candidate_ids"]
+        assert set(packet["candidate_ids"]) <= expected_candidate_ids
+        assert packet["page_transform"] == {
+            "dpi": DPI,
+            "rotation": 0,
+            "media_box": ["0", "0", "612", "792"],
+            "crop_box": ["0", "0", "612", "792"],
+        }
+        images = packet["images"]
+        assert isinstance(images, dict)
+        for image_info in images.values():
+            assert isinstance(image_info, dict)
+            key = image_info["storage_key"]
+            digest = image_info["sha256"]
+            assert isinstance(key, str) and isinstance(digest, str)
+            assert hashlib.sha256(store.objects[key]).hexdigest() == digest
 
 
 #: Drawn to scale, as a shop drawing is: the sheet's slots are 50, 100 and 50 points long, so at
@@ -311,20 +375,32 @@ def test_a_reader_whose_answer_stays_malformed_abstains_and_the_reading_waits() 
     assert result.mapping.proposals == ()
 
 
-def test_the_slot_reader_is_off_unless_switched_on() -> None:
+def test_the_slot_reader_is_off_unless_switched_on(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(database_url="postgresql+psycopg://x@localhost/x")
     assert settings.slot_reader_enabled is False
     assert settings.slot_reader_stacked_agreement is False
     assert configured_slot_reader(settings, None) is None
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "private-test-key")
+    with_key = Settings(database_url="postgresql+psycopg://x@localhost/x")
+    assert "private-test-key" not in repr(with_key)
 
 
 def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() -> None:
     with pytest.raises(ValueError, match="GV_FORM_READER_ENABLED"):
         Settings(database_url="postgresql+psycopg://x@localhost/x", slot_reader_enabled=True)
+    with pytest.raises(ValueError, match="GV_SLOT_READER_ENABLED"):
+        Settings(database_url="postgresql+psycopg://x@localhost/x", claude_reader_enabled=True)
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        Settings(
+            database_url="postgresql+psycopg://x@localhost/x",
+            slot_reader_enabled=True,
+            claude_reader_enabled=True,
+        )
 
     class On:
         slot_reader_enabled = True
         slot_reader_stacked_agreement = False
+        claude_reader_enabled = False
 
     with pytest.raises(ValueError, match="GV_FORM_READER_ENABLED"):
         configured_slot_reader(On(), None, environ=FRACTION_ENV)
@@ -333,6 +409,34 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
         configured_slot_reader(On(), form, environ={})
     configured = configured_slot_reader(On(), form, environ=FRACTION_ENV)
     assert configured is not None and configured.allow_stacked is False
+    assert configured.question_packets is False
+    claude_settings = type(
+        "ClaudeOn",
+        (On,),
+        {
+            "claude_reader_enabled": True,
+            "anthropic_api_key": SecretStr("private-test-key"),
+            "claude_reader_model_rpm": {
+                "anthropic.claude-opus-5-5": 60,
+                "anthropic.claude-sonnet-5-5": 60,
+            },
+            "claude_reader_timeout_seconds": 180,
+        },
+    )()
+    claude_enabled = configured_slot_reader(
+        claude_settings,
+        form,
+        environ=FRACTION_ENV,
+    )
+    assert claude_enabled is not None and claude_enabled.question_packets is True
+    assert claude_enabled.allow_stacked is True
+    assert claude_enabled.spend_cap_usd == Decimal("2.00")
+    assert claude_enabled.form.max_concurrent_calls == 1
+    assert claude_enabled.form.reader_ids == (
+        "anthropic.claude-opus-5-5",
+        "anthropic.claude-sonnet-5-5",
+    )
+    assert claude_enabled.form.max_tokens == 3000
     assert set(FRACTION_BAR_ENV) == set(FRACTION_ENV)
 
 
@@ -850,12 +954,16 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
         lookup = crops_to_texts(page, TEXTS)
         return FakeReaders(lambda _model, png: lookup[png])
 
-    revision, run, _result, count = _read_persisted(
+    revision, run, result, count = _read_persisted(
         session, named_sheet(sheets.yellow_box(241, sheets.CHAIN_Y + 3, 13, 7)), readers
     )
 
     assert count == 5  # three slots, the overall and the row's walls
     by_slot = _by_slot(session, run)
+    assert {
+        key: by_slot[f"slot:{key.removeprefix('slot:')}"].id for key in result.owner_candidate_ids
+    } == result.owner_candidate_ids
+    assert by_slot["walls"].id == result.wall_candidate_id
     covered = by_slot["slot:1"]
     assert covered.value_numerator is None and covered.corroboration_status is None
     assert covered.review_reason is not None and covered.review_reason.startswith("covered by")

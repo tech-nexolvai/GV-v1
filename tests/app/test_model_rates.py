@@ -43,7 +43,7 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     shipped = load_model_rates(SHIPPED)
 
     assert shipped.currency == "USD"
-    assert shipped.retrieved == date(2026, 10, 6)
+    assert shipped.retrieved == date(2026, 10, 8)
     assert "price list" in shipped.source
     # Every reader a deployment or the agent can run: a measured space, or no rectangle asked (#907).
     runnable = [reader for reader in VISION_READERS if reader.answers_readably]
@@ -51,6 +51,22 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     for reader in runnable:
         assert shipped.rate_for(reader.model_id) is not None, reader.model_id
     assert shipped.rate_for("us.moonshotai.kimi-k3") is not None
+
+
+def test_claude_reader_models_are_priced_at_anthropics_published_rates() -> None:
+    shipped = load_model_rates(SHIPPED)
+
+    opus = shipped.rate_for("anthropic.claude-opus-5-5")
+    sonnet = shipped.rate_for("anthropic.claude-sonnet-5-5")
+    assert opus is not None and sonnet is not None
+    assert (opus.input_per_1k_tokens, opus.output_per_1k_tokens) == (
+        Decimal("0.004"),
+        Decimal("0.02"),
+    )
+    assert (sonnet.input_per_1k_tokens, sonnet.output_per_1k_tokens) == (
+        Decimal("0.002"),
+        Decimal("0.01"),
+    )
 
 
 def test_kimi_k3_is_priced_at_the_aws_us_cris_standard_rate() -> None:

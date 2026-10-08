@@ -7,6 +7,7 @@ import json
 import re
 import threading
 from collections.abc import Callable, Mapping
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -60,10 +61,27 @@ class FakeClients:
             self.requests.append(kwargs)
         return self.answer(kwargs)
 
+    def count_input_tokens(self, **_kwargs: Any) -> int:
+        return 10
+
 
 class Rates:
     def rate_for(self, model_id: str) -> object | None:
         return object()
+
+
+class AnthropicRates:
+    def rate_for(self, model_id: str) -> object | None:
+        if model_id != "anthropic.claude-opus-5-5":
+            return None
+        return type(
+            "Rate",
+            (),
+            {
+                "input_per_1k_tokens": Decimal("0.004"),
+                "output_per_1k_tokens": Decimal("0.020"),
+            },
+        )()
 
 
 def run(clients: FakeClients, jobs: list[CropJob], **overrides: Any) -> dict[tuple[str, str], Any]:
@@ -90,6 +108,65 @@ def test_kimi_is_asked_at_low_effort_and_qwen_at_temperature_zero() -> None:
     assert qwen["inferenceConfig"]["temperature"] == 0 and "outputConfig" not in qwen
     content = qwen["messages"][0]["content"]
     assert "image" in content[0] and content[1]["text"] == CROP_PROMPT
+
+
+def test_claude_spend_cap_holds_before_parallel_generation() -> None:
+    model = "anthropic.claude-opus-5-5"
+    clients = FakeClients(lambda _request: reply(good('12"')))
+    answers = run(
+        clients,
+        [CropJob("slot", model, 0, PNG)],
+        rates=AnthropicRates(),
+        calls_per_minute={model: 6000},
+        spend_cap_usd=Decimal("0.001"),
+    )
+
+    assert answers[("slot", model)] is None
+    assert clients.requests == []
+
+
+def test_slot_question_sends_marked_full_view_before_close_up() -> None:
+    full_view = encode_png(4, 2, bytes(24))
+    request = build_crop_request(
+        model_id=QWEN,
+        full_view_png=full_view,
+        crop_png=PNG,
+        max_tokens=400,
+    )
+    content = request["messages"][0]["content"]
+
+    assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [
+        full_view,
+        PNG,
+    ]
+    assert content[-1]["text"] == CROP_PROMPT
+
+
+def test_each_reader_attempt_retains_its_exact_question_packet() -> None:
+    packet = {
+        "question_id": "p0:slot0:0",
+        "candidate_ids": ["p0:slot0:0"],
+        "images": {
+            "full_view": {"sha256": "a" * 64, "storage_key": "full.png"},
+            "close_up": {"sha256": "b" * 64, "storage_key": "close.png"},
+        },
+    }
+    attempts: list[AttemptUsage] = []
+    full_view = encode_png(4, 2, bytes(24))
+    read_crops_parallel(
+        [CropJob("p0:slot0:0", QWEN, 0, PNG, full_view, question_packet=packet)],
+        clients=FakeClients(lambda _request: reply(good('2"'))),
+        rates=Rates(),
+        calls_per_minute={QWEN: 6000},
+        max_concurrent_calls=1,
+        max_tokens=400,
+        max_throttle_retries=0,
+        retry_backoff_seconds=0.001,
+        record_attempt=attempts.append,
+    )
+
+    assert len(attempts) == 1
+    assert attempts[0].question_packet == packet
 
 
 def test_the_prompt_never_asks_for_the_parts_of_a_number() -> None:
