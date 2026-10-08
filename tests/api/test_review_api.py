@@ -96,6 +96,11 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 def _revision(session: Session, project_id: UUID) -> PackageRevision:
     session.add(Project(id=project_id, name=f"p-{project_id}"))
     session.flush()
+    return _revision_in_project(session, project_id)
+
+
+def _revision_in_project(session: Session, project_id: UUID) -> PackageRevision:
+    """Create another package revision without creating a second project."""
     package = Package(project_id=project_id)
     session.add(package)
     session.flush()
@@ -341,6 +346,90 @@ def test_an_open_session_reports_no_completion_time(session: Session) -> None:
     the sidebar renders on it."""
     revision = _revision(session, PROJECT_A)
     assert _open(_client(session, PROJECT_A), PROJECT_A, revision)["completed_at"] is None
+
+
+def test_finding_action_history_is_newest_first(session: Session) -> None:
+    project_id = uuid4()
+    revision = _revision(session, project_id)
+    finding = _finding(session, revision)
+    client = _client(session, project_id)
+    opened = _open(client, project_id, revision)
+    base = f"{API_PREFIX}/projects/{project_id}"
+    action_url = f"{base}/review-sessions/{opened['id']}/actions"
+
+    first = client.post(
+        action_url, json={"finding_id": str(finding.id), "action": "confirm", "note": "first"}
+    )
+    second = client.post(
+        action_url, json={"finding_id": str(finding.id), "action": "dismiss", "note": "second"}
+    )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+
+    response = client.get(f"{base}/packages/{revision.package_id}/findings/{finding.id}/actions")
+
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [second.json()["id"], first.json()["id"]]
+    assert [item["note"] for item in items] == ["second", "first"]
+    assert all(item["actor"] == REVIEWER for item in items)
+    assert all(item["created_at"] for item in items)
+
+
+def test_finding_action_history_is_empty_when_no_action_exists(session: Session) -> None:
+    project_id = uuid4()
+    revision = _revision(session, project_id)
+    finding = _finding(session, revision)
+
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{revision.package_id}/findings/{finding.id}/actions"
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"items": []}
+
+
+def test_finding_action_history_refuses_a_finding_from_another_package(session: Session) -> None:
+    project_id = uuid4()
+    requested_revision = _revision(session, project_id)
+    other_revision = _revision_in_project(session, project_id)
+    other_finding = _finding(session, other_revision)
+
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{requested_revision.package_id}"
+        f"/findings/{other_finding.id}/actions"
+    )
+
+    assert response.status_code == 404
+
+
+def test_finding_action_history_is_project_scoped(session: Session) -> None:
+    other_revision = _revision(session, PROJECT_B)
+    other_finding = _finding(session, other_revision)
+
+    response = _client(session, PROJECT_A).get(
+        f"{API_PREFIX}/projects/{PROJECT_A}/packages/{other_revision.package_id}"
+        f"/findings/{other_finding.id}/actions"
+    )
+
+    assert response.status_code == 404
+
+
+def test_finding_action_history_requires_read_package_permission(session: Session) -> None:
+    project_id = uuid4()
+    revision = _revision(session, project_id)
+    finding = _finding(session, revision)
+    principal = Principal(id=REVIEWER, roles=frozenset(), projects=frozenset({project_id}))
+
+    response = _client(session, project_id)
+    response.app.dependency_overrides[authenticate] = lambda: principal
+    result = response.get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{revision.package_id}"
+        f"/findings/{finding.id}/actions"
+    )
+
+    # Read authorization intentionally hides package existence behind the same 404 boundary.
+    assert result.status_code == 404
 
 
 # ---------------------------------------------------------------------------

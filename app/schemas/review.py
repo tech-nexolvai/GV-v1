@@ -89,6 +89,14 @@ class ReviewActionOut(BaseModel):
     created_at: datetime
 
 
+class ReviewActionPage(BaseModel):
+    """The complete append-only decision history for one finding, newest first."""
+
+    model_config = ConfigDict(frozen=True)
+
+    items: list[ReviewActionOut]
+
+
 class DecideEvidence(BaseModel):
     """Confirm or correct one observation behind one finding.
 
