@@ -40,7 +40,11 @@ from tests.extraction.test_annotations import _appearance, _free_text, _pdf, _st
 from tests.extraction.test_reader import MISSING_SPACE
 from vocabulary.part_kinds import PartKind
 from workflow.parts import confirm_part, record_part_proposal
-from workflow.stages import DatabaseStages, _matchable_items
+from workflow.stages import (
+    DatabaseStages,
+    _architect_candidate_filter_boxes_by_page,
+    _matchable_items,
+)
 from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -500,3 +504,61 @@ def test_the_document_kind_never_decides_a_combined_sheet_s_views(
     _extract(session, store, _combined_sheet())
 
     assert all(view.role is None for view in _views(session))
+
+
+def test_slot_reader_receives_architect_role_step_regions_only(session: Session) -> None:
+    revision = _revision(session)
+    version = _document_version(session, revision, document_kind=DocumentKind.SHOP)
+    page = Page(
+        document_version_id=version.id,
+        index=0,
+        content_hash="a" * 64,
+        width_pt=Decimal(612),
+        height_pt=Decimal(792),
+        rotation=0,
+        has_vector_text=True,
+        render_failed=False,
+        sheet_number=None,
+        page_type=None,
+        revision_label=None,
+    )
+    session.add(page)
+    session.flush()
+    arch = DrawingView(
+        page_id=page.id,
+        tag="A",
+        region={"space": "stored", "points": [["0.1", "0.2"], ["0.8", "0.2"], ["0.8", "0.6"]]},
+        role=ViewRole.ARCH.value,
+    )
+    unknown = DrawingView(
+        page_id=page.id,
+        tag="B",
+        region={"space": "stored", "points": [["0.1", "0.6"], ["0.8", "0.6"], ["0.8", "0.9"]]},
+        role=None,
+    )
+    proposed_arch = DrawingView(
+        page_id=page.id,
+        tag="C",
+        region={"space": "stored", "points": [["0.2", "0.1"], ["0.4", "0.1"], ["0.4", "0.3"]]},
+        role=None,
+    )
+    session.add_all((arch, unknown, proposed_arch))
+    session.flush()
+    session.add(
+        ViewRoleProposal(
+            drawing_view_id=proposed_arch.id,
+            proposed_role=ViewRole.ARCH.value,
+            heading="synthetic architect view",
+            reason="synthetic role-step proposal",
+            source="test",
+        )
+    )
+    session.flush()
+
+    result = _architect_candidate_filter_boxes_by_page(session, (page.id,))
+
+    assert len(result[page.id]) == 2
+    assert {(box.left, box.top, box.right, box.bottom) for box in result[page.id]} == {
+        (Decimal("0.1"), Decimal("0.2"), Decimal("0.8"), Decimal("0.6")),
+        (Decimal("0.2"), Decimal("0.1"), Decimal("0.4"), Decimal("0.3")),
+    }

@@ -35,6 +35,7 @@ from extraction.geometry.rows import (
     LabelKind,
     PageRows,
     RowSettings,
+    StoredBox,
     TickSource,
     Tiling,
     build_rows,
@@ -56,9 +57,12 @@ def _rows(
     *,
     settings: RowSettings = MEASURED_SETTINGS,
     drawing_boxes: tuple[Box, ...] = (),
+    architect_boxes: tuple[StoredBox, ...] = (),
 ) -> PageRows:
     with pdfplumber.open(io.BytesIO(_pdf(content, box=b"[0 0 400 300]"))) as document:
         ink = ink_from_page(document.pages[0], drawing_boxes=drawing_boxes)
+    if architect_boxes:
+        ink = replace(ink, architect_boxes=architect_boxes)
     return build_rows(ink, settings, place=_place)
 
 
@@ -102,6 +106,125 @@ SHEET = CHAIN + LABELS + OVERALL + OVERALL_LABEL
 def _only_candidate(rows: PageRows) -> CountertopRowCandidate:
     assert len(rows.candidates) == 1, [c.rejected_because for c in rows.rejected]
     return rows.candidates[0]
+
+
+def test_a_majority_feet_and_inches_row_is_not_a_countertop_candidate() -> None:
+    """Feet-and-inches text identifies an architect row; adjacent inch notation is unaffected."""
+    feet_labels = (
+        _text(65, ROW_Y + 4, "1'-9\"")
+        + _text(130, ROW_Y + 4, "2' - 6\"")
+        + _text(270, ROW_Y + 4, "2'-4\"")
+        + _line(50, OVERALL_Y, 350)
+        + _slash(50, OVERALL_Y)
+        + _slash(350, OVERALL_Y)
+        + _text(190, OVERALL_Y + 4, "8'-11\"")
+    )
+    rows = _rows(CHAIN + feet_labels)
+
+    assert rows.candidates == ()
+    (row,) = [row for row in rows.rejected if len(row.slots) == 3]
+    assert row.rejected_because == "feet-and-inches: the architect's drawing, not the vendor's"
+
+
+def test_an_adjacent_inches_row_stays_a_candidate_when_feet_row_is_rejected() -> None:
+    feet_y = 100.0
+    inch_y = 150.0
+    feet_ticks = (50.0, 100.0, 200.0, 350.0)
+    sheet = _line(50, feet_y, 350) + b"".join(_slash(x, feet_y) for x in feet_ticks)
+    sheet += _text(65, feet_y + 4, "1'-9\"") + _text(130, feet_y + 4, "2'-6\"")
+    sheet += _text(270, feet_y + 4, "2'-4\"")
+    sheet += _line(50, inch_y, 350) + b"".join(_slash(x, inch_y) for x in feet_ticks)
+    sheet += _text(65, inch_y + 4, '18"') + _text(130, inch_y + 4, '24"')
+    sheet += _text(270, inch_y + 4, '36"')
+
+    rows = _rows(sheet)
+
+    assert len(rows.candidates) == 1
+    (feet_row,) = [row for row in rows.rejected if len(row.slots) == 3]
+    assert feet_row.rejected_because == "feet-and-inches: the architect's drawing, not the vendor's"
+
+
+def test_one_feet_and_inches_label_does_not_reject_a_mixed_row() -> None:
+    mixed = (
+        _line(50, ROW_Y, 350)
+        + b"".join(_slash(x, ROW_Y) for x in TICKS)
+        + _text(70, ROW_Y + 4, '12"')
+        + _text(145, ROW_Y + 4, "2'-6\"")
+        + _text(270, ROW_Y + 4, '36"')
+    )
+
+    assert len(_rows(mixed).candidates) == 1
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        _text(70, ROW_Y + 4, '12"')
+        + _text(145, ROW_Y + 4, '24"')
+        + _text(270, ROW_Y + 4, '36"')
+        + _text(195, OVERALL_Y + 4, '72"'),
+        _text(70, ROW_Y + 4, "762 [30]")
+        + _text(145, ROW_Y + 4, "610 [24]")
+        + _text(270, ROW_Y + 4, "305 [12]")
+        + _text(195, OVERALL_Y + 4, "1676 [66]"),
+    ],
+)
+def test_inches_and_mm_inch_labels_are_not_rejected_as_feet_and_inches(labels: bytes) -> None:
+    overall = _line(50, OVERALL_Y, 350) + _slash(50, OVERALL_Y) + _slash(350, OVERALL_Y)
+    assert len(_rows(CHAIN + overall + labels).candidates) == 1
+
+
+def test_glyph_only_row_is_not_rejected_by_the_feet_and_inches_filter() -> None:
+    glyphs = b"".join(
+        f"{x + offset} 104 m {x + offset + 0.8} 107 l {x + offset} 110 l S\n".encode()
+        for x in (70, 145, 270)
+        for offset in (0, 2, 4, 6)
+    )
+    rows = _rows(CHAIN + glyphs)
+
+    assert len(rows.candidates) == 1
+    assert all(
+        label.kind is LabelKind.GLYPHS for slot in rows.candidates[0].slots for label in slot.labels
+    )
+
+
+def test_row_inside_a_confirmed_architect_view_box_is_rejected() -> None:
+    architect = StoredBox(
+        left=Decimal("0.1"), top=Decimal("0.55"), right=Decimal("0.9"), bottom=Decimal("0.8")
+    )
+
+    rows = _rows(SHEET, architect_boxes=(architect,))
+
+    assert rows.candidates == ()
+    (row,) = [row for row in rows.rejected if len(row.slots) == 3]
+    assert row.rejected_because == "inside the architect's drawing"
+
+
+def test_an_architect_view_box_does_not_remove_a_neighbouring_vendor_row() -> None:
+    ticks = (50.0, 100.0, 200.0, 350.0)
+    sheet = _line(50, ROW_Y, 350) + b"".join(_slash(x, ROW_Y) for x in ticks)
+    sheet += _text(65, ROW_Y + 4, '18"') + _text(130, ROW_Y + 4, '24"')
+    sheet += _text(270, ROW_Y + 4, '36"')
+    vendor_y = 150.0
+    sheet += _line(50, vendor_y, 350) + b"".join(_slash(x, vendor_y) for x in ticks)
+    sheet += _text(65, vendor_y + 4, '18"') + _text(130, vendor_y + 4, '24"')
+    sheet += _text(270, vendor_y + 4, '36"')
+    architect = StoredBox(
+        left=Decimal("0.1"), top=Decimal("0.6"), right=Decimal("0.9"), bottom=Decimal("0.75")
+    )
+
+    rows = _rows(sheet, architect_boxes=(architect,))
+
+    assert len(rows.candidates) == 1
+    assert rows.candidates[0].y == Decimal(150)
+    (architect_row,) = [
+        row for row in rows.rejected if row.rejected_because == "inside the architect's drawing"
+    ]
+    assert architect_row.y == Decimal(200)
+
+
+def test_row_is_unchanged_when_drawing_roles_are_unknown() -> None:
+    assert len(_rows(SHEET).candidates) == 1
 
 
 # ---------------------------------------------------------------------------

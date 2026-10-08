@@ -168,6 +168,7 @@ from extraction.fraction_parts import (
 )
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
+from extraction.geometry.rows import StoredBox
 from extraction.geometry.text_association import (
     AssociationResult,
     CannotAssociate,
@@ -1531,6 +1532,73 @@ class _PartPictures:
         }
 
 
+def _architect_candidate_filter_boxes_by_page(
+    session: Session, page_ids: Sequence[UUID]
+) -> dict[UUID, tuple[StoredBox, ...]]:
+    """Return architect role-step regions, in the slot reader's stored frame.
+
+    A confirmed role is authoritative. If role is still unknown, the latest role-step proposal is
+    used only as a negative candidate filter: a proposed architect view can remove rows, never
+    make any row more likely to be selected. A malformed architect region fails closed for the page.
+    """
+    if not page_ids:
+        return {}
+    rows = session.execute(
+        select(
+            DrawingView.id,
+            DrawingView.page_id,
+            DrawingView.region,
+            DrawingView.role,
+            ViewRoleProposal.proposed_role,
+        )
+        .outerjoin(ViewRoleProposal, ViewRoleProposal.drawing_view_id == DrawingView.id)
+        .where(DrawingView.page_id.in_(page_ids))
+        .order_by(
+            DrawingView.id,
+            ViewRoleProposal.created_at.desc().nullslast(),
+            ViewRoleProposal.id.desc().nullslast(),
+        )
+    ).all()
+    by_page: dict[UUID, list[StoredBox]] = {}
+    seen_views: set[UUID] = set()
+    for view_id, page_id, region, confirmed_role, latest_proposal in rows:
+        if view_id in seen_views:
+            continue
+        seen_views.add(view_id)
+        is_architect = confirmed_role == ViewRole.ARCH.value or (
+            confirmed_role is None and latest_proposal == ViewRole.ARCH.value
+        )
+        if not is_architect:
+            continue
+        box: StoredBox
+        try:
+            if not isinstance(region, dict) or region.get("space") != "stored":
+                raise ValueError("architect region is not in stored coordinates")
+            raw_points = region.get("points")
+            if not isinstance(raw_points, list) or len(raw_points) < 3:
+                raise ValueError("architect region has no polygon")
+            points: list[tuple[Decimal, Decimal]] = []
+            for point in raw_points:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    raise ValueError("architect region has an invalid point")
+                x, y = Decimal(str(point[0])), Decimal(str(point[1]))
+                if not (Decimal(0) <= x <= Decimal(1) and Decimal(0) <= y <= Decimal(1)):
+                    raise ValueError("architect region point is outside the stored page")
+                points.append((x, y))
+            box = StoredBox(
+                left=min(point[0] for point in points),
+                top=min(point[1] for point in points),
+                right=max(point[0] for point in points),
+                bottom=max(point[1] for point in points),
+            )
+            if box.left == box.right or box.top == box.bottom:
+                raise ValueError("architect region has no area")
+        except (ArithmeticError, TypeError, ValueError):
+            box = StoredBox(left=Decimal(0), top=Decimal(0), right=Decimal(1), bottom=Decimal(1))
+        by_page.setdefault(page_id, []).append(box)
+    return {page_id: tuple(boxes) for page_id, boxes in by_page.items()}
+
+
 class DatabaseStages:
     """The pipeline as far as it is built: checks run, everything else still says it did not.
 
@@ -2011,6 +2079,9 @@ class DatabaseStages:
         )
         images: list[FormPageImage] = []
         slot_pages: list[SlotPage] = []
+        architect_boxes = _architect_candidate_filter_boxes_by_page(
+            session, tuple(page.id for page in pages)
+        )
         for page in pages:
             rendered = self._vendor_render(data, page, version_id)
             if rendered is None:
@@ -2019,7 +2090,14 @@ class DatabaseStages:
             if transform is None:
                 continue
             ink = self._page_ink(data, page, rendered.dpi)
-            slot_page = self._slot_page(data, page, version_id, rendered, ink)
+            slot_page = self._slot_page(
+                data,
+                page,
+                version_id,
+                rendered,
+                ink,
+                architect_boxes=architect_boxes.get(page.id, ()),
+            )
             if slot_page is not None:
                 # A page with a row candidate is read slot by slot (#987); the whole-page reader
                 # stays for the pages where code finds no row.
@@ -2181,6 +2259,8 @@ class DatabaseStages:
         version_id: UUID,
         rendered: RenderedPage,
         ink: PageInk | None,
+        *,
+        architect_boxes: Sequence[StoredBox] = (),
     ) -> SlotPage | None:
         """The page as the slot reader takes it, or `None` where it has no row candidate (or the
         slot reader is off, or the page's rows cannot be read) — the whole-page reader's pages."""
@@ -2189,7 +2269,11 @@ class DatabaseStages:
             return None
         try:
             rows = page_rows_and_ink(
-                data, page.index, dpi=rendered.dpi, settings=runtime.row_settings
+                data,
+                page.index,
+                dpi=rendered.dpi,
+                settings=runtime.row_settings,
+                architect_boxes=architect_boxes,
             )
         except UnreadablePdf:
             return None

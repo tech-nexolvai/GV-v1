@@ -39,6 +39,7 @@ from extraction.geometry.rows import (
     PageInk,
     PageRows,
     RowSettings,
+    StoredBox,
     build_rows,
 )
 from extraction.reader import UnreadablePdf, page_frame, pixel_placement
@@ -96,7 +97,12 @@ def _is_ink(obj: dict[str, Any]) -> bool:
     return drawing_ink({"non_stroking_color": obj.get("stroking_color")})
 
 
-def ink_from_page(page: Any, *, drawing_boxes: Sequence[Box]) -> PageInk:
+def ink_from_page(
+    page: Any,
+    *,
+    drawing_boxes: Sequence[Box],
+    architect_boxes: Sequence[StoredBox] = (),
+) -> PageInk:
     """A pdfplumber page's black and grey ink, as the builder takes it.
 
     Lines, rectangles and curves become `InkLine`s and `InkCurve`s; a rectangle is a closed
@@ -150,6 +156,7 @@ def ink_from_page(page: Any, *, drawing_boxes: Sequence[Box]) -> PageInk:
         curves=tuple(curves),
         characters=characters,
         drawing_boxes=tuple(drawing_boxes),
+        architect_boxes=tuple(architect_boxes),
     )
 
 
@@ -191,7 +198,12 @@ class RowsAndInk:
 
 
 def page_rows_and_ink(
-    data: bytes, page_index: int, *, dpi: int, settings: RowSettings
+    data: bytes,
+    page_index: int,
+    *,
+    dpi: int,
+    settings: RowSettings,
+    architect_boxes: Sequence[StoredBox] = (),
 ) -> RowsAndInk:
     """`countertop_row_candidates`, also handing back the ink and the pixel placement it used.
 
@@ -203,7 +215,7 @@ def page_rows_and_ink(
         with pdfplumber.open(io.BytesIO(flattened)) as document:
             page = document.pages[page_index]
             transform, height = page_frame(page, dpi)
-            ink = ink_from_page(page, drawing_boxes=drawings)
+            ink = ink_from_page(page, drawing_boxes=drawings, architect_boxes=architect_boxes)
             pixel = pixel_placement(page, dpi)
     except UnreadablePdf:
         raise
@@ -231,7 +243,12 @@ def page_rows_and_ink(
 
 
 def countertop_row_candidates(
-    data: bytes, page_index: int, *, dpi: int, settings: RowSettings
+    data: bytes,
+    page_index: int,
+    *,
+    dpi: int,
+    settings: RowSettings,
+    architect_boxes: Sequence[StoredBox] = (),
 ) -> PageRowCandidates:
     """Every dimension row on `page_index` of `data`, built from its pasted drawings' own lines.
 
@@ -247,4 +264,6 @@ def countertop_row_candidates(
             place of a refusal: a page with no rows and a page that could not be read are different
             answers.
     """
-    return page_rows_and_ink(data, page_index, dpi=dpi, settings=settings).candidates
+    return page_rows_and_ink(
+        data, page_index, dpi=dpi, settings=settings, architect_boxes=architect_boxes
+    ).candidates
