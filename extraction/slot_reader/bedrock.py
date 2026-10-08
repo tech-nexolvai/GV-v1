@@ -56,6 +56,7 @@ __all__ = [
     "CROP_PROMPT_ID",
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
+    "ROW_PROMPT_IDS",
     "CropJob",
     "RowChoiceAnswer",
     "build_crop_request",
@@ -69,17 +70,22 @@ __all__ = [
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
-ROW_PROMPT_ID: Final = "slot-row-choice-v1"
+ROW_PROMPT_ID: Final = "slot-row-choice-v2"
+#: Earlier wordings of the row question, still recognised when a stored run is replayed.
+ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
 
 ROW_PROMPT: Final = (
     "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "
-    "reviewer marks). Numbered coloured boxes mark candidate dimension rows found on the drawing. "
+    "reviewer marks). Numbered coloured boxes mark candidate dimension rows found on the drawing; "
+    "each box's number is in the filled square of the same colour just left of it. "
     "Task: which numbered box marks the COUNTERTOP PIECE ROW — the horizontal chain of piece "
     "widths (fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that "
     "runs along the stone countertop and measures the pieces under it from one end of the stone "
     "top to the other? It is NOT an upper-cabinet row, NOT a wall-to-wall or room dimension, NOT "
     "a row inside a plan (top) view or a section view, and NOT the architect's small drawing. "
+    "If the sheet has no stone countertop at all (for example only a wardrobe, closet or tall "
+    "unit), the answer is 0 even when a box marks a chain of widths. "
     "Numbers in red or inside yellow boxes are the reviewer's markup, not the vendor's. Reply "
     'with ONLY a JSON object: {"row": <number, or 0 if none of the boxes is it>, '
     '"why": "<one short sentence>"}'

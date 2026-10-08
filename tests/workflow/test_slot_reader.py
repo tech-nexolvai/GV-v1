@@ -330,7 +330,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     asked = sorted(model for model, _image in readers.row_requests)
     assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
     assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -479,7 +479,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v1")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
@@ -1779,3 +1779,38 @@ def test_readers_agreeing_on_no_row_keep_the_page_for_the_reviewer() -> None:
     assert result.plan.row is None
     assert result.row_choice_number == 0
     assert not result.mapping.proposals
+
+
+def test_row_picture_tags_stand_beside_their_boxes_at_the_prototypes_size() -> None:
+    """A reader named the right row by its words but gave another box's number when the tags
+    were 3x5 dots inside the boxes, shrunk about 3x (proof run 2026-10-08). Each tag is now a
+    filled square just left of its box, about 48 px tall at 150 dpi as the prototype drew it."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from workflow.slot_reader import _ROW_COLOURS, _numbered_rows_png
+
+    page = slot_page(named_sheet())
+    png, candidates = _numbered_rows_png(page)
+    view = Image.open(BytesIO(png)).convert("RGB")
+    shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
+    pixels = view.load()
+    assert pixels is not None and candidates
+
+    colour = tuple(_ROW_COLOURS[0])
+    filled = [
+        (x, y)
+        for y in range(view.height)
+        for x in range(view.width)
+        if all(abs(a - b) <= 40 for a, b in zip(pixels[x, y][:3], colour, strict=True))
+    ]
+    first = candidates[0]
+    box_left = min(
+        page.rows.to_pixels(first.x0, first.y)[0], page.rows.to_pixels(first.x1, first.y)[0]
+    )
+    tag = [(x, y) for x, y in filled if x < (box_left / shrink) - 1]
+    assert tag, "the tag stands left of its box, clear of the row's labels"
+    height = max(y for _, y in tag) - min(y for _, y in tag) + 1
+    expected = 48 * page.rendered.dpi / 150 / shrink
+    assert height >= 0.8 * expected

@@ -484,3 +484,32 @@ def test_the_builder_imports_nothing_from_the_verdict() -> None:
             )
         ]
         assert imported and not any(name.split(".")[0] == "verdict" for name in imported)
+
+
+def test_a_row_whose_labels_are_all_words_is_not_a_candidate() -> None:
+    """Input: a chain labelled `EQ`, `EQ` (a tap's centring line). Outcome: not a candidate, and
+    it says why; the numbered chain on the same page still is."""
+    centring_y = ROW_Y + 40
+    centring = _line(50, centring_y, 350) + b"".join(
+        _slash(x, centring_y) for x in (50.0, 200.0, 350.0)
+    )
+    words = _text(120, centring_y + 4, "EQ") + _text(270, centring_y + 4, "EQ")
+    rows = _rows(SHEET + centring + words)
+
+    rejected = [r for r in rows.rejected if r.y == Decimal(300) - Decimal(centring_y)]
+    assert len(rejected) == 1
+    assert rejected[0].rejected_because == (
+        "no label has a number: a centring or note line, not a row of widths"
+    )
+    assert any(c.y == Decimal(300) - Decimal(ROW_Y) for c in rows.candidates)
+
+
+def test_a_row_with_one_numbered_label_among_words_stays_a_candidate() -> None:
+    centring_y = ROW_Y + 40
+    chain = _line(50, centring_y, 350) + b"".join(
+        _slash(x, centring_y) for x in (50.0, 200.0, 350.0)
+    )
+    labels = _text(120, centring_y + 4, "EQ") + _text(270, centring_y + 4, "24")
+    rows = _rows(SHEET + chain + labels)
+
+    assert any(c.y == Decimal(300) - Decimal(centring_y) for c in rows.candidates)
