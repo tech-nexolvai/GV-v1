@@ -85,7 +85,7 @@
     --sidebar-border: #e5e5e5;
     --sidebar-ring: #0d0d0d;
 
-    /* Outcome colours (proposal for the admin, on by default). Never shown without the outcome's
+    /* Outcome colours (admin decision, 2026-10-08). Never shown without the outcome's
        glyph (OutcomeIcon) and word: colour adds speed, it never carries the meaning alone.
        -fg is text/icon on -bg or on the page (≥ 4.5:1 on both); the bare token is a fill for
        charts and bars (≥ 3:1 on the page). Measured in tests/vitest/ui-tokens.test.ts. */
@@ -102,7 +102,7 @@
     --outcome-missing-fg: #525252;
     --outcome-missing-bg: #f4f4f4;
 
-    /* Typography (proposal for the admin, on by default): a sans for words, a mono for numbers,
+    /* Typography (admin decision, 2026-10-08): a sans for words, a mono for numbers,
        dimensions and ids. Set --font-ui to the mono to go back to an all-typewriter screen. */
     --font-ui: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     --font-num: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;

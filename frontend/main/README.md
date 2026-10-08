@@ -60,8 +60,8 @@ phone) and a comparison of every element's computed style against `main`. The re
   - Contrast is tested in `tests/vitest/ui-tokens.test.ts`.
 - **Type:** Geist for words (`font-sans`), IBM Plex Mono with even-width digits for numbers,
   dimensions and ids (the `num` utility).
-- Both the outcome colours and the sans face are proposals awaiting the admin's decision. Setting
-  `--font-ui` to the mono face returns to an all-typewriter screen.
+- Both the outcome colours and the sans face were decided by the admin on 2026-10-08 for the
+  redesigned screens. Setting `--font-ui` to the mono face would return to an all-typewriter screen.
 
 ## Imports
 
