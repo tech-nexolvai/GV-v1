@@ -1336,6 +1336,7 @@ select.value-input {
 }
 .field-review__pictures img {
   max-width: 100%;
+}
 
 /* The drawing on the left, the form on the right (admin, 2026-10-06). */
 .page-drawing {
