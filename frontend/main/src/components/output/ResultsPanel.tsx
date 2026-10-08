@@ -12,20 +12,24 @@ const RESULT_LABELS = {
   NOT_FOUND: 'Not checkable', NO_APPLICABLE_RULE: 'No applicable rule',
 };
 
-export function ResultsPanel({ findings, rows, readiness, selected, busy, onRefresh, onShowDrawing, onOpenRow, onViewEvidence, onAction, onCorrect, onExcept }: {
+export function ResultsPanel({ findings, rows, readiness, selected, busy, onRefresh, onShowDrawing, onOpenRow, onViewEvidence, onAction, onCorrect, onExcept, onlyNeedsMe: controlledFilter, onOnlyNeedsMeChange }: {
   findings: Finding[]; rows: SlotReaderRow[]; readiness: ApprovalReadiness | null; selected: string | null; busy: boolean;
+  /** Optional control of the "Only what needs me" filter, so the header's "Review N items" can open it filtered (#1034). */
+  onlyNeedsMe?: boolean; onOnlyNeedsMeChange?: (value: boolean) => void;
   onRefresh: () => void; onShowDrawing: (finding: Finding) => void; onOpenRow: (rowId: string) => void;
   onViewEvidence: (finding: Finding) => void;
   onAction: (id: string, action: SimpleReviewAction, note?: string) => Promise<DecisionSaveResult>;
   onCorrect: (id: string, value: string) => Promise<DecisionSaveResult>;
   onExcept: (id: string, reason: string, expires: string) => Promise<DecisionSaveResult>;
 }) {
-  const [onlyNeedsMe, setOnlyNeedsMe] = useState(true);
+  const [ownFilter, setOwnFilter] = useState(true);
+  const onlyNeedsMe = controlledFilter ?? ownFilter;
+  const setOnlyNeedsMe = (value: boolean) => { setOwnFilter(value); onOnlyNeedsMeChange?.(value); };
   const blockers = new Set(readiness?.blocking_finding_ids ?? []);
   const visible = onlyNeedsMe && readiness ? findings.filter(f => blockers.has(f.id)) : findings;
   return <section className="results-panel" aria-labelledby="results-title" aria-busy={busy}>
     <header className="results-panel__header">
-      <div><h2 id="results-title">Results</h2><p>{readiness ? `${readiness.blocking_findings} need you` : 'Checking what needs your review…'} · {findings.length} recorded checks</p></div>
+      <div><h2 id="results-title" tabIndex={-1}>Results</h2><p>{readiness ? `${readiness.blocking_findings} need you` : 'Checking what needs your review…'} · {findings.length} recorded checks</p></div>
       <button type="button" className="btn btn--subtle" disabled={busy} onClick={onRefresh}>{busy ? 'Refreshing…' : 'Refresh results'}</button>
     </header>
     <label className="results-panel__filter"><input type="checkbox" checked={onlyNeedsMe} onChange={e => setOnlyNeedsMe(e.target.checked)} />Only what needs me</label>

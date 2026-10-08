@@ -1,13 +1,13 @@
 import { Plus, ArrowRight } from 'lucide-react';
 import { useEffect, useReducer, useState } from 'react';
-import { listPackages, getFindingCounts, listReviewSessions } from '../api/client';
+import { listPackages, getFindingCounts, listReviewSessions, getApprovalReadiness, getSignedExports } from '../api/client';
 import { projectId } from '../api/config';
-import { StatusBadge } from '../components/ui/StatusBadge';
+import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
-import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows } from './documentRows';
+import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows, type DocumentRow } from './documentRows';
 import { DocumentResults } from './DocumentResults';
 import { DocumentRecord, DocumentDetails } from './DocumentRecord';
-import { documentGuidance } from './documentGuidance';
+import { documentNextStep } from './documentNextStep';
 import '../components/ui/PageFrame.css';
 import './PackagesPage.css';
 
@@ -17,6 +17,8 @@ function loadRows(cursor?: string) {
     packages: () => listPackages(project, cursor ? { cursor } : undefined),
     counts: (id) => getFindingCounts(project, id),
     sessions: () => listReviewSessions(project, { mine: false }),
+    readiness: (id) => getApprovalReadiness(project, id),
+    exports: (id) => getSignedExports(project, id),
   });
 }
 
@@ -105,7 +107,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
                 </button>
               </div>
               <div className="document-card__meta">
-                <StatusBadge status={row.document.state} />
+                <DocumentNext row={row} />
                 <span>Submitted <time dateTime={row.document.created_at}>{formatDate(row.document.created_at)}</time></span>
               </div>
               <div className="document-card__results">
@@ -115,11 +117,24 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
                 </p>}
                 <DocumentResults counts={row.counts} error={row.countsError} />
               </div>
-              <p className="document-card__guidance"><strong>Next step</strong> {documentGuidance(row.document.state, row.counts)}</p>
               <DocumentDetails row={row} reviewerUnavailable={data.reviewerError !== null} />
             </li>
           ))}
       </ul>}
     </PageFrame>
+  );
+}
+
+/** Where the review stands and what comes next, in the same words as the review's header (#1034). */
+function DocumentNext({ row }: { row: DocumentRow }) {
+  const next = documentNextStep(row);
+  return (
+    <span data-tw className="inline-flex flex-wrap items-center gap-1.5 font-sans text-sm">
+      <PackageStatusBadge status={row.document.state} />
+      <ArrowRight className="size-3.5 text-muted-foreground" aria-hidden="true" />
+      <span className={next.disabled ? 'text-muted-foreground' : 'font-medium'} title={next.reason ?? undefined}>
+        <span className="sr-only">Next step: </span>{next.label}
+      </span>
+    </span>
   );
 }

@@ -70,6 +70,11 @@ interface StatusBadgeProps {
   size?: 'sm' | 'md';
 }
 
+/** The words for a package state, shared with the shadcn status badge so both say the same thing. */
+export function packageStatusLabel(status: string): string {
+  return STATUS_CONFIG[status as PackageStatus]?.label ?? humanise(status);
+}
+
 export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
   const cfg = STATUS_CONFIG[status as PackageStatus];
   // An unrecognised state shows its own name in a neutral badge. A reviewer seeing

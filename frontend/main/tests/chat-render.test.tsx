@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { ChatMarkdown } from '../src/components/chat/ChatMarkdown.js';
 import { PromptSuggestions } from '../src/components/chat/PromptSuggestions.js';
-import { ReviewPackageDetails } from '../src/pages/ReviewPackageDetails.js';
 import { findingsTableMarkdown } from '../src/components/chat/findingsTable.js';
 import type { Finding } from '../src/data/types.js';
 
@@ -82,15 +81,7 @@ const disabledSuggestions = renderToStaticMarkup(<PromptSuggestions prompts={que
 assert.equal(disabledSuggestions.match(/disabled=""/g)?.length, 5);
 assert.equal(sends, 0, 'rendering suggestions does not send a question');
 
-const details = renderToStaticMarkup(
-  <ReviewPackageDetails packageId="package-a" projectId="project-b">
-    <ol><li>Upload</li><li>Review</li></ol>
-  </ReviewPackageDetails>,
-);
-assert.match(details, /Details &amp; steps/);
-assert.match(details, /package-a/);
-assert.match(details, /project-b/);
-assert.match(details, /Upload/);
-assert.doesNotMatch(details, /<details[^>]* open=/);
+// The review's "Details & steps" dropdown was replaced by the stepper and a Record IDs dialog
+// (#1034); tests/vitest/review-shell.test.tsx covers both.
 
 console.log('chat-render component test passed');

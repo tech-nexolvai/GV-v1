@@ -282,6 +282,7 @@ export function MeasurementPanel({
   onDone,
   onChoosePackage,
   onChecksQueued,
+  onValuesSaved,
   targetRow,
   onTargetReached,
   onReviewRow,
@@ -290,6 +291,8 @@ export function MeasurementPanel({
   onDone?: (packageId: string) => void;
   onChoosePackage?: () => void;
   onChecksQueued?: () => void;
+  /** Values were saved without running checks (#1034: the stepper then asks for a new run). */
+  onValuesSaved?: () => void;
   targetRow?: string | null;
   onTargetReached?: () => void;
   onReviewRow?: (rowId: string) => void;
@@ -867,7 +870,7 @@ export function MeasurementPanel({
     setError(null);
     setAccepted(null);
     try {
-      await saveVisibleValues();
+      if (await saveVisibleValues()) onValuesSaved?.();
     } finally {
       setBusy(false);
     }
@@ -1799,7 +1802,7 @@ export function MeasurementPanel({
         <button type="button" className="value-primary" onClick={onSave} disabled={busy}>
           Save values
         </button>
-        <button type="button" className="value-primary" onClick={onRunChecks} disabled={busy}>
+        <button type="button" id="measure-run-checks" className="value-primary" onClick={onRunChecks} disabled={busy}>
           <Play size={14} aria-hidden="true" /> Run checks
         </button>
         {packageId && onDone && (

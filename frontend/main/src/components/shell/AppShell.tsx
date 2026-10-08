@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Sidebar } from './Sidebar';
-import { Topbar } from './Topbar';
+import { useState } from 'react';
+
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { AppSidebar } from './app-sidebar';
+import { AppTopbar, type Crumb } from './app-topbar';
 import { ShellSlotsContext } from './shellSlots';
 import type { Page } from '../../app/route';
 import type { Theme } from '../../app/theme';
@@ -9,10 +11,13 @@ import './AppShell.css';
 interface AppShellProps {
   children: React.ReactNode;
   title: string;
+  crumbs: Crumb[];
   activePage: Page;
   activePackage: string | null;
   theme: Theme;
   sidebarRefreshKey: number;
+  /** The open review's newest "need you" count, so the sidebar never shows a stale one for it. */
+  liveNeedYou: { packageId: string; count: number } | null;
   /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
   evidencePanel?: React.ReactNode;
   onNavigate: (page: Page) => void;
@@ -21,7 +26,8 @@ interface AppShellProps {
   onToggleTheme: () => void;
 }
 
-const COLLAPSED_KEY = 'gv-sidebar-collapsed';
+/** The same key the sidebar used before #1034, so a reviewer's choice survives the change. */
+export const COLLAPSED_KEY = 'gv-sidebar-collapsed';
 
 function readCollapsed(): boolean {
   try {
@@ -33,93 +39,67 @@ function readCollapsed(): boolean {
 
 /**
  * The frame every screen sits in: sidebar, header, the screen, and — only when a finding's evidence
- * has been opened — the evidence panel beside it.
+ * has been opened — the evidence panel beside it (a full-screen sheet under 1100px).
  *
- * The previous frame pinned an evidence column open on every review screen, the start screen
- * included, and squeezed the conversation into 360–480px; the findings table could not fit and the
- * "View evidence" button was pushed off the edge. The conversation now gets the room, and the
- * evidence takes its share only when there is evidence to show (a full-screen sheet under 1100px).
+ * The sidebar is shadcn's (#1034): collapsible to icons, remembered on this device, and a sheet on
+ * phones. The header's two slots are where a screen places its status and its primary action.
  */
 export function AppShell({
   children,
   title,
+  crumbs,
   activePage,
   activePackage,
   theme,
   sidebarRefreshKey,
+  liveNeedYou,
   evidencePanel,
   onNavigate,
   onOpenPackage,
   onNewReview,
   onToggleTheme,
 }: AppShellProps) {
-  const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [open, setOpen] = useState(() => !readCollapsed());
   const [titleSlot, setTitleSlot] = useState<HTMLDivElement | null>(null);
   const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
   const evidenceOpen = Boolean(evidencePanel);
 
-  function toggleCollapsed() {
-    setCollapsed((current) => {
-      const next = !current;
-      try {
-        localStorage.setItem(COLLAPSED_KEY, String(next));
-      } catch {
-        // Storage blocked: the choice lasts for this visit.
-      }
-      return next;
-    });
-  }
-
-  // The drawer closes with Escape, like every other overlay.
-  useEffect(() => {
-    if (!mobileOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [mobileOpen]);
-
-  // Anything chosen from the drawer also closes it, so the reviewer lands on what they picked.
-  function closingDrawer<A extends unknown[]>(action: (...args: A) => void) {
-    return (...args: A) => {
-      setMobileOpen(false);
-      action(...args);
-    };
+  function changeOpen(next: boolean) {
+    setOpen(next);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, String(!next));
+    } catch {
+      // Storage blocked: the choice lasts for this visit.
+    }
   }
 
   return (
     <ShellSlotsContext.Provider value={{ title: titleSlot, actions: actionsSlot }}>
-      <div className="shell" data-evidence-open={evidenceOpen} data-page={activePage}>
+      <SidebarProvider
+        open={open}
+        onOpenChange={changeOpen}
+        className="shell h-dvh min-h-0"
+        data-evidence-open={evidenceOpen}
+        data-page={activePage}
+        style={{ '--sidebar-width': '16.25rem' } as React.CSSProperties}
+      >
         <a className="shell__skip" href="#main-content">Skip to content</a>
 
-        <Sidebar
-          collapsed={collapsed}
-          mobileOpen={mobileOpen}
+        <AppSidebar
           activePage={activePage}
           activePackage={activePackage}
           theme={theme}
           refreshKey={sidebarRefreshKey}
-          onToggleCollapsed={toggleCollapsed}
-          onCloseMobile={() => setMobileOpen(false)}
-          onNavigate={closingDrawer(onNavigate)}
-          onOpenPackage={closingDrawer(onOpenPackage)}
-          onNewReview={closingDrawer(onNewReview)}
+          liveNeedYou={liveNeedYou}
+          onNavigate={onNavigate}
+          onOpenPackage={onOpenPackage}
+          onNewReview={onNewReview}
           onToggleTheme={onToggleTheme}
         />
 
-        {mobileOpen && (
-          <div className="shell__scrim" onClick={() => setMobileOpen(false)} aria-hidden="true" />
-        )}
-
-        <div className="shell__content">
-          <Topbar
-            title={title}
-            onOpenMenu={() => setMobileOpen(true)}
-            titleRef={setTitleSlot}
-            actionsRef={setActionsSlot}
-          />
+        {/* Not shadcn's SidebarInset, which is a <main>: the screen below already is the page's main. */}
+        <div className="shell__content flex min-w-0 flex-1 flex-col">
+          <AppTopbar title={title} crumbs={crumbs} titleRef={setTitleSlot} actionsRef={setActionsSlot} />
 
           <div className="shell__body">
             <main className="shell__main" id="main-content" tabIndex={-1}>
@@ -140,7 +120,7 @@ export function AppShell({
             )}
           </div>
         </div>
-      </div>
+      </SidebarProvider>
     </ShellSlotsContext.Provider>
   );
 }

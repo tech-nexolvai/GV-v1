@@ -31,7 +31,7 @@ export const OUTCOME_FILL: Record<Outcome, string> = {
 };
 
 const outcomeBadgeVariants = cva(
-  'inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3.5 [&>svg]:shrink-0',
+  'inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-sans text-xs font-medium whitespace-nowrap [&>svg]:size-3.5 [&>svg]:shrink-0',
   {
     variants: {
       tone: {

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
+import type { Crumb } from './components/shell/app-topbar';
 import { ReviewPage } from './pages/ReviewPage';
 import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
@@ -29,8 +30,10 @@ export default function App() {
   const [route, navigate] = useRoute();
   const [theme, toggleTheme] = useTheme();
   const [evidencePanel, setEvidencePanel] = useState<React.ReactNode>(null);
-  // The vendor of the review on screen, reported by the review once its package has loaded.
-  const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string } | null>(null);
+  // The vendor and revision of the review on screen, reported by the review once its package has loaded.
+  const [reviewTitle, setReviewTitle] = useState<{ packageId: string; title: string; revision: number | null } | null>(null);
+  // The open review's newest "need you" count, so the sidebar's copy of it is never stale.
+  const [liveNeedYou, setLiveNeedYou] = useState<{ packageId: string; count: number } | null>(null);
   // Bumped after a new review is created, so the sidebar lists it without a reload.
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
   const [documentPosition, setDocumentPosition] = useState(() => {
@@ -55,6 +58,17 @@ export default function App() {
   useEffect(() => {
     document.title = `${title} · GV Review`;
   }, [title]);
+
+  // Where you are: Documents › vendor › Revision N on a review, the page's own name elsewhere.
+  const revision = packageId !== null && reviewTitle?.packageId === packageId ? reviewTitle.revision : null;
+  const crumbs: Crumb[] =
+    packageId !== null
+      ? [
+          { label: 'Documents', onSelect: () => go('documents') },
+          { label: title },
+          ...(revision !== null ? [{ label: `Revision ${revision}` }] : []),
+        ]
+      : [{ label: title }];
 
   function go(page: Page) {
     setEvidencePanel(null);
@@ -83,6 +97,8 @@ export default function App() {
   return (
     <AppShell
       title={title}
+      crumbs={crumbs}
+      liveNeedYou={liveNeedYou}
       activePage={route.page}
       activePackage={packageId}
       theme={theme}
@@ -108,7 +124,8 @@ export default function App() {
           key={packageId}
           sessionId={packageId}
           onEvidenceChange={setEvidencePanel}
-          onTitleChange={(vendor) => setReviewTitle({ packageId, title: vendor })}
+          onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
+          onNeedYouChange={(count) => setLiveNeedYou(count === null ? null : { packageId, count })}
           onBackToDocuments={() => go('documents')}
           onPackageChanged={() => setSidebarRefreshKey((key) => key + 1)}
         />

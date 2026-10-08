@@ -74,19 +74,6 @@
   }
 }
 
-/* ── Drawer scrim (mobile) ─────────────────────────────────── */
-.shell__scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 55;
-  background: var(--bg-overlay);
-  animation: gv-fade-in var(--duration-base) var(--ease-out) both;
-}
-
-@media (min-width: 768px) {
-  .shell__scrim { display: none; }
-}
-
 /* ── Nexolv, bottom-right ──────────────────────────────────── */
 .shell__partner {
   position: absolute;
@@ -155,7 +142,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .shell__evidence,
-  .shell__scrim { animation: none; }
+  .shell__evidence { animation: none; }
 }
 } /* @layer legacy */
