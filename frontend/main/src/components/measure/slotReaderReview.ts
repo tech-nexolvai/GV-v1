@@ -5,6 +5,10 @@ export type SlotReaderReviewPayload = {
   measurements?: Record<string, string>;
 };
 
+export function rowWallSelection(draft: string | undefined, saved: string | null): string {
+  return draft ?? saved ?? '';
+}
+
 /** Build only the choices a person actually made, never defaults rendered from AI proposals. */
 export function slotReaderReviewPayload(
   row: SlotReaderRow,

@@ -119,6 +119,11 @@ export function getChangedValues(projectId: string, packageId: string) {
   );
 }
 
+export type ApprovalReadiness = components['schemas']['ApprovalReadinessOut'];
+export function getApprovalReadiness(projectId: string, packageId: string) {
+  return request<ApprovalReadiness>(`/projects/${projectId}/packages/${packageId}/approval-readiness`);
+}
+
 export function listFindings(
   projectId: string,
   packageId: string,
@@ -1155,9 +1160,10 @@ export async function downloadPagePicture(
   projectId: string,
   packageId: string,
   pageNumber: number,
+  documentVersionId?: string,
 ): Promise<Blob> {
   const response = await fetch(
-    `${BASE}/projects/${projectId}/packages/${packageId}/pages/${pageNumber}/picture`,
+    `${BASE}/projects/${projectId}/packages/${packageId}/pages/${pageNumber}/picture${documentVersionId ? `?document_version_id=${encodeURIComponent(documentVersionId)}` : ''}`,
     { headers: { Accept: 'image/png,image/*;q=0.8' } },
   );
   if (!response.ok) {

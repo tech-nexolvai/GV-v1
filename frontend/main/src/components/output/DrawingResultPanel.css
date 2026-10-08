@@ -1,0 +1,11 @@
+.result-drawing { display:flex; flex-direction:column; height:100%; min-height:0; color:var(--text-primary); }
+.result-drawing > header { padding:16px; display:flex; gap:12px; justify-content:space-between; align-items:flex-start; }
+.result-drawing > header p, .result-drawing__hint { font-size:12px; color:var(--text-muted); }
+.result-drawing__hint { padding:0 16px 12px; }
+.result-drawing button { min-height:44px; }
+.result-drawing__controls { display:flex; gap:8px; align-items:center; padding:8px 16px; border-block:1px solid var(--border-subtle); }
+.result-drawing__viewport { overflow:auto; flex:1; min-height:0; }
+.result-drawing__page { position:relative; }
+.result-drawing__page img { width:100%; height:auto; display:block; }
+.result-drawing__page svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.result-drawing__page polygon { fill:none; stroke:#111; stroke-width:3px; stroke-dasharray:8 5; vector-effect:non-scaling-stroke; }

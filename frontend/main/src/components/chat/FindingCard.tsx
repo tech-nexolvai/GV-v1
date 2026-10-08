@@ -27,7 +27,7 @@ interface FindingCardProps {
   /** The table row has its own disclosure; the first opening must reveal the detail too. */
   defaultExpanded?: boolean;
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
+  onAction: (findingId: string, action: SimpleReviewAction, note?: string) => Promise<DecisionSaveResult>;
   /**
    * Correct a reading, with what it should say.
    *
@@ -54,7 +54,7 @@ export function FindingCard({
   const [showTrace, setShowTrace] = useState(false);
   // Which payload the reviewer is filling in, if either. `null` is the ordinary state: the buttons
   // that need nothing more still act on one click.
-  const [pending, setPending] = useState<'correct' | 'except' | null>(null);
+  const [pending, setPending] = useState<'correct' | 'except' | SimpleReviewAction | null>(null);
   const [correctedValue, setCorrectedValue] = useState('');
   const [reason, setReason] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
@@ -63,9 +63,11 @@ export function FindingCard({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const hasAction = finding.reviewer_action !== null;
+  const needsNote = finding.outcome === 'REVIEW_REQUIRED' || finding.outcome === 'NOT_FOUND';
 
   function submitAction(action: SimpleReviewAction) {
     if (isSaving) return;
+    if (needsNote) { setPending(action); setSaveError(null); return; }
     void saveDecision(() => onAction(finding.id, action), {
       busy: setIsSaving, error: setSaveError, saved: () => {},
     });
@@ -251,13 +253,12 @@ export function FindingCard({
 
               {!hasAction && finding.outcome !== 'PASS' && finding.outcome !== 'NO_APPLICABLE_RULE' && (
                 <div className="finding-card__reviewer-actions" aria-busy={isSaving}>
-                  {finding.outcome !== 'NOT_FOUND' && (
                     <button
                       className="btn btn--reviewer"
                       disabled={isSaving}
                       onClick={() => submitAction('confirm')}
-                    >Confirm</button>
-                  )}
+                    >{needsNote ? 'Checked: OK' : 'Confirm finding'}</button>
+                  <span className="finding-card__problem-label">Problem:</span>
                   <button
                     className="btn btn--reviewer"
                     disabled={isSaving}
@@ -274,12 +275,35 @@ export function FindingCard({
                     className="btn btn--reviewer btn--reviewer--dismiss"
                     disabled={isSaving}
                     onClick={() => submitAction('dismiss')}
-                  >Dismiss</button>
+                  >{needsNote ? 'Not checkable' : 'Dismiss'}</button>
                 </div>
               )}
 
               {!pending && isSaving && <p role="status">Saving decision…</p>}
               {!pending && saveError && <p className="finding-card__save-error" role="alert">{saveError}</p>}
+
+              {(pending === 'confirm' || pending === 'dismiss') && (
+                <form className="finding-card__decision" aria-busy={isSaving} onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!reason.trim()) return;
+                  void saveDecision(() => onAction(finding.id, pending, reason.trim()), {
+                    busy: setIsSaving, error: setSaveError,
+                    saved: () => { setPending(null); setReason(''); },
+                  });
+                }}>
+                  <label htmlFor={`note-${finding.id}`}>
+                    {pending === 'confirm' ? 'What did you check?' : 'Why is this not checkable?'} (required)
+                  </label>
+                  <textarea id={`note-${finding.id}`} required value={reason} disabled={isSaving}
+                    onChange={event => setReason(event.target.value)} rows={3} autoFocus />
+                  <small>This records your decision. The check remains {finding.outcome.replaceAll('_', ' ')}.</small>
+                  <button type="submit" className="btn btn--reviewer" disabled={isSaving || !reason.trim()}>
+                    {isSaving ? 'Saving…' : 'Record decision'}
+                  </button>
+                  <button type="button" className="btn btn--ghost" disabled={isSaving} onClick={() => setPending(null)}>Cancel</button>
+                  {saveError && <p role="alert">{saveError}</p>}
+                </form>
+              )}
 
               {pending === 'correct' && (
                 <form
@@ -371,10 +395,14 @@ export function FindingCard({
               )}
 
               {hasAction && (
-                <span className="finding-card__actioned-label">
+                <div className="finding-card__actioned-label">
                   <CheckCircle size={11} />
-                  Reviewer: {finding.reviewer_action}
-                </span>
+                  <div><strong>Reviewer decision: {needsNote && finding.reviewer_action === 'confirm' ? 'Checked: OK' : needsNote && finding.reviewer_action === 'dismiss' ? 'Not checkable' : finding.reviewer_action}</strong>
+                    <p>{finding.reviewed_by ?? 'Reviewer recorded'}{finding.reviewed_at ? ` · ${new Date(finding.reviewed_at).toLocaleString()}` : ''}</p>
+                    {finding.reviewer_note && <p>{finding.reviewer_note}</p>}
+                    <small>Recorded check unchanged: {finding.outcome.replaceAll('_', ' ')}</small>
+                  </div>
+                </div>
               )}
             </div>
           </div>

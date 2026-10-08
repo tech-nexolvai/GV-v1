@@ -8,6 +8,7 @@
  */
 
 import { getFindingChain, listFindings } from './client';
+import { collectFindingPages } from '../components/output/reviewerResults.js';
 import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
 type Listed = Awaited<ReturnType<typeof listFindings>>['items'][number];
@@ -24,6 +25,10 @@ export function toFinding(listed: Listed): Finding {
     id: listed.id,
     check_id: listed.rule_id,
     scope_item_id: listed.scope_item_id,
+    scope_row_candidate_id: listed.scope_row_candidate_id,
+    row_location: listed.row_location,
+    package_revision_id: listed.package_revision_id,
+    reason: listed.reason ?? undefined,
     scope_label: listed.scope_label,
     notes: listed.notes ?? [],
     // The rule id until the snapshot's human name is on the wire. Better a real identifier than a
@@ -37,6 +42,8 @@ export function toFinding(listed: Listed): Finding {
     // invisible. The two disagreeing was worse than either being empty.
     reviewer_action: (listed.reviewer_action?.action ?? null) as ReviewerAction | null,
     reviewed_by: listed.reviewer_action?.actor ?? null,
+    reviewer_note: listed.reviewer_action?.note ?? null,
+    reviewed_at: listed.reviewer_action?.at ?? null,
   };
 }
 
@@ -107,6 +114,8 @@ export function withChain(finding: Finding, chain: Chain): Finding {
 
   return {
     ...finding,
+    row_location: chain.row_location ?? finding.row_location,
+    scope_row_candidate_id: chain.scope_row_candidate_id ?? finding.scope_row_candidate_id,
     reason: source.kind === 'abstention' ? (source.reason ?? finding.reason) : finding.reason,
     recorded_operands: recordedOperands,
     trace,
@@ -138,9 +147,9 @@ function _evidenceFor(
 }
 
 /** Every finding for a package, in the order the API ranks them. */
-export async function loadFindings(projectId: string, packageId: string): Promise<Finding[]> {
-  const page = await listFindings(projectId, packageId);
-  const base = page.items.map(toFinding);
+export async function loadFindings(projectId: string, packageId: string, revisionId?: string): Promise<Finding[]> {
+  const items = await collectFindingPages(cursor => listFindings(projectId, packageId, { cursor }));
+  const base = items.filter(item => !revisionId || item.package_revision_id === revisionId).map(toFinding);
 
   // **Every finding arrives with its evidence, rather than one at a time on request.**
   //
@@ -157,15 +166,16 @@ export async function loadFindings(projectId: string, packageId: string): Promis
   // **A chain that will not load costs its own card's detail and nothing else.** The finding is
   // still shown, with its outcome and rule, because an evidence lookup failing is not a reason to
   // hide a recorded failure from the person reviewing it.
-  const chains = await Promise.all(
-    base.map(async (finding) => {
+  const chains: (Chain | null)[] = [];
+  for (let offset = 0; offset < base.length; offset += 8) {
+    chains.push(...await Promise.all(base.slice(offset, offset + 8).map(async (finding) => {
       try {
         return await getFindingChain(projectId, packageId, finding.id);
       } catch {
         return null;
       }
-    }),
-  );
+    })));
+  }
 
   return base.map((finding, index) => {
     const chain = chains[index];

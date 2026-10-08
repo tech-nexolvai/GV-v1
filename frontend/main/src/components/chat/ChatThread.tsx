@@ -16,7 +16,7 @@ interface ChatThreadProps {
   selectedFinding: string | null;
   recordedFindingCount: number;
   onViewEvidence: (finding: Finding) => void;
-  onAction: (findingId: string, action: SimpleReviewAction) => Promise<DecisionSaveResult>;
+  onAction: (findingId: string, action: SimpleReviewAction, note?: string) => Promise<DecisionSaveResult>;
   onCorrect: (findingId: string, correctedValue: string) => Promise<DecisionSaveResult>;
   onExcept: (findingId: string, reason: string, expiresAt: string) => Promise<DecisionSaveResult>;
 }

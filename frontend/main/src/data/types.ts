@@ -85,6 +85,9 @@ export interface Finding {
   /** `rule_id` on the wire. */
   check_id: string;
   scope_item_id?: string | null;
+  scope_row_candidate_id?: string | null;
+  row_location?: components['schemas']['RowLocation'] | null;
+  package_revision_id?: string;
   scope_label?: string | null;
   /** Persisted check notes from the backend, including human layout-choice provenance. */
   notes?: string[];
@@ -136,6 +139,8 @@ export interface Finding {
    *  disposition belongs to the package, so a colleague's decision shows with their name rather than
    *  as untouched work inviting a second opinion recorded as a first. */
   reviewed_by?: string | null;
+  reviewer_note?: string | null;
+  reviewed_at?: string | null;
 }
 
 /** One turn in the review thread. */
