@@ -124,6 +124,14 @@ export function getApprovalReadiness(projectId: string, packageId: string) {
   return request<ApprovalReadiness>(`/projects/${projectId}/packages/${packageId}/approval-readiness`);
 }
 
+/** One row per countertop of the live check run, with its exact numbers (#1035). Read-only. */
+export type CountertopResults = components['schemas']['CountertopResultsOut'];
+export type CountertopResult = CountertopResults['items'][number];
+export type ExactValue = components['schemas']['ExactValueOut'];
+export function getCountertopResults(projectId: string, packageId: string) {
+  return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results`);
+}
+
 export function listFindings(
   projectId: string,
   packageId: string,

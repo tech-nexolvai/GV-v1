@@ -87,6 +87,26 @@ The shell is shadcn's Sidebar (`components/shell/app-sidebar.tsx`, collapse reme
 `gv-sidebar-collapsed`) and a top bar (`components/shell/app-topbar.tsx`). The top bar carries the
 breadcrumb, the screen's title extras (`HeaderTitleExtra`) and its actions (`HeaderActions`).
 
+## Results dashboard (#1039)
+
+The review opens on `components/results/results-dashboard.tsx`:
+- five KPI cards;
+- one outcome donut (lazy-loaded with the chart library);
+- the countertop table: TanStack + shadcn Table, stacked rows on phones, ↑/↓, Enter and D on rows;
+- "Other checks", with one bulk "Mark not checkable…".
+
+Every number comes from `GET …/countertop-results` (#1035), and none is computed in the browser.
+`lib/countertop-results.ts` holds the pure rules: buckets, sort order, filters, the difference's sign
+and words, and `recordEach` for the bulk action.
+
+A row's bucket is what the record says (needs you, then PASS / FAIL / not checkable); a reviewer's
+choice appears only under "Decided by". Decisions go through the review page's existing handlers.
+The Decide dialog uses the same note rule as the finding card (`actionNeedsNote`).
+
+**Legacy islands.** A legacy component shown inside new UI (the chat and the drawing panel in shadcn
+Sheets) is wrapped in an element with `data-legacy`. Tailwind's scoped reset stops there, and the
+legacy element rules apply again inside it.
+
 ## Imports
 
 - **New code** uses the `@/` alias (`@/components/ui/button`, `@/lib/utils`). It is set in

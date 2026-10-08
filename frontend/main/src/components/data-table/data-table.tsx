@@ -121,13 +121,17 @@ export function SortableHeader<TData, TValue>({
   column,
   children,
   className,
+  compact = false,
 }: {
   column: Column<TData, TValue>;
   children: React.ReactNode;
   className?: string;
+  /** Show the arrow only on the sorted column (dense tables); the header still sorts on click. */
+  compact?: boolean;
 }) {
   const sorted = column.getIsSorted();
   const Icon = sorted === 'asc' ? ArrowUp : sorted === 'desc' ? ArrowDown : ArrowUpDown;
+  const showIcon = !compact || Boolean(sorted);
   return (
     <Button
       variant="ghost"
@@ -136,7 +140,7 @@ export function SortableHeader<TData, TValue>({
       onClick={() => column.toggleSorting(sorted === 'asc')}
     >
       {children}
-      <Icon className={cn('size-3.5', !sorted && 'text-muted-foreground')} aria-hidden="true" />
+      {showIcon && <Icon className={cn('size-3.5', !sorted && 'text-muted-foreground')} aria-hidden="true" />}
     </Button>
   );
 }

@@ -41,8 +41,17 @@ body {
 /* Element defaults for the legacy pages. Scoped with a lower boundary so they stop at new UI:
    shadcn/ui elements (every one has a data-slot) and blocks marked data-tw get Tailwind's scoped
    reset instead (src/styles/preflight-scoped.css). The legacy pages contain neither, so for them
-   nothing changes (#1029). */
-@scope (body) to ([data-slot], [data-tw]) {
+   nothing changes (#1029). A legacy island inside new UI (`data-legacy`, #1039) starts the scope
+   again, so a legacy component in a shadcn Sheet keeps its own look. */
+@scope (body, [data-legacy]) to ([data-slot], [data-tw]) {
+/* A legacy island starts from the same text the page body sets, not the new UI's. */
+:scope {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-body);
+}
+
 /* ── Typography base ─────────────────────────────────── */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading);
