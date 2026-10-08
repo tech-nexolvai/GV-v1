@@ -67,6 +67,7 @@ __all__ = [
     "build_row_request",
     "build_wall_request",
     "crop_prompt_id",
+    "parse_stored_reader_answer",
     "read_counter_break",
     "read_crop",
     "read_crops_parallel",
@@ -80,6 +81,12 @@ ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v1"
+
+
+def parse_stored_reader_answer(text: str) -> Mapping[str, Any]:
+    """Parse one append-only stored reply through the same JSON boundary as live calls."""
+    return _extract_json_object(text)
+
 
 ROW_PROMPT: Final = (
     "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "

@@ -327,6 +327,8 @@ from workflow.slot_reader import (
     persist_slot_readings,
     read_slot_pages,
 )
+from workflow.slot_row_evidence import slot_row_check
+from workflow.slot_row_scope import slot_rows
 from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
@@ -6138,6 +6140,7 @@ class DatabaseStages:
 
         countertop_subjects = countertop_scopes(session, package_revision_id)
         has_slot_reader_rows = slot_reader_has_rows(session, package_revision_id)
+        slot_row_subjects = slot_rows(session, package_revision_id)
         partial_claude_row = (
             _latest_claude_row_is_partial(session, package_revision_id)
             if countertop_subjects is None
@@ -6196,7 +6199,9 @@ class DatabaseStages:
                     # rather than attached to an arbitrary rule.
                     skipped += 1
                     continue
-                if countertop_subjects is not None and abstention.rule_id == "CT-WIDTH-001":
+                if abstention.rule_id == "CT-WIDTH-001" and (
+                    countertop_subjects is not None or slot_row_subjects
+                ):
                     # This rule must resolve its variant separately for each confirmed countertop.
                     continue
                 snapshot = store.latest(abstention.rule_id)
@@ -6286,6 +6291,8 @@ class DatabaseStages:
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
                 if countertop_subjects is not None and rule_id == "CT-WIDTH-001":
+                    continue
+                if rule_id == "CT-WIDTH-001" and countertop_subjects is None and slot_row_subjects:
                     continue
                 subjects: tuple[CountertopScope | None, ...] = (
                     countertop_subjects
@@ -6435,26 +6442,126 @@ class DatabaseStages:
         # scope, exactly as the resolver loop above runs it only for them.
         if countertop_subjects is not None and ProductType.COUNTERTOP in in_scope:
             width_snapshot = store.latest("CT-WIDTH-001")
+            if width_snapshot is not None and not countertop_subjects:
+                record_finding(
+                    session,
+                    package_revision_id=package_revision_id,
+                    finding=Finding(
+                        rule_id="CT-WIDTH-001",
+                        outcome=Outcome.NOT_FOUND,
+                        severity=width_snapshot.rule.severity,
+                        reason="No live confirmed countertop run remains for this check.",
+                        snapshot_id=width_snapshot.snapshot_id,
+                        engine_version=ENGINE_VERSION,
+                    ),
+                    operands={},
+                    parameter_set_ids=cited,
+                    defaults_set_id=defaults_set_id,
+                    defaults_canonical_json=defaults_canonical_json,
+                )
+                written += 1
+
+        # Slot-reader checks are independent page/row scopes. The legacy manual run path above is
+        # deliberately untouched and takes precedence whenever a reviewer has made any run decision.
+        # A slot row can use only its own complete values and its own drawing-clue wall layout, or a
+        # wall/value decision explicitly saved against that row.
+        manual_subjects = countertop_subjects or ()
+        manually_scoped_pages = {subject.page_index for subject in manual_subjects}
+        if (
+            countertop_subjects is not None or slot_row_subjects
+        ) and ProductType.COUNTERTOP in in_scope:
+            width_snapshot = store.latest("CT-WIDTH-001")
             if width_snapshot is not None:
-                if not countertop_subjects:
+                for row in slot_row_subjects:
+                    if row.page_number - 1 in manually_scoped_pages:
+                        # The reviewer-owned run remains the source on its page; a run on one page
+                        # cannot suppress independent slot-reader checks on another page.
+                        continue
+                    row_check = slot_row_check(session, row)
+                    discriminators = dict(self._discriminators)
+                    discriminators.pop(SemanticType.WALL_CONFIG.value, None)
+                    if row_check.wall_config is not None:
+                        discriminators[SemanticType.WALL_CONFIG.value] = row_check.wall_config
+                    scoped_resolution = resolve(
+                        store,
+                        CheckContext(
+                            product_type=ProductType.COUNTERTOP,
+                            project=scope,
+                            discriminators=discriminators,
+                        ),
+                    )
+                    applicable_width = next(
+                        (
+                            entry
+                            for entry in scoped_resolution.applicable
+                            if entry.snapshot.rule.id == "CT-WIDTH-001"
+                        ),
+                        None,
+                    )
+                    refused_width = next(
+                        (
+                            entry
+                            for entry in scoped_resolution.abstentions
+                            if entry.rule_id == "CT-WIDTH-001"
+                        ),
+                        None,
+                    )
+                    if not row_check.eligible:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason=row_check.reason
+                            or "This row needs reviewer input before checking.",
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                            notes=(
+                                (row_check.wall_provenance,)
+                                if row_check.wall_provenance is not None
+                                else ()
+                            ),
+                        )
+                        operands = {}
+                    elif applicable_width is not None:
+                        finding = execute(
+                            applicable_width.snapshot,
+                            row_check.operands,
+                            resolved,
+                            discriminators=discriminators,
+                        )
+                        if row_check.wall_provenance is not None:
+                            finding = replace(
+                                finding,
+                                notes=(*finding.notes, row_check.wall_provenance),
+                            )
+                        operands = row_check.operands
+                    elif refused_width is not None:
+                        finding = _unresolved(width_snapshot, refused_width)
+                        operands = {}
+                    else:
+                        finding = Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason="The published countertop width check did not resolve for this row.",
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        )
+                        operands = {}
                     record_finding(
                         session,
                         package_revision_id=package_revision_id,
-                        finding=Finding(
-                            rule_id="CT-WIDTH-001",
-                            outcome=Outcome.NOT_FOUND,
-                            severity=width_snapshot.rule.severity,
-                            reason="No live confirmed countertop run remains for this check.",
-                            snapshot_id=width_snapshot.snapshot_id,
-                            engine_version=ENGINE_VERSION,
-                        ),
-                        operands={},
+                        finding=finding,
+                        operands=operands,
                         parameter_set_ids=cited,
                         defaults_set_id=defaults_set_id,
                         defaults_canonical_json=defaults_canonical_json,
+                        missing=_declared_inputs(width_snapshot.rule),
+                        scope_row_candidate_id=row.anchor.id,
+                        scope_label=row.label,
                     )
                     written += 1
-                for subject in countertop_subjects:
+                for subject in manual_subjects:
                     selected = evidence_operands(
                         session,
                         package_revision_id,
@@ -6468,7 +6575,7 @@ class DatabaseStages:
                         session, package_revision_id, subject.page_index
                     )
                     same_page_count = sum(
-                        other.page_index == subject.page_index for other in countertop_subjects
+                        other.page_index == subject.page_index for other in manual_subjects
                     )
                     row_answer_owns_layout = row_layout is not None and (
                         row_layout.held or not row_layout.selected or row_layout.layout is not None
@@ -6487,7 +6594,7 @@ class DatabaseStages:
                             f"Wall layout: {wall_layout_name(layout)}, established by vendor "
                             "drawing clues for this countertop row."
                         )
-                    if layout is None and row_layout is None and len(countertop_subjects) == 1:
+                    if layout is None and row_layout is None and len(manual_subjects) == 1:
                         revision_layout = self._discriminators.get(SemanticType.WALL_CONFIG.value)
                         if revision_layout is not None:
                             layout = revision_layout

@@ -92,6 +92,10 @@ class VerdictOperand:
     row belongs to the persistence boundary, not to deterministic arithmetic.
     """
 
+    row_review_decision_id: str | None = None
+    """An immutable row-scoped reviewer input, when this operand was typed or confirmed for one
+    slot-reader row. It is mutually exclusive with a canonical drawing observation."""
+
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("a verdict operand must be named")

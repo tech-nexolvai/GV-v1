@@ -1195,6 +1195,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List each current slot-reader countertop row and its reviewer-only gaps */
+        get: operations["list_slot_rows_api_v1_projects__project_id__packages__package_id__slot_rows_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm a wall choice or fill missing widths for one slot-reader row */
+        post: operations["review_slot_row_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/views": {
         parameters: {
             query?: never;
@@ -4175,6 +4209,73 @@ export interface components {
              */
             status: "not_requested" | "preparing" | "ready" | "failed";
         };
+        /** SlotRowOut */
+        SlotRowOut: {
+            /** Confirmed By */
+            confirmed_by: string | null;
+            /** Decided At */
+            decided_at: string | null;
+            /** Decision Id */
+            decision_id: string | null;
+            /** Held Reason */
+            held_reason: string | null;
+            /** Label */
+            label: string;
+            /** Page Number */
+            page_number: number;
+            /** Piece Count */
+            piece_count: number;
+            /**
+             * Row Id
+             * Format: uuid
+             */
+            row_id: string;
+            /** Values */
+            values: components["schemas"]["SlotRowValueOut"][];
+            /** Wall Config */
+            wall_config: string | null;
+            /** Wall Layout Choices */
+            wall_layout_choices: string[];
+            /** Wall Proposal */
+            wall_proposal: string | null;
+            /** Wall Reason */
+            wall_reason: string | null;
+            /** Wall Source */
+            wall_source: string | null;
+        };
+        /** SlotRowReviewIn */
+        SlotRowReviewIn: {
+            /** Measurements */
+            measurements?: {
+                [key: string]: string;
+            };
+            /** Wall Config */
+            wall_config?: string | null;
+        };
+        /** SlotRowValueOut */
+        SlotRowValueOut: {
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Needs Value */
+            needs_value: boolean;
+            /** Position */
+            position: number | null;
+            /** Review Reason */
+            review_reason: string | null;
+            /** Source */
+            source: string;
+            /** Suggestion */
+            suggestion: string | null;
+            /** Value */
+            value: string | null;
+        };
+        /** SlotRowsOut */
+        SlotRowsOut: {
+            /** Rows */
+            rows: components["schemas"]["SlotRowOut"][];
+        };
         /** SnapPointOut */
         SnapPointOut: {
             /** Source */
@@ -6161,6 +6262,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SignedExportRequestOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_slot_rows_api_v1_projects__project_id__packages__package_id__slot_rows_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotRowsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_slot_row_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                row_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotRowReviewIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotRowOut"];
                 };
             };
             /** @description Validation Error */

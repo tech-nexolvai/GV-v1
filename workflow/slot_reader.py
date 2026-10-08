@@ -1742,6 +1742,7 @@ def persist_slot_readings(
                 polygon = _polygon(chosen.box_px)
                 flags.append(_box_flag("crop-box", chosen.crop_px))
                 flags.extend(chosen.outcome.flags)
+                flags.extend(f"reader-id:{source}" for source, _text in chosen.outcome.reader_texts)
                 if chosen.outcome.ink is not None:
                     flags.append(f"ink:{chosen.outcome.ink.value}")
                 flags.extend(
@@ -1779,6 +1780,31 @@ def persist_slot_readings(
             session.flush()
             candidates[index] = candidate
             count += 1
+            if accepted and chosen is not None:
+                if value is None:
+                    raise ValueError("a sealed slot-reader candidate has no exact value")
+                # Preserve the two independent raw readings as two evidence candidates. The
+                # combined row above remains the proposal shown in the form; it is not itself
+                # treated as two pieces of corroborating evidence by the verdict gate.
+                for reader_id, reader_text in chosen.outcome.reader_texts:
+                    support = ObservationCandidate(
+                        document_version_id=candidate.document_version_id,
+                        page_id=candidate.page_id,
+                        extraction_run_id=extraction_run_id,
+                        raw_text=reader_text,
+                        value_numerator=value.exact.numerator,
+                        value_denominator=value.exact.denominator,
+                        unit=Unit.INCH.value,
+                        polygon=polygon,
+                        coordinate_space="image",
+                        ambiguity_flags=[
+                            "slot-reader-support",
+                            f"supports:{candidate.id}",
+                            f"reader-id:{reader_id}",
+                        ],
+                    )
+                    session.add(support)
+                    session.flush()
         proposal_id = uuid4()
         for proposal in result.mapping.proposals:
             rows.append(

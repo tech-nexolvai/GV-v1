@@ -5028,6 +5028,267 @@
         "title": "SignedExportRequestOut",
         "type": "object"
       },
+      "SlotRowOut": {
+        "properties": {
+          "confirmed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "held_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Reason"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "piece_count": {
+            "title": "Piece Count",
+            "type": "integer"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/SlotRowValueOut"
+            },
+            "title": "Values",
+            "type": "array"
+          },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Config"
+          },
+          "wall_layout_choices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Wall Layout Choices",
+            "type": "array"
+          },
+          "wall_proposal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Proposal"
+          },
+          "wall_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Reason"
+          },
+          "wall_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Source"
+          }
+        },
+        "required": [
+          "row_id",
+          "page_number",
+          "label",
+          "piece_count",
+          "held_reason",
+          "values",
+          "wall_proposal",
+          "wall_source",
+          "wall_reason",
+          "wall_layout_choices",
+          "decision_id",
+          "confirmed_by",
+          "decided_at",
+          "wall_config"
+        ],
+        "title": "SlotRowOut",
+        "type": "object"
+      },
+      "SlotRowReviewIn": {
+        "additionalProperties": false,
+        "properties": {
+          "measurements": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Measurements",
+            "type": "object"
+          },
+          "wall_config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Config"
+          }
+        },
+        "title": "SlotRowReviewIn",
+        "type": "object"
+      },
+      "SlotRowValueOut": {
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "needs_value": {
+            "title": "Needs Value",
+            "type": "boolean"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "review_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Reason"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestion"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "position",
+          "value",
+          "suggestion",
+          "source",
+          "review_reason",
+          "needs_value"
+        ],
+        "title": "SlotRowValueOut",
+        "type": "object"
+      },
+      "SlotRowsOut": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SlotRowOut"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "title": "SlotRowsOut",
+        "type": "object"
+      },
       "SnapPointOut": {
         "properties": {
           "source": {
@@ -8828,6 +9089,132 @@
         "summary": "Request Exports",
         "tags": [
           "approvals"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows": {
+      "get": {
+        "operationId": "list_slot_rows_api_v1_projects__project_id__packages__package_id__slot_rows_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotRowsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List each current slot-reader countertop row and its reviewer-only gaps",
+        "tags": [
+          "slot-reader rows"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/review": {
+      "post": {
+        "operationId": "review_slot_row_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "row_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Row Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlotRowReviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotRowOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm a wall choice or fill missing widths for one slot-reader row",
+        "tags": [
+          "slot-reader rows"
         ]
       }
     },

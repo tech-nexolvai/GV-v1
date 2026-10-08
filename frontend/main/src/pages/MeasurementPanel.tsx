@@ -29,6 +29,7 @@ import { projectId } from '../api/config';
 import { AssignmentProgress } from '../components/measure/AssignmentProgress';
 import { DrawingRoles } from '../components/measure/DrawingRoles';
 import { CountertopRuns } from '../components/measure/CountertopRuns';
+import { SlotReaderRows } from '../components/measure/SlotReaderRows';
 import { DrawingParts } from '../components/measure/DrawingParts';
 import { PageDrawing } from '../components/measure/PageDrawing';
 import { ReadingParts } from '../components/measure/ReadingParts';
@@ -1046,6 +1047,9 @@ export function MeasurementPanel({
       <p className="measure-step-intro">After confirming vendor parts above, choose the parts beneath each countertop and the reading for each part&apos;s width. Each run needs your wall-layout choice; none is selected automatically.</p>
       {packageId && (
         <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} />
+      )}
+      {packageId && (
+        <SlotReaderRows packageId={packageId} refresh={reload + partsDecided + readingsConfirmed} />
       )}
 
       {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and

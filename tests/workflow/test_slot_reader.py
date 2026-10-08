@@ -1282,7 +1282,12 @@ def _by_slot(session: Any, run: Any) -> dict[str, Any]:
         if "wall-reader" in row.ambiguity_flags:
             found["walls"] = row
             continue
-        found[next(flag for flag in row.ambiguity_flags if flag.startswith("slot:"))] = row
+        slot_flag = next(
+            (flag for flag in row.ambiguity_flags if flag.startswith("slot:")),
+            None,
+        )
+        if slot_flag is not None:
+            found[slot_flag] = row
     return found
 
 
@@ -1385,7 +1390,7 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
 ) -> None:
     from sqlalchemy import select
 
-    from app.models.evidence import MeasurementProposal
+    from app.models.evidence import MeasurementProposal, ObservationCandidate
 
     def readers(page: SlotPage) -> FakeReaders:
         indexed = claude_crops_to_texts(
@@ -1425,6 +1430,20 @@ def test_persisted_candidates_carry_what_the_screen_needs_and_only_offered_ones_
     assert any(flag.startswith("crop-box:") for flag in first.ambiguity_flags)
     assert first.corroboration_status == "CORROBORATED", "the sealed piece is shown as a proposal"
     assert first.value_numerator == 12 and first.review_reason is None
+    assert {flag for flag in first.ambiguity_flags if flag.startswith("reader-id:")} == {
+        f"reader-id:{OPUS}",
+        f"reader-id:{SONNET}",
+    }
+    supports = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-support"]),
+        )
+    ).all()
+    assert len(supports) == 6, "each of the three accepted values retains both independent answers"
+    assert all(
+        any(flag.startswith("supports:") for flag in row.ambiguity_flags) for row in supports
+    )
     overall = by_slot["slot:overall"]
     assert overall.corroboration_status is None and overall.value_numerator == 48
     assert overall.review_reason is not None and overall.review_reason.startswith("held back")

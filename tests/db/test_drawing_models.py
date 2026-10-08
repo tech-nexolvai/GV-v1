@@ -933,6 +933,8 @@ RUN_AWARE: frozenset[str] = frozenset(
         "workflow/part_operands.py",
         "app/evidence/countertop_runs.py",
         "app/api/countertop_runs.py",
+        # The row-scoped reviewer endpoint loads only the newest slot-reader extraction run.
+        "app/api/slot_rows.py",
         "app/main.py",
     }
 )

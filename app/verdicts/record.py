@@ -40,15 +40,21 @@ from sqlalchemy.orm import Session, aliased
 
 from app.db.base import utc_now
 from app.models import (
+    CanonicalObservation,
+    Document,
+    DocumentVersion,
     DrawingItem,
     DrawingView,
+    ObservationCandidate,
     PackageRevisionDocument,
     Page,
     PartConfirmation,
     PartDecision,
     ViewRole,
 )
+from app.models.evidence import EvidenceSupportingCandidate, SlotRowReviewDecision
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, VerdictInput
 from app.models.verdicts import Finding as FindingRow
 from app.verdicts.trace import abstention_trace, calculation_trace, missing_operand_reason
@@ -106,6 +112,7 @@ def record_finding(
     defaults_canonical_json: str | None = None,
     missing: Mapping[str, str] | None = None,
     scope_item_id: UUID | None = None,
+    scope_row_candidate_id: UUID | None = None,
     scope_label: str | None = None,
 ) -> FindingRow:
     """Write one decision: its run, the operands it was computed from, and the finding itself.
@@ -127,8 +134,10 @@ def record_finding(
             "citing a snapshot the database does not hold could never be reproduced."
         )
 
-    if (scope_item_id is None) != (scope_label is None):
-        raise EvidenceMissing("a countertop finding needs both its confirmed item and plain name")
+    if scope_item_id is not None and scope_row_candidate_id is not None:
+        raise EvidenceMissing("a finding cannot name both a confirmed item and a slot-reader row")
+    if (scope_item_id is None and scope_row_candidate_id is None) != (scope_label is None):
+        raise EvidenceMissing("a scoped finding needs its subject and plain name")
     if scope_item_id is not None:
         if not scope_label or not scope_label.strip():
             raise EvidenceMissing("a countertop finding needs a plain name")
@@ -156,6 +165,97 @@ def record_finding(
             raise EvidenceMissing(
                 "the finding's countertop is not confirmed on this vendor revision"
             )
+    if scope_row_candidate_id is not None:
+        candidate = session.execute(
+            select(ObservationCandidate)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .join(DocumentVersion, DocumentVersion.id == Page.document_version_id)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(
+                ObservationCandidate.id == scope_row_candidate_id,
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+                Document.kind == "shop",
+            )
+        ).scalar_one_or_none()
+        flags = set(candidate.ambiguity_flags or []) if candidate is not None else set()
+        if candidate is None or "slot-reader" not in flags or "slot:0" not in flags:
+            raise EvidenceMissing("the finding's row is not a selected vendor slot-reader row")
+        latest_run_id = session.execute(
+            select(ExtractionRun.id)
+            .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+            .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+            .where(
+                WorkflowRun.package_revision_id == package_revision_id,
+                ExtractionRun.extractor_version.like("slot-reader%"),
+            )
+            .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if candidate.extraction_run_id != latest_run_id:
+            raise EvidenceMissing("the finding's row is not from the current slot-reader run")
+        row_rank = next(
+            (flag for flag in flags if flag.startswith("row-rank:")),
+            None,
+        )
+        if row_rank is None:
+            raise EvidenceMissing("the finding's row has no stored row identity")
+        for operand in operands.values():
+            if operand.row_review_decision_id is not None:
+                decision_id = _row_review_decision_id(operand)
+                decision = session.get(SlotRowReviewDecision, decision_id)
+                if decision is None or decision.row_candidate_id != scope_row_candidate_id:
+                    raise EvidenceMissing("review input belongs to a different countertop row")
+            if operand.evidence_observation_id is None:
+                continue
+            observation_id = _observation_id(operand)
+            observation = session.get(CanonicalObservation, observation_id)
+            if (
+                observation is None
+                or observation.page_id != candidate.page_id
+                or observation.document_version_id != candidate.document_version_id
+            ):
+                raise EvidenceMissing("drawing evidence belongs to a different row or page")
+            supporters = session.execute(
+                select(ObservationCandidate)
+                .join(
+                    EvidenceSupportingCandidate,
+                    EvidenceSupportingCandidate.candidate_id == ObservationCandidate.id,
+                )
+                .where(EvidenceSupportingCandidate.canonical_observation_id == observation.id)
+            ).scalars()
+            same_row = False
+            for supporter in supporters:
+                supporter_flags = set(supporter.ambiguity_flags or ())
+                parent_id = next(
+                    (
+                        flag.removeprefix("supports:")
+                        for flag in supporter_flags
+                        if flag.startswith("supports:")
+                    ),
+                    None,
+                )
+                parent = (
+                    None
+                    if parent_id is None
+                    else session.get(ObservationCandidate, UUID(parent_id))
+                )
+                if (
+                    parent is not None
+                    and parent.page_id == candidate.page_id
+                    and parent.extraction_run_id == candidate.extraction_run_id
+                    and row_rank in (parent.ambiguity_flags or [])
+                    and "slot-reader" in (parent.ambiguity_flags or [])
+                ):
+                    same_row = True
+                    break
+            if not same_row:
+                raise EvidenceMissing("drawing evidence is not supported by this countertop row")
+    elif any(operand.row_review_decision_id is not None for operand in operands.values()):
+        raise EvidenceMissing("a row review input requires a finding scoped to that same row")
 
     sealed = {
         name: operand
@@ -198,6 +298,7 @@ def record_finding(
                 unit=_unit_of(operand.value),
                 evidence_status=operand.status.value,
                 canonical_observation_id=_observation_id(operand),
+                slot_row_review_decision_id=_row_review_decision_id(operand),
             )
         )
 
@@ -206,6 +307,7 @@ def record_finding(
         # Explicit, and the composite foreign key checks it against the run's own.
         package_revision_id=package_revision_id,
         scope_item_id=scope_item_id,
+        scope_row_candidate_id=scope_row_candidate_id,
         scope_label=scope_label,
         outcome=finding.outcome.value,
         severity=finding.severity.value,
@@ -276,6 +378,19 @@ def _observation_id(operand: VerdictOperand) -> UUID | None:
     except (AttributeError, TypeError, ValueError) as error:
         raise EvidenceMissing(
             f"operand {operand.name!r} has an invalid canonical observation reference"
+        ) from error
+
+
+def _row_review_decision_id(operand: VerdictOperand) -> UUID | None:
+    if operand.row_review_decision_id is None:
+        return None
+    if operand.evidence_observation_id is not None:
+        raise EvidenceMissing("an operand cannot cite both a drawing observation and a row review")
+    try:
+        return UUID(operand.row_review_decision_id)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise EvidenceMissing(
+            f"operand {operand.name!r} has an invalid row review decision reference"
         ) from error
 
 

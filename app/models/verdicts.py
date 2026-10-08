@@ -171,12 +171,25 @@ class VerdictInput(Base, TimestampedUUID, Immutable):
         default=None,
         index=True,
     )
+    slot_row_review_decision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "slot_row_review_decisions.id",
+            ondelete="RESTRICT",
+            name="fk_verdict_inputs_row_review",
+        ),
+        default=None,
+        index=True,
+    )
     """Nullable, because not every operand comes from a drawing. A literal lives in the rule and a
     user input is what somebody typed — neither has an observation, and a non-null column would force
     one to be invented."""
 
     __table_args__ = (
         UniqueConstraint("check_run_id", "operand_name", name="uq_verdict_inputs_run_operand"),
+        CheckConstraint(
+            "canonical_observation_id IS NULL OR slot_row_review_decision_id IS NULL",
+            name="verdict_input_one_evidence_source",
+        ),
         CheckConstraint("operand_name <> ''", name="verdict_input_operand_name_present"),
         CheckConstraint("value_denominator > 0", name="verdict_input_denominator_positive"),
         CheckConstraint(f"unit IN ({UNIT_VALUES})", name="verdict_input_unit"),
@@ -211,6 +224,12 @@ class Finding(Base, TimestampedUUID, Immutable):
 
     scope_item_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("drawing_items.id", ondelete="RESTRICT", name="fk_findings_scope_item"),
+        default=None,
+    )
+    scope_row_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "observation_candidates.id", ondelete="RESTRICT", name="fk_findings_scope_slot_row"
+        ),
         default=None,
     )
     scope_label: Mapped[str | None] = mapped_column(Text, default=None)
@@ -296,11 +315,15 @@ class Finding(Base, TimestampedUUID, Immutable):
         CheckConstraint("variant IS NULL OR variant <> ''", name="finding_variant"),
         CheckConstraint(f"severity IN ({SEVERITY_VALUES})", name="finding_severity"),
         CheckConstraint(
-            "(scope_item_id IS NULL AND scope_label IS NULL) OR "
-            "(scope_item_id IS NOT NULL AND scope_label IS NOT NULL AND scope_label <> '')",
+            "(scope_item_id IS NULL AND scope_row_candidate_id IS NULL AND scope_label IS NULL) OR "
+            "(scope_item_id IS NOT NULL AND scope_row_candidate_id IS NULL "
+            "AND scope_label IS NOT NULL AND scope_label <> '') OR "
+            "(scope_item_id IS NULL AND scope_row_candidate_id IS NOT NULL "
+            "AND scope_label IS NOT NULL AND scope_label <> '')",
             name="finding_scope_pair",
         ),
         Index("ix_findings_revision_scope", "package_revision_id", "scope_item_id"),
+        Index("ix_findings_revision_slot_scope", "package_revision_id", "scope_row_candidate_id"),
         Index("ix_findings_outcome_severity", "outcome", "severity"),
     )
 

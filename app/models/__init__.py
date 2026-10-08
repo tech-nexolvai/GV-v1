@@ -63,6 +63,7 @@ from app.models.evidence import (
     MeasurementProposal,
     ObservationAssociation,
     ObservationCandidate,
+    SlotRowReviewDecision,
 )
 from app.models.matching import (
     ApprovalSource,
@@ -196,6 +197,7 @@ __all__ = [
     "RuleApplicabilityScope",
     "RuleDefinition",
     "RuleSnapshot",
+    "SlotRowReviewDecision",
     "SourceArtifact",
     "TaskRun",
     "TextPhrase",

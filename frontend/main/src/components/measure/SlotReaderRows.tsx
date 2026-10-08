@@ -1,0 +1,176 @@
+import { useEffect, useState } from 'react';
+
+import {
+  ApiError,
+  listSlotReaderRows,
+  reviewSlotReaderRow,
+  type SlotReaderRow,
+} from '../../api/client';
+import { projectId } from '../../api/config';
+import './SlotReaderRows.css';
+
+/** One reviewer decision per slot-reader row; no value or wall choice is revision-wide. */
+export function SlotReaderRows({ packageId, refresh }: { packageId: string; refresh: number }) {
+  const [rows, setRows] = useState<SlotReaderRow[]>([]);
+  const [wallDrafts, setWallDrafts] = useState<Record<string, string>>({});
+  const [valueDrafts, setValueDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    listSlotReaderRows(projectId(), packageId)
+      .then((result) => {
+        if (live) {
+          setRows(result.rows);
+          setError(null);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (live) setError(caught instanceof ApiError ? caught.message : String(caught));
+      });
+    return () => {
+      live = false;
+    };
+  }, [attempt, packageId, refresh]);
+
+  async function save(row: SlotReaderRow) {
+    const values = Object.fromEntries(
+      Object.entries(valueDrafts[row.row_id] ?? {}).filter(([, value]) => value.trim() !== ''),
+    );
+    const selectedWall = wallDrafts[row.row_id] ?? row.wall_config ?? (
+      row.wall_source === 'readers' ? row.wall_proposal ?? '' : ''
+    );
+    const confirmsReaderWall = row.wall_source === 'readers' && selectedWall !== '';
+    const changesWall = selectedWall !== '' && selectedWall !== row.wall_config;
+    if (Object.keys(values).length === 0 && !confirmsReaderWall && !changesWall) return;
+
+    setSaving(row.row_id);
+    setFeedback((current) => ({ ...current, [row.row_id]: '' }));
+    try {
+      await reviewSlotReaderRow(projectId(), packageId, row.row_id, {
+        ...(confirmsReaderWall || changesWall ? { wall_config: selectedWall } : {}),
+        ...(Object.keys(values).length ? { measurements: values } : {}),
+      });
+      setValueDrafts((current) => ({ ...current, [row.row_id]: {} }));
+      setFeedback((current) => ({ ...current, [row.row_id]: 'Saved for this countertop row.' }));
+      setAttempt((count) => count + 1);
+    } catch (caught) {
+      setFeedback((current) => ({
+        ...current,
+        [row.row_id]: caught instanceof ApiError ? caught.message : String(caught),
+      }));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  if (error && rows.length === 0) {
+    return (
+      <section className="enter-values__section slot-reader-rows" aria-labelledby="slot-rows-title">
+        <h2 id="slot-rows-title">Countertop rows read from the drawing</h2>
+        <p className="enter-values__error" role="alert">
+          The proposed rows could not be loaded: {error}{' '}
+          <button type="button" onClick={() => setAttempt((count) => count + 1)}>Try again</button>
+        </p>
+      </section>
+    );
+  }
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="enter-values__section slot-reader-rows" aria-labelledby="slot-rows-title">
+      <h2 id="slot-rows-title">Countertop rows read from the drawing</h2>
+      <p className="enter-values__hint">
+        Complete, unheld rows with walls found in the drawing can be checked automatically. A wall
+        suggestion from the readers is only a proposal until you confirm it for this row. Missing
+        widths can be entered here and stay attached to this row.
+      </p>
+      {rows.map((row) => {
+        const selectedWall = wallDrafts[row.row_id] ?? row.wall_config ?? (
+          row.wall_source === 'readers' ? row.wall_proposal ?? '' : ''
+        );
+        const confirmsReaderWall = row.wall_source === 'readers' && selectedWall !== '' && row.wall_config === null;
+        const hasTypedDraft = Object.values(valueDrafts[row.row_id] ?? {}).some((value) => value.trim() !== '');
+        const canSave = !row.held_reason && saving !== row.row_id && (
+          hasTypedDraft || confirmsReaderWall || (selectedWall !== '' && selectedWall !== row.wall_config)
+        );
+        return (
+          <article className="slot-reader-rows__row" key={row.row_id}>
+            <header>
+              <h3>Page {row.page_number}: {row.label}</h3>
+              <span>{row.piece_count} pieces</span>
+            </header>
+            {row.held_reason && <p className="slot-reader-rows__hold" role="status">Needs review: {row.held_reason}</p>}
+            <ul className="slot-reader-rows__values">
+              {row.values.map((item) => (
+                <li key={item.key}>
+                  {item.needs_value ? (
+                    <label>
+                      <span>{item.label}</span>
+                      {item.suggestion && (
+                        <small className="slot-reader-rows__reason">
+                          Reader proposal (not yet confirmed): {item.suggestion}
+                          {item.review_reason ? ` — ${item.review_reason}` : ''}
+                        </small>
+                      )}
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Enter the value with its unit"
+                        value={valueDrafts[row.row_id]?.[item.key] ?? ''}
+                        disabled={Boolean(row.held_reason) || saving === row.row_id}
+                        onChange={(event) => setValueDrafts((current) => ({
+                          ...current,
+                          [row.row_id]: { ...current[row.row_id], [item.key]: event.target.value },
+                        }))}
+                      />
+                    </label>
+                  ) : (
+                    <span>
+                      <strong>{item.label}:</strong> {item.value} <small>({item.source})</small>
+                      {item.review_reason && <small className="slot-reader-rows__reason">{item.review_reason}</small>}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {row.wall_source === 'vendor-drawing-clues' && row.wall_proposal && (
+              <p className="slot-reader-rows__wall-note">
+                Wall layout from drawing clues: {row.wall_proposal.replaceAll('_', ' ')}. This is the row&apos;s check input.
+              </p>
+            )}
+            {(row.wall_source === 'readers' || !row.wall_proposal || row.wall_config !== null) && (
+              <label className="slot-reader-rows__wall">
+                Wall layout for this row
+                <select
+                  value={selectedWall}
+                  disabled={Boolean(row.held_reason) || saving === row.row_id}
+                  onChange={(event) => setWallDrafts((current) => ({ ...current, [row.row_id]: event.target.value }))}
+                >
+                  <option value="">Choose this row&apos;s wall layout</option>
+                  {row.wall_layout_choices.map((choice) => (
+                    <option value={choice} key={choice}>{choice.replaceAll('_', ' ')}</option>
+                  ))}
+                </select>
+                {row.wall_source === 'readers' && row.wall_proposal && row.wall_config === null && (
+                  <small>Suggested by the readers. Save to confirm this choice for this row.</small>
+                )}
+                {row.wall_reason && <small>{row.wall_reason}</small>}
+              </label>
+            )}
+            <div className="slot-reader-rows__actions">
+              <button type="button" className="btn btn--sm btn--primary" disabled={!canSave} onClick={() => void save(row)}>
+                {saving === row.row_id ? 'Saving…' : 'Save this row'}
+              </button>
+              {row.confirmed_by && <small>Last saved by {row.confirmed_by}</small>}
+              {feedback[row.row_id] && <small role="status">{feedback[row.row_id]}</small>}
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
+}
