@@ -120,10 +120,12 @@ describe('results dashboard', () => {
     expect(cards.textContent).toMatch(/Needs you\s*2/);
     expect(cards.textContent).toMatch(/PASS\s*1/);
     expect(cards.textContent).toMatch(/FAIL\s*1/);
-    const legend = await screen.findByRole('list', { name: 'Countertop outcomes' });
+    // The legend is inside the lazily loaded chart; on a cold CI runner fetching the chart library
+    // can take longer than the default one-second wait.
+    const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
     expect(legend.textContent).toMatch(/Needs you\s*2/);
     expect(legend.textContent).toMatch(/Not checkable\s*1/);
-  });
+  }, 15_000);
 
   it('starts on what needs you, in order', () => {
     setup();
