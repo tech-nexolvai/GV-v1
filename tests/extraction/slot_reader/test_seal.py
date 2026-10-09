@@ -15,11 +15,13 @@ from extraction.geometry.rows import Box
 from extraction.ink import InkAt, InkClass
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from extraction.slot_reader.seal import (
+    Belongs,
     LabelOutcome,
     LabelState,
     ReaderAnswer,
     normalise_text,
     owner_outcome,
+    parse_belongs,
     plain_dimension,
     seal_label,
 )
@@ -47,8 +49,13 @@ GLYPH = PlannedLabel(
 TEXT = replace(GLYPH, lane=Lane.TEXT, text='14 3/8"')
 
 
-def answer(model: str, text: str, **flags: bool) -> ReaderAnswer:
-    values = {"readable": True, "no_dimension": False, "stacked": False, "combined": False}
+def answer(model: str, text: str, **flags: bool | Belongs) -> ReaderAnswer:
+    values: dict[str, bool | Belongs] = {
+        "readable": True,
+        "no_dimension": False,
+        "stacked": False,
+        "combined": False,
+    }
     values.update(flags)
     return ReaderAnswer(model_id=model, text=text, **values)
 
@@ -340,3 +347,115 @@ def test_one_slot_takes_one_reading_never_a_choice_between_two() -> None:
     none = owner_outcome([word])
     assert none.state is LabelState.REVIEW and none.reason_code == "no-label"
     assert owner_outcome([]).reason_code == "no-label"
+
+
+# --- #1110: unsure is never evidence of absence ---------------------------------------------------
+
+
+def test_two_readers_unsure_about_a_label_send_it_to_the_reviewer_never_no_label() -> None:
+    """v3 told a reader to answer "does not belong" when merely unsure, and two such answers
+    counted as "no dimension here", which is what starts the equal-shares read-through."""
+    outcome = seal(
+        answers=(
+            answer(OPUS, "", belongs=Belongs.UNSURE, readable=False),
+            answer(SONNET, "", belongs=Belongs.UNSURE, readable=False),
+        ),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.REVIEW
+    assert outcome.reason_code == "unsure"
+    assert outcome.reason == "a reader was not sure this label belongs to the marked span"
+    assert outcome.value is None
+    piece = owner_outcome([outcome])
+    assert piece.state is LabelState.REVIEW and piece.reason_code == "unsure"
+    assert piece.reason_code != "no-label"
+
+
+@pytest.mark.parametrize("other_no_dimension", [True, False])
+def test_one_unsure_reader_holds_the_label_whatever_the_other_says(
+    other_no_dimension: bool,
+) -> None:
+    other = (
+        answer(SONNET, "", belongs=Belongs.NO, readable=False, no_dimension=True)
+        if other_no_dimension
+        else answer(SONNET, '2"')
+    )
+    outcome = seal(
+        answers=(answer(OPUS, "", belongs=Belongs.UNSURE, readable=False), other),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "unsure"
+    assert outcome.value is None
+
+
+def test_unsure_holds_even_when_the_unsure_reader_also_ticked_no_dimension() -> None:
+    outcome = seal(
+        answers=(
+            answer(OPUS, "", belongs=Belongs.UNSURE, readable=False, no_dimension=True),
+            answer(SONNET, "", belongs=Belongs.NO, readable=False, no_dimension=True),
+        ),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "unsure"
+
+
+def test_two_explicit_no_dimension_answers_are_still_not_a_dimension() -> None:
+    by_flag = seal(
+        answers=(
+            answer(OPUS, "", belongs=Belongs.NO, readable=False, no_dimension=True),
+            answer(SONNET, "", belongs=Belongs.NO, readable=False, no_dimension=True),
+        ),
+        allow_claude_pair=True,
+    )
+    by_no = seal(
+        answers=(
+            answer(OPUS, "", belongs=Belongs.NO, readable=False),
+            answer(SONNET, "", belongs=Belongs.NO, readable=False),
+        ),
+        allow_claude_pair=True,
+    )
+
+    assert by_flag.state is LabelState.NOT_A_DIMENSION
+    assert by_no.state is LabelState.NOT_A_DIMENSION
+    assert owner_outcome([by_flag]).reason_code == "no-label"
+    assert owner_outcome([by_no]).reason_code == "no-label"
+
+
+def test_a_no_that_still_copies_a_text_is_not_an_explicit_no_dimension() -> None:
+    outcome = seal(
+        answers=(
+            answer(OPUS, '2"', belongs=Belongs.NO),
+            answer(SONNET, "", belongs=Belongs.NO, readable=False),
+        ),
+        allow_claude_pair=True,
+    )
+
+    assert outcome.state is LabelState.REVIEW
+    assert outcome.reason_code != "no-dimension"
+
+
+def test_v3_boolean_answers_read_as_they_always_did() -> None:
+    """Stored v1 to v3 answers: true is yes, false is no, and two falses with empty text are still
+    "no dimension" as before."""
+    assert parse_belongs(True) is Belongs.YES
+    assert parse_belongs(False) is Belongs.NO
+    assert parse_belongs("unsure") is Belongs.UNSURE
+    for bad in ("true", 1, None, "maybe"):
+        with pytest.raises(ValueError):
+            parse_belongs(bad)
+    old_false = ReaderAnswer(OPUS, "", False, False, False, False, False)  # type: ignore[arg-type]
+    old_true = ReaderAnswer(OPUS, '2"', True, False, False, False, True)  # type: ignore[arg-type]
+    assert old_false.belongs is Belongs.NO and old_true.belongs is Belongs.YES
+    assert old_true.usable and not old_false.usable
+
+    both_false = seal(
+        answers=(
+            ReaderAnswer(OPUS, "", False, False, False, False, False),  # type: ignore[arg-type]
+            ReaderAnswer(SONNET, "", False, False, False, False, False),  # type: ignore[arg-type]
+        ),
+        allow_claude_pair=True,
+    )
+    assert both_false.state is LabelState.NOT_A_DIMENSION

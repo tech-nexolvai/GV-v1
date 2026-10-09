@@ -64,8 +64,10 @@ def _verified_reader_answer(answer: object, expected: Fraction) -> Measurement |
     if not isinstance(answer, dict):
         return None
     text = answer.get("text")
+    belongs = answer.get("belongs")
     if (
-        answer.get("belongs") is not True
+        # `true` in v1 to v3, "yes" in v4 (#1110); "no" and "unsure" never support a value.
+        not (belongs is True or belongs == "yes")
         or answer.get("readable") is not True
         or answer.get("no_dimension") is not False
         or not isinstance(text, str)

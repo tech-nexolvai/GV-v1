@@ -67,7 +67,7 @@ from extraction.slot_reader.claude_output import (
     output_config,
     require_picture_fits,
 )
-from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.seal import Belongs, ReaderAnswer, parse_belongs
 from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
 from vocabulary.semantic_types import ProductType
 
@@ -113,8 +113,14 @@ CROP_PROMPT_ID: Final = "slot-crop-v1"
 ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
-CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v3"
-"""v3 (#1104): every answer field is defined, as `CROP_PROMPT` defines them. v2 named `stacked`,
+CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v4"
+"""v4 (#1110): `belongs` is "yes", "no" or "unsure". v3 told a reader to answer false when it was
+merely unsure, and two such answers counted as "no label", the trigger of the equal-shares
+read-through (#1086). "No" now means only "this span has no printed label of its own"; unsure is
+its own answer and sends the label to the reviewer. The span is boxed in magenta, a colour the
+reviewer never marks in, and the question names it: v3 called it a red box while telling the
+reader to ignore red markup.
+v3 (#1104): every answer field is defined, as `CROP_PROMPT` defines them. v2 named `stacked`,
 `combined`, `readable` and `no_dimension` without saying what they mean, so each reader guessed: on
 the keyed set one reader called a plain piece label "combined" because the close-up also shows its
 neighbours' labels, and that one answer held a label both readers had copied right.
@@ -122,7 +128,7 @@ v2 (#1051): a fixed answer shape and stated effort, and an upright third picture
 label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`)."""
 #: Earlier wordings, still recognised when a stored run is replayed.
 CLAUDE_SPAN_PROMPT_IDS: Final = frozenset(
-    {CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v2", "claude-slot-span-v1"}
+    {CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v3", "claude-slot-span-v2", "claude-slot-span-v1"}
 )
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
 ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v2"
@@ -248,15 +254,21 @@ CROP_PROMPT: Final = (
 )
 
 CLAUDE_SPAN_PROMPT: Final = (
-    "Picture 1 is the full vendor shop drawing. A thin red box marks one span of the selected "
-    "countertop dimension row. Picture 2 is a close-up of that same span. Is the printed "
-    "dimension label in Picture 2 the label that belongs to the exact red-boxed span in Picture 1? "
-    "Do not use a neighbour's label, an overall when a piece is marked, a height, or red/yellow "
-    "reviewer markup. If it belongs, copy its characters exactly as printed, including inch marks, "
-    "fractions, metric text in brackets, and words. Do not calculate, convert, correct, or complete "
-    "the text. If the label does not belong to the marked span, is absent, or you are unsure, set "
-    "belongs to false and return an empty text.\n"
-    "The other fields describe only that one label, the one that belongs to the red-boxed span:\n"
+    "Picture 1 is the full vendor shop drawing. A magenta (pink-purple) box marks one span of "
+    "the selected countertop dimension row; magenta is never the reviewer's colour. Picture 2 "
+    "is a close-up of that same span. Does the printed dimension label in Picture 2 belong to the "
+    "exact magenta-boxed span in Picture 1? Do not use a neighbour's label, an overall when a "
+    "piece is marked, a height, or red, blue or yellow reviewer markup. If it belongs, copy its "
+    "characters exactly as printed, including inch marks, fractions, metric text in brackets, and "
+    "words. Do not calculate, convert, correct, or complete the text.\n"
+    '- "belongs": "yes" if you are sure the label you copy belongs to the magenta-boxed span. '
+    '"no" only if you are sure the marked span has no printed dimension label of its own: every '
+    "label near it belongs to a neighbouring span, the overall or a height, or none is printed. "
+    "\"unsure\" if you cannot tell, for example a label may be the span's or a neighbour's, or "
+    'may be cut off or hidden. Being unsure is never a no. When the answer is not "yes", '
+    "return an empty text.\n"
+    "The other fields describe only that one label, the one that belongs to the magenta-boxed "
+    "span:\n"
     '- "stacked": true if a fraction in it is drawn with its numerator above its denominator.\n'
     '- "combined": true only if that label is itself a sum, an expression, a count or has words, '
     'such as 4"+1", 2"+1" Filler, 96"(4EQ) or INCLUDING FIELD CUT. A single dimension is not '
@@ -268,7 +280,7 @@ CLAUDE_SPAN_PROMPT: Final = (
     '- "no_dimension": true if Picture 2 shows no dimension label for the span at all (only a '
     "symbol, an arrow, a letter or a line).\n"
     "Return only this JSON: "
-    '{"belongs": true|false, "text": "exact printed label or empty string", '
+    '{"belongs": "yes|no|unsure", "text": "exact printed label or empty string", '
     '"stacked": true|false, "combined": true|false, "readable": true|false, '
     '"no_dimension": true|false}'
 )
@@ -302,7 +314,8 @@ class _CropAnswer(BaseModel):
 
 
 class _GroundedCropAnswer(_CropAnswer):
-    belongs: StrictBool
+    belongs: Literal["yes", "no", "unsure"] | StrictBool
+    """v4's word; the boolean is v1 to v3's shape, read by `seal.parse_belongs`."""
 
 
 class _RowChoiceReply(BaseModel):
@@ -936,10 +949,10 @@ def read_crop(
                     _parsed_answer(model_id, response, raw, schema)
                 )
                 parsed: _CropAnswer = parsed_grounded
-                belongs = parsed_grounded.belongs
+                belongs = parse_belongs(parsed_grounded.belongs)
             else:
                 parsed = _CropAnswer.model_validate(_parsed_answer(model_id, response, raw, schema))
-                belongs = True
+                belongs = Belongs.YES
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(

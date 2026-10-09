@@ -41,8 +41,8 @@ SCHEMAS = {
     "walls": WALL_SCHEMA,
 }
 SPAN_ANSWER = {
-    "belongs": True,
-    "text": '3"+2" Filler',
+    "belongs": "yes",
+    "text": '4"+1" Filler',
     "stacked": False,
     "combined": True,
     "readable": True,
@@ -115,6 +115,8 @@ def test_an_answer_that_did_not_finish_its_turn_is_malformed(stop: str | None) -
         json.dumps({key: value for key, value in SPAN_ANSWER.items() if key != "belongs"}),
         json.dumps(SPAN_ANSWER | {"why": "an extra key"}),
         json.dumps(SPAN_ANSWER | {"belongs": "true"}),
+        json.dumps(SPAN_ANSWER | {"belongs": True}),
+        json.dumps(SPAN_ANSWER | {"belongs": "maybe"}),
         json.dumps(SPAN_ANSWER | {"text": None}),
         json.dumps([SPAN_ANSWER]),
     ],

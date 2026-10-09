@@ -69,3 +69,33 @@ def test_sealed_exact_stacked_reading_is_eligible_for_its_row() -> None:
     )
 
     assert result.eligible
+
+
+@pytest.mark.parametrize(
+    ("belongs", "supports"),
+    [
+        (True, True),  # a stored v1 to v3 answer
+        ("yes", True),  # claude-slot-span-v4 (#1110)
+        (False, False),
+        ("no", False),
+        ("unsure", False),
+        (1, False),
+        ("true", False),
+        (None, False),
+    ],
+)
+def test_only_a_stored_yes_supports_a_value_in_either_answer_shape(
+    belongs: object, supports: bool
+) -> None:
+    answer = {
+        "belongs": belongs,
+        "text": '17 3/4"',
+        "stacked": False,
+        "combined": False,
+        "readable": True,
+        "no_dimension": False,
+    }
+
+    result = _verified_reader_answer(answer, Fraction(71, 4))
+
+    assert (result is not None) is supports

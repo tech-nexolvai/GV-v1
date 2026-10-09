@@ -503,7 +503,9 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
         thickness=max(2, round(4 * scale)),
         max_side=1800,
         outline=outline,
-        mark_color=bytes((255, 0, 0)),
+        # Magenta, named in the question (`claude-slot-span-v4`, #1110): the reviewer marks in
+        # red, blue and yellow, and the readers are told to ignore that markup.
+        mark_color=_MAGENTA,
     )
 
 
@@ -516,7 +518,7 @@ def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
     The close-up reaches past the span's ends as the prototype's did (at least 50 px at 300 dpi,
     or 15% of the span, a side): a narrow piece's label is wider than the piece, and a close-up
     cut at its ticks showed the readers only "1/2" of a printed 1 1/2 (proof run 2026-10-08).
-    Which span is meant stays the full view's red box, never the close-up's edges.
+    Which span is meant stays the full view's magenta box, never the close-up's edges.
     """
     if plan.row is None:
         return plan
