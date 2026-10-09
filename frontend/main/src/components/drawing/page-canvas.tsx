@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { ImageOff, RefreshCw } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { isSplitPage } from '@/lib/countertop-results';
 import { boundsOf, svgPoints, zoomAt, type Mark, type Reading, type Size, type Tone, type View, type ViewerTarget } from '@/lib/drawing-viewer';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
@@ -293,7 +294,10 @@ export function PageCanvas({
       )}
       {page === null && <CanvasNote icon={<ImageOff className="size-5" aria-hidden="true" />} line="No stored location" why="This result has no recorded page or outline, so nothing is drawn." />}
       {placed && !target.outline && (
-        <span className="absolute top-3 left-3 rounded-full border bg-background/95 px-2 py-0.5 text-xs text-muted-foreground shadow-sm">Outline not stored: nothing is drawn</span>
+        <span data-slot="no-outline" className="absolute top-3 left-3 rounded-full border bg-background/95 px-2 py-0.5 text-xs text-muted-foreground shadow-sm">
+          {/* A split page (#1093) has no line at all; anything else had one whose place was not stored. */}
+          {target.row && isSplitPage(target.row) ? 'No line chosen: nothing is outlined' : 'Outline not stored: nothing is drawn'}
+        </span>
       )}
     </div>
   );

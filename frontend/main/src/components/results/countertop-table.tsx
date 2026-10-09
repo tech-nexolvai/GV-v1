@@ -5,7 +5,7 @@ import { ChevronRight, CircleDashed, FileSearch, LayoutPanelTop, Lock, PencilLin
 import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta, initials, rowNeedsYou, sortValue } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, initials, isSplitPage, rowNeedsYou, sortValue } from '@/lib/countertop-results';
 import { architectState, awaitsPairing, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
@@ -17,6 +17,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { WallGlyph } from './wall-glyph';
 import { CountertopStrip } from './CountertopStrip';
 import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from './architect-line';
+import { SplitPageNote } from './split-page-note';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -135,13 +136,17 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                       <div className="flex flex-col gap-1">
                         <span className="truncate font-medium" title={row.label}>{row.label}</span>
                         {row.hold && <HoldChip hold={row.hold} />}
+                        {/* A split page's reason is the whole story (#1093): in the row, not only on hover. */}
+                        {row.hold && isSplitPage(row) && (
+                          <span data-slot="split-reason" className="line-clamp-3 text-xs whitespace-normal text-muted-foreground" title={row.hold.reason}>{row.hold.reason}</span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell><ResultCell row={row} /></TableCell>
                     <TableCell className="num text-right">{row.printed_overall?.display ?? '—'}</TableCell>
                     <TableCell className="num text-right">{row.expected_total?.display ?? '—'}</TableCell>
                     <TableCell className="text-right"><Delta row={row} /></TableCell>
-                    <TableCell><WallGlyph layout={row.wall_layout} compactSource /></TableCell>
+                    <TableCell>{isSplitPage(row) ? <SplitWalls /> : <WallGlyph layout={row.wall_layout} compactSource />}</TableCell>
                     <TableCell><DecidedBy row={row} /></TableCell>
                     <TableCell className="text-right"><Actions row={row} actions={actions} /></TableCell>
                   </TableRow>
@@ -180,18 +185,27 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
               </dl>
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <WallGlyph layout={row.wall_layout} />
+                  {isSplitPage(row) ? <SplitWalls /> : <WallGlyph layout={row.wall_layout} />}
                   <DecidedBy row={row} />
                 </div>
                 <Actions row={row} actions={actions} />
               </div>
-              {row.hold && <div className="mt-2"><HoldChip hold={row.hold} /></div>}
+              {row.hold && isSplitPage(row) ? (
+                <SplitPageNote hold={row.hold} className="mt-2" />
+              ) : row.hold ? (
+                <div className="mt-2"><HoldChip hold={row.hold} /></div>
+              ) : null}
               <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp />
               <ArchitectAction row={row} actions={actions} />
-              <button type="button" className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={open} onClick={() => toggle(row.row_id)}>
-                {open ? 'Hide pieces' : 'Show pieces'}
-              </button>
-              {open && <div className="mt-2"><RowDetails row={row} /></div>}
+              {/* A split page has no pieces to show: its note above says why. */}
+              {!isSplitPage(row) && (
+                <>
+                  <button type="button" className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={open} onClick={() => toggle(row.row_id)}>
+                    {open ? 'Hide pieces' : 'Show pieces'}
+                  </button>
+                  {open && <div className="mt-2"><RowDetails row={row} /></div>}
+                </>
+              )}
             </li>
           );
         })}
@@ -271,24 +285,29 @@ function DecidedBy({ row }: { row: CountertopResult }) {
 
 function Actions({ row, actions }: { row: CountertopResult; actions: RowActions }) {
   const decide = actions.canDecide(row);
+  // A split page (#1093) opens on its page with nothing outlined; it has no countertop card, because
+  // no line was chosen to read.
+  const split = isSplitPage(row);
   return (
     <span className="inline-flex items-center justify-end gap-0.5">
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-xs" aria-label="Show on drawing" disabled={!row.row_location} onClick={() => actions.onShowDrawing(row)}>
+          <Button variant="ghost" size="icon-xs" aria-label="Show on drawing" disabled={!row.row_location && !split} onClick={() => actions.onShowDrawing(row)}>
             <FileSearch />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{row.row_location ? 'Show on drawing' : 'No stored drawing location'}</TooltipContent>
+        <TooltipContent>{row.row_location ? 'Show on drawing' : split ? 'Show the page (no line chosen)' : 'No stored drawing location'}</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-xs" aria-label="Open countertop card" onClick={() => actions.onOpenCard(row)}>
-            <LayoutPanelTop />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Open countertop card</TooltipContent>
-      </Tooltip>
+      {!split && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-xs" aria-label="Open countertop card" onClick={() => actions.onOpenCard(row)}>
+              <LayoutPanelTop />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Open countertop card</TooltipContent>
+        </Tooltip>
+      )}
       {decide && (
         <Button size="sm" className="ml-1" onClick={() => actions.onDecide(row)}>Decide</Button>
       )}
@@ -302,13 +321,19 @@ function HoldChip({ hold }: { hold: NonNullable<CountertopResult['hold']> }) {
       <TooltipTrigger asChild>
         <span tabIndex={0} data-hold={hold.code} className="inline-flex w-fit max-w-full items-center gap-1 rounded-full border border-dashed px-2 py-0.5 font-sans text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <CircleDashed className="size-3" aria-hidden="true" />
-          <span className="truncate">Held</span>
-          <span className="sr-only">: {hold.reason}</span>
+          <span className="truncate">{isSplitPage({ hold }) ? 'No line chosen' : 'Held'}</span>
+          {/* A split page's reason is on screen beside the chip; said once. */}
+          {!isSplitPage({ hold }) && <span className="sr-only">: {hold.reason}</span>}
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-80">{hold.reason}</TooltipContent>
     </Tooltip>
   );
+}
+
+/** No walls to ask about on a split page (#1093): no line was chosen, and it has no countertop card. */
+function SplitWalls() {
+  return <span data-slot="split-walls" className="text-muted-foreground" title="No line chosen, so no walls">—</span>;
 }
 
 const SOURCE_ICON = { sealed: Lock, typed: PencilLine, missing: CircleDashed } as const;
@@ -317,6 +342,30 @@ const SOURCE_WORD = { sealed: 'both AIs agreed', typed: 'typed by a reviewer', m
 function RowDetails({ row }: { row: CountertopResult }) {
   return (
     <div className="flex flex-col gap-3 py-1 font-sans">
+      {/* A split page (#1093) has no line, so no pieces and no picture: its note says why. */}
+      {row.hold && isSplitPage(row) ? <SplitPageNote hold={row.hold} className="max-w-2xl" /> : <ReadDetails row={row} />}
+      {row.architect && row.architect.compared.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium">Matches the architect</p>
+          <ArchitectPairs result={row.architect} />
+          {row.architect.reason && <p className="max-w-2xl text-xs text-muted-foreground">{row.architect.reason}</p>}
+        </div>
+      )}
+      {/* The whole "not compared" reason, which the table's one line cuts short. */}
+      {row.architect && architectState(row.architect) === 'not-compared' && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium">Matches the architect</p>
+          <p className="max-w-2xl"><ArchitectStatus result={row.architect} /></p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What was read on a countertop's line: its pieces, its hold, and its picture. */
+function ReadDetails({ row }: { row: CountertopResult }) {
+  return (
+    <>
       <div className="flex flex-wrap items-center gap-1.5" aria-label="Pieces">
         {row.pieces.length === 0 && <span className="text-xs text-muted-foreground">No pieces read</span>}
         {row.pieces.map((piece) => {
@@ -349,21 +398,7 @@ function RowDetails({ row }: { row: CountertopResult }) {
       </div>
       {row.hold && <p className="text-xs text-muted-foreground"><HoldChip hold={row.hold} /> <span className="ml-1">{row.hold.reason}</span></p>}
       <CountertopStrip row={row} />
-      {row.architect && row.architect.compared.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium">Matches the architect</p>
-          <ArchitectPairs result={row.architect} />
-          {row.architect.reason && <p className="max-w-2xl text-xs text-muted-foreground">{row.architect.reason}</p>}
-        </div>
-      )}
-      {/* The whole "not compared" reason, which the table's one line cuts short. */}
-      {row.architect && architectState(row.architect) === 'not-compared' && (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium">Matches the architect</p>
-          <p className="max-w-2xl"><ArchitectStatus result={row.architect} /></p>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 

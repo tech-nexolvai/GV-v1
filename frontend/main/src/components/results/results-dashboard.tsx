@@ -1,13 +1,14 @@
 import { lazy, Suspense, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
 
-import { listRules, type CountertopResult } from '@/api/client';
+import { listRules, type CountertopResult, type PageWithoutCountertop } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
 import {
   bucketCounts,
   defaultFilter,
   failsNeedingYou,
+  isSplitPage,
   kpis as computeKpis,
   matchesFilter,
   sortRows,
@@ -23,6 +24,7 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
+import { NoCountertopPages } from './no-countertop-pages';
 
 // The chart library is fetched only when a review has results to draw.
 const OutcomeChart = lazy(() => import('./outcome-chart'));
@@ -30,7 +32,12 @@ const OutcomeChart = lazy(() => import('./outcome-chart'));
 export type CountertopsState =
   | { status: 'loading' }
   | { status: 'error'; error: string }
-  | { status: 'ready'; rows: CountertopResult[] };
+  | {
+      status: 'ready';
+      rows: CountertopResult[];
+      /** Pages where both AIs found no countertop line (#1093): listed, never blocking. */
+      pagesWithoutCountertop?: readonly PageWithoutCountertop[];
+    };
 
 const CHIPS: { value: Filter; word: string }[] = [
   { value: 'all', word: 'All' },
@@ -81,7 +88,7 @@ export function ResultsDashboard({
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
   const rules = useAsync(() => listRules(), []);
   const ruleNames = new Map(rules.status === 'ready' ? rules.data.map((r) => [r.rule_id, r.name] as [string, string]) : []);
-  const [deciding, setDeciding] = useState<{ finding: Finding; title: string } | null>(null);
+  const [deciding, setDeciding] = useState<{ finding: Finding; title: string; allowProblem?: boolean } | null>(null);
 
   if (countertops.status === 'loading') return <DashboardSkeleton />;
   if (countertops.status === 'error') {
@@ -124,7 +131,8 @@ export function ResultsDashboard({
     canDecide: (row) => row.needs_decision && row.finding_id !== null && byId.has(row.finding_id),
     onDecide: (row) => {
       const finding = row.finding_id ? byId.get(row.finding_id) : undefined;
-      if (finding) setDeciding({ finding, title: row.label });
+      // A split page (#1093): checked, or not checkable; nothing was read, so nothing to correct.
+      if (finding) setDeciding({ finding, title: row.label, allowProblem: !isSplitPage(row) });
     },
     architectFinding: (row) => (row.architect?.finding_id ? byId.get(row.architect.finding_id) : undefined),
     onDecideArchitect: (row) => {
@@ -138,8 +146,17 @@ export function ResultsDashboard({
     <section data-tw data-slot="results-dashboard" aria-label="Results" className="flex flex-col gap-4 p-4 font-sans sm:p-6">
       {rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed p-6">
-          <p className="font-medium">No countertops in this run</p>
-          <p className="text-sm text-muted-foreground">Run checks from Measurements to see results here.</p>
+          {(countertops.pagesWithoutCountertop?.length ?? 0) > 0 ? (
+            <>
+              <p className="font-medium">No countertop found on any page</p>
+              <p className="text-sm text-muted-foreground">Both AIs found no countertop line on the pages listed below.</p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium">No countertops in this run</p>
+              <p className="text-sm text-muted-foreground">Run checks from Measurements to see results here.</p>
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -190,6 +207,8 @@ export function ResultsDashboard({
         </>
       )}
 
+      <NoCountertopPages pages={countertops.pagesWithoutCountertop ?? []} />
+
       <OtherChecks
         findings={others}
         ruleNames={ruleNames}
@@ -206,6 +225,7 @@ export function ResultsDashboard({
         open={deciding !== null}
         onOpenChange={(open) => !open && setDeciding(null)}
         handlers={handlers}
+        allowProblem={deciding?.allowProblem ?? true}
       />
     </section>
   );

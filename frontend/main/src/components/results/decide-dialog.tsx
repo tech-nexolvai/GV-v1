@@ -25,12 +25,15 @@ export function DecideDialog({
   open,
   onOpenChange,
   handlers,
+  allowProblem = true,
 }: {
   finding: Pick<Finding, 'id' | 'outcome'> | null;
   title: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   handlers: DecideHandlers;
+  /** False for a split page (#1093): checked, or not checkable; nothing was read to correct. */
+  allowProblem?: boolean;
 }) {
   const draft = useDecisionDraft(finding);
   if (!finding) return null;
@@ -62,7 +65,7 @@ export function DecideDialog({
             void save();
           }}
         >
-          <DecisionFields draft={draft} idPrefix="decide" />
+          <DecisionFields draft={draft} idPrefix="decide" allowProblem={allowProblem} />
           <DialogFooter>
             <Button
               type="button"

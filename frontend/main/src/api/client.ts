@@ -153,6 +153,8 @@ export function getApprovalReadiness(projectId: string, packageId: string) {
 /** One row per countertop of the live check run, with its exact numbers (#1035). Read-only. */
 export type CountertopResults = components['schemas']['CountertopResultsOut'];
 export type CountertopResult = CountertopResults['items'][number];
+/** A vendor page where both AIs found no countertop line (#1093): listed, never blocking. */
+export type PageWithoutCountertop = components['schemas']['PageWithoutCountertopOut'];
 export type ExactValue = components['schemas']['ExactValueOut'];
 export function getCountertopResults(projectId: string, packageId: string) {
   return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results`);

@@ -23,6 +23,8 @@ import {
   type ViewerTarget,
 } from '@/lib/drawing-viewer';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
+import { SplitPageNote } from '@/components/results/split-page-note';
+import { isSplitPage } from '@/lib/countertop-results';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -238,7 +240,7 @@ export function DrawingViewer({
                 <span className="num">{target.page !== null ? `Page ${target.page}` : 'No page'}</span>
                 {target.row?.hold && (
                   <span className="max-w-full truncate rounded-full border border-dashed px-2 py-0.5" title={target.row.hold.reason}>
-                    Held: {target.row.hold.reason}
+                    {isSplitPage(target.row) ? 'No line chosen' : 'Held'}: {target.row.hold.reason}
                   </span>
                 )}
               </div>
@@ -305,7 +307,10 @@ export function DrawingViewer({
 
           {!embedded && (
           <aside aria-label="Evidence" data-slot="drawing-evidence" className="flex flex-col gap-5 border-t p-4 lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l">
-            {target.row && (
+            {/* A split page (#1093) has no line, so nothing is outlined and there is no picture. */}
+            {target.row?.hold && isSplitPage(target.row) ? (
+              <SplitPageNote hold={target.row.hold} />
+            ) : target.row && (
               <section aria-label="Countertop picture">
                 <CountertopStrip row={target.row} showHoldReason={false} />
               </section>

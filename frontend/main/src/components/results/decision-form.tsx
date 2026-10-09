@@ -11,11 +11,14 @@ export function DecisionFields({
   idPrefix,
   big = false,
   noteRef,
+  allowProblem = true,
 }: {
   draft: DecisionDraft;
   idPrefix: string;
   big?: boolean;
   noteRef?: React.Ref<HTMLTextAreaElement>;
+  /** False where nothing was read, so there is no value to correct (a split page, #1093). */
+  allowProblem?: boolean;
 }) {
   const { outcome, choice, problem, simple, noteRequired, labels, today } = draft;
   const choiceClass = big ? 'h-12 flex-1 text-sm font-medium' : 'flex-1';
@@ -33,17 +36,19 @@ export function DecisionFields({
           {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">1</kbd>}
           {labels.confirm}
         </ToggleGroupItem>
-        <ToggleGroupItem value="problem" className={choiceClass}>
-          {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">2</kbd>}
-          {labels.problem}
-        </ToggleGroupItem>
+        {allowProblem && (
+          <ToggleGroupItem value="problem" className={choiceClass}>
+            {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">2</kbd>}
+            {labels.problem}
+          </ToggleGroupItem>
+        )}
         <ToggleGroupItem value="dismiss" className={choiceClass}>
           {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">3</kbd>}
           {labels.dismiss}
         </ToggleGroupItem>
       </ToggleGroup>
 
-      {choice === 'problem' && (
+      {allowProblem && choice === 'problem' && (
         <ToggleGroup type="single" size="sm" variant="outline" value={problem} onValueChange={(next) => draft.setProblem(next as Problem | '')} aria-label="Kind of problem">
           <ToggleGroupItem value="correct">Correct a value</ToggleGroupItem>
           <ToggleGroupItem value="except">Exception</ToggleGroupItem>

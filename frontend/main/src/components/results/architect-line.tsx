@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
-import { architectState, awaitsPairing, confirmWords, headlinePair, notCheckedYet, pairLabel, pairedByWords } from '@/lib/architect';
+import { architectState, awaitsPairing, confirmWords, headlinePair, reasonSaysItself, pairLabel, pairedByWords } from '@/lib/architect';
 
 /**
  * The vendor-vs-architect check on a countertop (#1085): "Matches the architect". Every number is
@@ -25,7 +25,7 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
         className={cn('text-xs text-muted-foreground', clamp && 'line-clamp-2')}
         title={clamp ? result.not_compared_reason ?? undefined : undefined}
       >
-        {notCheckedYet(result) ? result.not_compared_reason : <>Not compared: {result.not_compared_reason}</>}
+        {reasonSaysItself(result) ? result.not_compared_reason : <>Not compared: {result.not_compared_reason}</>}
       </span>
     );
   }
