@@ -81,6 +81,8 @@ JUDGING = (
     "Would you approve page 4?",
     "Can we approve this now?",
     "What should I approve first?",
+    "Is page 4 approved?",
+    "Has it been signed off?",
 )
 
 QUESTIONS = (
@@ -91,8 +93,6 @@ QUESTIONS = (
     "failed pages?",
     "What is left before sign-off?",
     "Can I sign off?",
-    "Is page 4 approved?",
-    "Has it been signed off?",
     "What does approve mean here?",
     "How do I approve this package?",
     "Why does page 7 need me?",

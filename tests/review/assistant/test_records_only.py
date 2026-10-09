@@ -27,7 +27,6 @@ from app.review.assistant.records_only import (
 from app.review.assistant.starters import starters
 from app.schemas.visual_ui import ArchitectResultOut
 from tests.review.assistant.synthetic import (
-    HOLD_REASON,
     NO_COUNTERTOP_REASON,
     ROW_PASS,
     SECOND_ROW_REASON,
@@ -79,8 +78,8 @@ def test_why_did_page_4_fail_is_its_countertops_facts_cited() -> None:
     draft = answer_for_question(SNAPSHOT, "Why did page 4 fail?")
     assert draft is not None
     text = _text(draft)
-    assert text.startswith("The countertop on page 4 (Sample run A) needs correction [[0]].")
-    assert 'Printed overall 84 1/2"; needed overall 85"; difference -1/2" [[0]].' in text
+    assert text.startswith("The countertop on page 4 (Sample run A) needs correction [[0]]:")
+    assert '- The printed overall, 84 1/2" [[0]]\n- The needed overall, 85" [[0]]' in text
     assert render(draft.text, SNAPSHOT).citations == ("C1",)
     assert ("open_queue_item", "C1") in draft.actions
 
@@ -89,7 +88,7 @@ def test_what_is_left_lists_every_record_that_needs_the_reviewer() -> None:
     draft = blockers_answer(SNAPSHOT)
     rendered = render(draft.text, SNAPSHOT)
     assert rendered.citations == ("C1", "C2", "F1")
-    assert rendered.text.startswith("Sign-off is blocked: 3 items need your decision.")
+    assert rendered.text.startswith("Sign-off is blocked: 3 findings still need your decision.")
     assert "The Sink centre line check on page 5 is waiting on a value [[2]]" in rendered.text
     assert "blockers" in rendered.groups
 
@@ -115,7 +114,7 @@ def test_rows_not_checked_are_listed() -> None:
 def test_why_a_page_needs_me_quotes_the_hold() -> None:
     draft = answer_for_question(SNAPSHOT, "Why does page 7 need me?")
     assert draft is not None
-    assert f"Held because: {HOLD_REASON.rstrip('.')}" in _text(draft)
+    assert "It is held because the two AIs picked different countertop lines" in _text(draft)
 
 
 def test_a_page_with_no_records_says_so() -> None:
@@ -152,7 +151,7 @@ def test_the_architect_outcome_is_its_own_placeholder() -> None:
     )
     draft = records_answer(review, ["C1"])
     assert draft is not None
-    assert "The architect check looks right (Matches) [[0]]." in _text(draft, review)
+    assert "- The architect check looks right (Matches) [[0]]" in _text(draft, review)
 
 
 # ---- requests to judge -------------------------------------------------------------------------
@@ -169,7 +168,7 @@ def test_judging_a_page_states_its_outcome_and_whose_decision_it_is() -> None:
 def test_judging_a_page_with_a_second_countertop_mentions_it() -> None:
     draft = judging_answer(SNAPSHOT, 9)
     text = _text(draft)
-    assert "looks right [[0]]" in text
+    assert "looks right; you confirmed it (carried over from the earlier run) [[0]]" in text
     assert SECOND_ROW_REASON.rstrip(".") in text
     # Page 9 needs nothing: no queue button to an unrelated record, only the page.
     assert draft.actions == (("open_page", "P9"),)
@@ -191,6 +190,6 @@ def test_judging_a_page_the_records_do_not_have_points_nowhere() -> None:
 def test_judging_with_no_page_lists_what_needs_the_reviewer() -> None:
     draft = judging_answer(SNAPSHOT, None)
     text = _text(draft)
-    assert "These still need your decision:" in text
+    assert "These are still open in the queue:" in text
     assert render(draft.text, SNAPSHOT).citations == ("C1", "C2", "F1")
     assert text.endswith(YOUR_DECISION)

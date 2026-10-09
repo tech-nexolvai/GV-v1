@@ -34,7 +34,7 @@ def _reply(answer: object, *, stop: str = "end_turn") -> dict[str, Any]:
 
 
 GOOD = {
-    "text": "The countertop on {C1.page} {C1.outcome}: {C1.printed}, but {C1.needed}.",
+    "text": "The countertop on {C1.page} {C1.outcome}:\n- {C1.printed}\n- {C1.needed}",
     "evidence": ["C1"],
     "actions": [{"kind": "open_queue_item", "target": "C1"}],
 }
@@ -114,8 +114,8 @@ def test_a_guarded_model_answer_streams_in_step_order() -> None:
     assert isinstance(answer, AnswerEvent)
     assert (answer.mode, answer.checked, answer.model_id) == ("llm", True, SONNET)
     assert answer.text == (
-        'The countertop on page 4 needs correction: printed overall 84 1/2", but needed '
-        'overall 85" [[0]].'
+        'The countertop on page 4 needs correction [[0]]:\n- The printed overall, 84 1/2" [[0]]\n'
+        '- The needed overall, 85" [[0]]'
     )
     assert [(c.kind, c.page_number, c.record_id) for c in answer.citations] == [
         ("countertop", 4, str(ROW_FAIL))
@@ -161,7 +161,7 @@ def test_a_malformed_reply_is_replaced_by_the_records(reply: dict[str, Any]) -> 
     events = _run("What is left before sign-off?", _runtime(FakeModel(reply=reply)))
     answer = events[-1][1]
     assert answer.mode == "records_only"
-    assert answer.text.startswith("Sign-off is blocked: 3 items need your decision.")
+    assert answer.text.startswith("Sign-off is blocked: 3 findings still need your decision.")
 
 
 def test_a_decision_request_is_refused_without_a_model_call() -> None:
@@ -210,12 +210,16 @@ def test_a_failed_call_is_still_recorded() -> None:
 def test_only_the_last_turns_and_the_question_are_sent() -> None:
     model = FakeModel(reply=_reply(GOOD))
     runtime = AssistantRuntime(model=model, max_history_turns=2)
-    history = [{"role": "user", "text": f"turn {n}"} for n in range(5)]
+    history = [
+        {"role": "user" if n % 2 == 0 else "assistant", "text": f"turn {n}"} for n in range(6)
+    ]
     _run("Why did page 4 fail?", runtime, history=history, focus={"page_number": 4})
 
     blocks = [block["text"] for block in model.calls[0]["messages"][0]["content"]]
     turns = json.loads(blocks[2].split("\n", 1)[1])
-    assert [turn["text"] for turn in turns] == ["turn 3", "turn 4"]
+    # The reviewer's own last questions only; "assistant" turns from the client are dropped.
+    assert turns == ["turn 2", "turn 4"]
+    assert not any("turn 5" in block or "turn 3" in block for block in blocks)
     assert blocks[-1].endswith('"Why did page 4 fail?"')
 
 

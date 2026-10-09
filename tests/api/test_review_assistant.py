@@ -300,7 +300,7 @@ def test_a_model_answer_streams_in_step_order_and_its_cost_is_recorded(  # type:
         monkeypatch.delenv("GV_MODEL_RATES_FILE", raising=False)
     monkeypatch.setattr(review_assistant, "load_snapshot", lambda *_args: snapshot())
     answer = {
-        "text": "The countertop on {C1.page} {C1.outcome}: {C1.printed}, but {C1.needed}.",
+        "text": "The countertop on {C1.page} {C1.outcome}:\n- {C1.printed}\n- {C1.needed}",
         "evidence": ["C1"],
         "actions": [{"kind": "open_page", "target": "P4"}],
     }
@@ -338,8 +338,8 @@ def test_a_model_answer_streams_in_step_order_and_its_cost_is_recorded(  # type:
         }
     ]
     assert published["text"] == (
-        'The countertop on page 4 needs correction: printed overall 84 1/2", but needed '
-        'overall 85" [[0]].'
+        'The countertop on page 4 needs correction [[0]]:\n- The printed overall, 84 1/2" [[0]]\n'
+        '- The needed overall, 85" [[0]]'
     )
     assert published["actions"] == [{"kind": "open_page", "page_number": 4, "label": "Open page 4"}]
     assert model.calls == 1
