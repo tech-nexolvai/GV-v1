@@ -7,6 +7,7 @@ import type { Finding } from '@/data/types';
 import {
   bucketCounts,
   defaultFilter,
+  failsNeedingYou,
   kpis as computeKpis,
   matchesFilter,
   sortRows,
@@ -136,7 +137,7 @@ export function ResultsDashboard({
             <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} onOpenQueue={onOpenQueue} />
             <div className="rounded-xl border bg-card px-4 py-3">
               <Suspense fallback={<Skeleton className="h-32 w-64" />}>
-                <OutcomeChart counts={bucketCounts(rows)} />
+                <OutcomeChart counts={bucketCounts(rows)} failNeedsYou={failsNeedingYou(rows)} />
               </Suspense>
             </div>
           </div>
