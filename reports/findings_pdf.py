@@ -30,7 +30,7 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from app.schemas.visual_ui import CountertopResultOut, ExactValueOut
 from reports.signed_review import SignedReview, with_review_pdf
-from reports.spreadsheet import NOT_RECORDED, StoredFinding
+from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line
 from verdict.outcomes import Outcome
 from workflow.changed_values import ChangedValues
 
@@ -529,6 +529,7 @@ class _Document:
             details = [
                 f"Wall layout: {_text(result.wall_layout.label)} ({result.wall_layout.source})",
                 f"Field cut: {_text(None if result.field_cut_per_end is None else result.field_cut_per_end.display)} per end x {_text(result.field_cut_count)}",
+                architect_line(result),
             ]
             if result.reviewer_decision is None:
                 details.append(

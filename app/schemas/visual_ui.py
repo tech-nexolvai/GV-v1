@@ -65,6 +65,54 @@ class HoldOut(BaseModel):
     reason: str
 
 
+class ArchitectComparedOut(BaseModel):
+    """One width both drawings print for the same thing, as the architect check compared it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["overall", "piece"]
+    vendor_piece: int | None = Field(
+        description="The vendor piece, counted from 1 as the row shows it; null for the overall."
+    )
+    vendor: ExactValueOut | None
+    architect: ExactValueOut | None
+    delta: ExactValueOut | None = Field(
+        description="The vendor's value minus the architect's, exactly."
+    )
+    vendor_display: str | None
+    architect_display: str | None
+    delta_display: str | None
+    outcome: Outcome | None
+
+
+class ArchitectResultOut(BaseModel):
+    """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
+
+    `finding_id` and `outcome` are null when nothing was compared for this row; then
+    `not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones
+    the recorded check used, never recomputed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: Outcome | None = None
+    finding_id: UUID | None = None
+    reason: str | None = None
+    needs_decision: bool = False
+    compared: tuple[ArchitectComparedOut, ...] = ()
+    not_compared_reason: str | None = None
+    pairing_source: Literal["code+ais", "code", "both-ais", "reviewer", "none"] | None = None
+    pairing_judgments: (
+        Literal["code and both AIs", "code only", "both AIs only", "reviewer"] | None
+    ) = Field(
+        default=None,
+        description=(
+            "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and "
+            "both AIs) or a reviewer; on one alone the result waits for the reviewer."
+        ),
+    )
+
+
 class CountertopResultOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -85,6 +133,10 @@ class CountertopResultOut(BaseModel):
     wall_layout: WallLayoutOut
     agreement: AgreementFactsOut
     hold: HoldOut | None
+    architect: ArchitectResultOut = Field(
+        default_factory=ArchitectResultOut,
+        description="Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001).",
+    )
 
 
 class CountertopResultsOut(BaseModel):

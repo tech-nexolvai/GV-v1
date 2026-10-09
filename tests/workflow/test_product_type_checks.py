@@ -33,6 +33,7 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 COUNTERTOP_RULES = frozenset(
     {
+        "CT-ARCH-WIDTH-001",
         "CT-BACK-OFFSET-MIN-001",
         "CT-DEPTH-001",
         "CT-SINK-CABINET-WIDTH-001",

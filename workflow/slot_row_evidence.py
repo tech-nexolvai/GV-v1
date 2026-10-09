@@ -46,6 +46,7 @@ from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from workflow.slot_row_scope import (
     SlotRow,
+    SlotRowQualification,
     SlotRowReading,
     candidate_is_sealed,
     candidate_value,
@@ -94,8 +95,10 @@ class SlotRowCheck:
     observation_ids: tuple[UUID, ...]
 
 
-def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
-    """Return only qualified row operands plus the row's independently established wall choice."""
+def _row_positions(
+    row: SlotRow,
+) -> tuple[dict[int | None, ObservationCandidate], dict[UUID, str]] | str:
+    """The row's width candidates by position, or why the row has none it can use."""
     candidates_by_position: dict[int | None, ObservationCandidate] = {}
     proposal_fields = {
         candidate_id: proposal.field_key for candidate_id, proposal in row.proposals.items()
@@ -121,18 +124,15 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             continue
         if position in candidates_by_position:
             # Duplicate candidates at one position are not a tie-break opportunity.
-            candidates_by_position[position] = candidate
-            return SlotRowCheck(
-                False,
-                "This row has more than one saved reading for a width position.",
-                None,
-                None,
-                None,
-                {},
-                (),
-            )
+            return "This row has more than one saved reading for a width position."
         candidates_by_position[position] = candidate
+    return candidates_by_position, proposal_fields
 
+
+def _row_readings(
+    row: SlotRow, candidates_by_position: dict[int | None, ObservationCandidate]
+) -> tuple[list[SlotRowReading], dict[int | None, Measurement]]:
+    """Each position's sealed reading, or the value a reviewer saved against this exact row."""
     decision = row.decision
     typed = {} if decision is None else decision.measurements
     readings: list[SlotRowReading] = []
@@ -185,27 +185,32 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             )
         )
         values[position] = Measurement(exact, Unit.INCH, str(saved.get("display", "")))
+    return readings, values
 
-    qualification = qualify_slot_row(
+
+def _qualify(row: SlotRow, readings: list[SlotRowReading]) -> SlotRowQualification:
+    return qualify_slot_row(
         tuple(readings),
         expected_piece_count=row.piece_count,
         held_reason=row.held_reason,
         shop_document=row.held_reason != "This is not the vendor drawing.",
     )
-    layout, wall_reason, wall_note = _row_wall(row)
-    if not qualification.eligible:
-        return SlotRowCheck(False, qualification.reason, layout, wall_reason, wall_note, {}, ())
-    if layout is None:
-        return SlotRowCheck(
-            False,
-            wall_note or "Choose this row's wall layout.",
-            None,
-            wall_reason,
-            wall_note,
-            {},
-            (),
-        )
 
+
+def _seal_row(
+    session: Session,
+    row: SlotRow,
+    candidates_by_position: dict[int | None, ObservationCandidate],
+    proposal_fields: dict[UUID, str],
+    values: dict[int | None, Measurement],
+) -> tuple[dict[str, VerdictOperand], tuple[UUID, ...]] | str:
+    """Seal every width of a qualified row, or say which one could not be sealed.
+
+    The one place a vendor row's widths become verdict operands: the width check (CT-WIDTH-001)
+    and the architect check (CT-ARCH-WIDTH-001, #1054) both take them from here, so the vendor's
+    side of the two checks is the same evidence, sealed the same way.
+    """
+    decision = row.decision
     operands: dict[str, VerdictOperand] = {}
     observation_ids: list[UUID] = []
     overall_candidate = candidates_by_position.get(None)
@@ -217,31 +222,15 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             semantic=SemanticType.COUNTERTOP_OVERALL_WIDTH,
         )
         if observation is None:
-            return SlotRowCheck(
-                False,
-                "The overall label has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected.",
-                layout,
-                None,
-                wall_note,
-                {},
-                (),
-            )
+            return "The overall label has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
         operand = seal(_domain_observation(session, observation), "countertop_width")
         if isinstance(operand, GateRefusal):
-            return SlotRowCheck(False, operand.detail, layout, None, wall_note, {}, ())
+            return operand.detail
         operands["countertop_width"] = replace(operand, evidence_observation_id=str(observation.id))
         observation_ids.append(observation.id)
     else:
         if decision is None or None not in values:
-            return SlotRowCheck(
-                False,
-                "The overall width is not sealed or saved by a reviewer for this row.",
-                layout,
-                None,
-                wall_note,
-                {},
-                (),
-            )
+            return "The overall width is not sealed or saved by a reviewer for this row."
         operands["countertop_width"] = _human_operand("countertop_width", values[None], decision.id)
 
     piece_operands: list[Measurement] = []
@@ -250,15 +239,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         selected_candidate = candidates_by_position.get(position)
         if selected_candidate is None or not candidate_is_sealed(selected_candidate):
             if decision is None or position not in values:
-                return SlotRowCheck(
-                    False,
-                    f"Piece {position + 1} is not sealed or saved by a reviewer for this row.",
-                    layout,
-                    None,
-                    wall_note,
-                    {},
-                    (),
-                )
+                return f"Piece {position + 1} is not sealed or saved by a reviewer for this row."
             measurement = values[position]
             piece_operands.append(measurement)
             piece_sources.append((measurement, None, decision.id, EvidenceStatus.HUMAN_CONFIRMED))
@@ -271,34 +252,16 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
         )
         if observation is None:
-            return SlotRowCheck(
-                False,
-                f"Piece {position + 1} has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected.",
-                layout,
-                None,
-                wall_note,
-                {},
-                (),
-            )
+            return f"Piece {position + 1} has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
         operand = seal(_domain_observation(session, observation), f"piece_width_{position + 1}")
         if isinstance(operand, GateRefusal) or not isinstance(operand.value, Measurement):
-            return SlotRowCheck(
-                False,
-                "A piece width did not pass the evidence gate.",
-                layout,
-                None,
-                wall_note,
-                {},
-                (),
-            )
+            return "A piece width did not pass the evidence gate."
         piece_operands.append(operand.value)
         piece_sources.append((operand.value, observation.id, None, operand.status))
         observation_ids.append(observation.id)
 
     if not piece_operands or any(not isinstance(value, Measurement) for value in piece_operands):
-        return SlotRowCheck(
-            False, "Every piece width is required for this row.", layout, None, wall_note, {}, ()
-        )
+        return "Every piece width is required for this row."
     human_piece = any(source[3] is EvidenceStatus.HUMAN_CONFIRMED for source in piece_sources)
     decision_id = None if decision is None or not human_piece else str(decision.id)
     operands["piece_widths"] = VerdictOperand(
@@ -320,7 +283,67 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
             evidence_observation_id=None if observation_id is None else str(observation_id),
             row_review_decision_id=None if review_id is None else str(review_id),
         )
-    return SlotRowCheck(True, None, layout, None, wall_note, operands, tuple(observation_ids))
+    return operands, tuple(observation_ids)
+
+
+def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
+    """Return only qualified row operands plus the row's independently established wall choice."""
+    positions = _row_positions(row)
+    if isinstance(positions, str):
+        return SlotRowCheck(False, positions, None, None, None, {}, ())
+    candidates_by_position, proposal_fields = positions
+    readings, values = _row_readings(row, candidates_by_position)
+    qualification = _qualify(row, readings)
+    layout, wall_reason, wall_note = _row_wall(row)
+    if not qualification.eligible:
+        return SlotRowCheck(False, qualification.reason, layout, wall_reason, wall_note, {}, ())
+    if layout is None:
+        return SlotRowCheck(
+            False,
+            wall_note or "Choose this row's wall layout.",
+            None,
+            wall_reason,
+            wall_note,
+            {},
+            (),
+        )
+    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+    if isinstance(sealed, str):
+        return SlotRowCheck(False, sealed, layout, None, wall_note, {}, ())
+    operands, observation_ids = sealed
+    return SlotRowCheck(True, None, layout, None, wall_note, operands, observation_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class VendorRowOperands:
+    """The vendor row's sealed widths, without the wall layout the width check also needs."""
+
+    eligible: bool
+    reason: str | None
+    operands: dict[str, VerdictOperand]
+    """`countertop_width` and `piece_widths[i]`, exactly as the width check seals them."""
+
+
+def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
+    """The row's widths sealed exactly as CT-WIDTH-001 seals them, for a check that needs no walls.
+
+    The architect check (#1054) compares the vendor's printed widths with the architect's; the wall
+    layout decides the width check's field cut and has nothing to say about that. Everything else
+    is the width check's own path: the same row qualification, the same canonical evidence, the same
+    gate, the same reviewer-typed values for this row only.
+    """
+    positions = _row_positions(row)
+    if isinstance(positions, str):
+        return VendorRowOperands(False, positions, {})
+    candidates_by_position, proposal_fields = positions
+    readings, values = _row_readings(row, candidates_by_position)
+    qualification = _qualify(row, readings)
+    if not qualification.eligible:
+        return VendorRowOperands(False, qualification.reason, {})
+    sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+    if isinstance(sealed, str):
+        return VendorRowOperands(False, sealed, {})
+    return VendorRowOperands(True, None, sealed[0])
 
 
 def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:

@@ -208,6 +208,14 @@ class ReadingSides:
             )
         return self._same_file[document_version_id]
 
+    def same_file_as_both_sides(self, document_version_id: UUID) -> bool:
+        """Whether these bytes were uploaded as both the architect's and the vendor's drawing (#963).
+
+        Public for the architect check (#1054), which compares nothing on such a file: one combined
+        set uploaded twice has no separate architect side to compare with.
+        """
+        return self._same_file_as_both_sides(document_version_id)
+
     def _in_two_pdf_packages(self, document_version_id: UUID) -> bool:
         """Whether every revision this document is in also holds the other drawing's document.
 

@@ -142,7 +142,16 @@ DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_n
 #: something we have not built are both abstentions, and telling them apart is the difference
 #: between "chase Raj" and "finish the work". Entering `ours` here is an admission with a date on
 #: it, not a way to make a test green.
-UNDECIDED: dict[str, tuple[str, str]] = {}
+UNDECIDED: dict[str, tuple[str, str]] = {
+    # 2026-10-09 (#1054): the vendor-vs-architect check runs per vendor countertop row read by the
+    # slot reader, against that row's pairing with the architect's drawing (#1053). A form-filled
+    # revision has no such row, so it says "nothing was compared" (NO_APPLICABLE_RULE, never a pass,
+    # never blocking) rather than deciding from typed lists in an order nobody paired.
+    "CT-ARCH-WIDTH-001": (
+        "no countertop row on this revision has an architect dimension paired",
+        "ours",
+    ),
+}
 
 #: Kept for the tests that read it: the subset genuinely waiting on the client.
 CLIENT_BLOCKED: dict[str, str] = {

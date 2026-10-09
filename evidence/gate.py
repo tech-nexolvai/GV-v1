@@ -17,6 +17,7 @@ from typing import cast
 from evidence.canonical import Authority, CanonicalObservation, CorroborationLane
 from units.measurement import Measurement, Unit
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus, VerdictOperand
+from vocabulary.semantic_types import DocumentRole
 
 __all__ = [
     "QUALIFIED_STATUSES",
@@ -61,13 +62,23 @@ def _evidence_ref(observation: CanonicalObservation) -> str:
 
 
 def _has_two_read_agreement(observation: CanonicalObservation) -> bool:
-    """Return whether a corroborated observation has independent numeric agreement."""
+    """Return whether a corroborated observation has independent numeric agreement.
+
+    Two readers agreeing (`SECOND_READER`), a reviewer, or — for the architect's side only — the
+    architect's exact printed text with its drawn-length witness (`DRAWN_LENGTH`, #1054).
+    """
 
     if observation.status is EvidenceStatus.HUMAN_CONFIRMED:
         return True
+    if observation.status is not EvidenceStatus.CORROBORATED:
+        return False
+    if CorroborationLane.SECOND_READER in observation.corroborated_by:
+        return True
+    # The architect's printed text, read exactly by code, with its drawn-length witness (#1054).
+    # The architect's side only: a vendor's reading is never qualified by this lane.
     return (
-        observation.status is EvidenceStatus.CORROBORATED
-        and CorroborationLane.SECOND_READER in observation.corroborated_by
+        CorroborationLane.DRAWN_LENGTH in observation.corroborated_by
+        and observation.document_role is DocumentRole.ARCH
     )
 
 

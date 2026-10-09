@@ -330,6 +330,118 @@
         "title": "ApprovalReadinessOut",
         "type": "object"
       },
+      "ArchitectComparedOut": {
+        "description": "One width both drawings print for the same thing, as the architect check compared it.",
+        "properties": {
+          "architect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "architect_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architect Display"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's value minus the architect's, exactly."
+          },
+          "delta_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Display"
+          },
+          "kind": {
+            "enum": [
+              "overall",
+              "piece"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vendor_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vendor Display"
+          },
+          "vendor_piece": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor piece, counted from 1 as the row shows it; null for the overall.",
+            "title": "Vendor Piece"
+          }
+        },
+        "required": [
+          "kind",
+          "vendor_piece",
+          "vendor",
+          "architect",
+          "delta",
+          "vendor_display",
+          "architect_display",
+          "delta_display",
+          "outcome"
+        ],
+        "title": "ArchitectComparedOut",
+        "type": "object"
+      },
       "ArchitectPairIn": {
         "additionalProperties": false,
         "properties": {
@@ -601,6 +713,106 @@
           "supersedes_id"
         ],
         "title": "ArchitectPairingRecordOut",
+        "type": "object"
+      },
+      "ArchitectResultOut": {
+        "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
+        "properties": {
+          "compared": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ArchitectComparedOut"
+            },
+            "title": "Compared",
+            "type": "array"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "needs_decision": {
+            "default": false,
+            "title": "Needs Decision",
+            "type": "boolean"
+          },
+          "not_compared_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Compared Reason"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pairing_judgments": {
+            "anyOf": [
+              {
+                "enum": [
+                  "code and both AIs",
+                  "code only",
+                  "both AIs only",
+                  "reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and both AIs) or a reviewer; on one alone the result waits for the reviewer.",
+            "title": "Pairing Judgments"
+          },
+          "pairing_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "code+ais",
+                  "code",
+                  "both-ais",
+                  "reviewer",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pairing Source"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "ArchitectResultOut",
         "type": "object"
       },
       "ArchitectSpanOut": {
@@ -1852,6 +2064,10 @@
         "properties": {
           "agreement": {
             "$ref": "#/components/schemas/AgreementFactsOut"
+          },
+          "architect": {
+            "$ref": "#/components/schemas/ArchitectResultOut",
+            "description": "Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001)."
           },
           "delta": {
             "anyOf": [

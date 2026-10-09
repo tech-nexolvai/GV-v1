@@ -7,11 +7,14 @@ from fractions import Fraction
 from io import BytesIO
 from uuid import UUID
 
+import pytest
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
 from app.schemas.visual_ui import (
     AgreementFactsOut,
+    ArchitectComparedOut,
+    ArchitectResultOut,
     CountertopPieceOut,
     CountertopResultOut,
     ExactValueOut,
@@ -242,3 +245,302 @@ def test_workbook_has_exact_countertop_text_and_numeric_columns() -> None:
     assert row["difference"] == '1"'
     assert row["field_cut_per_end"] == '1"'
     assert row["field_cut_per_end_in"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The architect line (#1054): "Matches the architect" beside each countertop
+# ---------------------------------------------------------------------------
+
+
+def _with_architect(result: CountertopResultOut, block: ArchitectResultOut) -> CountertopResultOut:
+    return result.model_copy(update={"architect": block})
+
+
+def _compared_overall(
+    vendor: Fraction, architect: Fraction, outcome: Outcome
+) -> ArchitectComparedOut:
+    return ArchitectComparedOut(
+        kind="overall",
+        vendor_piece=None,
+        vendor=_exact(vendor),
+        architect=_exact(architect),
+        delta=_exact(vendor - architect),
+        vendor_display=_exact(vendor).display,
+        architect_display=_exact(architect).display,
+        delta_display=_exact(vendor - architect).display,
+        outcome=outcome,
+    )
+
+
+def _checked_row() -> CountertopResultOut:
+    return _result(
+        "Countertop row A",
+        Outcome.PASS,
+        printed=Fraction(163, 4),
+        pieces=(Fraction(10), Fraction(14)),
+        expected=Fraction(163, 4),
+        delta=Fraction(0),
+    )
+
+
+def test_pdf_card_says_whether_the_row_matches_the_architect() -> None:
+    failed = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=40),
+            reason="1 identifiers: 0 pass, 1 fail, 0 not found",
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code",
+        ),
+    )
+    not_compared = _with_architect(
+        _result(
+            "Countertop row B",
+            Outcome.PASS,
+            printed=Fraction(24),
+            pieces=(Fraction(10), Fraction(14)),
+            expected=Fraction(24),
+            delta=Fraction(0),
+        ),
+        ArchitectResultOut(
+            not_compared_reason="The architect prints nothing comparable for this row."
+        ),
+    )
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=12),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        countertop_results=(failed, not_compared),
+    )
+
+    text = _pdf_text(write_findings_pdf(source))
+
+    assert 'Matches the architect: FAIL (overall: vendor 40 3/4", architect 44")' in text
+    assert (
+        "Matches the architect: not compared: The architect prints nothing comparable for this row."
+        in text
+    )
+
+
+def test_architect_line_for_a_pairing_waiting_for_the_reviewer() -> None:
+    from reports.spreadsheet import architect_line
+
+    waiting = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.REVIEW_REQUIRED,
+            finding_id=UUID(int=41),
+            reason="Pair the architect's dimension with the vendor's (one click).",
+            needs_decision=True,
+            pairing_source="both-ais",
+        ),
+    )
+
+    assert architect_line(waiting) == (
+        "Matches the architect: REVIEW_REQUIRED: Pair the architect's dimension with the vendor's "
+        "(one click)."
+    )
+
+
+@pytest.mark.parametrize("source", ["code", "both-ais"])
+def test_architect_line_says_to_confirm_a_one_judgment_result(source: str) -> None:
+    from reports.spreadsheet import architect_line
+
+    reason = (
+        "Only code paired these; confirm that the architect's 3' - 8\" and the vendor's 40 3/4\" "
+        "measure the same thing."
+    )
+    waiting = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.REVIEW_REQUIRED,
+            finding_id=UUID(int=43),
+            reason=reason,
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.REVIEW_REQUIRED),),
+            pairing_source=source,  # type: ignore[arg-type]
+            pairing_judgments="code only" if source == "code" else "both AIs only",
+        ),
+    )
+
+    assert architect_line(waiting) == (
+        'Matches the architect: REVIEW_REQUIRED, to confirm (overall: vendor 40 3/4", '
+        f'architect 44"): {reason}'
+    )
+    text = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=12),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                countertop_results=(waiting,),
+            )
+        )
+    )
+    assert "Matches the architect: REVIEW_REQUIRED, to confirm" in text
+
+
+def test_architect_line_for_an_automatic_result_has_no_to_confirm() -> None:
+    from reports.spreadsheet import architect_line
+
+    automatic = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=44),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code+ais",
+            pairing_judgments="code and both AIs",
+        ),
+    )
+
+    assert architect_line(automatic) == (
+        'Matches the architect: FAIL (overall: vendor 40 3/4", architect 44")'
+    )
+
+
+def test_workbook_names_the_pairing_judgments_and_says_to_confirm() -> None:
+    one = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.REVIEW_REQUIRED,
+            finding_id=UUID(int=45),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.REVIEW_REQUIRED),),
+            pairing_source="both-ais",
+            pairing_judgments="both AIs only",
+        ),
+    )
+    two = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=46),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code+ais",
+            pairing_judgments="code and both AIs",
+        ),
+    )
+
+    book = load_workbook(
+        BytesIO(write_stored_workbook((_stored(),), countertop_results=(one, two)))
+    )
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    rows = [
+        {header: sheet.cell(index, column + 1).value for column, header in enumerate(headers)}
+        for index in (2, 3)
+    ]
+    waiting = next(item for item in rows if item["architect_pairing_source"] == "both-ais")
+    assert waiting["architect_pairing_judgments"] == "both AIs only — to confirm"
+    assert waiting["architect_outcome"] == "REVIEW_REQUIRED"
+    automatic = next(item for item in rows if item["architect_pairing_source"] == "code+ais")
+    assert automatic["architect_pairing_judgments"] == "code and both AIs"
+    assert headers.index("architect_pairing_judgments") == (
+        headers.index("architect_pairing_source") + 1
+    )
+
+
+def test_the_strip_drawing_is_unchanged_by_the_architect_line() -> None:
+    from reports.findings_pdf import _draw_countertop_strip
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def __getattr__(self, name: str) -> object:
+            return lambda *args, **_kwargs: self.calls.append((name, args))
+
+    plain = Recorder()
+    _draw_countertop_strip(plain, _checked_row(), x=0, y=0, width=420)
+    with_line = Recorder()
+    _draw_countertop_strip(
+        with_line,
+        _with_architect(
+            _checked_row(),
+            ArchitectResultOut(
+                outcome=Outcome.FAIL,
+                finding_id=UUID(int=40),
+                compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            ),
+        ),
+        x=0,
+        y=0,
+        width=420,
+    )
+
+    assert with_line.calls == plain.calls
+
+
+def test_workbook_has_the_architect_result_as_text_and_exact_numbers() -> None:
+    result = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=40),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code",
+        ),
+    )
+    third = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.PASS,
+            finding_id=UUID(int=42),
+            compared=(_compared_overall(Fraction(1, 3), Fraction(1, 3), Outcome.PASS),),
+            pairing_source="reviewer",
+        ),
+    )
+
+    book = load_workbook(
+        BytesIO(write_stored_workbook((_stored(),), countertop_results=(result, third)))
+    )
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    rows = [
+        {header: sheet.cell(index, column + 1).value for column, header in enumerate(headers)}
+        for index in (2, 3)
+    ]
+    row = next(item for item in rows if item["architect_pairing_source"] == "code")
+    assert row["architect_outcome"] == "FAIL"
+    assert (
+        row["architect_comparison"]
+        == 'overall: vendor 40 3/4", architect 44", difference -3 1/4" (FAIL)'
+    )
+    assert row["architect_not_compared_reason"] in ("", None)
+    assert row["architect_overall_vendor_in"] == 40.75
+    assert row["architect_overall_architect_in"] == 44
+    assert row["architect_overall_difference_in"] == -3.25
+    # A third is exact only as text: no rounded number is written.
+    other = next(item for item in rows if item["architect_pairing_source"] == "reviewer")
+    assert other["architect_overall_vendor_in"] in ("", None)
+    assert (
+        other["architect_comparison"]
+        == 'overall: vendor 1/3", architect 1/3", difference 0" (PASS)'
+    )
+    # The piece columns still follow every named column.
+    assert headers.index("piece_1_in") > headers.index("architect_overall_difference_in")
+
+
+def test_workbook_says_why_a_row_was_not_compared() -> None:
+    result = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(not_compared_reason="No architect dimension is paired with this row."),
+    )
+
+    book = load_workbook(BytesIO(write_stored_workbook((_stored(),), countertop_results=(result,))))
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: sheet.cell(2, index + 1).value for index, header in enumerate(headers)}
+    assert row["architect_outcome"] == "NOT COMPARED"
+    assert row["architect_not_compared_reason"] == "No architect dimension is paired with this row."

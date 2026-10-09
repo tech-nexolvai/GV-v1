@@ -110,9 +110,10 @@ def test_position_pairing_passes_two_swapped_cabinets_and_identifier_pairing_doe
     assert (by_position.outcome, by_identifier.outcome) == (Outcome.PASS, Outcome.FAIL)
 
 
-def test_the_rulebook_compares_by_position_in_exactly_two_checks() -> None:
-    """Outcome: `CAB-ARCH-VS-SHOP-001`'s two cabinet runs and `CAB-FILLER-001`'s four runs, each
-    with its own check's sentence, and no other rule's inputs. A sum of cabinets is indifferent to
+def test_the_rulebook_compares_by_position_in_exactly_three_checks() -> None:
+    """Outcome: `CAB-ARCH-VS-SHOP-001`'s two cabinet runs, `CAB-FILLER-001`'s four runs and
+    `CT-ARCH-WIDTH-001`'s two paired lists, each with its own check's sentence, and no other rule's
+    inputs. A sum of cabinets is indifferent to
     order, so `CT-WIDTH-001` keeps its runs.
 
     The filler check's site width, design width and cabinet classifications are not on the list. A
@@ -127,6 +128,11 @@ def test_the_rulebook_compares_by_position_in_exactly_two_checks() -> None:
     assert ordered.pop(FILLER_RULE) == dict.fromkeys(
         ("architectural_fillers", "shop_fillers", "architectural_cabinets", "shop_cabinets"),
         RUN_ORDER_WITHHELD,
+    )
+    # CT-ARCH-WIDTH-001 (#1054) compares two lists by position too, and evidence must never fill
+    # them in reading order: its lists are built only per countertop row, in the pairing's order.
+    assert ordered.pop("CT-ARCH-WIDTH-001") == dict.fromkeys(
+        ("architect_widths", "vendor_widths"), IDENTIFIER_PAIRING_WITHHELD
     )
     assert all(inputs == {} for inputs in ordered.values()), ordered
 

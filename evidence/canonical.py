@@ -46,6 +46,14 @@ class CorroborationLane(StrEnum):
     This corroborates the *meaning* of a reading, not its numeric value.  It is emitted only by the
     fail-closed semantic-typing gate; an OCR tag or geometric proximity alone never qualifies it.
     """
+    DRAWN_LENGTH = "DRAWN_LENGTH"
+    """The architect's printed value, read exactly by code from the drawing's own text layer, agrees
+    with the length drawn between its ticks through the drawing's scale (#1052, #1054).
+
+    One exact reading plus a non-model witness, the same shape as ``DUAL_UNIT``. It qualifies the
+    **architect's** side only (``DocumentRole.ARCH``): a vendor's reading still needs both readers,
+    and a model's reading never gets this lane. Emitted only by ``workflow/architect_row_evidence``.
+    """
 
 
 def _validate_candidate_ids(candidate_ids: tuple[str, ...], *, field: str) -> None:
@@ -124,15 +132,27 @@ class CanonicalObservation:
             if support_count < 1 or self.conflicts_with:
                 raise ValueError("RAW_CANDIDATE requires support and cannot record a conflict")
             return
+        if (
+            CorroborationLane.DRAWN_LENGTH in self.corroborated_by
+            and self.document_role is not DocumentRole.ARCH
+        ):
+            raise ValueError(
+                "the drawn-length witness corroborates the architect's printed text only; a "
+                "vendor's reading needs both readers"
+            )
         if self.status is EvidenceStatus.CORROBORATED:
             two_candidates = support_count >= 2
             dual_unit_lane = (
                 support_count >= 1 and CorroborationLane.DUAL_UNIT in self.corroborated_by
             )
-            if not (two_candidates or dual_unit_lane):
+            drawn_length_lane = (
+                support_count >= 1 and CorroborationLane.DRAWN_LENGTH in self.corroborated_by
+            )
+            if not (two_candidates or dual_unit_lane or drawn_length_lane):
                 raise ValueError(
-                    "CORROBORATED requires two candidates or one candidate plus "
-                    "dual-unit corroboration"
+                    "CORROBORATED requires two candidates or one candidate plus dual-unit "
+                    "corroboration (or, for the architect's printed text, its drawn-length "
+                    "witness)"
                 )
             if self.conflicts_with:
                 raise ValueError("CORROBORATED cannot record a conflict")

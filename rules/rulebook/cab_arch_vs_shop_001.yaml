@@ -1,5 +1,5 @@
 id: CAB-ARCH-VS-SHOP-001
-version: 1.1.0
+version: 1.1.1
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
@@ -33,7 +33,7 @@ operation:
     right: shop_cabinets
   tolerance:
     value: 0
-    unit: mm
+    unit: in
 
 on_missing: NOT_FOUND
 on_ambiguous: REVIEW_REQUIRED

@@ -262,7 +262,7 @@ from rules.project import ProjectScope
 from rules.required_inputs import DiscriminatorNeed, required_inputs
 from rules.schema import Rule
 from rules.semantic_types import ProductType, SemanticType
-from rules.snapshot import RuleSnapshot
+from rules.snapshot import RuleSnapshot, SnapshotStore
 from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
@@ -273,7 +273,7 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
-from verdict.outcomes import Outcome
+from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
@@ -288,6 +288,19 @@ from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
     persist_architect_pages,
+)
+from workflow.architect_row_evidence import architect_row_operands
+from workflow.architect_row_plan import (
+    ARCHITECT_CHECK_RULE_ID,
+    AUTOMATIC_SOURCES,
+    NOTHING_PAIRED_ON_REVISION,
+    Disposition,
+    PairingLookup,
+    effective_architect_pairing,
+    engine_comparison_note,
+    one_judgment_reason,
+    pair_label,
+    plan_architect_row,
 )
 from workflow.association import (
     AssociationSettings,
@@ -351,7 +364,7 @@ from workflow.slot_reader import (
     read_slot_pages,
 )
 from workflow.slot_row_evidence import slot_row_check
-from workflow.slot_row_scope import slot_rows
+from workflow.slot_row_scope import SlotRow, slot_rows
 from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
@@ -1663,6 +1676,7 @@ class DatabaseStages:
         part_pictures: PartPictureSettings | None = None,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
+        architect_pairing: PairingLookup | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1684,6 +1698,12 @@ class DatabaseStages:
         self._architect_reader = architect_reader
         # What it read, by page id, for pairing with the vendor's rows (#1053): set per extraction.
         self._architect_pages: dict[UUID, ArchitectPageInput] = {}
+        # The row's effective architect pairing (#1053), read by the vendor-vs-architect check
+        # (#1054). The join seam: `effective_architect_pairing` answers "no pairing" until the
+        # pairing module exists; tests pass fakes here.
+        self._architect_pairing: PairingLookup = (
+            effective_architect_pairing if architect_pairing is None else architect_pairing
+        )
         self._timed_first_page_runs: set[UUID] = set()
         self._timing_document_version_id: str | None = None
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
@@ -6268,6 +6288,103 @@ class DatabaseStages:
             },
         }
 
+    def _architect_row_check(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        row: SlotRow,
+        store: SnapshotStore,
+        parameter_set_ids: Mapping[str, str],
+        defaults_set_id: str | None,
+        defaults_canonical_json: str | None,
+    ) -> int:
+        """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one vendor row, beside its width.
+
+        Returns how many findings it wrote: none when nothing is comparable (the row's architect
+        line says why), else one, scoped to the same row as the width finding. The rule's exact
+        arithmetic decides pass or fail, and that result stands only when the pairing rests on two
+        independent judgments (code's drawn position AND both AIs, `code+ais`) or on a reviewer.
+        On one judgment alone (`code` or `both-ais`) the result, PASS or FAIL, waits for the
+        reviewer to confirm the pairing; the engine's comparison stays in the notes and the numbers
+        in the inputs. See `workflow/architect_row_plan.py` and `workflow/architect_row_evidence.py`.
+        """
+        snapshot = store.latest(ARCHITECT_CHECK_RULE_ID)
+        if snapshot is None:
+            return 0
+        pairing = self._architect_pairing(session, row.anchor.id)
+        plan = plan_architect_row(session, row, pairing)
+        if plan.disposition is Disposition.NOT_COMPARED:
+            return 0
+        operands: Mapping[str, VerdictOperand] = {}
+        if plan.disposition is Disposition.UNRESOLVED:
+            finding = Finding(
+                rule_id=ARCHITECT_CHECK_RULE_ID,
+                outcome=Outcome.REVIEW_REQUIRED,
+                severity=snapshot.rule.severity,
+                reason=plan.reason or "Pair the architect's dimension with the vendor's.",
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=ENGINE_VERSION,
+                notes=plan.notes,
+            )
+        else:
+            built = architect_row_operands(session, row, plan)
+            if not built.eligible:
+                finding = Finding(
+                    rule_id=ARCHITECT_CHECK_RULE_ID,
+                    outcome=Outcome.REVIEW_REQUIRED,
+                    severity=snapshot.rule.severity,
+                    reason=built.reason or "This row needs the reviewer before it is compared.",
+                    snapshot_id=snapshot.snapshot_id,
+                    engine_version=ENGINE_VERSION,
+                    notes=plan.notes,
+                )
+            else:
+                operands = built.operands
+                finding = execute(snapshot, operands)
+                finding = replace(finding, notes=(*finding.notes, *plan.notes))
+                source = "none" if pairing is None else pairing.source
+                if source not in AUTOMATIC_SOURCES and is_decision(finding.outcome):
+                    # One judgment of which numbers belong together is not enough for an automatic
+                    # PASS or FAIL: the reviewer confirms the pairing. The decided trace is not
+                    # kept, so nothing on record reads as decided; the engine's comparison stays
+                    # in the notes and the numbers in the recorded inputs.
+                    compared = tuple(
+                        (
+                            pair_label(pair.kind, pair.vendor_slot),
+                            built.architect_texts.get(pair.architect_name)
+                            or _inches_text(operands[pair.architect_name]),
+                            _inches_text(operands[pair.vendor_name]),
+                        )
+                        for pair in plan.pairs
+                    )
+                    finding = Finding(
+                        rule_id=ARCHITECT_CHECK_RULE_ID,
+                        outcome=Outcome.REVIEW_REQUIRED,
+                        severity=snapshot.rule.severity,
+                        reason=one_judgment_reason(source, compared),
+                        snapshot_id=snapshot.snapshot_id,
+                        engine_version=ENGINE_VERSION,
+                        notes=(
+                            engine_comparison_note(finding.outcome.value, finding.reason),
+                            *finding.notes,
+                        ),
+                    )
+        record_finding(
+            session,
+            package_revision_id=package_revision_id,
+            finding=finding,
+            operands=operands,
+            parameter_set_ids=parameter_set_ids,
+            defaults_set_id=defaults_set_id,
+            defaults_canonical_json=defaults_canonical_json,
+            missing=_declared_inputs(snapshot.rule),
+            scope_row_candidate_id=row.anchor.id,
+            scope_label=f"{row.label} · architect",
+            architect_pairing=pairing,
+        )
+        return 1
+
     def run_checks(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         """Run every applicable rule against this revision and record what each decided.
 
@@ -6390,6 +6507,7 @@ class DatabaseStages:
 
         written = 0
         skipped = 0
+        architect_rows = 0
         for product_type in in_scope:
             resolution = resolve(
                 store,
@@ -6506,6 +6624,12 @@ class DatabaseStages:
             )
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
+                if rule_id == ARCHITECT_CHECK_RULE_ID:
+                    # Row-scoped only (#1054): one finding per vendor countertop row that has
+                    # something paired with the architect, written in the slot-row loop below. A
+                    # revision-wide NOT_FOUND would ask the reviewer about every package where the
+                    # architect prints nothing comparable, and a revision has no pairing of its own.
+                    continue
                 if countertop_subjects is not None and rule_id == "CT-WIDTH-001":
                     continue
                 if rule_id == "CT-WIDTH-001" and countertop_subjects is None and slot_row_subjects:
@@ -6779,6 +6903,17 @@ class DatabaseStages:
                         scope_label=row.label,
                     )
                     written += 1
+                    architect_written = self._architect_row_check(
+                        session,
+                        package_revision_id=package_revision_id,
+                        row=row,
+                        store=store,
+                        parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
+                    )
+                    architect_rows += architect_written
+                    written += architect_written
                 for subject in manual_subjects:
                     selected = evidence_operands(
                         session,
@@ -6889,6 +7024,34 @@ class DatabaseStages:
                         scope_label=subject.label,
                     )
                     written += 1
+
+        architect_snapshot = store.latest(ARCHITECT_CHECK_RULE_ID)
+        if (
+            architect_snapshot is not None
+            and ProductType.COUNTERTOP in in_scope
+            and architect_rows == 0
+        ):
+            # **Seen to have run, without a click** (#1054). The architect check writes a finding
+            # only for a row with something paired; where no row has, one revision-wide line says
+            # so. NO_APPLICABLE_RULE is never a pass and never blocks sign-off; a missing row would
+            # leave the reviewer unable to tell "compared nothing" from "never ran".
+            record_finding(
+                session,
+                package_revision_id=package_revision_id,
+                finding=Finding(
+                    rule_id=ARCHITECT_CHECK_RULE_ID,
+                    outcome=Outcome.NO_APPLICABLE_RULE,
+                    severity=architect_snapshot.rule.severity,
+                    reason=NOTHING_PAIRED_ON_REVISION,
+                    snapshot_id=architect_snapshot.snapshot_id,
+                    engine_version=ENGINE_VERSION,
+                ),
+                operands={},
+                parameter_set_ids=cited,
+                defaults_set_id=defaults_set_id,
+                defaults_canonical_json=defaults_canonical_json,
+            )
+            written += 1
 
         return {
             "implemented": True,
@@ -7009,6 +7172,14 @@ def _empty_project(package: Package) -> ParameterSet:
         version=1,
         parameters={},
     )
+
+
+def _inches_text(operand: VerdictOperand) -> str:
+    """An exact inch value as a drawing writes it (`40 3/4"`), for the reviewer's reason."""
+    value = operand.value
+    if isinstance(value, Measurement) and value.unit is Unit.INCH:
+        return f'{format_inches(value.exact)}"'
+    return str(value)
 
 
 def _declared_inputs(rule: object) -> dict[str, str]:

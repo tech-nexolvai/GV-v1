@@ -52,17 +52,25 @@ from app.models import (
     PartDecision,
     ViewRole,
 )
-from app.models.evidence import EvidenceSupportingCandidate, SlotRowReviewDecision
+from app.models.evidence import (
+    EvidenceCorroborationLane,
+    EvidenceSupportingCandidate,
+    SlotRowReviewDecision,
+)
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, VerdictInput
 from app.models.verdicts import Finding as FindingRow
 from app.verdicts.trace import abstention_trace, calculation_trace, missing_operand_reason
+from evidence.canonical import CorroborationLane
 from units.measurement import Measurement
 from verdict.finding import Finding
 from verdict.operands import QUALIFIED_STATUSES, VerdictOperand
 from verdict.outcomes import DECISIVE_OUTCOMES, Outcome
 from vocabulary.part_kinds import PartKind
+from vocabulary.semantic_types import DocumentRole
+from workflow.architect_pairing_contract import EffectivePairing
+from workflow.architect_row_evidence import architect_candidate_refusal
 
 __all__ = ["EvidenceMissing", "record_finding", "supersede_runs"]
 
@@ -114,6 +122,7 @@ def record_finding(
     scope_item_id: UUID | None = None,
     scope_row_candidate_id: UUID | None = None,
     scope_label: str | None = None,
+    architect_pairing: EffectivePairing | None = None,
 ) -> FindingRow:
     """Write one decision: its run, the operands it was computed from, and the finding itself.
 
@@ -124,6 +133,10 @@ def record_finding(
 
     `missing` names the operands that were never read, and only reaches the stored trace when the
     check abstained. It is what turns "NOT_FOUND" into a sentence somebody can act on.
+
+    `architect_pairing` is the row's effective pairing (#1053), given only by the vendor-vs-architect
+    check (#1054). It is the one thing that lets an architect's value support a row-scoped finding,
+    and only the exact architect dimension it names, on the row's own page (`_paired_architect`).
     """
     snapshot_row = session.execute(
         select(RuleSnapshotRow).where(RuleSnapshotRow.snapshot_id == finding.snapshot_id)
@@ -136,6 +149,8 @@ def record_finding(
 
     if scope_item_id is not None and scope_row_candidate_id is not None:
         raise EvidenceMissing("a finding cannot name both a confirmed item and a slot-reader row")
+    if architect_pairing is not None and scope_row_candidate_id is None:
+        raise EvidenceMissing("an architect pairing belongs to one countertop row's finding")
     if (scope_item_id is None and scope_row_candidate_id is None) != (scope_label is None):
         raise EvidenceMissing("a scoped finding needs its subject and plain name")
     if scope_item_id is not None:
@@ -219,6 +234,11 @@ def record_finding(
                 or observation.document_version_id != candidate.document_version_id
             ):
                 raise EvidenceMissing("drawing evidence belongs to a different row or page")
+            if observation.document_role == DocumentRole.ARCH.value:
+                # The architect's value is never on the vendor's row: it is allowed only as the
+                # exact dimension this row's pairing names (#1054). Everything else stays refused.
+                _paired_architect(session, observation, candidate, architect_pairing)
+                continue
             supporters = session.execute(
                 select(ObservationCandidate)
                 .join(
@@ -348,6 +368,58 @@ def record_finding(
     session.add(row)
     session.flush()
     return row
+
+
+def _paired_architect(
+    session: Session,
+    observation: CanonicalObservation,
+    row_candidate: ObservationCandidate,
+    pairing: EffectivePairing | None,
+) -> None:
+    """Refuse an architect operand unless it is exactly what this row's pairing names (#1054).
+
+    The observation must rest on one candidate, the one the row's effective pairing names, on the
+    row's own page of the same document version (so the same package revision), qualified only by
+    its drawn-length witness, and still an architect's value the check may use: read by code from
+    the architect's own text, unheld, inside a drawing confirmed as the architect's
+    (`architect_candidate_refusal`, the same test the check itself applies).
+    """
+    if pairing is None:
+        raise EvidenceMissing(
+            "an architect's value supports a countertop row only through that row's pairing"
+        )
+    supporters = list(
+        session.scalars(
+            select(ObservationCandidate)
+            .join(
+                EvidenceSupportingCandidate,
+                EvidenceSupportingCandidate.candidate_id == ObservationCandidate.id,
+            )
+            .where(EvidenceSupportingCandidate.canonical_observation_id == observation.id)
+        )
+    )
+    named = {pair.architect_candidate_id for pair in pairing.pairs}
+    if len(supporters) != 1 or supporters[0].id not in named:
+        raise EvidenceMissing("architect evidence is not the dimension this row's pairing names")
+    (supporter,) = supporters
+    lanes = set(
+        session.scalars(
+            select(EvidenceCorroborationLane.lane).where(
+                EvidenceCorroborationLane.canonical_observation_id == observation.id
+            )
+        )
+    )
+    if (
+        supporter.page_id != row_candidate.page_id
+        or supporter.document_version_id != row_candidate.document_version_id
+        or supporter.value_numerator != observation.value_numerator
+        or supporter.value_denominator != observation.value_denominator
+        or lanes != {CorroborationLane.DRAWN_LENGTH.value}
+    ):
+        raise EvidenceMissing("architect evidence does not belong to this row's sheet")
+    refusal = architect_candidate_refusal(session, None, supporter)
+    if refusal is not None:
+        raise EvidenceMissing(f"the paired architect dimension cannot be used: {refusal}")
 
 
 def _cause_for(outcome: Outcome) -> str:
