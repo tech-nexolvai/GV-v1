@@ -16,7 +16,7 @@ import {
 import { GvMarksWarning } from './GvMarksWarning.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
 import { VendorPagePlacement } from './VendorPagePlacement.js';
-import { InfoTip } from './info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {

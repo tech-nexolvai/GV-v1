@@ -167,38 +167,14 @@
 
 .new-review__open-saved { margin-top: var(--space-3); }
 
-/* ── Uploading ─────────────────────────────────────────────── */
+/* ── Uploading (#1064): the progress panel inside the composer's frame ── */
 .new-review--running {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-3);
   padding: var(--space-5);
-}
-
-.new-review__spinner {
-  flex-shrink: 0;
-  animation: gv-spin 900ms linear infinite;
-}
-
-.new-review__step {
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-
-.new-review__step-note {
-  margin-top: 2px;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
 }
 
 @media (max-width: 560px) {
   .new-review { border-radius: var(--radius-xl); }
   .new-review__slots { grid-template-columns: 1fr; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .new-review__spinner { animation: none; }
 }
 
 /* "What is this drawing set for?" (#994): a quiet row under the vendor, like the vendor field. */

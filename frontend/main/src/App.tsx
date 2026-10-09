@@ -2,7 +2,6 @@ import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { AppShell } from './components/shell/AppShell';
 import type { Crumb } from './components/shell/app-topbar';
 import { ReviewPage } from './pages/ReviewPage';
-import { PackagesPage } from './pages/PackagesPage';
 import { WelcomePage } from './pages/WelcomePage';
 import { CompanySettingsPage } from './pages/CompanySettingsPage';
 import { RulebookPage } from './pages/RulebookPage';
@@ -16,6 +15,8 @@ import './design/components.css';
 
 // Loaded on demand: the kit pulls in charts and tables no reviewer screen needs yet.
 const UiKitPage = lazy(() => import('./pages/ui-kit/UiKitPage'));
+// The Documents table (#1064) brings the table library; fetched the first time Documents opens.
+const PackagesPage = lazy(() => import('./pages/PackagesPage').then((m) => ({ default: m.PackagesPage })));
 
 const PAGE_TITLES: Record<Page, string> = {
   review: 'New review',
@@ -132,9 +133,11 @@ export default function App() {
       )}
 
       {route.page === 'documents' && (
-        <PackagesPage onOpenReview={openReview} onNewPackage={newReview}
-          initialCursors={documentPosition.cursors} positionNotice={documentPosition.notice}
-          onPositionChange={rememberDocumentPosition} />
+        <Suspense fallback={<p className="page-frame__state" role="status">Loading documents…</p>}>
+          <PackagesPage onOpenReview={openReview} onNewPackage={newReview}
+            initialCursors={documentPosition.cursors} positionNotice={documentPosition.notice}
+            onPositionChange={rememberDocumentPosition} />
+        </Suspense>
       )}
 
       {route.page === 'rulebook' && <RulebookPage />}

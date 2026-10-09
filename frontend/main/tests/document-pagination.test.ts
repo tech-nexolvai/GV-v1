@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { documentListReducer as reduce, documentNavigation as nav, initialDocumentList } from '../src/pages/documentRows.js';
 import type { DocumentRows } from '../src/pages/documentRows.js';
 
-const first: DocumentRows = { rows: [], reviewerError: null, hasMore: true, nextCursor: 'opaque+/next=2' };
-const last: DocumentRows = { rows: [], reviewerError: null, hasMore: false, nextCursor: null };
+const first: DocumentRows = { rows: [], hasMore: true, nextCursor: 'opaque+/next=2' };
+const last: DocumentRows = { rows: [], hasMore: false, nextCursor: null };
 let state = reduce(initialDocumentList, { type: 'loaded', data: first });
 assert.equal(nav(state).page, 1);
 assert.equal(nav(state).previousDisabled, true);

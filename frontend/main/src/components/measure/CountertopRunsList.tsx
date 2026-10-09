@@ -12,7 +12,7 @@ import {
   type RunDrawing,
   type RunsList,
 } from './countertopRunChoices.js';
-import { InfoTip } from './info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 
 /**
  * Which confirmed parts sit beneath each countertop: what the computer suggests, and a person

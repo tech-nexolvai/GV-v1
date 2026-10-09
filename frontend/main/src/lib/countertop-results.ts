@@ -95,6 +95,29 @@ export function failsNeedingYou(rows: readonly CountertopResult[]): number {
   return rows.filter((row) => row.outcome === 'FAIL' && row.needs_decision).length;
 }
 
+/** What a sign-off covers, countertop by countertop (#1064). The four parts add up to the rows. */
+export interface SignOffSummary {
+  /** No decision needed and none recorded: the checks settled it ("needed no decision"). */
+  byChecks: number;
+  /** A reviewer's decision, other than "not checkable". */
+  byYou: number;
+  /** A check that could not decide, dismissed by a reviewer as not checkable. */
+  notCheckable: number;
+  /** Still waiting for a decision (the server's `needs_decision`). */
+  needYou: number;
+}
+
+export function signOffSummary(rows: readonly CountertopResult[]): SignOffSummary {
+  const summary: SignOffSummary = { byChecks: 0, byYou: 0, notCheckable: 0, needYou: 0 };
+  for (const row of rows) {
+    if (row.needs_decision) summary.needYou += 1;
+    else if (row.reviewer_decision === null) summary.byChecks += 1;
+    else if (decisionWords(row.reviewer_decision.action, row.outcome) === 'Not checkable') summary.notCheckable += 1;
+    else summary.byYou += 1;
+  }
+  return summary;
+}
+
 /** The filter a reviewer lands on: what needs them, when anything does. */
 export function defaultFilter(rows: readonly CountertopResult[]): Filter {
   return rows.some((r) => r.needs_decision) ? 'needs-you' : 'all';

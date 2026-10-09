@@ -13,7 +13,7 @@ import { projectId } from '../../api/config';
 import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, slotRowCount, unsavedRowCount, type SlotReaderReviewPayload } from './slotReaderReview.js';
 import type { StepCount } from '../../lib/measure-steps';
 import { wallWords } from '@/lib/needs-you-queue';
-import { InfoTip } from '@/components/measure/info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 import { WallLayoutPicture } from '@/components/results/wall-glyph';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import './SlotReaderRows.css';

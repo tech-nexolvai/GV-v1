@@ -23,7 +23,7 @@ assert.equal(state.requestedTrail.at(-1), 'opaque-next-3', 'retry still targets 
 state = documentListReducer(state, { type: 'first' });
 assert.deepEqual(state.requestedTrail, [undefined]);
 assert.equal(state.error, null);
-const fresh: DocumentRows = { rows: [], reviewerError: null, hasMore: false, nextCursor: null };
+const fresh: DocumentRows = { rows: [], hasMore: false, nextCursor: null };
 state = documentListReducer(state, { type: 'loaded', data: fresh });
 assert.equal(documentNavigation(state).page, 1);
 saveDocumentPosition(storage, 'project-a', []);

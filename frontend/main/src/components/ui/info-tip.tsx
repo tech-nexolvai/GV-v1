@@ -3,8 +3,9 @@ import type { ReactNode } from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 /**
- * The explanation behind a step, one click away (#1061): the Measurements screen keeps one line per
- * step and moves its paragraphs here. A popover rather than a hover tooltip, so it works on a phone.
+ * The explanation behind a line, one click away: the redesigned screens keep one line of text and
+ * move their paragraphs here (Measurements #1061, Documents #1064). A popover rather than a hover
+ * tooltip, so it works on a phone.
  */
 export function InfoTip({ label, children }: { label: string; children: ReactNode }) {
   return (

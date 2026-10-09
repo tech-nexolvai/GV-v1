@@ -88,10 +88,16 @@ describe('reviewStage: one step per state', () => {
     expect(stage.steps[3].count).toBeNull();
   });
 
-  it('report: approved, files failed → blocked step, Prepare report again', () => {
+  it('report: approved, files failed → blocked step, and no button that promises a retry (#1064)', () => {
     const stage = reviewStage({ ...base, state: 'APPROVED', exports: 'failed' });
     expect(stage.steps[5].state).toBe('blocked');
-    expect(stage.next).toMatchObject({ kind: 'prepare-report', disabled: false });
+    // Asking again returns the same failed request; only an admin's retry helps.
+    expect(stage.next).toMatchObject({ kind: 'prepare-report', label: 'Report failed', disabled: true });
+    expect(stage.next.reason).toMatch(/admin/);
+  });
+
+  it('report: approved, files never requested → Prepare report', () => {
+    expect(reviewStage({ ...base, state: 'APPROVED', exports: 'not_requested' }).next).toMatchObject({ kind: 'prepare-report', label: 'Prepare report', disabled: false });
   });
 
   it('report: approved, export status unknown → waits, never offers a download', () => {

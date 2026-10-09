@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  type RowData,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
@@ -16,6 +17,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
+declare module '@tanstack/react-table' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    /** Classes for this column's header and cells, e.g. hiding a column on a phone. */
+    className?: string;
+  }
+}
+
 /**
  * A sortable, filterable table on shadcn's <Table> and TanStack Table v8.
  *
@@ -31,6 +40,8 @@ export function DataTable<TData, TValue>({
   getRowId,
   onRowClick,
   className,
+  initialSorting = [],
+  label,
 }: {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
@@ -40,8 +51,12 @@ export function DataTable<TData, TValue>({
   getRowId?: (row: TData) => string;
   onRowClick?: (row: TData) => void;
   className?: string;
+  /** The order the table opens in (the reviewer can change it). */
+  initialSorting?: SortingState;
+  /** The table's accessible name. */
+  label?: string;
 }) {
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [globalFilter, setGlobalFilter] = useState('');
 
   // TanStack Table returns new functions every render by design; the React Compiler is told so.
@@ -72,7 +87,7 @@ export function DataTable<TData, TValue>({
         />
       )}
       <div className="overflow-hidden rounded-lg border">
-        <Table>
+        <Table aria-label={label}>
           <TableHeader className="bg-muted/50">
             {table.getHeaderGroups().map((group) => (
               <TableRow key={group.id}>
@@ -80,6 +95,7 @@ export function DataTable<TData, TValue>({
                   <TableHead
                     key={header.id}
                     aria-sort={ariaSort(header.column.getIsSorted())}
+                    className={header.column.columnDef.meta?.className}
                   >
                     {header.isPlaceholder
                       ? null
@@ -104,7 +120,9 @@ export function DataTable<TData, TValue>({
                   className={onRowClick ? 'cursor-pointer' : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                    <TableCell key={cell.id} className={cell.column.columnDef.meta?.className}>
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </TableCell>
                   ))}
                 </TableRow>
               ))
@@ -137,7 +155,8 @@ export function SortableHeader<TData, TValue>({
       variant="ghost"
       size="sm"
       className={cn('-ml-2 h-8 px-2 font-medium', className)}
-      onClick={() => column.toggleSorting(sorted === 'asc')}
+      // The first click sorts in the column's own first direction (most first for counts and dates).
+      onClick={() => column.toggleSorting(sorted ? sorted === 'asc' : column.getFirstSortDir() === 'desc')}
     >
       {children}
       {showIcon && <Icon className={cn('size-3.5', !sorted && 'text-muted-foreground')} aria-hidden="true" />}

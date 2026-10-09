@@ -6,7 +6,7 @@ import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
-import { recordEach, type Filter } from '@/lib/countertop-results';
+import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -47,6 +47,8 @@ import { ReviewStepper } from '@/components/review/review-stepper';
 import { NextActionButton, type SecondaryAction } from '@/components/review/next-action';
 import { ChangedValuesBadge } from '@/components/review/changed-values-badge';
 import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
+import { SignOffDialog, SignOffPanel, type SignOffScope } from '@/components/review/signoff-panel';
+import { ReportPanel } from '@/components/review/report-panel';
 import { ChangedValuesPanel } from '@/components/output/ChangedValuesPanel';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
@@ -98,7 +100,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       (item) =>
         item.package_revision_id === detail.current_revision_id && item.completed_at === null,
     );
-    return { detail, found, session: open ?? null, readiness };
+    // Who is signed in, as the server's own record of their sittings says (the list is theirs only,
+    // `mine` defaults to true): the name the sign-off confirmation shows (#1064).
+    const me = sessions.items[0]?.reviewer ?? null;
+    return { detail, found, session: open ?? null, readiness, me };
   }, [packageId]);
   const [resultsVersion, setResultsVersion] = useState(0);
   const changedValues = useAsync(
@@ -134,6 +139,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
+  // The sign-off confirmation (#1064): every Sign off button opens it; only its confirm signs.
+  const [signOffOpen, setSignOffOpen] = useState(false);
   const [approved, setApproved] = useState(false);
   const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
@@ -736,6 +743,24 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   });
   const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks;
 
+  // What a sign-off covers (#1064), from what the page already loaded: the countertops by who settled
+  // them, the other (package-level) results, and the total the server approves (the live run's).
+  const countertopsReady = countertops.status === 'ready';
+  const countertopFindingIds = new Set(countertopsReady ? countertops.rows.flatMap((row) => (row.finding_id ? [row.finding_id] : [])) : []);
+  const signOffScope: SignOffScope = {
+    countertops: countertopsReady ? signOffSummary(countertops.rows) : null,
+    packageChecks: countertopsReady ? findings.filter((finding) => !countertopFindingIds.has(finding.id)).length : null,
+    total: findings.length,
+  };
+  const signer = session?.reviewer ?? (remote.status === 'ready' ? remote.data.me : null);
+
+  async function confirmSignOff() {
+    await handleSignOff();
+    setSignOffOpen(false);
+  }
+  // The Report panel sits on Results after sign-off and says its own receipts there.
+  const reportPanelShown = activeTab === 'results' && isApproved;
+
   /** The header's one action. Each kind runs the same handler the page already had. */
   function act(kind: NextActionKind) {
     if (kind === 'run-checks') {
@@ -752,7 +777,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setActiveTab('results');
       openQueue();
     } else if (kind === 'sign-off') {
-      void handleSignOff();
+      // Never on one click: the confirmation names the signer and what is signed (#1064).
+      if (!signOffBlocked) setSignOffOpen(true);
     } else if (kind === 'prepare-report') {
       void prepareReport();
     } else if (kind === 'download-report') {
@@ -823,6 +849,16 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           />
         </DialogContent>
       </Dialog>
+      <SignOffDialog
+        open={signOffOpen}
+        onOpenChange={setSignOffOpen}
+        signer={signer}
+        vendor={pkg.vendor}
+        revision={pkg.revision}
+        scope={signOffScope}
+        busy={isSigningOff}
+        onConfirm={() => void confirmSignOff()}
+      />
       <RecordIdsDialog
         open={recordIdsOpen}
         onOpenChange={setRecordIdsOpen}
@@ -834,10 +870,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       <ReviewStepper steps={stage.steps} />
 
       {/* Download receipts and export problems, said where the reviewer is looking. */}
-      {downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
-      {downloadState.status === 'started' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Download started. Check your browser downloads.</p>}
-      {downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
-      {exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
+      {!reportPanelShown && downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
+      {!reportPanelShown && downloadState.status === 'started' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Download started. Check your browser downloads.</p>}
+      {!reportPanelShown && downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
+      {!reportPanelShown && exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
 
       {/* A write that failed, said out loud. The row has already been put back, so without this the
           reviewer would see their tick disappear and have no idea why — and might reasonably assume
@@ -871,6 +907,27 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
       {activeTab === 'results' && (
         <div className="min-h-0 flex-1 overflow-y-auto">
+          {stage.current === 'signoff' && (
+            <SignOffPanel
+              readiness={readiness}
+              ready={canSignOff(readiness) && !waitingForChecks}
+              scope={signOffScope}
+              busy={isSigningOff}
+              onSignOff={() => setSignOffOpen(true)}
+              onReview={openQueue}
+            />
+          )}
+          {isApproved && (
+            <ReportPanel
+              status={exportsStatus}
+              error={exportsError}
+              requesting={preparingExports}
+              download={downloadState}
+              onPrepare={() => void prepareReport()}
+              onCheck={() => setExportsVersion((n) => n + 1)}
+              onDownload={(format) => void handleDownload(format)}
+            />
+          )}
           <ResultsDashboard
             countertops={countertops}
             findings={findings}

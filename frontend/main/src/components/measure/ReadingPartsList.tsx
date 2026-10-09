@@ -15,7 +15,7 @@ import {
 } from './readingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
-import { InfoTip } from './info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 
 /**
  * Which confirmed reading is each confirmed part's width: what the computer suggests, and a person

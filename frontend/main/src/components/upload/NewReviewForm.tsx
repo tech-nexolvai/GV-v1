@@ -7,12 +7,12 @@
  * in ("Apex Glass & Stone"), which is how a sample name ends up on a real package.
  *
  * The upload path is unchanged (`createPackage`): the browser hashes each file, the API hands back a
- * ticket, the bytes go straight to storage, and the API confirms them. The progress line shows the
- * step that is really running, never a staged imitation.
+ * ticket, the bytes go straight to storage, and the API confirms them. While it runs, the progress
+ * panel shows each drawing's real share of bytes sent and the step that is really running (#1064).
  */
 
 import { useRef, useState } from 'react';
-import { ArrowUp, FileText, Loader2, Plus, X } from 'lucide-react';
+import { ArrowUp, FileText, Plus, X } from 'lucide-react';
 import { listProductTypes } from '../../api/client';
 import { createPackage } from '../../api/upload';
 import type { UploadProgress } from '../../api/upload';
@@ -26,6 +26,8 @@ import type { ProductType } from '../../api/uploadState';
 import { projectId } from '../../api/config';
 import { ProductTypeField } from './ProductTypeField';
 import type { ProductChoicesState } from './ProductTypeField';
+import { UploadProgressPanel } from './upload-progress';
+import { applyProgress, initialUploadView, type UploadView } from '../../lib/upload-progress';
 import './NewReviewForm.css';
 
 interface NewReviewFormProps {
@@ -56,7 +58,8 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   const [slotError, setSlotError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<Slot | null>(null);
   const [running, setRunning] = useState(false);
-  const [step, setStep] = useState('');
+  // What the progress panel shows (#1064): one bar per drawing and the Upload → AI reading → Ready steps.
+  const [view, setView] = useState<UploadView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedPackageId, setSavedPackageId] = useState<string | null>(null);
   // Hooks must be called directly: the React compiler can memoize an object literal and skip
@@ -106,7 +109,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
     setRunning(true);
     setError(null);
     setSavedPackageId(null);
-    setStep('');
+    setView(initialUploadView({ architectural: files.architectural?.size ?? 0, shop: files.shop?.size ?? 0 }));
     try {
       const { packageId } = await createPackage(
         projectId(),
@@ -117,7 +120,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
           shop: files.shop,
         },
         (progress: UploadProgress) => {
-          setStep(progress.file ? `${progress.step} ${progress.file}` : progress.step);
+          setView((current) => (current ? applyProgress(current, progress) : current));
         },
       );
       onCreated(packageId);
@@ -130,16 +133,15 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
     }
   }
 
-  if (running) {
+  if (running && view) {
     return (
-      <div className="new-review new-review--running" role="status" aria-live="polite">
-        <Loader2 size={20} className="new-review__spinner" aria-hidden="true" />
-        <div>
-          <p className="new-review__step">{step || 'Starting…'}</p>
-          <p className="new-review__step-note">
-            The review opens when both drawings are uploaded and confirmed.
-          </p>
-        </div>
+      <div className="new-review new-review--running">
+        <UploadProgressPanel
+          view={view}
+          files={(Object.keys(SLOT_COPY) as Slot[])
+            .filter((slot) => files[slot] !== null)
+            .map((slot) => ({ slot, title: SLOT_COPY[slot].title, name: files[slot]!.name, size: files[slot]!.size }))}
+        />
       </div>
     );
   }
