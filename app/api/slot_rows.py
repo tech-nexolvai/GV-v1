@@ -37,6 +37,7 @@ from vocabulary.semantic_types import SemanticType
 from workflow.architect_pairing_records import (
     DecidedPair,
     ReviewerPairingRefused,
+    ReviewerPairingStale,
     architect_spans_for_row,
     latest_architect_pairing,
     latest_record,
@@ -376,6 +377,10 @@ class ArchitectPairingIn(BaseModel):
 
     pairs: list[ArchitectPairIn] = Field(max_length=64)
     note: str | None = Field(default=None, max_length=500)
+    expected_record_id: UUID | None = None
+    """The `current.record_id` the reviewer was shown (#1088). When given and the row's pairing has
+    moved on since, the request is refused with 409 and nothing is recorded. Optional, so a client
+    that does not send it keeps today's behaviour."""
 
 
 #: Independent automatic judgments behind each pairing source (#1053): code by drawn position, and
@@ -573,7 +578,10 @@ def pair_architect_dimensions(
             ],
             note=body.note,
             actor=principal.id,
+            expected_record_id=body.expected_record_id,
         )
+    except ReviewerPairingStale as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except ReviewerPairingRefused as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)

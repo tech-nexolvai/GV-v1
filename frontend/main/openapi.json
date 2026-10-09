@@ -567,6 +567,18 @@
         "additionalProperties": false,
         "description": "A reviewer's pairing for one row. `pairs: []` states that nothing on the architect's drawing\nis comparable with this row.",
         "properties": {
+          "expected_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Record Id"
+          },
           "note": {
             "anyOf": [
               {
