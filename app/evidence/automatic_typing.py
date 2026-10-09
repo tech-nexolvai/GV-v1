@@ -32,7 +32,7 @@ from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint
-from evidence.corroborate import independence_key
+from evidence.corroborate import independence_key, one_dual_label_across_agreements
 from evidence.normalize import NormalizationRefusal, normalize
 from evidence.semantic_typing import (
     SemanticTypingDecision,
@@ -163,18 +163,24 @@ def _second_reader_candidate_ids(
         .where(
             ObservationCandidate.document_version_id == reading.document_version_id,
             ObservationCandidate.page_id == reading.page_id,
-            ObservationCandidate.value_numerator == reading.value_numerator,
-            ObservationCandidate.value_denominator == reading.value_denominator,
-            ObservationCandidate.unit == reading.unit,
             ObservationCandidate.corroboration_lane == CorroborationLane.SECOND_READER.value,
         )
         .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
     ).all()
-    matching = tuple(
+    # Every agreement in the region, whatever its value: what the seal would rest on, and what
+    # #928's check below is asked about.
+    agreeing = tuple(
         (candidate, run)
         for candidate, run in rows
         if candidate.polygon == reading.polygon
         and candidate.corroboration_status in agreement_statuses
+    )
+    matching = tuple(
+        (candidate, run)
+        for candidate, run in agreeing
+        if candidate.value_numerator == reading.value_numerator
+        and candidate.value_denominator == reading.value_denominator
+        and candidate.unit == reading.unit
     )
     # **A region holding a conflict is never locked in (#790).** A reading saved before a later
     # reader contradicted it cannot be re-marked — readings are append-only — so the conflict is
@@ -188,6 +194,14 @@ def _second_reader_candidate_ids(
     ).scalars()
     if any(polygon == reading.polygon for polygon in conflicted):
         return ()
+    # **Agreements from more than one pass state one dual label, or none is sealed (#928).** The
+    # first pass's pair agreeing on `914 [36]` and the agent's pair on `915 [36]` agree on the
+    # inches, but millimetres that differ show one group misread: a reviewer decides. The stage
+    # marks such a region conflicting; this also holds a region stored before it did.
+    if not one_dual_label_across_agreements(
+        tuple((_stored_value(candidate), candidate.raw_text) for candidate, _run in agreeing)
+    ):
+        return ()
     candidate_ids = tuple(candidate.id for candidate, _run in matching)
     # Independent by the rule `corroborate` agrees by (#775): model readers by vendor.
     independent = {
@@ -196,6 +210,22 @@ def _second_reader_candidate_ids(
     if reading.id not in candidate_ids or len(candidate_ids) < 2 or len(independent) < 2:
         return ()
     return candidate_ids
+
+
+def _stored_value(candidate: ObservationCandidate) -> Measurement | None:
+    """A stored reading's value, or `None` where it has none in a known unit."""
+    if (
+        candidate.value_numerator is None
+        or candidate.value_denominator is None
+        or candidate.unit is None
+        or candidate.unit not in {unit.value for unit in Unit}
+    ):
+        return None
+    return Measurement(
+        Fraction(candidate.value_numerator, candidate.value_denominator),
+        Unit(candidate.unit),
+        candidate.raw_text,
+    )
 
 
 def _review(
