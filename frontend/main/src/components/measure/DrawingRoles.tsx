@@ -3,9 +3,10 @@ import { useEffect, useState } from 'react';
 import { ApiError, confirmDrawingRole, listDrawingViews } from '../../api/client';
 import { projectId } from '../../api/config';
 import { roleCount, type DrawingRole, type DrawingView } from './drawingRoleChoices.js';
-import type { StepCount } from '../../lib/measure-steps';
+import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { DrawingRolesList } from './DrawingRolesList.js';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
+import { LoadError } from './wizard-ui.js';
 
 /**
  * Loads a package's drawings and saves a reviewer's answer about each (#795).
@@ -18,11 +19,14 @@ export function DrawingRoles({
   packageId,
   onConfirmed,
   onProgress,
+  onState,
 }: {
   packageId: string;
   onConfirmed: () => void;
   /** Its count for the Measurements step bar (#1061): reported whenever the list changes. */
   onProgress?: (count: StepCount | null) => void;
+  /** Loaded and empty, shown, loading or failed: for the step's "nothing here" line (#1124). */
+  onState?: (state: SectionState) => void;
 }) {
   const [views, setViews] = useState<DrawingView[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
@@ -32,6 +36,9 @@ export function DrawingRoles({
   useEffect(() => {
     if (views) onProgress?.(roleCount(views));
   }, [views, onProgress]);
+  useEffect(() => {
+    onState?.(loadError ? 'error' : views === null ? 'loading' : views.length === 0 ? 'empty' : 'shown');
+  }, [views, loadError, onState]);
 
   // Loaded once per mount; the page mounts one per package (`key`), so a package switch starts empty
   // rather than showing the last package's drawings while the next one's load.
@@ -60,20 +67,18 @@ export function DrawingRoles({
 
   if (views === null || views.length === 0) {
     return loadError ? (
-      <p className="enter-values__error" role="alert">
-        The drawings on these sheets could not be listed: {loadError}{' '}
-        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-      </p>
+      <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+        The drawings on these sheets could not be listed: {loadError}
+      </LoadError>
     ) : null;
   }
   return (
     <>
       <DrawingRolesList views={views} saving={null} feedback={feedback} onChoose={(view, role) => void choose(view, role)} />
       {loadError && (
-        <p className="enter-values__error" role="alert">
-          The drawing roles could not refresh: {loadError}{' '}
-          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-        </p>
+        <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+          The drawing roles could not refresh: {loadError}
+        </LoadError>
       )}
     </>
   );

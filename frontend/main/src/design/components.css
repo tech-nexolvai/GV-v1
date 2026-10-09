@@ -300,6 +300,23 @@
   transition-delay: 300ms;
 }
 
+/* ── Value box ─────────────────────────────────────────────────────
+   The chat's finding card still uses it; it lived in MeasurementPanel.css until the Measurements
+   wizard moved to the redesigned components (#1124). */
+.value-input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+.value-input::placeholder { color: var(--text-muted); }
+select.value-input { font-family: var(--font-sans); cursor: pointer; }
+
 /* ── Focus ─────────────────────────────────────────────────────────
    A visible ring on keyboard focus only, so a mouse click does not leave one behind. */
 .btn:focus-visible,

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MeasurementPanel } from '@/pages/MeasurementPanel';
+import { CountertopRunsList } from '@/components/measure/CountertopRunsList';
 import { countOf, isComplete, stepAfter, stepBefore, sumCounts } from '@/lib/measure-steps';
 import { slotRowCount, unsavedRowCount } from '@/components/measure/slotReaderReview';
 
@@ -35,6 +36,12 @@ const slot = (id: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 let slotRows = [slot('row-a'), slot('row-b', { wall_config: 'back_only' })];
+const view = (id: string, extra: Record<string, unknown> = {}) => ({
+  view_id: id, page_index: 1, tag: `panel-${id}`, role: null, suggested_role: null, suggested_from: 'Synthetic heading', reason: 'synthetic', ...extra,
+});
+let views: ReturnType<typeof view>[] = [];
+/** Per-test overrides: a path suffix answered differently (a failure, or never). */
+let override: Record<string, () => Promise<Response>> = {};
 
 const calls: { method: string; url: string; body?: string }[] = [];
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -42,13 +49,16 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 beforeEach(() => {
   calls.length = 0;
   slotRows = [slot('row-a'), slot('row-b', { wall_config: 'back_only' })];
+  views = [];
+  override = {};
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ method: init?.method ?? 'GET', url, body: typeof init?.body === 'string' ? init.body : undefined });
+    for (const [suffix, answer] of Object.entries(override)) if (url.endsWith(suffix)) return answer();
     if (url.includes('/required-inputs')) return json(REQUIRED);
     if (url.includes('/candidates')) return json({ candidates: [], page_number: 1, total: 0 });
     if (url.endsWith('/semantic-types')) return json(['countertop_width', 'sink_width']);
-    if (url.endsWith('/views')) return json({ views: [] });
+    if (url.endsWith('/views')) return json({ views });
     if (url.endsWith('/parts')) return json({ drawings: [] });
     if (url.endsWith('/countertop-runs')) return json({ can_suggest: false, why_not: null, drawings: [] });
     if (url.endsWith('/reading-parts')) return json({ can_suggest: true, why_not: null, drawings: [] });
@@ -114,14 +124,70 @@ describe('measurements wizard: on screen', { timeout: 15_000 }, () => {
     expect(visibleSteps()).toEqual(['runs']);
   });
 
-  it('keeps Run checks within reach on every step, where the header lands', async () => {
+  it('one primary action per step: Next, then Run checks only on the last step, keeping its id (#1124)', async () => {
     const user = userEvent.setup();
     await openPanel();
-    for (const label of [/Drawings/, /Countertops/, /Values/, /Settings/]) {
+    const footer = () => document.querySelector<HTMLElement>('[data-slot="measure-actions"]')!;
+    const primaries = () => [...footer().querySelectorAll<HTMLButtonElement>('button[data-variant="default"]')].map((b) => b.textContent?.trim());
+    const labels = () => [...footer().querySelectorAll<HTMLButtonElement>('button')].map((b) => b.textContent?.trim());
+    for (const [label, primary] of [[/Drawings/, 'Next'], [/Countertops/, 'Next'], [/Values/, 'Next'], [/Settings/, 'Run checks']] as const) {
       await user.click(stepButton(label));
-      const run = document.getElementById('measure-run-checks')!;
-      expect(run.closest('[hidden]')).toBeNull();
+      expect(primaries()).toEqual([primary]);
+      const run = document.getElementById('measure-run-checks');
+      if (primary === 'Run checks') {
+        expect(run?.textContent).toContain('Run checks');
+        expect(run?.closest('[hidden]')).toBeNull();
+      } else {
+        expect(run).toBeNull();
+      }
+      // The Results tab is right there: no duplicate "See findings".
+      expect(labels()).not.toContain('See findings');
     }
+    // Save values is the quiet one, and only where the values and settings it records are.
+    expect(footer().querySelector('button[data-variant="outline"]')?.textContent).toBe('Save values');
+    await user.click(stepButton(/Drawings/));
+    expect(labels()).not.toContain('Save values');
+    // Back is a ghost button, and step 1 has none.
+    expect(labels().some((l) => l?.includes('Back'))).toBe(false);
+    await user.click(stepButton(/Countertops/));
+    expect(footer().querySelector('button[data-variant="ghost"]')?.textContent).toContain('Back');
+  });
+
+  it("the header's Run checks opens the last step, where #measure-run-checks is (#1124)", async () => {
+    const { rerender } = await openPanel();
+    expect(document.getElementById('measure-run-checks')).toBeNull();
+    rerender(<MeasurementPanel packageId="k" runChecksRequest={1} />);
+    expect(visibleSteps()).toEqual(['settings']);
+    expect(document.getElementById('measure-run-checks')).not.toBeNull();
+    // Opened straight from the header (first mount with a request) works too.
+    const second = render(<MeasurementPanel packageId="k" runChecksRequest={1} />);
+    await waitFor(() => expect(second.container.querySelector('#measure-run-checks')).not.toBeNull(), { timeout: 5000 });
+  });
+
+  it('renders no h1: the review shell owns the page heading (#1124)', async () => {
+    await openPanel();
+    expect(document.querySelectorAll('h1')).toHaveLength(0);
+    expect(screen.getByRole('heading', { level: 2, name: 'Review measurements' })).toBeTruthy();
+  });
+
+  it('counts in words, and nothing is pre-selected (#1124)', async () => {
+    const user = userEvent.setup();
+    views = [view('a'), view('b'), view('c', { role: 'shop' })];
+    await openPanel();
+    expect(await screen.findByText('2 drawings still to confirm.', undefined, { timeout: 5000 })).toBeTruthy();
+    // No role is chosen for an unconfirmed drawing; only the saved one shows as chosen.
+    const pressed = [...document.querySelectorAll('[data-slot="drawing-roles"] button[aria-pressed="true"]')];
+    expect(pressed.map((b) => b.textContent)).toEqual(["Vendor's drawing"]);
+    // The step bar says "N of M done", never a bare "N/M".
+    const nav = screen.getByRole('navigation', { name: 'Measurement steps' });
+    await waitFor(() => expect(within(nav).getByRole('button', { name: /Drawings/ }).textContent).toContain('1 of 3 done'), { timeout: 5000 });
+    expect(nav.textContent).not.toMatch(/\d\/\d/);
+    // The countertop rows say how many are done, in words.
+    await user.click(stepButton(/Countertops/));
+    expect(await screen.findByText('1 of 2 countertop rows done.', undefined, { timeout: 5000 })).toBeTruthy();
+    // No layout or wall answer is chosen for the reviewer.
+    const group = screen.getAllByRole('radiogroup', { name: 'Wall layout for this row' })[0];
+    expect(within(group).queryAllByRole('radio', { checked: true })).toHaveLength(0);
   });
 
   it('a value typed in one step survives switching to another and back', async () => {
@@ -148,10 +214,11 @@ describe('measurements wizard: on screen', { timeout: 15_000 }, () => {
   it('counts each step: countertop rows, values on screen, settings that are filled or have a rulebook value', async () => {
     await openPanel();
     const nav = screen.getByRole('navigation', { name: 'Measurement steps' });
-    await waitFor(() => expect(within(nav).getByRole('button', { name: /Countertops/ }).textContent).toContain('1/2'), { timeout: 5000 });
-    expect(within(nav).getByRole('button', { name: /Values/ }).textContent).toContain('0/2');
+    // #1124: in words ("1 of 2 done"), no longer "1/2".
+    await waitFor(() => expect(within(nav).getByRole('button', { name: /Countertops/ }).textContent).toContain('1 of 2 done'), { timeout: 5000 });
+    expect(within(nav).getByRole('button', { name: /Values/ }).textContent).toContain('0 of 2 done');
     // field_cut has a rulebook value; overhang is empty; the blocked one is not the reviewer's.
-    expect(within(nav).getByRole('button', { name: /Settings/ }).textContent).toContain('1/2');
+    expect(within(nav).getByRole('button', { name: /Settings/ }).textContent).toContain('1 of 2 done');
   });
 
   it('a wall picture button is only a draft; "Use this wall layout" sends it', async () => {
@@ -197,5 +264,74 @@ describe('measurements wizard: on screen', { timeout: 15_000 }, () => {
     expect((await screen.findByText(/Needs review: Synthetic: the stone runs into the walls, so the reviewer decides\./, undefined, { timeout: 5000 }))).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Decide in the queue' }));
     expect(onOpenQueue).toHaveBeenCalled();
+  });
+});
+
+describe('measurements wizard: review fixes (#1124)', { timeout: 15_000 }, () => {
+  // Saving values and queuing checks; the page-picture request a step makes on its own is not one.
+  const writes = () => calls.filter((c) => c.method !== 'GET' && /\/(measurements|checks)$/.test(c.url));
+
+  it('a double-click on Next in Values moves one step and never runs the checks', async () => {
+    const user = userEvent.setup();
+    await openPanel();
+    await user.click(stepButton(/Values/));
+    await user.dblClick(screen.getByRole('button', { name: 'Next' }));
+    expect(visibleSteps()).toEqual(['settings']);
+    expect(writes()).toEqual([]);
+    // Focus went to the new step's heading, not to the button that took Next's place.
+    expect(document.activeElement?.getAttribute('data-step-heading')).toBe('settings');
+  });
+
+  it('Run checks ignores a click right after a step change, and works once the step has settled', async () => {
+    await openPanel();
+    fireEvent.click(screen.getByRole('button', { name: /Settings/ }));
+    fireEvent.click(document.getElementById('measure-run-checks')!);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes()).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    fireEvent.click(document.getElementById('measure-run-checks')!);
+    await waitFor(() => expect(writes().some((c) => c.url.endsWith('/measurements'))).toBe(true));
+  });
+
+  it('says a step is empty only when every section loaded empty', async () => {
+    await openPanel();
+    expect(await screen.findByText('Nothing to decide on these drawings.', undefined, { timeout: 5000 })).toBeTruthy();
+  });
+
+  it('never says a step is empty over a failed section', async () => {
+    override = { '/parts': async () => json({ error: 'http_error', message: 'Synthetic failure.', request_id: 'r' }, 500) };
+    await openPanel();
+    expect(await screen.findByText(/The parts of these drawings could not be listed/, undefined, { timeout: 5000 })).toBeTruthy();
+    expect(screen.queryByText('Nothing to decide on these drawings.')).toBeNull();
+  });
+
+  it('never says a step is empty while a section is still loading', async () => {
+    override = { '/views': () => new Promise<Response>(() => undefined) };
+    await openPanel();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText('Nothing to decide on these drawings.')).toBeNull();
+  });
+
+  it("confirming a run cannot send the readers' wall suggestion unless the person chose it", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const top = {
+      countertop_item_id: 'top', number: 2, code: null, decision: null,
+      suggestion: { members: [{ item_id: 'a', number: 1, kind: 'cabinet', position: 1, signal: 'synthetic' }], left_out: [], warnings: [], edge_tolerance: '0.004' },
+      wall_layout_proposal: { value: 'island', source: 'readers' },
+    };
+    const runs = {
+      can_suggest: true, why_not: null, wall_layout_choices: ['back_left_right', 'back_only', 'island'],
+      drawings: [{ view_id: 'v', page_index: 0, tag: 't', can_confirm: true, why_not: null, parts: [{ item_id: 'a', number: 1, kind: 'cabinet', code: null }], countertops: [top] }],
+    };
+    render(<CountertopRunsList runs={runs as never} saving={null} onConfirm={onConfirm} onWithdraw={() => undefined} />);
+    const confirm = screen.getByRole('button', { name: 'Confirm this run' });
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
+    expect(confirm).toHaveProperty('disabled', true);
+    await user.click(confirm);
+    expect(onConfirm).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Use the suggested layout: Island' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm this run' }));
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ countertop_item_id: 'top' }), ['a'], 'island');
   });
 });

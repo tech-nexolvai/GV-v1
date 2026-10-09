@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 
 import { downloadPartPicture } from '../../api/client';
 import { projectId } from '../../api/config';
+import { Button } from '@/components/ui/button';
+import { Hint } from './wizard-ui.js';
+
+/** How a part's picture sits in its card: whole, on white, never taller than a phone's half screen. */
+export const PICTURE_CLASS = 'max-h-56 w-full rounded-lg border bg-white object-contain';
 
 /**
  * One part's own picture: the vendor's drawing round its outline, cut by the worker (#897).
@@ -40,11 +45,18 @@ export function PartPicture({
     };
   }, [packageId, proposalId, attempt]);
 
-  if (state.error) return <p className="drawing-parts__no-picture">{state.error} <button type="button" className="btn btn--sm btn--subtle" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry picture</button></p>;
-  if (!state.url) return <p className="drawing-parts__no-picture">Loading the picture…</p>;
+  if (state.error) {
+    return (
+      <Hint className="flex flex-wrap items-center gap-2">
+        {state.error}
+        <Button type="button" size="xs" variant="outline" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry picture</Button>
+      </Hint>
+    );
+  }
+  if (!state.url) return <div className="h-32 w-full animate-pulse rounded-lg bg-muted motion-reduce:animate-none" aria-label="Loading the picture…" role="status" />;
   return (
     <a href={state.url} target="_blank" rel="noreferrer" title="Open the picture at full size">
-      <img className="drawing-parts__part-picture" src={state.url} alt={alt} />
+      <img className={PICTURE_CLASS} src={state.url} alt={alt} />
     </a>
   );
 }

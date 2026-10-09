@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
+  AlertCircle,
   AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
   ChevronRight,
+  CircleDashed,
   Play,
   Plus,
   ScanLine,
@@ -35,10 +40,15 @@ import { PageDrawing } from '../components/measure/PageDrawing';
 import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
-// New-style imports (`@/`): this screen now mixes Tailwind with its legacy classes (#1061).
+// The redesigned components (#1124): the whole wizard is Tailwind + shadcn now, no legacy classes.
 import { InfoTip } from '@/components/ui/info-tip';
 import { Button } from '@/components/ui/button';
-import { sameCount, stepAfter, stepBefore, sumCounts, type MeasureStep, type StepCount } from '@/lib/measure-steps';
+import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { cn } from '@/lib/utils';
+import { Caution, Hint, INPUT_CLASS, LoadError, SELECT_CLASS, StepSection } from '../components/measure/wizard-ui';
+import { countWords } from '../components/measure/wizardWords';
+import { MEASURE_STEPS, sameCount, stepAfter, stepBefore, stepIsEmpty, sumCounts, type MeasureStep, type SectionState, type StepCount } from '@/lib/measure-steps';
 import { measurementValueOrigin } from './measurementValueOrigin';
 import { proposalCoversEveryPosition, proposalValuesAtPositions } from '../lib/measurement-proposals';
 import { fieldReview, reviewCounts, type FieldReview, type ReviewedCandidate } from './fieldReview';
@@ -59,7 +69,6 @@ import {
   uploadLabel,
   type SettingPointer,
 } from '../components/measure/settingPointers';
-import './MeasurementPanel.css';
 
 /**
  * The reviewer completes the dimensions, and the deterministic engine decides.
@@ -162,6 +171,8 @@ type Needed = {
 };
 
 const REQUIRED_INPUTS_POLL_MS = 5000;
+/** Run checks ignores clicks this soon after a step change: they were meant for the step's Next. */
+const RUN_CHECKS_SETTLE_MS = 300;
 
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
 const SOURCE_LABEL: Record<string, string> = {
@@ -199,19 +210,22 @@ function ReadingProgress({ state }: { state: string }) {
 
   const stage = state.toLowerCase().replace(/_/g, ' ');
   return (
-    <div className="reading" role="status" aria-live="polite" aria-busy="true">
-      <div className="reading__head">
-        <ScanLine size={14} aria-hidden="true" />
-        <span className="reading__title">Reading these drawings</span>
-        <span className="reading__stage">{stage}</span>
-        <span className="reading__clock mono">{(elapsed / 1000).toFixed(0)}s</span>
+    <div data-slot="reading-progress" className="flex flex-col gap-2 rounded-xl border bg-card p-4" role="status" aria-live="polite" aria-busy="true">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <ScanLine className="size-4" aria-hidden="true" />
+        <span className="font-semibold">Reading these drawings</span>
+        <span className="text-muted-foreground">{stage}</span>
+        <span className="num ml-auto text-muted-foreground">{(elapsed / 1000).toFixed(0)}s</span>
       </div>
-      <div className="reading__track" aria-hidden="true">
-        <span className="reading__bar" />
+      {/* Indeterminate: a pulse says "working" and claims no fraction nobody measured. */}
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15" aria-hidden="true">
+        <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
       </div>
-      <p className="reading__note">
-        This usually takes about a minute. The page is watching and will fill itself in when the
-        reading finishes — you do not need to reload.
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        Usually about a minute; this page fills itself in.
+        <InfoTip label="About the reading">
+          <p>This usually takes about a minute. The page is watching and will fill itself in when the reading finishes — you do not need to reload.</p>
+        </InfoTip>
       </p>
     </div>
   );
@@ -283,7 +297,6 @@ function fieldLabel(quantity: Quantity): string {
 
 export function MeasurementPanel({
   packageId: selectedPackageId,
-  onDone,
   onChoosePackage,
   onChecksQueued,
   onValuesSaved,
@@ -291,9 +304,9 @@ export function MeasurementPanel({
   onTargetReached,
   onReviewRow,
   onOpenQueue,
+  runChecksRequest,
 }: {
   packageId?: string;
-  onDone?: (packageId: string) => void;
   onChoosePackage?: () => void;
   onChecksQueued?: () => void;
   /** Values were saved without running checks (#1034: the stepper then asks for a new run). */
@@ -303,6 +316,11 @@ export function MeasurementPanel({
   onReviewRow?: (rowId: string) => void;
   /** Opens the "Needs you" queue (#1050): where a held countertop row is decided. */
   onOpenQueue?: () => void;
+  /**
+   * Bumped by the review header's "Run checks" (#1124): Run checks lives only on the last step, so
+   * each new request opens that step, where `#measure-run-checks` is.
+   */
+  runChecksRequest?: number;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [selectedPageNumber, setSelectedPageNumber] = useState(1);
@@ -368,10 +386,18 @@ export function MeasurementPanel({
    */
   const [step, setStep] = useState<MeasureStep>('drawings');
   const rootRef = useRef<HTMLDivElement>(null);
+  /** When the reviewer last moved between steps, and to which step focus should follow (#1124). */
+  const stepChangedAtRef = useRef(0);
+  const focusStepRef = useRef<MeasureStep | null>(null);
   const [sectionCounts, setSectionCounts] = useState<Record<string, StepCount | null>>({});
   const [unsavedRows, setUnsavedRows] = useState(0);
   const reportCount = (section: string) => (count: StepCount | null) =>
     setSectionCounts((prior) => (sameCount(prior[section], count) ? prior : { ...prior, [section]: count }));
+  // Each section says whether it loaded empty, so a step's "nothing here" line is never shown over a
+  // failed or still-loading section (#1124).
+  const [sectionStates, setSectionStates] = useState<Record<string, SectionState>>({});
+  const reportState = (section: string) => (state: SectionState) =>
+    setSectionStates((prior) => (prior[section] === state ? prior : { ...prior, [section]: state }));
   // "Open countertop card" (Results, the queue) lands on the countertop rows: show their step first.
   const [seenTarget, setSeenTarget] = useState<string | null>(null);
   if (targetRow && targetRow !== seenTarget) {
@@ -379,6 +405,19 @@ export function MeasurementPanel({
     setStep('runs');
   } else if (!targetRow && seenTarget !== null) {
     setSeenTarget(null);
+  }
+  // A step change moves focus to that step's heading, not the footer: a second click of a double-click
+  // on Next then lands on nothing rather than on whatever button took Next's place (#1124).
+  useEffect(() => {
+    if (focusStepRef.current !== step) return;
+    focusStepRef.current = null;
+    rootRef.current?.querySelector<HTMLElement>(`[data-step-heading="${step}"]`)?.focus({ preventScroll: true });
+  }, [step]);
+  // Starts at 0, so a request that arrives with the first mount (the header opened this tab) counts.
+  const [seenRunRequest, setSeenRunRequest] = useState(0);
+  if ((runChecksRequest ?? 0) !== seenRunRequest) {
+    setSeenRunRequest(runChecksRequest ?? 0);
+    if (runChecksRequest) setStep('settings');
   }
 
   useEffect(() => {
@@ -570,16 +609,13 @@ export function MeasurementPanel({
 
   if (!selectedPackageId) {
     return (
-      <div className="enter-values">
-        <h1>Choose a review first</h1>
-        <p className="enter-values__hint">
-          Measurements belong to one uploaded drawing pair. Open that pair from Documents, then
-          confirm any AI readings and continue here.
-        </p>
+      <div data-tw data-slot="measure-wizard" className="flex h-full min-h-0 flex-1 flex-col items-start gap-3 overflow-y-auto bg-background p-4 font-sans text-foreground sm:p-6">
+        <h2 className="text-xl font-semibold tracking-tight">Choose a review first</h2>
+        <p className="text-sm text-muted-foreground">Measurements belong to one uploaded drawing pair: open it from Documents.</p>
         {onChoosePackage && (
-          <button type="button" className="value-primary" onClick={onChoosePackage}>
+          <Button type="button" onClick={onChoosePackage}>
             Open documents
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -903,6 +939,8 @@ export function MeasurementPanel({
 
   async function onRunChecks() {
     if (!packageId || !needed) return;
+    // A click this soon after a step change was aimed at the button that was there before (Next).
+    if (Date.now() - stepChangedAtRef.current < RUN_CHECKS_SETTLE_MS) return;
     setBusy(true);
     setError(null);
     setAccepted(null);
@@ -922,18 +960,18 @@ export function MeasurementPanel({
 
   if (loadError && !needed) {
     return (
-      <div className="enter-values">
-        <div className="enter-values__error" role="alert">
+      <div data-tw data-slot="measure-wizard" className="flex h-full min-h-0 flex-1 flex-col items-start gap-3 overflow-y-auto bg-background p-4 font-sans text-foreground sm:p-6">
+        <LoadError onRetry={() => setResourceRetry((count) => count + 1)} retryLabel="Try loading measurements again">
           {loadError}
-        </div>
-        <button type="button" className="value-secondary" onClick={() => setResourceRetry((count) => count + 1)}>Try loading measurements again</button>
+        </LoadError>
       </div>
     );
   }
   if (!needed) {
     return (
-      <div className="enter-values">
-        <p className="enter-values__hint">Reading what the rulebook needs…</p>
+      <div data-tw data-slot="measure-wizard" className="flex h-full min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-background p-4 font-sans text-foreground sm:p-6">
+        <p role="status" className="text-sm text-muted-foreground">Reading what the rulebook needs…</p>
+        <div className="h-16 w-full animate-pulse rounded-xl bg-muted motion-reduce:animate-none" aria-hidden="true" />
       </div>
     );
   }
@@ -974,13 +1012,7 @@ export function MeasurementPanel({
       candidates: candidatesById,
       placementUnverified: unverifiedFields.has(quantity.key),
     });
-  const REVIEW_LABEL: Record<FieldReview['state'], string> = {
-    agreed: '✓ Both AI readers agreed',
-    needs_look: 'Needs a look',
-    done: 'Done',
-    empty: 'Needs a value',
-  };
-  const coveragePercent =
+    const coveragePercent =
     measurementFieldCount === 0
       ? 0
       : Math.round((filledFieldCount / measurementFieldCount) * 100);
@@ -1051,953 +1083,983 @@ export function MeasurementPanel({
   const previousStep = stepBefore(step);
   const nextStep = stepAfter(step);
   const goToStep = (target: MeasureStep) => {
+    stepChangedAtRef.current = Date.now();
+    focusStepRef.current = target;
     setStep(target);
     if (rootRef.current) rootRef.current.scrollTop = 0;
   };
 
-  return (
-    <div className="enter-values" ref={rootRef}>
-      {/* **Two sentences, not five.** Everything here was true and none of it was what a reviewer
-          opening the page needs first, which is the format of a value. The rest is the rationale
-          for the form's existence — worth saying once, in small type, under the instruction. */}
-      <header className="enter-values__head">
-        <h1>Review measurements</h1>
-        {/* One line; the rest is behind "?" (#1061). */}
-        <p className="measure-oneliner">
-          Work through the four steps, then run the checks. Type every value with its unit — <code>25 1/2&quot;</code> or <code>648 mm</code>.{' '}
-          <InfoTip label="How these values are used">
-            <p>Check suggested values against the drawing, confirm what each one measures, then fill what is missing.</p>
-            <p>A suggestion is not a confirmed measurement. Values without units are refused. The {needed.rules_published} published rules compare saved values exactly; missing or uncertain inputs can leave a check undecided.</p>
-            <p><strong>Save values</strong> records the values and settings (steps 3 and 4) without running checks. <strong>Run checks</strong> saves them first and queues checks only if saving succeeds.</p>
-            <p>Drawings, parts, countertop rows, walls, runs and readings (steps 1 and 2) are saved by their own buttons.</p>
-          </InfoTip>
-        </p>
-        {refreshUnavailable && (
-          <p className="enter-values__hint" role="status">
-            Could not refresh the drawing data just now. Your unsaved measurements are still here;
-            this page will try again.
-          </p>
-        )}
-      </header>
-
-      <MeasurementSectionNav current={step} counts={stepCounts} onPick={goToStep} />
-      {loadError && <p className="enter-values__error" role="alert">The latest refresh failed; your entered values are still here. {loadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
-
-      {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
-          the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
-          a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
-      <div data-measure-step="drawings" hidden={step !== 'drawings'}>
-      <div id="measure-drawings" className="measure-step-target">
-      {packageId && (
-        <DrawingRoles
-          key={`${packageId}-drawing-roles`}
-          packageId={packageId}
-          onConfirmed={() => setReload((count) => count + 1)}
-          onProgress={reportCount('roles')}
-        />
-      )}
-
-      {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
-      {packageId && (
-        <DrawingParts
-          key={`${packageId}-drawing-parts`}
-          packageId={packageId}
-          refresh={reload}
-          onDecided={() => setPartsDecided((count) => count + 1)}
-          onProgress={reportCount('parts')}
-        />
-      )}
-      </div>
-      </div>
-
-      {/* **Which parts sit under each countertop** (#893): suggested from the confirmed parts above,
-          and each countertop's run decided by a person. Read again whenever a part is decided. */}
-      <div data-measure-step="runs" hidden={step !== 'runs'}>
-      <div id="measure-runs" className="measure-step-target">
-      <p className="measure-step-intro">
-        Confirm each countertop&apos;s parts, walls and widths.{' '}
-        <InfoTip label="About this step">
-          <p>After confirming the vendor&apos;s parts in step 1, choose the parts beneath each countertop and the reading for each part&apos;s width.</p>
-          <p>Each run needs your wall-layout choice; none is selected automatically.</p>
-        </InfoTip>
-      </p>
-      {packageId && (
-        <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} onProgress={reportCount('runs')} />
-      )}
-      {packageId && (
-        <SlotReaderRows packageId={packageId} refresh={reload + partsDecided + readingsConfirmed} targetRow={targetRow} onTargetReached={onTargetReached} onReviewRow={onReviewRow} onOpenQueue={onOpenQueue} onProgress={reportCount('rows')} onUnsaved={setUnsavedRows} />
-      )}
-
-      {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and
-          readings, and each part's link decided by a person. Read again whenever a part is decided
-          or a reading is confirmed here. */}
-      {packageId && (
-        <ReadingParts
-          key={`${packageId}-reading-parts`}
-          packageId={packageId}
-          refresh={reload + partsDecided + readingsConfirmed}
-          onProgress={reportCount('links')}
-        />
-      )}
-      </div>
-      </div>
-
-      {/* A plain wrapper hides the step: the section's own grid would override `hidden` (#1061). */}
-      <div data-measure-step="values" hidden={step !== 'values'}>
-      <section className="enter-values__section measure-step-target measure-values--with-drawing" id="measure-values">
-        {packageId && <PageDrawing packageId={packageId} pageNumber={selectedPageNumber} />}
-        {candidateLoadError && <p className="enter-values__error" role="alert">Drawing readings could not be refreshed. You can still enter values. {candidateLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
-        {vocabularyLoadError && <p className="enter-values__error" role="alert">Reading meanings could not be loaded. You can still enter values. {vocabularyLoadError} <button type="button" onClick={() => setResourceRetry((count) => count + 1)}>Try again</button></p>}
-        <div className="measure-page-picker">
-          <label htmlFor="measure-page-number">Review one page</label>
-          <select
-            id="measure-page-number"
-            className="value-input"
-            value={selectedPageNumber}
-            onChange={(event) => {
-              setCandidates([]);
-              setProposalSteps([]);
-              setProposal(null);
-              setProposalError(null);
-              setSelectedPageNumber(Number(event.currentTarget.value));
-            }}
-          >
-            {(needed.page_numbers.length ? needed.page_numbers : [selectedPageNumber]).map((page) => (
-              <option key={page} value={page}>Page {page}</option>
-            ))}
-          </select>
-          <InfoTip label="About the page picker">
-            <p>Readings and Fill with AI are limited to this page. The values you type belong to the whole set and are all saved together.</p>
-          </InfoTip>
-        </div>
-        <h2>Measurements — page {selectedPageNumber}</h2>
-
-        {/* **One line, one bar, three counts.**
-            This was five stat tiles and a paragraph, and a reviewer opening the page could not tell
-            at a glance whether there was anything to do. The bar is the only number that answers
-            that question — how much of the form is filled — and it is labelled as coverage, because
-            a filled field is not a right one and the screen must not imply that it is. */}
-        <div className="measure-coverage" aria-label="How much of the form is filled">
-          <div className="measure-coverage__head">
-            <p className="measure-coverage__headline">
-              <strong>{filledFieldCount}</strong> of <strong>{measurementFieldCount}</strong> fields
-              have a value
-            </p>
-            <span className="measure-coverage__percent mono">{coveragePercent}%</span>
-          </div>
-          <div
-            className="measure-coverage__track"
-            role="progressbar"
-            aria-valuenow={coveragePercent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <span className="measure-coverage__bar" style={{ width: `${coveragePercent}%` }} />
-          </div>
-          {/* The readings as one line of numbers, and the fields as a sheet × state table (#1061). */}
-          <ul className="measure-coverage__counts">
-            {needed.still_reading && candidates.length + confirmedCount === 0 ? (
-              <li>
-                <strong>Reading</strong> dimensions from the drawings
-              </li>
-            ) : (
-              <li>
-                <strong>{candidates.length + confirmedCount}</strong> read off the drawings
-              </li>
-            )}
-            <li>
-              <strong>{confirmedCount}</strong> confirmed
-            </li>
-            <li>
-              <strong>{candidates.length}</strong> without a meaning
-            </li>
-            {exactTagFieldCount > 0 && (
-              <li>
-                <strong>{exactTagFieldCount}</strong> filled by the drawing&apos;s own tags
-              </li>
-            )}
-            <li className="measure-coverage__caveat">
-              Coverage, not accuracy.{' '}
-              <InfoTip label="About coverage">
-                <p>A filled field is not a right one.</p>
-                <p>A dimension the reader could not parse, or a number with no unit, is not counted here at all — it was refused rather than guessed, and the field stays empty for you.</p>
-                {exactTagFieldCount > 0 && <p>Fields filled by the drawing&apos;s own tags needed no click: the drawing states the meaning itself.</p>}
-              </InfoTip>
-            </li>
-          </ul>
-          <table className="mt-2 w-full text-left font-sans text-xs" data-part="coverage-table">
-            <caption className="sr-only">Fields by drawing and state</caption>
-            <thead className="text-muted-foreground">
-              <tr>
-                <th scope="col" className="py-1 font-normal">Drawing</th>
-                <th scope="col" className="py-1 text-right font-normal">Needs a value</th>
-                <th scope="col" className="py-1 text-right font-normal">Needs a look</th>
-                <th scope="col" className="py-1 text-right font-normal">Agreed</th>
-                <th scope="col" className="py-1 text-right font-normal">Done</th>
-              </tr>
-            </thead>
-            <tbody className="num">
-              {sheets.map((sheet) => {
-                const states = needed.quantities.filter((quantity) => quantity.source === sheet).map((quantity) => reviewOf(quantity).state);
-                const count = (state: FieldReview['state']) => states.filter((value) => value === state).length;
-                return (
-                  <tr key={sheet} className="border-t">
-                    <th scope="row" className="py-1 font-sans font-normal">{SOURCE_LABEL[sheet] ?? sheet}</th>
-                    <td className="py-1 text-right">{count('empty')}</td>
-                    <td className="py-1 text-right">{count('needs_look')}</td>
-                    <td className="py-1 text-right">{count('agreed')}</td>
-                    <td className="py-1 text-right">{count('done')}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {needed.still_reading && <ReadingProgress state={needed.revision_state} />}
-        </div>
-
-        {/* **Filling the form from the drawings.**
-            The model is not asked what a number means in the abstract; it is asked to map readings
-            this pipeline has already located onto the fields the rulebook already names, and every
-            structural property of a right answer is one `workflow/assignment.py` verifies. What it
-            is never given is the rule arithmetic — a model that knew the equation could choose
-            readings that make it balance, and the check would then confirm the balance on a drawing
-            with a real error in it. */}
-        {/* **The offer stands until an attempt has been made, and then the panel owns the space.**
-            This was keyed on `proposalSteps.length === 0`, which is the state a request that failed
-            *before its first frame* also lands in — a 413, a 404, a server that did not answer. The
-            offer panel came back, `proposalError` was rendered nowhere, and pressing Fill with AI
-            looked like pressing a button that does nothing. Keyed on whether anything was attempted
-            instead, so a failure is shown rather than swallowed. */}
-        {needed.still_reading ? (
-          <div className="measure-fill measure-fill--reading">
-            <div className="measure-fill__text">
-              <h3>
-                <ScanLine size={15} aria-hidden="true" /> Still reading, watching
-              </h3>
-              <p>
-                Stage: <code>{needed.revision_state}</code>. This page checks again by itself.
-              </p>
-            </div>
-          </div>
-        ) : !attempted && storedProposalCount > 0 ? (
-          /* **Already done, before the reviewer arrived.** The proposal is made when the drawings
-             are read and filed, so this panel reports a completed step rather than offering one.
-             The offer below is what a package with no filed proposal still shows. */
-          <div className="measure-fill measure-fill--done">
-            <div className="measure-fill__text">
-              <h3>
-                <Sparkles size={15} aria-hidden="true" /> Filled from the drawings
-              </h3>
-              <p>
-                {storedProposalCount} field{storedProposalCount === 1 ? '' : 's'} filled, marked{' '}
-                <strong>proposed by AI</strong>: check, edit, then Save.{' '}
-                <InfoTip label="About the AI fill">
-                  <p>These were filled when the drawings were read, and every one passed the checks against the drawing — the right sheet, attached to a real dimension line, one reading per field, and a run in the order the drawing draws it.</p>
-                  <p>Nothing is saved until you press Save.</p>
-                </InfoTip>
-              </p>
-              {/* Stays visible: these need a look at the crop before they are kept. */}
-              {unverifiedFields.size > 0 && (
-                <p className="measure-fill__caveat">
-                  <AlertTriangle size={13} aria-hidden="true" />
-                  <span>
-                    {unverifiedFields.size} could not be checked against the drawing&apos;s lines: open their crops before keeping them.{' '}
-                    <InfoTip label="Why these could not be checked">
-                      <p>These sheets are scanned images with no dimension line-work, so nothing confirmed that each number sits on the dimension it measures.</p>
-                    </InfoTip>
-                  </span>
-                </p>
+  /** One field of the form: its name and where its value came from | its value, then the evidence. */
+  const renderField = (quantity: Quantity) => {
+    const origin = fieldOrigin(quantity);
+    const review = reviewOf(quantity);
+    const pictured =
+      review.state === 'needs_look'
+        ? (aiFilled[quantity.key] ?? [])
+            .map((id) => candidatesById.get(id))
+            .filter((candidate): candidate is ReviewedCandidate & CandidateOut => candidate !== undefined)
+        : [];
+    return (
+      <div className="flex flex-col gap-2 px-4 py-3" key={quantity.key} data-origin={origin} data-review={review.state}>
+        {/* A compact row (#1061): the field and where its value came from | its value. The reason,
+            crops, the AI's readings and the hints follow underneath. */}
+        <div className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <label className="flex flex-wrap items-baseline gap-x-2" htmlFor={`q-${quantity.key}`}>
+              {/* The rulebook's readable name leads; the code follows it. A reviewer filling this in
+                  needs to know it is the sink cabinet width — `CT004` is what they quote back. */}
+              <span className="text-sm font-medium">{fieldLabel(quantity)}</span>
+              <span className="num text-xs text-muted-foreground">{quantity.semantic_type}</span>
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5" id={`value-chips-${quantity.key}`} data-part="value-chips">
+              <ReviewChip state={review.state} />
+              {/* With no value, the state chip says it; one "needs a value" is enough. */}
+              {origin !== 'empty' && origin !== 'typed' && origin !== 'confirmed' && (
+                <Badge variant="outline" className="font-normal" data-origin-chip={origin}>
+                  {ORIGIN_LABEL[origin]}
+                </Badge>
               )}
-            </div>
-            <button
-              type="button"
-              className="value-secondary interactive"
-              onClick={() => void onPropose()}
-              disabled={busy || candidates.length === 0}
-            >
-              <Sparkles size={13} aria-hidden="true" /> Ask again
-            </button>
-          </div>
-        ) : !attempted ? (
-          <div className="measure-fill">
-            <div className="measure-fill__text">
-              <h3>Fill these from the drawings</h3>
-              <p>
-                The AI proposes which reading fills which field; nothing is saved until you press Save.{' '}
-                <InfoTip label="About Fill with AI">
-                  <p>A model proposes which reading fills which field when the drawings are read, so this form normally arrives already filled.</p>
-                  <p>Every proposal is checked against the drawing — the right sheet, attached to a real dimension line, one reading per field, and a run in the order the drawing draws it — and refused as a batch if any part of it fails.</p>
-                </InfoTip>
-              </p>
-            </div>
-            <button
-              type="button"
-              className="value-primary interactive"
-              onClick={() => void onPropose()}
-              disabled={busy || candidates.length === 0}
-            >
-              <Sparkles size={14} aria-hidden="true" /> Fill with AI
-            </button>
-            {/* **Two situations, not one sentence covering both.**
-                "every reading already has a meaning, or the reader found none" made the reviewer
-                work out which of the two they were in — from a panel that already knows. One of
-                them is a finished package and the other is a drawing nothing was read from, and
-                they want completely different things done about them. */}
-            {candidates.length === 0 && (
-              <p className="enter-values__hint enter-values__hint--tight">
-                {needed.still_reading
-                  ? `The AI is still reading these drawings (${needed.revision_state.toLowerCase().replace(/_/g, ' ')}). This page is watching, and will fill itself in when the reading finishes.`
-                  : confirmedCount > 0
-                    ? 'Nothing left to propose — every reading off these drawings already has a meaning.'
-                    : 'Nothing was read off these drawings, so there is nothing to propose from. ' +
-                      'Check on Documents that both drawings finished uploading and that the AI ' +
-                      'reading has run.'}
-              </p>
-            )}
-          </div>
-        ) : (
-          <AssignmentProgress
-            steps={proposalSteps}
-            result={proposal}
-            error={proposalError}
-          />
-        )}
-        {(proposal || proposalError) && !proposing && (
-          <button
-            type="button"
-            className="value-secondary measure-fill__again"
-            onClick={() => void onPropose()}
-          >
-            <Sparkles size={13} aria-hidden="true" /> Ask again
-          </button>
-        )}
-        {/* **Collapsed, because it is the slow route and no longer the only one.**
-            Every reading here is also offered beside the field it could fill, and now a model
-            proposes which field that is. What this list is still for is the moment a reviewer
-            wants to see the crop — the region of the uploaded PDF the number was read from —
-            before saying what it means. Open, it pushed the form itself below the fold on every
-            package with readings left. */}
-        {candidates.length > 0 && (
-          <section className="ai-proposals" aria-labelledby="ai-proposals-heading">
-            <button
-              type="button"
-              className="ai-proposals__toggle"
-              aria-expanded={inspecting}
-              id="ai-proposals-heading"
-              onClick={() => setInspecting((shown) => !shown)}
-            >
-              <ChevronRight
-                size={14}
-                className="collapsible-chevron"
-                data-open={inspecting}
-                aria-hidden="true"
-              />
-              Inspect {candidates.length} reading{candidates.length === 1 ? '' : 's'} on the crop
-              before using {candidates.length === 1 ? 'it' : 'them'}
-            </button>
-            <div className="collapsible" data-open={inspecting} inert={!inspecting}>
-            <div>
-            {candidates.map((candidate) => {
-              const availableTypes = typesForCandidate(candidate);
-              const isConfirming = confirming === candidate.candidate_id;
-              return (
-                <div className="ai-proposal" key={candidate.candidate_id}>
-                  <div className="ai-proposal__facts">
-                    <strong>{candidate.value}</strong>
-                    <span>
-                      {SOURCE_LABEL[candidate.source ?? ''] ??
-                        candidate.source_refusal ??
-                        'drawing source unavailable'}
-                    </span>
-                    <span>p{candidate.page_index + 1}</span>
-                    {/* No confidence score — it is written only by RapidOCR, which produced 903
-                        candidates and zero values on the real drawing. #720. */}
-                  </div>
-                  {candidate.crop_key && packageId ? (
-                    inspecting ? (
-                      <MeasureCandidateCrop candidate={candidate} packageId={packageId} />
-                    ) : (
-                      <p className="ai-proposal__crop-loading">Open the reading list to load its crop.</p>
-                    )
-                  ) : (
-                    <p className="ai-proposal__no-crop">
-                      No crop is available, so this reading cannot be confirmed here.
-                    </p>
-                  )}
-                  <label className="ai-proposal__type">
-                    {/* **The codes are not a vocabulary anybody has.**
-                        This listed `CT004`, `CT008`, `cabinet_width` — the rulebook's internal
-                        keys — and asked a reviewer to pick one. Nobody outside the rule engine
-                        knows what `CT008` measures, so the only honest thing a person could do was
-                        guess or give up. The rulebook already names every one of them readably and
-                        the page already uses those names on its own fields; this is the same
-                        `fieldLabel`, so the dropdown and the form cannot call one quantity two
-                        things. */}
-                    <span>What does this number measure?</span>
-                    <select
-                      className="value-input"
-                      aria-label={`Meaning for AI reading ${candidate.value}`}
-                      value={candidateChoices[candidate.candidate_id] ?? ''}
-                      disabled={confirming !== null || !candidate.crop_key || availableTypes.length === 0}
-                      onChange={(event) => {
-                        const type = event.target.value;
-                        setCandidateChoices((current) => ({ ...current, [candidate.candidate_id]: type }));
-                        if (type) void confirmFromMeasure(candidate, type);
-                      }}
-                    >
-                      <option value="">Choose what it measures…</option>
-                      {availableTypes.map((semanticType) => (
-                        <option key={semanticType} value={semanticType}>
-                          {quantityLabel(needed.quantities, semanticType)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {isConfirming && <span className="ai-proposal__saving">Saving confirmation…</span>}
-                  {candidateErrors[candidate.candidate_id] && (
-                    <p className="enter-values__error" role="alert">
-                      {candidateErrors[candidate.candidate_id]}{' '}
-                      {candidateChoices[candidate.candidate_id] && <button type="button" disabled={confirming !== null} onClick={() => void confirmFromMeasure(candidate, candidateChoices[candidate.candidate_id])}>Try this confirmation again</button>}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-            </div>
-            </div>
-            {candidateError && <p className="enter-values__error">{candidateError}</p>}
-          </section>
-        )}
-        {needed.confirmed_readings.length > 0 ? (
-          <p className="enter-values__hint" role="status">
-            {needed.confirmed_readings.length} drawing reading{needed.confirmed_readings.length === 1 ? ' has' : 's have'} filled below.
-            Review or edit them before saving.
-          </p>
-        ) : (
-          <p className="enter-values__hint" role="status">
-            No AI readings have been confirmed yet. Choose a meaning above, or enter a reviewer-read
-            value below.
-          </p>
-        )}
-        {/* **Grouped by the sheet the value is read from.**
-            A flat list of fourteen fields asked the reviewer to jump between two drawings on every
-            row. Grouped, they fill the shop drawing's fields with the shop drawing open, which is
-            how the work is actually done — and the sheet is stated once as a heading instead of
-            repeated fourteen times as a label. */}
-        <div className="review-summary" role="status">
-          <span className="review-summary__counts">
-            <strong>{reviewSummary.agreed}</strong> agreed by both AI readers ·{' '}
-            <strong>{reviewSummary.needs_look + reviewSummary.empty}</strong> need a look
-            {reviewSummary.done > 0 && (
-              <>
-                {' '}· <strong>{reviewSummary.done}</strong> done
-              </>
-            )}
-          </span>
-          <label className="review-summary__toggle">
-            <input
-              type="checkbox"
-              checked={onlyNeeded}
-              onChange={(event) => setOnlyNeeded(event.target.checked)}
-            />{' '}
-            Show only what needs a look
-          </label>
-        </div>
-        {sheets.map((sheet) => {
-          const inSheet = needed.quantities.filter((quantity) => quantity.source === sheet);
-          const done = inSheet.filter(hasValue).length;
-          return (
-            <div className="sheet-group" key={sheet}>
-              <div className="sheet-group__head">
-                <h3 className="sheet-group__title">
-                  From the {SOURCE_LABEL[sheet] ?? sheet}
-                </h3>
-                <span className="sheet-group__count mono">
-                  {done}/{inSheet.length}
+              {(origin === 'typed' || origin === 'confirmed') && (
+                <span className="text-xs text-muted-foreground">{ORIGIN_LABEL[origin]}</span>
+              )}
+              {quantity.key in aiFilled && (
+                <span className="text-xs text-muted-foreground">
+                  <span className="num">{aiFilled[quantity.key].length}</span> {aiFilled[quantity.key].length === 1 ? 'reading' : 'readings'} from the{' '}
+                  {SOURCE_LABEL[quantity.source] ?? quantity.source}
                 </span>
-              </div>
-              {inSheet.map((quantity) => {
-                const origin = fieldOrigin(quantity);
-                const review = reviewOf(quantity);
-                // A field the reviewer typed into stays on screen: hiding it as "done" after the first
-                // keystroke took the box away mid-word (found in #1061). Settled ones still hide.
-                const typedHere = reviewerEditedSingles.has(quantity.key) || reviewerEditedMany.has(quantity.key);
-                if (onlyNeeded && (review.state === 'agreed' || (review.state === 'done' && !typedHere))) return null;
-                const pictured =
-                  review.state === 'needs_look'
-                    ? (aiFilled[quantity.key] ?? [])
-                        .map((id) => candidatesById.get(id))
-                        .filter((candidate): candidate is ReviewedCandidate & CandidateOut => candidate !== undefined)
-                    : [];
-                return (
-                  <div className="value-field" key={quantity.key} data-origin={origin} data-review={review.state}>
-                    {/* A compact row (#1061): the field and where its value came from | its value. The reason,
-                        crops, the AI's readings and the hints follow underneath, unchanged. */}
-                    <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-                    <div className="flex min-w-0 flex-col gap-1">
-                    <label className="value-label" htmlFor={`q-${quantity.key}`}>
-                      {/* The rulebook's readable name leads; the code follows it. A reviewer filling
-                          this in needs to know it is the sink cabinet width — `CT004` is what they
-                          quote back when asking about it, not what tells them which box to type in. */}
-                      <span className="value-name">{fieldLabel(quantity)}</span>
-                      <span className="value-code">{quantity.semantic_type}</span>
-                    </label>
-                    <div className="flex flex-wrap items-center gap-1.5" id={`value-chips-${quantity.key}`} data-part="value-chips">
-                      {/* With no value, the state chip says it; one "needs a value" is enough. */}
-                      {origin !== 'empty' && (
-                        <span className={`value-origin value-origin--${origin}`}>
-                          {ORIGIN_LABEL[origin]}
-                        </span>
-                      )}
-                      <span className={`field-review field-review--${review.state}`}>
-                        {REVIEW_LABEL[review.state]}
-                      </span>
-                      {quantity.key in aiFilled && (
-                        <span className="value-where">
-                          {aiFilled[quantity.key].length} reading
-                          {aiFilled[quantity.key].length === 1 ? '' : 's'} from the{' '}
-                          {SOURCE_LABEL[quantity.source] ?? quantity.source}
-                        </span>
-                      )}
-                      <span className="value-feeds" title={quantity.consumers.map((c) => c.rule_id).join(', ')}>
-                        {quantity.consumers.length} check{quantity.consumers.length === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    </div>
-                    <div className="min-w-0">
-                    {quantity.many ? (
-                      <>
-                        {(runs[quantity.key] ?? ['']).map((value, index) => (
-                          <div className="value-row" key={index}>
-                            {isCategorical(quantity) ? (
-                              <select
-                                className="value-input value-input--wide"
-                                id={index === 0 ? `q-${quantity.key}` : undefined}
-                                aria-describedby={`value-chips-${quantity.key}`}
-                                aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
-                                value={value}
-                                onChange={(e) => {
-                                  releaseField(quantity.key);
-                                  setRun(quantity.key, index, e.target.value);
-                                }}
-                              >
-                                <option value="">Not classified</option>
-                                {(quantity.categories ?? []).map((category) => (
-                                  <option key={category} value={category}>
-                                    {categoryLabel(category)}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                className="value-input value-input--wide"
-                                id={index === 0 ? `q-${quantity.key}` : undefined}
-                                aria-describedby={`value-chips-${quantity.key}`}
-                                aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
-                                placeholder={'25 1/2" or 648 mm'}
-                                value={value}
-                                onChange={(e) => {
-                                  releaseField(quantity.key);
-                                  setRun(quantity.key, index, e.target.value);
-                                }}
-                              />
-                            )}
-                            <button
-                              type="button"
-                              className="value-remove interactive"
-                              aria-label={`Remove item ${index + 1} from ${fieldLabel(quantity)}`}
-                              onClick={() => {
-                                releaseField(quantity.key);
-                                markManyEdited(quantity.key);
-                                setRuns((prior) => ({
-                                  ...prior,
-                                  [quantity.key]: (prior[quantity.key] ?? []).filter(
-                                    (_, i) => i !== index,
-                                  ),
-                                }));
-                              }}
-                            >
-                              <Trash2 size={14} aria-hidden="true" />
-                            </button>
-                          </div>
-                        ))}
-                        <button
-                          type="button"
-                          className="value-add interactive"
-                          onClick={() => {
-                            markManyEdited(quantity.key);
-                            setRuns((prior) => ({
-                              ...prior,
-                              [quantity.key]: [...(prior[quantity.key] ?? []), ''],
-                            }));
-                          }}
-                        >
-                          <Plus size={14} aria-hidden="true" /> Add another
-                        </button>
-                        <p className="enter-values__hint enter-values__hint--tight">
-                          Left to right, in drawing order.{' '}
-                          <InfoTip label="Why the order matters">
-                            <p>Two runs are compared position by position, so keep the drawing&apos;s left-to-right order.</p>
-                          </InfoTip>
-                        </p>
-                        {needed.proposed_readings
-                          .filter((field) => field.field_key === quantity.key && field.expected_count != null)
-                          .map((field) => {
-                            const pageValues = field.values.filter(
-                              (reading) => reading.page_index === selectedPageNumber - 1,
-                            );
-                            if (pageValues.length >= (field.expected_count ?? 0)) return null;
-                            return (
-                              <p className="enter-values__hint enter-values__hint--tight" role="status" key={field.field_key}>
-                                {pageValues.length} of {field.expected_count} piece widths were read. Fill the blank positions before running the width check.
-                              </p>
-                            );
-                          })}
-                      </>
-                    ) : (
-                      <input
-                        className="value-input value-input--wide"
-                        id={`q-${quantity.key}`}
+              )}
+              <span className="text-xs text-muted-foreground" title={quantity.consumers.map((c) => c.rule_id).join(', ')}>
+                feeds <span className="num">{quantity.consumers.length}</span> {quantity.consumers.length === 1 ? 'check' : 'checks'}
+              </span>
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-col gap-2">
+            {quantity.many ? (
+              <>
+                {(runs[quantity.key] ?? ['']).map((value, index) => (
+                  <div className="flex items-center gap-2" key={index}>
+                    {isCategorical(quantity) ? (
+                      <select
+                        className={SELECT_CLASS}
+                        id={index === 0 ? `q-${quantity.key}` : undefined}
                         aria-describedby={`value-chips-${quantity.key}`}
-                        placeholder={'25 1/2" or 648 mm'}
-                        value={singles[quantity.key] ?? ''}
+                        aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
+                        value={value}
                         onChange={(e) => {
                           releaseField(quantity.key);
-                          const nextEdits = new Set(reviewerEditedSinglesRef.current).add(
-                            quantity.key,
-                          );
-                          reviewerEditedSinglesRef.current = nextEdits;
-                          setReviewerEditedSingles(nextEdits);
-                          setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
+                          setRun(quantity.key, index, e.target.value);
+                        }}
+                      >
+                        <option value="">Not classified</option>
+                        {(quantity.categories ?? []).map((category) => (
+                          <option key={category} value={category}>
+                            {categoryLabel(category)}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        className={cn(INPUT_CLASS, 'num')}
+                        id={index === 0 ? `q-${quantity.key}` : undefined}
+                        aria-describedby={`value-chips-${quantity.key}`}
+                        aria-label={`${fieldLabel(quantity)}, item ${index + 1}, left to right`}
+                        placeholder={'25 1/2" or 648 mm'}
+                        value={value}
+                        onChange={(e) => {
+                          releaseField(quantity.key);
+                          setRun(quantity.key, index, e.target.value);
                         }}
                       />
                     )}
-                    </div>
-                    </div>
-                    {/* **The AI's own readings, offered at the field that wants one.**
-                        They were previously listed in a separate block above the form: you picked a
-                        meaning from a dropdown of raw codes up there, and the value appeared in a
-                        box somewhere below. That is the interaction inside-out — it asks "what does
-                        this number mean?" when the reviewer is looking at a field and asking "what
-                        goes in here?". Offered here, confirming a reading is one click at the point
-                        it is needed, and the meaning is the field it was clicked under rather than a
-                        code chosen from a list. Nothing is filled in automatically: the click is the
-                        reviewer saying what the number means. */}
-                    {review.reason && review.state !== 'empty' && (
-                      <p className="field-review__reason">{review.reason}</p>
-                    )}
-                    {pictured.length > 0 && packageId && (
-                      <div className="field-review__pictures">
-                        {pictured.map((candidate) => (
-                          <MeasureCandidateCrop
-                            key={candidate.candidate_id}
-                            candidate={candidate}
-                            packageId={packageId}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {review.state !== 'agreed' && (
-                    <AiReadings
-                      quantity={quantity}
-                      candidates={candidates}
-                      busyId={confirming}
-                      onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type)}
-                    />
-                    )}
-                    {/* **An empty field used to say nothing at all.**
-                        A reviewer new to the product sees fourteen boxes and no indication of
-                        where any number comes from. The rulebook knows: which sheet it is read
-                        from, and what the client's own code book says the quantity is. Both were
-                        already loaded and neither was on the screen. */}
-                    {origin === 'empty' && (
-                      <p className="value-help">
-                        Nothing read here could fill it: read it off the <strong>{SOURCE_LABEL[quantity.source] ?? quantity.source}</strong>.
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
-        <FillerDistributionPanel
-          quantities={needed.quantities}
-          parameters={needed.parameters}
-          singles={singles}
-          runs={runs}
-          fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
-          onFieldWidthChange={(value) => {
-            if (!fieldDimensionKey) return;
-            const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
-            reviewerEditedSinglesRef.current = nextEdits;
-            setReviewerEditedSingles(nextEdits);
-            setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
-          }}
-          onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
-        />
-      </section>
-      </div>
-
-      <div data-measure-step="settings" hidden={step !== 'settings'}>
-      <section className="enter-values__section measure-step-target" id="measure-settings">
-        <h2>Settings</h2>
-        <p className="enter-values__hint">
-          Values for this job, not dimensions off a drawing.{' '}
-          <InfoTip label="About settings">
-            <p>Where the rulebook suggests a value it is shown — a rule author&apos;s stand-in, not a number the client has confirmed.</p>
-            <p>Where the architect&apos;s drawing states one, the page is shown but the number is not: type what you see, and it is saved only if it matches.</p>
-          </InfoTip>
-        </p>
-        {needed.parameters.map((parameter) => {
-          const pointer = citingPointer(parameter, declinedCitations);
-          return (
-            <div className="value-field grid gap-x-4 gap-y-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]" key={parameter.name}>
-              {/* A compact row (#1061): the setting | its value and where it came from. */}
-              <label className="value-label flex-col items-start" htmlFor={`p-${parameter.name}`}>
-                {parameter.name}
-                <span className="value-source">
-                  {parameter.scope === 'run' ? 'this review only' : 'this project'}
-                </span>
-                <span className="value-feeds">{parameter.rule_ids.join(', ')}</span>
-              </label>
-              <div className="min-w-0">
-              {parameter.blocked ? (
-                <p className="value-blocked" role="note">
-                  <AlertTriangle size={14} aria-hidden="true" /> Waiting on the vendor, not a field to fill in.{' '}
-                  <InfoTip label="Why this is waiting">
-                    <p>This check will report that it could not decide, which is the correct answer until the value arrives.</p>
-                  </InfoTip>
-                </p>
-              ) : pointer ? (
-                /* **Blind entry (#866).** The box shows where the architect's drawing states this
-                   setting and starts empty; the app's own reading of the number never reaches the
-                   page. Save sends the passage as the citation, and a number that differs from the
-                   drawing's is refused with the server's sentence below. */
-                <SettingCitation
-                  name={parameter.name}
-                  pointer={pointer}
-                  value={singles[parameter.name] ?? ''}
-                  crop={
-                    packageId ? (
-                      <SettingPassageCrop
-                        packageId={packageId}
-                        pointer={pointer}
-                        name={parameter.name}
-                      />
-                    ) : null
-                  }
-                  onChange={(value) =>
-                    setSingles((prior) => ({ ...prior, [parameter.name]: value }))
-                  }
-                  onDecline={() =>
-                    setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: true }))
-                  }
-                />
-              ) : (
-                <>
-                  <input
-                    className="value-input value-input--wide"
-                    id={`p-${parameter.name}`}
-                    placeholder=""
-                    value={singles[parameter.name] ?? ''}
-                    onChange={(e) =>
-                      setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
-                    }
-                  />
-                  {parameter.declared_default && (
-                    <p className="enter-values__hint enter-values__hint--tight">
-                      Blank uses the rulebook&apos;s <code>{parameter.declared_default}</code>: a stand-in, not a value the client confirmed.
-                    </p>
-                  )}
-                  <SettingSourceFields
-                    parameter={parameter}
-                    chosen={sourceChoices[parameter.name] ?? ''}
-                    reference={references[parameter.name] ?? ''}
-                    onChoose={(value) =>
-                      setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
-                    }
-                    onReference={(value) =>
-                      setReferences((prior) => ({ ...prior, [parameter.name]: value }))
-                    }
-                  />
-                  {parameter.found && (
-                    <button
+                    <Button
                       type="button"
-                      className="value-secondary setting-citation__decline"
-                      onClick={() =>
-                        setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: false }))
-                      }
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove item ${index + 1} from ${fieldLabel(quantity)}`}
+                      onClick={() => {
+                        releaseField(quantity.key);
+                        markManyEdited(quantity.key);
+                        setRuns((prior) => ({
+                          ...prior,
+                          [quantity.key]: (prior[quantity.key] ?? []).filter((_, i) => i !== index),
+                        }));
+                      }}
                     >
-                      Type it from the architect&apos;s drawing, page {parameter.found.page_index + 1}
-                    </button>
-                  )}
-                </>
-              )}
-              </div>
-            </div>
-          );
-        })}
-      </section>
+                      <Trash2 aria-hidden="true" />
+                    </Button>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      markManyEdited(quantity.key);
+                      setRuns((prior) => ({
+                        ...prior,
+                        [quantity.key]: [...(prior[quantity.key] ?? []), ''],
+                      }));
+                    }}
+                  >
+                    <Plus aria-hidden="true" /> Add another
+                  </Button>
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    Left to right, in drawing order.
+                    <InfoTip label="Why the order matters">
+                      <p>Two runs are compared position by position, so keep the drawing&apos;s left-to-right order.</p>
+                    </InfoTip>
+                  </span>
+                </div>
+                {needed.proposed_readings
+                  .filter((field) => field.field_key === quantity.key && field.expected_count != null)
+                  .map((field) => {
+                    const pageValues = field.values.filter(
+                      (reading) => reading.page_index === selectedPageNumber - 1,
+                    );
+                    if (pageValues.length >= (field.expected_count ?? 0)) return null;
+                    return (
+                      <Caution key={field.field_key}>
+                        <span className="num">{pageValues.length}</span> of <span className="num">{field.expected_count}</span> piece widths were read: fill the blank positions before running the width check.
+                      </Caution>
+                    );
+                  })}
+              </>
+            ) : (
+              <input
+                className={cn(INPUT_CLASS, 'num')}
+                id={`q-${quantity.key}`}
+                aria-describedby={`value-chips-${quantity.key}`}
+                placeholder={'25 1/2" or 648 mm'}
+                value={singles[quantity.key] ?? ''}
+                onChange={(e) => {
+                  releaseField(quantity.key);
+                  const nextEdits = new Set(reviewerEditedSinglesRef.current).add(quantity.key);
+                  reviewerEditedSinglesRef.current = nextEdits;
+                  setReviewerEditedSingles(nextEdits);
+                  setSingles((prior) => ({ ...prior, [quantity.key]: e.target.value }));
+                }}
+              />
+            )}
+          </div>
+        </div>
+        {review.reason && review.state !== 'empty' && <Hint>{review.reason}</Hint>}
+        {pictured.length > 0 && packageId && (
+          <div className="flex flex-wrap gap-2">
+            {pictured.map((candidate) => (
+              <MeasureCandidateCrop key={candidate.candidate_id} candidate={candidate} packageId={packageId} />
+            ))}
+          </div>
+        )}
+        {/* **The AI's own readings, offered at the field that wants one.** Confirming a reading is one
+            click at the point it is needed, and the meaning is the field it was clicked under rather
+            than a code chosen from a list. Nothing is filled in automatically. */}
+        {review.state !== 'agreed' && (
+          <AiReadings
+            quantity={quantity}
+            candidates={candidates}
+            busyId={confirming}
+            onUse={(candidate) => void confirmFromMeasure(candidate, quantity.semantic_type)}
+          />
+        )}
+        {/* An empty field says which sheet to read it from: the rulebook knows, and says so. */}
+        {origin === 'empty' && (
+          <Hint>{quantity.source === 'USER_INPUT' ? 'Measure it on site.' : `Read it off the ${SOURCE_LABEL[quantity.source] ?? quantity.source}.`}</Hint>
+        )}
+      </div>
+    );
+  };
 
-      {needed.discriminators.length > 0 && (
-        <section className="enter-values__section">
-          <h2>Layout</h2>
-          <p className="enter-values__hint">
-            What the drawing shows; leave an uncertain layout unstated.{' '}
-            <InfoTip label="About layout answers">
-              <p>A model-only suggestion stays unselected until you choose it; code-identified drawing clues may pre-select a value.</p>
+  const settingsCount = stepCounts.settings;
+  const pages = needed.page_numbers.length ? needed.page_numbers : [selectedPageNumber];
+
+  return (
+    // The wizard is its own scroll area; the action bar sticks to its bottom edge (#1124).
+    <div
+      ref={rootRef}
+      data-tw
+      data-slot="measure-wizard"
+      className="h-full min-h-0 w-full flex-1 overflow-y-auto bg-background font-sans text-foreground"
+    >
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pt-5 sm:px-6">
+        <header className="flex flex-col gap-1">
+          <h2 className="text-xl font-semibold tracking-tight">Review measurements</h2>
+          {/* One line; the rest is behind "?" (#1061). */}
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
+            <span>
+              Type every value with its unit: <span className="num text-foreground">25 1/2&quot;</span> or{' '}
+              <span className="num text-foreground">648 mm</span>.
+            </span>
+            <InfoTip label="How these values are used">
+              <p>Work through the four steps, then run the checks. Check suggested values against the drawing, confirm what each one measures, then fill what is missing.</p>
+              <p>A suggestion is not a confirmed measurement. Values without units are refused. The {needed.rules_published} published rules compare saved values exactly; missing or uncertain inputs can leave a check undecided.</p>
+              <p><strong>Save values</strong> records the values and settings (steps 3 and 4) without running checks. <strong>Run checks</strong> saves them first and queues checks only if saving succeeds.</p>
+              <p>Drawings, parts, countertop rows, walls, runs and readings (steps 1 and 2) are saved by their own buttons.</p>
             </InfoTip>
           </p>
-          {/* Stays visible: a pre-selected answer is recorded when the checks run. */}
-          {Object.keys(layoutChoiceDefaults(needed.discriminators)).length > 0 && (
-            <p className="layout-confirm-note" role="status">
-              Run checks records the selected answers; change one first if the crop shows otherwise.
-            </p>
+          {refreshUnavailable && (
+            <Hint role="status">Could not refresh the drawing data just now; your unsaved values are still here and the page will try again.</Hint>
           )}
-          {needed.discriminators.map((discriminator) => (
-            <div
-              className="value-field layout-field"
-              data-proposed={discriminator.proposal ? 'true' : 'false'}
-              key={discriminator.name}
-            >
-              <div className="layout-field__control">
-                <label className="value-label" htmlFor={`d-${discriminator.name}`}>
-                  {discriminator.name}
-                  {discriminator.proposal ? (
-                    <span className="value-origin value-origin--proposed">
-                      {discriminator.name === 'wall_config' &&
-                      discriminator.proposal.requires_confirmation
-                        ? 'needs your confirmation'
-                        : discriminator.proposal.prompt_id === 'slot-walls-drawing-clues-v1'
-                          ? 'drawing clue'
-                          : 'proposed'}
-                    </span>
-                  ) : (
-                    <span className="value-origin value-origin--empty">needs you</span>
-                  )}
-                  <span className="value-feeds">{discriminator.rule_ids.join(', ')}</span>
-                </label>
+        </header>
+
+        <MeasurementSectionNav current={step} counts={stepCounts} onPick={goToStep} />
+        {loadError && (
+          <LoadError onRetry={() => setResourceRetry((count) => count + 1)}>
+            The latest refresh failed; your entered values are still here. {loadError}
+          </LoadError>
+        )}
+
+        {/* **Before any reading can fill a field on a combined sheet** (#795): a reading is used only on
+            the side of the drawing it sits in, so the drawings' roles come first. Nothing renders for
+            a package of two separate PDFs. Each answer re-reads the readings, which now have a side. */}
+        <div data-measure-step="drawings" hidden={step !== 'drawings'}>
+          <StepHeading step="drawings" />
+          <div id="measure-drawings" className="flex scroll-mt-4 flex-col gap-8">
+            {packageId && (
+              <DrawingRoles
+                key={`${packageId}-drawing-roles`}
+                packageId={packageId}
+                onConfirmed={() => setReload((count) => count + 1)}
+                onProgress={reportCount('roles')}
+                onState={reportState('roles')}
+              />
+            )}
+            {/* **The parts of each vendor drawing** (#882): suggested, and each one decided by a person. */}
+            {packageId && (
+              <DrawingParts
+                key={`${packageId}-drawing-parts`}
+                packageId={packageId}
+                refresh={reload}
+                onDecided={() => setPartsDecided((count) => count + 1)}
+                onProgress={reportCount('parts')}
+                onState={reportState('parts')}
+              />
+            )}
+            {stepIsEmpty([sectionStates.roles, sectionStates.parts]) && <EmptyStep>Nothing to decide on these drawings.</EmptyStep>}
+          </div>
+        </div>
+
+        {/* **Which parts sit under each countertop** (#893): suggested from the confirmed parts above,
+            and each countertop's run decided by a person. Read again whenever a part is decided. */}
+        <div data-measure-step="runs" hidden={step !== 'runs'}>
+          <StepHeading step="runs" />
+          <div id="measure-runs" className="flex scroll-mt-4 flex-col gap-8">
+            {packageId && (
+              <CountertopRuns key={`${packageId}-countertop-runs`} packageId={packageId} refresh={reload + partsDecided} onProgress={reportCount('runs')} onState={reportState('runs')} />
+            )}
+            {packageId && (
+              <SlotReaderRows packageId={packageId} refresh={reload + partsDecided + readingsConfirmed} targetRow={targetRow} onTargetReached={onTargetReached} onReviewRow={onReviewRow} onOpenQueue={onOpenQueue} onProgress={reportCount('rows')} onUnsaved={setUnsavedRows} onState={reportState('rows')} />
+            )}
+            {/* **Which reading is each part's width** (#913): suggested from the confirmed parts and
+                readings, and each part's link decided by a person. Read again whenever a part is decided
+                or a reading is confirmed here. */}
+            {packageId && (
+              <ReadingParts
+                key={`${packageId}-reading-parts`}
+                packageId={packageId}
+                refresh={reload + partsDecided + readingsConfirmed}
+                onProgress={reportCount('links')}
+                onState={reportState('links')}
+              />
+            )}
+            {stepIsEmpty([sectionStates.runs, sectionStates.rows, sectionStates.links]) && <EmptyStep>No countertop to confirm yet.</EmptyStep>}
+          </div>
+        </div>
+
+        {/* A plain wrapper hides the step: the grid inside would override `hidden` (#1061). */}
+        <div data-measure-step="values" hidden={step !== 'values'}>
+          <StepHeading step="values" />
+          <section
+            id="measure-values"
+            aria-labelledby="measure-values-title"
+            className="grid scroll-mt-4 gap-5 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start"
+          >
+            {/* The page being reviewed beside the form (admin, 2026-10-06): the picture first. */}
+            <div className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-4">
+              {packageId && <PageDrawing packageId={packageId} pageNumber={selectedPageNumber} />}
+              <div className="flex items-center gap-2">
+                <label htmlFor="measure-page-number" className="shrink-0 text-sm font-medium">Review one page</label>
                 <select
-                  className="value-input value-input--wide"
-                  id={`d-${discriminator.name}`}
-                  value={choices[discriminator.name] ?? ''}
-                  onChange={(e) =>
-                    setChoices((prior) => ({ ...prior, [discriminator.name]: e.target.value }))
-                  }
+                  id="measure-page-number"
+                  className={cn(SELECT_CLASS, 'w-auto min-w-28')}
+                  value={selectedPageNumber}
+                  onChange={(event) => {
+                    setCandidates([]);
+                    setProposalSteps([]);
+                    setProposal(null);
+                    setProposalError(null);
+                    setSelectedPageNumber(Number(event.currentTarget.value));
+                  }}
                 >
-                  <option value="">Not stated</option>
-                  {discriminator.choices.map((choice) => (
-                    <option key={choice} value={choice}>
-                      {choice}
-                    </option>
+                  {pages.map((page) => (
+                    <option key={page} value={page}>Page {page}</option>
                   ))}
                 </select>
+                <InfoTip label="About the page picker">
+                  <p>Readings and Fill with AI are limited to this page. The values you type belong to the whole set and are all saved together.</p>
+                </InfoTip>
               </div>
-              {discriminator.proposal ? (
-                <LayoutProposalCrop
-                  packageId={packageId ?? ''}
-                  proposal={discriminator.proposal}
-                  discriminatorName={discriminator.name}
-                />
-              ) : (
-                <p className="layout-field__empty">
-                  No proposed answer was recorded for this layout question.
-                </p>
-              )}
             </div>
-          ))}
-        </section>
-      )}
 
-      {stored.length > 0 && (
-        <section className="enter-values__section" aria-live="polite">
-          <h2>Stored, as the system read them</h2>
-          <ul className="enter-values__stored">
-            {stored.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-        </section>
-      )}
-      </div>
+            <div className="flex min-w-0 flex-col gap-5">
+              {candidateLoadError && (
+                <LoadError onRetry={() => setResourceRetry((count) => count + 1)}>
+                  Drawing readings could not be refreshed; you can still enter values. {candidateLoadError}
+                </LoadError>
+              )}
+              {vocabularyLoadError && (
+                <LoadError onRetry={() => setResourceRetry((count) => count + 1)}>
+                  Reading meanings could not be loaded; you can still enter values. {vocabularyLoadError}
+                </LoadError>
+              )}
 
-      {/* Save and Run checks record the values and settings (steps 3–4) from any step, so they stay in
-          reach on every step (#1061); steps 1–2 save through their own buttons. `#measure-run-checks`
-          is where the review header's "Run checks" lands. */}
-      {/* `-bottom-5`: the scroll area keeps 20px of bottom padding, and a sticky bar would stop above
-          it with rows showing through; this reaches the true edge, and `pb-9` clears the shell's mark. */}
-      <footer data-tw className="measure-actions sticky -bottom-5 z-10 flex flex-col gap-2 border-t bg-background/95 pt-3 pb-9 font-sans backdrop-blur">
-        {error && (
-          <p className="text-sm text-outcome-fail-fg" role="alert">
-            {error}
-          </p>
-        )}
-        {accepted && (
-          <p className="flex items-center gap-1.5 text-sm" role="status">
-            Checks queued (<span className="num">{accepted.slice(0, 8)}</span>). Use <strong>See findings</strong> when they have run.
-            <InfoTip label="About the queued checks">
-              <p>The values and settings were saved first. A review worker now runs the deterministic checks.</p>
-            </InfoTip>
-          </p>
-        )}
-        {stored.length > 0 && !error && !accepted && (
-          <p className="text-sm text-muted-foreground" role="status">
-            Saved <span className="num">{stored.length}</span> {stored.length === 1 ? 'value' : 'values'}.{' '}
-            <button type="button" className="underline underline-offset-2" onClick={() => goToStep('settings')}>
-              See what was stored
-            </button>
-          </p>
-        )}
-        {unsavedRows > 0 && (
-          <p className="text-sm text-outcome-review-fg" role="status" data-part="unsaved-rows">
-            <span className="num">{unsavedRows}</span> countertop {unsavedRows === 1 ? 'row has' : 'rows have'} unsaved changes in step 2: use its &ldquo;Save this row&rdquo;.{' '}
-            <button type="button" className="underline underline-offset-2" onClick={() => goToStep('runs')}>
-              Go to step 2
-            </button>
-          </p>
-        )}
-        {(aiValuesToConfirm.length > 0 || layoutAnswers > 0) && (
-          <p className="text-xs text-muted-foreground" data-part="save-records">
-            {aiValuesToConfirm.length > 0 && (
-              <>
-                Saving confirms <span className="num">{aiValuesToConfirm.length}</span> AI-filled {aiValuesToConfirm.length === 1 ? 'value' : 'values'}
-                {aiUnchecked > 0 && <> (<span className="num">{aiUnchecked}</span> not checked against the drawing&apos;s lines)</>}.{' '}
-              </>
-            )}
-            {layoutAnswers > 0 && (
-              <>
-                Run checks also records <span className="num">{layoutAnswers}</span> layout {layoutAnswers === 1 ? 'answer' : 'answers'}.{' '}
-              </>
-            )}
-            <button type="button" className="underline underline-offset-2" onClick={() => goToStep(aiValuesToConfirm.length > 0 ? 'values' : 'settings')}>
-              Review {aiValuesToConfirm.length > 0 ? 'them' : 'the layout'}
-            </button>
-          </p>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => previousStep && goToStep(previousStep)} disabled={!previousStep}>
-            Back
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => nextStep && goToStep(nextStep)} disabled={!nextStep}>
-            Next
-          </Button>
-          <span className="ml-auto" />
-          <Button type="button" variant="outline" onClick={onSave} disabled={busy}>
-            Save values
-          </Button>
-          <Button type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy}>
-            <Play aria-hidden="true" /> Run checks
-          </Button>
-          {packageId && onDone && (
-            <Button type="button" variant="ghost" onClick={() => onDone(packageId)}>
-              See findings
-            </Button>
-          )}
+              {/* **One headline, one bar, one table.** The bar is the one number that answers "is there
+                  anything left to do?" — labelled as coverage, because a filled field is not a right one. */}
+              <div data-slot="measure-coverage" aria-label="How much of the form is filled" className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h3 id="measure-values-title" className="text-base font-semibold">
+                    Values · page <span className="num">{selectedPageNumber}</span>
+                  </h3>
+                </div>
+                <p className="text-sm">
+                  <span className="num text-2xl font-semibold">{filledFieldCount}</span> of{' '}
+                  <span className="num">{measurementFieldCount}</span> fields have a value
+                </p>
+                <Progress value={coveragePercent} aria-label="Fields with a value" />
+                <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {needed.still_reading && candidates.length + confirmedCount === 0 ? (
+                    <span>Reading dimensions from the drawings</span>
+                  ) : (
+                    <span><span className="num text-foreground">{candidates.length + confirmedCount}</span> read off the drawings</span>
+                  )}
+                  <span><span className="num text-foreground">{confirmedCount}</span> confirmed</span>
+                  <span><span className="num text-foreground">{candidates.length}</span> without a meaning</span>
+                  {exactTagFieldCount > 0 && (
+                    <span><span className="num text-foreground">{exactTagFieldCount}</span> filled by the drawing&apos;s own tags</span>
+                  )}
+                  <InfoTip label="About coverage">
+                    <p>Coverage, not accuracy: a filled field is not a right one.</p>
+                    <p>A dimension the reader could not parse, or a number with no unit, is not counted here at all — it was refused rather than guessed, and the field stays empty for you.</p>
+                    {exactTagFieldCount > 0 && <p>Fields filled by the drawing&apos;s own tags needed no click: the drawing states the meaning itself.</p>}
+                  </InfoTip>
+                </p>
+                {/* The fields as a sheet × state table (#1061): the numbers first. */}
+                <div className="min-w-0 overflow-x-auto">
+                  <table className="w-full text-left text-xs" data-part="coverage-table">
+                    <caption className="sr-only">Fields by drawing and state</caption>
+                    <thead className="text-muted-foreground">
+                      <tr>
+                        <th scope="col" className="py-1 pr-2 font-normal">Drawing</th>
+                        <th scope="col" className="px-1 py-1 text-right font-normal">Needs a value</th>
+                        <th scope="col" className="px-1 py-1 text-right font-normal">Needs a look</th>
+                        <th scope="col" className="px-1 py-1 text-right font-normal">Agreed</th>
+                        <th scope="col" className="py-1 pl-1 text-right font-normal">Done</th>
+                      </tr>
+                    </thead>
+                    <tbody className="num">
+                      {sheets.map((sheet) => {
+                        const states = needed.quantities.filter((quantity) => quantity.source === sheet).map((quantity) => reviewOf(quantity).state);
+                        const count = (state: FieldReview['state']) => states.filter((value) => value === state).length;
+                        return (
+                          <tr key={sheet} className="border-t">
+                            <th scope="row" className="py-1 pr-2 font-sans font-normal">{sentence(SOURCE_LABEL[sheet] ?? sheet)}</th>
+                            <td className="px-1 py-1 text-right">{count('empty')}</td>
+                            <td className="px-1 py-1 text-right">{count('needs_look')}</td>
+                            <td className="px-1 py-1 text-right">{count('agreed')}</td>
+                            <td className="py-1 pl-1 text-right">{count('done')}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* **Filling the form from the drawings.**
+                  The model is not asked what a number means in the abstract; it is asked to map readings
+                  this pipeline has already located onto the fields the rulebook already names, and every
+                  structural property of a right answer is one `workflow/assignment.py` verifies. What it
+                  is never given is the rule arithmetic — a model that knew the equation could choose
+                  readings that make it balance, and the check would then confirm the balance on a drawing
+                  with a real error in it. */}
+              {/* **The offer stands until an attempt has been made, and then the panel owns the space.**
+                  Keyed on whether anything was attempted, so a failure before the first frame (a 413, a
+                  404, a server that did not answer) is shown rather than swallowed. */}
+              {needed.still_reading ? (
+                <ReadingProgress state={needed.revision_state} />
+              ) : !attempted && storedProposalCount > 0 ? (
+                /* **Already done, before the reviewer arrived.** The proposal is made when the drawings
+                   are read and filed, so this panel reports a completed step rather than offering one. */
+                <div data-slot="measure-fill" data-state="done" className="flex flex-col gap-2 rounded-xl border bg-card p-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <h4 className="flex items-center gap-2 text-sm font-semibold">
+                      <Sparkles className="size-4" aria-hidden="true" /> Filled from the drawings
+                    </h4>
+                    <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+                      <span>
+                        <span className="num text-foreground">{storedProposalCount}</span> {storedProposalCount === 1 ? 'field' : 'fields'} proposed by AI: check, edit, then save.
+                      </span>
+                      <InfoTip label="About the AI fill">
+                        <p>These were filled when the drawings were read, and every one passed the checks against the drawing — the right sheet, attached to a real dimension line, one reading per field, and a run in the order the drawing draws it.</p>
+                        <p>Nothing is saved until you press Save.</p>
+                      </InfoTip>
+                    </p>
+                    {/* Stays visible: these need a look at the crop before they are kept. */}
+                    {unverifiedFields.size > 0 && (
+                      <Caution>
+                        <span className="num">{unverifiedFields.size}</span> not checked against the drawing&apos;s lines: open their crops before keeping them.{' '}
+                        <InfoTip label="Why these could not be checked">
+                          <p>These sheets are scanned images with no dimension line-work, so nothing confirmed that each number sits on the dimension it measures.</p>
+                        </InfoTip>
+                      </Caution>
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 self-start"
+                    onClick={() => void onPropose()}
+                    disabled={busy || candidates.length === 0}
+                  >
+                    <Sparkles aria-hidden="true" /> Ask again
+                  </Button>
+                </div>
+              ) : !attempted ? (
+                <div data-slot="measure-fill" data-state="offer" className="flex flex-col gap-2 rounded-xl border bg-card p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <h4 className="text-sm font-semibold">Fill these from the drawings</h4>
+                      <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+                        <span>AI proposes; nothing is saved until you save.</span>
+                        <InfoTip label="About Fill with AI">
+                          <p>A model proposes which reading fills which field when the drawings are read, so this form normally arrives already filled.</p>
+                          <p>Every proposal is checked against the drawing — the right sheet, attached to a real dimension line, one reading per field, and a run in the order the drawing draws it — and refused as a batch if any part of it fails.</p>
+                        </InfoTip>
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0 self-start"
+                      onClick={() => void onPropose()}
+                      disabled={busy || candidates.length === 0}
+                    >
+                      <Sparkles aria-hidden="true" /> Fill with AI
+                    </Button>
+                  </div>
+                  {/* **Two situations, not one sentence covering both**: a finished package and a drawing
+                      nothing was read from want completely different things done about them. */}
+                  {candidates.length === 0 && (
+                    <Hint>
+                      {confirmedCount > 0
+                        ? 'Nothing left to propose: every reading off these drawings already has a meaning.'
+                        : 'Nothing was read off these drawings. Check on Documents that both finished uploading and were read.'}
+                    </Hint>
+                  )}
+                </div>
+              ) : (
+                <AssignmentProgress steps={proposalSteps} result={proposal} error={proposalError} />
+              )}
+              {(proposal || proposalError) && !proposing && (
+                <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => void onPropose()}>
+                  <Sparkles aria-hidden="true" /> Ask again
+                </Button>
+              )}
+
+              {/* **Folded, because it is the slow route.** Every reading here is also offered beside the
+                  field it could fill; this list is for the moment a reviewer wants to see the crop
+                  before saying what a number means. */}
+              {candidates.length > 0 && (
+                <section data-slot="reading-inspector" aria-labelledby="ai-proposals-heading" className="rounded-xl border bg-card">
+                  <button
+                    type="button"
+                    className="flex min-h-11 w-full items-center gap-2 px-4 py-2 text-left text-sm font-medium"
+                    aria-expanded={inspecting}
+                    id="ai-proposals-heading"
+                    onClick={() => setInspecting((shown) => !shown)}
+                  >
+                    <ChevronRight className={cn('size-4 shrink-0 transition-transform motion-reduce:transition-none', inspecting && 'rotate-90')} aria-hidden="true" />
+                    <span>
+                      Inspect <span className="num">{candidates.length}</span> {candidates.length === 1 ? 'reading' : 'readings'} on the crop before using {candidates.length === 1 ? 'it' : 'them'}
+                    </span>
+                  </button>
+                  {inspecting && (
+                    <div className="grid gap-3 border-t p-4 sm:grid-cols-2">
+                      {candidates.map((candidate) => {
+                        const availableTypes = typesForCandidate(candidate);
+                        const isConfirming = confirming === candidate.candidate_id;
+                        return (
+                          <div className="flex min-w-0 flex-col gap-2 rounded-lg border p-3" key={candidate.candidate_id}>
+                            <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                              <span className="num font-semibold">{candidate.value}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {SOURCE_LABEL[candidate.source ?? ''] ?? candidate.source_refusal ?? 'drawing source unavailable'}
+                              </span>
+                              <span className="text-xs text-muted-foreground">page <span className="num">{candidate.page_index + 1}</span></span>
+                              {/* No confidence score — it is written only by RapidOCR, which produced 903
+                                  candidates and zero values on the real drawing. #720. */}
+                            </p>
+                            {candidate.crop_key && packageId ? (
+                              <MeasureCandidateCrop candidate={candidate} packageId={packageId} />
+                            ) : (
+                              <Hint>No crop is available, so this reading cannot be confirmed here.</Hint>
+                            )}
+                            {/* **The codes are not a vocabulary anybody has.** The rulebook names every
+                                quantity readably and the form uses those names on its own fields; this is
+                                the same `fieldLabel`, so the dropdown and the form cannot call one quantity
+                                two things. */}
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              What does this number measure?
+                              <select
+                                className={SELECT_CLASS}
+                                aria-label={`Meaning for AI reading ${candidate.value}`}
+                                value={candidateChoices[candidate.candidate_id] ?? ''}
+                                disabled={confirming !== null || !candidate.crop_key || availableTypes.length === 0}
+                                onChange={(event) => {
+                                  const type = event.target.value;
+                                  setCandidateChoices((current) => ({ ...current, [candidate.candidate_id]: type }));
+                                  if (type) void confirmFromMeasure(candidate, type);
+                                }}
+                              >
+                                <option value="">Choose what it measures…</option>
+                                {availableTypes.map((semanticType) => (
+                                  <option key={semanticType} value={semanticType}>
+                                    {quantityLabel(needed.quantities, semanticType)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            {isConfirming && <Hint role="status">Saving confirmation…</Hint>}
+                            {candidateErrors[candidate.candidate_id] && (
+                              <LoadError
+                                onRetry={candidateChoices[candidate.candidate_id] && confirming === null ? () => void confirmFromMeasure(candidate, candidateChoices[candidate.candidate_id]) : undefined}
+                                retryLabel="Try this confirmation again"
+                              >
+                                {candidateErrors[candidate.candidate_id]}
+                              </LoadError>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {candidateError && <div className="border-t px-4 py-3"><LoadError>{candidateError}</LoadError></div>}
+                </section>
+              )}
+
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-muted-foreground" role="status">
+                  {needed.confirmed_readings.length > 0 ? (
+                    <>
+                      <span className="num">{needed.confirmed_readings.length}</span> drawing {needed.confirmed_readings.length === 1 ? 'reading has' : 'readings have'} filled the fields below: review them before saving.
+                    </>
+                  ) : (
+                    'No AI reading confirmed yet: choose a meaning above, or type a value you read.'
+                  )}
+                </p>
+                {/* Review by exception (admin, 2026-10-06): show only the fields that need a look. */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm" role="status">
+                    <span className="num">{reviewSummary.agreed}</span> agreed by both AI readers ·{' '}
+                    <span className="num">{reviewSummary.needs_look + reviewSummary.empty}</span> need a look
+                    {reviewSummary.done > 0 && (
+                      <>
+                        {' '}· <span className="num">{reviewSummary.done}</span> done
+                      </>
+                    )}
+                  </p>
+                  <label className="flex min-h-8 items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-foreground"
+                      checked={onlyNeeded}
+                      onChange={(event) => setOnlyNeeded(event.target.checked)}
+                    />
+                    Show only what needs a look
+                  </label>
+                </div>
+              </div>
+
+              {/* **Grouped by the sheet the value is read from**, so the shop drawing's fields are filled
+                  with the shop drawing open, and the sheet is stated once as a heading. */}
+              {sheets.map((sheet) => {
+                const inSheet = needed.quantities.filter((quantity) => quantity.source === sheet);
+                const done = inSheet.filter(hasValue).length;
+                const shown = inSheet.filter((quantity) => {
+                  const review = reviewOf(quantity);
+                  // A field the reviewer typed into stays on screen: hiding it as "done" after the first
+                  // keystroke took the box away mid-word (found in #1061). Settled ones still hide.
+                  const typedHere = reviewerEditedSingles.has(quantity.key) || reviewerEditedMany.has(quantity.key);
+                  return !(onlyNeeded && (review.state === 'agreed' || (review.state === 'done' && !typedHere)));
+                });
+                const headingId = `sheet-${sheet}`;
+                return (
+                  <section className="flex flex-col gap-2" key={sheet} aria-labelledby={headingId}>
+                    <div className="flex items-baseline justify-between gap-3">
+                      <h4 id={headingId} className="text-sm font-semibold">
+                        {sentence(SOURCE_LABEL[sheet] ?? sheet)}
+                      </h4>
+                      <span className="text-xs text-muted-foreground">
+                        <span className="num">{done}</span> of <span className="num">{inSheet.length}</span> filled
+                      </span>
+                    </div>
+                    {shown.length === 0 ? (
+                      <Hint className="rounded-xl border border-dashed px-4 py-3">Nothing here needs a look.</Hint>
+                    ) : (
+                      <div className="divide-y rounded-xl border bg-card">
+                        {shown.map((quantity) => renderField(quantity))}
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
+              <FillerDistributionPanel
+                quantities={needed.quantities}
+                parameters={needed.parameters}
+                singles={singles}
+                runs={runs}
+                fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
+                onFieldWidthChange={(value) => {
+                  if (!fieldDimensionKey) return;
+                  const nextEdits = new Set(reviewerEditedSinglesRef.current).add(fieldDimensionKey);
+                  reviewerEditedSinglesRef.current = nextEdits;
+                  setReviewerEditedSingles(nextEdits);
+                  setSingles((prior) => ({ ...prior, [fieldDimensionKey]: value }));
+                }}
+                onCalculate={(request) => calculateFillerDistribution(projectId(), request)}
+              />
+            </div>
+          </section>
         </div>
-      </footer>
+
+        <div data-measure-step="settings" hidden={step !== 'settings'}>
+          <StepHeading step="settings" />
+          <div className="flex flex-col gap-8">
+            <div id="measure-settings" className="scroll-mt-4">
+              <StepSection
+                id="measure-settings-title"
+                slot="measure-settings"
+                title="Settings"
+                line={
+                  settingsCount && settingsCount.total > 0 ? (
+                    <strong className="font-medium text-foreground">
+                      {settingsCount.done === settingsCount.total
+                        ? `All ${countWords(settingsCount.total, 'setting')} set.`
+                        : `${settingsCount.done} of ${countWords(settingsCount.total, 'setting')} set.`}
+                    </strong>
+                  ) : (
+                    'Values for this job, not dimensions off a drawing.'
+                  )
+                }
+                tipLabel="About settings"
+                tip={
+                  <>
+                    <p>Values for this job, not dimensions off a drawing.</p>
+                    <p>Where the rulebook suggests a value it is shown — a rule author&apos;s stand-in, not a number the client has confirmed. A blank setting with one uses it.</p>
+                    <p>Where the architect&apos;s drawing states one, the page is shown but the number is not: type what you see, and it is saved only if it matches.</p>
+                  </>
+                }
+              >
+                <div className="divide-y rounded-xl border bg-card">
+                  {needed.parameters.map((parameter) => {
+                    const pointer = citingPointer(parameter, declinedCitations);
+                    return (
+                      <div className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]" key={parameter.name}>
+                        {/* A compact row (#1061): the setting | its value and where it came from. */}
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <label className="text-sm font-medium" htmlFor={`p-${parameter.name}`}>
+                            {sentence(parameter.name.replace(/_/g, ' '))}
+                          </label>
+                          <span className="text-xs text-muted-foreground">
+                            {parameter.scope === 'run' ? 'This review only' : 'This project'}
+                          </span>
+                          <span className="num break-all text-xs text-muted-foreground">{parameter.name} · {parameter.rule_ids.join(', ')}</span>
+                        </div>
+                        <div className="flex min-w-0 flex-col gap-2">
+                          {parameter.blocked ? (
+                            <p className="flex items-start gap-1.5 text-sm text-muted-foreground" role="note">
+                              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                              <span>
+                                Waiting on the vendor, not a field to fill in.{' '}
+                                <InfoTip label="Why this is waiting">
+                                  <p>This check will report that it could not decide, which is the correct answer until the value arrives.</p>
+                                </InfoTip>
+                              </span>
+                            </p>
+                          ) : pointer ? (
+                            /* **Blind entry (#866).** The box shows where the architect's drawing states this
+                               setting and starts empty; the app's own reading of the number never reaches the
+                               page. Save sends the passage as the citation, and a number that differs from the
+                               drawing's is refused with the server's sentence below. */
+                            <SettingCitation
+                              name={parameter.name}
+                              pointer={pointer}
+                              value={singles[parameter.name] ?? ''}
+                              crop={
+                                packageId ? (
+                                  <SettingPassageCrop packageId={packageId} pointer={pointer} name={parameter.name} />
+                                ) : null
+                              }
+                              onChange={(value) =>
+                                setSingles((prior) => ({ ...prior, [parameter.name]: value }))
+                              }
+                              onDecline={() =>
+                                setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: true }))
+                              }
+                            />
+                          ) : (
+                            <>
+                              <input
+                                className={cn(INPUT_CLASS, 'num')}
+                                id={`p-${parameter.name}`}
+                                placeholder=""
+                                value={singles[parameter.name] ?? ''}
+                                onChange={(e) =>
+                                  setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                                }
+                              />
+                              {parameter.declared_default && (
+                                <Hint>
+                                  Blank uses the rulebook&apos;s <span className="num text-foreground">{parameter.declared_default}</span>, a stand-in the client has not confirmed.
+                                </Hint>
+                              )}
+                              <SettingSourceFields
+                                parameter={parameter}
+                                chosen={sourceChoices[parameter.name] ?? ''}
+                                reference={references[parameter.name] ?? ''}
+                                onChoose={(value) =>
+                                  setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
+                                }
+                                onReference={(value) =>
+                                  setReferences((prior) => ({ ...prior, [parameter.name]: value }))
+                                }
+                              />
+                              {parameter.found && (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="self-start"
+                                  onClick={() =>
+                                    setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: false }))
+                                  }
+                                >
+                                  Type it from the architect&apos;s drawing, page {parameter.found.page_index + 1}
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </StepSection>
+            </div>
+
+            {needed.discriminators.length > 0 && (
+              <StepSection
+                id="measure-layout-title"
+                slot="measure-layout"
+                title="Layout"
+                line="What the drawing shows; leave an uncertain layout unstated."
+                tipLabel="About layout answers"
+                tip={<p>A model-only suggestion stays unselected until you choose it; code-identified drawing clues may pre-select a value.</p>}
+              >
+                {/* Stays visible: a pre-selected answer is recorded when the checks run. */}
+                {Object.keys(layoutChoiceDefaults(needed.discriminators)).length > 0 && (
+                  <Caution>Run checks records the selected answers; change one first if the crop shows otherwise.</Caution>
+                )}
+                <div className="divide-y rounded-xl border bg-card">
+                  {needed.discriminators.map((discriminator) => (
+                    <div
+                      className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]"
+                      data-proposed={discriminator.proposal ? 'true' : 'false'}
+                      key={discriminator.name}
+                    >
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <label className="text-sm font-medium" htmlFor={`d-${discriminator.name}`}>
+                          {sentence(discriminator.name.replace(/_/g, ' '))}
+                        </label>
+                        <span className="flex flex-wrap items-center gap-1.5">
+                          <Badge variant="outline" className="font-normal">
+                            {discriminator.proposal
+                              ? discriminator.name === 'wall_config' && discriminator.proposal.requires_confirmation
+                                ? 'Needs your confirmation'
+                                : discriminator.proposal.prompt_id === 'slot-walls-drawing-clues-v1'
+                                  ? 'Drawing clue'
+                                  : 'Proposed'
+                              : 'Needs you'}
+                          </Badge>
+                          <span className="num break-all text-xs text-muted-foreground">{discriminator.rule_ids.join(', ')}</span>
+                        </span>
+                      </div>
+                      <div className="flex min-w-0 flex-col gap-2">
+                        <select
+                          className={SELECT_CLASS}
+                          id={`d-${discriminator.name}`}
+                          value={choices[discriminator.name] ?? ''}
+                          onChange={(e) =>
+                            setChoices((prior) => ({ ...prior, [discriminator.name]: e.target.value }))
+                          }
+                        >
+                          <option value="">Not stated</option>
+                          {discriminator.choices.map((choice) => (
+                            <option key={choice} value={choice}>
+                              {choice}
+                            </option>
+                          ))}
+                        </select>
+                        {discriminator.proposal ? (
+                          <LayoutProposalCrop
+                            packageId={packageId ?? ''}
+                            proposal={discriminator.proposal}
+                            discriminatorName={discriminator.name}
+                          />
+                        ) : (
+                          <Hint>No proposed answer was recorded for this layout question.</Hint>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </StepSection>
+            )}
+
+            {stored.length > 0 && (
+              <section aria-live="polite" aria-labelledby="measure-stored-title" className="flex flex-col gap-2">
+                <h3 id="measure-stored-title" className="text-base font-semibold">Stored, as the system read them</h3>
+                <ul className="num flex flex-col gap-1 rounded-xl border bg-card px-4 py-3 text-xs break-all">
+                  {stored.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </div>
+        </div>
+
+        {/* **One primary action per step (#1124):** Next, and Run checks on the last step. Save values is
+            the quiet one, on the steps whose values and settings it records. `#measure-run-checks` is
+            where the review header's "Run checks" lands; asking for it opens the last step. */}
+        <footer
+          data-slot="measure-actions"
+          className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t bg-background px-4 pt-3 pb-4 sm:-mx-6 sm:px-6 sm:pb-9"
+        >
+          {error && <LoadError>{error}</LoadError>}
+          {accepted && (
+            <p className="flex flex-wrap items-center gap-1.5 text-sm" role="status">
+              <span>
+                Checks queued (<span className="num">{accepted.slice(0, 8)}</span>). Results update when they have run.
+              </span>
+              <InfoTip label="About the queued checks">
+                <p>The values and settings were saved first. A review worker now runs the deterministic checks; their results appear on the Results tab.</p>
+              </InfoTip>
+            </p>
+          )}
+          {stored.length > 0 && !error && !accepted && (
+            <p className="text-sm text-muted-foreground" role="status">
+              Saved <span className="num">{stored.length}</span> {stored.length === 1 ? 'value' : 'values'}.{' '}
+              <button type="button" className="underline underline-offset-2" onClick={() => goToStep('settings')}>
+                See what was stored
+              </button>
+            </p>
+          )}
+          {unsavedRows > 0 && (
+            <p className="flex flex-wrap items-center gap-1.5 text-sm text-outcome-review-fg" role="status" data-part="unsaved-rows">
+              <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+              <span>
+                <span className="num">{unsavedRows}</span> countertop {unsavedRows === 1 ? 'row has' : 'rows have'} unsaved changes in step 2: use its &ldquo;Save this row&rdquo;.
+              </span>
+              <button type="button" className="text-foreground underline underline-offset-2" onClick={() => goToStep('runs')}>
+                Go to step 2
+              </button>
+            </p>
+          )}
+          {(aiValuesToConfirm.length > 0 || layoutAnswers > 0) && (
+            <p className="text-xs text-muted-foreground" data-part="save-records">
+              {aiValuesToConfirm.length > 0 && (
+                <>
+                  Saving confirms <span className="num">{aiValuesToConfirm.length}</span> AI-filled {aiValuesToConfirm.length === 1 ? 'value' : 'values'}
+                  {aiUnchecked > 0 && <> (<span className="num">{aiUnchecked}</span> not checked against the drawing&apos;s lines)</>}.{' '}
+                </>
+              )}
+              {layoutAnswers > 0 && (
+                <>
+                  Run checks also records <span className="num">{layoutAnswers}</span> layout {layoutAnswers === 1 ? 'answer' : 'answers'}.{' '}
+                </>
+              )}
+              <button type="button" className="text-foreground underline underline-offset-2" onClick={() => goToStep(aiValuesToConfirm.length > 0 ? 'values' : 'settings')}>
+                Review {aiValuesToConfirm.length > 0 ? 'them' : 'the layout'}
+              </button>
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            {previousStep && (
+              <Button type="button" variant="ghost" onClick={() => goToStep(previousStep)}>
+                <ChevronLeft aria-hidden="true" /> Back
+              </Button>
+            )}
+            <span className="ml-auto" />
+            {(step === 'values' || step === 'settings') && (
+              <Button type="button" variant="outline" onClick={onSave} disabled={busy}>
+                Save values
+              </Button>
+            )}
+            {nextStep ? (
+              // Keyed apart, so React never reuses the focused Next button as Run checks (#1124).
+              <Button key="next" type="button" onClick={() => goToStep(nextStep)}>
+                Next <ChevronRight aria-hidden="true" />
+              </Button>
+            ) : (
+              <Button key="run-checks" type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy}>
+                <Play aria-hidden="true" /> Run checks
+              </Button>
+            )}
+          </div>
+        </footer>
+      </div>
     </div>
   );
+}
+
+/** "back offset minimum" → "Back offset minimum": a sentence-case label from a lower-case name. */
+function sentence(words: string): string {
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Whether a field needs the reviewer, as a chip with its glyph and word (never colour alone): the
+ * "needs your decision" amber only where a look is needed, the dashed "waiting on a value" where it
+ * is empty. It says whether to look, never whether the value is right.
+ */
+const REVIEW_CHIP: Record<FieldReview['state'], { word: string; icon: typeof Check; tone: string }> = {
+  agreed: { word: 'Both AI readers agreed', icon: CheckCircle2, tone: 'border-outcome-pass-fg/30 bg-outcome-pass-bg text-outcome-pass-fg' },
+  needs_look: { word: 'Needs a look', icon: AlertCircle, tone: 'border-outcome-review-fg/60 bg-outcome-review-bg text-outcome-review-fg' },
+  done: { word: 'Done', icon: Check, tone: 'border-border text-foreground' },
+  empty: { word: 'Needs a value', icon: CircleDashed, tone: 'border-dashed border-outcome-missing-fg/60 bg-outcome-missing-bg text-outcome-missing-fg' },
+};
+
+function ReviewChip({ state }: { state: FieldReview['state'] }) {
+  const chip = REVIEW_CHIP[state];
+  const Icon = chip.icon;
+  return (
+    <span
+      data-slot="field-review"
+      data-state={state}
+      className={cn('inline-flex w-fit items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap', chip.tone)}
+    >
+      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+      {chip.word}
+    </span>
+  );
+}
+
+/** A step with nothing in it says so, rather than showing an empty page. */
+function EmptyStep({ children }: { children: ReactNode }) {
+  return <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">{children}</p>;
 }
 
 /**
@@ -2032,47 +2094,48 @@ function AiReadings({
   const sheet = SOURCE_LABEL[quantity.source] ?? quantity.source;
 
   return (
-    <div className="ai-readings">
-      {/* **Collapsed, because the same readings are offered under every field of their sheet.**
-          Filtering by source is all that can honestly be done today: which sheet a number was read
-          from is recorded, and which field it belongs to is not — that is what the witness-line
-          geometry in `extraction/geometry/dimension_lines.py` (#179) is being built to establish.
-
-          With two readings and ten shop-drawing fields, showing them open put the same two values
-          on screen twenty times and buried the fields themselves. Collapsed, the offer is still at
-          the field that wants one, and the page still reads as a form. When geometry can say which
-          field each reading measures, this stops being a list and becomes one suggestion. */}
+    <div className="flex flex-col gap-2">
+      {/* **Folded, because the same readings are offered under every field of their sheet.** Which
+          sheet a number was read from is recorded; which field it belongs to is not — that is what
+          the witness-line geometry in `extraction/geometry/dimension_lines.py` (#179) is being built
+          to establish. Open, two readings and ten fields put the same values on screen twenty times. */}
       <button
         type="button"
-        className="ai-readings__label"
+        className="flex min-h-8 w-fit items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         aria-expanded={open}
         onClick={() => setOpen((shown) => !shown)}
       >
-        <ChevronRight size={12} className="collapsible-chevron" data-open={open} aria-hidden="true" />
-        <ScanLine size={12} aria-hidden="true" />
-        {offered.length} reading{offered.length === 1 ? '' : 's'} from the {sheet}
+        <ChevronRight className={cn('size-3.5 transition-transform motion-reduce:transition-none', open && 'rotate-90')} aria-hidden="true" />
+        <ScanLine className="size-3.5" aria-hidden="true" />
+        <span>
+          <span className="num">{offered.length}</span> {offered.length === 1 ? 'reading' : 'readings'} from the {sheet}
+        </span>
       </button>
-      <div className="collapsible" data-open={open} inert={!open}>
-      <div className="ai-readings__chips">
-        {offered.map((candidate) => (
-          <button
-            key={candidate.candidate_id}
-            type="button"
-            className="ai-reading interactive"
-            disabled={busyId !== null}
-            onClick={() => onUse(candidate)}
-            title={`Confirm ${candidate.value} as ${fieldLabel(quantity)}`}
-          >
-            <strong>{candidate.value}</strong>
-            <span>p{candidate.page_index + 1}</span>
-            {busyId === candidate.candidate_id ? <span>saving…</span> : <span>use</span>}
-          </button>
-        ))}
-      </div>
-      </div>
+      {open && (
+        <div className="flex flex-wrap gap-1.5">
+          {offered.map((candidate) => (
+            <Button
+              key={candidate.candidate_id}
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busyId !== null}
+              onClick={() => onUse(candidate)}
+              title={`Confirm ${candidate.value} as ${fieldLabel(quantity)}`}
+            >
+              <span className="num font-semibold">{candidate.value}</span>
+              <span className="text-xs text-muted-foreground">p<span className="num">{candidate.page_index + 1}</span></span>
+              <span className="text-xs">{busyId === candidate.candidate_id ? 'saving…' : 'use'}</span>
+            </Button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
+
+/** A crop from the uploaded PDF, as it is shown everywhere on this screen: whole, on white. */
+const CROP_CLASS = 'max-h-40 w-fit max-w-full rounded-md border bg-white object-contain';
 
 function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOut; packageId: string }) {
   const [state, setState] = useState<{ url: string } | { error: string } | null>(null);
@@ -2120,28 +2183,28 @@ function MeasureCandidateCrop({ candidate, packageId }: { candidate: CandidateOu
   }, [candidate.candidate_id, packageId, shouldLoad, attempt]);
 
   if (state && 'error' in state) {
-    return <span className="ai-proposal__no-crop">{state.error} <button type="button" className="value-secondary" onClick={() => { setState(null); setAttempt((count) => count + 1); }}>Retry crop</button></span>;
+    return (
+      <LoadError role="status" onRetry={() => { setState(null); setAttempt((count) => count + 1); }} retryLabel="Retry crop">
+        {state.error}
+      </LoadError>
+    );
   }
   if (!state || !('url' in state)) {
     return (
-      <span ref={placeholderRef} className="ai-proposal__crop-loading">
-        {shouldLoad ? <><ScanLine size={14} aria-hidden="true" /> Loading crop…</> : 'Scroll this reading into view to load its crop.'}
+      <span ref={placeholderRef} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {shouldLoad ? <><ScanLine className="size-3.5" aria-hidden="true" /> Loading crop…</> : 'Scroll this reading into view to load its crop.'}
       </span>
     );
   }
   const warning = candidateCropWarning(candidate.crop_shows_gv_mark);
   return (
-    <figure className="ai-proposal__crop-figure">
+    <figure className="flex flex-col gap-1">
       <img
-        className="ai-proposal__crop"
+        className={CROP_CLASS}
         src={state.url}
         alt={`Mechanical crop for ${candidate.raw_text} on page ${candidate.page_index + 1}`}
       />
-      {warning && (
-        <figcaption className="ai-proposal__mark-warning" role="status">
-          <AlertTriangle size={14} aria-hidden="true" /> {warning}
-        </figcaption>
-      )}
+      {warning && <Caution>{warning}</Caution>}
     </figure>
   );
 }
@@ -2178,23 +2241,23 @@ function LayoutProposalCrop({
   }, [packageId, proposal.crop_artifact_id]);
 
   if (state && 'error' in state) {
-    return <p className="layout-field__empty">{state.error}</p>;
+    return <Hint>{state.error}</Hint>;
   }
   if (!state || !('url' in state)) {
     return (
-      <span className="ai-proposal__crop-loading">
-        <ScanLine size={14} aria-hidden="true" /> Loading crop…
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <ScanLine className="size-3.5" aria-hidden="true" /> Loading crop…
       </span>
     );
   }
   return (
-    <figure className="layout-crop">
+    <figure className="flex flex-col gap-1">
       <img
-        className="ai-proposal__crop"
+        className={CROP_CLASS}
         src={state.url}
         alt={`Plan-view crop for ${discriminatorName}: ${proposal.value}`}
       />
-      <figcaption>Evidence picture for this proposed layout</figcaption>
+      <figcaption className="text-xs text-muted-foreground">Evidence picture for this proposed layout</figcaption>
     </figure>
   );
 }
@@ -2237,27 +2300,26 @@ function SettingPassageCrop({
   const page = pointer.page_index + 1;
   if (state && 'error' in state) {
     return (
-      <p className="setting-citation__note">
+      <LoadError role="status" onRetry={() => { setState(null); setAttempt((count) => count + 1); }} retryLabel="Retry passage picture">
         {state.error} Open page {page} of the {uploadLabel(pointer.document_kind)} and read it there.
-        {' '}<button type="button" className="value-secondary" onClick={() => { setState(null); setAttempt((count) => count + 1); }}>Retry passage picture</button>
-      </p>
+      </LoadError>
     );
   }
   if (!state || !('url' in state)) {
     return (
-      <span className="ai-proposal__crop-loading">
-        <ScanLine size={14} aria-hidden="true" /> Loading the passage…
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <ScanLine className="size-3.5" aria-hidden="true" /> Loading the passage…
       </span>
     );
   }
   return (
-    <figure className="layout-crop">
+    <figure className="flex flex-col gap-1">
       <img
-        className="setting-citation__crop"
+        className={CROP_CLASS}
         src={state.url}
         alt={`The passage on page ${page} where the architect's drawing states ${name}`}
       />
-      <figcaption>Page {page} of the {uploadLabel(pointer.document_kind)}</figcaption>
+      <figcaption className="text-xs text-muted-foreground">Page {page} of the {uploadLabel(pointer.document_kind)}</figcaption>
     </figure>
   );
 }
@@ -2284,16 +2346,16 @@ function SettingSourceFields({
   const current = sources.length === 1 ? sources[0].value : chosen;
   const selected = sources.find((source) => source.value === current);
   return (
-    <div className="setting-source">
+    <div className="flex flex-col gap-2">
       {sources.length === 1 ? (
-        <p className="enter-values__hint enter-values__hint--tight">
-          Source: <strong>{sources[0].value}</strong>
-        </p>
+        <Hint>
+          Source: <span className="font-medium text-foreground">{sources[0].value}</span>
+        </Hint>
       ) : (
-        <label className="setting-source__choice" htmlFor={`p-${parameter.name}-source`}>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground" htmlFor={`p-${parameter.name}-source`}>
           Where from?
           <select
-            className="value-input"
+            className={SELECT_CLASS}
             id={`p-${parameter.name}-source`}
             value={chosen}
             onChange={(e) => onChoose(e.target.value)}
@@ -2307,9 +2369,9 @@ function SettingSourceFields({
           </select>
         </label>
       )}
-      {selected && <p className="enter-values__hint enter-values__hint--tight">{selected.guidance}</p>}
+      {selected && <Hint>{selected.guidance}</Hint>}
       <input
-        className="value-input value-input--wide"
+        className={INPUT_CLASS}
         id={`p-${parameter.name}-reference`}
         aria-label={`Where in the source ${parameter.name} is`}
         placeholder="Reference (optional), e.g. Architect A-501, section 3"
@@ -2318,5 +2380,15 @@ function SettingSourceFields({
         onChange={(e) => onReference(e.target.value)}
       />
     </div>
+  );
+}
+
+/** The step's own heading, for screen readers and for focus after Next or Back (#1124). */
+function StepHeading({ step }: { step: MeasureStep }) {
+  const index = MEASURE_STEPS.findIndex((item) => item.id === step);
+  return (
+    <h3 tabIndex={-1} data-step-heading={step} className="sr-only">
+      Step {index + 1} of {MEASURE_STEPS.length}: {MEASURE_STEPS[index].label}
+    </h3>
   );
 }

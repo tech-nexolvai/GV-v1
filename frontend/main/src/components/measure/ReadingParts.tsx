@@ -4,10 +4,10 @@ import { ApiError, confirmReadingPart, listReadingParts, withdrawReadingPart } f
 import { projectId } from '../../api/config';
 import { PartPicture } from './PartPicture.js';
 import { linkCount, partName, type LinkPart, type ReadingLinks } from './readingPartChoices.js';
-import type { StepCount } from '../../lib/measure-steps';
+import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { ReadingPartsList } from './ReadingPartsList.js';
-import './DrawingParts.css';
+import { LoadError } from './wizard-ui.js';
 
 /**
  * Loads each confirmed part's suggested reading and saves a person's decision on one part at a time
@@ -18,7 +18,7 @@ import './DrawingParts.css';
  * change what can be suggested. After each decision here the list is read again, so the link shown
  * is always the server's.
  */
-export function ReadingParts({ packageId, refresh, onProgress }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void }) {
+export function ReadingParts({ packageId, refresh, onProgress, onState }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void; /** For the step's "nothing here" line (#1124). */ onState?: (state: SectionState) => void }) {
   const [links, setLinks] = useState<ReadingLinks | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
@@ -28,6 +28,9 @@ export function ReadingParts({ packageId, refresh, onProgress }: { packageId: st
   useEffect(() => {
     if (links) onProgress?.(linkCount(links));
   }, [links, onProgress]);
+  useEffect(() => {
+    onState?.(loadError ? 'error' : links === null ? 'loading' : links.drawings.length === 0 ? 'empty' : 'shown');
+  }, [links, loadError, onState]);
 
   useEffect(() => {
     let live = true;
@@ -59,10 +62,9 @@ export function ReadingParts({ packageId, refresh, onProgress }: { packageId: st
 
   if (links === null || links.drawings.length === 0) {
     return loadError ? (
-      <p className="enter-values__error" role="alert">
-        Which reading is each part&apos;s width could not be listed: {loadError}{' '}
-        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-      </p>
+      <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+        Which reading is each part&apos;s width could not be listed: {loadError}
+      </LoadError>
     ) : null;
   }
   return (
@@ -84,10 +86,9 @@ export function ReadingParts({ packageId, refresh, onProgress }: { packageId: st
         onWithdraw={withdraw}
       />
       {loadError && (
-        <p className="enter-values__error" role="alert">
-          The width links could not refresh: {loadError}{' '}
-          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-        </p>
+        <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+          The width links could not refresh: {loadError}
+        </LoadError>
       )}
     </>
   );

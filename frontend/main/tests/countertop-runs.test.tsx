@@ -74,14 +74,16 @@ const html = renderToStaticMarkup(
 // The question is asked, and how much is left is stated.
 assert.match(html, /Parts under each countertop/);
 assert.match(html, /Page 2: the vendor&#x27;s drawing/);
-assert.match(html, /1 still to decide\./);
+// #1124: the count names what it counts.
+assert.match(html, /1 countertop still to decide\./);
 assert.equal(runsStillToDecide(runs), 1);
 
 // The suggested run is shown left to right, each part named as "Parts of each drawing" names it,
 // with why; the wall cabinet is shown as left out, with why, and is not in the run.
 assert.match(html, /Countertop, part 2/);
 assert.ok(html.indexOf('part 1 (cabinet)') < html.indexOf('part 3 (cabinet)'));
-assert.equal((html.match(/class="countertop-runs__members"/g) ?? []).length, 1);
+// #1124: Tailwind now; the run's list is found by its data-slot.
+assert.equal((html.match(/data-slot="run-members"/g) ?? []).length, 1);
 assert.match(html, /part 4 \(cabinet\): Left out/);
 assert.match(html, /Not decided yet\./);
 
@@ -102,8 +104,10 @@ assert.match(html, />Not this countertop&#x27;s run<\/button>/);
 assert.equal((html.match(/role="group"/g) ?? []).length, 1);
 assert.doesNotMatch(html, /aria-pressed="true"/);
 
-// Reader-only walls are visible and preselected for this one countertop, but the choice remains
-// a required human run decision. Nothing is saved merely because the select has a value.
+// Reader-only walls are visible as a suggestion, never preselected (#1124, DECIDED "nothing
+// pre-selected"): before, the select started on the readers' answer, so "Confirm this run" sent it
+// as the person's decision. Now the person chooses it, in the select or with "Use the suggested
+// layout", and until then the run cannot be confirmed.
 const readerWallSuggestion: RunCountertop = {
   ...countertop,
   wall_layout_proposal: { value: 'back_left_right', source: 'readers' },
@@ -117,9 +121,12 @@ const suggestedLayoutHtml = renderToStaticMarkup(
   />,
 );
 assert.match(suggestedLayoutHtml, /Suggested from the drawing readers/);
-assert.match(suggestedLayoutHtml, /Confirm this run to use it/);
-assert.match(suggestedLayoutHtml, /<option value="back_left_right" selected="">Walls at both ends/);
-assert.match(suggestedLayoutHtml, /type="button"[^>]*>Confirm this run<\/button>/);
+assert.match(suggestedLayoutHtml, /confirm this run to use it/);
+assert.match(suggestedLayoutHtml, /<option value="" selected="">/);
+assert.doesNotMatch(suggestedLayoutHtml, /<option value="back_left_right" selected/);
+assert.match(suggestedLayoutHtml, />Use the suggested layout: Walls at both ends<\/button>/);
+assert.match(suggestedLayoutHtml, /disabled=""[^>]*>Confirm this run<\/button>/);
+assert.match(suggestedLayoutHtml, /nothing is selected for you/);
 
 // Ticking a different set of parts makes it a correction, whatever order they were ticked in.
 assert.equal(isTheSuggestion(countertop, ['right', 'left']), true);
@@ -169,7 +176,8 @@ const staleHtml = renderToStaticMarkup(
     onWithdraw={() => undefined}
   />,
 );
-assert.match(staleHtml, /role="status">A part in this run was taken back/);
+// #1124: the note carries a warning glyph before its words now.
+assert.match(staleHtml, /role="status"[^>]*>(?:<svg[\s\S]*?<\/svg>)?<span[^>]*>A part in this run was taken back/);
 assert.match(staleHtml, /Nothing left to decide\./);
 assert.match(staleHtml, /<option value="back_left_right" selected="">Walls at both ends<\/option>/);
 
@@ -196,7 +204,8 @@ const withdrawnHtml = renderToStaticMarkup(
     onWithdraw={() => undefined}
   />,
 );
-assert.match(withdrawnHtml, /aria-pressed="true"[^>]*>Not this countertop&#x27;s run/);
+// #1124: the chosen answer carries a tick before its word, so the pattern allows one.
+assert.match(withdrawnHtml, /aria-pressed="true"[^>]*>(?:<svg[\s\S]*?<\/svg>)?Not this countertop&#x27;s run/);
 
 // Without a stated tolerance nothing is suggested, nothing can be confirmed, and the page says why.
 const unstated: RunsList = {
