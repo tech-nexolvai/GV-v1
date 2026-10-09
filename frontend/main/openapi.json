@@ -442,6 +442,274 @@
         "title": "ArchitectComparedOut",
         "type": "object"
       },
+      "ArchitectPairIn": {
+        "additionalProperties": false,
+        "properties": {
+          "architect_candidate_id": {
+            "format": "uuid",
+            "title": "Architect Candidate Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "piece",
+              "overall"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "vendor_slot_indices": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 64,
+            "title": "Vendor Slot Indices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "architect_candidate_id"
+        ],
+        "title": "ArchitectPairIn",
+        "type": "object"
+      },
+      "ArchitectPairOut": {
+        "properties": {
+          "architect_candidate_id": {
+            "format": "uuid",
+            "title": "Architect Candidate Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "vendor_slot_indices": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Vendor Slot Indices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "architect_candidate_id",
+          "vendor_slot_indices"
+        ],
+        "title": "ArchitectPairOut",
+        "type": "object"
+      },
+      "ArchitectPairingEffectiveOut": {
+        "description": "The pairing that counts, re-checked against the architect's dimensions as they stand.",
+        "properties": {
+          "ai_only": {
+            "title": "Ai Only",
+            "type": "boolean"
+          },
+          "pairs": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectPairOut"
+            },
+            "title": "Pairs",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "source",
+          "status",
+          "pairs",
+          "reasons",
+          "ai_only"
+        ],
+        "title": "ArchitectPairingEffectiveOut",
+        "type": "object"
+      },
+      "ArchitectPairingIn": {
+        "additionalProperties": false,
+        "description": "A reviewer's pairing for one row. `pairs: []` states that nothing on the architect's drawing\nis comparable with this row.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "pairs": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectPairIn"
+            },
+            "maxItems": 64,
+            "title": "Pairs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pairs"
+        ],
+        "title": "ArchitectPairingIn",
+        "type": "object"
+      },
+      "ArchitectPairingOut": {
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectPairingRecordOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectPairingEffectiveOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "piece_count": {
+            "title": "Piece Count",
+            "type": "integer"
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "spans": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectSpanOut"
+            },
+            "title": "Spans",
+            "type": "array"
+          }
+        },
+        "required": [
+          "row_id",
+          "piece_count",
+          "current",
+          "effective",
+          "spans"
+        ],
+        "title": "ArchitectPairingOut",
+        "type": "object"
+      },
+      "ArchitectPairingRecordOut": {
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "pairs": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectPairOut"
+            },
+            "title": "Pairs",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "required": [
+          "record_id",
+          "source",
+          "status",
+          "pairs",
+          "reasons",
+          "note",
+          "decided_by",
+          "decided_at",
+          "supersedes_id"
+        ],
+        "title": "ArchitectPairingRecordOut",
+        "type": "object"
+      },
       "ArchitectResultOut": {
         "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
         "properties": {
@@ -521,6 +789,102 @@
           }
         },
         "title": "ArchitectResultOut",
+        "type": "object"
+      },
+      "ArchitectSpanOut": {
+        "properties": {
+          "can_pair": {
+            "title": "Can Pair",
+            "type": "boolean"
+          },
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "held_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Reason"
+          },
+          "inches": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inches"
+          },
+          "on_outline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Outline"
+          },
+          "printed": {
+            "title": "Printed",
+            "type": "string"
+          },
+          "refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal"
+          },
+          "row": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row"
+          },
+          "slot": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "printed",
+          "inches",
+          "on_outline",
+          "held_reason",
+          "row",
+          "slot",
+          "can_pair",
+          "refusal"
+        ],
+        "title": "ArchitectSpanOut",
         "type": "object"
       },
       "AssemblyInput": {
@@ -10595,6 +10959,140 @@
           }
         },
         "summary": "List each current slot-reader countertop row and its reviewer-only gaps",
+        "tags": [
+          "slot-reader rows"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-pairing": {
+      "get": {
+        "operationId": "get_architect_pairing_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "row_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Row Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchitectPairingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Show which architect dimension pairs with which vendor piece on one countertop row",
+        "tags": [
+          "slot-reader rows"
+        ]
+      },
+      "post": {
+        "operationId": "pair_architect_dimensions_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "row_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Row Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchitectPairingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchitectPairingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pair the architect's dimensions with one countertop row (or say none is comparable)",
         "tags": [
           "slot-reader rows"
         ]

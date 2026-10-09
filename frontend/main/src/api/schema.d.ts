@@ -1971,6 +1971,33 @@ export interface components {
              */
             revision_id: string;
         };
+        /**
+         * ArchitectComparedOut
+         * @description One width both drawings print for the same thing, as the architect check compared it.
+         */
+        ArchitectComparedOut: {
+            architect: components["schemas"]["ExactValueOut"] | null;
+            /** Architect Display */
+            architect_display: string | null;
+            /** @description The vendor's value minus the architect's, exactly. */
+            delta: components["schemas"]["ExactValueOut"] | null;
+            /** Delta Display */
+            delta_display: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "overall" | "piece";
+            outcome: components["schemas"]["Outcome"] | null;
+            vendor: components["schemas"]["ExactValueOut"] | null;
+            /** Vendor Display */
+            vendor_display: string | null;
+            /**
+             * Vendor Piece
+             * @description The vendor piece, counted from 1 as the row shows it; null for the overall.
+             */
+            vendor_piece: number | null;
+        };
         /** ArchitectPairIn */
         ArchitectPairIn: {
             /**
@@ -2073,57 +2100,6 @@ export interface components {
             /** Supersedes Id */
             supersedes_id: string | null;
         };
-        /** ArchitectSpanOut */
-        ArchitectSpanOut: {
-            /** Can Pair */
-            can_pair: boolean;
-            /**
-             * Candidate Id
-             * Format: uuid
-             */
-            candidate_id: string;
-            /** Held Reason */
-            held_reason: string | null;
-            /** Inches */
-            inches: string | null;
-            /** On Outline */
-            on_outline: boolean | null;
-            /** Printed */
-            printed: string;
-            /** Refusal */
-            refusal: string | null;
-            /** Row */
-            row: number | null;
-            /** Slot */
-            slot: number | null;
-        };
-        /**
-         * ArchitectComparedOut
-         * @description One width both drawings print for the same thing, as the architect check compared it.
-         */
-        ArchitectComparedOut: {
-            architect: components["schemas"]["ExactValueOut"] | null;
-            /** Architect Display */
-            architect_display: string | null;
-            /** @description The vendor's value minus the architect's, exactly. */
-            delta: components["schemas"]["ExactValueOut"] | null;
-            /** Delta Display */
-            delta_display: string | null;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "overall" | "piece";
-            outcome: components["schemas"]["Outcome"] | null;
-            vendor: components["schemas"]["ExactValueOut"] | null;
-            /** Vendor Display */
-            vendor_display: string | null;
-            /**
-             * Vendor Piece
-             * @description The vendor piece, counted from 1 as the row shows it; null for the overall.
-             */
-            vendor_piece: number | null;
-        };
         /**
          * ArchitectResultOut
          * @description The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
@@ -2152,6 +2128,30 @@ export interface components {
             pairing_source?: ("code" | "both-ais" | "reviewer" | "none") | null;
             /** Reason */
             reason?: string | null;
+        };
+        /** ArchitectSpanOut */
+        ArchitectSpanOut: {
+            /** Can Pair */
+            can_pair: boolean;
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Held Reason */
+            held_reason: string | null;
+            /** Inches */
+            inches: string | null;
+            /** On Outline */
+            on_outline: boolean | null;
+            /** Printed */
+            printed: string;
+            /** Refusal */
+            refusal: string | null;
+            /** Row */
+            row: number | null;
+            /** Slot */
+            slot: number | null;
         };
         /**
          * AssemblyInput
