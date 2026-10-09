@@ -35,6 +35,10 @@ from storage.store import ArtifactStore, StoredArtifact
 POINTS_PER_INCH: Final = Decimal(72)
 PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 
+#: The page context, in PDF points, around every evidence crop a reviewer inspects. One value, so the
+#: vendor-only view of a crop's region (#952) shows the same piece of paper the crop shows.
+EVIDENCE_CONTEXT_MARGIN_PT: Final = Decimal(9)
+
 
 class CropStatus(StrEnum):
     """Whether the evidence image is available or needs reviewer attention."""
@@ -224,13 +228,12 @@ def encode_png(width: int, height: int, rgb: bytes) -> bytes:
     )
 
 
-def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
-    """Decode the deterministic RGB PNGs this module writes.
+def _rgb_png_pixels(data: bytes) -> tuple[int, int, bytes]:
+    """The width, height and joined compressed pixels of an RGB PNG this module writes.
 
-    Vector-first rendering deliberately goes through :func:`encode_png`, so the localized OCR
-    route can decode that byte-identical crop without taking a Pillow dependency.  This is not a
-    general PNG decoder: accepting palette, alpha, interlaced, or filtered images here would imply
-    support we neither write nor test.  Refusing them is preferable to handing OCR scrambled pixels.
+    Refuses anything else: palette, alpha, interlaced or another bit depth, a corrupt chunk, or a
+    missing end. Shared by `decode_rgb_png` and `cut_png_region`, so both accept exactly the same
+    files.
     """
     if not isinstance(data, bytes) or not data.startswith(PNG_SIGNATURE):
         raise ValueError("localized OCR needs an RGB PNG produced by the crop renderer")
@@ -276,8 +279,20 @@ def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
 
     if width is None or height is None or not payloads or not ended or offset != len(data):
         raise ValueError("localized OCR crop is missing required PNG data")
+    return width, height, b"".join(payloads)
+
+
+def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
+    """Decode the deterministic RGB PNGs this module writes.
+
+    Vector-first rendering deliberately goes through :func:`encode_png`, so the localized OCR
+    route can decode that byte-identical crop without taking a Pillow dependency.  This is not a
+    general PNG decoder: accepting palette, alpha, interlaced, or filtered images here would imply
+    support we neither write nor test.  Refusing them is preferable to handing OCR scrambled pixels.
+    """
+    width, height, compressed = _rgb_png_pixels(data)
     try:
-        scanlines = zlib.decompress(b"".join(payloads))
+        scanlines = zlib.decompress(compressed)
     except zlib.error as error:
         raise ValueError("localized OCR crop has invalid compressed pixels") from error
     stride = width * 3
@@ -293,6 +308,43 @@ def decode_rgb_png(data: bytes) -> tuple[int, int, bytes]:
             scanlines[row * (stride + 1) + 1 : (row + 1) * (stride + 1)] for row in range(height)
         ),
     )
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    """The width and height an RGB PNG this module writes states, checked as `decode_rgb_png`
+    checks the file, without decompressing its pixels."""
+    width, height, _ = _rgb_png_pixels(data)
+    return width, height
+
+
+def cut_png_region(data: bytes, box: tuple[int, int, int, int]) -> bytes:
+    """The pixels `box` = `(left, top, right, bottom)` of an RGB PNG this module writes, as a PNG.
+
+    For a stored full-page picture (#952): only the rows down to `box`'s bottom are decompressed,
+    and only the box's rows are kept, so a whole sheet is never held in memory to show a corner of
+    it. The box must lie inside the picture; nothing is clamped, because a box clamped to fit is a
+    picture of a different region.
+    """
+    width, height, compressed = _rgb_png_pixels(data)
+    left, top, right, bottom = box
+    if not (0 <= left < right <= width and 0 <= top < bottom <= height):
+        raise ValueError(f"the region {box} does not lie inside the {width}x{height} picture")
+    stride = width * 3 + 1
+    wanted = bottom * stride
+    decompressor = zlib.decompressobj()
+    try:
+        scanlines = decompressor.decompress(compressed, wanted)
+    except zlib.error as error:
+        raise ValueError("the picture has invalid compressed pixels") from error
+    if len(scanlines) < wanted:
+        raise ValueError("the picture has fewer rows than its header states")
+    rows = []
+    for row in range(top, bottom):
+        line = scanlines[row * stride : (row + 1) * stride]
+        if line[0] != 0:
+            raise ValueError("the picture uses an unsupported PNG filter")
+        rows.append(line[1 + left * 3 : 1 + right * 3])
+    return encode_png(right - left, bottom - top, b"".join(rows))
 
 
 def _stored_extent(
@@ -322,18 +374,29 @@ def crop_pixel_box(
     Public because a caller deciding something about what a crop *shows* must use the rectangle the
     crop was actually cut by, not a second computation of it that could round differently (#735).
     """
+    return pixel_box(rendered.width_px, rendered.height_px, spec)
+
+
+def pixel_box(
+    width_px: int, height_px: int, spec: CropSpec | BoxCropSpec
+) -> tuple[int, int, int, int]:
+    """The pixels `(left, top, right, bottom)` `spec` cuts from a `width_px` x `height_px` page.
+
+    The one computation `crop_pixel_box` makes, for a page known by its size alone: the stored
+    vendor-only page picture a crop's region is shown from (#952), which is never decoded whole.
+    """
     stored_xs, stored_ys = _stored_extent(spec)
-    xs = tuple(x * Decimal(rendered.width_px) for x in stored_xs)
-    ys = tuple(y * Decimal(rendered.height_px) for y in stored_ys)
+    xs = tuple(x * Decimal(width_px) for x in stored_xs)
+    ys = tuple(y * Decimal(height_px) for y in stored_ys)
     margin = spec.context_margin_pt * Decimal(spec.dpi) / POINTS_PER_INCH
     left = max(0, int((min(xs) - margin).to_integral_value(rounding=ROUND_FLOOR)))
     top = max(0, int((min(ys) - margin).to_integral_value(rounding=ROUND_FLOOR)))
     right = min(
-        rendered.width_px,
+        width_px,
         int((max(xs) + margin).to_integral_value(rounding=ROUND_CEILING)),
     )
     bottom = min(
-        rendered.height_px,
+        height_px,
         int((max(ys) + margin).to_integral_value(rounding=ROUND_CEILING)),
     )
     if right <= left or bottom <= top:

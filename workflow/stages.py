@@ -110,6 +110,7 @@ from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
 from evidence.corroborate import corroborate, is_consistent_dual_label
 from evidence.crop import (
+    EVIDENCE_CONTEXT_MARGIN_PT,
     BoxCropSpec,
     CropSpec,
     CropStatus,
@@ -818,7 +819,8 @@ MAXIMUM_RENDER_PIXELS = 40_000_000
 #: the caller, which is the right call: it is a judgement about drawings, and this value is the
 #: smallest one that shows a dimension line either side of its text. **Expect to tune it against the
 #: real GV drawings when #274 lands**; it is a starting point chosen deliberately, not a measured one.
-CROP_CONTEXT_MARGIN_PT = Decimal(9)
+#: Defined beside the crop cutter, so the vendor-only view of a crop's region (#952) keeps the same.
+CROP_CONTEXT_MARGIN_PT = EVIDENCE_CONTEXT_MARGIN_PT
 
 #: The bounded crop and context sent to vision readers. It deliberately reuses the evidence crop
 #: margin so the model sees a region, not a full page, and no model chooses its own context.
