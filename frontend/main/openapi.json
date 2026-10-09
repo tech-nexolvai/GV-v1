@@ -5439,6 +5439,22 @@
             "title": "Rules Published",
             "type": "integer"
           },
+          "saved_measurements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SavedQuantityOut"
+            },
+            "title": "Saved Measurements",
+            "type": "array"
+          },
+          "saved_parameters": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SavedParameterOut"
+            },
+            "title": "Saved Parameters",
+            "type": "array"
+          },
           "still_reading": {
             "default": false,
             "title": "Still Reading",
@@ -6349,6 +6365,146 @@
           "drawings"
         ],
         "title": "RunsOut",
+        "type": "object"
+      },
+      "SavedParameterOut": {
+        "description": "The setting value in force for one parameter, as saved, with where it came from (#1074).",
+        "properties": {
+          "citation": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation"
+          },
+          "layer": {
+            "enum": [
+              "project",
+              "run"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/SavedValueOut"
+          }
+        },
+        "required": [
+          "name",
+          "layer",
+          "value",
+          "source"
+        ],
+        "title": "SavedParameterOut",
+        "type": "object"
+      },
+      "SavedQuantityOut": {
+        "description": "What this review already holds for one quantity of the form, keyed like `QuantityOut.key`.\n\nA quantity feeds one or more rule inputs (`QuantityOut.consumers`) and the form saves it once per\ninput. `values` are those of the input saved most recently \u2014 one value, or a run in layout order\nfor a many-valued quantity.",
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/SavedValueOut"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "values",
+          "set_by",
+          "set_at",
+          "complete"
+        ],
+        "title": "SavedQuantityOut",
+        "type": "object"
+      },
+      "SavedValueOut": {
+        "description": "One value a reviewer saved, exactly as stored, with who saved it and when (#1074).\n\n`numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same\nnumber written the way the form takes it (`25 1/2\"`), and reads back to exactly these two numbers\nwhen sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is\n`38 94/127\"`), because the characters first typed are not stored \u2014 only the number is.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "unit",
+          "text",
+          "set_by",
+          "set_at"
+        ],
+        "title": "SavedValueOut",
         "type": "object"
       },
       "SettingPointerOut": {

@@ -607,6 +607,35 @@ def test_the_override_report_shows_the_citation(session: Session, store: LocalSt
     ) in text
 
 
+def test_the_form_gives_back_a_cited_value_with_its_passage(
+    session: Session, store: LocalStore
+) -> None:
+    """#1074: after a reload the form gets the saved overhang back, still citing the passage it was
+    typed from, and still citing it once a later save carried it into a new version."""
+    _publish(session, "ct_depth_001.yaml")
+    review, proposal_id = _found(session, store)
+    assert (
+        review.enter({"name": OVERHANG, "value": SEEN, "citation": str(proposal_id)}).status_code
+        == 201
+    )
+    assert review.enter({"name": "cabinet_depth", "value": '24"'}).status_code == 201
+
+    form = review.client.get(f"{review.url}/required-inputs")
+
+    assert form.status_code == 200, form.text
+    saved = {entry["name"]: entry for entry in form.json()["saved_parameters"]}
+    overhang = saved[OVERHANG]
+    assert (overhang["layer"], overhang["source"], overhang["citation"]) == (
+        "project",
+        "G.C / Client",
+        str(proposal_id),
+    )
+    assert overhang["reference"].startswith("Architect's drawing, page 1")
+    assert (overhang["value"]["numerator"], overhang["value"]["denominator"]) == ("23", "16")
+    assert overhang["value"]["text"] == SEEN
+    assert saved["cabinet_depth"]["citation"] is None
+
+
 # ---------------------------------------------------------------------------
 # End to end: the vendor's note never decides
 # ---------------------------------------------------------------------------

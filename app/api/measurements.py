@@ -52,7 +52,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -100,6 +100,9 @@ from app.schemas.measurements import (
     RequiredInputsOut,
     ReviewerEntry,
     ReviewerEntryOut,
+    SavedParameterOut,
+    SavedQuantityOut,
+    SavedValueOut,
     SettingPointerOut,
     SourceOut,
     StoredList,
@@ -108,12 +111,12 @@ from app.schemas.measurements import (
 from app.verdicts.rulebook import snapshot_store
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
-from rules.required_inputs import allowed_categories_for, required_inputs
+from rules.required_inputs import RequiredInputs, allowed_categories_for, required_inputs
 from rules.schema import Quantity, Rule
 from rules.semantic_types import SemanticType
 from storage.store import ArtifactStore
 from units.imperial import format_inches
-from units.measurement import Measurement
+from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
 from workflow.assignment_bedrock import (
@@ -674,6 +677,132 @@ def _stored_layout_proposal_out(
     }
 
 
+def _saved_value(row: StoredParameterValue) -> SavedValueOut:
+    """One stored value as the form takes it: the exact pair, and text that reads back to it."""
+    exact = row.exact_value
+    return SavedValueOut(
+        numerator=str(exact.numerator),
+        denominator=str(exact.denominator),
+        unit=row.unit,
+        # Written from the stored fraction, never from a float: `format_inches` is exact and
+        # `parse_imperial` reads back everything it writes, so the form can send this unchanged.
+        text=f'{format_inches(exact)}"' if row.unit == Unit.INCH.value else None,
+        set_by=row.set_by,
+        set_at=row.set_at,
+    )
+
+
+def _saved_entries(
+    session: Session, project_id: UUID, revision: PackageRevision, needs: RequiredInputs
+) -> tuple[tuple[SavedQuantityOut, ...], tuple[SavedParameterOut, ...]]:
+    """What this review already holds for the form's fields (#1074), read and never written.
+
+    **The same sets the checks read, so the form shows what will be judged.** Measurements and
+    run-scope settings come from this package revision's newest RUN set
+    (`workflow/measurements.py:_latest_run_set`); project and global settings from the project's
+    newest PROJECT set (`load_parameter_sets`), which every review in the project shares by design.
+    A save carries every untouched value into its new version (#799, #801), so the newest set holds
+    the latest entry for each name and nothing older needs reading.
+
+    **Four queries, whatever was saved:** the two sets, their values, and the values' citations.
+    """
+    run_set = session.execute(
+        select(StoredParameterSet.id)
+        .where(
+            StoredParameterSet.project_id == project_id,
+            StoredParameterSet.layer == ParameterLayer.RUN.value,
+            StoredParameterSet.package_revision_id == revision.id,
+        )
+        .order_by(StoredParameterSet.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    project_set = session.execute(
+        select(StoredParameterSet.id)
+        .where(
+            StoredParameterSet.project_id == project_id,
+            StoredParameterSet.layer == ParameterLayer.PROJECT.value,
+            StoredParameterSet.package_revision_id.is_(None),
+        )
+        .order_by(StoredParameterSet.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    set_ids = [set_id for set_id in (run_set, project_set) if set_id is not None]
+    if not set_ids:
+        return (), ()
+
+    run: dict[str, StoredParameterValue] = {}
+    project: dict[str, StoredParameterValue] = {}
+    for row in session.scalars(
+        select(StoredParameterValue).where(StoredParameterValue.parameter_set_id.in_(set_ids))
+    ):
+        (run if row.parameter_set_id == run_set else project)[row.name] = row
+
+    # Measurements: one stored name per rule input, `rule_id:name` or `rule_id:name#i` for a run.
+    runs: dict[str, dict[int, StoredParameterValue]] = {}
+    for name, row in run.items():
+        stem, marker, index = name.partition(LIST_MARKER)
+        if marker and index.isdigit():
+            runs.setdefault(stem, {})[int(index)] = row
+    measurements: list[SavedQuantityOut] = []
+    for quantity in needs.quantities:
+        held: list[tuple[StoredParameterValue, ...]] = []
+        for consumer in quantity.consumers:
+            stem = f"{consumer.rule_id}:{consumer.input_name}"
+            if quantity.many:
+                indexed = runs.get(stem, {})
+                held.append(tuple(indexed[position] for position in sorted(indexed)))
+            else:
+                held.append((run[stem],) if stem in run else ())
+        saved = [rows for rows in held if rows]
+        if not saved:
+            continue
+        # The input saved most recently; ties go to the first consumer, in the form's own order.
+        latest = max(saved, key=lambda rows: max(row.set_at for row in rows))
+        newest = max(latest, key=lambda row: row.set_at)
+        exact = [(row.exact_value, row.unit) for row in latest]
+        measurements.append(
+            SavedQuantityOut(
+                key=quantity.key,
+                values=tuple(_saved_value(row) for row in latest),
+                set_by=newest.set_by,
+                set_at=newest.set_at,
+                complete=all(
+                    [(row.exact_value, row.unit) for row in rows] == exact for rows in held
+                ),
+            )
+        )
+
+    # Settings: the layer the form's `scope` files each one in, which is the layer checks read.
+    chosen: list[tuple[Literal["project", "run"], StoredParameterValue]] = []
+    for parameter in needs.parameters:
+        is_run = parameter.scope == ParameterLayer.RUN.value
+        setting = (run if is_run else project).get(parameter.name)
+        if setting is not None and not parameter.blocked:
+            chosen.append(("run" if is_run else "project", setting))
+    # Asked even when nothing was chosen, so the count of queries never depends on what was saved.
+    citations: dict[UUID, UUID] = {
+        value_id: proposal_id
+        for value_id, proposal_id in session.execute(
+            select(
+                ParameterValueCitation.parameter_value_id,
+                ParameterValueCitation.parameter_proposal_id,
+            ).where(ParameterValueCitation.parameter_value_id.in_([row.id for _, row in chosen]))
+        )
+    }
+    parameters = tuple(
+        SavedParameterOut(
+            name=row.name,
+            layer=layer,
+            value=_saved_value(row),
+            source=row.provenance,
+            reference=row.source_reference,
+            citation=citations.get(row.id),
+        )
+        for layer, row in chosen
+    )
+    return tuple(measurements), parameters
+
+
 def _published_rules(session: Session) -> list[Rule]:
     """The rulebook as published, which is what `run_checks` reads.
 
@@ -720,6 +849,7 @@ def read_required_inputs(
     needs = required_inputs(rules)
     layout_proposals = _stored_layout_proposal_out(session, revision)
     found = _setting_pointers(session, revision)
+    saved_measurements, saved_parameters = _saved_entries(session, project_id, revision, needs)
 
     # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
     # says and what it means, asking them to type that exact value again is pure transcription risk.
@@ -840,6 +970,8 @@ def read_required_inputs(
         rules_published=len(rules),
         revision_state=revision.state,
         still_reading=PackageState(revision.state) in READING_STATES,
+        saved_measurements=saved_measurements,
+        saved_parameters=saved_parameters,
     )
 
 
