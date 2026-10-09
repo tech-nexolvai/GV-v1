@@ -5,8 +5,8 @@ No AI, no database, no cost: the pure reader (`extraction/architect/reader.py`) 
 `eval/architect_reader.py` on the result. The key and the output hold the client's values, so both
 stay outside the repository (`data/goldset/`, `~/gv-local/`):
 
-    python scripts/score_architect_reader.py data/drawings/aiset2/AI_Set_2.pdf \\
-        data/goldset/arch-key-ai-set-2/arch_key.json --out ~/gv-local/type1-build/1052/aiset2
+    python scripts/score_architect_reader.py data/drawings/<set>/<drawing>.pdf \\
+        data/goldset/<arch-key>/arch_key.json --out ~/gv-local/<somewhere>
 
 Prints, per page: each drawing's two role judgments, then the key widths found, held (with the
 reason) and missing, and every value read that the key does not list — each of those is for a

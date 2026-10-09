@@ -6,12 +6,12 @@ every mark has a reason to be there. **No client value appears here**: the drawi
 The architect's drawing (`/Stamp`, annotation 1) is pasted at 1:1 (`/Rect` = `/BBox`), prints
 `1/4" = 1'-0"` — 1.5 pt per real inch — and draws, over a solid floor line:
 
-* two cabinets, 42" and 24" wide (63 pt and 36 pt), dimensioned on row 1 as `3' - 6"` and
-  `2' - 0"`, ticks on their solid sides, dashed grey extension lines through everything as the
+* two cabinets, 40" and 26" wide (60 pt and 39 pt), dimensioned on row 1 as `3' - 4"` and
+  `2' - 2"`, ticks on their solid sides, dashed grey extension lines through everything as the
   client's CAD draws them;
-* row 2 under it: `1' - 6"` from the left cabinet's side to an outlet's centre line, dashed, with
+* row 2 under it: `1' - 5"` from the left cabinet's side to an outlet's centre line, dashed, with
   `CL` printed on it — a centre-line dimension;
-* row 3: a span 36 pt wide (24") labelled `2' - 6"` — a label that disagrees with its drawn length;
+* row 3: a span 36 pt wide (24") labelled `2' - 7"` — a label that disagrees with its drawn length;
 * row 4: a span labelled only in red, `9' - 9"` — a reviewer's mark inside the snapshot.
 
 The vendor's drawing (annotation 3) prints `1:10` and millimetre labels with bracketed inches.
@@ -29,8 +29,8 @@ ARCH_RECT = (50, 430, 550, 730)
 VENDOR_RECT = (50, 50, 550, 380)
 
 #: Row 1's ticks in the architect's own space, and so on the page at x + 50.
-LEFT, MIDDLE, RIGHT = 60, 123, 159
-OUTLET = 87
+LEFT, MIDDLE, RIGHT = 60, 120, 159
+OUTLET = 85.5
 
 
 def _dashed(x: float, y0: float, y1: float) -> bytes:
@@ -76,15 +76,15 @@ def architect_stream(*, centre_mark: bool = True) -> bytes:
         stream += _dashed(x, 3, 200)
     # Row 1: the cabinets' widths.
     stream += _row(40, [LEFT, MIDDLE, RIGHT])
-    stream += _text(83, 43, "3' - 6\"") + _text(133, 43, "2' - 0\"")
+    stream += _text(82.5, 43, "3' - 4\"") + _text(132, 43, "2' - 2\"")
     # Row 2: from the cabinet's side to the outlet's centre line.
     stream += _row(25, [LEFT, OUTLET])
-    stream += _text(66, 28, "1' - 6\"")
+    stream += _text(65, 28, "1' - 5\"")
     if centre_mark:
         stream += _text(OUTLET - 3, 205, "CL")
     # Row 3: a label that disagrees with the length drawn under it (36 pt is 24", not 30").
     stream += _row(10, [200, 236])
-    stream += _text(210, 13, "2' - 6\"")
+    stream += _text(210, 13, "2' - 7\"")
     # Row 4: labelled only in a reviewer's red.
     stream += _row(250, [300, 360])
     stream += _text(320, 253, "9' - 9\"", colour=b"1 0 0 rg")

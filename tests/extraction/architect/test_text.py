@@ -67,7 +67,7 @@ def test_two_labels_that_touch_are_two_dimensions() -> None:
 
 
 def test_a_character_printed_twice_on_itself_is_read_once() -> None:
-    chars = _line("2' - 6\"", 10)
+    chars = _line("2' - 7\"", 10)
     doubled = chars + [
         TextChar(
             c.text, Box(c.box.x0 + Decimal("0.2"), c.box.top, c.box.x1, c.box.bottom), c.orientation
@@ -76,7 +76,7 @@ def test_a_character_printed_twice_on_itself_is_read_once() -> None:
     ]
 
     (dimension,) = find_printed(doubled, SETTINGS).dimensions
-    assert dimension.reading.inches == Fraction(30)
+    assert dimension.reading.inches == Fraction(31)
 
 
 def test_characters_of_two_sizes_are_held_as_a_stacked_fraction() -> None:
@@ -89,7 +89,7 @@ def test_characters_of_two_sizes_are_held_as_a_stacked_fraction() -> None:
 
 
 def test_a_note_with_a_number_in_it_is_held() -> None:
-    (dimension,) = find_printed(_line('6" WOODEN', 10), SETTINGS).dimensions
+    (dimension,) = find_printed(_line('6" STEEL', 10), SETTINGS).dimensions
 
     assert dimension.reading.inches is None
 

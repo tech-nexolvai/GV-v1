@@ -1,7 +1,7 @@
 """Read the architect's dimensions on one combined sheet, with two judgments for every decision (#1052).
 
 On the client's sheets the architect's drawing is pasted beside the vendor's, and its dimensions are
-**real text** inside the pasted drawing (`3' - 6"`), so code reads them exactly, at no cost and with
+**real text** inside the pasted drawing (`4' - 2"`), so code reads them exactly, at no cost and with
 no AI. This module is that reading, for one page, with nothing stored:
 
 1. **Which drawing is the architect's** — the heading and the drawing's own content, both
@@ -210,8 +210,8 @@ class ArchitectPage:
 #: the text and outline lengths below, and the scale band that accepted every right value on both
 #: sets and refuses a value off by one bay.
 MEASURED_ARCHITECT_SETTINGS = ArchitectSettings(
-    # The architect's tick slashes are drawn larger than the vendor's (4.4 pt on a pasted 1/2"
-    # drawing): the vendor's E1 thresholds with a larger slash. The vendor's rows are never built
+    # The architect's tick slashes are drawn larger than the vendor's (over 4 pt on the client's
+    # pasted drawings): the vendor's E1 thresholds with a larger slash. The vendor's rows are never built
     # with these.
     rows=replace(MEASURED_SETTINGS, slash_maximum_pt=Decimal(6)),
     text=TextSettings(

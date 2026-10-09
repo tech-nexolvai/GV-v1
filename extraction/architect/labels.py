@@ -6,7 +6,7 @@ But the word is not noise either. It says the architect has not committed to the
 reviewer needs to see it. So the label is split here into the dimension text and the qualifier
 words printed with it, each qualifier kept as a flag, and the label is **held** when a qualifier
 says the number is not firm (`VIF`, `±`, `HOLD`) or when words nobody recognises are printed with
-it (a note such as `6" WOODEN BLOCKING` is not a dimension).
+it (a note such as `6" STEEL ANGLE` is not a dimension).
 
 **What it never does.** It never rounds, never guesses a unit, and never reads a value out of a
 label it holds: a held label's inches are `None`. Fractions must be over a power of two no larger

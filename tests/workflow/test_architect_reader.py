@@ -150,8 +150,8 @@ def test_architect_values_are_stored_as_the_architects_with_their_flags(
     _extract(session, store, _upload(session, store, combined_sheet()))
 
     rows = _by_text(_architect_rows(session))
-    cabinet = rows["3' - 6\""]
-    assert Fraction(cabinet.value_numerator, cabinet.value_denominator) == 42  # type: ignore[arg-type]
+    cabinet = rows["3' - 4\""]
+    assert Fraction(cabinet.value_numerator, cabinet.value_denominator) == 40  # type: ignore[arg-type]
     assert cabinet.unit == "in"
     flags = set(cabinet.ambiguity_flags)
     assert "arch-ticks-on-outline:yes" in flags
@@ -159,7 +159,7 @@ def test_architect_values_are_stored_as_the_architects_with_their_flags(
     assert any(flag.startswith("arch-row:") for flag in flags)
     assert any(flag.startswith("arch-scale:1.5") for flag in flags)
     assert any(flag.startswith("arch-ticks:110") for flag in flags)
-    assert "arch-ticks-on-outline:no" in rows["1' - 6\""].ambiguity_flags
+    assert "arch-ticks-on-outline:no" in rows["1' - 5\""].ambiguity_flags
 
     assert ReadingSides(session).of(cabinet) is DocumentRole.ARCH
 
@@ -169,7 +169,7 @@ def test_a_held_span_is_stored_with_its_reason_and_no_value(
 ) -> None:
     _extract(session, store, _upload(session, store, combined_sheet()))
 
-    held = _by_text(_architect_rows(session))["2' - 6\""]
+    held = _by_text(_architect_rows(session))["2' - 7\""]
     assert held.value_numerator is None and held.value_denominator is None
     assert held.review_reason is not None and "drawn length" in held.review_reason
     assert any(flag.startswith("arch-held:") for flag in held.ambiguity_flags)

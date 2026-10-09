@@ -69,7 +69,7 @@ def test_the_cabinet_widths_are_read_exactly_witnessed_and_on_the_outline(
 ) -> None:
     spans = _spans(page)
 
-    for text, inches in (("3' - 6\"", 42), ("2' - 0\"", 24)):
+    for text, inches in (("3' - 4\"", 40), ("2' - 2\"", 26)):
         span = spans[text]
         assert span.held_reason is None, span.held_reason
         assert span.inches == Fraction(inches)
@@ -79,24 +79,24 @@ def test_the_cabinet_widths_are_read_exactly_witnessed_and_on_the_outline(
 
 
 def test_a_centre_line_dimension_is_read_and_never_on_the_outline(page: ArchitectPage) -> None:
-    span = _spans(page)["1' - 6\""]
+    span = _spans(page)["1' - 5\""]
 
-    assert span.inches == Fraction(18)
+    assert span.inches == Fraction(17)
     assert span.on_outline is False
     assert "centre-line" in span.outline_reason
 
 
 def test_without_its_mark_a_dashed_centre_line_is_still_not_on_the_outline() -> None:
-    span = _spans(_read(centre_mark=False))["1' - 6\""]
+    span = _spans(_read(centre_mark=False))["1' - 5\""]
 
     assert span.on_outline is False
     assert "dashed" in span.outline_reason
 
 
 def test_a_label_its_drawn_length_contradicts_is_held_with_the_reason(page: ArchitectPage) -> None:
-    span = _spans(page)["2' - 6\""]
+    span = _spans(page)["2' - 7\""]
 
-    assert span.printed_inches == Fraction(30)
+    assert span.printed_inches == Fraction(31)
     assert span.inches is None
     assert span.held_reason is not None and "drawn length" in span.held_reason
 
@@ -114,8 +114,8 @@ def test_spans_carry_what_the_pairing_needs(page: ArchitectPage) -> None:
 
     assert row.points_per_inch is not None
     assert [(span.x0_pt, span.x1_pt) for span in row.spans] == [
-        (Decimal(110), Decimal(173)),
-        (Decimal(173), Decimal(209)),
+        (Decimal(110), Decimal(170)),
+        (Decimal(170), Decimal(209)),
     ]
     assert [row.rank for row in page.rows] == list(range(1, len(page.rows) + 1))
 

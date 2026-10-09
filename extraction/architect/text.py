@@ -400,8 +400,8 @@ def _dimensions(
         heights = {_height(char) for char in phrase.chars_in(match.start(), match.end())}
         if max(heights) - min(heights) > max(heights) * settings.same_size_fraction:
             # A stacked fraction's numerator and denominator are set smaller beside the whole
-            # number, and joined along the line they read as one wrong number: `21` and `7/8`
-            # as `218"`.
+            # number, and joined along the line they read as one wrong number: `17` and `3/8`
+            # as `173"`.
             reading = _held(
                 reading, "its characters are not all one size: a stacked fraction or two labels"
             )
@@ -471,7 +471,7 @@ def _beside_other_sizes(
     """Hold a dimension printed right against text of another size.
 
     A stacked fraction's whole number, numerator and denominator are set at different sizes and
-    heights, so its pieces land on different lines: `21` on one, `7` above, `8"` below. Read alone,
+    heights, so its pieces land on different lines: `17` on one, `3` above, `8"` below. Read alone,
     the denominator is a plausible wrong number (`8"`). Any character of another size touching the
     label along its line, and overlapping it across, holds it.
     """

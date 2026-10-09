@@ -78,7 +78,7 @@ def test_other_qualifiers_are_flags_on_a_usable_number(text: str, qualifier: Qua
 @pytest.mark.parametrize(
     "text",
     [
-        '6" WOODEN BLOCKING',  # a note, not a dimension label
+        '6" STEEL ANGLE',  # a note, not a dimension label
         "3'-6\" 2'-0\"",  # two dimensions in one label
         "EQ",  # no number at all
         "3'-1 1/3\"",  # thirds are not drawn

@@ -8,7 +8,7 @@ say the same thing (decision D2, 2026-10-09):
 * **(a) the heading** the sheet prints above the drawing — `ID SET ELEVATION` or `VENDOR'S SHOP
   DRAWING ELEVATION` — read exactly (`extraction/panels.py`);
 * **(b) the drawing's own content**: how its dimensions are written and the scale it prints. The
-  architect writes feet and inches (`3' - 6"`) and an architectural scale (`1/4" = 1'-0"`); the
+  architect writes feet and inches (`4' - 2"`) and an architectural scale (`1/4" = 1'-0"`); the
   vendor on the client's sheets writes inches or millimetres with inches in brackets (`457 [18]`)
   and a ratio scale (`1:10`).
 
