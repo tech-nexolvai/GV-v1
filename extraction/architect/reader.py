@@ -50,7 +50,10 @@ from extraction.architect.labels import Qualifier
 from extraction.architect.outline import (
     OutlineSettings,
     end_witness,
+    hatched_regions,
     line_work,
+    one_object,
+    slanted_strokes,
     span_on_outline,
 )
 from extraction.architect.text import Orientation as TextOrientation
@@ -232,6 +235,9 @@ MEASURED_ARCHITECT_SETTINGS = ArchitectSettings(
         mark_reach_pt=Decimal(4),
         link_pt=Decimal(4),
         toe_kick_in=Decimal(6),
+        hatch_parallel_sine=Decimal("0.02"),
+        hatch_spacing_pt=Decimal(6),
+        hatch_minimum_lines=5,
     ),
     label_reach_pt=Decimal(12),
     label_slack_pt=Decimal(2),
@@ -342,6 +348,25 @@ def _stamps(data: bytes, page_index: int) -> dict[int, tuple[Box, Decimal | None
                 _paste_factor(annotation),
             )
     return found
+
+
+def _pattern_fill(colour: object) -> bool:
+    """Whether a fill colour is a pattern (its name, or a colour with a pattern's name) rather than
+    plain components."""
+    if colour is None or isinstance(colour, (int, float)):
+        return False
+    if isinstance(colour, (tuple, list)):
+        return any(not isinstance(part, (int, float)) for part in colour)
+    return True
+
+
+def _pattern_fills(page: Any) -> tuple[Box, ...]:
+    """The boxes of every path filled with a pattern: hatching drawn as a fill, not as strokes."""
+    return tuple(
+        _box(obj)
+        for obj in (*page.rects, *page.curves)
+        if obj.get("fill") and _pattern_fill(obj.get("non_stroking_color"))
+    )
 
 
 def _median(values: Sequence[Decimal]) -> Decimal:
@@ -579,6 +604,7 @@ def read_architect_page(
                 page, drawing_boxes=tuple(stamps[stamp.annotation_index][0] for stamp in drawings)
             )
             pixel = pixel_placement(page, dpi)
+            fills = _pattern_fills(page)
             chars = [
                 TextChar(
                     text=str(char["text"]),
@@ -691,6 +717,9 @@ def read_architect_page(
             for row, drafts in zip(view_rows, drafts_by_row, strict=True)
             if any(draft.label is not None for draft in drafts)
         )
+        hatched = hatched_regions(
+            slanted_strokes(ink, box, settings.outline), fills, view=box, settings=settings.outline
+        )
         for row, drafts in zip(view_rows, drafts_by_row, strict=True):
             for draft in drafts:
                 ends = [
@@ -703,11 +732,28 @@ def read_architect_page(
                         points_per_inch=outline_scale,
                         settings=settings.outline,
                         dimension_lines=dimension_lines,
+                        hatched=hatched,
                     )
                     for x in (draft.x0, draft.x1)
                 ]
                 draft.on_outline = span_on_outline(ends[0], ends[1])
                 draft.outline_reason = f"left: {ends[0].reason}; right: {ends[1].reason}"
+                if draft.on_outline and not one_object(
+                    ends[0],
+                    ends[1],
+                    draft.x0,
+                    draft.x1,
+                    work=work,
+                    view=box,
+                    dimension_lines=dimension_lines,
+                    settings=settings.outline,
+                ):
+                    draft.on_outline = False
+                    draft.outline_reason = (
+                        "measures a clearance between different things: both ends are edges, but "
+                        "no outline runs from one to the other as one object's top and bottom; "
+                        + draft.outline_reason
+                    )
         if judgment.agreed is not Role.ARCH:
             for drafts in drafts_by_row:
                 for draft in drafts:

@@ -13,7 +13,10 @@ from extraction.architect.outline import (
     LineWork,
     OutlineSettings,
     Piece,
+    Stroke,
     end_witness,
+    hatched_regions,
+    one_object,
     span_on_outline,
 )
 from extraction.geometry.rows import Box
@@ -29,6 +32,9 @@ SETTINGS = OutlineSettings(
     mark_reach_pt=Decimal(4),
     link_pt=Decimal(4),
     toe_kick_in=Decimal(6),
+    hatch_parallel_sine=Decimal("0.02"),
+    hatch_spacing_pt=Decimal(6),
+    hatch_minimum_lines=5,
 )
 VIEW = Box(Decimal(0), Decimal(0), Decimal(400), Decimal(200))
 ROW = Decimal(100)
@@ -41,7 +47,11 @@ def _dashes(x: int, start: int = 10, end: int = 104) -> list[Piece]:
 
 
 def _witness(
-    x: int, verticals: list[Piece], marks: tuple[Box, ...] = (), ppi: Decimal | None = None
+    x: int,
+    verticals: list[Piece],
+    marks: tuple[Box, ...] = (),
+    ppi: Decimal | None = None,
+    hatched: tuple[Box, ...] = (),
 ) -> EndWitness:
     return end_witness(
         Decimal(x),
@@ -51,6 +61,7 @@ def _witness(
         centre_marks=marks,
         points_per_inch=ppi,
         settings=SETTINGS,
+        hatched=hatched,
     )
 
 
@@ -110,3 +121,128 @@ def test_a_span_is_on_the_outline_only_when_both_ends_are() -> None:
     assert span_on_outline(yes, no) is False
     assert span_on_outline(unclear, no) is False
     assert span_on_outline(yes, unclear) is None
+
+
+# --- Hatched material is never casework (#1052 fix) ------------------------------------------------
+
+
+def _hatch(x0: int, x1: int, top: int, bottom: int, spacing: int = 4) -> list[Stroke]:
+    """Parallel 45-degree strokes filling a box, as a CAD program draws wood blocking or a wall's
+    cut section: each stroke runs from the box's bottom edge up and to the right."""
+    height = bottom - top
+    return [
+        Stroke(Decimal(x), Decimal(bottom), Decimal(x + height), Decimal(top))
+        for x in range(x0, x1 - height + 1, spacing)
+    ]
+
+
+def test_a_dense_family_of_parallel_strokes_is_a_hatched_region() -> None:
+    (region,) = hatched_regions(_hatch(50, 150, 60, 80), (), view=VIEW, settings=SETTINGS)
+
+    assert region.x0 == Decimal(50) and region.top == Decimal(60)
+    assert region.bottom == Decimal(80)
+
+
+def test_a_few_diagonals_or_one_dashed_diagonal_are_not_hatching() -> None:
+    """A door's swing is two lines; a dashed diagonal is many pieces of one line."""
+    swing = [
+        Stroke(Decimal(200), Decimal(80), Decimal(260), Decimal(20)),
+        Stroke(Decimal(210), Decimal(80), Decimal(270), Decimal(20)),
+    ]
+    dashed = [
+        Stroke(Decimal(300 + 6 * k), Decimal(80 - 6 * k), Decimal(303 + 6 * k), Decimal(77 - 6 * k))
+        for k in range(10)
+    ]
+
+    assert hatched_regions(swing + dashed, (), view=VIEW, settings=SETTINGS) == ()
+
+
+def test_a_pattern_fill_is_a_hatched_region() -> None:
+    fill = Box(Decimal(10), Decimal(60), Decimal(40), Decimal(80))
+
+    assert hatched_regions((), (fill,), view=VIEW, settings=SETTINGS) == (fill,)
+
+
+def test_an_edge_bounding_hatched_material_is_not_casework() -> None:
+    """Wood blocking drawn as a hatched strip on the floor line: its sides start at the first
+    outline crossed, exactly like a cabinet's, but the strip is not casework."""
+    side = Piece(Decimal(50), Decimal(60), Decimal(80))
+    region = hatched_regions(_hatch(50, 150, 60, 80), (), view=VIEW, settings=SETTINGS)
+
+    assert _witness(50, [side]).on_outline is True
+    witness = _witness(50, [side], hatched=region)
+    assert witness.on_outline is False
+    assert "hatched material" in witness.reason
+
+
+# --- Both ends must be edges of one object (#1052 fix) ---------------------------------------------
+
+
+def _ended(x: int, top: int, bottom: int) -> EndWitness:
+    return EndWitness(True, "edge", edge_top=Decimal(top), edge_bottom=Decimal(bottom))
+
+
+def test_a_cabinet_with_its_top_and_bottom_between_both_ends_is_one_object() -> None:
+    top = Piece(Decimal(20), Decimal(50), Decimal(150))
+    work = LineWork((), (FLOOR, top))
+
+    assert one_object(
+        _ended(50, 20, 80),
+        _ended(150, 20, 80),
+        Decimal(50),
+        Decimal(150),
+        work=work,
+        view=VIEW,
+        dimension_lines=(),
+        settings=SETTINGS,
+    )
+
+
+def test_a_cabinet_in_a_run_under_one_continuous_top_is_one_object() -> None:
+    """The top line runs on past the joint: the cabinet is the cell between its two sides."""
+    top = Piece(Decimal(20), Decimal(0), Decimal(300))
+    work = LineWork((), (FLOOR, top))
+
+    assert one_object(
+        _ended(50, 20, 80),
+        _ended(150, 20, 80),
+        Decimal(50),
+        Decimal(150),
+        work=work,
+        view=VIEW,
+        dimension_lines=(),
+        settings=SETTINGS,
+    )
+
+
+def test_a_wall_to_an_objects_side_is_a_clearance_not_an_object() -> None:
+    """From the wall to a credenza standing apart: only the floor line runs between the two ends,
+    and the credenza's top stops at its own side."""
+    credenza_top = Piece(Decimal(60), Decimal(150), Decimal(250))
+    work = LineWork((), (FLOOR, credenza_top))
+
+    assert not one_object(
+        _ended(50, 0, 80),
+        _ended(150, 60, 80),
+        Decimal(50),
+        Decimal(150),
+        work=work,
+        view=VIEW,
+        dimension_lines=(),
+        settings=SETTINGS,
+    )
+
+
+def test_an_end_without_an_edge_is_never_one_object() -> None:
+    work = LineWork((), (FLOOR, Piece(Decimal(20), Decimal(50), Decimal(150))))
+
+    assert not one_object(
+        EndWitness(True, "edge"),
+        _ended(150, 20, 80),
+        Decimal(50),
+        Decimal(150),
+        work=work,
+        view=VIEW,
+        dimension_lines=(),
+        settings=SETTINGS,
+    )

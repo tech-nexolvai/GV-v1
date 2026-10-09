@@ -14,6 +14,14 @@ The architect's drawing (`/Stamp`, annotation 1) is pasted at 1:1 (`/Rect` = `/B
 * row 3: a span 36 pt wide (24") labelled `2' - 7"` — a label that disagrees with its drawn length;
 * row 4: a span labelled only in red, `9' - 9"` — a reviewer's mark inside the snapshot.
 
+With `extras=True` the floor line runs on to the right and two more spans stand on it, on a row of
+their own:
+
+* `3' - 0"` over a hatched strip of wood blocking (54 pt, parallel 45-degree strokes inside a
+  rectangle): its ends look like a cabinet's sides, but it is not casework;
+* `1' - 8"` from a wall to the side of a credenza standing apart (30 pt): a clearance between two
+  different things, not one object's width.
+
 The vendor's drawing (annotation 3) prints `1:10` and millimetre labels with bracketed inches.
 Headings are `/FreeText` notes (annotations 0 and 2) above each drawing, as on the client's sheets.
 """
@@ -59,12 +67,33 @@ def _text(x: float, y: float, text: str, *, size: int = 6, colour: bytes = b"0 g
     return colour + f" BT /F1 {size} Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET 0 g\n".encode()
 
 
-def architect_stream(*, centre_mark: bool = True) -> bytes:
+def _extras() -> bytes:
+    """Wood blocking drawn hatched, and a wall with a credenza standing apart from it."""
+    parts = [
+        b"0 0 0 RG 0.5 w",
+        # The blocking: a rectangle on the floor line, filled with parallel strokes.
+        b"300 60 m 354 60 l 354 72 l 300 72 l h S",
+        b"0.2 w",
+        *(f"{x} 60 m {x + 12} 72 l S".encode() for x in range(300, 343, 3)),
+        b"0.5 w",
+        # The wall, full height, and the credenza 30 pt to its right: two sides and a top.
+        b"380 60 m 380 250 l S",
+        b"410 60 m 410 90 l S 470 60 m 470 90 l S 410 90 m 470 90 l S",
+    ]
+    stream = b"\n".join(parts) + b"\n"
+    for x in (300, 354, 380, 410):
+        stream += _dashed(x, 40, 200)
+    stream += _row(47, [300, 354]) + _text(318, 50, "3' - 0\"")
+    stream += _row(47, [380, 410]) + _text(386, 50, "1' - 8\"")
+    return stream
+
+
+def architect_stream(*, centre_mark: bool = True, extras: bool = False) -> bytes:
     """The architect's drawing, in its own space (0..500 by 0..300)."""
     parts = [
         b"0 0 0 RG 0.5 w",
         # The floor line, and the two cabinets standing on it (solid sides).
-        b"50 60 m 260 60 l S",
+        b"50 60 m 480 60 l S" if extras else b"50 60 m 260 60 l S",
         f"{LEFT} 60 m {LEFT} 120 l S {MIDDLE} 60 m {MIDDLE} 120 l S".encode(),
         f"{RIGHT} 60 m {RIGHT} 120 l S {LEFT} 120 m {RIGHT} 120 l S".encode(),
         # An outlet drawn above the cabinets: a small box on its centre line.
@@ -90,6 +119,8 @@ def architect_stream(*, centre_mark: bool = True) -> bytes:
     stream += _text(320, 253, "9' - 9\"", colour=b"1 0 0 rg")
     # The scale note, as the client's title bubble prints it.
     stream += _text(200, 280, '1/4" = 1\'-0"', size=8)
+    if extras:
+        stream += _extras()
     return stream
 
 
@@ -129,7 +160,9 @@ def _note(text: str, rect: tuple[int, int, int, int]) -> bytes:
     )
 
 
-def combined_sheet(*, headings: bool = True, centre_mark: bool = True) -> bytes:
+def combined_sheet(
+    *, headings: bool = True, centre_mark: bool = True, extras: bool = False
+) -> bytes:
     """The whole one-page PDF. `headings=False` leaves the two labels off."""
     annotations = [
         _note("ID SET ELEVATION", (10, 760, 300, 780)),
@@ -149,7 +182,7 @@ def combined_sheet(*, headings: bool = True, centre_mark: bool = True) -> bytes:
         ),
         b"<< /Length 0 >>\nstream\n\nendstream",
         *annotations,
-        _appearance(architect_stream(centre_mark=centre_mark), ARCH_RECT, 11),
+        _appearance(architect_stream(centre_mark=centre_mark, extras=extras), ARCH_RECT, 11),
         _appearance(vendor_stream(), VENDOR_RECT, 11),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]

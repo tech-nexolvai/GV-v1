@@ -132,6 +132,30 @@ def test_a_sheet_with_no_heading_decides_nothing_and_holds_every_value() -> None
     assert all("not decided by code" in (span.held_reason or "") for span in spans)
 
 
+def test_a_span_over_hatched_blocking_is_read_but_never_on_the_outline() -> None:
+    """Its ends start at the floor line like a cabinet's sides; the hatching says it is not one."""
+    span = _spans(_read(extras=True))["3' - 0\""]
+
+    assert span.inches == Fraction(36)
+    assert span.on_outline is False
+    assert "hatched material" in span.outline_reason
+
+
+def test_a_span_from_a_wall_to_a_credenzas_side_is_a_clearance() -> None:
+    span = _spans(_read(extras=True))["1' - 8\""]
+
+    assert span.inches == Fraction(20)
+    assert span.on_outline is False
+    assert "clearance between different things" in span.outline_reason
+
+
+def test_the_cabinets_stay_on_the_outline_beside_the_hatching_and_the_wall() -> None:
+    spans = _spans(_read(extras=True))
+
+    assert spans["3' - 4\""].on_outline is True, spans["3' - 4\""].outline_reason
+    assert spans["2' - 2\""].on_outline is True, spans["2' - 2\""].outline_reason
+
+
 def test_the_reader_holds_no_float(page: ArchitectPage) -> None:
     def leaves(value: object) -> list[object]:
         if isinstance(value, (tuple, list, frozenset)):
