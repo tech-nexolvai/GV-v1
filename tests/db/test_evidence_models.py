@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from fractions import Fraction
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -54,6 +56,7 @@ EVIDENCE_TABLES = {
 }
 HASH = "a" * 64
 PAGE_HASH = "b" * 64
+_VERSIONS = Path(__file__).resolve().parents[2] / "alembic" / "versions"
 
 
 def test_candidates_and_canonical_facts_are_distinct_registered_tables() -> None:
@@ -239,12 +242,13 @@ def _canonical(
     document_version_id: UUID,
     page_id: UUID,
     status: EvidenceStatus,
+    role: DocumentRole = DocumentRole.SHOP,
 ) -> CanonicalObservation:
     value = Fraction(1, 3)
     return CanonicalObservation(
         document_version_id=document_version_id,
         page_id=page_id,
-        document_role=DocumentRole.SHOP,
+        document_role=role,
         polygon=[["0.1", "0.1"], ["0.2", "0.1"], ["0.2", "0.2"]],
         coordinate_space="stored",
         semantic_type=SemanticType.CT001,
@@ -516,6 +520,170 @@ def test_one_candidate_plus_dual_unit_satisfies_corroborated_provenance(
                 ),
             )
         )
+
+
+def _corroborated_with_lanes(
+    session: Session,
+    role: DocumentRole,
+    lanes: tuple[CorroborationLane, ...],
+    *,
+    candidates: int = 1,
+) -> UUID:
+    """One CORROBORATED observation on `role`'s side with `candidates` supporters and `lanes`."""
+
+    version_id, page_id, extraction_id = _persist_context(session)
+    readings = [
+        _candidate(version_id, page_id, extraction_id, f"reading {index}")
+        for index in range(candidates)
+    ]
+    observation = _canonical(version_id, page_id, EvidenceStatus.CORROBORATED, role)
+    session.add_all((*readings, observation))
+    session.flush()
+    session.add_all(
+        EvidenceSupportingCandidate(
+            canonical_observation_id=observation.id,
+            candidate_id=reading.id,
+            role=(
+                EvidenceCandidateRole.PRIMARY if index == 0 else EvidenceCandidateRole.CORROBORATING
+            ),
+        )
+        for index, reading in enumerate(readings)
+    )
+    session.add_all(
+        EvidenceCorroborationLane(canonical_observation_id=observation.id, lane=lane)
+        for lane in lanes
+    )
+    return observation.id
+
+
+def test_architect_reading_with_its_drawn_length_witness_commits(
+    postgres_engine: Engine,
+) -> None:
+    """Input: one architect reading plus its drawn-length witness. Outcome: commit (#1054).
+
+    Why: this is the architect's qualification lane, and the database must agree with
+    `evidence/canonical.py` at COMMIT, not only at flush — the paid proof run failed here.
+    """
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with unit_of_work(factory) as session:
+        observation_id = _corroborated_with_lanes(
+            session, DocumentRole.ARCH, (CorroborationLane.DRAWN_LENGTH,)
+        )
+    with unit_of_work(factory) as session:
+        stored = session.get(CanonicalObservation, observation_id)
+        assert stored is not None
+        assert stored.status == EvidenceStatus.CORROBORATED.value
+
+
+@pytest.mark.parametrize("candidates", [1, 2])
+def test_drawn_length_witness_on_the_vendor_side_is_refused_at_commit(
+    postgres_engine: Engine, candidates: int
+) -> None:
+    """Input: the drawn-length lane on a vendor reading. Outcome: rejection at commit.
+
+    Why: the lane qualifies the architect's printed text only. Even with two readers (which would
+    corroborate on their own) the lane itself is a false statement about a vendor value.
+    """
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with (
+        pytest.raises(IntegrityError, match="DRAWN_LENGTH provenance is invalid"),
+        unit_of_work(factory) as session,
+    ):
+        _corroborated_with_lanes(
+            session,
+            DocumentRole.SHOP,
+            (CorroborationLane.DRAWN_LENGTH,),
+            candidates=candidates,
+        )
+
+
+def test_architect_drawn_length_witness_without_a_reading_is_refused_at_commit(
+    postgres_engine: Engine,
+) -> None:
+    """Input: the architect's lane with no supporting reading. Outcome: rejection at commit."""
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    with (
+        pytest.raises(IntegrityError, match="CORROBORATED provenance is invalid"),
+        unit_of_work(factory) as session,
+    ):
+        _corroborated_with_lanes(
+            session, DocumentRole.ARCH, (CorroborationLane.DRAWN_LENGTH,), candidates=0
+        )
+
+
+@pytest.mark.parametrize("role", [DocumentRole.SHOP, DocumentRole.ARCH])
+@pytest.mark.parametrize(
+    ("candidates", "lanes", "commits"),
+    [
+        (2, (), True),
+        (1, (CorroborationLane.DUAL_UNIT,), True),
+        (1, (CorroborationLane.SECOND_READER,), False),
+        (1, (), False),
+    ],
+)
+def test_existing_corroboration_rules_are_unchanged_on_both_sides(
+    postgres_engine: Engine,
+    role: DocumentRole,
+    candidates: int,
+    lanes: tuple[CorroborationLane, ...],
+    commits: bool,
+) -> None:
+    """Input: the pre-#1054 lanes. Outcome: the same answers at commit as before the new lane."""
+
+    _upgrade(postgres_engine)
+    factory = session_factory(postgres_engine)
+    if commits:
+        with unit_of_work(factory) as session:
+            _corroborated_with_lanes(session, role, lanes, candidates=candidates)
+        return
+    with (
+        pytest.raises(IntegrityError, match="CORROBORATED provenance is invalid"),
+        unit_of_work(factory) as session,
+    ):
+        _corroborated_with_lanes(session, role, lanes, candidates=candidates)
+
+
+def test_drawn_length_migration_downgrade_restores_the_original_provenance_check(
+    postgres_engine: Engine,
+) -> None:
+    """Downgrading 0077 puts back the provenance function exactly as 0006 wrote it."""
+
+    _upgrade(postgres_engine)
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+
+    def body() -> str:
+        with postgres_engine.connect() as connection:
+            return str(
+                connection.execute(
+                    text(
+                        "SELECT prosrc FROM pg_proc "
+                        "WHERE proname = 'check_canonical_observation_provenance'"
+                    )
+                ).scalar_one()
+            )
+
+    try:
+        upgraded = body()
+        assert "DRAWN_LENGTH" in upgraded
+        command.downgrade(config, "0076_architect_pairing_records")
+        original = re.search(
+            r"CREATE FUNCTION check_canonical_observation_provenance\(\).*?AS \$\$(.*?)\$\$",
+            (_VERSIONS / "0006_evidence_plane.py").read_text(),
+            re.DOTALL,
+        )
+        assert original is not None
+        assert body() == original.group(1)
+        command.upgrade(config, "head")
+        assert body() == upgraded
+    finally:
+        command.upgrade(config, "head")
 
 
 def test_non_normalized_rational_is_rejected_before_insert(postgres_engine: Engine) -> None:
