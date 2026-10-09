@@ -36,7 +36,7 @@ export default function OutcomeChart({ counts, failNeedsYou = 0 }: { counts: Rec
   return (
     <div data-slot="outcome-chart" className="flex items-center gap-4">
       <ChartContainer config={config} className="aspect-square h-32 shrink-0 sm:h-36" aria-hidden="true">
-        <PieChart>
+        <PieChart accessibilityLayer={false}>
           <ChartTooltip content={<ChartTooltipContent nameKey="bucket" hideLabel />} />
           <Pie data={data} dataKey="count" nameKey="bucket" innerRadius="62%" strokeWidth={2} stroke="var(--background)" isAnimationActive={false}>
             {data.map((d) => (

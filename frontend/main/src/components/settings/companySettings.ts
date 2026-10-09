@@ -9,6 +9,11 @@ export function settingLabel(name: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** A date with the month as a word ("9 Oct 2026", or "Oct 9, 2026" in US English), never 09/10/2026. */
+export function settingDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 /** Where the number a check starts from comes from, said the way an admin reads it. */
 export function inUseSentence(setting: CompanySetting): string {
   if (setting.in_use === null || setting.in_use === undefined) {
@@ -17,11 +22,21 @@ export function inUseSentence(setting: CompanySetting): string {
   if (setting.in_use_from === 'company') {
     const who = setting.company_set_by ? ` by ${setting.company_set_by}` : '';
     const when = setting.company_set_at
-      ? ` on ${new Date(setting.company_set_at).toLocaleDateString()}`
+      ? ` on ${settingDate(setting.company_set_at)}`
       : '';
     return `${setting.in_use} — GV's standard, set${who}${when}.`;
   }
   return `${setting.in_use} — the rulebook's default, until GV sets its own.`;
+}
+
+/** For the meter (#1072): how many GV has set, how many use the rulebook's default, how many have a value. */
+export function settingCounts(settings: readonly CompanySetting[]): { total: number; inUse: number; byCompany: number; byRulebook: number } {
+  return {
+    total: settings.length,
+    inUse: settings.filter((setting) => setting.in_use != null).length,
+    byCompany: settings.filter((setting) => setting.in_use != null && setting.in_use_from === 'company').length,
+    byRulebook: settings.filter((setting) => setting.in_use != null && setting.in_use_from === 'rulebook').length,
+  };
 }
 
 /**

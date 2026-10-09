@@ -54,11 +54,20 @@ const html = renderToStaticMarkup(
   <CompanySettingsList settings={settings} drafts={{}} saving={false} onDraft={() => undefined} />,
 );
 
-// One row each, with a readable name and the code beside it, and how many are still missing.
-assert.match(html, /Cabinet depth <code>cabinet_depth<\/code>/);
-assert.match(html, /1 not set yet\./);
+// One row each (#1072: a table), with a readable name and the code beside it, and a meter: how many
+// GV set, how many use the rulebook's default, and how many are still missing.
+assert.match(html, /Cabinet depth<\/label> <code[^>]*>cabinet_depth<\/code>/);
+assert.equal((html.match(/<tr [^>]*data-source=/g) ?? []).length, 3);
+assert.match(html, /<span class="num">1<\/span> of <span class="num">3<\/span> set by GV · <span class="num">1<\/span> on the rulebook&#x27;s default/);
+assert.match(html, /<span class="num">1<\/span> not set yet/);
+assert.match(html, /aria-label="1 of 3 set by GV"/);
 
-// Where each number in use came from, said in words.
+// Where each number comes from, as a word with its own edge, never colour alone.
+for (const [source, word] of [['company', 'GV standard'], ['rulebook', 'Rulebook default'], ['none', 'Not set']]) {
+  assert.match(html, new RegExp(`data-source="${source}" class="[^"]*">${word}</span>`));
+}
+
+// Where each number in use came from, said in words (for a screen reader, beside the badge).
 assert.match(html, /2 in — the rulebook&#x27;s default, until GV sets its own\./);
 assert.match(html, /2 3\/8 in — GV&#x27;s standard, set by anant on /);
 assert.match(html, /Not set — checks that need it say &quot;not found&quot; until it is\./);
@@ -66,11 +75,13 @@ assert.match(html, /Not set — checks that need it say &quot;not found&quot; un
 // The doubt note shows only while the rulebook default is in use; a company value shows the default
 // it replaced instead.
 assert.match(html, /awaiting his confirmation \(#674\)/);
-assert.match(html, /Rulebook default: 2 1\/2 in/);
+assert.match(html, /Rulebook default: <span class="num">2 1\/2 in<\/span>/);
 assert.equal((html.match(/Rulebook default:/g) ?? []).length, 1);
 
-// Which checks use each one.
-assert.match(html, /Used by CT-DEPTH-001/);
+// Which checks use each one. No column suggests a project cannot use its own number: every one of
+// these can be set differently for one project, in that review's Measurements (#1072 review).
+assert.match(html, /Used by <\/span><span[^>]*><code[^>]*>CT-DEPTH-001<\/code>/);
+assert.doesNotMatch(html, /Same on every project|Can use its own/);
 
 // Only typed, non-blank values are sent; a blank box leaves a standard as it was.
 assert.deepEqual(changedValues({ cabinet_depth: ' 24" ', filler_max: '', back_offset_minimum: '  ' }), [
