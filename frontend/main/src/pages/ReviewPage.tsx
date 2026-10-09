@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { ChatThread } from '../components/chat/ChatThread';
 import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
 import { ChatInput } from '../components/chat/ChatInput';
 import { EvidencePanel } from '../components/chat/EvidencePanel';
-import { DrawingResultPanel, type DrawingTarget } from '../components/output/DrawingResultPanel';
+import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
 import { recordEach, type Filter } from '@/lib/countertop-results';
@@ -53,6 +53,9 @@ import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { recordReviewDecision } from './recordReviewDecision';
 import './ReviewPage.css';
+
+// The drawing viewer (#1045) is fetched the first time a reviewer opens a drawing.
+const DrawingViewerSheet = lazy(() => import('@/components/drawing/drawing-viewer').then((m) => ({ default: m.DrawingViewerSheet })));
 
 /** States in which the server is reading or checking on its own; the stepper follows them (#1034). */
 const PROCESSING_STATES = new Set([
@@ -108,7 +111,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // The review opens on Results (#1039); chat lives in a side sheet.
   const [activeTab, setActiveTab] = useState<'results' | 'measure'>('results');
   const [chatOpen, setChatOpen] = useState(Boolean(initialMessage));
-  const [drawingTarget, setDrawingTarget] = useState<DrawingTarget | null>(null);
+  // "Show on drawing" (#1045): what the drawing viewer points at; `opening` restarts it fitted each time.
+  const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
+  const [openings, setOpenings] = useState(0);
   // The countertop results (#1035), loaded beside the findings; earlier rows stay on screen while a
   // refresh is in flight, so the table never flashes back to a skeleton.
   const [countertops, setCountertops] = useState<CountertopsState>({ status: 'loading' });
@@ -272,14 +277,20 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
   }
 
-  function showDrawing(finding: Finding) {
-    setSelectedFindingId(finding.id); selectedFindingRef.current = finding.id;
-    onEvidenceChange(<DrawingResultPanel key={finding.id} finding={finding} projectId={projectId()} packageId={packageId} onClose={() => { onEvidenceChange(null); setSelectedFindingId(null); selectedFindingRef.current = null; }} />);
+  function openViewer(target: ViewerTarget) {
+    setViewer({ opening: openings + 1, target });
+    setOpenings(openings + 1);
   }
 
-  /** A countertop row on its drawing page, in a side sheet (#1039). */
+  /** A finding on its drawing (#1045): as its countertop when it has one, so the page strip and the picture come too. */
+  function showDrawing(finding: Finding) {
+    const row = countertops.status === 'ready' ? countertops.rows.find((r) => r.finding_id === finding.id) : undefined;
+    openViewer(row ? targetFromRow(row) : targetFromFinding(finding));
+  }
+
+  /** A countertop row on its drawing page (#1039, #1045). */
   function showRowOnDrawing(row: CountertopResult) {
-    setDrawingTarget({ name: row.label, scope_label: row.label, row_location: row.row_location, shop_evidence: null, arch_evidence: null });
+    openViewer(targetFromRow(row));
   }
 
   /**
@@ -901,17 +912,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </SheetContent>
       </Sheet>
 
-      <Sheet open={drawingTarget !== null} onOpenChange={(open) => !open && setDrawingTarget(null)}>
-        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-3xl [&>button:last-child]:hidden">
-          <SheetTitle className="sr-only">Countertop on its drawing</SheetTitle>
-          <SheetDescription className="sr-only">The page picture with the recorded row outline.</SheetDescription>
-          {drawingTarget && (
-            <div data-legacy className="h-full min-h-0">
-              <DrawingResultPanel finding={drawingTarget} projectId={projectId()} packageId={packageId} onClose={() => setDrawingTarget(null)} />
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+      {openings > 0 && (
+        <Suspense fallback={null}>
+          <DrawingViewerSheet
+            target={viewer?.target ?? null}
+            opening={viewer?.opening ?? 0}
+            rows={countertops.status === 'ready' ? countertops.rows : []}
+            projectId={projectId()}
+            packageId={packageId}
+            onTargetChange={(target) => setViewer((current) => (current ? { ...current, target } : current))}
+            onClose={() => setViewer(null)}
+          />
+        </Suspense>
+      )}
       {measureVisited && (
         <div className="review-page__measure-container" hidden={activeTab !== 'measure'}>
           <MeasurementPanel

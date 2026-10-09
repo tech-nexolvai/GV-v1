@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, X, FileImage, MapPin } from 'lucide-react';
+import { ArrowLeft, X, MapPin } from 'lucide-react';
 import type { Finding } from '../../data/types';
 import { downloadEvidenceCrop } from '../../api/client';
 import { OutcomeBadge } from '../ui/StatusBadge';
+import { NoCrops } from '../drawing/evidence-crops';
 import './EvidencePanel.css';
 
 interface EvidencePanelProps {
@@ -24,14 +25,6 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
   const hasDrawingOperandWithoutCrop = recordedOperands.some(
     (operand) => (operand.source === 'ARCH' || operand.source === 'SHOP') && !operand.hasEvidence,
   );
-
-  const sourceSummary = recordedOperands.length === 0
-    ? null
-    : recordedOperands
-      .map((operand) =>
-        `${operand.name}: ${operand.value} (${operand.source}) · ${operand.status}${operand.hasEvidence ? ' · has stored crop' : ''}`,
-      )
-      .join('\n');
 
   const noEvidenceMessage = () => {
     if (hasUnmappedStoredCrop) {
@@ -123,39 +116,10 @@ export function EvidencePanel({ finding, projectId, packageId, loading = false, 
         )}
 
         {/* No crop is intentionally not rendered as a plausible stand-in. A reviewer must be able to
-            distinguish a rule result from visual drawing evidence. */}
+            distinguish a rule result from visual drawing evidence. One line; the reason is behind "?" (#1045). */}
         {!loading && !error && !finding.arch_evidence && !finding.shop_evidence && (
           <div className="evidence-panel__no-evidence">
-            <FileImage size={24} className="evidence-panel__no-evidence-icon" />
-            <p>No drawing crop is available for this check.</p>
-            <p className="evidence-panel__no-evidence-sub">
-              {noEvidenceMessage()}
-            </p>
-            {sourceSummary !== null && (
-              <>
-                <p className="evidence-panel__no-evidence-ops">
-                  Recorded operands:
-                </p>
-                <code className="evidence-panel__no-evidence-code">{sourceSummary}</code>
-              </>
-            )}
-            {hasUnmappedStoredCrop && (
-              <p className="evidence-panel__no-evidence-guidance">
-                The evidence record is retained in the finding chain; this is a linkage issue, not a verdict or value change.
-              </p>
-            )}
-            <ul className="evidence-panel__no-evidence-guide-list">
-              <li>
-                {finding.outcome === 'REVIEW_REQUIRED'
-                  ? 'REVIEW REQUIRED is normal: it is waiting for a reviewer choice, not a missing image.'
-                  : 'A drawing crop appears only when a confirmed drawing reading has a stored location.'}
-              </li>
-              <li>Findings built from input-only values are intentionally shown without crops.</li>
-            </ul>
-            <button className="btn btn--action evidence-panel__empty-back" onClick={onClose}>
-              <ArrowLeft size={13} />
-              Back to findings
-            </button>
+            <NoCrops line="No drawing crop for this check" why={noEvidenceMessage()} />
           </div>
         )}
       </div>

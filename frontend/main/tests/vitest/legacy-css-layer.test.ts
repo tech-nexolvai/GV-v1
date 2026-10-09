@@ -29,8 +29,9 @@ describe('legacy stylesheets', () => {
   const files = cssFiles(SRC);
 
   it('finds the legacy stylesheets', () => {
-    // 28 since #1039 retired ResultsPanel.css; the number only guards against the walk finding nothing.
-    expect(files.length).toBeGreaterThanOrEqual(28);
+    // 27 since #1045 retired DrawingResultPanel.css (#1039 retired ResultsPanel.css); the number only
+    // guards against the walk finding nothing.
+    expect(files.length).toBeGreaterThanOrEqual(27);
   });
 
   it.each(files.map((f) => [path.relative(SRC, f), f]))('%s is wrapped in @layer legacy', (_name, file) => {
