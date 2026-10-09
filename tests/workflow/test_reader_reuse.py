@@ -511,7 +511,7 @@ def test_a_rejected_or_failed_answer_is_never_reused(session: Any) -> None:
                         "combined": False,
                         "readable": True,
                         "no_dimension": False,
-                        "belongs": True,
+                        "belongs": "yes",
                     }
                 ),
                 reader_page_index=0,
@@ -630,7 +630,7 @@ def test_a_stored_reply_is_read_by_the_live_code_and_a_bad_one_is_asked_again() 
         "combined": True,
         "readable": True,
         "no_dimension": False,
-        "belongs": True,
+        "belongs": "yes",
     }
     replayed = replay_stored_answer(span, json.dumps(answer), reused_from="x", max_tokens=400)
     assert replayed is not None
@@ -646,9 +646,18 @@ def test_a_stored_reply_is_read_by_the_live_code_and_a_bad_one_is_asked_again() 
         is None
     )
     # An answer the live code would refuse for this question — a row beyond the numbered boxes.
-    out_of_range = json.dumps({"row": 3, "why": "the third box"})
+    out_of_range = json.dumps({"row": 3, "kind": "row", "also": [], "why": "the third box"})
     assert replay_stored_answer(row, out_of_range, reused_from="x", max_tokens=400) is None
     in_range = replay_stored_answer(
-        row, json.dumps({"row": 2, "why": "the second box"}), reused_from="x", max_tokens=400
+        row,
+        json.dumps({"row": 2, "kind": "row", "also": [], "why": "the second box"}),
+        reused_from="x",
+        max_tokens=400,
     )
     assert in_range is not None and in_range[0].row == 2  # type: ignore[union-attr]
+    # A reply in an older question's shape is not an answer to the live question, so it is asked
+    # again: span v4 needs "yes"/"no"/"unsure" (#1110), row v3 needs its kind (#1108).
+    old_span = json.dumps(answer | {"belongs": True})
+    assert replay_stored_answer(span, old_span, reused_from="x", max_tokens=400) is None
+    old_row = json.dumps({"row": 2, "why": "the second box"})
+    assert replay_stored_answer(row, old_row, reused_from="x", max_tokens=400) is None
