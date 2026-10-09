@@ -354,6 +354,17 @@
             ],
             "title": "Architect Display"
           },
+          "architect_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the compared architect dimension is on the drawing: its line from tick to tick with its printed label, in the same stored space as `row_location`. Null when the position the architect reader stored cannot be used exactly."
+          },
           "delta": {
             "anyOf": [
               {
@@ -847,6 +858,17 @@
               }
             ],
             "title": "Inches"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where this dimension is on the drawing: its line from tick to tick with its printed label, in the same stored space as `row_location` (#1066). Null when the position the architect reader stored cannot be used exactly."
           },
           "on_outline": {
             "anyOf": [

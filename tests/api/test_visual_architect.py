@@ -91,6 +91,10 @@ def test_a_compared_row_shows_both_values_and_the_exact_difference(
     assert block["not_compared_reason"] is None
     assert block["pairing_source"] == "code+ais"
     assert block["pairing_judgments"] == "code and both AIs"
+    # Where the architect's dimension is (#1066, `tests/api/test_architect_locations.py`).
+    location = block["compared"][0].pop("architect_location")
+    assert location["page_id"] == str(overall.page_id)
+    assert location["coordinate_space"] == "stored"
     assert block["compared"] == [
         {
             "kind": "overall",

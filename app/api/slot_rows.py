@@ -28,7 +28,7 @@ from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.models import ObservationCandidate, SlotRowReviewDecision
-from app.review.row_location import RowLocation, row_location
+from app.review.row_location import RowLocation, architect_locations, row_location
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from vocabulary.check_holds import STONE_SHORT_OF_ENDS
@@ -428,6 +428,14 @@ class ArchitectSpanOut(BaseModel):
     slot: int | None
     can_pair: bool
     refusal: str | None
+    location: RowLocation | None = Field(
+        default=None,
+        description=(
+            "Where this dimension is on the drawing: its line from tick to tick with its printed "
+            "label, in the same stored space as `row_location` (#1066). Null when the position the "
+            "architect reader stored cannot be used exactly."
+        ),
+    )
 
 
 class ArchitectPairingOut(BaseModel):
@@ -456,6 +464,7 @@ def _architect_pairing_out(session: Session, row: SlotRow) -> ArchitectPairingOu
     current = latest_record(session, row.anchor.id)
     effective = latest_architect_pairing(session, row.anchor.id)
     spans = architect_spans_for_row(session, row.anchor, current)
+    locations = architect_locations(session, [span.candidate.id for span in spans])
     reasons = [] if current is None else current.details.get("reasons")
     note = None if current is None else current.details.get("note")
     return ArchitectPairingOut(
@@ -508,6 +517,7 @@ def _architect_pairing_out(session: Session, row: SlotRow) -> ArchitectPairingOu
                 slot=span.slot,
                 can_pair=span.comparable,
                 refusal=None if span.comparable else span.refusal(),
+                location=locations.get(span.candidate.id),
             )
             for span in spans
         ],
