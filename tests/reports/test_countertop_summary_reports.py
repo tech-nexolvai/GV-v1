@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from fractions import Fraction
 from io import BytesIO
@@ -676,3 +677,64 @@ def test_workbook_has_the_split_page_and_the_pages_with_no_countertop() -> None:
     empty = book["No Countertop Found"]
     assert [cell.value for cell in empty[1]] == ["page", "reason"]
     assert [cell.value for cell in empty[2]] == ["4", NONE_REASON]
+
+
+_FOOTER = re.compile(r"GRANITI \+ NEXOLV - REVIEW FINDINGS PAGE (\d+)")
+
+
+def _page_texts(data: bytes) -> list[str]:
+    return [
+        " ".join((page.extract_text() or "").split()) for page in PdfReader(BytesIO(data)).pages
+    ]
+
+
+def _many_results(count: int) -> tuple[CountertopResultOut, ...]:
+    return tuple(
+        _result(
+            f"Countertop row {index}",
+            Outcome.PASS,
+            printed=Fraction(24),
+            pieces=(Fraction(10), Fraction(14)),
+            expected=Fraction(24),
+            delta=Fraction(0),
+        ).model_copy(update={"page_number": index + 1})
+        for index in range(count)
+    )
+
+
+@pytest.mark.parametrize(
+    ("results", "empty_pages", "changed"),
+    [
+        pytest.param(_many_results(1), False, False, id="one-countertop"),
+        pytest.param(_many_results(1), False, True, id="after-project-values"),
+        pytest.param((_split_item(),), True, False, id="split-and-no-countertop-list"),
+        pytest.param((), True, False, id="only-no-countertop-list"),
+        pytest.param(_many_results(9), True, False, id="countertops-continued"),
+    ],
+)
+def test_pdf_countertop_section_has_no_empty_page_and_findings_start_their_own_page(
+    results: tuple[CountertopResultOut, ...], empty_pages: bool, changed: bool
+) -> None:
+    from workflow.changed_values import UNAVAILABLE, ChangedValues
+
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=14),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        countertop_results=results,
+        changed_values=ChangedValues("unavailable", UNAVAILABLE, (), ()) if changed else None,
+        pages_without_countertop=_pages_without_countertop() if empty_pages else (),
+    )
+
+    pages = _page_texts(write_findings_pdf(source))
+
+    numbers = [int(match.group(1)) for page in pages for match in _FOOTER.finditer(page)]
+    assert numbers == list(range(1, len(pages) + 1))
+    assert all(_FOOTER.sub("", page).strip() for page in pages), "a page has only its footer"
+    findings_start = next(index for index, page in enumerate(pages) if "CT-WIDTH-001" in page)
+    assert pages[findings_start].startswith("FINDINGS REVISION 1")
+    assert "COUNTERTOP" not in pages[findings_start]
+    assert any("COUNTERTOPS" in page for page in pages[:findings_start])
+    if len(results) > 4:
+        assert any("COUNTERTOPS — CONTINUED" in page for page in pages[:findings_start])
