@@ -335,6 +335,59 @@ describe('ArchitectPairingPanel', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it('names the record it showed on every save, so a colleague\'s newer pairing is never overwritten (#1101)', async () => {
+    const user = userEvent.setup();
+    let currentId = 'record-shown-1';
+    const record = (id: string) => ({
+      record_id: id, source: 'code', status: 'paired', pairs: PAIRING.effective!.pairs, reasons: [], note: null,
+      decided_by: null, decided_at: '2026-10-09T10:00:00Z', supersedes_id: null,
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).endsWith('/slot-rows/r/architect-pairing')) return new Response('{}', { status: 404 });
+      if ((init?.method ?? 'GET') === 'GET') {
+        gets += 1;
+        return new Response(JSON.stringify({ ...PAIRING, current: record(currentId) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      posts.push(JSON.parse(String(init?.body)));
+      if (postStatus === 409) return new Response(JSON.stringify({ error: 'http_error', message: "This row's pairing changed after you opened it. Reload it before pairing again.", request_id: 'x' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(PAIRING), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const { onSaved } = setup();
+
+    // Someone else saved a newer pairing while this one was on screen: the server refuses.
+    postStatus = 409;
+    await user.click(await screen.findByRole('button', { name: 'Confirm the pairing' }));
+    expect((await screen.findByRole('alert')).textContent).toContain("This row's pairing changed after you opened it.");
+    expect(posts).toEqual([{ pairs: [{ kind: 'overall', architect_candidate_id: 'span-ok', vendor_slot_indices: [] }], note: null, expected_record_id: 'record-shown-1' }]);
+
+    // Reloaded, the reviewer sees the newer record and the next save names it.
+    currentId = 'record-shown-2';
+    postStatus = 201;
+    await user.click(screen.getByRole('button', { name: 'Reload the pairing' }));
+    await user.type(await screen.findByLabelText(/Note/), 'Synthetic: only centre lines here.');
+    await user.click(screen.getByRole('button', { name: 'Nothing comparable' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(posts[1]).toEqual({ pairs: [], note: 'Synthetic: only centre lines here.', expected_record_id: 'record-shown-2' });
+
+    // The picker path names it too.
+    await user.click(screen.getByRole('button', { name: 'Pair it differently' }));
+    const ok = screen.getByRole('list', { name: "The architect's dimensions on this page" }).querySelector('[data-span="span-ok"]') as HTMLElement;
+    await user.click(within(ok).getByRole('radio', { name: 'One piece' }));
+    await user.click(within(ok).getByRole('radio', { name: '2' }));
+    await user.click(screen.getByRole('button', { name: 'Save this pairing' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(2));
+    expect(posts[2]).toEqual({ pairs: [{ kind: 'piece', architect_candidate_id: 'span-ok', vendor_slot_indices: [1] }], note: 'Synthetic: only centre lines here.', expected_record_id: 'record-shown-2' });
+  });
+
+  it('sends no record id when the row has no record yet', async () => {
+    const user = userEvent.setup();
+    const { onSaved } = setup();
+    await user.click(await screen.findByRole('button', { name: 'Confirm the pairing' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).not.toHaveProperty('expected_record_id');
+  });
+
   it('checks a drafted pairing the way the server does', () => {
     expect(draftProblem([], [SPAN_OK])).toMatch(/at least one pair/);
     expect(draftProblem([{ candidateId: 'span-centre', kind: 'overall', pieces: [] }], [SPAN_OK, SPAN_CENTRE])).toBe(SPAN_CENTRE.refusal);
