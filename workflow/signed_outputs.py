@@ -113,12 +113,14 @@ def generate_signed_outputs(
             changed_values=payload.changed_values,
             signed_review=payload.review,
             pages_without_countertop=countertop_results.pages_without_countertop,
+            rows_not_checked=countertop_results.rows_not_checked,
         )
     )
     workbook = write_stored_workbook(
         findings,
         countertop_results=countertop_results.items,
         pages_without_countertop=countertop_results.pages_without_countertop,
+        rows_not_checked=countertop_results.rows_not_checked,
         changed_values=payload.changed_values,
         signed_review=payload.review,
         signoff=WorkbookSignoff(

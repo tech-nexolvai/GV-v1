@@ -330,3 +330,173 @@ def test_pages_without_countertop_is_optional_in_the_published_schema() -> None:
 
     assert "pages_without_countertop" in published["properties"]
     assert "pages_without_countertop" not in published.get("required", [])
+
+
+# #1108: since `slot-row-choice-v3` each reader also says what its 0 meant (`row-kind:` flags).
+NOT_BOXED_KINDS = ("row-kind:opus-5-5:not_among_boxes", "row-kind:sonnet-5-5:not_among_boxes")
+NO_COUNTERTOP_KINDS = ("row-kind:opus-5-5:no_countertop", "row-kind:sonnet-5-5:no_countertop")
+NOT_BOXED_WHY = (
+    "opus-5-5: a countertop that none of the numbered lines measures (synthetic: unboxed); "
+    "sonnet-5-5: a countertop that none of the numbered lines measures (synthetic: plan only); "
+    "the reviewer chooses"
+)
+
+
+@pytest.mark.parametrize(
+    ("flags", "kind"),
+    [
+        (NONE_PICKS + NO_COUNTERTOP_KINDS, "none"),
+        (NONE_PICKS + NOT_BOXED_KINDS, "split"),
+        (NONE_PICKS + ("row-kind:opus-5-5:no_countertop", "row-kind:sonnet-5-5:unsure"), "split"),
+        (
+            NONE_PICKS + ("row-kind:opus-5-5:no_countertop", "row-kind:sonnet-5-5:not_among_boxes"),
+            "split",
+        ),
+        (NONE_PICKS + ("row-kind:opus-5-5:unsure", "row-kind:sonnet-5-5:unsure"), "split"),
+        # One reader's kind is missing: doubt never lists a page.
+        (NONE_PICKS + ("row-kind:opus-5-5:no_countertop",), "split"),
+        # A kind that is not one of the four, or a reader with two kinds: doubt again.
+        (NONE_PICKS + ("row-kind:opus-5-5:no_countertop", "row-kind:sonnet-5-5:maybe"), "split"),
+        (
+            NONE_PICKS + NO_COUNTERTOP_KINDS + ("row-kind:sonnet-5-5:not_among_boxes",),
+            "split",
+        ),
+        # Records without `row-kind:` flags classify exactly as before (#1093).
+        (NONE_PICKS, "none"),
+        (SPLIT_PICKS, "split"),
+    ],
+)
+def test_only_no_countertop_from_every_reader_is_listed_without_blocking(
+    session: Session, flags: tuple[str, ...], kind: str
+) -> None:
+    from workflow.slot_row_scope import unchosen_row_pages
+
+    _project_id, package_id, _anchors = _package_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(session, revision.id, page_index=2, flags=flags, reason=NONE_WHY)
+
+    (page,) = unchosen_row_pages(session, revision.id)
+    assert page.record.id == record_id
+    assert page.kind == kind
+    if kind == "none":
+        assert page.reason == NONE_WHY
+
+
+def test_a_countertop_none_of_the_boxes_measures_is_one_blocking_item_with_both_reasons(
+    session: Session, tmp_path: Path
+) -> None:
+    """Both AIs said a countertop is drawn but no numbered line is its row (#1108). It used to be
+    listed as "no countertop" and never checked; now it needs the reviewer, like a split page."""
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session, revision.id, page_index=2, flags=NONE_PICKS + NOT_BOXED_KINDS, reason=NOT_BOXED_WHY
+    )
+
+    _run_current_checks(session, package_id, tmp_path)
+    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert finding.outcome == "REVIEW_REQUIRED"
+    reason = finding.reason or ""
+    assert "found a countertop on this page that none of the numbered lines measures" in reason
+    assert "synthetic: unboxed" in reason and "synthetic: plan only" in reason
+    assert "nothing on it was read or checked" in reason
+    assert not reason.endswith("the reviewer chooses")
+
+    results = _results(session, package_id)
+    (item,) = [item for item in results.items if item.row_id == record_id]
+    assert item.hold is not None and item.hold.code == "row-choice-split"
+    assert item.hold.reason == reason
+    assert item.needs_decision
+    assert results.pages_without_countertop == ()
+
+    _decide(session, revision.id, skip=record_id)
+    assert approval_readiness(session, revision.id).blocking_finding_ids == (finding.id,)
+    _decide(session, revision.id)
+    assert approval_readiness(session, revision.id).blocking_findings == 0
+
+
+def test_an_unsure_reader_makes_one_blocking_item(session: Session, tmp_path: Path) -> None:
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session,
+        revision.id,
+        page_index=2,
+        flags=NONE_PICKS + ("row-kind:opus-5-5:no_countertop", "row-kind:sonnet-5-5:unsure"),
+        reason="opus-5-5: no countertop on the sheet; sonnet-5-5: not sure which line; "
+        "the reviewer chooses",
+    )
+
+    _run_current_checks(session, package_id, tmp_path)
+    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert "not sure which line on this page is the countertop line" in (finding.reason or "")
+    assert finding.id in approval_readiness(session, revision.id).blocking_finding_ids
+    assert _results(session, package_id).pages_without_countertop == ()
+
+
+def test_both_no_countertop_kinds_are_listed_and_block_nothing(
+    session: Session, tmp_path: Path
+) -> None:
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session, revision.id, page_index=2, flags=NONE_PICKS + NO_COUNTERTOP_KINDS, reason=NONE_WHY
+    )
+
+    _run_current_checks(session, package_id, tmp_path)
+    assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
+    _decide(session, revision.id)
+    assert approval_readiness(session, revision.id).blocking_findings == 0
+    results = _results(session, package_id)
+    assert [(page.page_number, page.reason) for page in results.pages_without_countertop] == [
+        (3, NONE_WHY)
+    ]
+
+
+def test_a_second_countertop_row_on_a_read_page_is_listed_not_checked_and_never_blocks(
+    session: Session, tmp_path: Path
+) -> None:
+    """A reader named a second countertop's row on page 1 (#1108). V1 reads one row per page, so it
+    is listed as not checked; it adds no result and blocks nothing."""
+    project_id, package_id, anchors = _package_rows(
+        session,
+        unsealed_all=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page_index, _offset, _slot: (
+            ["row-also:opus-5-5:3", "row-also:sonnet-5-5:3", "row-also:sonnet-5-5:4"]
+            if page_index == 0
+            else []
+        ),
+    )
+    for anchor in anchors.values():
+        _save_all_row_widths(session, project_id, package_id, anchor)
+    revision = _revision_of(session, package_id)
+
+    _run_current_checks(session, package_id, tmp_path)
+    live = _live(session, revision.id)
+    _decide(session, revision.id)
+    assert approval_readiness(session, revision.id).blocking_findings == 0
+
+    results = _results(session, package_id)
+    assert [item.page_number for item in results.items] == [1, 2]
+    assert len(live) == len(_live(session, revision.id))
+    (listed,) = results.rows_not_checked
+    assert listed.page_number == 1
+    assert "second countertop" in listed.reason
+    assert "numbered line 3, named by opus-5-5 and sonnet-5-5" in listed.reason
+    assert "numbered line 4, named by sonnet-5-5" in listed.reason
+    assert "not checked" in listed.reason
+
+
+def test_rows_not_checked_is_optional_in_the_published_schema() -> None:
+    from app.config import Settings
+    from app.main import create_app
+
+    settings = Settings(
+        database_url="postgresql+psycopg://unused@localhost/unused", environment="test"
+    )
+    published = create_app(settings).openapi()["components"]["schemas"]["CountertopResultsOut"]
+
+    assert "rows_not_checked" in published["properties"]
+    assert "rows_not_checked" not in published.get("required", [])

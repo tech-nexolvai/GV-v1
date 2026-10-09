@@ -28,7 +28,12 @@ from reportlab.lib.pagesizes import A4  # type: ignore[import-untyped]
 from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
-from app.schemas.visual_ui import CountertopResultOut, ExactValueOut, PageWithoutCountertopOut
+from app.schemas.visual_ui import (
+    CountertopResultOut,
+    ExactValueOut,
+    PageWithoutCountertopOut,
+    RowNotCheckedOut,
+)
 from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line
 from verdict.outcomes import Outcome
@@ -71,6 +76,9 @@ class FindingsPdfInput:
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = ()
     """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093). Listed
     after the countertops so a page that was not checked can never pass unnoticed."""
+    rows_not_checked: tuple[RowNotCheckedOut, ...] = ()
+    """Second countertop rows an AI named on a page whose countertop row was read (#1108). V1 reads
+    one row per page, so each is listed after the countertops as not checked."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.package_revision_id, UUID):
@@ -99,6 +107,10 @@ class FindingsPdfInput:
             isinstance(page, PageWithoutCountertopOut) for page in self.pages_without_countertop
         ):
             raise TypeError("pages_without_countertop must contain PageWithoutCountertopOut values")
+        if not isinstance(self.rows_not_checked, tuple) or not all(
+            isinstance(row, RowNotCheckedOut) for row in self.rows_not_checked
+        ):
+            raise TypeError("rows_not_checked must contain RowNotCheckedOut values")
 
 
 def _text(value: object, *, absent: str = NOT_RECORDED) -> str:
@@ -522,7 +534,8 @@ class _Document:
     def _countertops(self) -> None:
         results = self.source.countertop_results
         empty_pages = self.source.pages_without_countertop
-        if not results and not empty_pages:
+        not_checked = self.source.rows_not_checked
+        if not results and not empty_pages and not not_checked:
             return
 
         # The section before this one closed its own page, so the first countertop page is the fresh
@@ -640,19 +653,45 @@ class _Document:
             self.y = card_bottom - 12
         if empty_pages:
             self._pages_without_countertop(lambda: new_page(continued=True))
+        if not_checked:
+            self._listed_pages(
+                lambda: new_page(continued=True),
+                title="SECOND COUNTERTOP ROWS NOT CHECKED",
+                note=(
+                    "An AI found a second countertop on these pages. Only one countertop line per "
+                    "page is read, so these were not checked."
+                ),
+                entries=[(row.page_number, row.reason) for row in not_checked],
+            )
         # Close the last countertop page like the sections before, so FINDINGS starts its own page.
         self._footer()
         self.canvas.showPage()
 
     def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
         """The pages both AIs found no countertop line on, each with the AI's reason (#1093)."""
+        self._listed_pages(
+            new_page,
+            title="PAGES WITH NO COUNTERTOP FOUND",
+            note="Both AIs found no countertop line on these pages, so nothing on them was checked.",
+            entries=[
+                (page.page_number, page.reason) for page in self.source.pages_without_countertop
+            ],
+        )
+
+    def _listed_pages(
+        self,
+        new_page: Callable[[], None],
+        *,
+        title: str,
+        note: str,
+        entries: Sequence[tuple[int, str]],
+    ) -> None:
+        """A titled list of pages, each with its reason, in page order: nothing to decide."""
         lines = [
             line
-            for page in sorted(
-                self.source.pages_without_countertop, key=lambda item: item.page_number
-            )
+            for page_number, reason in sorted(entries, key=lambda item: item[0])
             for line in _wrapped(
-                f"Page {page.page_number}: {page.reason}",
+                f"Page {page_number}: {reason}",
                 width=_CONTENT_WIDTH - 16,
                 font=_BODY_FONT,
                 size=7.5,
@@ -662,13 +701,9 @@ class _Document:
             new_page()
         self.canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
         self.canvas.setFont(_BOLD_FONT, 9)
-        self.canvas.drawString(_MARGIN + 8, self.y - 4, "PAGES WITH NO COUNTERTOP FOUND")
+        self.canvas.drawString(_MARGIN + 8, self.y - 4, title)
         self.canvas.setFont(_BODY_FONT, 7)
-        self.canvas.drawString(
-            _MARGIN + 8,
-            self.y - 15,
-            "Both AIs found no countertop line on these pages, so nothing on them was checked.",
-        )
+        self.canvas.drawString(_MARGIN + 8, self.y - 15, note)
         self.y -= 29
         for line in lines:
             if self.y < 60:

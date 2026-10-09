@@ -41,6 +41,7 @@ from app.schemas.visual_ui import (
     HoldOut,
     PageWithoutCountertopOut,
     ReviewerDecisionOut,
+    RowNotCheckedOut,
     WallLayoutOut,
 )
 from units.imperial import format_inches
@@ -750,7 +751,11 @@ def _countertop_results_for_revision(
     # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
     # is the source: the check asks nothing there, so neither does this list.
     rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
-    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
+    owned = (
+        reviewer_owned_pages(session, revision.id)
+        if unchosen or any(row.also for row in rows)
+        else set()
+    )
     unchosen = tuple(page for page in unchosen if page.page_number - 1 not in owned)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
@@ -959,6 +964,36 @@ def _countertop_results_for_revision(
             for page in unchosen
             if not page.split
         ),
+        rows_not_checked=_rows_not_checked(rows, owned),
+    )
+
+
+def _rows_not_checked(rows: tuple[SlotRow, ...], owned: set[int]) -> tuple[RowNotCheckedOut, ...]:
+    """One entry per vendor page where an AI named a second countertop row (#1108), in page order.
+
+    V1 reads one countertop row per page, so the second is listed, never checked and never
+    blocking. A page a reviewer-owned run is the source on is left out, as for the pages above.
+    """
+    named: dict[int, dict[int, set[str]]] = {}
+    for row in rows:
+        if row.page_number - 1 in owned:
+            continue
+        for model, number in row.also:
+            named.setdefault(row.page_number, {}).setdefault(number, set()).add(model)
+    return tuple(
+        RowNotCheckedOut(
+            page_number=page_number,
+            reason=(
+                "An AI found a second countertop on this page ("
+                + "; ".join(
+                    f"numbered line {number}, named by {' and '.join(sorted(models))}"
+                    for number, models in sorted(boxes.items())
+                )
+                + "). Only one countertop line per page is read, so it was not checked. Check it "
+                "on the drawing."
+            ),
+        )
+        for page_number, boxes in sorted(named.items())
     )
 
 

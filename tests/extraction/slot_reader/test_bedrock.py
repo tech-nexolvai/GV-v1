@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from evidence.crop import encode_png
-from extraction.form_reader.bedrock import AttemptUsage
+from extraction.form_reader.bedrock import AttemptUsage, MalformedFormAnswer
 from extraction.form_reader.runner import ModelPacer
 from extraction.slot_reader.anthropic import BatchSpendGuard
 from extraction.slot_reader.bedrock import (
@@ -252,6 +252,97 @@ def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() ->
     assert request["inferenceConfig"]["maxTokens"] == 3000
 
 
+ROW_TWO = {"row": 2, "kind": "row", "also": [], "why": "front elevation"}
+
+
+def _row_answer(
+    payload: object, *, model_id: str = OPUS, candidate_count: int = 4
+) -> tuple[RowChoiceAnswer | None, list[AttemptUsage]]:
+    """One row question answered `payload` every time; `None` when it stayed malformed."""
+    attempts: list[AttemptUsage] = []
+    try:
+        answer = read_row_choice(
+            FakeClients(lambda _request: reply(payload)),
+            model_id=model_id,
+            page_png=PNG,
+            page_index=0,
+            candidate_count=candidate_count,
+            max_tokens=3000,
+            record_attempt=attempts.append,
+        )
+    except MalformedFormAnswer:
+        return None, attempts
+    return answer, attempts
+
+
+@pytest.mark.parametrize(
+    ("payload", "kind"),
+    [
+        ({"row": 3, "kind": "row", "also": [], "why": "synthetic: box 3"}, "row"),
+        ({"row": 0, "kind": "no_countertop", "also": [], "why": "synthetic: tall unit"}, None),
+        ({"row": 0, "kind": "not_among_boxes", "also": [], "why": "synthetic: unboxed"}, None),
+        ({"row": 0, "kind": "unsure", "also": [], "why": "synthetic: cannot tell"}, None),
+    ],
+)
+def test_row_reader_keeps_each_kind_of_answer(payload: dict[str, object], kind: str | None) -> None:
+    """v3 (#1108): "no countertop" and "a countertop no box measures" are two answers, not one 0."""
+    answer, attempts = _row_answer(payload)
+
+    assert answer is not None
+    assert answer.kind == payload["kind"]
+    assert answer.row == payload["row"]
+    assert answer.also == ()
+    assert [attempt.malformed for attempt in attempts] == [False]
+    assert attempts[0].prompt_id == "slot-row-choice-v3"
+
+
+def test_row_reader_keeps_a_second_countertop_row_but_never_the_row_itself() -> None:
+    answer, _ = _row_answer({"row": 1, "kind": "row", "also": [4, 1, 3, 4], "why": "two tops"})
+
+    assert answer is not None and answer.row == 1 and answer.also == (3, 4)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"row": 2, "kind": "no_countertop", "also": [], "why": "contradiction"},
+        {"row": 0, "kind": "row", "also": [], "why": "contradiction"},
+        {"row": 1, "kind": "row", "also": [5], "why": "box 5 does not exist"},
+        {"row": 1, "kind": "row", "also": [0], "why": "box 0 does not exist"},
+        {"row": 1, "kind": "maybe", "also": [], "why": "not a kind"},
+    ],
+)
+def test_a_self_contradicting_or_out_of_range_row_answer_is_malformed(
+    payload: dict[str, object],
+) -> None:
+    """Re-asked once, then the reader abstains, which sends the page to the reviewer."""
+    answer, attempts = _row_answer(payload)
+
+    assert answer is None
+    assert [attempt.malformed for attempt in attempts] == [True, True]
+
+
+def test_a_row_answer_of_the_older_shape_still_parses_with_no_kind() -> None:
+    """A non-Claude reader's (or a stored v2) answer has no kind and names no second row."""
+    answer, _ = _row_answer({"row": 0, "why": "synthetic: none"}, model_id=QWEN)
+
+    assert answer == RowChoiceAnswer(QWEN, 0, "synthetic: none", None, ())
+
+
+def test_row_prompt_names_its_box_colours_and_none_is_the_reviewers() -> None:
+    """Box 1 was crimson while the same question said red numbers are the reviewer's (#1108)."""
+    from extraction.slot_reader.bedrock import ROW_BOX_COLOURS, ROW_PROMPT_IDS
+
+    assert {"slot-row-choice-v1", "slot-row-choice-v2", "slot-row-choice-v3"} == ROW_PROMPT_IDS
+    for name, _rgb in ROW_BOX_COLOURS:
+        assert name in ROW_PROMPT
+    assert "numbers in red or blue, and yellow boxes, are the reviewer's markup" in ROW_PROMPT
+    for name in ("red", "crimson", "blue", "yellow", "orange"):
+        assert name not in {colour for colour, _ in ROW_BOX_COLOURS}
+    for kind in ("no_countertop", "not_among_boxes", "unsure", '"also"'):
+        assert kind in ROW_PROMPT
+
+
 def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -> None:
     calls = 0
     attempts: list[AttemptUsage] = []
@@ -259,7 +350,7 @@ def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -
     def answer(_request: dict[str, Any]) -> Mapping[str, Any]:
         nonlocal calls
         calls += 1
-        return reply("not json" if calls == 1 else {"row": 2, "why": "front elevation"})
+        return reply("not json" if calls == 1 else ROW_TWO)
 
     result = read_row_choice(
         FakeClients(answer),
@@ -271,19 +362,20 @@ def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -
         record_attempt=attempts.append,
     )
 
-    assert result == RowChoiceAnswer(OPUS, 2, "front elevation")
+    assert result == RowChoiceAnswer(OPUS, 2, "front elevation", "row", ())
     assert calls == 2
     assert [attempt.malformed for attempt in attempts] == [True, False]
-    assert [attempt.raw_response_text for attempt in attempts] == [
-        "not json",
-        '{"row": 2, "why": "front elevation"}',
-    ]
+    assert [attempt.raw_response_text for attempt in attempts] == ["not json", json.dumps(ROW_TWO)]
 
 
 def test_row_reader_zero_is_a_valid_reviewer_choice_not_a_retry() -> None:
     attempts: list[AttemptUsage] = []
     result = read_row_choice(
-        FakeClients(lambda _request: reply({"row": 0, "why": "no candidate fits"})),
+        FakeClients(
+            lambda _request: reply(
+                {"row": 0, "kind": "no_countertop", "also": [], "why": "no candidate fits"}
+            )
+        ),
         model_id=OPUS,
         page_png=PNG,
         page_index=0,
@@ -299,14 +391,18 @@ def test_row_reader_zero_is_a_valid_reviewer_choice_not_a_retry() -> None:
 def test_row_question_uses_the_same_read_pool_result_shape() -> None:
     model = OPUS
     answers = run(
-        FakeClients(lambda _request: reply({"row": 1, "why": "countertop row"})),
+        FakeClients(
+            lambda _request: reply({"row": 1, "kind": "row", "also": [2], "why": "countertop row"})
+        ),
         [CropJob("p0:row-choice", model, 0, PNG, row_question=True, candidate_count=2)],
         rates=AnthropicRates(),
         calls_per_minute={model: 6000},
         max_tokens=3000,
     )
 
-    assert answers == {("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row")}
+    assert answers == {
+        ("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row", "row", (2,))
+    }
 
 
 def test_counter_break_question_is_a_hold_only_two_picture_question() -> None:

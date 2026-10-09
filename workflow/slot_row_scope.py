@@ -51,6 +51,10 @@ class SlotRow:
     held_reason: str | None
     wall_confirmation_allowed: bool
     row_number: int | None = None
+    also: tuple[tuple[str, int], ...] = ()
+    """`(short model name, box number)` for each other numbered box a row reader named as a
+    second countertop's piece row on this vendor page (#1108). V1 reads one row per page, so these
+    are listed as not checked; empty on any other page and on a record from before #1108."""
 
     @property
     def label(self) -> str:
@@ -77,9 +81,13 @@ class UnchosenRowPage:
     `kind` is "split" when the readers did not name the same existing row (or one gave no answer):
     nothing was read, and the page must reach the reviewer as a blocking item. It is "none" only
     when every reader said the page has no countertop row; such a page is listed, not blocking.
+    Since #1108 a reader also says what kind of answer it gave (`row-kind:` flags): "none" then
+    needs every reader to have said `no_countertop`; `not_among_boxes` (a countertop no numbered
+    box measures) or `unsure` from any reader is "split" too, with its own reason.
     `picks` are each reader's own pick (short model name, row number; 0 for "no row", `None` for no
-    answer), empty on a record written before #1093. `reason` is the plain sentence for the
-    reviewer; `stored_reason` is the record's own text.
+    answer), empty on a record written before #1093. `kinds` are each reader's kind of answer
+    (short model name, kind), empty on a record written before #1108. `reason` is the plain
+    sentence for the reviewer; `stored_reason` is the record's own text.
     """
 
     record: ObservationCandidate
@@ -88,6 +96,7 @@ class UnchosenRowPage:
     picks: tuple[tuple[str, int | None], ...]
     reason: str
     stored_reason: str | None
+    kinds: tuple[tuple[str, str], ...] = ()
 
     @property
     def split(self) -> bool:
@@ -114,6 +123,36 @@ def _row_picks(flags: frozenset[str]) -> tuple[tuple[str, int | None], ...] | No
     return tuple(picks)
 
 
+#: The kinds of row answer a reader may give (`slot-row-choice-v3`, #1108).
+_ROW_KINDS: Final = frozenset({"row", "no_countertop", "not_among_boxes", "unsure"})
+
+
+def _row_kinds(flags: frozenset[str]) -> tuple[tuple[str, str], ...] | None:
+    """The `row-kind:<model>:<kind>` flags, sorted by model; `None` when a flag is malformed or a
+    reader has two."""
+    kinds: list[tuple[str, str]] = []
+    for flag in sorted(flag for flag in flags if flag.startswith("row-kind:")):
+        model, separator, kind = flag.removeprefix("row-kind:").rpartition(":")
+        if not separator or not model or kind not in _ROW_KINDS:
+            return None
+        kinds.append((model, kind))
+    if len({model for model, _ in kinds}) != len(kinds):
+        return None
+    return tuple(kinds)
+
+
+def _row_also(flags: frozenset[str]) -> tuple[tuple[str, int], ...]:
+    """The well-formed `row-also:<model>:<n>` flags, sorted by model then box number."""
+    also: list[tuple[str, int]] = []
+    for flag in flags:
+        if not flag.startswith("row-also:"):
+            continue
+        model, separator, number = flag.removeprefix("row-also:").rpartition(":")
+        if separator and model and number.isdigit() and int(number) > 0:
+            also.append((model, int(number)))
+    return tuple(sorted(also))
+
+
 def _pick_words(pick: int | None) -> str:
     if pick is None:
         return "no answer"
@@ -122,13 +161,27 @@ def _pick_words(pick: int | None) -> str:
 
 def _classify(
     flags: frozenset[str], stored_reason: str | None
-) -> tuple[Literal["split", "none"], tuple[tuple[str, int | None], ...]]:
+) -> tuple[
+    Literal["split", "none"], tuple[tuple[str, int | None], ...], tuple[tuple[str, str], ...]
+]:
     """Split unless every reader said "no countertop row"; never the other way round on doubt."""
     picks = _row_picks(flags)
-    if picks is None:
-        return "split", ()
+    kinds = _row_kinds(flags)
+    if picks is None or kinds is None:
+        return "split", (), ()
+    if kinds:
+        # #1108: each reader said what its 0 meant. Only "no countertop on the sheet" from every
+        # reader that picked is listed; any other kind, a missing kind or answer, blocks.
+        readers = {model for model, _ in picks}
+        none = (
+            bool(picks)
+            and all(pick == 0 for _, pick in picks)
+            and {model for model, _ in kinds} == readers
+            and all(kind == "no_countertop" for _, kind in kinds)
+        )
+        return ("none" if none else "split"), picks, kinds
     if picks:
-        return ("none" if all(pick == 0 for _, pick in picks) else "split"), picks
+        return ("none" if all(pick == 0 for _, pick in picks) else "split"), picks, ()
     # A record from before #1093 carries no picks. Its reason tells the two apart: the reader wrote
     # its own reason, ending "; the reviewer chooses", for a disagreement or a missing answer; a
     # "both said no row" record keeps the AI's own why. A record that names a row (`row-choice:N`,
@@ -141,13 +194,55 @@ def _classify(
         or reason.endswith(_CODE_AUTHORED_ENDING)
         or reason == _CODE_AUTHORED_DEFAULT
     ):
-        return "split", ()
-    return "none", ()
+        return "split", (), ()
+    return "none", (), ()
 
 
-def _split_reason(picks: tuple[tuple[str, int | None], ...], stored_reason: str | None) -> str:
+#: How the reason for the reviewer names each kind of row answer (#1108).
+_KIND_WORDS: Final = {
+    "row": "a numbered line",
+    "no_countertop": "no countertop on the sheet",
+    "not_among_boxes": "a countertop that none of the numbered lines measures",
+    "unsure": "not sure which line",
+}
+
+
+def _split_reason(
+    picks: tuple[tuple[str, int | None], ...],
+    stored_reason: str | None,
+    kinds: tuple[tuple[str, str], ...] = (),
+) -> str:
+    said_by_kind = dict(kinds)
+    if kinds and all(pick == 0 for _, pick in picks):
+        # Every reader answered 0, but not every one said "no countertop" (#1108): a countertop
+        # may be drawn that none of the numbered lines measures, so nothing on it was read.
+        words = (stored_reason or "").removesuffix(_CODE_AUTHORED_ENDING) or "; ".join(
+            f"{model}: {_KIND_WORDS.get(said_by_kind.get(model, ''), 'no kind of answer')}"
+            for model, _ in picks
+        )
+        said_kinds = {kind for _, kind in kinds}
+        if said_kinds == {"not_among_boxes"} and len(kinds) == len(picks):
+            opening = (
+                "The AIs found a countertop on this page that none of the numbered lines measures"
+            )
+        elif "unsure" in said_kinds:
+            opening = "An AI was not sure which line on this page is the countertop line"
+        else:
+            opening = "The AIs did not agree whether this page has a countertop"
+        return (
+            f"{opening} ({words}), so nothing on it was read or checked. The reviewer sets up "
+            "this page's countertop line on the Measurements screen, or decides this page."
+        )
     said = (
-        "; ".join(f"{model} picked {_pick_words(pick)}" for model, pick in picks)
+        "; ".join(
+            f"{model} picked "
+            + (
+                _KIND_WORDS[said_by_kind[model]]
+                if pick == 0 and said_by_kind.get(model) in _KIND_WORDS
+                else _pick_words(pick)
+            )
+            for model, pick in picks
+        )
         if picks
         else (stored_reason or "no reader answer was kept").removesuffix(_CODE_AUTHORED_ENDING)
     )
@@ -158,18 +253,19 @@ def _split_reason(picks: tuple[tuple[str, int | None], ...], stored_reason: str 
 
 
 def _unchosen_page(page_index: int, record: ObservationCandidate) -> UnchosenRowPage:
-    kind, picks = _classify(frozenset(record.ambiguity_flags or ()), record.review_reason)
+    kind, picks, kinds = _classify(frozenset(record.ambiguity_flags or ()), record.review_reason)
     return UnchosenRowPage(
         record=record,
         page_number=page_index + 1,
         kind=kind,
         picks=picks,
         reason=(
-            _split_reason(picks, record.review_reason)
+            _split_reason(picks, record.review_reason, kinds)
             if kind == "split"
             else (record.review_reason or "Both AIs found no countertop line on this page.")
         ),
         stored_reason=record.review_reason,
+        kinds=kinds,
     )
 
 
@@ -406,6 +502,19 @@ def slot_rows_and_unchosen_pages(
             (flag for candidate in candidates for flag in candidate.ambiguity_flags or ()),
         )
         is_vendor = roles[(page_index, rank)] == "shop"
+        also = (
+            tuple(
+                sorted(
+                    {
+                        pair
+                        for candidate in candidates
+                        for pair in _row_also(frozenset(candidate.ambiguity_flags or ()))
+                    }
+                )
+            )
+            if is_vendor
+            else ()
+        )
         output.append(
             SlotRow(
                 anchor=anchor,
@@ -417,6 +526,7 @@ def slot_rows_and_unchosen_pages(
                 decision=decision,
                 held_reason=held if is_vendor else "This is not the vendor drawing.",
                 wall_confirmation_allowed=is_vendor and (held is None or between_panels),
+                also=also,
             )
         )
     counts = {

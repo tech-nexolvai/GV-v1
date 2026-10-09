@@ -62,7 +62,12 @@ from openpyxl.cell.cell import Cell  # type: ignore[import-untyped]
 from openpyxl.styles import Alignment, Font, PatternFill  # type: ignore[import-untyped]
 from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
-from app.schemas.visual_ui import CountertopResultOut, ExactValueOut, PageWithoutCountertopOut
+from app.schemas.visual_ui import (
+    CountertopResultOut,
+    ExactValueOut,
+    PageWithoutCountertopOut,
+    RowNotCheckedOut,
+)
 from reports.signed_review import SignedReview
 from units.measurement import Measurement
 from verdict.finding import Finding
@@ -98,6 +103,9 @@ COUNTERTOPS_SHEET: Final = "Countertops"
 #: Vendor pages where both AIs found no countertop line (#1093): listed, with the AI's reason.
 PAGES_WITHOUT_COUNTERTOP_SHEET: Final = "No Countertop Found"
 PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason")
+#: Second countertop rows an AI named on a page whose row was read (#1108): listed, not checked.
+ROWS_NOT_CHECKED_SHEET: Final = "Second Rows Not Checked"
+ROWS_NOT_CHECKED_COLUMNS: Final = ("page", "reason")
 COUNTERTOP_COLUMNS: Final = (
     "page",
     "label",
@@ -868,6 +876,7 @@ def write_stored_workbook(
     signed_review: SignedReview | None = None,
     countertop_results: Sequence[CountertopResultOut] = (),
     pages_without_countertop: Sequence[PageWithoutCountertopOut] = (),
+    rows_not_checked: Sequence[RowNotCheckedOut] = (),
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -889,6 +898,10 @@ def write_stored_workbook(
         raise TypeError(
             "pages_without_countertop must contain only PageWithoutCountertopOut values"
         )
+    if isinstance(rows_not_checked, str) or not all(
+        isinstance(row, RowNotCheckedOut) for row in rows_not_checked
+    ):
+        raise TypeError("rows_not_checked must contain only RowNotCheckedOut values")
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -941,6 +954,16 @@ def write_stored_workbook(
             [
                 (page.page_number, page.reason)
                 for page in sorted(pages_without_countertop, key=lambda item: item.page_number)
+            ],
+        )
+    if rows_not_checked:
+        _write_sheet(
+            workbook,
+            ROWS_NOT_CHECKED_SHEET,
+            ROWS_NOT_CHECKED_COLUMNS,
+            [
+                (row.page_number, row.reason)
+                for row in sorted(rows_not_checked, key=lambda item: item.page_number)
             ],
         )
 
