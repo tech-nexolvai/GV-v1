@@ -423,9 +423,12 @@ def _canonical_for_candidate(
             return None
         reader_id = reader_flag.removeprefix("reader-id:")
         seen_readers.add(reader_id)
-        measurement = plain_dimension(support.raw_text, allow_explicit_mm=True)
+        # Normalised first, as sealing did (#1090): one reader's `2”` and the other's `2"` are the
+        # same label, and the parsers only know the straight marks.
+        text = normalise_text(support.raw_text)
+        measurement = plain_dimension(text, allow_explicit_mm=True)
         if measurement is None:
-            expanded = expand_label(support.raw_text)
+            expanded = expand_label(text)
             measurement = None if expanded is None else expanded.value
         if (
             measurement is None
