@@ -79,7 +79,12 @@ def main(argv: list[str] | None = None) -> int:
     card = score_pages(key, {page.page_index + 1: _spans(page) for page in pages})
 
     lines: list[str] = [f"# Architect reader on {args.pdf.name}", ""]
-    report: dict[str, object] = {"drawing": args.pdf.name, "totals": dict(card.totals), "pages": []}
+    page_reports: list[dict[str, object]] = []
+    report: dict[str, object] = {
+        "drawing": args.pdf.name,
+        "totals": dict(card.totals),
+        "pages": page_reports,
+    }
     by_number = {page.page_index + 1: page for page in pages}
     for score in card.pages:
         page = by_number.get(score.page)
@@ -126,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
             lines.append("  - missing: " + ", ".join(_inches(value) for value in score.missing))
         for value, text in score.extra_usable:
             lines.append(f"  - read, not in key (check on the page): {text!r} = {_inches(value)}")
-        for value, text, reason in score.extra_held:
-            lines.append(f"  - held, not in key: {text!r} = {_inches(value)}: {reason}")
+        for printed, text, reason in score.extra_held:
+            lines.append(f"  - held, not in key: {text!r} = {_inches(printed)}: {reason}")
         spans = [] if page is None else _spans(page)
         lines.append(
             "  - on the outline: "
@@ -138,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         lines.append("")
-        report["pages"].append(  # type: ignore[union-attr]
+        page_reports.append(
             {
                 "page": score.page,
                 "views": views,

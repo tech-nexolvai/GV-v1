@@ -257,7 +257,11 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
     from workflow.form_reader import configured_form_reader
     from workflow.hatchet_app import build_worker
     from workflow.slot_reader import configured_slot_reader
-    from workflow.stages import DatabaseStages, missing_space_from_environment
+    from workflow.stages import (
+        DatabaseStages,
+        configured_architect_reader,
+        missing_space_from_environment,
+    )
 
     try:
         missing_space = missing_space_from_environment()
@@ -290,6 +294,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
             missing_space=missing_space,
             form_reader=(form_reader := configured_form_reader(settings)),
             slot_reader=configured_slot_reader(settings, form_reader),
+            architect_reader=configured_architect_reader(settings),
         ),
     )
     logger.info("worker starting")

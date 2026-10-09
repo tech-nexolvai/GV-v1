@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # limits, and the whole-page reading stays for a page with no row. The fraction-bar lengths
     # (`GV_READER_FRACTION_*`) are required by the worker when it is on.
     slot_reader_enabled: bool = False
+    # The architect's dimensions read by code from the text inside a combined sheet's pasted drawing
+    # (#1052): no AI, no cost. Off by default. When on, a drawing whose exact heading and own content
+    # agree on its role is confirmed by code, and the architect's values are stored as candidates.
+    architect_reader_enabled: bool = False
     # Grounded full-view plus close-up reader route (#1001 onward). It is separate from the
     # existing one-crop route and defaults off until every proof gate is met.
     claude_reader_enabled: bool = False
