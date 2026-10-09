@@ -14,7 +14,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -29,6 +29,7 @@ from app.models import (
     Document,
     DocumentKind,
     DocumentVersion,
+    EvidenceArtifact,
     Finding,
     FindingEvidence,
     Package,
@@ -286,3 +287,42 @@ def test_a_chain_in_another_project_is_not_disclosed(session: Session) -> None:
     assert response.json()["error"] == "http_error"
     assert response.json()["message"] == "Not found"
     assert str(project_id) not in response.text
+
+
+def test_each_operand_says_whether_its_served_crop_shows_gv_markup(session: Session) -> None:
+    """Input: a crop of the shop reading found to show GV's markup, and no crop of the architect's.
+    Output: `crop_shows_gv_mark` true and null, and the same PASS. Why: the evidence panel offers the
+    vendor-only view from this flag (#952), and a flag never changes an outcome."""
+    project_id, package_id, finding_id = _seed(session)
+    shop = session.scalars(
+        select(CanonicalObservation).where(CanonicalObservation.document_role == "SHOP")
+    ).one()
+    page = session.get_one(Page, shop.page_id)
+    session.add(
+        EvidenceArtifact(
+            candidate_id=None,
+            canonical_observation_id=shop.id,
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            kind="crop",
+            storage_key="evidence-crops/marked.png",
+            sha256="c" * 64,
+            media_type="image/png",
+            coordinate_space="image",
+            shows_gv_marks=True,
+        )
+    )
+    session.flush()
+
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain"
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    marks = {
+        operand["evidence"]["document_role"]: operand["evidence"]["crop_shows_gv_mark"]
+        for operand in body["operands"]
+    }
+    assert marks == {"SHOP": True, "ARCH": None}
+    assert body["outcome"] == "PASS"

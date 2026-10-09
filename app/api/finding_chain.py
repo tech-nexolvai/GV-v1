@@ -21,7 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
@@ -61,6 +61,13 @@ class EvidenceLocation(BaseModel):
     polygon: list[list[str]]
     coordinate_space: str
     crop_uri: str | None
+    crop_shows_gv_mark: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the stored crop the evidence endpoint serves for this reading was found to show "
+            "GV's markup (#952). Null: no crop, or not checked."
+        ),
+    )
     document_role: str
     semantic_type: str
     authority: str
@@ -305,41 +312,8 @@ def evidence_crop(
     would be worse than displaying nothing.
     """
     del principal  # Access was established by the dependency; SQL establishes row ownership.
-    revision = _current_revision(session, project_id, package_id)
-    observation = session.execute(
-        select(CanonicalObservation)
-        .join(
-            DocumentVersion,
-            DocumentVersion.id == CanonicalObservation.document_version_id,
-        )
-        .join(
-            PackageRevisionDocument,
-            PackageRevisionDocument.document_version_id == DocumentVersion.id,
-        )
-        .where(
-            CanonicalObservation.id == canonical_observation_id,
-            PackageRevisionDocument.package_revision_id == revision.id,
-        )
-    ).scalar_one_or_none()
-    if observation is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-
-    artifact = session.execute(
-        select(EvidenceArtifact)
-        .outerjoin(
-            EvidenceSupportingCandidate,
-            EvidenceSupportingCandidate.candidate_id == EvidenceArtifact.candidate_id,
-        )
-        .where(
-            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
-            or_(
-                EvidenceArtifact.canonical_observation_id == observation.id,
-                EvidenceSupportingCandidate.canonical_observation_id == observation.id,
-            ),
-        )
-        .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
-        .limit(1)
-    ).scalar_one_or_none()
+    observation = revision_observation(session, project_id, package_id, canonical_observation_id)
+    artifact = evidence_crop_artifacts(session, [observation.id]).get(observation.id)
     if artifact is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -364,6 +338,69 @@ def evidence_crop(
         media_type=artifact.media_type,
         headers={"Cache-Control": "no-store"},
     )
+
+
+def revision_observation(
+    session: Session, project_id: UUID, package_id: UUID, canonical_observation_id: UUID
+) -> CanonicalObservation:
+    """A confirmed reading on a document of this package's current revision, or 404.
+
+    The boundary every evidence route shares, so an observation id cannot become a cross-package
+    lookup: the package must be in the project, and the reading on one of its current documents.
+    """
+    revision = _current_revision(session, project_id, package_id)
+    observation = session.execute(
+        select(CanonicalObservation)
+        .join(
+            DocumentVersion,
+            DocumentVersion.id == CanonicalObservation.document_version_id,
+        )
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == DocumentVersion.id,
+        )
+        .where(
+            CanonicalObservation.id == canonical_observation_id,
+            PackageRevisionDocument.package_revision_id == revision.id,
+        )
+    ).scalar_one_or_none()
+    if observation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    return observation
+
+
+def evidence_crop_artifacts(
+    session: Session, canonical_observation_ids: Sequence[UUID]
+) -> dict[UUID, EvidenceArtifact]:
+    """The crop the evidence endpoint serves for each confirmed reading: its own, or one of a
+    candidate supporting it, the earliest first. One definition, so the chain's GV-mark flag and
+    the vendor-only view (#952) describe the very crop a reviewer is shown."""
+    if not canonical_observation_ids:
+        return {}
+    owner = func.coalesce(
+        EvidenceArtifact.canonical_observation_id,
+        EvidenceSupportingCandidate.canonical_observation_id,
+    )
+    rows = session.execute(
+        select(owner, EvidenceArtifact)
+        .outerjoin(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.candidate_id == EvidenceArtifact.candidate_id,
+        )
+        .where(
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+            or_(
+                EvidenceArtifact.canonical_observation_id.in_(canonical_observation_ids),
+                EvidenceSupportingCandidate.canonical_observation_id.in_(canonical_observation_ids),
+            ),
+        )
+        .order_by(EvidenceArtifact.created_at, EvidenceArtifact.id)
+    ).all()
+    found: dict[UUID, EvidenceArtifact] = {}
+    for observation_id, artifact in rows:
+        if observation_id in canonical_observation_ids:
+            found.setdefault(observation_id, artifact)
+    return found
 
 
 def _current_revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
@@ -414,6 +451,7 @@ def build_chain(
             definition,
             operand_rows,
             row_location(session, finding.scope_row_candidate_id),
+            _crop_marks(session, operand_rows),
         )
 
     fetched = session.execute(
@@ -427,14 +465,27 @@ def build_chain(
         .order_by(VerdictInput.operand_name, VerdictInput.id)
     ).all()
 
+    rows = [(row[0], row[1], row[2]) for row in fetched]
     return _assemble(
         finding,
         run,
         snapshot,
         definition,
-        [(row[0], row[1], row[2]) for row in fetched],
+        rows,
         row_location(session, finding.scope_row_candidate_id),
+        _crop_marks(session, rows),
     )
+
+
+def _crop_marks(
+    session: Session,
+    operand_rows: Sequence[tuple[VerdictInput, CanonicalObservation | None, Page | None]],
+) -> dict[UUID, bool | None]:
+    """What each drawing operand's served crop was found to show of GV's markup (#952)."""
+    crops = evidence_crop_artifacts(
+        session, [observation.id for _, observation, _ in operand_rows if observation is not None]
+    )
+    return {observation_id: crop.shows_gv_marks for observation_id, crop in crops.items()}
 
 
 def _assemble(
@@ -444,10 +495,11 @@ def _assemble(
     definition: RuleDefinition,
     operand_rows: Sequence[tuple[VerdictInput, CanonicalObservation | None, Page | None]],
     location: RowLocation | None,
+    crop_marks: Mapping[UUID, bool | None],
 ) -> FindingChain:
     """Render the chain from rows, whoever fetched them. One place, so the two paths cannot diverge."""
     operands = tuple(
-        _operand_record(verdict_input, observation, page)
+        _operand_record(verdict_input, observation, page, crop_marks)
         for verdict_input, observation, page in operand_rows
     )
     reason = finding.reason or finding.trace.get("reason")
@@ -482,6 +534,7 @@ def _operand_record(
     verdict_input: VerdictInput,
     observation: CanonicalObservation | None,
     page: Page | None,
+    crop_marks: Mapping[UUID, bool | None],
 ) -> ExactOperand:
     """Render one operand without manufacturing provenance for literals or user input."""
 
@@ -499,6 +552,7 @@ def _operand_record(
             polygon=observation.polygon,
             coordinate_space=observation.coordinate_space,
             crop_uri=observation.evidence_crop_uri,
+            crop_shows_gv_mark=crop_marks.get(observation.id),
             document_role=observation.document_role,
             semantic_type=observation.semantic_type,
             authority=observation.authority,
@@ -513,4 +567,10 @@ def _operand_record(
     )
 
 
-__all__ = ["FindingChain", "get_session", "router"]
+__all__ = [
+    "FindingChain",
+    "evidence_crop_artifacts",
+    "get_session",
+    "revision_observation",
+    "router",
+]
