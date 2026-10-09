@@ -684,6 +684,13 @@ def read_architect_page(
             settings,
         )
         outline_scale = chosen if chosen is not None else absolute
+        # The drawing's labelled dimension lines: a row stacked between a tick and the drawing is
+        # not an outline of the drawing.
+        dimension_lines = tuple(
+            (row.y, row.x0, row.x1)
+            for row, drafts in zip(view_rows, drafts_by_row, strict=True)
+            if any(draft.label is not None for draft in drafts)
+        )
         for row, drafts in zip(view_rows, drafts_by_row, strict=True):
             for draft in drafts:
                 ends = [
@@ -695,6 +702,7 @@ def read_architect_page(
                         centre_marks=printed.centre_marks,
                         points_per_inch=outline_scale,
                         settings=settings.outline,
+                        dimension_lines=dimension_lines,
                     )
                     for x in (draft.x0, draft.x1)
                 ]

@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
@@ -111,6 +111,8 @@ class PrintedDimension:
     orientation: Orientation
     phrase: str
     """The whole phrase it was printed in, as printed."""
+    chars: frozenset[TextChar] = field(default=frozenset(), compare=False)
+    """The characters it is printed in."""
 
     @property
     def is_feet_and_inches(self) -> bool:
@@ -409,6 +411,7 @@ def _dimensions(
                 box=phrase.box(match.start(), match.end()),
                 orientation=orientation,
                 phrase=phrase_text,
+                chars=phrase.chars_in(match.start(), match.end()),
             )
         )
     return results
@@ -454,7 +457,52 @@ def find_printed(chars: Sequence[TextChar], settings: TextSettings) -> PrintedTe
             if "".join(phrase.plain.split()).upper() in _CENTRE_LINE_MARKS:
                 marks.append(phrase.box(0, len(phrase.plain)))
             dimensions.extend(_dimensions(phrase, orientation, settings))
-    return PrintedText(tuple(dimensions), tuple(scales), tuple(phrases), tuple(marks))
+    return PrintedText(
+        tuple(_beside_other_sizes(dimension, readable, settings) for dimension in dimensions),
+        tuple(scales),
+        tuple(phrases),
+        tuple(marks),
+    )
+
+
+def _beside_other_sizes(
+    dimension: PrintedDimension, chars: Sequence[TextChar], settings: TextSettings
+) -> PrintedDimension:
+    """Hold a dimension printed right against text of another size.
+
+    A stacked fraction's whole number, numerator and denominator are set at different sizes and
+    heights, so its pieces land on different lines: `21` on one, `7` above, `8"` below. Read alone,
+    the denominator is a plausible wrong number (`8"`). Any character of another size touching the
+    label along its line, and overlapping it across, holds it.
+    """
+    if not dimension.chars or dimension.reading.held_reason is not None:
+        return dimension
+    height = max(_height(char) for char in dimension.chars)
+    reach = settings.phrase_em * height
+    box = dimension.box
+    for char in chars:
+        if char in dimension.chars or char.orientation is not dimension.orientation:
+            continue
+        if abs(_height(char) - height) <= height * settings.same_size_fraction:
+            continue
+        if char.box.x0 > box.x1 + reach or char.box.x1 < box.x0 - reach:
+            continue
+        if char.box.top > box.bottom + reach or char.box.bottom < box.top - reach:
+            continue
+        across = (
+            char.box.top < box.bottom and char.box.bottom > box.top
+            if dimension.orientation is Orientation.UPRIGHT
+            else char.box.x0 < box.x1 and char.box.x1 > box.x0
+        )
+        if across:
+            return replace(
+                dimension,
+                reading=_held(
+                    dimension.reading,
+                    "it is printed against text of another size: part of a stacked fraction",
+                ),
+            )
+    return dimension
 
 
 def centre(box: Box) -> tuple[Decimal, Decimal]:

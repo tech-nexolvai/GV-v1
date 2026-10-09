@@ -186,6 +186,7 @@ def _one_side(
     view: Box,
     work: LineWork,
     points_per_inch: Decimal | None,
+    dimension_lines: Sequence[tuple[Decimal, Decimal, Decimal]],
     settings: OutlineSettings,
 ) -> tuple[EndWitness, bool]:
     """What one side of the dimension line says about an end tick, and whether any outline of the
@@ -217,6 +218,10 @@ def _one_side(
         and piece.length >= settings.solid_minimum_pt
         and view.top <= piece.at <= view.bottom
         and (piece.at < row_y - clearance if above else piece.at > row_y + clearance)
+        and not any(
+            abs(piece.at - line_y) <= clearance and piece.start <= line_x1 and line_x0 <= piece.end
+            for line_y, line_x0, line_x1 in dimension_lines
+        )
     )
     if crossings:
         first = crossings[0]
@@ -268,10 +273,12 @@ def end_witness(
     centre_marks: Sequence[Box],
     points_per_inch: Decimal | None,
     settings: OutlineSettings,
+    dimension_lines: Sequence[tuple[Decimal, Decimal, Decimal]] = (),
 ) -> EndWitness:
     """What is drawn at one end tick of a span, inside the drawing `view`.
 
-    Both sides of the dimension line are read. When the drawing's outline is crossed on one side
+    `dimension_lines` are the page's dimension rows, `(y, x0, x1)`: a row stacked between the tick
+    and the drawing is not an outline of the drawing. Both sides of the dimension line are read. When the drawing's outline is crossed on one side
     only, that side decides. Otherwise a side saying the tick is not on an edge wins over a side
     saying it is: when unsure, never paired.
     """
@@ -287,6 +294,7 @@ def end_witness(
             view=view,
             work=work,
             points_per_inch=points_per_inch,
+            dimension_lines=dimension_lines,
             settings=settings,
         )
         for above in (True, False)

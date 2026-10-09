@@ -16,10 +16,10 @@ from extraction.architect.labels import Qualifier, read_label, split_label
     ("text", "expected"),
     [
         ("3' - 6\"", Fraction(42)),
-        ("3’ − 6\"", Fraction(42)),
+        ('3’ − 6"', Fraction(42)),
         ("3'6\"", Fraction(42)),
         ("0'-6\"", Fraction(6)),
-        ("11\"", Fraction(11)),
+        ('11"', Fraction(11)),
         ("2'-0 1/2\"", Fraction(49, 2)),
         ("2'-0½\"", Fraction(49, 2)),
     ],
@@ -78,11 +78,11 @@ def test_other_qualifiers_are_flags_on_a_usable_number(text: str, qualifier: Qua
 @pytest.mark.parametrize(
     "text",
     [
-        "6\" WOODEN BLOCKING",  # a note, not a dimension label
+        '6" WOODEN BLOCKING',  # a note, not a dimension label
         "3'-6\" 2'-0\"",  # two dimensions in one label
         "EQ",  # no number at all
         "3'-1 1/3\"",  # thirds are not drawn
-        "11 1/10\"",  # neither are tenths, in inches alone either
+        '11 1/10"',  # neither are tenths, in inches alone either
         "3'-14\"",  # the inch part of feet-and-inches is under a foot
         "36",  # a bare number has no unit
     ],
@@ -95,7 +95,7 @@ def test_anything_else_is_held_with_a_reason_and_has_no_value(text: str) -> None
 
 
 def test_split_keeps_the_dimension_as_printed() -> None:
-    split = split_label("2’ − 1\" TYP")
+    split = split_label('2’ − 1" TYP')
 
     assert split.dimension == "2' - 1\""
     assert split.qualifiers == frozenset({Qualifier.TYP})

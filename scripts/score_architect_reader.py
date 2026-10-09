@@ -153,7 +153,9 @@ def main(argv: list[str] | None = None) -> int:
                 "spans": [
                     {
                         "text": span.text,
-                        "printed": None if span.printed_inches is None else str(span.printed_inches),
+                        "printed": (
+                            None if span.printed_inches is None else str(span.printed_inches)
+                        ),
                         "usable": None if span.inches is None else str(span.inches),
                         "held": span.held_reason,
                         "on_outline": span.on_outline,
