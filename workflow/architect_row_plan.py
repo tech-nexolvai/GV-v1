@@ -18,8 +18,9 @@ value, what the check does with the row:
 Imports nothing that reads a drawing, so the countertop results (`app/api/visual_countertops.py`)
 can ask it too (`tests/api/test_no_heavy_work.py`).
 
-**The join seam with #1053.** `effective_architect_pairing` imports `workflow.architect_pairing`
-lazily and answers "no pairing" while that module does not exist on this branch.
+**The pairing (#1053).** `effective_architect_pairing` reads the row's pairing record through the
+light `workflow/architect_pairing_records.py` (never the module that makes pairings, which reads
+drawings); `effective_architect_pairings` answers many rows in a fixed number of statements.
 `DatabaseStages(architect_pairing=...)` and `countertop_results_for_revision(pairing_lookup=...)`
 take any callable of the same shape, which is how the tests give fake pairings.
 
@@ -28,7 +29,7 @@ Source: issue #1054 · Verification: `tests/workflow/test_architect_row_evidence
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, Literal
@@ -41,11 +42,15 @@ from app.evidence.sides import ReadingSides
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionRun
 from workflow.architect_pairing_contract import EffectivePairing, PairingSource
+from workflow.architect_pairing_records import (
+    ARCHITECT_EXTRACTOR,
+    latest_architect_pairing,
+    latest_architect_pairings,
+)
 from workflow.slot_row_scope import SlotRow
 
 __all__ = [
     "ARCHITECT_CHECK_RULE_ID",
-    "ARCHITECT_TEXT_ROUTE",
     "CONFIRM_AI_PAIRING",
     "NOTHING_PAIRED_ON_REVISION",
     "PAIR_BY_REVIEWER",
@@ -54,16 +59,12 @@ __all__ = [
     "Disposition",
     "PairingLookup",
     "effective_architect_pairing",
+    "effective_architect_pairings",
     "pair_label",
     "pairing_source_from_notes",
     "pairing_source_note",
     "plan_architect_row",
 ]
-
-#: The route the architect reader records its values under — `workflow.architect_reader.
-#: ARCHITECT_EXTRACTOR`, restated because that module reads PDFs and the API may not import it.
-#: `tests/workflow/test_architect_row_evidence.py` fails if the two part.
-ARCHITECT_TEXT_ROUTE: Final = "architect-text"
 
 ARCHITECT_CHECK_RULE_ID: Final = "CT-ARCH-WIDTH-001"
 
@@ -98,23 +99,15 @@ CONFIRM_AI_PAIRING: Final = (
 
 
 def effective_architect_pairing(session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
-    """The pairing that counts for this vendor row: the join seam with #1053.
+    """The pairing that counts for this vendor row (#1053), or `None` when it has none."""
+    return latest_architect_pairing(session, row_anchor_id)
 
-    Until `workflow/architect_pairing.py` exists on this branch there is no pairing, so the check
-    compares nothing and says so. Only that module's own absence is "no pairing": any other import
-    error inside it is raised, so a broken pairing module can never look like an empty one.
-    """
-    try:
-        from workflow.architect_pairing import (  # type: ignore[import-not-found]
-            latest_architect_pairing,
-        )
-    except ModuleNotFoundError as error:
-        if error.name != "workflow.architect_pairing":
-            raise
-        return None
-    pairing = latest_architect_pairing(session, row_anchor_id)
-    assert pairing is None or isinstance(pairing, EffectivePairing)
-    return pairing
+
+def effective_architect_pairings(
+    session: Session, row_anchor_ids: Collection[UUID]
+) -> dict[UUID, EffectivePairing | None]:
+    """`effective_architect_pairing` for many rows, in a fixed number of statements."""
+    return latest_architect_pairings(session, row_anchor_ids)
 
 
 class Disposition(StrEnum):
@@ -208,7 +201,7 @@ def _eligible_architect_spans(session: Session, row: SlotRow) -> bool:
         .where(
             ObservationCandidate.page_id == row.anchor.page_id,
             ObservationCandidate.document_version_id == row.anchor.document_version_id,
-            ExtractionRun.extractor == ARCHITECT_TEXT_ROUTE,
+            ExtractionRun.extractor == ARCHITECT_EXTRACTOR,
             ObservationCandidate.value_numerator.is_not(None),
         )
     ):

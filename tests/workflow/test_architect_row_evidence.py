@@ -54,11 +54,11 @@ from tests.app.postgres_fixture import alembic_config
 from verdict.finding import Finding as DomainFinding
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome
+from workflow import architect_pairing_records, architect_reader, architect_row_plan
 from workflow.architect_pairing_contract import EffectivePair, EffectivePairing
 from workflow.architect_reader import ARCHITECT_EXTRACTOR, ARCHITECT_EXTRACTOR_VERSION
 from workflow.architect_row_evidence import architect_row_operands
 from workflow.architect_row_plan import (
-    ARCHITECT_TEXT_ROUTE,
     CONFIRM_AI_PAIRING,
     NOTHING_PAIRED_ON_REVISION,
     PAIR_BY_REVIEWER,
@@ -282,13 +282,18 @@ def _row(session: Session, package_id: UUID, anchor: UUID) -> SlotRow:
 # ---------------------------------------------------------------------------
 
 
-def test_the_route_name_is_the_architect_readers_own() -> None:
-    assert ARCHITECT_TEXT_ROUTE == ARCHITECT_EXTRACTOR
+def test_the_route_name_has_one_home() -> None:
+    """The reader, the plan and the light records module share one constant, not three copies."""
+    assert architect_reader.ARCHITECT_EXTRACTOR is architect_pairing_records.ARCHITECT_EXTRACTOR
+    assert architect_row_plan.ARCHITECT_EXTRACTOR is architect_pairing_records.ARCHITECT_EXTRACTOR
+    assert ARCHITECT_EXTRACTOR == "architect-text"
 
 
-def test_without_the_pairing_module_there_is_no_pairing(session: Session) -> None:
-    """The join seam: until #1053's module is on this branch, every row has no pairing."""
-    assert effective_architect_pairing(session, uuid4()) is None
+def test_a_row_with_no_pairing_record_has_no_pairing(session: Session) -> None:
+    anchor = uuid4()
+    assert effective_architect_pairing(session, anchor) is None
+    assert architect_row_plan.effective_architect_pairings(session, [anchor]) == {anchor: None}
+    assert architect_row_plan.effective_architect_pairings(session, []) == {}
 
 
 def test_the_labels_used_here_read_exactly() -> None:

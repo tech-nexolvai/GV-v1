@@ -46,8 +46,8 @@ from extraction.architect.labels import read_label
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from vocabulary.semantic_types import DocumentRole, SemanticType
+from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
 from workflow.architect_row_plan import (
-    ARCHITECT_TEXT_ROUTE,
     ArchitectRowPlan,
     Disposition,
     pair_label,
@@ -179,7 +179,7 @@ def architect_candidate_refusal(
     """
     run = session.get(ExtractionRun, candidate.extraction_run_id)
     flags = set(candidate.ambiguity_flags or ())
-    if run is None or run.extractor != ARCHITECT_TEXT_ROUTE or "architect-reader" not in flags:
+    if run is None or run.extractor != ARCHITECT_EXTRACTOR or "architect-reader" not in flags:
         return "it was not read from the architect's own text by code."
     if "reviewer-markup" in flags or any(flag.startswith("ink:") for flag in flags):
         return "it is not the architect's black text."
