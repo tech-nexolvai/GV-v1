@@ -569,6 +569,9 @@ class _Document:
                     details.append(f"Reviewer note: {decision.note}")
             if result.hold is not None:
                 details.append(f"Hold: {result.hold.reason}")
+            if result.drawn_length_note is not None:
+                # A value resting on the readers' text alone is said, never silent (#1107).
+                details.append(result.drawn_length_note)
             detail_lines = tuple(
                 line
                 for detail in details

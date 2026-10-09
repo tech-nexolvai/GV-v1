@@ -1021,3 +1021,185 @@ def test_between_panels_hold_accepts_only_an_explicit_wall_decision(
         review_slot_row(principal, principal, session, project_id, package_id, anchors[0], body)
     assert refused.value.status_code == 409
     assert session.query(SlotRowReviewDecision).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# #1107: a width PASS resting on a reading with no drawn-length witness
+# ---------------------------------------------------------------------------
+
+NO_WITNESS = "no-drawn-length-witness"
+
+
+def _unwitnessed_on_first_page(page_index: int, _row_offset: int, slot: str) -> list[str]:
+    """A two-piece row's pieces each have one neighbour to scale by: no scale, no witness. Its
+    overall has two, so it is witnessed. Only the first page's row is flagged."""
+    return [NO_WITNESS] if page_index == 0 and slot != "overall" else []
+
+
+def _sealed_two_piece_rows(
+    session: Session, **options: object
+) -> tuple[UUID, UUID, dict[int, UUID]]:
+    ids = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=_unwitnessed_on_first_page,
+        **options,  # type: ignore[arg-type]
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+    return ids
+
+
+def test_a_pass_resting_on_a_reading_with_no_drawn_length_witness_waits_for_one_click(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (3). Input: two sealed two-piece rows that add up; the first page's pieces were
+    sealed with no drawn-length witness. Outcome: that row's PASS becomes REVIEW_REQUIRED with
+    the decided reason, the engine's PASS kept in the notes and the unchecked pieces named; the
+    second row, whose readings were all checked, keeps its automatic PASS. The numbers stay in
+    the recorded inputs."""
+    from vocabulary.drawn_length import NO_WITNESS_REASON
+
+    _project_id, package_id, anchors = _sealed_two_piece_rows(session)
+
+    by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding in _run_current_checks(session, package_id, tmp_path)
+    }
+
+    held = by_row[anchors[0]]
+    assert held.outcome == "REVIEW_REQUIRED", held.reason
+    assert held.reason == NO_WITNESS_REASON
+    assert held.notes is not None
+    assert held.notes[0].startswith("The engine's result, which counts only once a person ")
+    assert "PASS" in held.notes[0]
+    assert "Drawn length not checked (no scale): piece 1, piece 2." in held.notes
+    inputs = session.scalars(
+        select(VerdictInput).where(VerdictInput.check_run_id == held.check_run_id)
+    ).all()
+    assert {item.operand_name for item in inputs} >= {
+        "countertop_width",
+        "piece_widths[0]",
+        "piece_widths[1]",
+    }
+    pieces = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"]),
+            ObservationCandidate.ambiguity_flags.contains([NO_WITNESS]),
+        )
+    ).all()
+    assert len(pieces) == 2, "the witness flag is on the two readings it concerns"
+
+    witnessed = by_row[anchors[1]]
+    assert witnessed.outcome == "PASS", witnessed.reason
+    assert not any("Drawn length not checked" in note for note in witnessed.notes or ())
+
+
+def test_a_fail_resting_on_a_reading_with_no_drawn_length_witness_is_unchanged(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (3). Input: the same unwitnessed row, its printed overall wrong. Outcome: FAIL, as
+    before: a FAIL already waits for the reviewer."""
+    _project_id, package_id, anchors = _sealed_two_piece_rows(session, overall_override=99)
+
+    by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding in _run_current_checks(session, package_id, tmp_path)
+    }
+
+    assert by_row[anchors[0]].outcome == "FAIL", by_row[anchors[0]].reason
+    assert not any("Drawn length not checked" in note for note in by_row[anchors[0]].notes or ())
+
+
+def test_values_the_reviewer_typed_are_not_readings_and_never_need_the_witness(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (3). Input: a row whose unsealed readings carry the flag, every width typed by the
+    reviewer for that row. Outcome: an automatic PASS — typed values are not readings."""
+    project_id, package_id, anchors = _package_rows(
+        session,
+        unsealed_all=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda _page, _offset, _slot: [NO_WITNESS],
+    )
+    principal = Principal(
+        id="synthetic reviewer",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({project_id}),
+    )
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(measurements={"countertop_width": "22 in", "piece_widths:0": "20 in"}),
+    )
+
+    by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding in _run_current_checks(session, package_id, tmp_path)
+    }
+
+    assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
+
+
+def test_the_countertop_results_say_drawn_length_not_checked_for_that_row(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (2). Input: the unwitnessed and the witnessed row, checked. Outcome: the countertop
+    results say "Drawn length not checked (no scale)" for the first row's two pieces only."""
+    from app.api.visual_countertops import _countertop_results_for_revision
+
+    _project_id, package_id, anchors = _sealed_two_piece_rows(session)
+    _run_current_checks(session, package_id, tmp_path)
+    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
+
+    results = _countertop_results_for_revision(session, package_id, revision)
+
+    by_row = {item.row_id: item for item in results.items}
+    assert by_row[anchors[0]].drawn_length_note == (
+        "Drawn length not checked (no scale): piece 1, piece 2."
+    )
+    assert by_row[anchors[0]].outcome == "REVIEW_REQUIRED"
+    assert by_row[anchors[0]].needs_decision
+    assert by_row[anchors[1]].drawn_length_note is None
+    assert by_row[anchors[1]].outcome == "PASS"
+
+
+def test_a_reading_with_the_files_own_text_among_its_sources_never_needs_the_click(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (decided 2026-10-09): the file's own text is a non-model witness. Input: the
+    unwitnessed row, its pieces read from the PDF text and one reader. Outcome: automatic PASS."""
+    _project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page, _offset, slot: (
+            [NO_WITNESS, "reader-id:pdf-text-layer", "reader-id:amazon.qwen3-vl"]
+            if page == 0 and slot != "overall"
+            else []
+        ),
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+
+    by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding in _run_current_checks(session, package_id, tmp_path)
+    }
+
+    assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason

@@ -2828,3 +2828,188 @@ def test_a_chain_read_through_persists_its_rows_rank_and_the_chosen_rows(session
         assert f"equal-shares-for-row-rank:{blank.rank}" in flags
         assert found[key].corroboration_status == "CORROBORATED"
     assert f"row-rank:{chain.rank}" in found["walls"].ambiguity_flags
+
+
+# ---------------------------------------------------------------------------
+# #1107: a reader's `stacked` never removes a check; a skipped check is recorded
+# ---------------------------------------------------------------------------
+
+
+def _drawn_owner(
+    index: int | None,
+    inches: str,
+    *,
+    flags: tuple[str, ...] = (),
+    state: LabelState = LabelState.PROVISIONAL,
+    x0: int | None = None,
+    width: int = 10,
+    sources: tuple[str, str] = ("opus", "sonnet"),
+) -> Any:
+    """One piece (or the overall, `index=None`) sealed by the readers, drawn `width` points long.
+
+    Every piece is drawn 10 points per 10 inches unless told otherwise; values are invented."""
+    from extraction.geometry.rows import Box
+    from extraction.ink import InkClass
+    from extraction.slot_reader.runs import Lane, PlannedLabel, PlannedOwner
+    from extraction.slot_reader.seal import LabelOutcome, OwnerOutcome, plain_dimension
+    from workflow.slot_reader import LabelResult, OwnerResult
+
+    left = Decimal((index or 0) * 10 if x0 is None else x0)
+    right = left + Decimal(width)
+    box = Box(left, Decimal(1), right, Decimal(3))
+    label = PlannedLabel(
+        box=box,
+        crop=box,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=False,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(),
+    )
+    value = plain_dimension(f'{inches}"')
+    assert value is not None
+    provisional = state is LabelState.PROVISIONAL
+    outcome = LabelOutcome(
+        state,
+        None if provisional else value,
+        value if provisional else None,
+        f'{inches}"',
+        None,
+        None,
+        InkClass.VENDOR,
+        ("lane:glyphs", *flags),
+        tuple((source, f'{inches}"') for source in sources),
+    )
+    owner = PlannedOwner(index, left, right, Decimal(2), box, (label,))
+    return OwnerResult(
+        owner,
+        (0, 0, 1, 1),
+        (LabelResult(label, outcome, (0, 0, 1, 1), (0, 0, 1, 1)),),
+        OwnerOutcome(state, None if provisional else value, 0, None, None),
+        None,
+        (),
+    )
+
+
+def _flags(owner: Any) -> tuple[str, ...]:
+    return tuple(owner.labels[owner.outcome.label_index].outcome.flags)
+
+
+def test_one_readers_stacked_flag_no_longer_switches_the_check_off_for_its_neighbours() -> None:
+    """#1107 (c). Input: a three-piece row where one reader says piece 1 is stacked (code does
+    not). Outcome: piece 1 still gives its neighbours a scale, so every reading is checked (none
+    flagged `no-drawn-length-witness`) and a big misread in piece 2 (20 printed where 10 is drawn)
+    is held back; on main piece 2 sealed unchecked. A misread pulls its short row's scale, so its
+    neighbours may be held with it: holding is always safe."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    clean = (
+        _drawn_owner(0, "10"),
+        _drawn_owner(1, "10", flags=("stacked",)),
+        _drawn_owner(2, "10"),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(clean, None)
+    assert vetoed == ()
+    assert [owner.outcome.state for owner in held] == [LabelState.SEALED] * 3
+    assert "stacked" in _flags(held[1]), "the reader's flag stays on the record"
+    assert all("no-drawn-length-witness" not in _flags(owner) for owner in held)
+
+    misread = (*clean[:2], _drawn_owner(2, "20"))
+    held, _overall, vetoed = _veto_by_drawn_length(misread, None)
+    assert 2 in vetoed
+    assert held[2].outcome.state is LabelState.REVIEW
+    assert held[2].outcome.reason_code == "drawn-length"
+    assert held[2].outcome.value is None
+
+
+def test_a_code_confirmed_stacked_piece_is_still_left_out_of_the_scale() -> None:
+    """#1107 (c). Input: the same row, but code confirmed piece 1 is a stacked fraction. Outcome:
+    piece 1 is no scale source, so pieces 0 and 2 have no scale: they seal unchecked and say so,
+    and a big misread in piece 2 is not caught. Piece 1 itself is checked (two others scale it)."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    clean = (
+        _drawn_owner(0, "10"),
+        _drawn_owner(1, "10", flags=("stacked", "stacked-by-code")),
+        _drawn_owner(2, "10"),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(clean, None)
+    assert vetoed == ()
+    assert [owner.outcome.state for owner in held] == [LabelState.SEALED] * 3
+    assert "no-drawn-length-witness" in _flags(held[0])
+    assert "no-drawn-length-witness" not in _flags(held[1])
+    assert "no-drawn-length-witness" in _flags(held[2])
+
+    misread = (*clean[:2], _drawn_owner(2, "20"))
+    held, _overall, vetoed = _veto_by_drawn_length(misread, None)
+    assert 2 not in vetoed
+    assert held[2].outcome.state is LabelState.SEALED
+    assert "no-drawn-length-witness" in _flags(held[2])
+
+
+@pytest.mark.parametrize("state", [LabelState.PROVISIONAL, LabelState.SEALED])
+def test_a_reading_the_check_could_not_reach_seals_and_says_so(state: LabelState) -> None:
+    """#1107 (a). Input: a two-piece row and its overall, sealed by the Claude pair (provisional)
+    or by two makers (sealed). Outcome: automation unchanged — all three seal — but each piece,
+    with only one neighbour to scale by, is flagged `no-drawn-length-witness`; the overall, scaled
+    by both pieces, is not. A three-piece row's readings are all witnessed."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    row = (_drawn_owner(0, "10", state=state), _drawn_owner(1, "20", state=state, width=20))
+    whole = _drawn_owner(None, "30", state=state, x0=0, width=30)
+    held, held_overall, vetoed = _veto_by_drawn_length(row, whole)
+
+    assert vetoed == ()
+    assert held_overall is not None
+    assert all(owner.outcome.state is LabelState.SEALED for owner in (*held, held_overall))
+    assert all(owner.outcome.value is not None for owner in (*held, held_overall))
+    assert all("no-drawn-length-witness" in _flags(owner) for owner in held)
+    assert "no-drawn-length-witness" not in _flags(held_overall)
+
+    three = tuple(_drawn_owner(index, "10", state=state) for index in range(3))
+    held, _overall, _vetoed = _veto_by_drawn_length(three, None)
+    assert all("no-drawn-length-witness" not in _flags(owner) for owner in held)
+
+
+def test_a_skipped_drawn_length_check_is_kept_on_the_saved_reading(session: Any) -> None:
+    """#1107 (a). Input: a three-piece row whose first piece the two readers read differently, so
+    two sealed pieces are left, each with one neighbour to scale by. Outcome: the saved readings
+    of those two pieces carry `no-drawn-length-witness`; the overall, scaled by both, does not."""
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        first = crops_to_texts(page, TEXTS | {0: '13"'})
+        return FakeReaders(lambda model, png: (first if model == KIMI else lookup)[png])
+
+    _revision, run, _result, _count = _read_persisted(
+        session, sheets.sheet(sheets.glyph_labels()), readers
+    )
+    by_slot = _by_slot(session, run)
+    assert by_slot["slot:0"].corroboration_status is None
+    assert "no-drawn-length-witness" not in by_slot["slot:0"].ambiguity_flags
+    for slot in ("slot:1", "slot:2"):
+        assert "no-drawn-length-witness" in by_slot[slot].ambiguity_flags, slot
+    assert "no-drawn-length-witness" not in by_slot["slot:overall"].ambiguity_flags
+
+
+def test_a_reading_with_the_files_own_text_is_never_flagged_without_a_witness() -> None:
+    """#1107 (decided 2026-10-09): the file's own text is a non-model witness. Input: a two-piece
+    row whose first piece the file's text and one reader agree on. Outcome: both seal; only the
+    second piece, read by the two AIs alone, is flagged `no-drawn-length-witness`."""
+    from extraction.slot_reader.seal import TEXT_LAYER
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    row = (
+        _drawn_owner(0, "10", state=LabelState.SEALED, sources=(TEXT_LAYER, "kimi")),
+        _drawn_owner(1, "20", state=LabelState.SEALED, width=20),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(row, None)
+
+    assert vetoed == ()
+    assert all(owner.outcome.state is LabelState.SEALED for owner in held)
+    assert "no-drawn-length-witness" not in _flags(held[0])
+    assert "no-drawn-length-witness" in _flags(held[1])

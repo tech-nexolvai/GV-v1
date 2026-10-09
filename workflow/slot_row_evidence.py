@@ -2,6 +2,14 @@
 
 This is deliberately separate from ``part_operands``: the manual run workflow remains the primary
 path, and a slot row may not borrow any candidate or reviewer input from another row or page.
+
+**A PASS with no drawn-length witness (#1107).** A sealed reading flagged `no-drawn-length-witness`
+rests on the two readers' identical text alone: its row had no scale to check its drawn length by.
+`SlotRowCheck.unwitnessed` names those positions among the row's operands, and
+`confirm_unwitnessed_pass` turns the width check's PASS on such a row into REVIEW_REQUIRED with the
+engine's PASS kept in the notes, the shape of the type 1 one-judgment rule
+(`workflow/architect_row_plan.py`). A FAIL already waits for the reviewer; a value the reviewer typed
+is not a reading and never triggers it.
 """
 
 from __future__ import annotations
@@ -40,10 +48,18 @@ from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
 from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS, parse_stored_reader_answer
 from extraction.slot_reader.labels import expand_label, plain_dimension
-from extraction.slot_reader.seal import _CLAUDE_PAIR, normalise_text
+from extraction.slot_reader.seal import _CLAUDE_PAIR, TEXT_LAYER, normalise_text
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
+from verdict.finding import Finding
 from verdict.operands import VerdictOperand
+from verdict.outcomes import Outcome
+from vocabulary.drawn_length import (
+    NO_DRAWN_LENGTH_WITNESS,
+    NO_WITNESS_REASON,
+    engine_result_note,
+    not_checked_note,
+)
 from workflow.slot_row_scope import (
     SlotRow,
     SlotRowQualification,
@@ -95,6 +111,53 @@ class SlotRowCheck:
     wall_provenance: str | None
     operands: dict[str, VerdictOperand]
     observation_ids: tuple[UUID, ...]
+    unwitnessed: tuple[int | None, ...] = ()
+    """The operands' sealed readings whose drawn length was not checked (no scale): piece slots
+    from 0, `None` for the overall (#1107). Reviewer-typed values are never listed."""
+
+
+def unwitnessed_positions(
+    candidates_by_position: dict[int | None, ObservationCandidate],
+) -> tuple[int | None, ...]:
+    """The sealed readings, by position, flagged `no-drawn-length-witness` (#1107).
+
+    `_seal_row` takes a position's sealed reading whenever there is one, so these are exactly the
+    readings among the row's operands that rest on the readers' identical text alone. A reading
+    whose sources include the file's own text (`reader-id:pdf-text-layer`) has its non-model
+    witness and is never listed.
+    """
+    return tuple(
+        position
+        for position, candidate in candidates_by_position.items()
+        if candidate_is_sealed(candidate)
+        and NO_DRAWN_LENGTH_WITNESS in (candidate.ambiguity_flags or ())
+        # The file's own text is a non-model witness: such a reading never needs the click.
+        and f"reader-id:{TEXT_LAYER}" not in (candidate.ambiguity_flags or ())
+    )
+
+
+def confirm_unwitnessed_pass(finding: Finding, unwitnessed: tuple[int | None, ...]) -> Finding:
+    """A width PASS resting on any reading with no drawn-length witness waits for one click.
+
+    The engine's PASS is kept in the notes; the decided trace is not kept, so nothing on record
+    reads as decided (the type 1 one-judgment rule's shape, `workflow/stages.py`). Anything but a
+    PASS, or a row whose readings were all checked, is returned unchanged.
+    """
+    note = not_checked_note(unwitnessed)
+    if finding.outcome is not Outcome.PASS or note is None:
+        return finding
+    return Finding(
+        rule_id=finding.rule_id,
+        outcome=Outcome.REVIEW_REQUIRED,
+        severity=finding.severity,
+        reason=NO_WITNESS_REASON,
+        snapshot_id=finding.snapshot_id,
+        engine_version=finding.engine_version,
+        parameter_set_ids=finding.parameter_set_ids,
+        evidence_refs=finding.evidence_refs,
+        variant=finding.variant,
+        notes=(engine_result_note(finding.outcome.value, finding.reason), note, *finding.notes),
+    )
 
 
 def _row_positions(
@@ -313,7 +376,16 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
     if isinstance(sealed, str):
         return SlotRowCheck(False, sealed, layout, None, wall_note, {}, ())
     operands, observation_ids = sealed
-    return SlotRowCheck(True, None, layout, None, wall_note, operands, observation_ids)
+    return SlotRowCheck(
+        True,
+        None,
+        layout,
+        None,
+        wall_note,
+        operands,
+        observation_ids,
+        unwitnessed_positions(candidates_by_position),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +396,8 @@ class VendorRowOperands:
     reason: str | None
     operands: dict[str, VerdictOperand]
     """`countertop_width` and `piece_widths[i]`, exactly as the width check seals them."""
+    unwitnessed: tuple[int | None, ...] = ()
+    """As `SlotRowCheck.unwitnessed`: the sealed readings with no drawn-length witness (#1107)."""
 
 
 def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
@@ -345,7 +419,7 @@ def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
     sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
     if isinstance(sealed, str):
         return VendorRowOperands(False, sealed, {})
-    return VendorRowOperands(True, None, sealed[0])
+    return VendorRowOperands(True, None, sealed[0], unwitnessed_positions(candidates_by_position))
 
 
 def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:

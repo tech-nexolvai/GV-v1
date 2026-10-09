@@ -490,3 +490,26 @@ def test_v3_boolean_answers_read_as_they_always_did() -> None:
         allow_claude_pair=True,
     )
     assert both_false.state is LabelState.NOT_A_DIMENSION
+
+
+def test_only_a_stacked_fraction_code_confirms_is_flagged_stacked_by_code() -> None:
+    """#1107. Input: a label code finds stacked (fraction bar, or the file's text), and one a reader
+    alone calls stacked. Outcome: both keep `stacked` for the record; only code's gets
+    `stacked-by-code`, the one flag that takes a piece out of its row's drawn-length scale."""
+    from extraction.slot_reader.seal import STACKED_BY_CODE
+
+    for by_code in (
+        seal(stacked_by_bar=True, allow_stacked=True),
+        seal(replace(GLYPH, text_stacked=True), allow_stacked=True),
+    ):
+        assert by_code.state is LabelState.SEALED
+        assert "stacked" in by_code.flags and STACKED_BY_CODE in by_code.flags
+    reader_only = seal(
+        answers=(answer(KIMI, '14 3/8"', stacked=True), answer(QWEN, '14 3/8"')),
+        allow_stacked=True,
+    )
+    assert reader_only.state is LabelState.SEALED
+    assert "stacked" in reader_only.flags
+    assert STACKED_BY_CODE not in reader_only.flags
+    plain = seal()
+    assert "stacked" not in plain.flags and STACKED_BY_CODE not in plain.flags

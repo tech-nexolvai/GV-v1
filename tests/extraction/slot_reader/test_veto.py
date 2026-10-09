@@ -109,3 +109,33 @@ def test_drawn_lengths_and_values_are_exact() -> None:
         DrawnReading(0, 12.0, Fraction(48), False)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         DrawnReading(0, Fraction(12), Fraction(0), False)
+
+
+def test_witnessed_names_every_reading_the_drawing_could_check_vetoed_or_not() -> None:
+    """#1107. Input: a three-piece row with one big misread, and its overall. Outcome: every
+    reading had a scale from two other pieces, so all four were checked — the vetoed one too."""
+    from extraction.slot_reader.veto import drawn_length_witnessed
+
+    row = [piece(0, 12), piece(1, 120, 12), piece(2, 12)]
+    assert drawn_length_vetoes(row, overall(36)) != {}
+    assert drawn_length_witnessed(row, overall(36)) == frozenset({0, 1, 2, None})
+
+
+def test_a_reading_with_no_scale_is_not_witnessed() -> None:
+    """#1107. Input: a two-piece row and its overall. Outcome: each piece has one other piece to
+    scale by, which is no scale, so neither piece is witnessed; the overall (two pieces) is."""
+    from extraction.slot_reader.veto import drawn_length_witnessed
+
+    row = [piece(0, 12), piece(1, 24)]
+    assert drawn_length_witnessed(row, overall(36)) == frozenset({None})
+    assert drawn_length_witnessed([piece(0, 12)], overall(12)) == frozenset()
+    assert drawn_length_witnessed([], None) == frozenset()
+
+
+def test_a_code_confirmed_stacked_piece_leaves_its_neighbours_without_a_scale() -> None:
+    """#1107. Input: three pieces, one a stacked fraction code confirmed. Outcome: it is still
+    checked (two others scale it), but the other two each have only one scale source left."""
+    from extraction.slot_reader.veto import drawn_length_witnessed
+
+    row = [piece(0, Fraction(3, 4), stacked=True), piece(1, 24), piece(2, 30)]
+    assert drawn_length_witnessed(row, None) == frozenset({0})

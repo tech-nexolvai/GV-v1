@@ -1446,3 +1446,81 @@ def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
 
     assert _revisions_with_unchecked_pairings(session, [revision.id]) == set()
     assert approval_readiness(session, revision.id).reason != PAIRING_NEEDS_RERUN
+
+
+# ---------------------------------------------------------------------------
+# #1107: an architect PASS on a vendor reading with no drawn-length witness
+# ---------------------------------------------------------------------------
+
+
+def _sealed_rows_unwitnessed(session: Session, slot: str) -> tuple[UUID, dict[int, UUID]]:
+    """`_sealed_rows`, with the first page's reading at `slot` sealed with no drawn-length
+    witness (its row gave no scale to check it by)."""
+    _project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page, _offset, at: (
+            ["no-drawn-length-witness"] if page == 0 and at == slot else []
+        ),
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+    return package_id, anchors
+
+
+@pytest.mark.parametrize(("printed", "engine"), [("3' - 7\"", "PASS"), ("3' - 6\"", "FAIL")])
+def test_an_architect_pass_on_a_vendor_reading_with_no_drawn_length_witness_waits(
+    session: Session, tmp_path: Path, printed: str, engine: str
+) -> None:
+    """#1107. Input: a pairing on two judgments (code and both AIs), the vendor's overall sealed
+    with no drawn-length witness. Outcome: the engine's PASS waits for one click, with the
+    decided reason and the PASS in the notes; a FAIL stands unchanged."""
+    from vocabulary.drawn_length import NO_WITNESS_REASON
+
+    package_id, anchors = _sealed_rows_unwitnessed(session, "overall")
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], printed)
+
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source="code+ais")},
+    )[ARCH_RULE][anchors[0]]
+
+    if engine == "FAIL":
+        assert finding.outcome == "FAIL", finding.reason
+        return
+    assert finding.outcome == "REVIEW_REQUIRED", finding.reason
+    assert finding.reason == NO_WITNESS_REASON
+    assert finding.trace["outcome"] == "REVIEW_REQUIRED"
+    engine_notes = [note for note in finding.notes if note.startswith("The engine's result")]
+    assert len(engine_notes) == 1 and ": PASS " in engine_notes[0], finding.notes
+    assert "Drawn length not checked (no scale): the overall." in finding.notes
+    assert any(note.startswith("Pairing source: code+ais") for note in finding.notes)
+    assert {"architect_overall", "vendor_overall"} <= set(_inputs(session, finding))
+
+
+def test_an_unwitnessed_vendor_reading_the_architect_check_does_not_compare_changes_nothing(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107. Input: the vendor's first piece has no drawn-length witness, but only the overall is
+    paired with the architect. Outcome: the architect PASS stands; the reading is not compared."""
+    package_id, anchors = _sealed_rows_unwitnessed(session, "0")
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source="code+ais")},
+    )[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "PASS", finding.reason
