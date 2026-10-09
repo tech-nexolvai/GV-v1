@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                     "labels_lean": judgment.content.labels_lean
                     and judgment.content.labels_lean.value,
                     "agreed": judgment.agreed and judgment.agreed.value,
+                    "by_content_of_both_drawings": judgment.by_content_alone,
                     "reason": judgment.reason,
                     "read": view.read,
                     "scale_note": view.scale_note,
@@ -118,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
                     "scale_reason": view.scale_reason,
                 }
             )
+        pictures = () if page is None else page.pictures
+        for picture in pictures:
+            lines.append(f"- picture {picture.annotation_index}: {picture.reason}")
         lines.append(
             f"- key widths {score.key_count}: found {len(score.found)}, held {len(score.held)}, "
             f"missing {len(score.missing)}; extra usable {len(score.extra_usable)}, "
@@ -147,6 +151,10 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "page": score.page,
                 "views": views,
+                "pictures": [
+                    {"annotation_index": picture.annotation_index, "reason": picture.reason}
+                    for picture in pictures
+                ],
                 "found": [str(value) for value in score.found],
                 "held": [[str(value), reason] for value, reason in score.held],
                 "missing": [str(value) for value in score.missing],

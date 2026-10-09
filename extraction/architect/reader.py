@@ -5,9 +5,12 @@ On the client's sheets the architect's drawing is pasted beside the vendor's, an
 no AI. This module is that reading, for one page, with nothing stored:
 
 1. **Which drawing is the architect's** — the heading and the drawing's own content, both
-   (`views.py`). Only a drawing with an architect's heading or architect-like content is read; a
-   value read in a drawing whose role the two judgments do not both give as the architect's is
-   reported but **held**.
+   (`views.py`); on a page that prints no heading at all, the content of both drawings, each clearly
+   one side's (`views.decide_without_headings`). Only a drawing with an architect's heading or
+   architect-like content is read; a value read in a drawing whose role is not decided by code as
+   the architect's is reported but **held**. A pasted drawing is a `/Stamp` or a `/Square` holding
+   a drawing (`stamp_text.carries_drawing`); a pasted picture holds nothing code can read and is
+   listed with that reason (`ArchitectPage.pictures`).
 2. **The architect's dimension rows** — the same row finder the vendor's rows come from
    (`extraction/geometry/rows.py`): its ticks, and the spans between them. Each printed label is
    given to the one span and row it is printed on (`text.py`).
@@ -19,7 +22,8 @@ no AI. This module is that reading, for one page, with nothing stored:
    every available witness agrees with its label; with none, or with any disagreeing, it is held
    with the reason.
 4. **Whether a span runs between casework edges** or to a centre line (`outline.py`), so a fixture's
-   centre-line dimension is never paired with a cabinet.
+   centre-line dimension is never paired with a cabinet; nor a span over hatched material, nor one
+   from one thing to another (a clearance).
 
 **What it never does.** It never reads coloured ink (GV's markup) as text, a tick or an edge; never
 rounds; never fills in a value it could not read; and never decides anything it was not given two
