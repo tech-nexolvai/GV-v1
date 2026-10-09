@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from fractions import Fraction
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
+from app.evidence.sides import ReadingSides
 from app.models import (
     CheckRun,
     Finding,
@@ -27,6 +28,8 @@ from app.review.approval import approval_readiness
 from app.review.row_location import row_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
+    ArchitectComparedOut,
+    ArchitectResultOut,
     CountertopPieceOut,
     CountertopResultOut,
     CountertopResultsOut,
@@ -39,7 +42,15 @@ from units.imperial import format_inches
 from verdict.outcomes import Outcome
 from vocabulary.check_holds import CHECK_HOLD_REASONS
 from vocabulary.reviewer_reasons import reviewer_reason
-from workflow.slot_row_scope import candidate_is_sealed, candidate_value, slot_rows
+from workflow.architect_row_plan import (
+    ARCHITECT_CHECK_RULE_ID,
+    Disposition,
+    PairingLookup,
+    effective_architect_pairing,
+    pairing_source_from_notes,
+    plan_architect_row,
+)
+from workflow.slot_row_scope import SlotRow, candidate_is_sealed, candidate_value, slot_rows
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -255,6 +266,96 @@ def _wall(row: Any) -> WallLayoutOut:
     )
 
 
+_ARCHITECT_INPUT = re.compile(r"^(architect|vendor)_(overall|piece\[(\d+)\])$")
+NOT_CHECKED_YET: Final = (
+    "Not checked yet: run the checks to compare this row with the architect's drawing."
+)
+
+
+def _pair_outcomes(trace: dict[str, Any]) -> dict[int, Outcome]:
+    """Each compared pair's own outcome, as the engine's stored trace recorded it (`pair[#k]`)."""
+    found: dict[int, Outcome] = {}
+    for pair in trace.get("intermediates", []):
+        if not (isinstance(pair, list) and len(pair) == 2 and isinstance(pair[1], str)):
+            continue
+        name = pair[0]
+        if not (isinstance(name, str) and name.startswith("pair[#") and name.endswith("]")):
+            continue
+        index = name.removeprefix("pair[#").removesuffix("]")
+        if not index.isdigit() or "outcome=<Outcome." not in pair[1]:
+            continue
+        # The last one: an operand's printed text comes earlier in the record and is not trusted.
+        word = pair[1].rsplit("outcome=<Outcome.", 1)[1].split(":", 1)[0]
+        if word in Outcome.__members__:
+            found[int(index)] = Outcome[word]
+    return found
+
+
+def _architect_block(
+    session: Session,
+    row: SlotRow,
+    finding: Finding | None,
+    inputs: dict[str, VerdictInput],
+    *,
+    blocking: set[UUID],
+    pairing_lookup: PairingLookup,
+    sides: ReadingSides,
+) -> ArchitectResultOut:
+    """What the architect check recorded for this row, or why nothing was compared."""
+    if finding is None:
+        pairing = pairing_lookup(session, row.anchor.id)
+        plan = plan_architect_row(session, row, pairing, sides=sides)
+        return ArchitectResultOut(
+            not_compared_reason=(
+                plan.reason if plan.disposition is Disposition.NOT_COMPARED else NOT_CHECKED_YET
+            ),
+            pairing_source=None if pairing is None else pairing.source,
+        )
+    values: dict[tuple[str, int | None], dict[str, Fraction]] = {}
+    for name, item in inputs.items():
+        match = _ARCHITECT_INPUT.match(name)
+        if match is None:
+            continue
+        side, kind, slot = match.groups()
+        key = ("overall", None) if kind == "overall" else ("piece", int(slot))
+        values.setdefault(key, {})[side] = Fraction(item.value_numerator, item.value_denominator)
+    ordered = sorted(values, key=lambda key: -1 if key[1] is None else key[1])
+    decided = finding.outcome in (Outcome.PASS.value, Outcome.FAIL.value)
+    pair_outcomes = _pair_outcomes(finding.trace or {}) if decided else {}
+    compared: list[ArchitectComparedOut] = []
+    for position, (kind, slot) in enumerate(ordered):
+        vendor = values[(kind, slot)].get("vendor")
+        architect = values[(kind, slot)].get("architect")
+        delta = vendor - architect if vendor is not None and architect is not None else None
+        vendor_out, architect_out, delta_out = _exact(vendor), _exact(architect), _exact(delta)
+        compared.append(
+            ArchitectComparedOut(
+                kind="overall" if kind == "overall" else "piece",
+                vendor_piece=None if slot is None else slot + 1,
+                vendor=vendor_out,
+                architect=architect_out,
+                delta=delta_out,
+                vendor_display=None if vendor_out is None else vendor_out.display,
+                architect_display=None if architect_out is None else architect_out.display,
+                delta_display=None if delta_out is None else delta_out.display,
+                outcome=(
+                    pair_outcomes.get(position)
+                    if decided
+                    else Outcome(finding.outcome) if vendor is not None else None
+                ),
+            )
+        )
+    return ArchitectResultOut(
+        outcome=Outcome(finding.outcome),
+        finding_id=finding.id,
+        reason=finding.reason,
+        needs_decision=finding.id in blocking,
+        compared=tuple(compared),
+        not_compared_reason=None,
+        pairing_source=pairing_source_from_notes(finding.notes),
+    )
+
+
 @router.get(
     "/projects/{project_id}/packages/{package_id}/countertop-results",
     response_model=CountertopResultsOut,
@@ -281,9 +382,18 @@ def countertop_results(
 
 
 def _countertop_results_for_revision(
-    session: Session, package_id: UUID, revision: PackageRevision
+    session: Session,
+    package_id: UUID,
+    revision: PackageRevision,
+    *,
+    pairing_lookup: PairingLookup | None = None,
 ) -> CountertopResultsOut:
-    """Shared projection used by the read API and the signed report writer."""
+    """Shared projection used by the read API and the signed report writer.
+
+    `pairing_lookup` answers, for a row the architect check wrote nothing for, why nothing was
+    compared; it defaults to the join seam with #1053 (`effective_architect_pairing`).
+    """
+    lookup = effective_architect_pairing if pairing_lookup is None else pairing_lookup
     rows = slot_rows(session, revision.id)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
@@ -294,10 +404,20 @@ def _countertop_results_for_revision(
             Finding.package_revision_id == revision.id,
             CheckRun.superseded_at.is_(None),
             Finding.scope_row_candidate_id.is_not(None),
-            RuleDefinition.rule_id == "CT-WIDTH-001",
+            RuleDefinition.rule_id.in_(("CT-WIDTH-001", ARCHITECT_CHECK_RULE_ID)),
         )
     ).all()
-    finding_by_row = {finding.scope_row_candidate_id: finding for finding, _ in findings}
+    finding_by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding, rule_id in findings
+        if rule_id == "CT-WIDTH-001"
+    }
+    architect_by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding, rule_id in findings
+        if rule_id == ARCHITECT_CHECK_RULE_ID
+    }
+    sides = ReadingSides(session)
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
         for input_row in session.scalars(
@@ -434,6 +554,19 @@ def _countertop_results_for_revision(
                     code_clue_used=any(flag.startswith("wall-clue:") for flag in wall_flags),
                 ),
                 hold=hold,
+                architect=_architect_block(
+                    session,
+                    row,
+                    architect_by_row.get(row.anchor.id),
+                    (
+                        {}
+                        if (architect := architect_by_row.get(row.anchor.id)) is None
+                        else verdict_inputs_by_finding.get(architect.check_run_id, {})
+                    ),
+                    blocking=need_ids,
+                    pairing_lookup=lookup,
+                    sides=sides,
+                ),
             )
         )
     return CountertopResultsOut(package_id=package_id, revision_id=revision.id, items=tuple(items))

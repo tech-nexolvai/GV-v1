@@ -2098,6 +2098,62 @@ export interface components {
             slot: number | null;
         };
         /**
+         * ArchitectComparedOut
+         * @description One width both drawings print for the same thing, as the architect check compared it.
+         */
+        ArchitectComparedOut: {
+            architect: components["schemas"]["ExactValueOut"] | null;
+            /** Architect Display */
+            architect_display: string | null;
+            /** @description The vendor's value minus the architect's, exactly. */
+            delta: components["schemas"]["ExactValueOut"] | null;
+            /** Delta Display */
+            delta_display: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "overall" | "piece";
+            outcome: components["schemas"]["Outcome"] | null;
+            vendor: components["schemas"]["ExactValueOut"] | null;
+            /** Vendor Display */
+            vendor_display: string | null;
+            /**
+             * Vendor Piece
+             * @description The vendor piece, counted from 1 as the row shows it; null for the overall.
+             */
+            vendor_piece: number | null;
+        };
+        /**
+         * ArchitectResultOut
+         * @description The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
+         *
+         *     `finding_id` and `outcome` are null when nothing was compared for this row; then
+         *     `not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones
+         *     the recorded check used, never recomputed.
+         */
+        ArchitectResultOut: {
+            /**
+             * Compared
+             * @default []
+             */
+            compared: components["schemas"]["ArchitectComparedOut"][];
+            /** Finding Id */
+            finding_id?: string | null;
+            /**
+             * Needs Decision
+             * @default false
+             */
+            needs_decision: boolean;
+            /** Not Compared Reason */
+            not_compared_reason?: string | null;
+            outcome?: components["schemas"]["Outcome"] | null;
+            /** Pairing Source */
+            pairing_source?: ("code" | "both-ais" | "reviewer" | "none") | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
          * AssemblyInput
          * @description The ordered cabinet/filler assembly used to derive the design width.
          */
@@ -2616,6 +2672,8 @@ export interface components {
         /** CountertopResultOut */
         CountertopResultOut: {
             agreement: components["schemas"]["AgreementFactsOut"];
+            /** @description Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001). */
+            architect?: components["schemas"]["ArchitectResultOut"];
             delta: components["schemas"]["ExactValueOut"] | null;
             expected_total: components["schemas"]["ExactValueOut"] | null;
             /** Field Cut Count */
