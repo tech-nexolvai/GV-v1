@@ -367,6 +367,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only view of an unconfirmed reading's crop region, or why there is none */
+        get: operations["candidate_vendor_only_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only picture of an unconfirmed reading's crop region */
+        get: operations["candidate_vendor_only_picture_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_picture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
         parameters: {
             query?: never;
@@ -620,6 +654,40 @@ export interface paths {
          *     would be worse than displaying nothing.
          */
         get: operations["evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only view of a confirmed reading's evidence region, or why there is none */
+        get: operations["evidence_vendor_only_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only picture of a confirmed reading's evidence region */
+        get: operations["evidence_vendor_only_picture_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_picture_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2917,6 +2985,11 @@ export interface components {
             canonical_observation_id: string;
             /** Coordinate Space */
             coordinate_space: string;
+            /**
+             * Crop Shows Gv Mark
+             * @description Whether the stored crop the evidence endpoint serves for this reading was found to show GV's markup (#952). Null: no crop, or not checked.
+             */
+            crop_shows_gv_mark?: boolean | null;
             /** Crop Uri */
             crop_uri: string | null;
             /** Document Role */
@@ -4882,6 +4955,20 @@ export interface components {
             values: components["schemas"]["StoredValue"][];
         };
         /**
+         * StoredRegionOut
+         * @description The reading's region in stored page space (0..1 across and down), as exact decimal text.
+         */
+        StoredRegionOut: {
+            /** Bottom */
+            bottom: string;
+            /** Left */
+            left: string;
+            /** Right */
+            right: string;
+            /** Top */
+            top: string;
+        };
+        /**
          * StoredValue
          * @description One value as stored: exact, and in inches because inches decide (Q12).
          */
@@ -5105,6 +5192,70 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * VendorOnlyRegionOut
+         * @description What the second, vendor-only view of one evidence region is, or why there is none.
+         */
+        VendorOnlyRegionOut: {
+            /**
+             * Available
+             * @description Whether the vendor-only picture of this exact region can be shown. False is a plain 'not available yet'; never show another page or region instead.
+             */
+            available: boolean;
+            /**
+             * Context Margin Pt
+             * @description Page context kept around the region, in points.
+             */
+            context_margin_pt: string;
+            /**
+             * Crop Shows Gv Mark
+             * @description Whether the original crop was found to show GV's markup. Null: no crop, or not checked (crops cut before #952 were checked for marks inside the vendor's drawing only).
+             */
+            crop_shows_gv_mark?: boolean | null;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /**
+             * Label
+             * @description Show this over the vendor-only picture.
+             * @default vendor's drawing without GV markup
+             */
+            label: string;
+            /**
+             * Page Id
+             * Format: uuid
+             */
+            page_id: string;
+            /**
+             * Page Number
+             * @description 1-based, as the screens number pages.
+             */
+            page_number: number;
+            /**
+             * Picture Dpi
+             * @description The vendor-only picture's dpi.
+             */
+            picture_dpi?: number | null;
+            /**
+             * Pixel Box
+             * @description `(left, top, right, bottom)` cut from the vendor-only picture, when available.
+             */
+            pixel_box?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** @description Null only when the reading's region could not be placed. */
+            region?: components["schemas"]["StoredRegionOut"] | null;
+            /**
+             * Unavailable Reason
+             * @description Why it is not available, for the reviewer. Null when available.
+             */
+            unavailable_reason?: string | null;
         };
         /** VendorPagePictureOut */
         VendorPagePictureOut: {
@@ -5734,6 +5885,72 @@ export interface operations {
             };
         };
     };
+    candidate_vendor_only_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOnlyRegionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    candidate_vendor_only_picture_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The same region, cut from the vendor-only page picture. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get: {
         parameters: {
             query?: never;
@@ -6092,6 +6309,72 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The stored mechanical evidence crop. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_vendor_only_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                canonical_observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOnlyRegionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_vendor_only_picture_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                canonical_observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The same region, cut from the vendor-only page picture. */
             200: {
                 headers: {
                     [name: string]: unknown;
