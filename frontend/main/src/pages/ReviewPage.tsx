@@ -6,7 +6,7 @@ import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
-import { recordEach, type Filter } from '@/lib/countertop-results';
+import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -47,6 +47,8 @@ import { ReviewStepper } from '@/components/review/review-stepper';
 import { NextActionButton, type SecondaryAction } from '@/components/review/next-action';
 import { ChangedValuesBadge } from '@/components/review/changed-values-badge';
 import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
+import { SignOffDialog, SignOffPanel, type SignOffScope } from '@/components/review/signoff-panel';
+import { ReportPanel } from '@/components/review/report-panel';
 import { ChangedValuesPanel } from '@/components/output/ChangedValuesPanel';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
@@ -98,7 +100,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       (item) =>
         item.package_revision_id === detail.current_revision_id && item.completed_at === null,
     );
-    return { detail, found, session: open ?? null, readiness };
+    // Who is signed in, as the server's own record of their sittings says (the list is theirs only,
+    // `mine` defaults to true): the name the sign-off confirmation shows (#1064).
+    const me = sessions.items[0]?.reviewer ?? null;
+    return { detail, found, session: open ?? null, readiness, me };
   }, [packageId]);
   const [resultsVersion, setResultsVersion] = useState(0);
   const changedValues = useAsync(
@@ -134,6 +139,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
+  // The sign-off confirmation (#1064): every Sign off button opens it; only its confirm signs.
+  const [signOffOpen, setSignOffOpen] = useState(false);
+  const [signOffError, setSignOffError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
   const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
@@ -152,6 +160,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [exportsError, setExportsError] = useState<string | null>(null);
   const [exportsVersion, setExportsVersion] = useState(0);
   const [preparingExports, setPreparingExports] = useState(false);
+  // A failed "Prepare signed files" request, kept apart from a failed status check (#1064).
+  const [prepareError, setPrepareError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -646,8 +656,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
    * REVIEW REQUIRED finding is unaddressed, which the button's own disabled state already reflects —
    * the server check is what makes that a rule rather than a hint.
    */
-  async function handleSignOff() {
-    if (!canSignOff(readiness) || isSigningOff) return;
+  /** Returns null once the approval is recorded, or why nothing was signed (#1064: the dialog says it). */
+  async function handleSignOff(): Promise<string | null> {
+    if (!canSignOff(readiness) || isSigningOff || isApproved) {
+      return readiness?.reason ?? 'the review is not ready to sign off right now.';
+    }
     setActionError(null);
     setIsSigningOff(true);
     try {
@@ -667,10 +680,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       } catch (error) {
         setActionError(`Sign-off was recorded, but its refreshed status could not be loaded. Reload to check it: ${error instanceof Error ? error.message : String(error)}`);
       }
+      return null;
     } catch (error) {
-      setActionError(
-        `Sign-off did not complete — ${error instanceof Error ? error.message : String(error)}`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      setActionError(`Sign-off did not complete — ${message}`);
+      return message;
     } finally {
       setIsSigningOff(false);
     }
@@ -734,7 +748,39 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     readiness: readiness ? { blockingFindings: readiness.blocking_findings, canApprove: readiness.can_approve, reason: readiness.reason } : null,
     exports: exportsStatus,
   });
-  const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks;
+  // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
+  const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks || isApproved;
+
+  // What a sign-off covers (#1064), from what the page already loaded: the countertops by who settled
+  // them, the other (package-level) results, and the total the server approves (the live run's).
+  const countertopsReady = countertops.status === 'ready';
+  const countertopFindingIds = new Set(countertopsReady ? countertops.rows.flatMap((row) => (row.finding_id ? [row.finding_id] : [])) : []);
+  const signOffScope: SignOffScope = {
+    countertops: countertopsReady ? signOffSummary(countertops.rows) : null,
+    countertopsFailed: countertops.status === 'error',
+    otherChecks: countertopsReady ? findings.filter((finding) => !countertopFindingIds.has(finding.id)).length : null,
+    total: findings.length,
+  };
+  const signer = session?.reviewer ?? (remote.status === 'ready' ? remote.data.me : null);
+
+  function openSignOff() {
+    setSignOffError(null);
+    setSignOffOpen(true);
+  }
+
+  /** The dialog closes only once the approval is recorded; otherwise it says why nothing was signed. */
+  async function confirmSignOff() {
+    const failure = await handleSignOff();
+    if (failure !== null) {
+      setSignOffError(failure);
+      return;
+    }
+    setSignOffOpen(false);
+    // The Sign off panel and its button are gone; take focus to the Report panel that replaced them.
+    window.setTimeout(() => document.getElementById('report-panel-title')?.focus(), 50);
+  }
+  // The Report panel sits on Results after sign-off and says its own receipts there.
+  const reportPanelShown = activeTab === 'results' && isApproved;
 
   /** The header's one action. Each kind runs the same handler the page already had. */
   function act(kind: NextActionKind) {
@@ -752,7 +798,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       setActiveTab('results');
       openQueue();
     } else if (kind === 'sign-off') {
-      void handleSignOff();
+      // Never on one click: the confirmation names the signer and what is signed (#1064).
+      if (!signOffBlocked) openSignOff();
     } else if (kind === 'prepare-report') {
       void prepareReport();
     } else if (kind === 'download-report') {
@@ -762,12 +809,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
   async function prepareReport() {
     setPreparingExports(true);
-    setExportsError(null);
+    setPrepareError(null);
     try {
       await prepareSignedExports(projectId(), packageId);
       setExportsVersion((n) => n + 1);
     } catch (error) {
-      setExportsError(error instanceof Error ? error.message : String(error));
+      setPrepareError(error instanceof Error ? error.message : String(error));
     } finally {
       setPreparingExports(false);
     }
@@ -823,6 +870,18 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           />
         </DialogContent>
       </Dialog>
+      <SignOffDialog
+        open={signOffOpen}
+        onOpenChange={setSignOffOpen}
+        signer={signer}
+        vendor={pkg.vendor}
+        revision={pkg.revision}
+        scope={signOffScope}
+        ready={canSignOff(readiness) && !waitingForChecks && !isApproved}
+        busy={isSigningOff}
+        error={signOffError}
+        onConfirm={() => void confirmSignOff()}
+      />
       <RecordIdsDialog
         open={recordIdsOpen}
         onOpenChange={setRecordIdsOpen}
@@ -834,10 +893,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       <ReviewStepper steps={stage.steps} />
 
       {/* Download receipts and export problems, said where the reviewer is looking. */}
-      {downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
-      {downloadState.status === 'started' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Download started. Check your browser downloads.</p>}
-      {downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
-      {exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
+      {!reportPanelShown && downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
+      {!reportPanelShown && downloadState.status === 'started' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Download started. Check your browser downloads.</p>}
+      {!reportPanelShown && downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
+      {!reportPanelShown && exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
 
       {/* A write that failed, said out loud. The row has already been put back, so without this the
           reviewer would see their tick disappear and have no idea why — and might reasonably assume
@@ -871,6 +930,28 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
       {activeTab === 'results' && (
         <div className="min-h-0 flex-1 overflow-y-auto">
+          {stage.current === 'signoff' && !isApproved && (
+            <SignOffPanel
+              readiness={readiness}
+              ready={canSignOff(readiness) && !waitingForChecks}
+              scope={signOffScope}
+              busy={isSigningOff}
+              onSignOff={openSignOff}
+              onReview={openQueue}
+            />
+          )}
+          {isApproved && (
+            <ReportPanel
+              status={exportsStatus}
+              error={exportsError}
+              prepareError={prepareError}
+              requesting={preparingExports}
+              download={downloadState}
+              onPrepare={() => void prepareReport()}
+              onCheck={() => setExportsVersion((n) => n + 1)}
+              onDownload={(format) => void handleDownload(format)}
+            />
+          )}
           <ResultsDashboard
             countertops={countertops}
             findings={findings}

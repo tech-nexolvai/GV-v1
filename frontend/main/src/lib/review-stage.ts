@@ -172,7 +172,10 @@ function nextAction(
         : { kind: 'sign-off', label: 'Sign off', disabled: true, reason: facts.readiness?.reason ?? 'Checking whether sign-off is possible…' };
     case 'report':
       if (facts.exports === 'preparing') return { kind: 'preparing-report', label: 'Preparing report…', disabled: true, reason: 'The signed files are being prepared.' };
-      if (facts.exports === 'failed' || facts.exports === 'not_requested') return { kind: 'prepare-report', label: 'Prepare report', disabled: false, reason: facts.exports === 'failed' ? 'The signed files could not be prepared. Try again.' : null };
+      // A failed export is not retried by asking again: the server answers with the same failed
+      // request (#1064). So no button promises a retry; an admin retries the export.
+      if (facts.exports === 'failed') return { kind: 'prepare-report', label: 'Report failed', disabled: true, reason: 'The signed files could not be prepared, and nothing was published. An admin needs to retry the export.' };
+      if (facts.exports === 'not_requested') return { kind: 'prepare-report', label: 'Prepare report', disabled: false, reason: null };
       return { kind: 'preparing-report', label: 'Report', disabled: true, reason: 'Checking the signed files…' };
     case null:
       return { kind: 'download-report', label: 'Download report', disabled: false, reason: null };

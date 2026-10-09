@@ -78,7 +78,7 @@ action is. It reads only recorded facts:
 Several places read it, so they always agree:
 - the review stepper (`components/review/review-stepper.tsx`);
 - the header's primary button (`components/review/next-action.tsx`, placed through `HeaderActions`);
-- the Documents cards (`pages/documentNextStep.ts`).
+- the Sign off and Report panels on Results (#1064, below).
 
 Unknown facts stay unknown. A readiness answer that has not loaded shows no count, never 0. Every
 state is unit-tested in `tests/vitest/review-stage.test.ts`.
@@ -161,8 +161,28 @@ How it works:
   - `#measure-run-checks` is where the header's "Run checks" lands, and "Open countertop card" switches
     to step 2.
 - **Behaviour and API calls are unchanged.** Only layout and wording moved: paragraphs now sit behind
-  "?" (`components/measure/info-tip.tsx`), the wall choice is picture buttons, and fields are
+  "?" (`components/ui/info-tip.tsx`), the wall choice is picture buttons, and fields are
   two-column rows.
+
+**Documents, upload, sign-off and the signed report** (#1064):
+- **Documents** (`pages/PackagesPage.tsx`, `components/documents/`, arithmetic in
+  `lib/documents-table.ts`) is one table from `packages-summary`: one request per page of up to 200,
+  every column included. Loaded the first time Documents opens.
+  - **The bar shows recorded results** in the agreed outcome words; a decision does not change them.
+    What still needs a decision is the server's `needs_decision`, in its own column. A review with
+    nothing recorded says "No results yet", never 0.
+  - **Sort and search** act on the loaded page (the API has neither yet, requested in #1065), and the
+    table says so when there is more than one page.
+- **Upload** (`components/upload/upload-progress.tsx`, rules in `lib/upload-progress.ts`): one bar per
+  drawing with its real share of bytes sent. The PUT is an `XMLHttpRequest` (`fetch` reports no upload
+  progress) to the same ticket URL, with the same method and headers.
+- **Sign off** (`components/review/signoff-panel.tsx`): when the stepper reaches Sign off, a panel shows
+  the server's readiness and what is being signed. Every Sign off button (header, panel, queue) opens
+  a confirmation naming the signer (from the reviewer's own sittings) and saying it cannot be undone;
+  only its confirm calls `approve`.
+- **Report** (`components/review/report-panel.tsx`): after sign-off, requested → preparing → ready from
+  `signed-exports`, then one card per signed file. Downloads appear only when ready. A failed export
+  promises no retry, because asking again returns the same failed request (an admin retries it).
 
 **Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
 an element with `data-legacy`. Tailwind's scoped reset stops there, and the

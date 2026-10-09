@@ -1,58 +1,18 @@
-import type { ApprovalReadiness, FindingCounts, PackagePage, ReviewSessionPage, SignedExportStatus } from '../api/client';
+import type { PackageSummary, PackageSummaryPage } from '../api/client';
 
-export interface DocumentRow {
-  document: PackagePage['items'][number];
-  counts: FindingCounts | null;
-  countsError: string | null;
-  reviewer: string | null;
-  /** The approval-readiness answer for a package under review (#1034); absent when not asked or unavailable. */
-  readiness?: ApprovalReadiness | null;
-  /** Signed-export status for an approved package (#1034); absent when not asked or unavailable. */
-  exports?: SignedExportStatus['status'] | null;
-}
+/**
+ * One page of the Documents table: the `packages-summary` answer (#1035), which carries every column
+ * in a single request. It replaced one request per card (counts, readiness, exports, reviewers).
+ */
 export interface DocumentRows {
-  rows: DocumentRow[];
-  reviewerError: string | null;
+  rows: PackageSummary[];
   hasMore: boolean;
   nextCursor: string | null;
 }
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-/** Package states in which someone may still need to decide something. */
-const IN_REVIEW = new Set(['AWAITING_REVIEW', 'NEEDS_INPUT', 'CHANGES_REQUESTED']);
-
-/** Supplementary failures must not discard successfully loaded document records. */
-export async function loadDocumentRows(api: {
-  packages: () => Promise<PackagePage>;
-  counts: (id: string) => Promise<FindingCounts>;
-  sessions: () => Promise<ReviewSessionPage>;
-  /** Optional: what still needs the reviewer, for packages under review. */
-  readiness?: (id: string) => Promise<ApprovalReadiness>;
-  /** Optional: whether the signed files are ready, for approved packages. */
-  exports?: (id: string) => Promise<SignedExportStatus>;
-}): Promise<DocumentRows> {
-  const page = await api.packages(); // A primary-list failure remains a genuine load error.
-  let reviewerError: string | null = null;
-  let reviewers = new Map<string, string>();
-  try {
-    const sessions = await api.sessions();
-    reviewers = new Map(sessions.items.map((session) => [session.package_revision_id, session.reviewer]));
-  } catch (error) { reviewerError = message(error); }
-  const rows = await Promise.all(page.items.map(async (document) => {
-    const reviewer = reviewers.get(document.current_revision_id) ?? null;
-    // Supplementary and independent: either failing leaves its fact unknown, never invented.
-    const [readiness, exports] = await Promise.all([
-      api.readiness && IN_REVIEW.has(document.state) ? api.readiness(document.id).catch(() => null) : Promise.resolve(null),
-      api.exports && document.state === 'APPROVED' ? api.exports(document.id).then((answer) => answer.status, () => null) : Promise.resolve(null),
-    ]);
-    try {
-      return { document, reviewer, counts: await api.counts(document.id), countsError: null, readiness, exports };
-    } catch (error) {
-      return { document, reviewer, counts: null, countsError: message(error), readiness, exports };
-    }
-  }));
+export function documentRowsOf(page: PackageSummaryPage): DocumentRows {
   const nextCursor = page.next_cursor ?? null;
-  return { rows, reviewerError, hasMore: nextCursor !== null, nextCursor };
+  return { rows: [...page.items], hasMore: nextCursor !== null, nextCursor };
 }
 
 export interface DocumentListState {

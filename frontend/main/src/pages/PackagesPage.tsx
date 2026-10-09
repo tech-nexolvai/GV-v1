@@ -1,25 +1,16 @@
-import { Plus, ArrowRight } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { useEffect, useReducer, useState } from 'react';
-import { listPackages, getFindingCounts, listReviewSessions, getApprovalReadiness, getSignedExports } from '../api/client';
+import { getPackagesSummary, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
-import { PackageStatusBadge } from '@/components/ui/package-status-badge';
+import { DocumentsTable } from '@/components/documents/documents-table';
+import { Button } from '@/components/ui/button';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
-import { documentListReducer, documentNavigation, restoreDocumentList, loadDocumentRows, type DocumentRow } from './documentRows';
-import { DocumentResults } from './DocumentResults';
-import { DocumentRecord, DocumentDetails } from './DocumentRecord';
-import { documentNextStep } from './documentNextStep';
+import { documentListReducer, documentNavigation, documentRowsOf, restoreDocumentList } from './documentRows';
 import '../components/ui/PageFrame.css';
-import './PackagesPage.css';
 
-function loadRows(cursor?: string) {
-  const project = projectId();
-  return loadDocumentRows({
-    packages: () => listPackages(project, cursor ? { cursor } : undefined),
-    counts: (id) => getFindingCounts(project, id),
-    sessions: () => listReviewSessions(project, { mine: false }),
-    readiness: (id) => getApprovalReadiness(project, id),
-    exports: (id) => getSignedExports(project, id),
-  });
+/** One request per page (#1064): `packages-summary` carries every column the table shows. */
+async function loadRows(cursor?: string) {
+  return documentRowsOf(await getPackagesSummary(projectId(), { cursor, limit: PACKAGES_SUMMARY_PAGE_SIZE }));
 }
 
 interface PackagesPageProps {
@@ -28,12 +19,6 @@ interface PackagesPageProps {
   initialCursors?: readonly string[];
   positionNotice?: string | null;
   onPositionChange?: (cursors: readonly string[]) => void;
-}
-
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric',
-  });
 }
 
 export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], positionNotice, onPositionChange }: PackagesPageProps) {
@@ -58,83 +43,64 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
   }
   const data = state.data;
   const navigation = documentNavigation(state);
-  const partial = data?.reviewerError != null || data?.rows.some((row) => row.countsError !== null);
+  const morePages = navigation.page > 1 || Boolean(data?.hasMore);
 
   return (
-    <PageFrame title="Documents" className="packages-page"
-      description="Open a drawing review to check its findings and evidence, then continue reviewing."
-      actions={<button className="btn btn--action" onClick={onNewPackage}>
-        <Plus size={14} aria-hidden="true" /> New Document
-      </button>}>
-      {positionNotice && <p className="page-frame__state" role="status">{positionNotice}</p>}
-      {state.loading && <p className="page-frame__state" role="status">{data ? navigation.changingPage ? `Loading page ${state.requestedTrail.length}… Page ${navigation.page} remains visible.` : 'Refreshing document details… Existing rows remain available.' : 'Loading documents…'}</p>}
-      {!data && state.error && <PageLoadError title="Documents could not be loaded" message={state.error} onRetry={retry} />}
-      {!data && state.error && state.requestedTrail.length > 1 && <button type="button" className="btn btn--ghost" onClick={() => dispatch({ type: 'first' })}>Start from first page</button>}
-      {data && (partial || state.error) && <aside className="packages-page__notice" aria-label="Document data availability">
-        <div role="status">
-          <strong>{state.error ? navigation.changingPage ? `Could not load page ${state.requestedTrail.length}. Still showing page ${navigation.page}.` : 'Refresh failed. Showing the last loaded documents.' : 'Documents loaded; some details are unavailable.'}</strong>
-          <p>{state.error ?? 'You can still open each review. Unavailable results are not zero findings.'}</p>
-          {data.reviewerError && <p>Reviewer details unavailable: {data.reviewerError}</p>}
-          {data.rows.some((row) => row.countsError !== null) && <details>
-            <summary>Result request details</summary>
-            <ul>{data.rows.filter((row) => row.countsError !== null).map((row) => <li key={row.document.id}>
-              {row.document.vendor ?? row.document.id}: {row.countsError}
-            </li>)}</ul>
-          </details>}
-        </div>
-        <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={retry}>{navigation.changingPage ? 'Retry page' : 'Retry unavailable details'}</button>
-      </aside>}
-      {data && <nav className="packages-page__pagination" aria-label="Document pages">
-        <p role="status" aria-atomic="true">Page {navigation.page} · {data.rows.length} document{data.rows.length === 1 ? '' : 's'} on this page</p>
-        <div>
-          {navigation.page > 1 && <button type="button" className="btn btn--ghost" disabled={state.loading} onClick={() => dispatch({ type: 'first' })}>First page</button>}
-          <button type="button" className="btn btn--ghost" disabled={navigation.previousDisabled} onClick={() => dispatch({ type: 'previous' })}>Previous page</button>
-          <button type="button" className="btn btn--ghost" disabled={navigation.nextDisabled} onClick={() => dispatch({ type: 'next' })}>Next page</button>
-        </div>
-      </nav>}
-      {navigation.repeatedCursor && <p role="alert" className="page-frame__state">The server repeated a page cursor. Further navigation is unavailable; existing documents remain visible.</p>}
-      {data && data.rows.length === 0 && <p className="page-frame__state">{navigation.page === 1 ? 'No documents yet. Start a review with New Document.' : 'No documents on this page. Use Previous page to return to the earlier results.'}</p>}
-      {data && data.rows.length > 0 && <ul className="document-cards" role="list" aria-label="Drawing reviews">
-          {data.rows.map((row) => (
-            <li key={row.document.id} className="document-card">
-              <div className="document-card__header">
-                <DocumentRecord row={row} />
-                <button type="button" className="btn btn--action"
-                aria-label={`Open review for ${row.document.vendor ?? 'document'} (${row.document.id})`}
-                onClick={() => onOpenReview(row.document.id)}>
-                Open review
-                <ArrowRight size={16} aria-hidden="true" />
-                </button>
-              </div>
-              <div className="document-card__meta">
-                <DocumentNext row={row} />
-                <span>Submitted <time dateTime={row.document.created_at}>{formatDate(row.document.created_at)}</time></span>
-              </div>
-              <div className="document-card__results">
-                <p className="document-card__results-heading">Recorded check results</p>
-                {row.counts && row.counts.total > 0 && <p className="document-card__count-note">
-                  {row.counts.total} recorded check{row.counts.total === 1 ? '' : 's'} — these count checks, not drawings or individual dimensions.
-                </p>}
-                <DocumentResults counts={row.counts} error={row.countsError} />
-              </div>
-              <DocumentDetails row={row} reviewerUnavailable={data.reviewerError !== null} />
-            </li>
-          ))}
-      </ul>}
+    <PageFrame title="Documents"
+      description="Every drawing review in this project. Open one to check its results and decide what needs you."
+      actions={<Button type="button" onClick={onNewPackage}>
+        <Plus aria-hidden="true" /> New Document
+      </Button>}>
+      <div data-tw className="flex flex-col gap-3 font-sans">
+        {positionNotice && <p className="text-sm text-muted-foreground" role="status">{positionNotice}</p>}
+        {state.loading && (
+          <p className="text-sm text-muted-foreground" role="status">
+            {data
+              ? navigation.changingPage ? `Loading page ${state.requestedTrail.length}… Page ${navigation.page} stays visible.` : 'Refreshing…'
+              : 'Loading documents…'}
+          </p>
+        )}
+        {!data && state.error && <PageLoadError title="Documents could not be loaded" message={state.error} onRetry={retry} />}
+        {!data && state.error && state.requestedTrail.length > 1 && (
+          <Button type="button" variant="ghost" className="self-start" onClick={() => dispatch({ type: 'first' })}>Start from first page</Button>
+        )}
+        {data && state.error && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-sm" role="alert">
+            <span>
+              {navigation.changingPage
+                ? `Could not load page ${state.requestedTrail.length}; still showing page ${navigation.page}.`
+                : 'Refresh failed; showing the last loaded reviews.'}{' '}
+              <span className="text-xs">{state.error}</span>
+            </span>
+            <Button type="button" size="sm" variant="outline" disabled={state.loading} onClick={retry}>
+              {navigation.changingPage ? 'Retry page' : 'Retry'}
+            </Button>
+          </div>
+        )}
+        {navigation.repeatedCursor && (
+          <p role="alert" className="text-sm">The server repeated a page cursor. Further pages are unavailable; the reviews shown stay visible.</p>
+        )}
+        {data && (
+          <DocumentsTable
+            rows={data.rows}
+            onOpen={onOpenReview}
+            morePages={morePages}
+            emptyMessage={navigation.page === 1 ? 'No reviews yet. Start one with New Document.' : 'No reviews on this page. Use Previous page to go back.'}
+          />
+        )}
+        {data && morePages && (
+          <nav aria-label="Document pages" className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <p role="status" aria-atomic="true" className="text-muted-foreground">
+              Page <span className="num">{navigation.page}</span> · <span className="num">{data.rows.length}</span> on this page
+            </p>
+            <div className="flex gap-2">
+              {navigation.page > 1 && <Button type="button" size="sm" variant="ghost" disabled={state.loading} onClick={() => dispatch({ type: 'first' })}>First page</Button>}
+              <Button type="button" size="sm" variant="outline" disabled={navigation.previousDisabled} onClick={() => dispatch({ type: 'previous' })}>Previous page</Button>
+              <Button type="button" size="sm" variant="outline" disabled={navigation.nextDisabled} onClick={() => dispatch({ type: 'next' })}>Next page</Button>
+            </div>
+          </nav>
+        )}
+      </div>
     </PageFrame>
-  );
-}
-
-/** Where the review stands and what comes next, in the same words as the review's header (#1034). */
-function DocumentNext({ row }: { row: DocumentRow }) {
-  const next = documentNextStep(row);
-  return (
-    <span data-tw className="inline-flex flex-wrap items-center gap-1.5 font-sans text-sm">
-      <PackageStatusBadge status={row.document.state} />
-      <ArrowRight className="size-3.5 text-muted-foreground" aria-hidden="true" />
-      <span className={next.disabled ? 'text-muted-foreground' : 'font-medium'} title={next.reason ?? undefined}>
-        <span className="sr-only">Next step: </span>{next.label}
-      </span>
-    </span>
   );
 }

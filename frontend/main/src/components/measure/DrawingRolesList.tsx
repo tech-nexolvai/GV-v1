@@ -7,7 +7,7 @@ import {
   type DrawingView,
 } from './drawingRoleChoices.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
-import { InfoTip } from './info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 
 /**
  * Which drawing is which, on sheets that hold both (#795).

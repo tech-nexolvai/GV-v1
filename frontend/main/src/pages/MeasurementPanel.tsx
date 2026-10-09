@@ -36,7 +36,7 @@ import { ReadingParts } from '../components/measure/ReadingParts';
 import { FillerDistributionPanel } from '../components/measure/FillerDistributionPanel';
 import { MeasurementSectionNav } from './MeasurementSectionNav';
 // New-style imports (`@/`): this screen now mixes Tailwind with its legacy classes (#1061).
-import { InfoTip } from '@/components/measure/info-tip';
+import { InfoTip } from '@/components/ui/info-tip';
 import { Button } from '@/components/ui/button';
 import { sameCount, stepAfter, stepBefore, sumCounts, type MeasureStep, type StepCount } from '@/lib/measure-steps';
 import { measurementValueOrigin } from './measurementValueOrigin';

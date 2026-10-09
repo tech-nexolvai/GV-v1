@@ -109,6 +109,21 @@ export function listPackages(projectId: string, query?: { cursor?: string; limit
   return request<PackagePage>(`/projects/${projectId}/packages${suffix}`);
 }
 
+/** One page of the Documents table (#1035): every column in one request, newest first. */
+export type PackageSummaryPage = Get<'/api/v1/projects/{project_id}/packages-summary'>;
+export type PackageSummary = PackageSummaryPage['items'][number];
+
+/** The largest page the API serves (`MAX_PAGE_SIZE`); the table sorts and searches within a page. */
+export const PACKAGES_SUMMARY_PAGE_SIZE = 200;
+
+export function getPackagesSummary(projectId: string, query?: { cursor?: string; limit?: number }) {
+  const search = new URLSearchParams();
+  if (query?.cursor) search.set('cursor', query.cursor);
+  if (query?.limit) search.set('limit', String(query.limit));
+  const suffix = search.toString() ? `?${search}` : '';
+  return request<PackageSummaryPage>(`/projects/${projectId}/packages-summary${suffix}`);
+}
+
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
 }

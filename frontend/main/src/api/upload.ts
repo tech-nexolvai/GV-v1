@@ -92,6 +92,36 @@ export type DocumentKind = 'architectural' | 'shop' | 'schedule' | 'product_spec
 export interface UploadProgress {
   step: string;
   file?: string;
+  /** Which drawing slot the step is about, when it is about one (#1064). */
+  kind?: DocumentKind;
+  /** Bytes sent so far and in all, while the file itself is being sent. */
+  loaded?: number;
+  total?: number;
+}
+
+/**
+ * Send the bytes with `XMLHttpRequest`, the one browser API that reports upload progress (`fetch`
+ * cannot). Same URL, same method, same headers as the ticket says; resolves with the HTTP status.
+ */
+function putWithProgress(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  file: File,
+  onBytes: (loaded: number, total: number) => void,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(method, url);
+    for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onBytes(event.loaded, event.total);
+    };
+    request.onload = () => resolve(request.status);
+    request.onerror = () => reject(new Error('The drawing could not be sent to storage (network error).'));
+    request.onabort = () => reject(new Error('Sending the drawing was cancelled.'));
+    request.send(file);
+  });
 }
 
 /**
@@ -107,30 +137,32 @@ export async function uploadDocument(
   kind: DocumentKind,
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<{ document_id: string }> {
-  onProgress?.({ step: 'Hashing', file: file.name });
+  onProgress?.({ step: 'Hashing', file: file.name, kind });
   const digest = await sha256(file);
 
-  onProgress?.({ step: 'Registering', file: file.name });
+  onProgress?.({ step: 'Registering', file: file.name, kind });
   const ticket = await post<Ticket>(
     `/projects/${projectId}/packages/${packageId}/documents`,
     { kind, sha256: digest },
   );
 
-  onProgress?.({ step: 'Uploading', file: file.name });
-  const written = await fetch(writableUrl(ticket), {
-    method: ticket.method,
+  onProgress?.({ step: 'Uploading', file: file.name, kind, loaded: 0, total: file.size });
+  const status = await putWithProgress(
+    writableUrl(ticket),
+    ticket.method,
     // Replayed exactly. A signature normally covers them, so the same bytes sent with a different
     // verb or content type is a different request and a signing backend will refuse it.
-    headers: ticket.required_headers,
-    body: file,
-  });
-  if (!written.ok) {
+    ticket.required_headers,
+    file,
+    (loaded, total) => onProgress?.({ step: 'Uploading', file: file.name, kind, loaded, total }),
+  );
+  if (status < 200 || status >= 300) {
     throw new Error(
-      `The drawing could not be written to storage (${written.status}).`,
+      `The drawing could not be written to storage (${status}).`,
     );
   }
 
-  onProgress?.({ step: 'Confirming', file: file.name });
+  onProgress?.({ step: 'Confirming', file: file.name, kind });
   // The page count is read from the PDF rather than guessed. The API states plainly that it does not
   // open the file and that ingestion builds the real manifest, so a disagreement surfaces there — a
   // fabricated number would manufacture one.
@@ -144,6 +176,7 @@ export async function uploadDocument(
     page_count: pageCount,
   });
 
+  onProgress?.({ step: 'Uploaded', file: file.name, kind });
   return { document_id: ticket.document_id };
 }
 
@@ -179,6 +212,10 @@ export async function createPackage(
     !!input.shop &&
     (await sha256(input.architectural)) === (await sha256(input.shop));
   const files: Array<[File, DocumentKind]> = uploadPlan(input.architectural, input.shop, sameBytes);
+  // The same bytes in both slots go up once, as the shop drawings; say so for the other slot.
+  if (sameBytes && input.architectural) {
+    onProgress?.({ step: 'Same file as the shop drawings', file: input.architectural.name, kind: 'architectural' });
+  }
 
   try {
     for (const [file, kind] of files) {
