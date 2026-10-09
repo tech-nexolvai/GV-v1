@@ -7,6 +7,7 @@ from fractions import Fraction
 from io import BytesIO
 from uuid import UUID
 
+import pytest
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
@@ -341,6 +342,109 @@ def test_architect_line_for_a_pairing_waiting_for_the_reviewer() -> None:
     assert architect_line(waiting) == (
         "Matches the architect: REVIEW_REQUIRED: Pair the architect's dimension with the vendor's "
         "(one click)."
+    )
+
+
+@pytest.mark.parametrize("source", ["code", "both-ais"])
+def test_architect_line_says_to_confirm_a_one_judgment_result(source: str) -> None:
+    from reports.spreadsheet import architect_line
+
+    reason = (
+        "Only code paired these; confirm that the architect's 3' - 8\" and the vendor's 40 3/4\" "
+        "measure the same thing."
+    )
+    waiting = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.REVIEW_REQUIRED,
+            finding_id=UUID(int=43),
+            reason=reason,
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.REVIEW_REQUIRED),),
+            pairing_source=source,  # type: ignore[arg-type]
+            pairing_judgments="code only" if source == "code" else "both AIs only",
+        ),
+    )
+
+    assert architect_line(waiting) == (
+        'Matches the architect: REVIEW_REQUIRED, to confirm (overall: vendor 40 3/4", '
+        f'architect 44"): {reason}'
+    )
+    text = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=12),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                countertop_results=(waiting,),
+            )
+        )
+    )
+    assert "Matches the architect: REVIEW_REQUIRED, to confirm" in text
+
+
+def test_architect_line_for_an_automatic_result_has_no_to_confirm() -> None:
+    from reports.spreadsheet import architect_line
+
+    automatic = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=44),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code+ais",
+            pairing_judgments="code and both AIs",
+        ),
+    )
+
+    assert architect_line(automatic) == (
+        'Matches the architect: FAIL (overall: vendor 40 3/4", architect 44")'
+    )
+
+
+def test_workbook_names_the_pairing_judgments_and_says_to_confirm() -> None:
+    one = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.REVIEW_REQUIRED,
+            finding_id=UUID(int=45),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.REVIEW_REQUIRED),),
+            pairing_source="both-ais",
+            pairing_judgments="both AIs only",
+        ),
+    )
+    two = _with_architect(
+        _checked_row(),
+        ArchitectResultOut(
+            outcome=Outcome.FAIL,
+            finding_id=UUID(int=46),
+            needs_decision=True,
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
+            pairing_source="code+ais",
+            pairing_judgments="code and both AIs",
+        ),
+    )
+
+    book = load_workbook(
+        BytesIO(write_stored_workbook((_stored(),), countertop_results=(one, two)))
+    )
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    rows = [
+        {header: sheet.cell(index, column + 1).value for column, header in enumerate(headers)}
+        for index in (2, 3)
+    ]
+    waiting = next(item for item in rows if item["architect_pairing_source"] == "both-ais")
+    assert waiting["architect_pairing_judgments"] == "both AIs only — to confirm"
+    assert waiting["architect_outcome"] == "REVIEW_REQUIRED"
+    automatic = next(item for item in rows if item["architect_pairing_source"] == "code+ais")
+    assert automatic["architect_pairing_judgments"] == "code and both AIs"
+    assert headers.index("architect_pairing_judgments") == (
+        headers.index("architect_pairing_source") + 1
     )
 
 

@@ -122,6 +122,7 @@ COUNTERTOP_COLUMNS: Final = (
     "architect_comparison",
     "architect_not_compared_reason",
     "architect_pairing_source",
+    "architect_pairing_judgments",
     "architect_overall_vendor_in",
     "architect_overall_architect_in",
     "architect_overall_difference_in",
@@ -474,7 +475,8 @@ def architect_line(result: CountertopResultOut) -> str:
 
     Repeats the recorded result; it never compares anything itself. `Matches the architect: FAIL
     (overall: vendor 40 3/4", architect 44")`, or `... not compared: <reason>` when the check wrote
-    nothing for this row.
+    nothing for this row. A result resting on one judgment of the pairing (code only, or both AIs
+    only) says `REVIEW_REQUIRED, to confirm`: the reviewer confirms the pairing before it counts.
     """
     block = result.architect
     if block.outcome is None:
@@ -486,11 +488,28 @@ def architect_line(result: CountertopResultOut) -> str:
         for pair in block.compared
     )
     line = f"Matches the architect: {block.outcome.value}"
+    if _to_confirm(result):
+        line += ", to confirm"
     if pairs:
         line += f" ({pairs})"
     if block.outcome not in (Outcome.PASS, Outcome.FAIL) and block.reason:
         line += f": {block.reason}"
     return line
+
+
+def _to_confirm(result: CountertopResultOut) -> bool:
+    """Whether the row's architect result was compared on one judgment and waits for the reviewer."""
+    block = result.architect
+    return (
+        block.outcome is Outcome.REVIEW_REQUIRED
+        and bool(block.compared)
+        and block.pairing_source in ("code", "both-ais")
+    )
+
+
+def _architect_judgments(result: CountertopResultOut) -> str:
+    words = result.architect.pairing_judgments or ""
+    return f"{words} — to confirm" if words and _to_confirm(result) else words
 
 
 def _architect_comparison(result: CountertopResultOut) -> str:
@@ -538,6 +557,7 @@ def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tupl
         _architect_comparison(result),
         result.architect.not_compared_reason or "",
         result.architect.pairing_source or "",
+        _architect_judgments(result),
         _numeric_inches(None if overall is None else overall.vendor),
         _numeric_inches(None if overall is None else overall.architect),
         _numeric_inches(None if overall is None else overall.delta),
