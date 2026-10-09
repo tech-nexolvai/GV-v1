@@ -459,7 +459,7 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
 
     owner_count = len(result.plan.slots) + (result.plan.overall is not None)
-    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v2"]
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v3"]
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
@@ -2212,7 +2212,7 @@ def test_a_sideways_label_adds_its_upright_close_up_as_a_third_picture() -> None
     upright_spans = {texts for _model, texts in readers.span_texts if CLAUDE_UPRIGHT_NOTE in texts}
     assert len(upright_spans) == 1
     assert all(
-        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v2"
+        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
         for attempt in attempts
         if attempt.prompt_id.startswith("claude-slot-span")
     )
