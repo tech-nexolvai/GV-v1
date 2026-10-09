@@ -43,6 +43,9 @@ class AttemptUsage:
     raw_response_text: str | None = field(default=None, repr=False)
     attempt_number: int = 1
     question_packet: Mapping[str, object] | None = field(default=None, repr=False)
+    reused_from: str | None = None
+    """No call was made (#1112): the stored answer of this recorded invocation id was reused for the
+    identical question. Such an attempt used no tokens and costs nothing."""
 
 
 UsageRecorder = Callable[[AttemptUsage], None]

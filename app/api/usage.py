@@ -25,6 +25,7 @@ from app.models import (
     TaskRun,
     WorkflowRun,
 )
+from app.models.runs import made_a_call
 from app.schemas.visual_ui import (
     ModelUsageOut,
     PackageReadingTimeOut,
@@ -215,6 +216,8 @@ def project_usage(
         .join(PackageRevision, PackageRevision.id == invocation_revision.c.revision_id)
         .join(Package, Package.id == PackageRevision.package_id)
         .where(Package.project_id == project_id)
+        # A reused stored answer (#1112) made no call: it is not usage.
+        .where(made_a_call())
     )
     if from_ is not None:
         base = base.where(ModelInvocation.created_at >= from_)

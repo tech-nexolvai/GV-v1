@@ -132,6 +132,7 @@ from workflow.layout_proposals import (
 if TYPE_CHECKING:
     from storage.store import ArtifactStore
     from workflow.architect_pairing import ArchitectPairing, PairingOutcome
+    from workflow.reader_reuse import StoredAnswerSource
 
 __all__ = [
     "FRACTION_BAR_ENV",
@@ -214,6 +215,10 @@ class SlotReaderRuntime:
     architect_pairing: str | None = None
     """The architect pairing's prompt and settings when it runs beside this reading (#1053), so
     the run's identity says so; `None` leaves the identity exactly as before."""
+    reuse_answers: bool = True
+    """Reuse a stored answer to an identical question instead of asking again (#1112,
+    `GV_READER_REUSE_ANSWERS`). Off, every question is asked, as a proof run that must re-ask
+    needs. Applies only where questions carry packets (the Claude readers)."""
 
     @property
     def prompt_id(self) -> str:
@@ -351,6 +356,7 @@ def configured_slot_reader(
         claude_row_reader=claude_enabled,
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
         claude_route=(OPENROUTER_ROUTE if claude_enabled and provider == "openrouter" else None),
+        reuse_answers=bool(getattr(settings, "reader_reuse_answers", True)),
     )
 
 
@@ -950,6 +956,7 @@ def read_slot_pages(
     wall_ends: Callable[[SlotPage], frozenset[WallEnd]] = lambda _page: frozenset(),
     store: ArtifactStore | None = None,
     architect: ArchitectPairing | None = None,
+    stored_answers: StoredAnswerSource | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -972,6 +979,11 @@ def read_slot_pages(
     `wall_ends` says which ends of a page's row stand against a wall *for naming a piece's kind*;
     the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by
     default none does and no piece takes its kind from its position.
+
+    `stored_answers` (#1112): before any batch is asked, every question identical to one already
+    answered for this document version (same model, prompt id, pictures and packet) takes that stored
+    answer instead, with no call, no cost and no place in the pacer or the spend guard; only the
+    rest are asked. Used only when `runtime.reuse_answers` is on and questions carry packets.
     """
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
@@ -1031,7 +1043,31 @@ def read_slot_pages(
         tuple[str, str],
         ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
     ]:
-        return read_crops_parallel(
+        reused: dict[
+            tuple[str, str],
+            ReaderAnswer
+            | WallAnswer
+            | RowChoiceAnswer
+            | CounterBreakAnswer
+            | ArchPairAnswer
+            | None,
+        ] = {}
+        if stored_answers is not None and runtime.reuse_answers and runtime.question_packets:
+            from workflow.reader_reuse import reuse_stored_answers
+
+            found, to_ask = reuse_stored_answers(
+                items,
+                stored=stored_answers,
+                record_attempt=record_attempt,
+                max_tokens=runtime.form.max_tokens,
+                product=runtime.product,
+                claude_effort=runtime.claude_effort,
+            )
+            reused.update(found)
+            items = to_ask
+            if not items:
+                return reused
+        return reused | read_crops_parallel(
             items,
             clients=runtime.form.clients,
             rates=runtime.form.rates,

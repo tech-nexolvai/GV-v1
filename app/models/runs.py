@@ -15,7 +15,16 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    ColumnElement,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -294,6 +303,25 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
         ),
         Index("ix_model_invocations_created_at", "created_at"),
     )
+
+
+#: The question-packet key of a row that records a reused stored answer, not a call (#1112). Its
+#: value is the id of the invocation that was actually asked. The packet's own `packet_sha256` is
+#: the question's hash and never covers this key: the question is the same, only the way the
+#: answer was obtained differs.
+REUSED_FROM_KEY: Final = "reused_from"
+
+
+def made_a_call() -> ColumnElement[bool]:
+    """True for an invocation row that records a real model call; false for a reused answer.
+
+    A reused answer (#1112) is recorded so the run's evidence stays complete, with no tokens and no
+    cost; anything that counts calls — usage, ceilings, attribution — filters it out with this.
+    """
+    unmarked: ColumnElement[bool] = ModelInvocation.reader_question_packet[
+        REUSED_FROM_KEY
+    ].astext.is_(None)
+    return unmarked
 
 
 class AgentNodeInvocationClaim(Base, TimestampedUUID):

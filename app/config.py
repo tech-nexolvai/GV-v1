@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     # never depends on a model's own default (Opus 5.5's is `medium`). Accuracy first: `high`.
     # Kept in step with `extraction/slot_reader/claude_output.py` `CLAUDE_EFFORTS`.
     claude_reader_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # A re-run reuses a reader's stored answer to the identical question (same document version,
+    # model, prompt id, pictures and packet) instead of asking again (#1112): $0 and repeatable.
+    # Off for a proof run that must ask every question again.
+    reader_reuse_answers: bool = True
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False
