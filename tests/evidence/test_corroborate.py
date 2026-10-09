@@ -623,3 +623,81 @@ def test_a_dual_label_is_one_whichever_of_a_readings_texts_states_it() -> None:
     assert corroborate((first, second)) == CorroborationResult(
         EvidenceStatus.RAW_CANDIDATE, ("a", "b"), (), None
     )
+
+
+# ---------------------------------------------------------------------------
+# Agreements from more than one pass in one region (#928)
+# ---------------------------------------------------------------------------
+
+
+def _reading(text: str, inches: Fraction = Fraction(36)) -> tuple[Measurement, str]:
+    """An agreed reading as a region stores it: its inches, and the text it was read from."""
+    return Measurement(inches, Unit.INCH, text), text
+
+
+def test_two_groups_agreeing_on_the_inches_but_not_the_millimetres_state_no_one_label() -> None:
+    """**The #928 case.** Input: the first pass's pair agreed on `914 [36]`, the agent's pair on
+    `915 [36]`. Outcome: not one label. Why: the inches decide (Q12), but millimetres that differ
+    between the groups show one group misread, as #924 refuses within one group."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    readings = (
+        _reading("914 [36]"),
+        _reading("914 [36]"),
+        _reading("915 [36]"),
+        _reading("915 [36]"),
+    )
+
+    assert one_dual_label_across_agreements(readings) is False
+
+
+def test_groups_agreeing_on_the_same_millimetres_and_inches_state_one_label() -> None:
+    """Input: both passes agreed on `914 [36]`, one reader writing it `914mm [36"]`. Outcome: one
+    label — the notation module reads both as the same two halves."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    readings = (
+        _reading("914 [36]"),
+        _reading('914mm [36"]'),
+        _reading("914 [36]"),
+        _reading("914 [36]"),
+    )
+
+    assert one_dual_label_across_agreements(readings) is True
+
+
+def test_one_group_is_unchanged() -> None:
+    """Input: one pair agreed on `914 [36]`. Outcome: one label, as `corroborate` agreed it."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    assert one_dual_label_across_agreements((_reading("914 [36]"), _reading("914 [36]"))) is True
+
+
+def test_agreements_on_plain_inches_are_not_this_rule() -> None:
+    """Input: two passes agreeing on `36"`, no dual label anywhere. Outcome: nothing to compare —
+    this rule is about a dual label's millimetres, and a region with none is left as it was."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    assert one_dual_label_across_agreements((_reading('36"'),) * 4) is True
+    assert one_dual_label_across_agreements(()) is True
+
+
+def test_a_dual_label_beside_a_group_with_no_millimetres_states_no_one_label() -> None:
+    """Input: one pass agreed on `914 [36]`, another on a plain `36"`. Outcome: not one label. Why:
+    across the region the readings agree on the inches alone, the millimetres missing from one
+    group — what #924 refuses within one group."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    readings = (_reading("914 [36]"), _reading("914 [36]"), _reading('36"'), _reading('36"'))
+
+    assert one_dual_label_across_agreements(readings) is False
+
+
+def test_a_dual_label_whose_halves_cannot_be_read_states_no_one_label() -> None:
+    """Input: a bracketed text that is two dimensions and an operator. Outcome: not one label — a
+    reading whose halves cannot be read agrees with nothing."""
+    from evidence.corroborate import one_dual_label_across_agreements
+
+    readings = (_reading("914 [36]"), _reading("914 [36] + 25 [1]"))
+
+    assert one_dual_label_across_agreements(readings) is False
