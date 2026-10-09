@@ -111,14 +111,16 @@ const OUTCOME_LOOK: Record<Outcome, Tone> = {
 };
 
 /**
- * How a countertop row looks, exactly as the results table shows it: the recorded result, a decided
- * abstention as "Not checkable", an unchecked row as "Not checked". "Needs you" is separate.
+ * How a countertop row looks, exactly as the results table's result cell shows it: the recorded
+ * result in its own words; a decided abstention as "Not checkable"; an unchecked row as "Not
+ * checked". "Needs you" is separate (`needsYou`), shown beside the result, never instead of it.
  */
 function rowLook(row: Pick<CountertopResult, 'outcome' | 'needs_decision'>): Pick<ViewerTarget, 'tone' | 'glyph' | 'word'> {
-  if (row.outcome === 'PASS' || row.outcome === 'FAIL') return { tone: OUTCOME_LOOK[row.outcome], glyph: row.outcome, word: OUTCOME_LABELS[row.outcome] };
-  if (row.outcome && row.needs_decision) return { tone: 'review', glyph: 'REVIEW_REQUIRED', word: OUTCOME_LABELS.REVIEW_REQUIRED };
-  if (row.outcome) return { tone: 'missing', glyph: 'NOT_FOUND', word: 'Not checkable' };
-  return { tone: 'missing', glyph: 'NOT_FOUND', word: 'Not checked' };
+  if (!row.outcome) return { tone: 'missing', glyph: 'NOT_FOUND', word: 'Not checked' };
+  if (!row.needs_decision && (row.outcome === 'REVIEW_REQUIRED' || row.outcome === 'NOT_FOUND')) {
+    return { tone: 'missing', glyph: 'NOT_FOUND', word: 'Not checkable' };
+  }
+  return { tone: OUTCOME_LOOK[row.outcome], glyph: row.outcome, word: OUTCOME_LABELS[row.outcome] };
 }
 
 export function targetFromRow(row: CountertopResult): ViewerTarget {

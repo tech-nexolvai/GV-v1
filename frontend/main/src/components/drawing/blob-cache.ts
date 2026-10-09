@@ -83,9 +83,13 @@ export function useBlob(cache: BlobCache, key: string | null): [BlobState, () =>
       },
       (error: unknown) => {
         if (!live) return;
-        const state: BlobState = error instanceof ApiError && error.status === 404
+        // The picture API says "not ready" only for a page whose picture the worker has not made yet;
+        // a page that does not exist is a plain 404 and must not read as "try again later".
+        const state: BlobState = error instanceof ApiError && error.status === 404 && /not ready/i.test(error.message)
           ? { status: 'not-ready' }
-          : { status: 'error', error: error instanceof Error ? error.message : String(error) };
+          : error instanceof ApiError && error.status === 404
+            ? { status: 'error', error: 'This page is not in the drawing set.' }
+            : { status: 'error', error: error instanceof Error ? error.message : String(error) };
         setLoaded({ key, state });
       },
     );

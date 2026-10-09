@@ -187,6 +187,8 @@ export function PageCanvas({
       {ready && (
         <div
           data-slot="drawing-page"
+          // The paper is white in both themes, so what is drawn on it uses the light colours.
+          data-theme="light"
           className="absolute top-0 left-0 shadow-sm"
           style={
             placed
@@ -225,9 +227,15 @@ export function PageCanvas({
                   data-reading={reading.observationId}
                   points={svgPoints(reading.spot)}
                   vectorEffect="non-scaling-stroke"
-                  strokeWidth={activeReading === reading.observationId ? 2 : 1}
-                  className={cn('fill-transparent', activeReading === reading.observationId ? 'stroke-foreground' : 'stroke-foreground/45 [stroke-dasharray:2_2]')}
-                />
+                  strokeWidth={activeReading === reading.observationId ? 2.5 : 1.5}
+                  className={cn(
+                    // Each number the result used is highlighted where it was read (decided 2026-10-08). Grey,
+                    // not a colour: only outcomes are coloured (decided 2026-10-08).
+                    activeReading === reading.observationId ? 'fill-neutral-900/20 stroke-neutral-900' : 'fill-neutral-900/[0.07] stroke-neutral-900/60',
+                  )}
+                >
+                  <title>{`${reading.label}: ${reading.value}`}</title>
+                </polygon>
               ) : null,
             )}
             {target.outline && (

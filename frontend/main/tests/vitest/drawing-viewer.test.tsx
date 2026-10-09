@@ -119,6 +119,9 @@ describe('drawing viewer: what is shown', () => {
     expect(targetFromRow(C)).toMatchObject({ tone: 'review', glyph: 'REVIEW_REQUIRED', needsYou: true });
     expect(targetFromRow({ ...C, needs_decision: false })).toMatchObject({ tone: 'missing', word: 'Not checkable' });
     expect(targetFromRow({ ...C, outcome: null, finding_id: null })).toMatchObject({ word: 'Not checked' });
+    // The table's own words for the other recorded results, with "needs you" kept separate.
+    expect(targetFromRow({ ...C, outcome: 'NOT_FOUND' })).toMatchObject({ tone: 'missing', glyph: 'NOT_FOUND', word: 'Waiting on a value', needsYou: true });
+    expect(targetFromRow({ ...C, outcome: 'NO_APPLICABLE_RULE', needs_decision: false })).toMatchObject({ word: 'Not applicable', needsYou: false });
   });
 
   it('a finding is placed by its row outline, else by its shop reading', () => {
@@ -159,15 +162,18 @@ const calls: { method: string; url: string }[] = [];
 const png = () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'Content-Type': 'image/png' } });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 let notReady = new Set<number>();
+let missingPages = new Set<number>();
 
 beforeEach(() => {
   calls.length = 0;
   notReady = new Set([7]);
+  missingPages = new Set();
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ method: init?.method ?? 'GET', url });
     const picture = /\/pages\/(\d+)\/picture/.exec(url);
     if (picture) {
+      if (missingPages.has(Number(picture[1]))) return json({ error: 'http_error', message: 'Not found', request_id: 'r' }, 404);
       return notReady.has(Number(picture[1]))
         ? json({ error: 'not_found', message: 'the page picture is not ready yet', request_id: 'r' }, 404)
         : png();
@@ -222,6 +228,8 @@ describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
     const svg = outline.closest('svg')!;
     expect(svg.getAttribute('viewBox')).toBe('0 0 1 1');
     expect(svg.parentElement).toBe(pageBox());
+    // The paper is white in both themes, so what is drawn on it keeps the light colours.
+    expect(pageBox().getAttribute('data-theme')).toBe('light');
     expect(screen.getByRole('img', { name: 'Outline of Synthetic countertop a on page 12' })).toBeTruthy();
 
     const before = parseFloat(pageBox().style.width);
@@ -284,8 +292,11 @@ describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
     await waitFor(() => expect(document.querySelectorAll('[data-slot="crop-value"]')).toHaveLength(3), { timeout: 5000 });
     expect([...document.querySelectorAll('[data-slot="crop-value"]')].map((n) => n.textContent)).toEqual(['42"', '20 1/2"', '20"']);
     fireEvent.click(document.querySelector('[data-reading-crop="obs-p0"]')!);
-    expect(document.querySelector('[data-reading="obs-p0"]')!.getAttribute('stroke-width')).toBe('2');
-    expect(document.querySelector('[data-reading="obs-p1"]')!.getAttribute('stroke-width')).toBe('1');
+    // Every number the result used is highlighted where it was read; the picked one most strongly.
+    expect(document.querySelectorAll('[data-reading]')).toHaveLength(3);
+    expect(document.querySelector('[data-reading="obs-p0"]')!.getAttribute('stroke-width')).toBe('2.5');
+    expect(document.querySelector('[data-reading="obs-p1"]')!.getAttribute('stroke-width')).toBe('1.5');
+    expect(document.querySelector('[data-reading="obs-p1"] title')!.textContent).toBe('Filler 2: 20"');
   });
 
   it('a held row shows one line with a "?" instead of crops, and its hold reason in the header', async () => {
@@ -294,6 +305,13 @@ describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
     expect(screen.getByRole('button', { name: 'Why: The check did not run' })).toBeTruthy();
     expect(screen.getByText('Held: Synthetic hold reason.')).toBeTruthy();
     expect(document.querySelectorAll('[data-reading-crop]')).toHaveLength(0);
+  });
+
+  it('a page that is not in the set is an error, not "not ready"', async () => {
+    missingPages = new Set([12]);
+    open(targetFromRow(A), vi.fn(), [A]);
+    expect(await screen.findByText('The page picture could not be loaded', undefined, { timeout: 5000 })).toBeTruthy();
+    expect(screen.queryByText(/not ready/)).toBeNull();
   });
 
   it('a result with no stored location says so and fetches no picture', async () => {
