@@ -559,7 +559,7 @@ def test_a_clearance_with_a_naive_timestamp_is_refused() -> None:
         VendorClearance(
             approval_id=APPROVAL,
             approved_by="anant",
-            approved_at=datetime(2026, 8, 25, 9, 30),  # noqa: DTZ001
+            approved_at=datetime(2026, 8, 25, 9, 30),  # noqa: DTZ001, RUF100
         )
 
 

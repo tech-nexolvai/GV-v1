@@ -96,7 +96,7 @@ def test_naive_datetime_is_rejected_before_it_reaches_database_storage(
             session.add(
                 Record(
                     name="cabinet",
-                    observed_at=datetime(2026, 8, 15, 9, 0),  # noqa: DTZ001
+                    observed_at=datetime(2026, 8, 15, 9, 0),  # noqa: DTZ001, RUF100
                 )
             )
     finally:
