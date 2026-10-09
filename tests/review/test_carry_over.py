@@ -40,9 +40,11 @@ from app.review.approval import approval_readiness, approval_readiness_many, app
 from app.review.session import grant_exception, open_session, record_action
 from app.review.signed_exports import load_snapshot
 from app.verdicts.record import supersede_runs
+from storage.local import LocalStore
 from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_session import _revision
+from tests.workflow.test_part_operands import Assembly
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -366,6 +368,8 @@ def _stored(
     outcome: str = "REVIEW_REQUIRED",
     parameters: dict[str, str] | None = None,
     reason: str = "Synthetic held result.",
+    scope_item_id: UUID | None = None,
+    scope_label: str | None = None,
 ) -> Finding:
     run = CheckRun(
         package_revision_id=revision.id,
@@ -383,6 +387,8 @@ def _stored(
         parameter_set_versions=parameters or {"GLOBAL": "sha256:" + "1" * 64},
         reason=reason,
         notes=[],
+        scope_item_id=scope_item_id,
+        scope_label=scope_label,
     )
     session.add(finding)
     session.flush()
@@ -564,6 +570,27 @@ def test_a_note_less_dismiss_of_a_fail_never_carries(session: Session) -> None:
     assert carried == 0
 
 
+def test_a_hand_confirmed_countertop_result_never_carries(session: Session, tmp_path: Path) -> None:
+    """The legacy manual path keeps its inputs in the countertop-run tables, which this feature
+    does not read, so its result always asks again even when nothing changed."""
+    from app.review.carry_over import carry_decisions_over, result_fingerprints
+
+    assembly = Assembly(session, LocalStore(root=tmp_path, ticket_secret=b"synthetic-test-only"))
+    revision = assembly.revision
+    snapshot = _snapshot(session, f"CT-{uuid4().hex[:6]}")
+    item = {"scope_item_id": assembly.parts[0], "scope_label": "Synthetic countertop"}
+    old = _stored(session, revision, snapshot, **item)
+    _dismiss(session, old)
+    supersede_runs(session, revision.id)
+    new = _stored(session, revision, snapshot, **item)
+    assert len(set(result_fingerprints(session, [old, new]).values())) == 1
+    carried = carry_decisions_over(
+        session, package_revision_id=revision.id, previous_finding_ids=[old.id]
+    )
+    assert carried == 0
+    assert new.id in approval_readiness(session, revision.id).blocking_finding_ids
+
+
 def test_nothing_carries_from_another_revision(session: Session) -> None:
     first = _revision(session)
     second = _revision(session)
@@ -587,20 +614,19 @@ def test_the_database_refuses_a_cross_revision_link(session: Session) -> None:
     elsewhere = _stored(session, first, snapshot)
     action = _dismiss(session, elsewhere)
     here = _stored(session, second, snapshot)
-    session.commit()
-    session.add(
-        _links()(
-            package_revision_id=second.id,
-            new_finding_id=here.id,
-            from_finding_id=elsewhere.id,
-            review_action_id=action.id,
-            action=action.action,
-            matched_on_hash="0" * 64,
+    # A savepoint, never a commit: the shared test schema must not keep rows between tests.
+    with pytest.raises(IntegrityError), session.begin_nested():
+        session.add(
+            _links()(
+                package_revision_id=second.id,
+                new_finding_id=here.id,
+                from_finding_id=elsewhere.id,
+                review_action_id=action.id,
+                action=action.action,
+                matched_on_hash="0" * 64,
+            )
         )
-    )
-    with pytest.raises(IntegrityError):
         session.flush()
-    session.rollback()
 
 
 def test_carry_links_are_append_only(session: Session) -> None:
@@ -609,14 +635,14 @@ def test_carry_links_are_append_only(session: Session) -> None:
     old = _stored(session, revision, snapshot)
     _dismiss(session, old)
     _rerun(session, revision, [old], (snapshot, {}))
-    session.commit()
+    assert session.query(_links()).count() == 1
     for statement in (
         "UPDATE finding_decision_carryovers SET matched_on_hash = repeat('1', 64)",
         "DELETE FROM finding_decision_carryovers",
     ):
-        with pytest.raises(DBAPIError):
+        with pytest.raises(DBAPIError), session.begin_nested():
             session.execute(text(statement))
-        session.rollback()
+    assert session.query(_links()).count() == 1
 
 
 def test_another_projects_history_is_not_found(session: Session, tmp_path: Path) -> None:
