@@ -38,7 +38,7 @@ function StepMark({ state, index }: { state: StepState; index: number }) {
         'num flex size-6 items-center justify-center rounded-full border text-xs',
         state === 'done' && 'border-foreground bg-foreground text-background',
         state === 'current' && 'border-foreground',
-        state === 'blocked' && 'border-outcome-fail-fg text-outcome-fail-fg',
+        state === 'blocked' && 'border-destructive text-destructive',
       )}
     >
       {state === 'done' ? <Check className="size-3.5" /> : state === 'blocked' ? <X className="size-3.5" /> : state === 'current' ? <Loader2 className="size-3.5 animate-spin" /> : index + 1}
@@ -56,6 +56,7 @@ function StepMark({ state, index }: { state: StepState; index: number }) {
 export function ReportPanel({
   status,
   error,
+  prepareError = null,
   requesting,
   download,
   onPrepare,
@@ -64,8 +65,10 @@ export function ReportPanel({
 }: {
   /** The server's answer; null while it is being asked (or when asking failed). */
   status: ExportStatus | null;
-  /** Why asking failed, if it did. */
+  /** Why asking for the status failed, if it did. */
   error: string | null;
+  /** Why "Prepare signed files" failed, if it did (the button stays, to try again). */
+  prepareError?: string | null;
   /** True while "Prepare signed files" is being sent. */
   requesting: boolean;
   download: DownloadState;
@@ -83,7 +86,7 @@ export function ReportPanel({
       className="mx-4 mt-4 flex flex-col gap-3 rounded-xl border bg-card p-4 font-sans text-card-foreground sm:mx-6"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="report-panel-title" className="text-base font-semibold">Signed report</h2>
+        <h2 id="report-panel-title" tabIndex={-1} className="text-base font-semibold focus-visible:outline-none">Signed report</h2>
         <ol className="flex flex-wrap items-center gap-2 text-sm" aria-label="Signed files progress">
           {(['Requested', 'Preparing', 'Ready'] as const).map((label, index) => (
             <li key={label} className="flex items-center gap-1.5" data-state={steps[index]} aria-current={steps[index] === 'current' ? 'step' : undefined}>
@@ -99,17 +102,27 @@ export function ReportPanel({
 
       {status !== 'ready' && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <p role={error !== null || status === 'failed' ? 'alert' : 'status'} className="min-w-0 flex-1">
-            {error !== null
-              ? `Could not check the signed files: ${error}`
-              : status === 'failed'
-                ? 'The signed files could not be prepared, and nothing was published. Asking again here does not retry it: an admin needs to retry the export, then check again.'
+          {/* Two live regions, each keeping its role: a role changed in place may not be announced. */}
+          <div className="min-w-0 flex-1">
+            <p role="alert" className="text-destructive">
+              {error !== null
+                ? `Could not check the signed files: ${error}`
+                : status === 'failed'
+                  ? 'The signed files could not be prepared, and nothing was published. Asking again here does not retry it: an admin needs to retry the export, then check again.'
+                  : prepareError !== null
+                    ? `Could not request the signed files: ${prepareError}`
+                    : ''}
+            </p>
+            <p role="status">
+              {error !== null || status === 'failed'
+                ? ''
                 : status === 'not_requested'
                   ? 'The signed files have not been requested for this sign-off yet.'
                   : status === 'preparing'
                     ? 'Preparing the signed files. This page checks again every few seconds.'
                     : 'Checking the signed files…'}
-          </p>
+            </p>
+          </div>
           {status === 'not_requested' && error === null && (
             <Button type="button" size="sm" onClick={onPrepare} disabled={requesting}>
               {requesting ? <><Loader2 className="animate-spin" aria-hidden="true" /> Requesting…</> : 'Prepare signed files'}
@@ -145,7 +158,7 @@ export function ReportPanel({
       {download.status === 'loading' && <p className="text-sm" role="status">Downloading the {FORMAT_WORDS[download.format]}…</p>}
       {download.status === 'started' && <p className="text-sm" role="status">Download started. Check your browser downloads.</p>}
       {download.status === 'error' && (
-        <p className="text-sm text-outcome-fail-fg" role="alert">The {FORMAT_WORDS[download.format]} could not be downloaded: {download.message}</p>
+        <p className="text-sm text-destructive" role="alert">The {FORMAT_WORDS[download.format]} could not be downloaded: {download.message}</p>
       )}
     </section>
   );

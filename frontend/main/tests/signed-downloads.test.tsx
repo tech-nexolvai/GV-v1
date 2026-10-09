@@ -17,14 +17,15 @@ for (const { status, error } of notReady) {
   const html = renderToStaticMarkup(<ReportPanel {...props} status={status} error={error} />);
   assert.doesNotMatch(html, /Download PDF|Download workbook|Download redline/, `no download while ${status ?? error ?? 'checking'}`);
   assert.match(html, /Check again/);
-  if (error !== null) assert.match(html, /role="alert"[^>]*>Could not check the signed files: 503 status unavailable/);
-  if (status === 'failed') {
-    assert.match(html, /role="alert"/);
-    assert.match(html, /nothing was published/);
-  }
+  if (error !== null) assert.match(html, /role="alert"[^>]*>Could not check the signed files: 503 status unavailable</);
+  else if (status === 'failed') assert.match(html, /role="alert"[^>]*>The signed files could not be prepared, and nothing was published/);
+  else assert.match(html, /<p role="alert"[^>]*><\/p>/, 'no alert text while nothing is wrong');
   if (status === 'not_requested') assert.match(html, /Prepare signed files/);
   else assert.doesNotMatch(html, /Prepare signed files/, 'only a never-requested export offers to prepare (a failed one is not retried by asking)');
 }
+const refusedPrepare = renderToStaticMarkup(<ReportPanel {...props} status="not_requested" prepareError="409 not signed off" />);
+assert.match(refusedPrepare, /role="alert"[^>]*>Could not request the signed files: 409 not signed off</, 'a failed request is not reported as a failed check');
+assert.match(refusedPrepare, /Prepare signed files/, 'and the button stays, to try again');
 const ready = renderToStaticMarkup(<ReportPanel {...props} status="ready" />);
 for (const label of ['Download PDF', 'Download workbook', 'Download redline']) assert.match(ready, new RegExp(label));
 for (const title of ['Findings PDF', 'Workbook', 'Drawing redline']) assert.match(ready, new RegExp(title));

@@ -114,6 +114,18 @@ describe('countertop results: pure rules', () => {
 });
 
 describe('results dashboard', () => {
+  it('sorts a column low to high on the first click, a missing value last (kept by #1064)', async () => {
+    const user = userEvent.setup();
+    setup({ filter: 'all' });
+    await user.click(await screen.findByRole('button', { name: 'Printed' }));
+    const ids = tableRows().map((row) => row.getAttribute('data-row-id'));
+    expect(ids[0]).toBe('fail-p2'); // 82" is the smallest printed overall
+    expect(ids.at(-1)).toBe('held-p5'); // no printed overall: last, not first
+    // A second click reverses it (the header must see that it is already sorted).
+    await user.click(screen.getByRole('button', { name: 'Printed' }));
+    expect(tableRows().map((row) => row.getAttribute('data-row-id'))[0]).not.toBe('fail-p2');
+  });
+
   it('shows the five numbers and the outcome legend', async () => {
     setup();
     const cards = document.querySelector('[data-slot="kpi-cards"]') as HTMLElement;

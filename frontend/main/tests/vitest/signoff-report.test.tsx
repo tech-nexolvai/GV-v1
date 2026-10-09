@@ -35,12 +35,13 @@ describe('signOffSummary', () => {
       row('d', { outcome: 'FAIL', reviewer_decision: decision('dismiss') }), // a dismissed FAIL is the reviewer's call, not "not checkable"
       row('e', { outcome: 'REVIEW_REQUIRED', needs_decision: true }),
       row('f', { outcome: 'PASS', needs_decision: true, reviewer_decision: decision('correct') }), // waiting for a re-run
+      row('g', { finding_id: null, outcome: null, needs_decision: true }), // no recorded result: not a finding
     ];
-    expect(signOffSummary(rows)).toEqual({ byChecks: 1, byYou: 2, notCheckable: 1, needYou: 2 });
+    expect(signOffSummary(rows)).toEqual({ byChecks: 1, byYou: 2, notCheckable: 1, needYou: 2, noResult: 1 });
   });
 });
 
-const SCOPE: SignOffScope = { countertops: { byChecks: 7, byYou: 2, notCheckable: 1, needYou: 0 }, packageChecks: 3, total: 13 };
+const SCOPE: SignOffScope = { countertops: { byChecks: 7, byYou: 2, notCheckable: 1, needYou: 0, noResult: 0 }, countertopsFailed: false, otherChecks: 3, total: 13 };
 const READY: ApprovalReadiness = { revision_id: 'rev', can_approve: true, blocking_findings: 0, blocking_finding_ids: [], reason: null };
 
 describe('SignOffPanel', () => {
@@ -48,9 +49,15 @@ describe('SignOffPanel', () => {
     render(<SignOffPanel readiness={READY} ready scope={SCOPE} busy={false} onSignOff={() => {}} onReview={() => {}} />);
     expect(screen.getByText('Ready')).toBeTruthy();
     expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'countertops').textContent).toBe('7 needed no decision · 2 decided by you · 1 not checkable');
-    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'package-checks').textContent).toBe('3 recorded results');
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'other-checks').textContent).toBe('3 recorded results');
     expect(screen.getByText(/approves all/).textContent).toContain('approves all 13 recorded results of this revision. It cannot be undone.');
     expect(screen.getByRole('button', { name: 'Sign off…' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('says when the countertop split is unavailable, and words a single result in the singular', () => {
+    render(<SignOffPanel readiness={READY} ready scope={{ countertops: null, countertopsFailed: true, otherChecks: null, total: 1 }} busy={false} onSignOff={() => {}} onReview={() => {}} />);
+    expect(screen.getByText('Not available: the countertop results did not load.')).toBeTruthy();
+    expect(screen.getByText(/approves the/).textContent).toBe('Signing off approves the 1 recorded result of this revision. It cannot be undone.');
   });
 
   it('shows the server\'s blockers and reason, and offers the queue instead of signing', async () => {
@@ -76,9 +83,9 @@ describe('SignOffPanel', () => {
 });
 
 describe('SignOffDialog', () => {
-  function Harness({ signer, onConfirm }: { signer: string | null; onConfirm: () => void }) {
+  function Harness({ signer, onConfirm, ready = true, error = null }: { signer: string | null; onConfirm: () => void; ready?: boolean; error?: string | null }) {
     const [open, setOpen] = useState(true);
-    return <SignOffDialog open={open} onOpenChange={setOpen} signer={signer} vendor="Synthetic vendor" revision={2} scope={SCOPE} busy={false} onConfirm={onConfirm} />;
+    return <SignOffDialog open={open} onOpenChange={setOpen} signer={signer} vendor="Synthetic vendor" revision={2} scope={SCOPE} ready={ready} busy={false} error={error} onConfirm={onConfirm} />;
   }
 
   it('names the signer and the set, and says it cannot be undone', () => {
@@ -106,11 +113,18 @@ describe('SignOffDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Sign off' }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
+
+  it('cannot confirm once the server no longer says ready, and shows why nothing was signed', () => {
+    render(<Harness signer="Synthetic Reviewer" onConfirm={() => {}} ready={false} error="409 synthetic refusal" />);
+    expect(screen.getByRole('button', { name: 'Sign off' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('alert').textContent).toBe('Nothing was signed: 409 synthetic refusal');
+  });
 });
 
 describe('ReviewPage: sign-off, then the signed report', () => {
   let state: string;
   let exportsStatus: string;
+  let approveStatus: number;
   const posts: string[] = [];
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   const listed = (id: string, outcome: string, action: string | null) => ({
@@ -122,6 +136,7 @@ describe('ReviewPage: sign-off, then the signed report', () => {
   beforeEach(() => {
     state = 'AWAITING_REVIEW';
     exportsStatus = 'preparing';
+    approveStatus = 201;
     posts.length = 0;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input).replace(/^.*\/api\/v1/, '');
@@ -139,6 +154,7 @@ describe('ReviewPage: sign-off, then the signed report', () => {
       if (url.endsWith('/approval-readiness')) return json(READY);
       if (url.endsWith('/countertop-results')) return json({ package_id: 'pkg', revision_id: 'rev', items: [row('a')] });
       if (url === '/projects/p/review-sessions/s/approve' && method === 'POST') {
+        if (approveStatus !== 201) return json({ error: 'http_error', message: 'synthetic refusal', request_id: 'r' }, approveStatus);
         state = 'APPROVED';
         return json({ approval_id: 'ap', package_revision_id: 'rev', approved_by: 'Synthetic Reviewer', findings_approved: 2, state: 'APPROVED' }, 201);
       }
@@ -166,7 +182,7 @@ describe('ReviewPage: sign-off, then the signed report', () => {
     const panel = await screen.findByRole('region', { name: 'Sign off' });
     await waitFor(() => expect(within(panel).getByText('Ready')).toBeTruthy());
     expect(panel.querySelector('[data-part="countertops"]')?.textContent).toBe('1 needed no decision · 0 decided by you · 0 not checkable');
-    expect(panel.querySelector('[data-part="package-checks"]')?.textContent).toBe('1 recorded result');
+    expect(panel.querySelector('[data-part="other-checks"]')?.textContent).toBe('1 recorded result');
 
     // The header's Sign off opens the dialog; Keep reviewing signs nothing.
     await user.click(within(screen.getByTestId('header-actions')).getByRole('button', { name: 'Sign off' }));
@@ -177,9 +193,10 @@ describe('ReviewPage: sign-off, then the signed report', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(posts.filter((url) => url.endsWith('/approve'))).toEqual([]);
 
-    // The panel's button, then confirm: exactly one approval.
+    // The panel's button, then confirm (clicked twice, fast): exactly one approval.
     await user.click(within(panel).getByRole('button', { name: 'Sign off…' }));
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Sign off' }));
+    const confirm = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Sign off' });
+    await user.dblClick(confirm);
     await waitFor(() => expect(posts.filter((url) => url.endsWith('/approve'))).toEqual(['/projects/p/review-sessions/s/approve']));
 
     // Signed: the Report panel replaces the Sign off panel and follows the export status.
@@ -192,5 +209,22 @@ describe('ReviewPage: sign-off, then the signed report', () => {
     await waitFor(() => expect(within(report).getByRole('button', { name: 'Download PDF' })).toBeTruthy());
     expect(within(report).getByRole('button', { name: 'Download workbook' })).toBeTruthy();
     expect(within(report).getByRole('button', { name: 'Download redline' })).toBeTruthy();
+    // Still exactly one approval, and nothing offers Sign off any more.
+    expect(posts.filter((url) => url.endsWith('/approve'))).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /^Sign off/ })).toBeNull();
+  });
+
+  it('a refused sign-off keeps the dialog open and says nothing was signed', async () => {
+    const user = userEvent.setup();
+    approveStatus = 409;
+    render(<Page />);
+    const panel = await screen.findByRole('region', { name: 'Sign off' });
+    await waitFor(() => expect(within(panel).getByText('Ready')).toBeTruthy());
+    await user.click(within(panel).getByRole('button', { name: 'Sign off…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off this review?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Sign off' }));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toMatch(/^Nothing was signed: .*synthetic refusal/));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(screen.queryByRole('region', { name: 'Signed report' })).toBeNull();
   });
 });

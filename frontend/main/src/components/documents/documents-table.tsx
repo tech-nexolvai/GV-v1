@@ -13,6 +13,13 @@ import { matchesSearch, productWord, resultTotal, statusRank } from '@/lib/docum
 
 const UNTITLED = 'Untitled document set';
 
+/** States in which someone may still need to decide something; elsewhere "Needs you" is not asked. */
+const IN_REVIEW = new Set(['AWAITING_REVIEW', 'NEEDS_INPUT', 'CHANGES_REQUESTED']);
+
+function underReview(row: PackageSummary): boolean {
+  return IN_REVIEW.has(row.state) && !row.approved;
+}
+
 function formatDay(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
@@ -21,10 +28,13 @@ function formatMoment(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** A yes/no column: a check mark, or a dash; the words are always there for a screen reader. */
+/**
+ * A yes/no column: a check mark, or a dash; the words are always there for a screen reader. Plain
+ * colour, because the outcome colours mean results, not facts like "signed off".
+ */
 function YesNo({ yes, yesWord, noWord }: { yes: boolean; yesWord: string; noWord: string }) {
   return yes ? (
-    <span className="inline-flex items-center text-outcome-pass-fg" title={yesWord}>
+    <span className="inline-flex items-center text-foreground" title={yesWord}>
       <Check className="size-4" aria-hidden="true" />
       <span className="sr-only">{yesWord}</span>
     </span>
@@ -40,15 +50,11 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
   return [
     {
       id: 'vendor',
-      accessorFn: (row) => row.vendor ?? '',
+      accessorFn: (row) => row.vendor ?? undefined,
       header: ({ column }) => <SortableHeader column={column}>Vendor</SortableHeader>,
-      // Named sets A→Z, ignoring case; untitled sets sort after the named ones.
-      sortingFn: (a, b) => {
-        const left = a.original.vendor;
-        const right = b.original.vendor;
-        if (!left || !right) return left ? -1 : right ? 1 : 0;
-        return left.localeCompare(right, undefined, { sensitivity: 'base' });
-      },
+      // Named sets A→Z (or Z→A), ignoring case; untitled sets stay last either way.
+      sortUndefined: 'last',
+      sortingFn: (a, b) => (a.original.vendor ?? '').localeCompare(b.original.vendor ?? '', undefined, { sensitivity: 'base' }),
       // The name opens the review too, so on a phone (no Open column) it is one tap away.
       cell: ({ row }) => (
         <button
@@ -57,7 +63,7 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
           className="flex min-w-32 flex-col rounded-sm text-left hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
         >
           <span className="font-medium">{row.original.vendor ?? UNTITLED}</span>
-          <span className="num text-xs text-muted-foreground">Revision {row.original.revision_number}</span>
+          <span className="text-xs text-muted-foreground">Revision <span className="num">{row.original.revision_number}</span></span>
         </button>
       ),
     },
@@ -91,11 +97,17 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
     },
     {
       id: 'needs',
-      accessorFn: (row) => row.needs_decision,
+      // Only a review still under review is asked (as the old cards did): readiness is "now", so a
+      // signed-off review with an exception that has since expired would otherwise show a count
+      // nobody can act on. Not under review sorts below every count.
+      accessorFn: (row) => (underReview(row) ? row.needs_decision : -1),
       header: ({ column }) => <SortableHeader column={column}>Needs you</SortableHeader>,
       sortDescFirst: true,
       cell: ({ row }) => {
         const count = row.original.needs_decision;
+        if (!underReview(row.original)) {
+          return <span className="text-muted-foreground"><span aria-hidden="true">—</span><span className="sr-only">Not under review</span></span>;
+        }
         if (count > 0) {
           return (
             <span className="num inline-flex items-center gap-1 rounded-full border border-outcome-review-fg/60 bg-outcome-review-bg px-2 py-0.5 text-xs font-medium text-outcome-review-fg">
@@ -132,7 +144,7 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
     },
     {
       id: 'updated',
-      accessorFn: (row) => row.updated_at,
+      accessorFn: (row) => Date.parse(row.updated_at),
       header: ({ column }) => <SortableHeader column={column}>Updated</SortableHeader>,
       sortDescFirst: true,
       meta: { className: 'hidden md:table-cell' },

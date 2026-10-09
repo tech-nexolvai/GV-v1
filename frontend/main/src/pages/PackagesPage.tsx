@@ -65,7 +65,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
           <Button type="button" variant="ghost" className="self-start" onClick={() => dispatch({ type: 'first' })}>Start from first page</Button>
         )}
         {data && state.error && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-outcome-review-fg/40 bg-outcome-review-bg px-3 py-2 text-sm text-outcome-review-fg" role="alert">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-sm" role="alert">
             <span>
               {navigation.changingPage
                 ? `Could not load page ${state.requestedTrail.length}; still showing page ${navigation.page}.`

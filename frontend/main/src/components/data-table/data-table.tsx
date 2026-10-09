@@ -147,6 +147,9 @@ export function SortableHeader<TData, TValue>({
   /** Show the arrow only on the sorted column (dense tables); the header still sorts on click. */
   compact?: boolean;
 }) {
+  // TanStack hands back the same `column` object after every sort, so a memoised render would keep the
+  // old direction: the second click sorted the same way again and the arrow never moved (#1064).
+  'use no memo';
   const sorted = column.getIsSorted();
   const Icon = sorted === 'asc' ? ArrowUp : sorted === 'desc' ? ArrowDown : ArrowUpDown;
   const showIcon = !compact || Boolean(sorted);
@@ -155,8 +158,9 @@ export function SortableHeader<TData, TValue>({
       variant="ghost"
       size="sm"
       className={cn('-ml-2 h-8 px-2 font-medium', className)}
-      // The first click sorts in the column's own first direction (most first for counts and dates).
-      onClick={() => column.toggleSorting(sorted ? sorted === 'asc' : column.getFirstSortDir() === 'desc')}
+      // The first click sorts low to high, unless the column asks for high first (`sortDescFirst`,
+      // e.g. counts and dates). Other tables keep their low-to-high first click.
+      onClick={() => column.toggleSorting(sorted ? sorted === 'asc' : column.columnDef.sortDescFirst === true)}
     >
       {children}
       {showIcon && <Icon className={cn('size-3.5', !sorted && 'text-muted-foreground')} aria-hidden="true" />}

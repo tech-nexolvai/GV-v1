@@ -83,8 +83,16 @@ describe('DocumentsTable', () => {
     expect(screen.queryByText(/cover this page only/)).toBeNull();
   });
 
+  it('asks "Needs you" only of a review under review, never of a signed-off one', () => {
+    const lapsed = summary('s', { vendor: 'Signed vendor', state: 'APPROVED', approved: true, outcomes: { ...zero, pass: 2 }, needs_decision: 1 });
+    render(<DocumentsTable rows={[lapsed]} onOpen={() => {}} morePages={false} />);
+    const row = screen.getAllByRole('row')[1];
+    expect(within(row).getByText('Not under review')).toBeTruthy();
+    expect(within(row).queryByText(/need your decision|needs your decision/)).toBeNull();
+  });
+
   it('shows a review with nothing recorded as "No results yet", not as a zero', () => {
-    render(<DocumentsTable rows={[ROWS[2]]} onOpen={() => {}} morePages={false} />);
+    render(<DocumentsTable rows={[{ ...ROWS[2], state: 'NEEDS_INPUT' }]} onOpen={() => {}} morePages={false} />);
     const row = screen.getAllByRole('row')[1];
     expect(within(row).getAllByText('No results yet')).toHaveLength(2); // the bar and the Needs-you cell
     expect(within(row).queryByText('0')).toBeNull();
@@ -95,6 +103,8 @@ describe('DocumentsTable', () => {
     render(<DocumentsTable rows={ROWS} onOpen={() => {}} morePages={false} />);
     await user.click(screen.getByRole('button', { name: /Vendor/ }));
     expect(vendorsInOrder()).toEqual(['alpha works', 'Beta Stone', 'Untitled document set']);
+    await user.click(screen.getByRole('button', { name: /Vendor/ }));
+    expect(vendorsInOrder()).toEqual(['Beta Stone', 'alpha works', 'Untitled document set']);
     await user.click(screen.getByRole('button', { name: /Needs you/ }));
     expect(vendorsInOrder()[0]).toBe('Beta Stone');
     expect(screen.getByRole('columnheader', { name: /Needs you/ }).getAttribute('aria-sort')).toBe('descending');

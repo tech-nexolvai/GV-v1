@@ -15,6 +15,12 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** The phase in words; the percentage alone uses the number face. */
+function PhaseWords({ file, percent }: { file: FileProgress; percent: number }) {
+  if (file.phase === 'sending') return <>Sending <span className="num">{percent}%</span></>;
+  return <>{phaseWords(file, percent)}</>;
+}
+
 function phaseWords(file: FileProgress, percent: number): string {
   switch (file.phase) {
     case 'waiting': return 'Waiting';
@@ -82,9 +88,9 @@ export function UploadProgressPanel({
                 <span className="min-w-0 flex-1 truncate text-muted-foreground" title={file.name}>
                   {file.name} · <span className="num">{formatSize(file.size)}</span>
                 </span>
-                <span className={cn('num shrink-0 text-xs', done ? 'text-outcome-pass-fg' : 'text-muted-foreground')}>
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {done && <Check className="mr-0.5 inline size-3.5" aria-hidden="true" />}
-                  {phaseWords(progress, percent)}
+                  <PhaseWords file={progress} percent={percent} />
                 </span>
               </div>
               <Progress value={percent} aria-label={`${file.title}: ${phaseWords(progress, percent)}`} />

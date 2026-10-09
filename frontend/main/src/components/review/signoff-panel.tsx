@@ -13,14 +13,28 @@ import {
 } from '@/components/ui/dialog';
 import type { SignOffSummary } from '@/lib/countertop-results';
 
-/** What is being signed, in counts the page already has. Null parts are still loading. */
+/** What is being signed, in counts the page already has. */
 export interface SignOffScope {
-  /** Countertops by who settled them; null while the countertop results load or if they failed. */
+  /** Countertops by who settled them; null while the countertop results load or when they failed. */
   countertops: SignOffSummary | null;
-  /** Recorded results that are not a countertop's (package-level checks); null while loading. */
-  packageChecks: number | null;
+  /** True when the countertop results could not be loaded (the split is then unavailable). */
+  countertopsFailed: boolean;
+  /**
+   * Recorded results that are not a countertop row's own, the same set the Results page lists under
+   * "Other checks" (package-level checks, and the architect comparison); null until countertops load.
+   */
+  otherChecks: number | null;
   /** Every recorded result of the revision: the server approves them all. */
   total: number;
+}
+
+function results(count: number) {
+  return count === 1 ? 'recorded result' : 'recorded results';
+}
+
+/** "all 16 recorded results", or "the 1 recorded result". */
+function allResults(count: number) {
+  return count === 1 ? <>the <span className="num">1</span> recorded result</> : <>all <span className="num">{count}</span> recorded results</>;
 }
 
 /** "1 needed no decision · 2 decided by you · 7 not checkable": numbers in the number face only. */
@@ -31,6 +45,8 @@ function CountertopLine({ summary }: { summary: SignOffSummary }) {
     [summary.notCheckable, 'not checkable'],
   ];
   if (summary.needYou > 0) parts.push([summary.needYou, summary.needYou === 1 ? 'still needs you' : 'still need you']);
+  // A row with no recorded result is not a finding, so it is not part of what the server approves.
+  if (summary.noResult > 0) parts.push([summary.noResult, 'with no recorded result']);
   return (
     <>
       {parts.map(([count, words], index) => (
@@ -106,15 +122,17 @@ export function SignOffPanel({
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         <dt className="text-muted-foreground">Countertops</dt>
         <dd data-part="countertops">
-          {scope.countertops ? <CountertopLine summary={scope.countertops} /> : 'Loading…'}
+          {scope.countertops ? <CountertopLine summary={scope.countertops} /> : scope.countertopsFailed ? 'Not available: the countertop results did not load.' : 'Loading…'}
         </dd>
-        <dt className="text-muted-foreground">Package checks</dt>
-        <dd data-part="package-checks">
-          {scope.packageChecks === null ? 'Loading…' : <><span className="num">{scope.packageChecks}</span> {scope.packageChecks === 1 ? 'recorded result' : 'recorded results'}</>}
+        <dt className="text-muted-foreground">Other checks</dt>
+        <dd data-part="other-checks">
+          {scope.otherChecks !== null
+            ? <><span className="num">{scope.otherChecks}</span> {results(scope.otherChecks)}</>
+            : scope.countertopsFailed ? 'Not available' : 'Loading…'}
         </dd>
       </dl>
       <p className="text-sm text-muted-foreground">
-        Signing off approves all <span className="num">{scope.total}</span> recorded results of this revision. It cannot be undone.
+        Signing off approves {allResults(scope.total)} of this revision. It cannot be undone.
       </p>
 
       <div>
@@ -140,7 +158,9 @@ export function SignOffDialog({
   vendor,
   revision,
   scope,
+  ready,
   busy,
+  error,
   onConfirm,
 }: {
   open: boolean;
@@ -149,7 +169,11 @@ export function SignOffDialog({
   vendor: string;
   revision: number | null;
   scope: SignOffScope;
+  /** The server still says the review can be signed; confirm is disabled otherwise. */
+  ready: boolean;
   busy: boolean;
+  /** Why the last attempt did not sign, shown here so it is not hidden behind the dialog. */
+  error: string | null;
   onConfirm: () => void;
 }) {
   return (
@@ -169,7 +193,7 @@ export function SignOffDialog({
           <li>
             {vendor}
             {revision !== null && <>, revision <span className="num">{revision}</span></>}:{' '}
-            all <span className="num">{scope.total}</span> recorded results are approved.
+            {allResults(scope.total)} {scope.total === 1 ? 'is' : 'are'} approved.
           </li>
           {scope.countertops && (
             <li>
@@ -179,11 +203,14 @@ export function SignOffDialog({
           <li>The signed files are prepared next: findings PDF, workbook and drawing redline.</li>
           <li><strong>This cannot be undone.</strong> Changes after sign-off need a new revision of the drawings.</li>
         </ul>
+        {error !== null && (
+          <p className="text-sm text-destructive" role="alert" data-part="signoff-error">Nothing was signed: {error}</p>
+        )}
         <DialogFooter>
           <DialogClose asChild>
             <Button type="button" variant="outline" disabled={busy}>Keep reviewing</Button>
           </DialogClose>
-          <Button type="button" onClick={onConfirm} disabled={busy}>
+          <Button type="button" onClick={onConfirm} disabled={busy || !ready}>
             {busy ? <><Loader2 className="animate-spin" aria-hidden="true" /> Signing off…</> : 'Sign off'}
           </Button>
         </DialogFooter>
