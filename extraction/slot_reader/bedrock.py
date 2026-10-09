@@ -51,6 +51,7 @@ from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
 from extraction.product_context import product_context_line, with_product
 from extraction.slot_reader.claude_output import (
+    ARCH_MEASURES,
     ARCH_PAIR_SCHEMA,
     COUNTER_BREAK_SCHEMA,
     CROP_SCHEMA,
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ARCH_PAIR_PROMPT_ID",
+    "ARCH_PAIR_PROMPT_IDS",
     "CLAUDE_SPAN_PROMPT",
     "CLAUDE_SPAN_PROMPT_ID",
     "CLAUDE_SPAN_PROMPT_IDS",
@@ -117,9 +119,14 @@ whose label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`). The two-picture wording i
 #: Earlier wordings, still recognised when a stored run is replayed.
 CLAUDE_SPAN_PROMPT_IDS: Final = frozenset({CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v1"})
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
-ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v1"
-"""The architect-pairing question (#1053): asked of both Claude readers only when code cannot pair
-the architect's dimensions with the vendor's row by drawn position."""
+ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v2"
+"""The architect-pairing question (#1053), asked of both Claude readers on every page with an
+architect dimension code has not refused. v2 first asks what EVERY numbered architect dimension
+measures (`ARCH_MEASURES`), then the pairing; code accepts a pair only when what it measures can be
+the same thing (`workflow/architect_pairing.py`). v1 asked only for the pairing, and only when code
+could not pair by drawn position."""
+#: Earlier wordings, still recognised in stored records and invocations.
+ARCH_PAIR_PROMPT_IDS: Final = frozenset({ARCH_PAIR_PROMPT_ID, "arch-pair-v1"})
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
 COUNTER_BREAK_PROMPT_IDS: Final = frozenset({COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v1"})
 
@@ -147,12 +154,14 @@ ROW_PROMPT: Final = (
 
 
 def arch_pair_prompt(*, vendor_pieces: int, architect_spans: int) -> str:
-    """The architect-pairing question for one picture with `vendor_pieces` red and
+    """The architect-pairing question (`arch-pair-v2`) for one picture with `vendor_pieces` red and
     `architect_spans` blue numbered marks (#1053).
 
-    It asks only which marked dimensions measure the same physical thing. It never asks for, or
-    lets the model use, a printed number: pairing by value is circular (it could only pair numbers
-    that already agree), and the comparison is exact arithmetic done afterwards by code.
+    It asks what physical thing every marked architect dimension measures, then which ones measure
+    the same physical thing as the vendor's pieces and run. It never asks for, or lets the model
+    use, a printed number: pairing by value is circular (it could only pair numbers that already
+    agree), and the comparison is exact arithmetic done afterwards by code. Code, not the model,
+    then decides which measures may pair with what.
     """
     if vendor_pieces < 1 or architect_spans < 1:
         raise ValueError("an architect-pairing question needs at least one mark of each kind")
@@ -163,17 +172,37 @@ def arch_pair_prompt(*, vendor_pieces: int, architect_spans: int) -> str:
         f"V1 to V{vendor_pieces}, left to right, in the red tags. Some of the architect's "
         "dimensions are outlined in blue and numbered "
         f"A1 to A{architect_spans} in the blue tags. "
-        "Task: for each vendor piece, and for the vendor's whole run (from the left end of V1 to "
-        "the right end of the last piece), say which architect dimension measures the SAME "
-        "PHYSICAL THING: the same cabinet, filler, opening or run, judged only by where its two "
-        "ends are drawn. Do not compare, read or add up the printed numbers, and never pair two "
-        "dimensions because their numbers are equal or close: the numbers are compared later. "
-        "A dimension that runs to a fixture's centre line (an outlet, a sink, an appliance, an "
-        "artwork, a light) is never a cabinet width. Several vendor pieces may together measure "
-        "one architect dimension (the vendor split one cabinet or bay into pieces): give that "
-        "A-number for each of those pieces. Use 0 where the architect prints no dimension for the "
-        "same thing. Reply with ONLY a JSON object: "
-        '{"overall": <A-number for the whole run, or 0>, '
+        "Judge everything only by where each dimension's two ends (its tick marks or arrows) are "
+        "drawn and which drawn lines they touch. Do not compare, read or add up the printed "
+        "numbers, and never pair two dimensions because their numbers are equal or close: the "
+        "numbers are compared later. "
+        f"Step one: for EVERY architect dimension, A1 to A{architect_spans}, say what physical "
+        "thing it measures, with exactly one of these words: "
+        '"countertop" (the stone or counter top, end to end); '
+        '"cabinet_run" (a run of several cabinets, end to end); '
+        '"single_cabinet" (one cabinet box); '
+        '"filler_or_end_panel" (a filler, scribe or end panel); '
+        '"wall_to_wall" (from one wall to the other); '
+        '"clearance_or_gap" (a space between a wall and an object\'s edge, or between two '
+        "objects); "
+        '"blocking_or_backing" (blocking, backing or a hatched support strip, often in the wall); '
+        '"fixture_or_appliance_centre" (to or from the centre line of an outlet, a sink, a faucet, '
+        "an appliance, a light or an artwork); "
+        '"appliance_opening" (an opening left for an appliance); '
+        '"height_or_other" (a height, or anything else); '
+        '"unsure" (you cannot tell). '
+        "A dimension that runs to a centre line, to blocking or backing, or between a wall and an "
+        "object's edge is never a cabinet or countertop width. "
+        "Step two: for each vendor piece, and for the vendor's whole run (from the left end of V1 "
+        f"to the right end of V{vendor_pieces}), give the A-number of the architect dimension that "
+        "measures the SAME PHYSICAL THING: the same countertop, run, cabinet or filler, its two "
+        "ends at the same drawn places. Several vendor pieces may together measure one architect "
+        "dimension (the vendor split one cabinet or bay into pieces): give that A-number for each "
+        "of those pieces. Use 0 where the architect prints no dimension of the same thing. "
+        "Reply with ONLY a JSON object: "
+        '{"architect": [{"a": <A-number>, "measures": "<one of the words above>"}, one entry for '
+        f"each of A1 to A{architect_spans}], "
+        '"overall": <A-number for the whole run, or 0>, '
         f'"pieces": [<A-number or 0 for V1>, ..., <for V{vendor_pieces}>], '
         '"why": "<one short sentence>"}'
     )
@@ -281,11 +310,22 @@ class ArchPairAnswer:
     pieces: tuple[int, ...]
     """One entry per vendor piece, V1 first."""
     why: str
+    measures: tuple[str, ...] = ()
+    """What each architect dimension measures (`ARCH_MEASURES`), A1 first; one entry per A-number
+    (v2). Empty only for a v1 answer, which code never pairs on."""
+
+
+class _ArchMeasure(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    a: StrictInt
+    measures: StrictStr
 
 
 class _ArchPairReply(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
+    architect: list[_ArchMeasure]
     overall: StrictInt
     pieces: list[StrictInt]
     why: StrictStr
@@ -476,8 +516,9 @@ def read_arch_pair(
     question_packet: Mapping[str, object] | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> ArchPairAnswer:
-    """Ask once, re-asking only a malformed answer: not one entry per vendor piece, or an A-number
-    outside the marks shown. Malformed twice raises `MalformedFormAnswer` (the job abstains)."""
+    """Ask once, re-asking only a malformed answer: not one entry per vendor piece, an A-number
+    outside the marks shown, or not exactly one known measure for every A-number shown. Malformed
+    twice raises `MalformedFormAnswer` (the job abstains)."""
     for attempt in range(2):
         request = build_arch_pair_request(
             model_id=model_id,
@@ -524,6 +565,12 @@ def read_arch_pair(
                 raise MalformedFormAnswer("the answer does not give one entry per vendor piece")
             if any(not 0 <= number <= architect_spans for number in numbers):
                 raise MalformedFormAnswer("the answer names an A-number that is not marked")
+            said = sorted(entry.a for entry in parsed.architect)
+            if said != list(range(1, architect_spans + 1)):
+                raise MalformedFormAnswer("the answer does not say once what every A measures")
+            if any(entry.measures not in ARCH_MEASURES for entry in parsed.architect):
+                raise MalformedFormAnswer("the answer gives a measure that is not offered")
+            measures = {entry.a: entry.measures for entry in parsed.architect}
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -565,6 +612,7 @@ def read_arch_pair(
             overall=parsed.overall,
             pieces=tuple(parsed.pieces),
             why=parsed.why[:300],
+            measures=tuple(measures[a] for a in range(1, architect_spans + 1)),
         )
     raise AssertionError("unreachable")
 

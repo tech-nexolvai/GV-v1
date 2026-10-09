@@ -34,6 +34,7 @@ from typing import Any, Final, Literal, get_args
 from extraction.form_reader.bedrock import MalformedFormAnswer, _response_text
 
 __all__ = [
+    "ARCH_MEASURES",
     "ARCH_PAIR_SCHEMA",
     "CLAUDE_EFFORTS",
     "COUNTER_BREAK_SCHEMA",
@@ -144,11 +145,38 @@ WALL_SCHEMA: Final = _object(
 )
 
 
-#: The architect-pairing question (#1053): for the vendor's overall and each vendor piece, the
-#: A-number of the architect dimension that measures the same physical thing, or 0. The ranges
-#: (0..A, one entry per vendor piece) are checked by the reader: the schema subset has no bounds.
+#: What one architect dimension measures, in the words of the architect-pairing question
+#: (`arch-pair-v2`, #1053). Code, not the model, decides which of these may pair with what.
+ARCH_MEASURES: Final[tuple[str, ...]] = (
+    "countertop",
+    "cabinet_run",
+    "single_cabinet",
+    "filler_or_end_panel",
+    "wall_to_wall",
+    "clearance_or_gap",
+    "blocking_or_backing",
+    "fixture_or_appliance_centre",
+    "appliance_opening",
+    "height_or_other",
+    "unsure",
+)
+
+#: The architect-pairing question (#1053, v2): first what EVERY numbered architect dimension
+#: measures (`architect`, one entry per A-number), then for the vendor's overall and each vendor
+#: piece the A-number of the architect dimension that measures the same physical thing, or 0.
+#: Structure only; the ranges (every A once, 0..A, one entry per vendor piece) are checked by the
+#: reader: the schema subset has no bounds.
 ARCH_PAIR_SCHEMA: Final = _object(
     {
+        "architect": {
+            "type": "array",
+            "items": _object(
+                {
+                    "a": {"type": "integer"},
+                    "measures": {"type": "string", "enum": list(ARCH_MEASURES)},
+                }
+            ),
+        },
         "overall": {"type": "integer"},
         "pieces": {"type": "array", "items": {"type": "integer"}},
         "why": _STRING,

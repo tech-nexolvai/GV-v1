@@ -1,7 +1,8 @@
 """The architect-pairing question to the two Claude readers (#1053, type 1 step T2 part B).
 
-Verification for `ARCH_PAIR_PROMPT_ID`, `build_arch_pair_request`, `read_arch_pair` and the
-`arch_pair_question` job kind in `extraction/slot_reader/bedrock.py`, and the array support in
+Verification for `ARCH_PAIR_PROMPT_ID` (`arch-pair-v2`: what every architect dimension measures,
+then the pairing), `build_arch_pair_request`, `read_arch_pair` and the `arch_pair_question` job kind
+in `extraction/slot_reader/bedrock.py`, and the array support in
 `extraction/slot_reader/claude_output.py`. Fake clients only: no network, no client value.
 """
 
@@ -18,6 +19,7 @@ from evidence.crop import encode_png
 from extraction.form_reader.bedrock import AttemptUsage, MalformedFormAnswer
 from extraction.slot_reader.bedrock import (
     ARCH_PAIR_PROMPT_ID,
+    ARCH_PAIR_PROMPT_IDS,
     ArchPairAnswer,
     CropJob,
     arch_pair_prompt,
@@ -25,11 +27,16 @@ from extraction.slot_reader.bedrock import (
     read_arch_pair,
     read_crops_parallel,
 )
-from extraction.slot_reader.claude_output import ARCH_PAIR_SCHEMA, claude_answer
+from extraction.slot_reader.claude_output import ARCH_MEASURES, ARCH_PAIR_SCHEMA, claude_answer
 
 OPUS = "anthropic.claude-opus-5-5"
 SONNET = "anthropic.claude-sonnet-5-5"
 PNG = encode_png(2, 2, bytes(12))
+
+
+def measured(*measures: str) -> list[dict[str, object]]:
+    """The `architect` part of an answer: A1, A2, ... measure these."""
+    return [{"a": k, "measures": measure} for k, measure in enumerate(measures, start=1)]
 
 
 def reply(payload: object) -> dict[str, Any]:
@@ -71,23 +78,59 @@ def test_the_answer_shape_is_structure_only() -> None:
     assert ARCH_PAIR_SCHEMA == {
         "type": "object",
         "properties": {
+            "architect": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "integer"},
+                        "measures": {"type": "string", "enum": list(ARCH_MEASURES)},
+                    },
+                    "required": ["a", "measures"],
+                    "additionalProperties": False,
+                },
+            },
             "overall": {"type": "integer"},
             "pieces": {"type": "array", "items": {"type": "integer"}},
             "why": {"type": "string"},
         },
-        "required": ["overall", "pieces", "why"],
+        "required": ["architect", "overall", "pieces", "why"],
         "additionalProperties": False,
     }
+    assert ARCH_MEASURES == (
+        "countertop",
+        "cabinet_run",
+        "single_cabinet",
+        "filler_or_end_panel",
+        "wall_to_wall",
+        "clearance_or_gap",
+        "blocking_or_backing",
+        "fixture_or_appliance_centre",
+        "appliance_opening",
+        "height_or_other",
+        "unsure",
+    )
+
+
+def test_v2_is_asked_and_v1_stays_recognisable_in_stored_records() -> None:
+    assert ARCH_PAIR_PROMPT_ID == "arch-pair-v2"
+    assert ARCH_PAIR_PROMPT_IDS == frozenset({"arch-pair-v2", "arch-pair-v1"})
 
 
 def test_an_array_answer_is_checked_item_by_item() -> None:
-    assert claude_answer(reply({"overall": 0, "pieces": [1, 0], "why": "x"}), ARCH_PAIR_SCHEMA)
-    with pytest.raises(MalformedFormAnswer):
-        claude_answer(reply({"overall": 0, "pieces": [1, "2"], "why": "x"}), ARCH_PAIR_SCHEMA)
-    with pytest.raises(MalformedFormAnswer):
-        claude_answer(reply({"overall": 0, "pieces": [True], "why": "x"}), ARCH_PAIR_SCHEMA)
-    with pytest.raises(MalformedFormAnswer):
-        claude_answer(reply({"overall": 0, "pieces": 1, "why": "x"}), ARCH_PAIR_SCHEMA)
+    good = {"architect": measured("countertop"), "overall": 0, "pieces": [1, 0], "why": "x"}
+    assert claude_answer(reply(good), ARCH_PAIR_SCHEMA)
+    for bad in (
+        {**good, "pieces": [1, "2"]},
+        {**good, "pieces": [True]},
+        {**good, "pieces": 1},
+        {**good, "architect": [{"a": 1, "measures": "a cabinet"}]},
+        {**good, "architect": [{"a": 1}]},
+        {**good, "architect": [{"a": "1", "measures": "countertop"}]},
+        {key: value for key, value in good.items() if key != "architect"},
+    ):
+        with pytest.raises(MalformedFormAnswer):
+            claude_answer(reply(bad), ARCH_PAIR_SCHEMA)
 
 
 def test_the_request_shows_one_picture_and_states_its_shape_and_effort() -> None:
@@ -109,7 +152,13 @@ def test_the_prompt_asks_for_the_same_physical_thing_never_a_comparison() -> Non
 
     assert "v1 to v3" in prompt and "a1 to a4" in prompt
     assert "same physical thing" in prompt
-    assert "centre line" in prompt and "never a cabinet width" in prompt
+    assert "every architect dimension" in prompt
+    for measure in ARCH_MEASURES:
+        assert f'"{measure}"' in prompt, measure
+    assert "centre line" in prompt
+    assert "blocking or backing" in prompt
+    assert "between a wall and an object's edge" in prompt
+    assert "never a cabinet or countertop width" in prompt
     for fixture in ("outlet", "sink", "appliance", "artwork"):
         assert fixture in prompt
     assert "do not compare" in prompt
@@ -120,13 +169,24 @@ def test_the_prompt_asks_for_the_same_physical_thing_never_a_comparison() -> Non
     assert not any(character.isdigit() for character in stripped)
 
 
+FOUR = measured("countertop", "single_cabinet", "blocking_or_backing", "unsure")
+
+
 @pytest.mark.parametrize(
     "payload",
     [
-        {"overall": 0, "pieces": [1, 2], "why": "too few pieces"},
-        {"overall": 0, "pieces": [1, 2, 3, 4], "why": "too many"},
-        {"overall": 5, "pieces": [1, 2, 3], "why": "no A5"},
-        {"overall": 0, "pieces": [1, -1, 3], "why": "negative"},
+        {"architect": FOUR, "overall": 0, "pieces": [1, 2], "why": "too few pieces"},
+        {"architect": FOUR, "overall": 0, "pieces": [1, 2, 3, 4], "why": "too many"},
+        {"architect": FOUR, "overall": 5, "pieces": [1, 2, 3], "why": "no A5"},
+        {"architect": FOUR, "overall": 0, "pieces": [1, -1, 3], "why": "negative"},
+        {"architect": FOUR[:3], "overall": 0, "pieces": [1, 2, 3], "why": "A4 not said"},
+        {"architect": [*FOUR, FOUR[0]], "overall": 0, "pieces": [1, 2, 3], "why": "A1 twice"},
+        {
+            "architect": [*FOUR[:3], {"a": 5, "measures": "unsure"}],
+            "overall": 0,
+            "pieces": [1, 2, 3],
+            "why": "A5 instead of A4",
+        },
     ],
 )
 def test_an_answer_outside_the_numbered_marks_is_malformed(payload: dict[str, object]) -> None:
@@ -153,7 +213,12 @@ def test_a_good_answer_is_kept_exactly_as_given() -> None:
     attempts: list[AttemptUsage] = []
     clients = FakeClients(
         lambda _request: reply(
-            {"overall": 4, "pieces": [1, 1, 0], "why": "the two pieces split A1"}
+            {
+                "architect": list(reversed(FOUR)),
+                "overall": 4,
+                "pieces": [1, 1, 0],
+                "why": "the two pieces split A1",
+            }
         )
     )
 
@@ -169,14 +234,29 @@ def test_a_good_answer_is_kept_exactly_as_given() -> None:
         question_packet={"packet_sha256": "abc"},
     )
 
-    assert answer == ArchPairAnswer(SONNET, 4, (1, 1, 0), "the two pieces split A1")
+    assert answer == ArchPairAnswer(
+        SONNET,
+        4,
+        (1, 1, 0),
+        "the two pieces split A1",
+        ("countertop", "single_cabinet", "blocking_or_backing", "unsure"),
+    ), "the measures are kept in A order, whatever order they were given in"
     assert attempts[0].question_packet == {"packet_sha256": "abc"}
     assert attempts[0].raw_response_text is not None
 
 
 def test_the_job_kind_rides_the_shared_batch_under_its_own_prompt_id() -> None:
     attempts: list[AttemptUsage] = []
-    clients = FakeClients(lambda _request: reply({"overall": 0, "pieces": [2], "why": "same"}))
+    clients = FakeClients(
+        lambda _request: reply(
+            {
+                "architect": measured("countertop", "single_cabinet"),
+                "overall": 0,
+                "pieces": [2],
+                "why": "same",
+            }
+        )
+    )
 
     answers = read_crops_parallel(
         [
@@ -203,8 +283,12 @@ def test_the_job_kind_rides_the_shared_batch_under_its_own_prompt_id() -> None:
     )
 
     assert answers == {
-        ("p0:arch-pair", OPUS): ArchPairAnswer(OPUS, 0, (2,), "same"),
-        ("p0:arch-pair", SONNET): ArchPairAnswer(SONNET, 0, (2,), "same"),
+        ("p0:arch-pair", OPUS): ArchPairAnswer(
+            OPUS, 0, (2,), "same", ("countertop", "single_cabinet")
+        ),
+        ("p0:arch-pair", SONNET): ArchPairAnswer(
+            SONNET, 0, (2,), "same", ("countertop", "single_cabinet")
+        ),
     }
     assert {attempt.prompt_id for attempt in attempts} == {ARCH_PAIR_PROMPT_ID}
     assert all(
