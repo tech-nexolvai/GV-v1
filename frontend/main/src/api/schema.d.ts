@@ -1288,6 +1288,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-pairing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Show which architect dimension pairs with which vendor piece on one countertop row */
+        get: operations["get_architect_pairing_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_get"];
+        put?: never;
+        /** Pair the architect's dimensions with one countertop row (or say none is comparable) */
+        post: operations["pair_architect_dimensions_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/review": {
         parameters: {
             query?: never;
@@ -1952,6 +1970,130 @@ export interface components {
              * Format: uuid
              */
             revision_id: string;
+        };
+        /** ArchitectPairIn */
+        ArchitectPairIn: {
+            /**
+             * Architect Candidate Id
+             * Format: uuid
+             */
+            architect_candidate_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "piece" | "overall";
+            /** Vendor Slot Indices */
+            vendor_slot_indices?: number[];
+        };
+        /** ArchitectPairOut */
+        ArchitectPairOut: {
+            /**
+             * Architect Candidate Id
+             * Format: uuid
+             */
+            architect_candidate_id: string;
+            /** Kind */
+            kind: string;
+            /** Vendor Slot Indices */
+            vendor_slot_indices: number[];
+        };
+        /**
+         * ArchitectPairingEffectiveOut
+         * @description The pairing that counts, re-checked against the architect's dimensions as they stand.
+         */
+        ArchitectPairingEffectiveOut: {
+            /** Ai Only */
+            ai_only: boolean;
+            /** Pairs */
+            pairs: components["schemas"]["ArchitectPairOut"][];
+            /** Reasons */
+            reasons: string[];
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Source */
+            source: string;
+            /** Status */
+            status: string;
+        };
+        /**
+         * ArchitectPairingIn
+         * @description A reviewer's pairing for one row. `pairs: []` states that nothing on the architect's drawing
+         *     is comparable with this row.
+         */
+        ArchitectPairingIn: {
+            /** Note */
+            note?: string | null;
+            /** Pairs */
+            pairs: components["schemas"]["ArchitectPairIn"][];
+        };
+        /** ArchitectPairingOut */
+        ArchitectPairingOut: {
+            current: components["schemas"]["ArchitectPairingRecordOut"] | null;
+            effective: components["schemas"]["ArchitectPairingEffectiveOut"] | null;
+            /** Piece Count */
+            piece_count: number;
+            /**
+             * Row Id
+             * Format: uuid
+             */
+            row_id: string;
+            /** Spans */
+            spans: components["schemas"]["ArchitectSpanOut"][];
+        };
+        /** ArchitectPairingRecordOut */
+        ArchitectPairingRecordOut: {
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string | null;
+            /** Note */
+            note: string | null;
+            /** Pairs */
+            pairs: components["schemas"]["ArchitectPairOut"][];
+            /** Reasons */
+            reasons: string[];
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Source */
+            source: string;
+            /** Status */
+            status: string;
+            /** Supersedes Id */
+            supersedes_id: string | null;
+        };
+        /** ArchitectSpanOut */
+        ArchitectSpanOut: {
+            /** Can Pair */
+            can_pair: boolean;
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Held Reason */
+            held_reason: string | null;
+            /** Inches */
+            inches: string | null;
+            /** On Outline */
+            on_outline: boolean | null;
+            /** Printed */
+            printed: string;
+            /** Refusal */
+            refusal: string | null;
+            /** Row */
+            row: number | null;
+            /** Slot */
+            slot: number | null;
         };
         /**
          * AssemblyInput
@@ -6857,6 +6999,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SlotRowsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_architect_pairing_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                row_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchitectPairingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pair_architect_dimensions_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_pairing_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                row_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchitectPairingIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchitectPairingOut"];
                 };
             };
             /** @description Validation Error */
