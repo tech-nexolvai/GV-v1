@@ -275,9 +275,9 @@ def _checked_row() -> CountertopResultOut:
     return _result(
         "Countertop row A",
         Outcome.PASS,
-        printed=Fraction(79, 2),
+        printed=Fraction(163, 4),
         pieces=(Fraction(10), Fraction(14)),
-        expected=Fraction(79, 2),
+        expected=Fraction(163, 4),
         delta=Fraction(0),
     )
 
@@ -290,7 +290,7 @@ def test_pdf_card_says_whether_the_row_matches_the_architect() -> None:
             finding_id=UUID(int=40),
             reason="1 identifiers: 0 pass, 1 fail, 0 not found",
             needs_decision=True,
-            compared=(_compared_overall(Fraction(79, 2), Fraction(42), Outcome.FAIL),),
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
             pairing_source="code",
         ),
     )
@@ -317,7 +317,7 @@ def test_pdf_card_says_whether_the_row_matches_the_architect() -> None:
 
     text = _pdf_text(write_findings_pdf(source))
 
-    assert 'Matches the architect: FAIL (overall: vendor 39 1/2", architect 42")' in text
+    assert 'Matches the architect: FAIL (overall: vendor 40 3/4", architect 44")' in text
     assert (
         "Matches the architect: not compared: The architect prints nothing comparable for this row."
         in text
@@ -364,7 +364,7 @@ def test_the_strip_drawing_is_unchanged_by_the_architect_line() -> None:
             ArchitectResultOut(
                 outcome=Outcome.FAIL,
                 finding_id=UUID(int=40),
-                compared=(_compared_overall(Fraction(79, 2), Fraction(42), Outcome.FAIL),),
+                compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
             ),
         ),
         x=0,
@@ -382,7 +382,7 @@ def test_workbook_has_the_architect_result_as_text_and_exact_numbers() -> None:
             outcome=Outcome.FAIL,
             finding_id=UUID(int=40),
             needs_decision=True,
-            compared=(_compared_overall(Fraction(79, 2), Fraction(42), Outcome.FAIL),),
+            compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.FAIL),),
             pairing_source="code",
         ),
     )
@@ -410,12 +410,12 @@ def test_workbook_has_the_architect_result_as_text_and_exact_numbers() -> None:
     assert row["architect_outcome"] == "FAIL"
     assert (
         row["architect_comparison"]
-        == 'overall: vendor 39 1/2", architect 42", difference -2 1/2" (FAIL)'
+        == 'overall: vendor 40 3/4", architect 44", difference -3 1/4" (FAIL)'
     )
     assert row["architect_not_compared_reason"] in ("", None)
-    assert row["architect_overall_vendor_in"] == 39.5
-    assert row["architect_overall_architect_in"] == 42
-    assert row["architect_overall_difference_in"] == -2.5
+    assert row["architect_overall_vendor_in"] == 40.75
+    assert row["architect_overall_architect_in"] == 44
+    assert row["architect_overall_difference_in"] == -3.25
     # A third is exact only as text: no rounded number is written.
     other = next(item for item in rows if item["architect_pairing_source"] == "reviewer")
     assert other["architect_overall_vendor_in"] in ("", None)

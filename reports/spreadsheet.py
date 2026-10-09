@@ -473,7 +473,7 @@ def architect_line(result: CountertopResultOut) -> str:
     """One plain line: does this countertop match the architect's drawing (#1054)?
 
     Repeats the recorded result; it never compares anything itself. `Matches the architect: FAIL
-    (overall: vendor 39 1/2", architect 42")`, or `... not compared: <reason>` when the check wrote
+    (overall: vendor 40 3/4", architect 44")`, or `... not compared: <reason>` when the check wrote
     nothing for this row.
     """
     block = result.architect
