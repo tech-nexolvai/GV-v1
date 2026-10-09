@@ -588,9 +588,10 @@ class SlotRowReviewDecision(Base, TimestampedUUID, Immutable):
     )
 
 
-ARCHITECT_PAIRING_SOURCES = ("code", "both-ais", "reviewer", "none")
-"""Who decided an architect pairing (#1053): code by drawn position, both Claude readers with
-identical answers, a reviewer, or nobody (the readers disagreed or refused)."""
+ARCHITECT_PAIRING_SOURCES = ("code+ais", "code", "both-ais", "reviewer", "none")
+"""Who decided an architect pairing (#1053): code by drawn position and both Claude readers alike
+(`code+ais`, the only automatic pairing), code alone, both Claude readers alone (each one judgment,
+confirmed by a reviewer), a reviewer, or nobody."""
 
 ARCHITECT_PAIRING_STATUSES = (
     "paired",
@@ -637,7 +638,7 @@ class ArchitectPairingRecord(Base, TimestampedUUID, Immutable):
 
     __table_args__ = (
         CheckConstraint(
-            "source IN ('code', 'both-ais', 'reviewer', 'none')",
+            "source IN ('code+ais', 'code', 'both-ais', 'reviewer', 'none')",
             name="architect_pairing_source",
         ),
         CheckConstraint(

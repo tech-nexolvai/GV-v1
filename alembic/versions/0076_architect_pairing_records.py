@@ -1,7 +1,7 @@
 """Append-only records of which architect dimension pairs with which vendor piece (#1053).
 
-One automatic record per vendor countertop row per extraction run (code by drawn position, both
-Claude readers with identical answers, or nobody), and a reviewer's pairing as a new record that
+One automatic record per vendor countertop row per extraction run (code by drawn position and both
+Claude readers alike, either one alone, or nobody), and a reviewer's pairing as a new record that
 supersedes the latest. Never edited: the same append-only trigger as every other evidence table.
 
 Revision ID: 0076_architect_pairing_records
@@ -68,7 +68,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("id", "row_anchor_candidate_id", name="uq_architect_pairing_id_row"),
         sa.CheckConstraint(
-            "source IN ('code', 'both-ais', 'reviewer', 'none')",
+            "source IN ('code+ais', 'code', 'both-ais', 'reviewer', 'none')",
             name="architect_pairing_source",
         ),
         sa.CheckConstraint(
