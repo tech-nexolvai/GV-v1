@@ -1,4 +1,5 @@
-import { CircleDashed } from 'lucide-react';
+import { useId, useState } from 'react';
+import { ChevronDown, CircleDashed } from 'lucide-react';
 
 import type { ArchitectCompared, ArchitectResult } from '@/api/client';
 import { cn } from '@/lib/utils';
@@ -134,5 +135,47 @@ export function ArchitectPairs({ result }: { result: ArchitectResult }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * One quiet notice above the table (#1126) when every countertop is "not compared" with the
+ * architect for the same reason: said once, not under every row. The reason is the API's own text,
+ * behind "Why?"; each row's details still carry it too.
+ */
+export function ArchitectNotice({ reason, className }: { reason: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const notYet = reason.startsWith('Not checked yet');
+  // The headline already says "not compared" / "not checked yet": the reason is not prefixed twice.
+  const body = reason.replace(/^(Not compared|Not checked yet):\s*/, '');
+  const shown = body.charAt(0).toUpperCase() + body.slice(1);
+  return (
+    <section
+      data-slot="architect-notice"
+      aria-label="Matches the architect"
+      className={cn('flex flex-col gap-1.5 rounded-xl border border-dashed px-4 py-2.5 font-sans text-sm text-muted-foreground', className)}
+    >
+      <div className="flex items-start gap-2">
+        <CircleDashed className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p className="min-w-0">
+          <span className="font-medium text-foreground">Matches the architect:</span>{' '}
+          {notYet ? 'not checked yet on any countertop' : 'not compared on any countertop'}{' '}
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={id}
+            onClick={() => setOpen((value) => !value)}
+            className="inline-flex items-center gap-0.5 rounded-md align-baseline text-xs whitespace-nowrap underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Why?
+            <ChevronDown className={cn('size-3.5 self-center transition-transform motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
+          </button>
+        </p>
+      </div>
+      <p id={id} hidden={!open} data-slot="architect-notice-reason" className="max-w-3xl pl-6 text-xs">
+        {shown}
+      </p>
+    </section>
   );
 }

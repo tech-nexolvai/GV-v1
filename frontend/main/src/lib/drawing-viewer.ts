@@ -306,16 +306,21 @@ export function inchMarks(value: string): string {
   return value.replace(/ in\b/g, '"');
 }
 
-/** One line for a result with no crops, and the reason behind the "?". */
-export function noCropsReason(chain: Pick<Chain, 'operands' | 'trace'> | null, row: Pick<CountertopResult, 'hold' | 'finding_id'> | null): { line: string; why: string } {
+/**
+ * One line for a result with no crops, the reason behind the "?", and, for a held result, the hold
+ * reason said on screen (#1126): "No readings used" and why, never "The check did not run".
+ */
+export function noCropsReason(chain: Pick<Chain, 'operands' | 'trace'> | null, row: Pick<CountertopResult, 'hold' | 'finding_id'> | null): { line: string; why: string; reason?: string } {
   if (row && row.finding_id === null) {
     return { line: 'Not checked yet', why: 'This countertop has no recorded result yet, so there are no readings to show. Run the checks from Measurements.' };
   }
   if (chain?.trace.kind === 'abstention') {
-    return {
-      line: 'The check did not run',
-      why: `No reading was used, so there is nothing to crop. ${row?.hold?.reason ?? chain.trace.reason ?? 'The reason is in the result.'}`,
-    };
+    const reason = row?.hold?.reason || chain.trace.reason || null;
+    // Said from the trace's own cause: only a hold is called "held" (a budget stop is not one).
+    const why = chain.trace.cause === 'held'
+      ? 'The check was held before it used any reading, so there is nothing to crop.'
+      : 'No reading was used for this result, so there is nothing to crop.';
+    return { line: 'No readings used', why, ...(reason ? { reason } : {}) };
   }
   if (chain && (chain.operands ?? []).length > 0) {
     return { line: 'No drawing crops', why: 'This result uses values that were typed or set, not read from the drawing, so no crop is expected.' };

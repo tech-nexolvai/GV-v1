@@ -97,8 +97,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SAMPLE_BY_PAGE, SAMPLE_FINDINGS, SAMPLE_TOTALS, type SampleFinding } from './sample-data';
-import type { ArchitectResult } from '@/api/client';
-import { ArchitectLine, ArchitectPairs } from '@/components/results/architect-line';
+import type { ArchitectResult, CountertopResult } from '@/api/client';
+import { ArchitectLine, ArchitectNotice, ArchitectPairs } from '@/components/results/architect-line';
+import { CountertopTable } from '@/components/results/countertop-table';
+import { ListedPages } from '@/components/results/no-countertop-pages';
+import { NoCrops } from '@/components/drawing/evidence-crops';
 
 const ALL_OUTCOMES: Outcome[] = ['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE'];
 
@@ -404,6 +407,54 @@ export function ArchitectSection() {
         <div className="flex flex-col gap-1">
           <span className="text-xs text-muted-foreground">Every compared pair (row details)</span>
           <ArchitectPairs result={sampleArchitect({ outcome: 'FAIL', compared: FAIL_PAIRS })} />
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+/* ── Results: said once, quiet notes (#1126) ──────────────────────────────── */
+
+const SAMPLE_NOT_COMPARED = 'No architect dimension on this sheet measures a countertop or a cabinet run, so there is nothing to compare.';
+function sampleRow(id: string, page: number, extra: Partial<CountertopResult>): CountertopResult {
+  return {
+    finding_id: `sample-${id}`, row_id: id, page_number: page, label: `Countertop row ${page}.1`, row_location: null,
+    outcome: 'PASS', needs_decision: false, printed_overall: sampleValue('84', '84"'),
+    pieces: [{ index: 0, value: sampleValue('42', '42"'), source: 'sealed', kind: 'cabinet' }, { index: 1, value: sampleValue('42', '42"'), source: 'sealed', kind: 'cabinet' }],
+    field_cut_per_end: sampleValue('0', '0"'), field_cut_count: 0, expected_total: sampleValue('84', '84"'), delta: sampleValue('0', '0"'),
+    hold: null, reviewer_decision: null, drawn_length_note: null,
+    wall_layout: { config: 'back_only', label: 'back wall only', source: 'drawing clues' },
+    agreement: { both_readers_agreed_on_row: true, code_clue_used: true, values_agreed: [true, true] },
+    architect: sampleArchitect({ outcome: null, finding_id: null, compared: [], pairing_source: null, pairing_judgments: null, not_compared_reason: SAMPLE_NOT_COMPARED }),
+    ...extra,
+  } as CountertopResult;
+}
+const RESULT_SAMPLES: CountertopResult[] = [
+  sampleRow('noted', 2, { drawn_length_note: 'Drawn length not checked (no scale): piece 2, the overall' }),
+  sampleRow('walls', 5, {
+    outcome: 'REVIEW_REQUIRED', needs_decision: true, delta: null, expected_total: null,
+    wall_layout: { config: null, label: null, source: 'not established' },
+  }),
+];
+const SAMPLE_ACTIONS = { onShowDrawing: () => {}, onOpenCard: () => {}, onDecide: () => {}, canDecide: () => false };
+
+export function ResultsNotesSection() {
+  return (
+    <Section
+      id="results-notes"
+      title="Results: said once"
+      lead="A reason every countertop shares is one notice above the table. The drawn-length note sits on its own row. Pages and lines that were not checked are listed, never blocking."
+    >
+      <div className="flex flex-col gap-3">
+        <ArchitectNotice reason={SAMPLE_NOT_COMPARED} />
+        <CountertopTable rows={RESULT_SAMPLES} actions={SAMPLE_ACTIONS} architectNotice />
+        <ListedPages
+          pagesWithoutCountertop={[{ page_number: 15, reason: 'Both AIs saw only tall units on this page.' }]}
+          rowsNotChecked={[{ page_number: 4, reason: 'An AI named a second countertop line on this page; one line per page is read.' }]}
+        />
+        <div className="rounded-xl border bg-card p-4">
+          <span className="text-xs text-muted-foreground">Drawing panel, a held result</span>
+          <NoCrops line="No readings used" why="The check was held before it used any reading, so there is nothing to crop." reason="The stone stops short of the walls, so the check was held." />
         </div>
       </div>
     </Section>

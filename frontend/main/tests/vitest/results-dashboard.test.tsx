@@ -160,7 +160,7 @@ describe('results dashboard', () => {
     expect(tableRows().map((r) => r.dataset.rowId).sort()).toEqual(['fail-open-p12', 'fail-p2']);
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
     expect(legend.textContent).toMatch(/FAIL\s*2\s*1 needs you/);
-    await user.click(screen.getByRole('radio', { name: /All\s*6/ }));
+    await user.click(screen.getByRole('radio', { name: 'All' }));
     expect(props.onFilterChange).toHaveBeenCalledWith('all');
   }, 15_000);
 
@@ -171,7 +171,7 @@ describe('results dashboard', () => {
     expect(props.onFilterChange).toHaveBeenCalledWith('fail');
     rerender(<ResultsDashboard {...props} filter="fail" />);
     expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['fail-p2']);
-    await user.click(screen.getByRole('radio', { name: /All\s*5/ }));
+    await user.click(screen.getByRole('radio', { name: 'All' }));
     expect(props.onFilterChange).toHaveBeenCalledWith('all');
     rerender(<ResultsDashboard {...props} filter="held" />);
     expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['held-p5', 'need-p9']);

@@ -8,6 +8,7 @@ import { useAsync } from '@/api/useAsync';
 import type { Page } from '@/app/route';
 import type { Theme } from '@/app/theme';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
+import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import {
   Sidebar,
   SidebarContent,
@@ -197,9 +198,12 @@ export function AppSidebar({
                         <span className="w-full truncate font-medium">{pkg.vendor ?? 'Untitled document set'}</span>
                         <span className="flex w-full flex-wrap items-center gap-1.5">
                           <PackageStatusBadge status={pkg.state} />
+                          {/* The open review's number is on its header and Results tab (#1126): here it
+                              only says that it needs you. Other reviews keep their number. */}
                           {count !== undefined && count > 0 && (
-                            <span className="text-xs text-outcome-review-fg">
-                              <span className="num">{count}</span> need you
+                            <span data-slot="need-you" className="inline-flex items-center gap-1 text-xs text-outcome-review-fg">
+                              <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} className="shrink-0" />
+                              {active ? 'Needs you' : <span><span className="num">{count}</span> need you</span>}
                             </span>
                           )}
                           {pkg.current_revision_number > 1 && (

@@ -75,12 +75,12 @@ function Thumb({ page, selected, cache, projectId, packageId, onPick }: { page: 
         {state.status === 'ready' ? <img src={state.url} alt="" className="size-full bg-white object-contain" /> : <span className="num text-xs text-muted-foreground">{page.page}</span>}
       </span>
       <span className="flex items-center justify-between gap-1">
-        <span className="num text-[11px] font-medium">p{page.page}</span>
+        <span className="num text-xs font-medium">p{page.page}</span>
         <span className="flex items-center gap-0.5" aria-hidden="true">
           {shown.map((t) => (
             <OutcomeIcon key={t.key} outcome={t.glyph} size={11} className={GLYPH_COLOUR[t.tone]} />
           ))}
-          {page.targets.length > shown.length && <span className="num text-[10px] text-muted-foreground">+{page.targets.length - shown.length}</span>}
+          {page.targets.length > shown.length && <span className="num text-xs text-muted-foreground">+{page.targets.length - shown.length}</span>}
         </span>
       </span>
     </button>

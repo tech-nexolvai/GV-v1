@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CountertopResult } from '@/api/client';
@@ -149,8 +149,13 @@ describe('drawing viewer: what is shown', () => {
   });
 
   it('says in one line why there are no crops', () => {
-    expect(noCropsReason(CHAIN_C, C).line).toBe('The check did not run');
-    expect(noCropsReason(CHAIN_C, C).why).toContain('Synthetic hold reason.');
+    // A held result used no reading: said so, with the hold reason on screen (#1126).
+    expect(noCropsReason(CHAIN_C, C).line).toBe('No readings used');
+    expect(noCropsReason(CHAIN_C, C).reason).toBe('Synthetic hold reason.');
+    expect(noCropsReason(CHAIN_C, C).why).toContain('held');
+    // Only a hold is called "held": another abstention (a budget stop) is said neutrally.
+    const budget = { operands: [], trace: { kind: 'abstention' as const, cause: 'budget', reason: 'Synthetic: the model budget ran out.' } };
+    expect(noCropsReason(budget, { hold: null, finding_id: 'f' })).toEqual({ line: 'No readings used', why: 'No reading was used for this result, so there is nothing to crop.', reason: 'Synthetic: the model budget ran out.' });
     expect(noCropsReason(null, { hold: null, finding_id: null }).line).toBe('Not checked yet');
   });
 });
@@ -299,12 +304,34 @@ describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
     expect(document.querySelector('[data-reading="obs-p1"] title')!.textContent).toBe('Filler 2: 20"');
   });
 
-  it('a held row shows one line with a "?" instead of crops, and its hold reason in the header', async () => {
+  it('a held row says "No readings used" with its hold reason instead of crops, and the reason in the header', async () => {
     open(targetFromRow(C));
-    expect(await screen.findByText('The check did not run', undefined, { timeout: 5000 })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Why: The check did not run' })).toBeTruthy();
+    expect(await screen.findByText('No readings used', undefined, { timeout: 5000 })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Why: No readings used' })).toBeTruthy();
+    expect(document.querySelector('[data-slot="no-crops-reason"]')?.textContent).toBe('Synthetic hold reason.');
+    expect(screen.queryByText(/did not run/)).toBeNull();
+    // Said once in the panel: not again under the picture.
+    expect(document.querySelector('[data-slot="drawing-hold-reason"]')).toBeNull();
     expect(screen.getByText('Held: Synthetic hold reason.')).toBeTruthy();
     expect(document.querySelectorAll('[data-reading-crop]')).toHaveLength(0);
+  });
+
+  it('a held row whose check did use readings says its hold reason under the picture', async () => {
+    const held = row('a', 12, { hold: { code: 'stone-into-walls', reason: 'Synthetic: held for the walls.' } });
+    open(targetFromRow(held), vi.fn(), [held, B]);
+    await waitFor(() => expect(document.querySelectorAll('[data-slot="crop-value"]').length).toBeGreaterThan(0), { timeout: 5000 });
+    expect(document.querySelector('[data-slot="drawing-evidence"] [data-slot="drawing-hold-reason"]')?.textContent).toBe('Synthetic: held for the walls.');
+  });
+
+  it('the side panel shows the row\'s "drawn length not checked" note under its picture, and nothing when there is none (#1107)', async () => {
+    const NOTE = 'Drawn length not checked (no scale): piece 2, the overall';
+    const noted = row('noted', 12, { drawn_length_note: NOTE });
+    open(targetFromRow(noted), vi.fn(), [noted, B]);
+    const panel = document.querySelector('[data-slot="drawing-evidence"]') as HTMLElement;
+    expect(panel.querySelector('[data-slot="drawn-length-note"]')?.textContent).toBe(NOTE);
+    cleanup();
+    open(targetFromRow(row('plain', 12, { drawn_length_note: null })));
+    expect(document.querySelector('[data-slot="drawing-evidence"] [data-slot="drawn-length-note"]')).toBeNull();
   });
 
   it('a page that is not in the set is an error, not "not ready"', async () => {
