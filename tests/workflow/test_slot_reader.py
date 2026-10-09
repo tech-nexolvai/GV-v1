@@ -2312,3 +2312,177 @@ def test_box_numbers_are_drawn_in_a_real_typeface_so_three_never_reads_as_eight(
         return sum(sum(row) for row in lower_left)
 
     assert left_ink(masks[8]) > left_ink(masks[3])
+
+
+# --- #1086: a row of N unlabelled pieces read through the vendor's `X"(N EQ)` chain ---------------
+
+#: The glyph sheet's chain, drawn to scale (0.24" a point): pieces 12", 24" as two equal shares,
+#: 12", overall 48". Invented values.
+EQ_TEXTS: dict[int | None, str] = {0: '12"', 1: '24"(2 EQ)', 2: '12"', None: '48"'}
+
+
+def _blank_row(
+    chain: Any, *, pieces: int, shift: Decimal = Decimal(0), y: Decimal | None = None
+) -> Any:
+    """The same run as `chain`, `pieces` equal pieces with nothing printed on them, drawn below it
+    in the same pasted drawing (or at `y`), its ends moved by `shift`."""
+    from itertools import pairwise
+
+    from extraction.geometry.rows import Slot
+
+    x0, x1 = chain.x0 + shift, chain.x1 + shift
+    line = chain.y + 40 if y is None else y
+    ticks = tuple(x0 + (x1 - x0) * i / pieces for i in range(pieces + 1))
+    slots = tuple(
+        Slot(
+            index=i,
+            x0=a,
+            x1=b,
+            box=Box(a, line - 16, b, line + 16),
+            stored=chain.slots[0].stored,
+            labels=(),
+        )
+        for i, (a, b) in enumerate(pairwise(ticks))
+    )
+    return replace(chain, y=line, ticks=ticks, slots=slots, overall=None, rank=1)
+
+
+def _equal_share_read(
+    texts: Mapping[int | None, str] = EQ_TEXTS,
+    *,
+    pieces: int = 2,
+    shift: Decimal = Decimal(0),
+    y: Decimal | None = None,
+    blank_text: str = "",
+) -> tuple[PageSlotResult, FakeReaders, Any, Any]:
+    """Both readers choose the blank row (box 1); the chain with its overall is box 2."""
+    from workflow.slot_reader import _claude_span_plan
+
+    page = slot_page(sheets.sheet(sheets.glyph_labels()))
+    chain = replace(page.rows.candidates.rows.candidates[0], rank=2)
+    blank = _blank_row(chain, pieces=pieces, shift=shift, y=y)
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(blank, chain), rejected=()),
+            ),
+        ),
+    )
+    chain_plan = _claude_span_plan(
+        page,
+        plan_slots(
+            page.rows.candidates.rows,
+            page.rows.ink,
+            settings=E2_CROP_SETTINGS,
+            row_settings=MEASURED_SETTINGS,
+            selected_row=chain,
+            row_choice_made=True,
+        ),
+    )
+    chain_crops = {
+        _crop_png(
+            page.rendered, _pixels(page.rows, owner.labels[0].crop, page.rendered)
+        ): texts.get(owner.index, "")
+        for owner in (*chain_plan.slots, *((chain_plan.overall,) if chain_plan.overall else ()))
+    }
+    readers = FakeReaders(lambda _model, png: chain_crops.get(png, blank_text))
+    (result,) = read_slot_pages(
+        [page],
+        runtime=runtime(readers, claude_row_reader=True),
+        record_attempt=lambda _attempt: None,
+    )
+    return result, readers, blank, chain
+
+
+def test_blank_pieces_are_read_through_the_equal_share_chain_with_the_same_ends() -> None:
+    result, readers, blank, chain = _equal_share_read()
+
+    assert result.row_choice_number == 1, "the readers' own choice is kept on record"
+    assert result.read_through is blank
+    assert result.plan.row is chain
+    values = [slot.outcome.value.exact if slot.outcome.value else None for slot in result.slots]
+    assert values == [12, 24, 12]
+    assert all(slot.outcome.state is LabelState.SEALED for slot in result.slots)
+    assert result.overall is not None and result.overall.outcome.value is not None
+    assert result.overall.outcome.value.exact == 48
+    assert {p.field_key for p in result.mapping.proposals} >= {OVERALL_FIELD, PIECE_FIELD}
+    # Each reader read the blank row's two pieces, then the chain's three pieces and overall.
+    assert len(readers.requests) == 2 * (2 + 4)
+
+
+def test_a_share_count_that_is_not_the_blank_piece_count_changes_nothing() -> None:
+    result, _readers, blank, _chain = _equal_share_read(EQ_TEXTS | {1: '24"(3 EQ)'})
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert all(slot.outcome.reason_code == "no-label" for slot in result.slots)
+    assert not result.mapping.proposals
+
+
+def test_blank_pieces_whose_ends_are_off_the_chains_are_never_read_through_it() -> None:
+    off = MEASURED_SETTINGS.overall_end_pt + Decimal("0.5")
+    result, readers, blank, _chain = _equal_share_read(shift=off)
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert len(readers.requests) == 2 * 2, "the chain is not even read"
+
+
+def test_blank_pieces_in_another_pasted_drawing_are_never_read_through_the_chain() -> None:
+    # The stamp's drawing ends at 250 points from the top of the page; this row lies below it.
+    result, readers, blank, _chain = _equal_share_read(y=Decimal(280))
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert len(readers.requests) == 2 * 2
+
+
+def test_a_chosen_row_with_anything_read_on_it_is_never_read_through_the_chain() -> None:
+    result, readers, blank, _chain = _equal_share_read(blank_text='9"')
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert len(readers.requests) == 2 * 2
+
+
+def test_an_unread_end_piece_on_the_chain_changes_nothing() -> None:
+    result, _readers, blank, _chain = _equal_share_read(EQ_TEXTS | {0: ""})
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert not result.mapping.proposals
+
+
+def test_a_chain_without_equal_shares_changes_nothing() -> None:
+    result, _readers, blank, _chain = _equal_share_read(EQ_TEXTS | {1: '24"'})
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+
+
+def test_a_chain_read_through_persists_its_rows_rank_and_the_chosen_rows(session: Any) -> None:
+    from workflow.slot_reader import CLAUDE_SPAN_PROMPT_ID, persist_slot_readings
+
+    result, _readers, blank, chain = _equal_share_read()
+    revision, version, page_row, run = _scaffold(session)
+    result = replace(result, page_id=page_row.id, document_version_id=version.id)
+
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+        prompt_id=CLAUDE_SPAN_PROMPT_ID,
+    )
+
+    found = _by_slot(session, run)
+    for key in ("slot:0", "slot:1", "slot:2", "slot:overall"):
+        flags = found[key].ambiguity_flags
+        assert f"row-rank:{chain.rank}" in flags
+        assert f"equal-shares-for-row-rank:{blank.rank}" in flags
+        assert found[key].corroboration_status == "CORROBORATED"
+    assert f"row-rank:{chain.rank}" in found["walls"].ambiguity_flags
