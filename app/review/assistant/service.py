@@ -52,12 +52,13 @@ from app.review.assistant.model import (
     build_request,
     parse_answer,
 )
-from app.review.assistant.placeholders import record_fields
+from app.review.assistant.placeholders import placeholder_guide
 from app.review.assistant.records import ReviewSnapshot, prompt_records
 from app.review.assistant.records_only import (
     NO_ANSWER_IN_RECORDS,
     answer_for_question,
     fallback_answer,
+    glossary_answer,
     judging_answer,
 )
 from app.runs.invocations import BedrockConverseInvocationRecorder
@@ -174,12 +175,14 @@ def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
         page = focus.page_number
     actions: list[tuple[str, str]] = []
     if page is not None:
+        # A page the records do not have gets no button: never one to an unrelated item.
         waiting = next((item for item in snapshot.on_page(page) if item.needs_you), None)
         if waiting is not None:
             actions.append(("open_queue_item", waiting.id))
         elif page in snapshot.pages():
             actions.append(("open_page", f"P{page}"))
-    if not actions and focus is not None and focus.record_id is not None:
+        return Draft(text=REFUSAL_TEXT, actions=tuple(actions))
+    if focus is not None and focus.record_id is not None:
         record = snapshot.by_record_id(focus.record_id)
         if record is not None:
             actions.append(("open_queue_item", record.id))
@@ -251,6 +254,21 @@ def stream_answer(
         )
         return
 
+    glossary = glossary_answer(question)
+    if glossary is not None:
+        # What an app word means: a fixed explanation in code, no model and no record facts.
+        yield _stage("guard")
+        yield (
+            "answer",
+            _publish_safely(
+                _checked_or_plain(glossary, snapshot),
+                snapshot,
+                mode="records_only",
+                question=question,
+            ),
+        )
+        return
+
     if is_judging_question(question):
         # Asked to judge: the recorded outcome and whose decision it is, never a model's view.
         _log.info("review assistant answered a request to judge from the records", extra=log)
@@ -287,11 +305,14 @@ def stream_answer(
         )
         return
 
-    history = request.history[-runtime.max_history_turns :] if runtime.max_history_turns else ()
+    # Only the reviewer's own earlier questions go back to the model: text a client says the
+    # assistant wrote is not trusted, so it never reaches the prompt.
+    asked = tuple(turn for turn in request.history if turn.role == "user")
+    history = asked[-runtime.max_history_turns :] if runtime.max_history_turns else ()
     built = build_request(
         model_id=model.model_id,
         records_json=prompt_records(snapshot),
-        placeholders=record_fields(snapshot),
+        placeholders=placeholder_guide(snapshot),
         question=question,
         history=history,
         focus=request.focus,

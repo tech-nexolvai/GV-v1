@@ -18,13 +18,16 @@ from app.review.assistant.placeholders import Slot, UnknownPlaceholder, value_of
 from app.review.assistant.records import CountertopRecord, FindingRecord, ReviewSnapshot
 
 __all__ = [
+    "GLOSSARY",
     "NOTHING_ON_THAT_PAGE",
     "NOTHING_TO_DECIDE_THERE",
     "NO_ANSWER_IN_RECORDS",
     "YOUR_DECISION",
     "answer_for_question",
     "blockers_answer",
+    "details_answer",
     "fallback_answer",
+    "glossary_answer",
     "judging_answer",
     "records_answer",
 ]
@@ -57,6 +60,110 @@ _FAIL_WORDS: Final = re.compile(r"\bfail|wrong|correction|incorrect|off by|misma
 _NEED_WORDS: Final = re.compile(
     r"need(?:s)? (?:me|you|my|a decision)|held|hold|decide|decision|review"
 )
+_DETAIL_WORDS: Final = re.compile(
+    r"\bwalls?\b|\bwhat (?:was|were) read\b|\breadings?\b|\bpieces?\b|\bfield cut|"
+    r"\bvalues?\b|\bmeasure|\bnumbers\b|\bdimensions?\b"
+)
+_FIX_WORDS: Final = re.compile(
+    r"\bfix|\bhow do i (?:correct|solve|sort)|\bwhat (?:do|should) i tell"
+)
+
+#: Plain-word answers to "what does … mean?": the app's own vocabulary, no record facts.
+GLOSSARY: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (
+        re.compile(r"\bheld\b|\bhold\b|on hold"),
+        (
+            "Held means the app stopped before checking a countertop because it could not read it "
+            "safely, for example when the readers picked different countertop lines. Nothing is "
+            "checked; the countertop waits in the queue for you to look at it on the drawing."
+        ),
+    ),
+    (
+        re.compile(r"needs? correction"),
+        (
+            "Needs correction means the vendor's printed dimension and the dimension the rulebook "
+            "calls for, from the pieces and field cuts the vendor drew, are not the same. You decide "
+            "in the queue what goes back to the vendor."
+        ),
+    ),
+    (
+        re.compile(r"needs? (?:your|my) decision|review required"),
+        (
+            "Needs your decision means the app could not settle the check by itself, so it waits "
+            "for you in the queue. Nothing about it was judged."
+        ),
+    ),
+    (
+        re.compile(r"waiting on a value|not found"),
+        (
+            "Waiting on a value means a number the check needs is missing, so the check could not "
+            "run. Entering the value lets it run."
+        ),
+    ),
+    (
+        re.compile(r"looks? right"),
+        (
+            "Looks right means the vendor's printed dimension and the dimension the rulebook calls "
+            "for are exactly the same."
+        ),
+    ),
+    (
+        re.compile(r"field cut"),
+        (
+            "A field cut is extra stone left at an end that meets a wall, so the installers can trim "
+            "it to the real wall on site. The rulebook adds it to the pieces at each wall end."
+        ),
+    ),
+    (
+        re.compile(r"\bexception|\baccept|\breject|\bdismiss|\bapprov|\bconfirm"),
+        (
+            "In the queue you confirm a result, correct a value that was read wrongly, accept a result "
+            "as an exception with a note, or dismiss it. Each is your own decision and is recorded "
+            "with your name; sign-off approves the whole review. The assistant cannot do any of "
+            "these."
+        ),
+    ),
+    (
+        re.compile(r"\bdifference\b|\bgap\b"),
+        (
+            "The difference is the vendor's printed overall minus the overall the rulebook calls for "
+            "from the pieces and field cuts. A minus sign means the printed overall is the smaller "
+            "of the two."
+        ),
+    ),
+    (
+        re.compile(r"\bfiller"),
+        (
+            "A filler is a narrow panel between cabinets or at a wall that takes up the leftover "
+            "space. It counts as a piece under the countertop."
+        ),
+    ),
+    (
+        re.compile(r"sign[ -]?off"),
+        (
+            "Sign-off is your approval of the whole review. It is possible once every finding has a "
+            "valid decision from you; the panel shows what still stands in the way."
+        ),
+    ),
+    (
+        re.compile(r"\boverall\b"),
+        (
+            "The overall is the full length of the countertop the vendor printed on the drawing; the "
+            "rulebook compares it with the pieces underneath plus the field cuts."
+        ),
+    ),
+    (
+        re.compile(r"carried over"),
+        (
+            "Carried over means you decided this result before the checks ran again, nothing it rests "
+            "on changed, so your decision still stands."
+        ),
+    ),
+)
+_GLOSSARY_QUESTION: Final = re.compile(
+    r"\bwhat (?:does|do) .*\bmean\b|\bmeaning of\b|\bwhat(?: is| are|'s) (?:a|an|the)\b|"
+    r"\bwhat would (?:that|it|this) do\b|\bdefine\b|\bexplain the term\b|\bwhat happens when\b"
+)
 
 
 def _folded(question: str) -> str:
@@ -73,40 +180,59 @@ def _has(snapshot: ReviewSnapshot, key: str, field: str) -> bool:
     return True
 
 
-def _record_lines(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> list[str]:
-    """One sentence per fact the record holds, each a placeholder of that record."""
+def _subject(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str:
     key = item.id
-
-    def has(field: str) -> bool:
-        return _has(snapshot, key, field)
-
     if isinstance(item, CountertopRecord):
-        lines = [f"The countertop on {{{key}.page}} ({{{key}.label}}) {{{key}.outcome}}."]
-        values = [
-            f"{{{key}.{field}}}" for field in ("printed", "needed", "difference") if has(field)
-        ]
-        if values:
-            lines.append("; ".join(values) + ".")
-        if has("tolerance"):
-            lines.append(f"{{{key}.check}}, {{{key}.tolerance}}.")
+        return f"The countertop on {{{key}.page}} ({{{key}.label}})"
+    where = f" on {{{key}.page}}" if _has(snapshot, key, "page") else ""
+    return f"The {{{key}.check}} check{where}"
+
+
+def _record_lines(
+    snapshot: ReviewSnapshot,
+    item: CountertopRecord | FindingRecord,
+    fields: Sequence[str] | None = None,
+) -> str:
+    """The record's outcome as a header, then one list line per fact it holds."""
+    key = item.id
+    if fields is None:
+        if isinstance(item, CountertopRecord):
+            fields = (
+                "printed",
+                "needed",
+                "difference",
+                "tolerance",
+                "reason",
+                "hold_reason",
+                "drawn_length_note",
+                "architect",
+                "needs_you",
+            )
+        else:
+            fields = ("reason", "comparison", "tolerance", "needs_you")
+    lines: list[str] = []
+    for field in fields:
+        if not _has(snapshot, key, field):
+            continue
         if (
-            has("reason")
-            and item.outcome != "PASS"
-            and item.rule is not None
-            and item.rule.reason != item.hold_reason
+            field == "reason"
+            and isinstance(item, CountertopRecord)
+            and (item.outcome == "PASS" or (item.rule and item.rule.reason == item.hold_reason))
         ):
-            lines.append(f"{{{key}.reason}}.")
-        fields = ("hold_reason", "drawn_length_note", "architect", "decision", "needs_you")
-    else:
-        where = f" on {{{key}.page}}" if has("page") else ""
-        lines = [f"The {{{key}.check}} check{where} {{{key}.outcome}}."]
-        fields = ("reason", "comparison", "tolerance", "decision", "needs_you")
-    lines.extend(f"{{{key}.{field}}}." for field in fields if has(field))
-    return lines
+            continue
+        lines.append(f"- {{{key}.{field}}}")
+    if item.decision is not None and item.decision.note:
+        lines.append(f"- {{{key}.decision}}")
+    header = f"{_subject(snapshot, item)} {{{key}.outcome}}"
+    return "\n".join([header + (":" if lines else "."), *lines])
 
 
-def _explain(snapshot: ReviewSnapshot, items: Sequence[CountertopRecord | FindingRecord]) -> Draft:
-    paragraphs = [" ".join(_record_lines(snapshot, item)) for item in items[:MAX_EXPLAINED]]
+def _explain(
+    snapshot: ReviewSnapshot,
+    items: Sequence[CountertopRecord | FindingRecord],
+    fields: Sequence[str] | None = None,
+) -> Draft:
+    paragraphs = [_record_lines(snapshot, item, fields) for item in items[:MAX_EXPLAINED]]
     if len(items) > MAX_EXPLAINED:
         paragraphs.append("The rest are listed in the queue.")
     return Draft(
@@ -130,11 +256,7 @@ def _actions_for(items: Sequence[CountertopRecord | FindingRecord]) -> tuple[tup
 
 
 def _list_line(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str:
-    key = item.id
-    if isinstance(item, CountertopRecord):
-        return f"- The countertop on {{{key}.page}} ({{{key}.label}}) {{{key}.outcome}}"
-    where = f" on {{{key}.page}}" if _has(snapshot, key, "page") else ""
-    return f"- The {{{key}.check}} check{where} {{{key}.outcome}}"
+    return f"- {_subject(snapshot, item)} {{{item.id}.outcome}}"
 
 
 def _waiting(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]:
@@ -146,20 +268,31 @@ def _waiting(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]
 
 
 def blockers_answer(snapshot: ReviewSnapshot) -> Draft:
-    """What still stands between this package and sign-off."""
+    """What still stands between this package and sign-off, in sign-off readiness's own numbers.
+
+    Results that block sign-off are listed under it only when sign-off is blocked; countertops
+    with no check result are listed apart, since readiness does not wait for them, so the answer
+    never says "you can sign off" and lists blockers together.
+    """
     if not snapshot.checks_have_run:
         return Draft(text=NOTHING_HAS_RUN, evidence=("blockers",))
     waiting = _waiting(snapshot)
+    blocking = [item for item in waiting if item.outcome is not None]
+    unchecked = [item for item in waiting if item.outcome is None]
     lines = ["{signoff.status}."]
-    if waiting:
-        lines.append("These still need your decision:")
-        lines.extend(_list_line(snapshot, item) for item in waiting[:MAX_LISTED])
-        if len(waiting) > MAX_LISTED:
+    if blocking and not snapshot.readiness.can_sign_off:
+        lines.append("These are still open in the queue:")
+        lines.extend(_list_line(snapshot, item) for item in blocking[:MAX_LISTED])
+        if len(blocking) > MAX_LISTED:
             lines.append("The rest are listed in the queue.")
+    if unchecked:
+        lines.append("These countertops have no check result yet:")
+        lines.extend(_list_line(snapshot, item) for item in unchecked[:MAX_LISTED])
+    first = (blocking if not snapshot.readiness.can_sign_off else []) + unchecked
     return Draft(
         text="\n".join(lines),
         evidence=("blockers",),
-        actions=(() if not waiting else (("open_queue_item", waiting[0].id),)),
+        actions=(() if not first else (("open_queue_item", first[0].id),)),
     )
 
 
@@ -188,7 +321,9 @@ def _page_notes(snapshot: ReviewSnapshot, page: int) -> list[str]:
     ]
 
 
-def _page_answer(snapshot: ReviewSnapshot, page: int, *, want: str) -> Draft:
+def _page_answer(
+    snapshot: ReviewSnapshot, page: int, *, want: str, fields: Sequence[str] | None = None
+) -> Draft:
     records = list(snapshot.on_page(page))
     notes = _page_notes(snapshot, page)
     if not records and not notes:
@@ -199,14 +334,57 @@ def _page_answer(snapshot: ReviewSnapshot, page: int, *, want: str) -> Draft:
         chosen = [item for item in records if item.needs_you] or records
     else:
         chosen = records
-    draft = _explain(snapshot, chosen) if chosen else Draft(text="")
+    draft = _explain(snapshot, chosen, fields) if chosen else Draft(text="")
     if not notes:
         return draft
     return Draft(
-        text="\n\n".join(part for part in (draft.text, " ".join(notes)) if part),
+        text="\n\n".join(part for part in (draft.text, "\n".join(notes)) if part),
         evidence=draft.evidence,
         actions=draft.actions or (("open_page", f"P{page}"),),
     )
+
+
+_DETAIL_FIELDS: Final = (
+    "walls",
+    "printed",
+    "pieces",
+    "field_cut",
+    "needed",
+    "difference",
+    "drawn_length_note",
+)
+_FIX_FIELDS: Final = ("reason", "printed", "needed", "difference", "hold_reason", "needs_you")
+_FIX_NOTE: Final = (
+    "The assistant and the app do not change the drawing; the vendor redraws it. Open the item "
+    "in the queue to look at it on the drawing and record what goes back to the vendor."
+)
+
+
+def details_answer(snapshot: ReviewSnapshot, page: int) -> Draft:
+    """What was read on a page: walls, printed overall, pieces, field cut, needed overall."""
+    return _page_answer(snapshot, page, want="any", fields=_DETAIL_FIELDS)
+
+
+def _fix_answer(snapshot: ReviewSnapshot, page: int) -> Draft:
+    draft = _page_answer(snapshot, page, want="fail", fields=_FIX_FIELDS)
+    if draft.text == NOTHING_ON_THAT_PAGE:
+        return draft
+    return Draft(
+        text=f"{draft.text}\n\n{_FIX_NOTE}", evidence=draft.evidence, actions=draft.actions
+    )
+
+
+def glossary_answer(question: str) -> Draft | None:
+    """The fixed explanation of an app term the question asks about, or `None`."""
+    folded = _folded(question)
+    if not _GLOSSARY_QUESTION.search(folded) and not folded.endswith(("mean", "mean?")):
+        return None
+    if _PAGE.search(folded):
+        return None
+    for pattern, text in GLOSSARY:
+        if pattern.search(folded):
+            return Draft(text=text)
+    return None
 
 
 def records_answer(snapshot: ReviewSnapshot, short_ids: Sequence[str]) -> Draft | None:
@@ -237,11 +415,22 @@ def answer_for_question(
     """A records-only answer when the question is one code can answer; otherwise `None`.
 
     Covers the starter questions (what blocks sign-off, pages with no countertop, rows not checked,
-    why a page failed or needs the reviewer) and a question about one page or the focus record.
+    why a page failed or needs the reviewer), what was read on a page (walls, pieces, field cut),
+    how to fix a page, what an app term means, and a question about one page or the focus record.
     """
+    glossary = glossary_answer(question)
+    if glossary is not None:
+        return glossary
     folded = _folded(question)
     page_match = _PAGE.search(folded)
     page = int(page_match.group(1)) if page_match else None
+    if (
+        page is None
+        and focus is not None
+        and focus.page_number is not None
+        and (_DETAIL_WORDS.search(folded) or _FIX_WORDS.search(folded))
+    ):
+        page = focus.page_number
     if _NO_COUNTERTOP.search(folded):
         return _notes_answer(snapshot, no_countertop=True)
     if page is None and _NOT_CHECKED.search(folded):
@@ -249,6 +438,10 @@ def answer_for_question(
     if page is None and _BLOCKERS.search(folded):
         return blockers_answer(snapshot)
     if page is not None:
+        if _FIX_WORDS.search(folded):
+            return _fix_answer(snapshot, page)
+        if _DETAIL_WORDS.search(folded):
+            return details_answer(snapshot, page)
         want = (
             "fail"
             if _FAIL_WORDS.search(folded)
@@ -266,21 +459,18 @@ NOTHING_TO_DECIDE_THERE: Final = "There is no countertop result on that page to 
 
 
 def judging_answer(snapshot: ReviewSnapshot, page: int | None, focus: Focus | None = None) -> Draft:
-    """For "should page 4 pass?", "what should I approve first?": the records, and whose call it is.
+    """For "should page 4 pass?", "is page 4 fine?": the records, and whose call it is.
 
     The assistant never judges, so this is code, not a model. A named page: its results and any
     second countertop not checked there (or that it has no countertop, or that the records have
-    nothing on it). No page: the focus record, else everything that still needs the reviewer.
-    The queue button points only at a record on that page that needs the reviewer.
+    nothing on it). No page: the focus record, else what sign-off readiness says and what is
+    still open. The queue button points only at a record on that page that needs the reviewer.
     """
     if page is None and focus is not None:
-        if focus.record_id is not None and snapshot.by_record_id(focus.record_id) is not None:
-            record = snapshot.by_record_id(focus.record_id)
-            assert record is not None
+        record = None if focus.record_id is None else snapshot.by_record_id(focus.record_id)
+        if record is not None:
             return Draft(
-                text="\n".join(
-                    [_list_line(snapshot, record).removeprefix("- ") + ".", YOUR_DECISION]
-                ),
+                text="\n".join([_list_line(snapshot, record)[2:] + ".", YOUR_DECISION]),
                 actions=((("open_queue_item", record.id),) if record.needs_you else ()),
             )
         page = focus.page_number
@@ -295,7 +485,7 @@ def judging_answer(snapshot: ReviewSnapshot, page: int | None, focus: Focus | No
     notes = _page_notes(snapshot, page)
     if not records and not notes:
         return Draft(text=NOTHING_ON_THAT_PAGE)
-    lines = [_list_line(snapshot, item).removeprefix("- ") + "." for item in records[:MAX_LISTED]]
+    lines = [_list_line(snapshot, item)[2:] + "." for item in records[:MAX_LISTED]]
     lines.extend(notes)
     lines.append(YOUR_DECISION if records else NOTHING_TO_DECIDE_THERE)
     waiting = next((item for item in records if item.needs_you), None)
@@ -316,11 +506,12 @@ def fallback_answer(
     cited: Sequence[str] = (),
     focus: Focus | None = None,
 ) -> Draft:
-    """What replaces a dropped model answer: the records it named, else the focus, else the
-    question's records-only answer, else a plain statement that nothing could be checked."""
+    """What replaces a dropped model answer: the question's own records-only answer (details, a
+    fix, a term, a page), else the records the model named, else the focus, else a plain
+    statement that nothing could be checked."""
     return (
-        records_answer(snapshot, [short_id for short_id in cited if short_id[:1] in "CF"])
+        answer_for_question(snapshot, question, focus)
+        or records_answer(snapshot, [short_id for short_id in cited if short_id[:1] in "CF"])
         or _focus_answer(snapshot, focus)
-        or answer_for_question(snapshot, question, focus)
         or Draft(text=NO_ANSWER_IN_RECORDS)
     )
