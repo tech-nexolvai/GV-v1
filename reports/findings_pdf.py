@@ -34,6 +34,7 @@ from app.schemas.visual_ui import (
     PageWithoutCountertopOut,
     RowNotCheckedOut,
 )
+from reports.countertop_strip import StripRefused, StripSpan, strip_layout
 from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line
 from verdict.outcomes import Outcome
@@ -170,106 +171,168 @@ def _exact_fraction(value: ExactValueOut | None) -> Fraction | None:
         return None
 
 
+_STRIP_WALL: Final = 14.0
+"""Room kept for a wall block outside each end of the run, like the screen's strip."""
+_STRIP_RUN_BOTTOM: Final = 7.0
+_STRIP_RUN_TOP: Final = 23.0
+_STRIP_BACK_WALL: Final = 28.0
+_STRIP_PRINTED: Final = 35.0
+_STRIP_PRINTED_LABEL: Final = 40.0
+_STRIP_PIECE_LABEL: Final = 0.0
+_STRIP_NEEDED: Final = -5.0
+_STRIP_NEEDED_LABEL: Final = -13.0
+_STRIP_NOTE: Final = -25.0
+
+
+def _strip_draw_width(width: float) -> float:
+    """The drawing width the strip places pieces in, after both wall blocks."""
+    return max(width - 2 * _STRIP_WALL, 20.0)
+
+
+def _strip_bracket(
+    canvas: Canvas, span: StripSpan, *, x0: float, y: float, tick: float, label_y: float, word: str
+) -> None:
+    """A bracket drawn to its own length on the strip's one scale, from the left wall face."""
+    left = x0 + span.x
+    right = left + span.w
+    canvas.line(left, y + tick, left, y)
+    canvas.line(left, y, right, y)
+    canvas.line(right, y, right, y + tick)
+    canvas.setFont(_BODY_FONT, 7)
+    canvas.drawCentredString(left + span.w / 2, label_y, f"{word} {span.label}")
+
+
 def _draw_countertop_strip(
     canvas: Canvas, result: CountertopResultOut, *, x: float, y: float, width: float
 ) -> None:
-    """Draw a proportional, presentation-only strip from exact API values."""
-    left_wall = result.wall_layout.config == "back_left_right"
-    right_wall = result.wall_layout.config == "back_left_right"
-    wall_width = 14.0
-    inner_x = x + (wall_width if left_wall else 0.0)
-    inner_width = width - (wall_width if left_wall else 0.0) - (wall_width if right_wall else 0.0)
-    inner_width = max(inner_width, 20.0)
-    values = [_exact_fraction(piece.value) for piece in result.pieces]
-    weights = [max(float(value), 1.0) if value is not None else 18.0 for value in values]
-    total_weight = sum(weights) or 1.0
+    """Draw the countertop picture from the shared strip geometry (``reports.countertop_strip``).
+
+    The same rules as the screen's ``CountertopStrip``: pieces, caps and both brackets on one
+    scale from the left wall face; caps only at ends with a wall; a missing piece is a dashed box
+    marked ``?`` and the whole strip is then drawn as equal boxes with a "Not to scale" note; and
+    a row the strip refuses gets one line, "No picture: <reason>", instead of a guessed drawing.
+    """
+    layout = strip_layout(result, _strip_draw_width(width))
     canvas.setStrokeColorRGB(_BLACK, _BLACK, _BLACK)
     canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
-    if result.wall_layout.config in {"back_only", "back_left_right"}:
-        canvas.setLineWidth(0.7)
-        canvas.line(inner_x, y + 29, inner_x + inner_width, y + 29)
-    if left_wall:
-        canvas.rect(x, y + 7, wall_width - 2, 16, fill=0, stroke=1)
-        for offset in (2, 6, 10):
-            canvas.line(x + offset, y + 8, x + min(offset + 8, wall_width - 2), y + 22)
-    if right_wall:
-        right_x = x + width - wall_width + 2
-        canvas.rect(right_x, y + 7, wall_width - 2, 16, fill=0, stroke=1)
-        for offset in (2, 6, 10):
-            canvas.line(right_x + offset, y + 8, right_x + min(offset + 8, wall_width - 2), y + 22)
-    if result.field_cut_count and result.field_cut_per_end is not None:
-        for end_x in (
-            (inner_x,) if result.field_cut_count == 1 else (inner_x, inner_x + inner_width)
-        ):
-            canvas.line(end_x, y + 27, end_x, y + 34)
-            canvas.setFont(_BODY_FONT, 6)
-            canvas.drawCentredString(end_x, y + 25, f"+{result.field_cut_per_end.display}")
-    cursor = inner_x
-    piece_y = y + 7
-    piece_height = 16.0
-    for piece, value, weight in zip(result.pieces, values, weights, strict=True):
-        piece_width = inner_width * weight / total_weight
-        kind = (piece.kind or "").casefold()
-        appliance = "appliance" in kind
-        if appliance:
-            canvas.setDash(3, 2)
-        canvas.rect(cursor, piece_y, piece_width, piece_height, fill=0, stroke=1)
+    if isinstance(layout, StripRefused):
+        canvas.setFont(_BODY_FONT, 7)
+        canvas.drawString(x, y + _STRIP_RUN_BOTTOM, _no_picture(layout))
+        return
+    x0 = x + _STRIP_WALL  # the left wall face
+    run_end = x0 + layout.run_end
+    run_bottom = y + _STRIP_RUN_BOTTOM
+    run_height = _STRIP_RUN_TOP - _STRIP_RUN_BOTTOM
+    canvas.setLineWidth(0.7)
+    if layout.walls is not None and layout.walls.back:
+        canvas.line(x0, y + _STRIP_BACK_WALL, run_end, y + _STRIP_BACK_WALL)
+    wall_height = _STRIP_BACK_WALL - _STRIP_RUN_BOTTOM
+    for wall_on, wall_x in (
+        (layout.walls is not None and layout.walls.left, x),
+        (layout.walls is not None and layout.walls.right, run_end + 2),
+    ):
+        if not wall_on:
+            continue
+        canvas.rect(wall_x, run_bottom, _STRIP_WALL - 2, wall_height, fill=0, stroke=1)
+        for offset in (2.0, 6.0, 10.0):
+            canvas.line(
+                wall_x + offset,
+                run_bottom + 1,
+                wall_x + min(offset + 8, _STRIP_WALL - 2),
+                run_bottom + wall_height - 1,
+            )
+    for cap, outer_x, anchor in (
+        (layout.cap_left, x, "start"),
+        (layout.cap_right, x + width, "end"),
+    ):
+        if cap is None:
+            continue
+        canvas.setDash(2, 2)
+        canvas.rect(x0 + cap.x, run_bottom, cap.w, run_height, fill=0, stroke=1)
         canvas.setDash()
-        if "filler" in kind:
-            hatch_x = cursor + 2
-            while hatch_x < cursor + piece_width - 1:
+        # In the label row, flush with the outer edge, like the screen.
+        canvas.setFont(_BODY_FONT, 6)
+        if anchor == "start":
+            canvas.drawString(outer_x, y + _STRIP_PIECE_LABEL, cap.label)
+        else:
+            canvas.drawRightString(outer_x, y + _STRIP_PIECE_LABEL, cap.label)
+    for piece in layout.pieces:
+        left = x0 + piece.x
+        missing = piece.label is None
+        if missing or piece.kind == "appliance":
+            canvas.setDash(3, 2)
+        canvas.rect(left, run_bottom, max(piece.w, 1.0), run_height, fill=0, stroke=1)
+        canvas.setDash()
+        if piece.kind == "filler" and not missing:
+            hatch_x = left + 2
+            while hatch_x < left + piece.w - 1:
                 canvas.line(
                     hatch_x,
-                    piece_y + 1,
-                    min(hatch_x + piece_height, cursor + piece_width - 1),
-                    piece_y + piece_height - 1,
+                    run_bottom + 1,
+                    min(hatch_x + run_height, left + piece.w - 1),
+                    run_bottom + run_height - 1,
                 )
                 hatch_x += 5
-        display = "?" if piece.value is None else piece.value.display
-        canvas.setFont(_BODY_FONT, 6.5)
-        canvas.drawCentredString(cursor + piece_width / 2, y - 4, display)
-        cursor += piece_width
-    if result.hold is not None or result.outcome is None:
+        if missing:
+            canvas.setFont(_BODY_FONT, 9)
+            canvas.drawCentredString(left + piece.w / 2, run_bottom + run_height / 2 - 3, "?")
+        else:
+            canvas.setFont(_BODY_FONT, 6.5)
+            canvas.drawCentredString(left + piece.w / 2, y + _STRIP_PIECE_LABEL, piece.label)
+    if layout.held or result.outcome is None:
         canvas.saveState()
         canvas.setDash(2, 2)
-        hatch = inner_x
-        while hatch < inner_x + inner_width:
-            canvas.line(
-                hatch, piece_y, min(hatch + 16, inner_x + inner_width), piece_y + piece_height
-            )
+        hatch = x0
+        while hatch < run_end:
+            canvas.line(hatch, run_bottom, min(hatch + 16, run_end), run_bottom + run_height)
             hatch += 8
         canvas.restoreState()
-    if result.printed_overall is not None:
-        canvas.line(inner_x, y + 39, inner_x, y + 34)
-        canvas.line(inner_x, y + 36, inner_x + inner_width, y + 36)
-        canvas.line(inner_x + inner_width, y + 39, inner_x + inner_width, y + 34)
-        canvas.setFont(_BODY_FONT, 7)
-        canvas.drawCentredString(
-            inner_x + inner_width / 2, y + 41, f"Printed {result.printed_overall.display}"
+    if layout.printed is not None:
+        _strip_bracket(
+            canvas,
+            layout.printed,
+            x0=x0,
+            y=y + _STRIP_PRINTED,
+            tick=-3,
+            label_y=y + _STRIP_PRINTED_LABEL,
+            word="Printed",
         )
-    if result.expected_total is not None:
-        canvas.line(inner_x, y + 1, inner_x, y - 3)
-        canvas.line(inner_x, y - 1, inner_x + inner_width, y - 1)
-        canvas.line(inner_x + inner_width, y + 1, inner_x + inner_width, y - 3)
-        canvas.setFont(_BODY_FONT, 7)
-        canvas.drawCentredString(
-            inner_x + inner_width / 2, y - 12, f"Needed {result.expected_total.display}"
+    if layout.needed is not None:
+        _strip_bracket(
+            canvas,
+            layout.needed,
+            x0=x0,
+            y=y + _STRIP_NEEDED,
+            tick=3,
+            label_y=y + _STRIP_NEEDED_LABEL,
+            word="Needed",
         )
+    if not layout.to_scale:
+        canvas.setFont(_BODY_FONT, 7)
+        canvas.drawString(x, y + _STRIP_NOTE, _NOT_TO_SCALE)
     if result.delta is not None:
         delta = _exact_fraction(result.delta)
         if delta == 0:
             canvas.setFont(_BOLD_FONT, 8)
-            canvas.drawRightString(x + width, y - 25, 'Difference 0"')
+            canvas.drawRightString(x + width, y + _STRIP_NOTE, 'Difference 0"')
             mark_x = x + width - 69
             canvas.line(mark_x, y - 22, mark_x + 2, y - 24)
             canvas.line(mark_x + 2, y - 24, mark_x + 6, y - 18)
         else:
             canvas.setFont(_BOLD_FONT, 8)
             difference = f"Difference {result.delta.display}"
-            canvas.drawRightString(x + width, y - 25, difference)
+            canvas.drawRightString(x + width, y + _STRIP_NOTE, difference)
             mark_x = x + width - stringWidth(difference, _BOLD_FONT, 8) - 9
             canvas.line(mark_x, y - 23, mark_x + 5, y - 18)
             canvas.line(mark_x, y - 18, mark_x + 5, y - 23)
+
+
+_NOT_TO_SCALE: Final = "Not to scale: some widths are missing."
+
+
+def _no_picture(refused: StripRefused) -> str:
+    """The one line a card shows when the strip refuses to draw, worded like the screen."""
+    return f"No picture: {refused.reason.lower()}"
 
 
 def _countertop_heading(result: CountertopResultOut) -> str:
@@ -585,14 +648,19 @@ class _Document:
             if result.drawn_length_note is not None:
                 # A value resting on the readers' text alone is said, never silent (#1107).
                 details.append(result.drawn_length_note)
+            # The picture follows the screen's strip rules: a row the strip refuses (no pieces
+            # read, #1093, or a width that is not an exact number) says why instead of a drawing.
+            layout = strip_layout(result, _strip_draw_width(_CONTENT_WIDTH - 16))
+            if isinstance(layout, StripRefused):
+                details.append(_no_picture(layout))
             detail_lines = tuple(
                 line
                 for detail in details
                 for line in _wrapped(detail, width=_CONTENT_WIDTH - 16, font=_BODY_FONT, size=7)
             )
-            # An item with no pieces read (a page whose countertop line was not chosen, #1093) has
+            # A refused picture (e.g. a page whose countertop line was not chosen, #1093) has
             # nothing to draw, so its card ends after its words, with no countertop picture.
-            pictured = bool(result.pieces)
+            pictured = not isinstance(layout, StripRefused)
             strip_y, card_bottom = _countertop_card_bottom(self.y, len(detail_lines), pictured)
             card_height = self.y - card_bottom
             if self.y - card_height < 48:
