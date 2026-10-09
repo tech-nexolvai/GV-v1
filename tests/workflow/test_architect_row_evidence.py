@@ -935,3 +935,81 @@ def test_a_pairing_without_a_row_is_refused(session: Session) -> None:
             parameter_set_ids={},
             architect_pairing=_pairing(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Sign-off treats the architect finding like any other (no change to approval.py)
+# ---------------------------------------------------------------------------
+
+
+def test_an_unaddressed_architect_fail_blocks_sign_off_and_a_confirmed_one_does_not(
+    session: Session, tmp_path: Path
+) -> None:
+    from app.review.session import ReviewActionKind, open_session, record_action
+
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], "3' - 6\"")
+    finding = _run(session, package_id, tmp_path, {anchors[0]: _pairing(_overall(overall))})[
+        ARCH_RULE
+    ][anchors[0]]
+    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
+    assert finding.outcome == "FAIL"
+
+    blocked = approval_readiness(session, revision.id)
+    assert finding.id in blocked.blocking_finding_ids
+    assert not blocked.can_approve
+
+    sitting = open_session(session, package_revision_id=revision.id, reviewer="synthetic reviewer")
+    record_action(
+        session,
+        review_session_id=sitting.id,
+        finding_id=finding.id,
+        action=ReviewActionKind.CONFIRM,
+        actor="synthetic reviewer",
+    )
+
+    assert finding.id not in approval_readiness(session, revision.id).blocking_finding_ids
+
+
+def test_an_ai_only_match_blocks_sign_off_until_a_person_acts_with_a_note(
+    session: Session, tmp_path: Path
+) -> None:
+    from app.review.session import (
+        ReviewActionKind,
+        ReviewNeedsANote,
+        open_session,
+        record_action,
+    )
+
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source="both-ais")},
+    )[ARCH_RULE][anchors[0]]
+    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
+    sitting = open_session(session, package_revision_id=revision.id, reviewer="synthetic reviewer")
+
+    assert finding.id in approval_readiness(session, revision.id).blocking_finding_ids
+    with pytest.raises(ReviewNeedsANote):
+        record_action(
+            session,
+            review_session_id=sitting.id,
+            finding_id=finding.id,
+            action=ReviewActionKind.CONFIRM,
+            actor="synthetic reviewer",
+        )
+    assert finding.id in approval_readiness(session, revision.id).blocking_finding_ids
+    record_action(
+        session,
+        review_session_id=sitting.id,
+        finding_id=finding.id,
+        action=ReviewActionKind.CONFIRM,
+        actor="synthetic reviewer",
+        note="Checked on the sheet: these are the same overall.",
+    )
+    assert finding.id not in approval_readiness(session, revision.id).blocking_finding_ids
