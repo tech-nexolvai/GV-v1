@@ -8,6 +8,8 @@ import type { Finding } from '@/data/types';
 import { toFinding } from '@/api/findings';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import { NeedsYouQueue } from '@/components/queue/needs-you-queue';
+import { FindingCard } from '@/components/chat/FindingCard';
+import { recordReviewDecision } from '@/pages/recordReviewDecision';
 
 // The dashboard asks the rulebook for names; keep it off the network.
 vi.mock('@/api/client', async (original) => ({
@@ -83,6 +85,24 @@ describe('carried-over decisions (#1073)', () => {
     const region = screen.getByRole('region', { name: 'Other checks' });
     await user.click(within(region).getByRole('button', { name: /Other checks/ }));
     expect(region.querySelector('[data-slot="carried-over"]')?.textContent).toBe('carried over');
+  });
+});
+
+describe('a carried decision changed by the reviewer', () => {
+  it('is the reviewer\'s own from then on: the label goes at once, not at the next refresh', async () => {
+    let findings: Finding[] = [finding('other', { reviewer_action: 'dismiss', reviewed_by: 'Synthetic Reviewer', reviewer_carried_over: true })];
+    const saved = await recordReviewDecision('other', 'confirm', async () => undefined, (apply) => { findings = apply(findings); });
+    expect(saved).toEqual({ saved: true });
+    expect(findings[0]).toMatchObject({ reviewer_action: 'confirm', reviewer_carried_over: false });
+  });
+
+  it('the chat finding card says a decision was carried over', () => {
+    const carriedFinding = finding('other', { reviewer_action: 'dismiss', reviewed_by: 'Synthetic Reviewer', reviewer_carried_over: true, reason: 'Synthetic.' });
+    const handlers = { onViewEvidence: vi.fn(), onAction: vi.fn(async () => ({ saved: true as const })), onCorrect: vi.fn(async () => ({ saved: true as const })), onExcept: vi.fn(async () => ({ saved: true as const })) };
+    const view = render(<FindingCard finding={carriedFinding} isSelected={false} defaultExpanded needsDecision={false} {...handlers} />);
+    expect(view.container.textContent).toContain('carried over from the previous check run');
+    view.rerender(<FindingCard finding={{ ...carriedFinding, reviewer_carried_over: false }} isSelected={false} defaultExpanded needsDecision={false} {...handlers} />);
+    expect(view.container.textContent).not.toContain('carried over');
   });
 });
 
