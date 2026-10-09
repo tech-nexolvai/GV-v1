@@ -596,3 +596,53 @@ def test_every_run_identity_fits_its_column_whatever_the_missing_space_setting(
             assert len(seen) == 3, "the turn reads the text the setting decides"
         else:
             assert len(seen) == 1, "a reader shown the crop as cut keeps its identity"
+
+
+# ---------------------------------------------------------------------------
+# The architect reader (#1052): the local worker builds it exactly as the deployed worker does
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("enabled", [None, "false", "true"])
+def test_the_local_worker_passes_the_architect_reader_switch_through(
+    monkeypatch: pytest.MonkeyPatch, enabled: str | None
+) -> None:
+    """`GV_ARCHITECT_READER_ENABLED` reaches the stages the local worker builds: on gives the measured
+    settings, off or unset gives none. A worker that dropped it would read nothing, silently."""
+    import scripts.drain_outbox as worker
+    from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
+    from workflow import stages
+    from workflow.stages import MISSING_SPACE_ENV
+
+    built: dict[str, object] = {}
+
+    class _Capture:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
+            built.update(kwargs)
+
+    monkeypatch.setattr(stages, "DatabaseStages", _Capture)
+    monkeypatch.setenv("GV_DATABASE_URL", "postgresql+psycopg://gv:gv@localhost:5433/never-opened")
+    for name in list(os.environ):
+        if name.startswith(
+            (
+                "GV_READER_",
+                "GV_LOCALIZED_OCR",
+                "GV_READING_AGENT",
+                "GV_FRACTION_PARTS",
+                "GV_GLYPH",
+                "GV_FORM_READER",
+                "GV_SLOT_READER",
+                "GV_CLAUDE_READER",
+            )
+        ):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv(MISSING_SPACE_ENV, "0.1")
+    if enabled is None:
+        monkeypatch.delenv("GV_ARCHITECT_READER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("GV_ARCHITECT_READER_ENABLED", enabled)
+
+    worker._stages()
+
+    expected = MEASURED_ARCHITECT_SETTINGS if enabled == "true" else None
+    assert built["architect_reader"] is expected

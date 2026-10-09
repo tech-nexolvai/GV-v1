@@ -47,7 +47,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from functools import cache, partial
 from io import BytesIO
-from typing import Final, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
@@ -353,6 +353,9 @@ from workflow.vendor_page_pictures import (
     record_page_picture,
 )
 from workflow.view_roles import record_panel_view, revision_views
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
 EXTRACTOR = "pdfplumber"
@@ -7102,13 +7105,14 @@ def _document_records_for(
     ]
 
 
-def configured_architect_reader(settings: object) -> ArchitectSettings | None:
+def configured_architect_reader(settings: Settings) -> ArchitectSettings | None:
     """The architect reader's settings when `GV_ARCHITECT_READER_ENABLED` is on, else `None` (#1052).
 
     The thresholds are the ones measured on both client sets (`MEASURED_ARCHITECT_SETTINGS`); the
-    flag only says whether the reading runs.
+    flag only says whether the reading runs. Read as the typed field: a misspelt or missing setting
+    is an error at start, never a reader that is silently off.
     """
-    if not getattr(settings, "architect_reader_enabled", False):
+    if not settings.architect_reader_enabled:
         return None
     return MEASURED_ARCHITECT_SETTINGS
 

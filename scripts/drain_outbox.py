@@ -289,6 +289,7 @@ def _stages(
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.stages import (
         DatabaseStages,
+        configured_architect_reader,
         fraction_parts_from_environment,
         missing_space_from_environment,
     )
@@ -344,6 +345,8 @@ def _stages(
         part_pictures=_part_picture_configuration(  # type: ignore[arg-type]
             required=association is not None
         ),
+        # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
+        architect_reader=configured_architect_reader(settings),
     )
 
 

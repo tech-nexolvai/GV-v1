@@ -111,16 +111,30 @@ def _views(session: Session) -> dict[str, DrawingView]:
     return {view.tag: view for view in session.scalars(select(DrawingView))}
 
 
-def test_the_setting_is_off_by_default() -> None:
+@pytest.mark.parametrize(("enabled", "expected"), [(False, None), (True, "measured")])
+def test_the_setting_switches_the_reader_on_and_off(enabled: bool, expected: str | None) -> None:
+    """The typed `GV_ARCHITECT_READER_ENABLED` field: on gives the measured settings, off none."""
     from app.config import Settings
 
+    settings = Settings(
+        database_url="postgresql+psycopg://x@localhost/x", architect_reader_enabled=enabled
+    )
+
+    reader = configured_architect_reader(settings)
+    assert reader is (MEASURED_ARCHITECT_SETTINGS if expected else None)
+
+
+def test_the_setting_is_off_by_default_and_read_from_its_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import Settings
+
+    monkeypatch.delenv("GV_ARCHITECT_READER_ENABLED", raising=False)
     assert Settings.model_fields["architect_reader_enabled"].default is False
-
-    class _On:
-        architect_reader_enabled = True
-
-    assert configured_architect_reader(object()) is None
-    assert configured_architect_reader(_On()) is MEASURED_ARCHITECT_SETTINGS
+    monkeypatch.setenv("GV_ARCHITECT_READER_ENABLED", "true")
+    on = Settings(database_url="postgresql+psycopg://x@localhost/x")
+    assert on.architect_reader_enabled is True
+    assert configured_architect_reader(on) is MEASURED_ARCHITECT_SETTINGS
 
 
 def test_off_nothing_is_read_and_no_role_is_set(session: Session, store: LocalStore) -> None:
