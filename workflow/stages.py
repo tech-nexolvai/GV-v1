@@ -1962,6 +1962,10 @@ class DatabaseStages:
         verified = 0
         unreadable: list[str] = []
         miscounted: list[str] = []
+        # **One parse per distinct file (#961).** Every stored copy is still fetched and its digest
+        # checked below — each copy is its own stored object, and a wrong one still halts the
+        # package — but two copies of the same bytes have the same pages, so they are counted once.
+        parsed: dict[str, int | UnreadablePdf] = {}
         for version_id, key, sha256, page_count in records:
             data = _fetch(self._store, key)
             if hashlib.sha256(data).hexdigest() != sha256:
@@ -1982,13 +1986,17 @@ class DatabaseStages:
                     f"document version {version_id} does not match the digest recorded when it was "
                     "uploaded, so this package is not the one that was submitted"
                 )
-            try:
-                pages = read_pages(data)
-            except UnreadablePdf as error:
-                unreadable.append(f"{version_id}: {error}")
+            if sha256 not in parsed:
+                try:
+                    parsed[sha256] = len(read_pages(data))
+                except UnreadablePdf as error:
+                    parsed[sha256] = error
+            found = parsed[sha256]
+            if isinstance(found, UnreadablePdf):
+                unreadable.append(f"{version_id}: {found}")
                 continue
-            if len(pages) != page_count:
-                miscounted.append(f"{version_id}: {len(pages)} pages, {page_count} recorded")
+            if found != page_count:
+                miscounted.append(f"{version_id}: {found} pages, {page_count} recorded")
                 continue
             verified += 1
 
@@ -2054,7 +2062,16 @@ class DatabaseStages:
 
         results: list[PageResult] = []
         verified_data: dict[UUID, bytes] = {}
+        # **Each distinct file is read once (#961).** A revision can hold the same bytes twice
+        # without passing the upload doors that refuse it (#963): a revision built by `supersede`,
+        # one assembled before #964 and retried, or one a script wrote. Read as two documents, every
+        # page, candidate and model call was made twice, and each reading had a twin on the other
+        # copy. The other copy keeps its document, version, artifact and membership rows; its pages
+        # are the read copy's, and `ingest` has already checked its own stored bytes.
+        read_as = _copies_read_once(session, package_revision_id)
         for version, key, sha256, _ in documents:
+            if version in read_as:
+                continue
             # No `try` around the fetch. An artifact this stage cannot read must fail the stage, not
             # be skipped — see `_fetch`.
             data = _fetch(self._store, key)
@@ -7350,6 +7367,43 @@ def _document_records_for(
         (version_id, storage_key(document_id, sha), sha, page_count)
         for version_id, document_id, sha, page_count in rows
     ]
+
+
+def _copies_read_once(session: Session, package_revision_id: UUID) -> dict[UUID, UUID]:
+    """Each version in this revision whose exact bytes another version here holds, mapped to the one
+    copy that is read in its place (#961).
+
+    Identity is the confirmed `DocumentVersion.sha256` alone; a filename or a slot label never makes
+    two files one, or one file two. A version not in the result is read as itself.
+
+    **Which copy is read is fixed, never the first row that comes back:** the shop slot's copy when
+    there is one — the same as uploading a combined set once, as shop (#963), so the form reader and
+    the vendor's rows see exactly what they would see then — otherwise the earliest version, then the
+    lowest id. That choice says where the pages are recorded and nothing else: it gives no drawing a
+    role or a side, and while one file sits in both slots the slot still decides neither
+    (`_one_file_as_both_roles`, `ReadingSides`).
+    """
+    copies_by_bytes: dict[str, list[tuple[bool, datetime, str, UUID]]] = {}
+    for version_id, sha256, kind, created_at in session.execute(
+        select(
+            PackageRevisionDocument.document_version_id,
+            DocumentVersion.sha256,
+            Document.kind,
+            DocumentVersion.created_at,
+        )
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ):
+        copies_by_bytes.setdefault(str(sha256), []).append(
+            (kind != DocumentKind.SHOP.value, created_at, str(version_id), version_id)
+        )
+    read_as: dict[UUID, UUID] = {}
+    for copies in copies_by_bytes.values():
+        (*_, read), *others = sorted(copies)
+        for *_, version_id in others:
+            read_as[version_id] = read
+    return read_as
 
 
 def configured_architect_reader(settings: Settings) -> ArchitectSettings | None:
