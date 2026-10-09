@@ -127,7 +127,14 @@ label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`)."""
 CLAUDE_SPAN_PROMPT_IDS: Final = frozenset(
     {CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v2", "claude-slot-span-v1"}
 )
-COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
+COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v3"
+"""v3 (#1111): every answer field is defined with examples (invented); `stone_ends` gains
+`open_end`, for a run end with no wall at all (v2 offered only answers that assume walls, so a
+reader facing an open end guessed); "the marked span" is described: the stretch between the two
+magenta verticals in Picture 2, which also shows the drawing beyond each end; the marks are named
+magenta, a colour no reviewer markup uses. `open_end` holds nothing, like `to_walls`; `no_stone` is
+recorded on the row and named in its reason text, and holds nothing either.
+v2: where the stone ends (`stone_ends`). v1 asked only about tall appliances."""
 ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v3"
 """The architect-pairing question (#1053), asked of both Claude readers on every page with an
 architect dimension code has not refused. v3 (#1109): every pairing is one word, `A<k>`, `none`
@@ -141,7 +148,9 @@ by drawn position."""
 #: Earlier wordings, still recognised in stored records and invocations.
 ARCH_PAIR_PROMPT_IDS: Final = frozenset({ARCH_PAIR_PROMPT_ID, "arch-pair-v2", "arch-pair-v1"})
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
-COUNTER_BREAK_PROMPT_IDS: Final = frozenset({COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v1"})
+COUNTER_BREAK_PROMPT_IDS: Final = frozenset(
+    {COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v2", "claude-counter-break-v1"}
+)
 
 
 def parse_stored_reader_answer(text: str) -> Mapping[str, Any]:
@@ -245,19 +254,50 @@ def arch_pair_prompt(*, vendor_pieces: int, architect_spans: int) -> str:
 
 
 COUNTER_BREAK_PROMPT: Final = (
-    "Picture 1 is the vendor's full drawing view. Picture 2 is the same view close around the "
-    "marked countertop span. Look only inside the marked span. Is a tall appliance or tall unit "
-    "drawn there, such as a refrigerator, oven or wall-oven tower, pantry, or tall cabinet? "
-    "Answer yes only when the drawing lines show it physically occupies that span. Do not infer "
-    "from a text label outside the span. Also say where the STONE TOP itself ends at the span's "
-    'two ends: "to_walls" if the stone runs over the end pieces up to the walls; '
-    '"short_of_ends" if the stone stops before an end, between full-height fillers, panels '
-    'or tall units that rise past it; "into_walls" if the stone runs past the wall faces into '
-    'the walls (a pocket or recess); "no_stone" if no stone top is drawn; otherwise '
-    '"unsure". This is a hold-only safety question: an appliance or a stone that does not end '
-    "at the walls sends the row to the reviewer; a no does not approve the row. Return only this JSON: "
-    '{"contains_tall_appliance": true|false, "stone_ends": "to_walls|short_of_ends|into_walls|'
-    'no_stone|unsure", "why": "short visual reason"}'
+    "These pictures come from a cabinet maker's shop drawing for a stone countertop job. Our marks "
+    "are drawn in magenta (a bright pink-purple), a colour no reviewer markup uses. Red or yellow "
+    "marks are a reviewer's markup, not the vendor's drawing: ignore them.\n"
+    "Picture 1 is the vendor's full drawing view; the countertop row is the magenta line.\n"
+    "Picture 2 is the same row close up: the magenta horizontal line is the row, and two magenta "
+    "vertical lines mark its two ends. THE MARKED SPAN is the stretch between those two magenta "
+    "verticals, with everything drawn above and below the line inside that stretch. Picture 2 "
+    "also shows the drawing beyond each end, about half the span's width again: that belongs to "
+    "the neighbours, not to the span. Never judge a neighbour's cabinet or a neighbour's end as "
+    "part of the span. Judge the span's ends at the two magenta verticals.\n"
+    "This is a hold-only safety question: a tall appliance, or a stone that stops short of an "
+    "end or runs into a wall, sends the row to the reviewer; any other answer does not approve "
+    "the row. The fields:\n"
+    '- "contains_tall_appliance": true only when the drawing lines show a tall appliance or tall '
+    "unit physically standing inside the marked span, such as a refrigerator, an oven or "
+    "wall-oven tower, a pantry or a tall cabinet. Do not infer it from a text label outside the "
+    "span. Example true: between the verticals a refrigerator outline rises from the floor past "
+    "the countertop. Example false: a tall pantry stands just beyond the right vertical, outside "
+    "the span.\n"
+    '- "stone_ends": where the STONE TOP itself ends at the span\'s two ends (the magenta '
+    "verticals). One of:\n"
+    '  "to_walls": at both ends the stone runs over the end pieces up to a wall. Example: hatched '
+    "walls stand at both verticals and the stone meets each.\n"
+    '  "open_end": at least one end has no wall at all and nothing rising past the stone: the '
+    "stone ends in the open, for example over a finished end panel with open floor beyond. "
+    "Example: a wall at the left vertical; beyond the right vertical, open floor with nothing "
+    "standing on it.\n"
+    '  "short_of_ends": the stone stops before an end, between full-height fillers, panels or '
+    "tall units that rise past it. Example: a tall panel rises past the countertop at the right "
+    "vertical and the stone stops against it.\n"
+    '  "into_walls": the stone runs past the wall faces into the walls (a pocket or recess). '
+    "Example: the stone's line carries on past the wall face into a notch drawn in the wall.\n"
+    '  "no_stone": no stone top is drawn over the span at all. Example: the span shows only base '
+    "cabinets with no countertop line over them.\n"
+    '  "unsure": the drawing does not let you tell.\n'
+    "  When the two ends differ, give the first of these that applies at either end: into_walls, "
+    "short_of_ends, open_end, to_walls. Example not to_walls: a wall at one end and open floor at "
+    'the other is "open_end".\n'
+    '- "why": one short sentence saying what you saw in the pictures that decided both answers. '
+    'Example: "refrigerator outline inside the span; stone meets hatched walls at both ends". '
+    'Not an example: "as asked" or "no", which repeat an answer without saying what you saw.\n'
+    "Return only this JSON: "
+    '{"contains_tall_appliance": true|false, "stone_ends": "to_walls|open_end|short_of_ends|'
+    'into_walls|no_stone|unsure", "why": "one short sentence"}'
 )
 
 CROP_PROMPT: Final = (
@@ -450,8 +490,10 @@ class CounterBreakAnswer:
     contains_tall_appliance: bool
     why: str
     stone_ends: str = "unsure"
-    """Where the stone top ends at the span's ends (v2): `to_walls`, `short_of_ends`,
-    `into_walls`, `no_stone` or `unsure`. Hold-only, like the appliance answer."""
+    """Where the stone top ends at the span's ends (v2): `to_walls`, `open_end` (v3),
+    `short_of_ends`, `into_walls`, `no_stone` or `unsure`.
+    Hold-only, like the appliance answer: only `short_of_ends` and `into_walls` hold the row;
+    `no_stone` is recorded on the row and named in its reason, and holds nothing."""
 
 
 def _base_model_id(model_id: str) -> str:
@@ -720,7 +762,9 @@ class _CounterBreakReply(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     contains_tall_appliance: StrictBool
-    stone_ends: Literal["to_walls", "short_of_ends", "into_walls", "no_stone", "unsure"] = "unsure"
+    stone_ends: Literal[
+        "to_walls", "open_end", "short_of_ends", "into_walls", "no_stone", "unsure"
+    ] = "unsure"
     why: StrictStr
 
 

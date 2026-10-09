@@ -11,7 +11,8 @@ export async function recordReviewDecision(
   try {
     await persist();
     update((current) => current.map((finding) => finding.id === findingId
-      ? { ...finding, reviewer_action: action } : finding));
+      // A new decision is the reviewer's own on this result, never one carried over (#1073).
+      ? { ...finding, reviewer_action: action, reviewer_carried_over: false } : finding));
     return { saved: true };
   } catch (error) {
     return { saved: false, error: `That decision was not recorded — ${error instanceof Error ? error.message : String(error)}` };

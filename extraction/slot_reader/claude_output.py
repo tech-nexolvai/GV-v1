@@ -123,13 +123,20 @@ SPAN_SCHEMA: Final = _object(
         "no_dimension": _BOOLEAN,
     }
 )
-#: The hold-only line question (`_CounterBreakReply`).
+#: The hold-only line question (`_CounterBreakReply`); `open_end` since v3 (#1111).
 COUNTER_BREAK_SCHEMA: Final = _object(
     {
         "contains_tall_appliance": _BOOLEAN,
         "stone_ends": {
             "type": "string",
-            "enum": ["to_walls", "short_of_ends", "into_walls", "no_stone", "unsure"],
+            "enum": [
+                "to_walls",
+                "open_end",
+                "short_of_ends",
+                "into_walls",
+                "no_stone",
+                "unsure",
+            ],
         },
         "why": _STRING,
     }

@@ -25,6 +25,7 @@ import type { NextAction, NextActionKind } from '@/lib/review-stage';
 import { cn } from '@/lib/utils';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { SplitPageNote } from '@/components/results/split-page-note';
+import { CarriedOver } from '@/components/results/carried-over';
 import { ArchitectLine, ArchitectPairs, ArchitectStatus } from '@/components/results/architect-line';
 import { ArchitectPairingPanel } from './architect-pairing';
 import { DecisionFields } from '@/components/results/decision-form';
@@ -387,7 +388,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
             {/* A check run makes new results, and a decision belongs to the result it was made on. */}
             {progress.waitingForRun > 0 && status === 'open' && !question && (
               <p role="note" data-slot="queue-run-first" className="border-b bg-muted/50 px-4 py-2 text-sm">
-                <span className="num">{progress.waitingForRun}</span> {progress.waitingForRun === 1 ? 'answer waits' : 'answers wait'} for a check run. That run replaces these results, so decisions made now will be asked again: run the checks first.
+                <span className="num">{progress.waitingForRun}</span> {progress.waitingForRun === 1 ? 'answer waits' : 'answers wait'} for a check run. That run replaces these results: a decision made now carries over only if its result comes back unchanged, so run the checks first.
               </p>
             )}
             <div className="min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-[minmax(0,27rem)_minmax(0,1fr)] lg:overflow-hidden" data-slot="queue-item" data-status={status}>
@@ -671,7 +672,7 @@ function DecidedSummary({
   packageId: string;
   onChange?: () => void;
 }) {
-  const decision = row?.reviewer_decision ?? (finding?.reviewer_action ? { action: finding.reviewer_action, actor: finding.reviewed_by ?? '', note: finding.reviewer_note ?? null } : null);
+  const decision = row?.reviewer_decision ?? (finding?.reviewer_action ? { action: finding.reviewer_action, actor: finding.reviewed_by ?? '', note: finding.reviewer_note ?? null, carried_over: finding.reviewer_carried_over } : null);
   const outcome = givenOutcome !== undefined ? givenOutcome : row?.outcome ?? finding?.outcome ?? null;
   return (
     <section data-slot="queue-decided" className="flex flex-col gap-2 rounded-lg border p-3 text-sm">
@@ -692,6 +693,7 @@ function DecidedSummary({
           <CheckCircle2 className="size-4" aria-hidden="true" />
           {decision ? `Decided: ${decisionWords(decision.action, outcome)}` : 'No longer blocking sign-off'}
           {decision?.actor && <span className="font-normal text-muted-foreground">by {decision.actor}</span>}
+          {decision?.carried_over && <CarriedOver />}
         </p>
       )}
       {decision?.note && <p className="text-muted-foreground">“{decision.note}”</p>}
@@ -734,6 +736,7 @@ function HistoryList({ findingId, outcome, projectId, packageId }: { findingId: 
         <li key={action.id} className={cn('flex flex-col gap-0.5', i > 0 && 'text-muted-foreground')}>
           <span className="font-medium">
             {decisionWords(action.action, outcome)}
+            {action.carried_over && <> <CarriedOver /></>}
             {i === 0 && <span className="ml-1.5 rounded-full border px-1.5 text-[10px] font-normal">latest</span>}
           </span>
           <span className="text-xs">
@@ -754,7 +757,7 @@ function DoneState({ empty, waitingForRun, next, onAct, onBrowse }: { empty: boo
       {waitingForRun > 0 ? (
         <>
           <p className="text-sm text-muted-foreground">
-            <span className="num">{waitingForRun}</span> {waitingForRun === 1 ? 'answer needs' : 'answers need'} a new check run before {waitingForRun === 1 ? 'it shows' : 'they show'} in the results. The run replaces the current results, so anything still held will be asked again.
+            <span className="num">{waitingForRun}</span> {waitingForRun === 1 ? 'answer needs' : 'answers need'} a new check run before {waitingForRun === 1 ? 'it shows' : 'they show'} in the results. The run replaces the current results; a decision carries over only where its result comes back unchanged.
           </p>
           <Button onClick={() => onAct('run-checks')}>Run checks</Button>
         </>
