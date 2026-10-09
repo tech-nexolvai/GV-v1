@@ -541,6 +541,11 @@ class _Document:
                 decision = result.reviewer_decision
                 details.append(
                     f"Decision: {decision.action} by {decision.actor} on {decision.time.isoformat()}"
+                    + (
+                        " (carried over from the previous check run; the result was the same)"
+                        if decision.carried_over
+                        else ""
+                    )
                 )
                 if decision.note:
                     details.append(f"Reviewer note: {decision.note}")

@@ -54,6 +54,13 @@ class ReviewerDecisionOut(BaseModel):
     actor: str
     time: datetime
 
+    carried_over: bool = False
+    """True when this decision was carried over an unchanged check re-run (#1073). It is still the
+    reviewer's own decision: the actor, time and note are the ones they recorded."""
+
+    carried_from_finding_id: UUID | None = None
+    """The result the reviewer actually decided on, when `carried_over`; otherwise null."""
+
 
 class WallLayoutOut(BaseModel):
     model_config = ConfigDict(frozen=True)

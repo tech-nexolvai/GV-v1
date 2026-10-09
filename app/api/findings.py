@@ -52,7 +52,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
-from sqlalchemy.sql import Subquery
 
 from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
@@ -61,10 +60,11 @@ from app.models import (
     Finding,
     Package,
     PackageRevision,
-    ReviewAction,
     RuleDefinition,
     RuleSnapshot,
 )
+from app.models.review import ReviewActionKind
+from app.review.carry_over import decision_records
 from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.row_location import row_location
 from app.review.session import exceptions_for_revision
@@ -75,6 +75,7 @@ from app.schemas.findings import (
     FindingCounts,
     FindingOut,
     FindingPage,
+    ReviewerActionOut,
 )
 from verdict.outcomes import Outcome, Severity
 from vocabulary.reviewer_reasons import finding_reviewer_reason
@@ -211,38 +212,6 @@ def _strictly_after(keys: Sequence[tuple[Any, Any]]) -> ColumnElement[bool]:
 # ---------------------------------------------------------------------------
 
 
-def _latest_action() -> Subquery:
-    """The most recent review action per finding, as a joinable subquery.
-
-    **Ranked, not aggregated.** `max(created_at)` would give the time and not the row, and a second
-    join back to fetch the verb reintroduces the tie it was meant to resolve. A window function keeps
-    the whole row that won.
-
-    **The ordering is total on purpose**, `created_at` then `id`. Two actions written in the same
-    microsecond would otherwise tie, and a tie here is a finding that reads `confirm` on one request
-    and `dismiss` on the next — the same reason the findings list orders by `id` last.
-
-    Matched on the revision as well as the finding, mirroring the composite foreign keys on
-    `review_actions`: a finding and an action that disagree about which revision they concern is a
-    row that should never exist, and joining on both means it cannot be resurrected by a join either.
-    """
-    ranked = select(
-        ReviewAction.finding_id,
-        ReviewAction.package_revision_id,
-        ReviewAction.action,
-        ReviewAction.actor,
-        ReviewAction.note,
-        ReviewAction.created_at,
-        func.row_number()
-        .over(
-            partition_by=ReviewAction.finding_id,
-            order_by=(ReviewAction.created_at.desc(), ReviewAction.id.desc()),
-        )
-        .label("rank"),
-    ).subquery()
-    return select(ranked).where(ranked.c.rank == 1).subquery()
-
-
 def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     """Every finding for one package, with the versions that explain it.
 
@@ -250,7 +219,6 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
     `findings.package_revision_id` are covered by one composite foreign key to `check_runs`, so
     SQLAlchemy cannot work out a single-column join condition for either on its own.
     """
-    latest = _latest_action()
     return (
         select(
             Finding.id,
@@ -273,23 +241,12 @@ def _base_query(project_id: UUID, package_id: UUID) -> Select[Any]:
             RuleSnapshot.check_type,
             RuleSnapshot.product_type,
             RuleDefinition.rule_id,
-            latest.c.action.label("reviewer_action_kind"),
-            latest.c.actor.label("reviewer_action_actor"),
-            latest.c.note.label("reviewer_action_note"),
-            latest.c.created_at.label("reviewer_action_at"),
         )
         .join(PackageRevision, PackageRevision.id == Finding.package_revision_id)
         .join(Package, Package.id == PackageRevision.package_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
-        # Outer, because most findings have no action and an inner join would silently drop every
-        # untouched one — a reviewer would open a package and see only the work already done.
-        .outerjoin(
-            latest,
-            (latest.c.finding_id == Finding.id)
-            & (latest.c.package_revision_id == Finding.package_revision_id),
-        )
         # Both halves matter. The package pins the resource; the project is the isolation boundary,
         # and leaving it to the dependency alone would mean a package id from another project reached
         # the database with nothing but a membership claim standing between them.
@@ -323,23 +280,44 @@ def _as_finding(row: Row[Any]) -> dict[str, Any]:
     data = dict(row._mapping)
     data["reviewer_reason"] = finding_reviewer_reason(data["outcome"], data.get("reason"))
     data["scope_label"] = data.get("scope_label") or "Package revision"
-    kind = data.pop("reviewer_action_kind", None)
-    actor = data.pop("reviewer_action_actor", None)
-    note = data.pop("reviewer_action_note", None)
-    at = data.pop("reviewer_action_at", None)
-
-    # All-or-nothing. A half-populated action means the join produced something this code did not
-    # anticipate, and inventing a verb for it would put a decision in the record that no reviewer made.
-    data["reviewer_action"] = (
-        None
-        if kind is None or actor is None or at is None
-        else {"action": kind, "actor": actor, "note": note, "at": at}
-    )
+    # Filled in by `_reviewer_actions`, from the one shared decision reader.
+    data["reviewer_action"] = None
     return data
 
 
+def _reviewer_actions(session: Session, items: Sequence[FindingOut]) -> dict[UUID, UUID]:
+    """Set each listed finding's standing decision, from the reader sign-off uses (#1073).
+
+    The reviewer's own latest action, or the one carried over an unchanged re-run, marked as such and
+    still showing the reviewer's own name, time and note. One bounded read for the whole page.
+    Returns, for a carried decision, the finding it was recorded on, which is what an exception it
+    granted names.
+    """
+    records = decision_records(session, [item.id for item in items])
+    carried_from: dict[UUID, UUID] = {}
+    for item in items:
+        decision = records.decisions.get(item.id)
+        if decision is None or decision.action.package_revision_id != item.package_revision_id:
+            continue
+        item.reviewer_action = ReviewerActionOut(
+            action=ReviewActionKind(decision.action.action),
+            actor=decision.action.actor,
+            at=decision.action.created_at,
+            note=decision.action.note,
+            carried_over=decision.carried_over,
+            carried_from_finding_id=decision.carried_from_finding_id,
+        )
+        if decision.carried_from_finding_id is not None:
+            carried_from[item.id] = decision.carried_from_finding_id
+    return carried_from
+
+
 def _exception_annotations(
-    session: Session, items: Sequence[FindingOut], *, when: datetime
+    session: Session,
+    items: Sequence[FindingOut],
+    *,
+    when: datetime,
+    carried_from: dict[UUID, UUID] | None = None,
 ) -> None:
     """Decide every listed finding against this revision's exceptions, in place.
 
@@ -373,7 +351,9 @@ def _exception_annotations(
             continue
         decision = decide(
             FindingRef(
-                finding_id=item.id,
+                # A decision carried over an unchanged re-run (#1073) is asked about the finding it
+                # was granted on, which is what a finding-scoped exception names.
+                finding_id=(carried_from or {}).get(item.id, item.id),
                 package_revision_id=item.package_revision_id,
                 item_id=None,
             ),
@@ -548,7 +528,8 @@ def list_findings(
         item.row_location = row_location(session, item.scope_row_candidate_id)
     # Decided here rather than in SQL: whether an exception still applies depends on the clock, and
     # `app/review/exceptions.py` enforces expiry at the moment of reading for exactly that reason.
-    _exception_annotations(session, items, when=datetime.now(UTC))
+    carried_from = _reviewer_actions(session, items)
+    _exception_annotations(session, items, when=datetime.now(UTC), carried_from=carried_from)
 
     next_cursor = None
     if len(rows) > limit and items:

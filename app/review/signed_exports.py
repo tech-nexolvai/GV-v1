@@ -12,10 +12,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.package import Package, PackageRevision
-from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
+from app.models.review import (
+    Approval,
+    ApprovedFinding,
+    FindingDecisionCarryover,
+    ReviewAction,
+    ReviewSession,
+)
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.models.signed_exports import ApprovalExportAction, ApprovalExportSnapshot
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
+from app.review.carry_over import decision_records
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
 from workflow.changed_values import ChangedValues, changed_values_for_revision
 from workflow.outbox import enqueue
@@ -166,6 +173,18 @@ def load_snapshot(db: Session, snapshot: ApprovalExportSnapshot) -> ExportSnapsh
             raise SignedExportRefused("signed finding differs from the stored finding")
         for action in frozen.actions:
             stored = db.get(ReviewAction, action.action_id)
+            if action.carried_from_finding_id is not None and (
+                db.scalar(
+                    select(FindingDecisionCarryover.id).where(
+                        FindingDecisionCarryover.new_finding_id == frozen.finding_id,
+                        FindingDecisionCarryover.review_action_id == action.action_id,
+                        FindingDecisionCarryover.package_revision_id
+                        == snapshot.package_revision_id,
+                    )
+                )
+                is None
+            ):
+                raise SignedExportRefused("signed carried decision has no stored carry-over link")
             if stored is None or (
                 stored.package_revision_id,
                 stored.finding_id,
@@ -175,7 +194,7 @@ def load_snapshot(db: Session, snapshot: ApprovalExportSnapshot) -> ExportSnapsh
                 stored.note,
             ) != (
                 snapshot.package_revision_id,
-                frozen.finding_id,
+                action.carried_from_finding_id or frozen.finding_id,
                 action.action,
                 action.reviewer,
                 action.at,
@@ -223,7 +242,17 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
             .order_by(ReviewAction.created_at)
         )
     )
-    for action in actions:
+    # A decision carried over an unchanged re-run (#1073) is frozen as the reviewer's own action,
+    # marked with the finding it was recorded on, before any action taken on the approved finding.
+    carried = {
+        finding_id: decision.action
+        for finding_id, decision in decision_records(
+            db, [row[0].id for row in rows]
+        ).carried.items()
+        if decision.action.package_revision_id == revision.id
+        and decision.action.created_at <= approval.created_at
+    }
+    for action in [*actions, *carried.values()]:
         review = db.get(ReviewSession, action.review_session_id)
         if review is None or review.created_at > approval.created_at:
             raise SignedExportRefused("historical review session is unavailable or ambiguous")
@@ -244,9 +273,14 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
                         reviewer=action.actor,
                         at=action.created_at,
                         note=action.note,
+                        carried_from_finding_id=(
+                            None if action.finding_id == finding.id else action.finding_id
+                        ),
                     )
-                    for action in actions
-                    if action.finding_id == finding.id
+                    for action in (
+                        *((carried[finding.id],) if finding.id in carried else ()),
+                        *(action for action in actions if action.finding_id == finding.id),
+                    )
                 ),
             )
             for finding, _, _, definition in rows
@@ -275,9 +309,9 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
     db.flush()
     db.add_all(
         ApprovalExportAction(
-            snapshot_id=snapshot.id, package_revision_id=revision.id, review_action_id=action.id
+            snapshot_id=snapshot.id, package_revision_id=revision.id, review_action_id=action_id
         )
-        for action in actions
+        for action_id in dict.fromkeys(action.id for action in [*actions, *carried.values()])
     )
     enqueue(
         db,
