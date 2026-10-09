@@ -31,7 +31,8 @@ from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.evidence import CanonicalObservation
 from app.models.package import Package, PackageRevision
-from app.models.review import ReviewActionKind, ReviewSession
+from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
+from app.models.verdicts import Finding
 from app.review.evidence_actions import (
     EvidenceActionRefused,
     EvidenceConfirmationNotAuthorised,
@@ -62,6 +63,7 @@ from app.schemas.review import (
     OpenReviewSession,
     RecordAction,
     ReviewActionOut,
+    ReviewActionPage,
     ReviewExceptionOut,
     ReviewSessionOut,
     ReviewSessionPage,
@@ -249,6 +251,52 @@ def list_review_sessions(
 
     rows = db.execute(statement).scalars().all()
     return ReviewSessionPage(items=[ReviewSessionOut.model_validate(row) for row in rows])
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/findings/{finding_id}/actions",
+    response_model=ReviewActionPage,
+    summary="Read one finding's review history, newest first",
+)
+def list_finding_actions(
+    _: Annotated[Principal, Depends(require_project_access)],
+    __: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
+    db: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    finding_id: UUID,
+) -> ReviewActionPage:
+    """Return every recorded action for a finding, without changing review state.
+
+    Project and package are both checked in SQL. The project dependency says the caller may access
+    the named project; it does not make a finding from another package belong to this request.
+    Returning the full append-only history lets the visual review show how the current decision
+    came to be rather than only the latest row.
+    """
+    scoped_revision_id = (
+        select(Finding.package_revision_id)
+        .join(PackageRevision, PackageRevision.id == Finding.package_revision_id)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(
+            Finding.id == finding_id,
+            Package.id == package_id,
+            Package.project_id == project_id,
+        )
+    )
+    revision_id = db.execute(scoped_revision_id).scalar_one_or_none()
+    if revision_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+
+    statement = (
+        select(ReviewAction)
+        .where(
+            ReviewAction.finding_id == finding_id,
+            ReviewAction.package_revision_id == revision_id,
+        )
+        .order_by(ReviewAction.created_at.desc(), ReviewAction.id.desc())
+    )
+    actions = db.execute(statement).scalars().all()
+    return ReviewActionPage(items=[ReviewActionOut.model_validate(action) for action in actions])
 
 
 @router.post(

@@ -750,6 +750,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one finding's review history, newest first
+         * @description Return every recorded action for a finding, without changing review state.
+         *
+         *     Project and package are both checked in SQL. The project dependency says the caller may access
+         *     the named project; it does not make a finding from another package belong to this request.
+         *     Returning the full append-only history lets the visual review show how the current decision
+         *     came to be rather than only the latest row.
+         */
+        get: operations["list_finding_actions_api_v1_projects__project_id__packages__package_id__findings__finding_id__actions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/chain": {
         parameters: {
             query?: never;
@@ -4091,6 +4116,14 @@ export interface components {
             review_session_id: string;
         };
         /**
+         * ReviewActionPage
+         * @description The complete append-only decision history for one finding, newest first.
+         */
+        ReviewActionPage: {
+            /** Items */
+            items: components["schemas"]["ReviewActionOut"][];
+        };
+        /**
          * ReviewExceptionOut
          * @description A granted exception, with the terms a later reader needs.
          */
@@ -5994,6 +6027,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FindingCounts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_finding_actions_api_v1_projects__project_id__packages__package_id__findings__finding_id__actions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewActionPage"];
                 };
             };
             /** @description Validation Error */

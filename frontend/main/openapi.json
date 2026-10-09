@@ -4906,6 +4906,23 @@
         "title": "ReviewActionOut",
         "type": "object"
       },
+      "ReviewActionPage": {
+        "description": "The complete append-only decision history for one finding, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewActionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ReviewActionPage",
+        "type": "object"
+      },
       "ReviewExceptionOut": {
         "description": "A granted exception, with the terms a later reader needs.",
         "properties": {
@@ -8860,6 +8877,70 @@
         "summary": "How this package's findings break down",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/findings/{finding_id}/actions": {
+      "get": {
+        "description": "Return every recorded action for a finding, without changing review state.\n\nProject and package are both checked in SQL. The project dependency says the caller may access\nthe named project; it does not make a finding from another package belong to this request.\nReturning the full append-only history lets the visual review show how the current decision\ncame to be rather than only the latest row.",
+        "operationId": "list_finding_actions_api_v1_projects__project_id__packages__package_id__findings__finding_id__actions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewActionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read one finding's review history, newest first",
+        "tags": [
+          "review"
         ]
       }
     },
