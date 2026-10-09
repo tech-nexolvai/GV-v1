@@ -273,7 +273,7 @@ from verdict.engine import execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
-from verdict.outcomes import Outcome
+from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
@@ -292,11 +292,14 @@ from workflow.architect_reader import (
 from workflow.architect_row_evidence import architect_row_operands
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
-    CONFIRM_AI_PAIRING,
+    AUTOMATIC_SOURCES,
     NOTHING_PAIRED_ON_REVISION,
     Disposition,
     PairingLookup,
     effective_architect_pairing,
+    engine_comparison_note,
+    one_judgment_reason,
+    pair_label,
     plan_architect_row,
 )
 from workflow.association import (
@@ -6300,9 +6303,11 @@ class DatabaseStages:
 
         Returns how many findings it wrote: none when nothing is comparable (the row's architect
         line says why), else one, scoped to the same row as the width finding. The rule's exact
-        arithmetic decides pass or fail; a PASS that rests on a pairing only the two AIs made is
-        held for the reviewer's confirmation, while a FAIL may stand (AI-only information never
-        makes a PASS). See `workflow/architect_row_plan.py` and `workflow/architect_row_evidence.py`.
+        arithmetic decides pass or fail, and that result stands only when the pairing rests on two
+        independent judgments (code's drawn position AND both AIs, `code+ais`) or on a reviewer.
+        On one judgment alone (`code` or `both-ais`) the result, PASS or FAIL, waits for the
+        reviewer to confirm the pairing; the engine's comparison stays in the notes and the numbers
+        in the inputs. See `workflow/architect_row_plan.py` and `workflow/architect_row_evidence.py`.
         """
         snapshot = store.latest(ARCHITECT_CHECK_RULE_ID)
         if snapshot is None:
@@ -6338,21 +6343,32 @@ class DatabaseStages:
                 operands = built.operands
                 finding = execute(snapshot, operands)
                 finding = replace(finding, notes=(*finding.notes, *plan.notes))
-                if (
-                    finding.outcome is Outcome.PASS
-                    and pairing is not None
-                    and pairing.source not in ("code", "reviewer")
-                ):
-                    # The numbers match, but which numbers belong together came from the AIs only.
-                    # The decided trace is not kept: nothing on record may read as a PASS (#1054).
+                source = "none" if pairing is None else pairing.source
+                if source not in AUTOMATIC_SOURCES and is_decision(finding.outcome):
+                    # One judgment of which numbers belong together is not enough for an automatic
+                    # PASS or FAIL: the reviewer confirms the pairing. The decided trace is not
+                    # kept, so nothing on record reads as decided; the engine's comparison stays
+                    # in the notes and the numbers in the recorded inputs.
+                    compared = tuple(
+                        (
+                            pair_label(pair.kind, pair.vendor_slot),
+                            built.architect_texts.get(pair.architect_name)
+                            or _inches_text(operands[pair.architect_name]),
+                            _inches_text(operands[pair.vendor_name]),
+                        )
+                        for pair in plan.pairs
+                    )
                     finding = Finding(
                         rule_id=ARCHITECT_CHECK_RULE_ID,
                         outcome=Outcome.REVIEW_REQUIRED,
                         severity=snapshot.rule.severity,
-                        reason=CONFIRM_AI_PAIRING,
+                        reason=one_judgment_reason(source, compared),
                         snapshot_id=snapshot.snapshot_id,
                         engine_version=ENGINE_VERSION,
-                        notes=finding.notes,
+                        notes=(
+                            engine_comparison_note(finding.outcome.value, finding.reason),
+                            *finding.notes,
+                        ),
                     )
         record_finding(
             session,
@@ -7156,6 +7172,14 @@ def _empty_project(package: Package) -> ParameterSet:
         version=1,
         parameters={},
     )
+
+
+def _inches_text(operand: VerdictOperand) -> str:
+    """An exact inch value as a drawing writes it (`40 3/4"`), for the reviewer's reason."""
+    value = operand.value
+    if isinstance(value, Measurement) and value.unit is Unit.INCH:
+        return f'{format_inches(value.exact)}"'
+    return str(value)
 
 
 def _declared_inputs(rule: object) -> dict[str, str]:

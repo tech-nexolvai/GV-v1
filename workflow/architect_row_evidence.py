@@ -19,7 +19,7 @@ Source: issue #1054 · Verification: `tests/workflow/test_architect_row_evidence
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID
@@ -69,6 +69,9 @@ class ArchitectRowOperands:
     eligible: bool
     reason: str | None
     operands: dict[str, VerdictOperand]
+    architect_texts: dict[str, str] = field(default_factory=dict)
+    """The architect's printed text for each compared pair, by its operand name
+    (`architect_overall`, `architect_piece[i]`): what the reviewer finds on the sheet."""
 
 
 def architect_row_operands(
@@ -85,6 +88,7 @@ def architect_row_operands(
             {},
         )
     operands: dict[str, VerdictOperand] = {}
+    architect_texts: dict[str, str] = {}
     architect_values: list[Measurement] = []
     vendor_values: list[Measurement] = []
     human_vendor = False
@@ -119,6 +123,9 @@ def architect_row_operands(
             )
         assert isinstance(architect.value, Measurement)
         operands[pair.architect_name] = architect
+        printed = session.get_one(ObservationCandidate, pair.architect_candidate_id).raw_text
+        if printed and printed.strip():
+            architect_texts[pair.architect_name] = printed.strip()
         operands[pair.vendor_name] = replace(vendor_operand, name=pair.vendor_name)
         architect_values.append(architect.value)
         vendor_values.append(vendor_operand.value)
@@ -142,7 +149,7 @@ def architect_row_operands(
             str(decision.id) if human_vendor and decision is not None else None
         ),
     )
-    return ArchitectRowOperands(True, None, operands)
+    return ArchitectRowOperands(True, None, operands, architect_texts)
 
 
 def _architect_operand(

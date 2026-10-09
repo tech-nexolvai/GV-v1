@@ -55,11 +55,10 @@ from verdict.finding import Finding as DomainFinding
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome
 from workflow import architect_pairing_records, architect_reader, architect_row_plan
-from workflow.architect_pairing_contract import EffectivePair, EffectivePairing
+from workflow.architect_pairing_contract import EffectivePair, EffectivePairing, PairingSource
 from workflow.architect_reader import ARCHITECT_EXTRACTOR, ARCHITECT_EXTRACTOR_VERSION
 from workflow.architect_row_evidence import architect_row_operands
 from workflow.architect_row_plan import (
-    CONFIRM_AI_PAIRING,
     NOTHING_PAIRED_ON_REVISION,
     PAIR_BY_REVIEWER,
     Disposition,
@@ -205,12 +204,18 @@ def _architect_value(
 
 def _pairing(
     *pairs: EffectivePair,
-    source: Literal["code", "both-ais", "reviewer", "none"] = "code",
+    source: PairingSource = "code+ais",
     status: str = "paired",
     reasons: tuple[str, ...] = ("synthetic pairing",),
+    measures: tuple[tuple[UUID, str], ...] = (),
 ) -> EffectivePairing:
     return EffectivePairing(
-        record_id=uuid4(), source=source, status=status, pairs=pairs, reasons=reasons
+        record_id=uuid4(),
+        source=source,
+        status=status,
+        pairs=pairs,
+        reasons=reasons,
+        architect_measures=measures,
     )
 
 
@@ -307,7 +312,7 @@ def test_the_labels_used_here_read_exactly() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_equal_widths_paired_by_code_pass_beside_the_width_check(
+def test_equal_widths_paired_by_code_and_both_ais_pass_beside_the_width_check(
     session: Session, tmp_path: Path
 ) -> None:
     package_id, anchors = _sealed_rows(session)
@@ -321,7 +326,7 @@ def test_equal_widths_paired_by_code_pass_beside_the_width_check(
     assert finding.scope_row_candidate_id == anchors[0]
     width = findings["CT-WIDTH-001"][anchors[0]]
     assert finding.scope_label == f"{width.scope_label} · architect"
-    assert any(note.startswith("Pairing source: code") for note in finding.notes)
+    assert any(note.startswith("Pairing source: code+ais ") for note in finding.notes)
     inputs = _inputs(session, finding)
     assert {"architect_overall", "vendor_overall"} <= set(inputs)
     architect = inputs["architect_overall"]
@@ -455,40 +460,89 @@ def test_one_to_one_pieces_are_compared_each_against_its_own_architect_span(
     ) == Fraction(21)
 
 
-def test_a_pass_resting_on_an_ai_only_pairing_waits_for_the_reviewer(
-    session: Session, tmp_path: Path
+@pytest.mark.parametrize(("printed", "engine"), [("3' - 7\"", "PASS"), ("3' - 6\"", "FAIL")])
+def test_two_judgments_code_and_both_ais_let_the_engines_result_stand(
+    session: Session, tmp_path: Path, printed: str, engine: str
 ) -> None:
+    """Code's drawn position AND both AIs' reading of what the dimension measures agree: automatic."""
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
-    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+    overall = _architect_value(session, run, anchors[0], printed)
 
     finding = _run(
         session,
         package_id,
         tmp_path,
-        {anchors[0]: _pairing(_overall(overall), source="both-ais")},
+        {anchors[0]: _pairing(_overall(overall), source="code+ais")},
+    )[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == engine, finding.reason
+    assert any(note.startswith("Pairing source: code+ais") for note in finding.notes)
+
+
+@pytest.mark.parametrize(("source", "who"), [("code", "code"), ("both-ais", "the two AIs")])
+@pytest.mark.parametrize(("printed", "engine"), [("3' - 7\"", "PASS"), ("3' - 6\"", "FAIL")])
+def test_one_judgment_alone_sends_pass_or_fail_to_the_reviewer(
+    session: Session,
+    tmp_path: Path,
+    source: PairingSource,
+    who: str,
+    printed: str,
+    engine: str,
+) -> None:
+    """Only code, or only the two AIs, paired the row: the reviewer confirms the pairing.
+
+    The both-AIs FAIL is the paid proof's false FAIL: the AIs paired the vendor's countertop with an
+    architect dimension that measured something else, and nothing else agreed.
+    """
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], printed)
+
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source=source)},
     )[ARCH_RULE][anchors[0]]
 
     assert finding.outcome == "REVIEW_REQUIRED"
-    assert finding.reason == CONFIRM_AI_PAIRING
-    # Nothing on record reads as a PASS: the stored trace is the abstention, not the calculation.
+    assert finding.reason == (
+        f"Only {who} paired these; confirm that the architect's {printed} and the vendor's 43\" "
+        "measure the same thing."
+    )
+    # Nothing on record reads as a decision: the stored trace is the abstention.
     assert finding.trace["outcome"] == "REVIEW_REQUIRED"
-    assert "PASS" not in str(finding.trace)
+    assert engine not in str(finding.trace)
+    # The engine's comparison is kept in the notes, and the numbers in the inputs, for the reviewer.
+    comparison = [note for note in finding.notes if note.startswith("The engine's comparison")]
+    assert len(comparison) == 1 and f": {engine} " in comparison[0], finding.notes
+    assert any(note.startswith(f"Pairing source: {source} ") for note in finding.notes)
+    inputs = _inputs(session, finding)
+    assert {"architect_overall", "vendor_overall"} <= set(inputs)
 
 
-def test_a_fail_on_an_ai_only_pairing_stands(session: Session, tmp_path: Path) -> None:
+def test_a_one_judgment_reason_names_every_compared_pair(session: Session, tmp_path: Path) -> None:
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
-    overall = _architect_value(session, run, anchors[0], "3' - 6\"")
+    first = _architect_value(session, run, anchors[0], "1' - 8\"", slot=0)
+    second = _architect_value(
+        session, run, anchors[0], "1' - 10\"", slot=1, box=(420, 200, 520, 230)
+    )
 
     finding = _run(
         session,
         package_id,
         tmp_path,
-        {anchors[0]: _pairing(_overall(overall), source="both-ais")},
+        {anchors[0]: _pairing(_piece(first, 0), _piece(second, 1), source="code")},
     )[ARCH_RULE][anchors[0]]
 
-    assert finding.outcome == "FAIL"
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == (
+        "Only code paired these; confirm that the architect's 1' - 8\" and the vendor's 20\" "
+        "(piece 1), and the architect's 1' - 10\" and the vendor's 21\" (piece 2) measure the "
+        "same thing."
+    )
 
 
 def test_a_reviewers_pairing_may_pass(session: Session, tmp_path: Path) -> None:
@@ -564,6 +618,75 @@ def test_nothing_comparable_makes_no_finding_and_says_why(
     plan = plan_architect_row(session, _row(session, package_id, anchors[0]), pairing)
     assert plan.disposition is Disposition.NOT_COMPARED
     assert plan.reason == "every architect span ends on a fixture's centre line."
+
+
+@pytest.mark.parametrize(
+    ("source", "status"), [("none", "none"), ("code+ais", "nothing_comparable")]
+)
+def test_nothing_comparable_names_what_the_architects_dimensions_measure(
+    session: Session, tmp_path: Path, source: PairingSource, status: str
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    pairing = _pairing(
+        source=source,
+        status=status,
+        reasons=("no architect dimension ends on the countertop",),
+        measures=((uuid4(), "blocking"), (uuid4(), "fixture_centre"), (uuid4(), "blocking")),
+    )
+
+    findings = _run(session, package_id, tmp_path, {anchors[0]: pairing})
+
+    _only_the_revision_line(findings)
+    plan = plan_architect_row(session, _row(session, package_id, anchors[0]), pairing)
+    assert plan.disposition is Disposition.NOT_COMPARED
+    assert plan.reason == (
+        "The architect's dimensions on this sheet measure blocking and fixture centres, not the "
+        "countertop. No architect dimension ends on the countertop."
+    )
+
+
+@pytest.mark.parametrize(
+    ("measures", "sentence"),
+    [
+        (
+            ("cabinet_run",),
+            "The architect's dimensions on this sheet measure cabinet runs, not the countertop.",
+        ),
+        (
+            ("countertop", "blocking"),
+            "The architect's dimensions on this sheet measure the countertop and blocking.",
+        ),
+        (
+            ("blocking", "fixture_centre", "toe_kick"),
+            (
+                "The architect's dimensions on this sheet measure blocking, fixture centres and "
+                "toe kick, not the countertop."
+            ),
+        ),
+    ],
+)
+def test_the_measures_sentence_is_plain_english(
+    session: Session, measures: tuple[str, ...], sentence: str
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    pairing = _pairing(
+        status="nothing_comparable",
+        reasons=(),
+        measures=tuple((uuid4(), kind) for kind in measures),
+    )
+
+    plan = plan_architect_row(session, _row(session, package_id, anchors[0]), pairing)
+
+    assert plan.reason == f"{sentence} The architect prints nothing comparable for this row."
+
+
+def test_without_measures_the_reason_is_unchanged(session: Session) -> None:
+    package_id, anchors = _sealed_rows(session)
+    pairing = _pairing(status="nothing_comparable", reasons=())
+
+    plan = plan_architect_row(session, _row(session, package_id, anchors[0]), pairing)
+
+    assert plan.reason == "The architect prints nothing comparable for this row."
 
 
 def test_no_pairing_at_all_makes_no_row_finding_and_one_line_that_blocks_nothing(
@@ -1045,8 +1168,12 @@ def test_an_unaddressed_architect_fail_blocks_sign_off_and_a_confirmed_one_does_
     assert finding.id not in approval_readiness(session, revision.id).blocking_finding_ids
 
 
-def test_an_ai_only_match_blocks_sign_off_until_a_person_acts_with_a_note(
-    session: Session, tmp_path: Path
+@pytest.mark.parametrize(
+    ("source", "printed"),
+    [("both-ais", "3' - 7\""), ("both-ais", "3' - 6\""), ("code", "3' - 6\"")],
+)
+def test_a_one_judgment_result_blocks_sign_off_until_a_person_acts_with_a_note(
+    session: Session, tmp_path: Path, source: PairingSource, printed: str
 ) -> None:
     from app.review.session import (
         ReviewActionKind,
@@ -1057,13 +1184,14 @@ def test_an_ai_only_match_blocks_sign_off_until_a_person_acts_with_a_note(
 
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
-    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+    overall = _architect_value(session, run, anchors[0], printed)
     finding = _run(
         session,
         package_id,
         tmp_path,
-        {anchors[0]: _pairing(_overall(overall), source="both-ais")},
+        {anchors[0]: _pairing(_overall(overall), source=source)},
     )[ARCH_RULE][anchors[0]]
+    assert finding.outcome == "REVIEW_REQUIRED"
     revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
     sitting = open_session(session, package_revision_id=revision.id, reviewer="synthetic reviewer")
 
