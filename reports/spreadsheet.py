@@ -548,7 +548,12 @@ def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tupl
         result.field_cut_count,
         result.wall_layout.label or "not established",
         result.wall_layout.source,
-        "" if decision is None else decision.action,
+        (
+            ""
+            if decision is None
+            else decision.action
+            + (" (carried over from the previous check run)" if decision.carried_over else "")
+        ),
         "" if decision is None else decision.actor,
         "" if decision is None else decision.time.isoformat(),
         "" if decision is None or decision.note is None else decision.note,

@@ -5647,6 +5647,22 @@
             "title": "Actor",
             "type": "string"
           },
+          "carried_from_finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried From Finding Id"
+          },
+          "carried_over": {
+            "title": "Carried Over",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -5844,6 +5860,22 @@
             "title": "At",
             "type": "string"
           },
+          "carried_from_finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried From Finding Id"
+          },
+          "carried_over": {
+            "title": "Carried Over",
+            "type": "boolean"
+          },
           "note": {
             "anyOf": [
               {
@@ -5983,6 +6015,22 @@
           "actor": {
             "title": "Actor",
             "type": "string"
+          },
+          "carried_from_finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried From Finding Id"
+          },
+          "carried_over": {
+            "title": "Carried Over",
+            "type": "boolean"
           },
           "note": {
             "anyOf": [

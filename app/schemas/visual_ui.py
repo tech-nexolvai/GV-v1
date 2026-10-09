@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.row_location import RowLocation
+from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome
 
 
@@ -53,6 +54,13 @@ class ReviewerDecisionOut(BaseModel):
     note: str | None
     actor: str
     time: datetime
+
+    carried_over: bool = Field(default=False, json_schema_extra=optional_in_schema)
+    """True when this decision was carried over an unchanged check re-run (#1073). It is still the
+    reviewer's own decision: the actor, time and note are the ones they recorded."""
+
+    carried_from_finding_id: UUID | None = None
+    """The result the reviewer actually decided on, when `carried_over`; otherwise null."""
 
 
 class WallLayoutOut(BaseModel):

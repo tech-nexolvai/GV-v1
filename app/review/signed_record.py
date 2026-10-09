@@ -17,6 +17,9 @@ class ReviewDisposition(BaseModel):
     reviewer: str
     at: AwareDatetime
     note: str | None = None
+    carried_from_finding_id: UUID | None = None
+    """Set when this decision was carried over an unchanged check re-run (#1073): the finding the
+    reviewer actually decided on. Still the reviewer's own action, with their name, time and note."""
 
     def wording(self, outcome: str) -> str:
         who = f"by reviewer {self.reviewer} on {self.at.isoformat()}"
@@ -36,7 +39,15 @@ class ReviewDisposition(BaseModel):
                 "dismiss": "dismissed",
             }[self.action]
             heading = f"{outcome}: {verb} {who}"
-        return heading + (f" Reason: {self.note}" if self.note is not None else "")
+        carried = (
+            ""
+            if self.carried_from_finding_id is None
+            else (
+                " Carried over from the previous check run, whose result was the same "
+                f"(decided on finding {self.carried_from_finding_id})."
+            )
+        )
+        return heading + (f" Reason: {self.note}" if self.note is not None else "") + carried
 
 
 class SignedReviewFinding(BaseModel):

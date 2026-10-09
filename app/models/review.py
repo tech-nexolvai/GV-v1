@@ -337,3 +337,73 @@ class ApprovedFinding(Base, TimestampedUUID, Immutable):
         ),
         UniqueConstraint("approval_id", "finding_id", name="uq_approved_findings_link"),
     )
+
+
+#: The three verbs a re-run may carry. A `correct` is what the re-run consumes, so it never carries.
+CARRIED_ACTION_VALUES = "'confirm', 'dismiss', 'except'"
+
+
+class FindingDecisionCarryover(Base, TimestampedUUID, Immutable):
+    """A reviewer's decision carried from one check result to its unchanged re-run (#1073).
+
+    **Why it exists.** Every "Run checks" writes new findings and supersedes the previous run, and a
+    `ReviewAction` belongs to the one finding it was recorded on. Without this, every held result
+    asked again after any re-run, even when nothing it rests on had changed (Anant, option b,
+    2026-10-09).
+
+    **It is a link, never a copy.** No `ReviewAction` is written under anybody's name: the decision
+    stays the reviewer's own row, with its original actor, time and note, and this row only says the
+    new finding inherits it because its stored result is the same (`matched_on_hash`, computed by
+    `app/review/carry_over.py`). Findings are untouched.
+
+    **The database holds the boundaries.** Three composite foreign keys tie the new finding, the
+    finding it replaces and the action to one package revision, so nothing can carry across
+    revisions or projects. A fourth pins `action` to the real action's verb, and the CHECK refuses a
+    `correct`. One link per new finding. Append-only like every other record table.
+    """
+
+    __tablename__ = "finding_decision_carryovers"
+
+    package_revision_id: Mapped[UUID] = mapped_column(index=True)
+    new_finding_id: Mapped[UUID] = mapped_column(unique=True, index=True)
+    """The result written by the re-run, which inherits the decision."""
+
+    from_finding_id: Mapped[UUID] = mapped_column(index=True)
+    """The result it replaced, in the run the re-run superseded."""
+
+    review_action_id: Mapped[UUID] = mapped_column(index=True)
+    """The reviewer's own action. May sit on an older finding when it was itself carried."""
+
+    action: Mapped[str] = mapped_column(String(32))
+    matched_on_hash: Mapped[str] = mapped_column(String(64))
+    """sha256 of the "same result" fingerprint both findings share (hex)."""
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["new_finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_carryover_new_finding_revision",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["from_finding_id", "package_revision_id"],
+            ["findings.id", "findings.package_revision_id"],
+            name="fk_carryover_from_finding_revision",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["review_action_id", "package_revision_id"],
+            ["review_actions.id", "review_actions.package_revision_id"],
+            name="fk_carryover_action_revision",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["review_action_id", "action"],
+            ["review_actions.id", "review_actions.action"],
+            name="fk_carryover_action_kind",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(f"action IN ({CARRIED_ACTION_VALUES})", name="carryover_action_carriable"),
+        CheckConstraint("new_finding_id <> from_finding_id", name="carryover_distinct_findings"),
+        CheckConstraint("matched_on_hash ~ '^[0-9a-f]{64}$'", name="carryover_hash_shape"),
+    )

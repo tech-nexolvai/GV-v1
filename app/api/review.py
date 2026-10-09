@@ -31,8 +31,9 @@ from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.evidence import CanonicalObservation
 from app.models.package import Package, PackageRevision
-from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
+from app.models.review import ReviewActionKind, ReviewSession
 from app.models.verdicts import Finding
+from app.review.carry_over import decision_records
 from app.review.evidence_actions import (
     EvidenceActionRefused,
     EvidenceConfirmationNotAuthorised,
@@ -287,16 +288,29 @@ def list_finding_actions(
     if revision_id is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
-    statement = (
-        select(ReviewAction)
-        .where(
-            ReviewAction.finding_id == finding_id,
-            ReviewAction.package_revision_id == revision_id,
-        )
-        .order_by(ReviewAction.created_at.desc(), ReviewAction.id.desc())
+    # The shared reader (#1073): this finding's own actions, plus the decision it carried over an
+    # unchanged re-run, which stays the reviewer's own row and is marked as carried.
+    records = decision_records(db, [finding_id])
+    own = [
+        ReviewActionOut.model_validate(action)
+        for action in records.own_actions.get(finding_id, ())
+        if action.package_revision_id == revision_id
+    ]
+    carried = records.carried.get(finding_id)
+    entries = own + (
+        []
+        if carried is None or carried.action.package_revision_id != revision_id
+        else [
+            ReviewActionOut.model_validate(carried.action).model_copy(
+                update={
+                    "carried_over": True,
+                    "carried_from_finding_id": carried.carried_from_finding_id,
+                }
+            )
+        ]
     )
-    actions = db.execute(statement).scalars().all()
-    return ReviewActionPage(items=[ReviewActionOut.model_validate(action) for action in actions])
+    entries.sort(key=lambda entry: (entry.created_at, str(entry.id)), reverse=True)
+    return ReviewActionPage(items=entries)
 
 
 @router.post(

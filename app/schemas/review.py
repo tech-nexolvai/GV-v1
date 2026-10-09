@@ -15,12 +15,21 @@ Source: `docs/DESIGN_PRODUCT.md` §4 · Verification: `tests/api/test_review_api
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.review import ExceptionScope, ReviewActionKind
+
+
+def optional_in_schema(schema: dict[str, Any]) -> None:
+    """Publish a defaulted flag as optional in OpenAPI, so existing typed clients stay valid (#1073).
+
+    `openapi-typescript` makes any property with a non-null default required. The server always
+    sends `carried_over`; a client that has not learned of it yet treats a missing one as false.
+    """
+    schema.pop("default", None)
 
 
 class OpenReviewSession(BaseModel):
@@ -87,6 +96,13 @@ class ReviewActionOut(BaseModel):
     actor: str
     note: str | None
     created_at: datetime
+
+    carried_over: bool = Field(default=False, json_schema_extra=optional_in_schema)
+    """True when this decision was carried over an unchanged check re-run (#1073). It is still the
+    reviewer's own decision: the actor, time and note are the ones they recorded."""
+
+    carried_from_finding_id: UUID | None = None
+    """The result the reviewer actually decided on, when `carried_over`; otherwise null."""
 
 
 class ReviewActionPage(BaseModel):
