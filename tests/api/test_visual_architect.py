@@ -6,7 +6,7 @@ the architect's, exactly. A row the check wrote nothing for says why. Synthetic 
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -138,10 +138,10 @@ def test_a_row_with_nothing_compared_says_why_and_needs_no_decision(
     )
     _run(session, package_id, tmp_path, {anchors[0]: pairing})
 
-    def lookup(_session: Session, anchor: UUID) -> EffectivePairing | None:
-        return pairing if anchor == anchors[0] else None
+    def lookup(_session: Session, rows: Collection[UUID]) -> dict[UUID, EffectivePairing | None]:
+        return {anchor: pairing if anchor == anchors[0] else None for anchor in rows}
 
-    monkeypatch.setattr(visual_countertops, "effective_architect_pairing", lookup)
+    monkeypatch.setattr(visual_countertops, "effective_architect_pairings", lookup)
     items = _items(session, package_id)
 
     first = items[str(anchors[0])]["architect"]
@@ -166,8 +166,10 @@ def test_a_pairing_made_after_the_last_run_asks_for_a_run(
     pairing = _pairing(_overall(overall))
     monkeypatch.setattr(
         visual_countertops,
-        "effective_architect_pairing",
-        lambda _session, anchor: pairing if anchor == anchors[0] else None,
+        "effective_architect_pairings",
+        lambda _session, rows: {
+            anchor: pairing if anchor == anchors[0] else None for anchor in rows
+        },
     )
 
     block = _items(session, package_id)[str(anchors[0])]["architect"]

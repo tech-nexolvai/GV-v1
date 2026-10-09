@@ -42,11 +42,12 @@ from units.imperial import format_inches
 from verdict.outcomes import Outcome
 from vocabulary.check_holds import CHECK_HOLD_REASONS
 from vocabulary.reviewer_reasons import reviewer_reason
+from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
     Disposition,
     PairingLookup,
-    effective_architect_pairing,
+    effective_architect_pairings,
     pairing_source_from_notes,
     plan_architect_row,
 )
@@ -381,6 +382,16 @@ def countertop_results(
     return _countertop_results_for_revision(session, package_id, revision)
 
 
+def _batched_pairings(session: Session, row_anchor_ids: list[UUID]) -> PairingLookup:
+    """Every listed row's pairing read at once, answered row by row as a `PairingLookup`."""
+    pairings = effective_architect_pairings(session, row_anchor_ids)
+
+    def lookup(_session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
+        return pairings.get(row_anchor_id)
+
+    return lookup
+
+
 def _countertop_results_for_revision(
     session: Session,
     package_id: UUID,
@@ -391,9 +402,9 @@ def _countertop_results_for_revision(
     """Shared projection used by the read API and the signed report writer.
 
     `pairing_lookup` answers, for a row the architect check wrote nothing for, why nothing was
-    compared; it defaults to the join seam with #1053 (`effective_architect_pairing`).
+    compared; by default every such row's pairing record (#1053) is read in one batch
+    (`effective_architect_pairings`), so the statement count does not grow with the rows.
     """
-    lookup = effective_architect_pairing if pairing_lookup is None else pairing_lookup
     rows = slot_rows(session, revision.id)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
@@ -417,6 +428,9 @@ def _countertop_results_for_revision(
         for finding, rule_id in findings
         if rule_id == ARCHITECT_CHECK_RULE_ID
     }
+    lookup = pairing_lookup or _batched_pairings(
+        session, [row.anchor.id for row in rows if row.anchor.id not in architect_by_row]
+    )
     sides = ReadingSides(session)
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
