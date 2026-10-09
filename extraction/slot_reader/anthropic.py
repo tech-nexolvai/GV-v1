@@ -13,6 +13,9 @@ with no text, which the reader treats as malformed and abstains on.
 request opts in (`fallbacks`, beta header `server-side-fallback-2026-07-01`). This adapter never
 sends either: a reading must stay attributable to the model that made it, because the two-reader
 rule seals a value only when two *named* models print the identical text.
+
+The same request goes through OpenRouter by default (`openrouter.py`, #1094), with OpenRouter's
+names for the models and its routing; the reply rules and the spend cap here are shared.
 """
 
 from __future__ import annotations
@@ -51,10 +54,12 @@ _REQUEST_OVERHEAD_TOKENS = 1024
 class AnthropicRequestError(RuntimeError):
     """Sanitized API error carrying only the status class needed for bounded retries."""
 
-    def __init__(self, status_code: int, error_type: str) -> None:
+    def __init__(
+        self, status_code: int, error_type: str, *, api: str = "Anthropic Messages API"
+    ) -> None:
         self.status_code = status_code
         self.response = {"Error": {"Code": error_type}}
-        super().__init__(f"Anthropic Messages API returned HTTP {status_code} ({error_type})")
+        super().__init__(f"{api} returned HTTP {status_code} ({error_type})")
 
 
 class SpendCapExceeded(RuntimeError):
@@ -74,7 +79,8 @@ class BatchSpendGuard:
 
     Output is reserved at its full configured maximum. Input is reserved at twice the per-call
     estimate to allow for image-tokenization variance. Failed calls retain their reservation: a
-    lost response must not make budget appear available again.
+    lost response must not make budget appear available again. The one exception is a call the
+    provider refused outright, unserved (`refused_unserved`): nothing was generated or charged.
     """
 
     def __init__(self, maximum_usd: Decimal, rates: object) -> None:
@@ -106,6 +112,11 @@ class BatchSpendGuard:
                 raise SpendCapExceeded("Claude reader batch spend cap would be exceeded")
             self._reserved_usd += amount
         return _Reservation(amount, model_id, input_tokens, output_limit)
+
+    def release(self, reservation: _Reservation) -> None:
+        """Give back the reservation of a call the provider refused outright, unserved."""
+        with self._lock:
+            self._reserved_usd -= reservation.reserved_usd
 
     def settle(self, reservation: _Reservation, response: Mapping[str, Any]) -> None:
         usage = response.get("usage")
@@ -156,11 +167,25 @@ class SpendLimitedClient:
         ):
             raise TypeError("Claude request is missing its model id or output-token bound")
         reservation = self._guard.reserve(model_id, _reserved_input_tokens(kwargs), output_limit)
-        response = self._client.converse(**kwargs)
+        try:
+            response = self._client.converse(**kwargs)
+        except AnthropicRequestError as error:
+            if refused_unserved(error):
+                self._guard.release(reservation)
+            raise
         if not isinstance(response, Mapping):
             raise TypeError("Claude client returned a malformed response")
         self._guard.settle(reservation, response)
         return response
+
+
+def refused_unserved(error: AnthropicRequestError) -> bool:
+    """Whether the provider answered, before generating anything, that it would not serve the call:
+    a rate limit (429) or payment required (402, OpenRouter's in-flight budget or no credit). Such a
+    call is not charged (#1094: OpenRouter limits a new account to 20 calls a minute per model, and
+    its refusals held $1+ of a $2.50 cap). A lost connection, an overload or a server error may
+    have been charged, so those keep their reservation."""
+    return error.status_code in (402, 429)
 
 
 def input_token_upper_bound(request: Mapping[str, Any]) -> int:
@@ -218,7 +243,9 @@ def _text_blocks(value: object) -> str:
     return "\n".join(blocks)
 
 
-def _message_content(value: object, model_id: str) -> list[dict[str, object]]:
+def _message_content(
+    value: object, model_id: str, *, refuse_resize: bool
+) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise TypeError("Anthropic user message content must be a list")
     content: list[dict[str, object]] = []
@@ -244,19 +271,19 @@ def _message_content(value: object, model_id: str) -> list[dict[str, object]]:
         # Refused here, before any call, if the API would resize it (#1051): the pictures were
         # measured at the size they are drawn, and a silently shrunk one is not that picture.
         require_picture_fits((raw,), model_id)
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": f"image/{'jpeg' if image_format == 'jpg' else image_format}",
-                    "data": base64.b64encode(raw).decode("ascii"),
-                },
-                # And if the local check and the API ever disagree, the API refuses rather than
-                # resizes (vision-coordinates, "Turn resizing into an error").
-                "transformations": {"oversized_image": "error"},
-            }
-        )
+        block: dict[str, object] = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": f"image/{'jpeg' if image_format == 'jpg' else image_format}",
+                "data": base64.b64encode(raw).decode("ascii"),
+            },
+        }
+        if refuse_resize:
+            # And if the local check and the API ever disagree, the API refuses rather than
+            # resizes (vision-coordinates, "Turn resizing into an error").
+            block["transformations"] = {"oversized_image": "error"}
+        content.append(block)
     return content
 
 
@@ -287,7 +314,20 @@ def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
     model_id = kwargs.get("modelId")
     if not isinstance(model_id, str) or not model_id.startswith(MODEL_PREFIX):
         raise ValueError("Claude slot-reader model ids must start with 'anthropic.'")
-    model = model_id.removeprefix(MODEL_PREFIX)
+    return messages_request(kwargs, model=model_id.removeprefix(MODEL_PREFIX), refuse_resize=True)
+
+
+def messages_request(
+    kwargs: Mapping[str, Any], *, model: str, refuse_resize: bool
+) -> dict[str, object]:
+    """The Messages API body for a slot-reader request, asking `model` by the route's own name.
+
+    `refuse_resize` marks every picture `oversized_image: "error"` where the route takes that
+    field; the local size check refuses an oversized picture before any call either way.
+    """
+    model_id = kwargs.get("modelId")
+    if not isinstance(model_id, str):
+        raise TypeError("Claude slot-reader request must name its model")
     system_value = kwargs.get("system")
     messages = kwargs.get("messages")
     if not isinstance(messages, list) or len(messages) != 1:
@@ -303,7 +343,12 @@ def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
         "model": model,
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "user", "content": _message_content(message.get("content"), model_id)}
+            {
+                "role": "user",
+                "content": _message_content(
+                    message.get("content"), model_id, refuse_resize=refuse_resize
+                ),
+            }
         ],
         "output_config": _output_config(kwargs.get(OUTPUT_CONFIG_KEY)),
     }
@@ -328,36 +373,9 @@ class AnthropicMessagesClient:
     def converse(self, **kwargs: Any) -> Mapping[str, Any]:
         body = anthropic_messages_request(**kwargs)
         payload = self._post_json(MESSAGES_URL, body)
-        content = payload.get("content")
-        usage = payload.get("usage")
-        if not isinstance(content, list) or not isinstance(usage, Mapping):
-            raise AnthropicRequestError(502, "ProviderResponseMalformed")
-        stop_reason = payload.get("stop_reason")
-        if not _answered_by(payload.get("model"), str(body["model"])):
-            # Not the model that was asked: never passed on as that model's reading.
-            stop_reason = "model_mismatch"
-        # Only a finished turn's text blocks are an answer. Thinking blocks are the model's own and
-        # never parsed; a refusal or a token-limit stop may carry partial text, which the API says
-        # to discard (refusals-and-fallback), so the reader sees no text and abstains.
-        texts = (
-            [
-                {"type": "text", "text": item["text"]}
-                for item in content
-                if isinstance(item, Mapping)
-                and item.get("type") == "text"
-                and isinstance(item.get("text"), str)
-            ]
-            if stop_reason == "end_turn"
-            else []
+        return messages_reply(
+            payload, answered=_answered_by(payload.get("model"), str(body["model"]))
         )
-        return {
-            "stopReason": stop_reason,
-            "output": {"message": {"content": texts}},
-            "usage": {
-                "inputTokens": usage.get("input_tokens"),
-                "outputTokens": usage.get("output_tokens"),
-            },
-        }
 
     def count_input_tokens(self, **kwargs: Any) -> int:
         body = anthropic_messages_request(**kwargs)
@@ -369,41 +387,106 @@ class AnthropicMessagesClient:
         return count
 
     def _post_json(self, url: str, body: Mapping[str, object]) -> Mapping[str, Any]:
-        request = Request(
+        return post_json(
             url,
-            data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "x-api-key": self._api_key,
-                "anthropic-version": ANTHROPIC_VERSION,
-            },
-            method="POST",
+            body,
+            headers={"x-api-key": self._api_key, "anthropic-version": ANTHROPIC_VERSION},
+            timeout_seconds=self._timeout_seconds,
         )
-        try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = json.loads(response.read())
-        except HTTPError as error:
-            status = int(error.code)
-            error.close()
-            error_type = (
-                "TooManyRequestsException"
-                if status == 429
-                else (
-                    "ModelOverloadedException"
-                    if status == 529
-                    else (
-                        "ServiceUnavailableException"
-                        if status >= 500
-                        else "ProviderRequestRejected"
-                    )
-                )
+
+
+def messages_reply(
+    payload: Mapping[str, Any], *, answered: bool, api: str = "Anthropic Messages API"
+) -> dict[str, Any]:
+    """A Messages API reply in the reader's Converse shape. `answered` says the reply names the
+    model that was asked: when it does not, no text is passed on as that model's reading."""
+    content = payload.get("content")
+    usage = payload.get("usage")
+    if not isinstance(content, list) or not isinstance(usage, Mapping):
+        raise AnthropicRequestError(502, "ProviderResponseMalformed", api=api)
+    stop_reason = payload.get("stop_reason")
+    if not answered:
+        # Not the model that was asked: never passed on as that model's reading.
+        stop_reason = "model_mismatch"
+    # Only a finished turn's text blocks are an answer. Thinking blocks are the model's own and
+    # never parsed; a refusal or a token-limit stop may carry partial text, which the API says
+    # to discard (refusals-and-fallback), so the reader sees no text and abstains.
+    texts = (
+        [
+            {"type": "text", "text": item["text"]}
+            for item in content
+            if isinstance(item, Mapping)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if stop_reason == "end_turn"
+        else []
+    )
+    return {
+        "stopReason": stop_reason,
+        "output": {"message": {"content": texts}},
+        "usage": {
+            "inputTokens": usage.get("input_tokens"),
+            "outputTokens": usage.get("output_tokens"),
+        },
+    }
+
+
+def post_json(
+    url: str,
+    body: Mapping[str, object],
+    *,
+    headers: Mapping[str, str],
+    timeout_seconds: int,
+    api: str = "Anthropic Messages API",
+) -> Mapping[str, Any]:
+    """POST one JSON body. Errors carry only a status and a retry class: never the body sent,
+    the reply's words or a credential."""
+    request = Request(
+        url,
+        data=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+        headers={"content-type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read())
+    except HTTPError as error:
+        status = int(error.code)
+        # OpenRouter's "in-flight budget" (a new or low-balance account, too many calls at once)
+        # is a 402 that clears by itself, so it is retried like a throttle (decision log
+        # 2026-10-06). Any other 402 (no credit) is refused. Only that marker is looked for; the
+        # reply's words never leave this function.
+        in_flight = status == 402 and b"in_flight_budget" in _error_body(error)
+        error.close()
+        error_type = (
+            "TooManyRequestsException"
+            if status == 429 or in_flight
+            else (
+                "ModelOverloadedException"
+                if status == 529
+                else ("ServiceUnavailableException" if status >= 500 else "ProviderRequestRejected")
             )
-            raise AnthropicRequestError(status, error_type) from None
-        except (URLError, TimeoutError, OSError):
-            raise AnthropicRequestError(503, "ProviderTransportError") from None
-        if not isinstance(payload, Mapping):
-            raise AnthropicRequestError(502, "ProviderResponseMalformed")
-        return payload
+        )
+        raise AnthropicRequestError(status, error_type, api=api) from None
+    except (URLError, TimeoutError, OSError):
+        raise AnthropicRequestError(503, "ProviderTransportError", api=api) from None
+    if not isinstance(payload, Mapping):
+        raise AnthropicRequestError(502, "ProviderResponseMalformed", api=api)
+    return payload
+
+
+def _error_body(error: HTTPError) -> bytes:
+    """At most 4 KB of an error reply, or nothing when it cannot be read whole; always closed.
+
+    Any failure is swallowed: a cut-off reply (`IncompleteRead`) carries the reply's own bytes,
+    which must never reach an exception."""
+    try:
+        return error.read(4096) or b""
+    except Exception:  # noqa: BLE001 - the reply's words must never escape
+        return b""
+    finally:
+        error.close()
 
 
 def _answered_by(reported: object, requested: str) -> bool:

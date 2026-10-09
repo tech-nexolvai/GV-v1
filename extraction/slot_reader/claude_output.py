@@ -61,8 +61,9 @@ CLAUDE_EFFORTS: Final[tuple[str, ...]] = get_args(ClaudeEffort.__value__)
 #: would be `medium`; Sonnet 5.5's is `high`. Stated on every call so the two never drift apart.
 DEFAULT_CLAUDE_EFFORT: Final[ClaudeEffort] = "high"
 
-#: The key a slot-reader request carries its Claude output settings under. Only the Anthropic
-#: adapter reads it; a Bedrock (non-Claude) request never has it.
+#: The key a slot-reader request carries its Claude output settings under. Only the Claude
+#: adapters read it (Anthropic's API, or OpenRouter since #1094); a Bedrock (non-Claude) request
+#: never has it.
 OUTPUT_CONFIG_KEY: Final = "anthropicOutputConfig"
 
 _MODEL_PREFIX: Final = "anthropic."

@@ -202,11 +202,15 @@ class SlotReaderRuntime:
     question_packets: bool = False
     """Enable storing a private, hash-bound question packet for every reader attempt."""
     spend_cap_usd: Decimal | None = None
-    """Per-reading-batch maximum when using the direct Claude route; otherwise unset."""
+    """Per-reading-batch maximum when the Claude readers are on (either route); otherwise unset."""
     claude_row_reader: bool = False
     """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
     """The effort every Claude question is asked at (`GV_CLAUDE_READER_EFFORT`, #1051)."""
+    claude_route: str | None = None
+    """Where the Claude readers are called (#1094), in the run's identity: OpenRouter and its host
+    (`openrouter:google-vertex/global`). `None` is Anthropic's own API, whose identity is exactly
+    as before."""
     architect_pairing: str | None = None
     """The architect pairing's prompt and settings when it runs beside this reading (#1053), so
     the run's identity says so; `None` leaves the identity exactly as before."""
@@ -231,8 +235,11 @@ class SlotReaderRuntime:
             "rules=drawn-length-veto,label-expansion,counter-break"
             f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=3000' if self.claude_row_reader else ''}"
             + (
-                f";claude=effort:{self.claude_effort},structured-output-v1,oversized-image-error,"
-                f"upright-sideways:height>={_SIDEWAYS_HEIGHT_TO_WIDTH}xwidth"
+                f";claude=effort:{self.claude_effort},structured-output-v1,"
+                # OpenRouter takes no `oversized_image: "error"`; the local size check runs on both.
+                + ("oversized-image-error," if self.claude_route is None else "")
+                + f"upright-sideways:height>={_SIDEWAYS_HEIGHT_TO_WIDTH}xwidth"
+                + ("" if self.claude_route is None else f",route={self.claude_route}")
                 if self.claude_row_reader
                 else ""
             )
@@ -273,6 +280,10 @@ def configured_slot_reader(
     if claude_enabled:
         from extraction.form_reader.pricing import require_priced_readers
         from extraction.slot_reader.anthropic import ThreadLocalAnthropicClients
+        from extraction.slot_reader.openrouter import (
+            OPENROUTER_ROUTE,
+            ThreadLocalOpenRouterClients,
+        )
 
         model_ids = (
             "anthropic.claude-opus-5-5",
@@ -287,15 +298,24 @@ def configured_slot_reader(
                 "GV_CLAUDE_READER_ENABLED requires explicit per-model pacing for: "
                 + ", ".join(sorted(missing))
             )
-        key = getattr(settings, "anthropic_api_key", None)
+        # The same two models either way (#1094); OpenRouter unless the admin says otherwise.
+        provider = getattr(settings, "claude_reader_provider", "openrouter")
+        if provider not in ("openrouter", "anthropic"):
+            raise ValueError(
+                f"GV_CLAUDE_READER_PROVIDER must be openrouter or anthropic: {provider!r}"
+            )
+        key_name = "OPENROUTER_API_KEY" if provider == "openrouter" else "ANTHROPIC_API_KEY"
+        key = getattr(settings, f"{provider}_api_key", None)
         if key is None or not hasattr(key, "get_secret_value"):
-            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
+            raise ValueError(f"GV_CLAUDE_READER_ENABLED requires {key_name}")
         key_value = key.get_secret_value()
         if not isinstance(key_value, str) or not key_value.strip():
-            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
-        clients = ThreadLocalAnthropicClients(
-            key_value,
-            timeout_seconds=int(getattr(settings, "claude_reader_timeout_seconds", 180)),
+            raise ValueError(f"GV_CLAUDE_READER_ENABLED requires {key_name}")
+        timeout_seconds = int(getattr(settings, "claude_reader_timeout_seconds", 180))
+        clients: ThreadLocalOpenRouterClients | ThreadLocalAnthropicClients = (
+            ThreadLocalOpenRouterClients(key_value, timeout_seconds=timeout_seconds)
+            if provider == "openrouter"
+            else ThreadLocalAnthropicClients(key_value, timeout_seconds=timeout_seconds)
         )
         effort = getattr(settings, "claude_reader_effort", DEFAULT_CLAUDE_EFFORT)
         if effort not in CLAUDE_EFFORTS:
@@ -330,6 +350,7 @@ def configured_slot_reader(
         ),
         claude_row_reader=claude_enabled,
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
+        claude_route=(OPENROUTER_ROUTE if claude_enabled and provider == "openrouter" else None),
     )
 
 
