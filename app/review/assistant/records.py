@@ -21,6 +21,7 @@ screen (`record_id`: the countertop row id, or the finding id).
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Final, Literal, Protocol
 from uuid import UUID
@@ -74,10 +75,37 @@ def outcome_label(outcome: str | None) -> str:
     return NOT_CHECKED_LABEL if outcome is None else reviewer_outcome(outcome)
 
 
+#: Characters that hide or reorder text: controls, zero-width and bidirectional marks.
+_HIDDEN: Final = re.compile(
+    "[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u200b-\u200f\u2028-\u202e"
+    "\u2060-\u2064\u2066-\u2069\ufeff]"
+)
+_MARKDOWN_LINK: Final = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_HTML_TAG: Final = re.compile(r"<[^>]*>")
+_URL: Final = re.compile(
+    r"(?i)\b(?:https?|ftp|javascript|data):\S*|\bwww\.\S+|\b[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*"
+    r"\.[a-z]{2,}(?:/\S*)?"
+)
+
+
+def sanitise(text: str) -> str:
+    """Record text from readers and vendors, made inert before it is shown or put in a prompt.
+
+    Hidden characters are removed; markdown links keep only their words; HTML tags, links,
+    citation markers, placeholder braces and markdown emphasis are removed. The words stay.
+    """
+    text = _HIDDEN.sub("", text)
+    text = _MARKDOWN_LINK.sub(r"\1", text)
+    text = _HTML_TAG.sub(" ", text)
+    text = _URL.sub("(link removed)", text)
+    text = re.sub(r"[\[\]{}*_`#~|<>]+", " ", text)
+    return text
+
+
 def _cut(text: str | None) -> str | None:
     if text is None:
         return None
-    collapsed = " ".join(text.split())
+    collapsed = " ".join(sanitise(text).split())
     if not collapsed:
         return None
     return collapsed if len(collapsed) <= MAX_TEXT else collapsed[: MAX_TEXT - 1].rstrip() + "…"
@@ -201,6 +229,8 @@ class ReviewSnapshot(_Frozen):
     pages_without_countertop: tuple[PageNoteRecord, ...]
     rows_not_checked: tuple[PageNoteRecord, ...]
     omitted: Mapping[str, int]
+    totals: Mapping[str, int]
+    """Counts over every record, before any cap: what `{count.*}` says."""
 
     def records(self) -> tuple[CountertopRecord | FindingRecord, ...]:
         """Every countertop, then every other check."""
@@ -477,7 +507,45 @@ def build_snapshot(
             for page in countertops.rows_not_checked[:MAX_PAGE_NOTES]
         ),
         omitted=omitted,
+        totals=_totals(countertops, others, readiness, decisions),
     )
+
+
+#: Decisions after which a result no longer needs correction from the reviewer's side.
+_SETTLED: Final = frozenset({"except", "dismiss"})
+
+
+def _totals(
+    countertops: CountertopResultsOut,
+    others: Sequence[ComposerFinding],
+    readiness: _Readiness,
+    decisions: Mapping[UUID, _Decision],
+) -> dict[str, int]:
+    """Counts over the uncapped lists, decision-aware: a decided result is not counted as open."""
+    states: list[tuple[str | None, str | None]] = [
+        (
+            None if item.outcome is None else item.outcome.value,
+            None if item.reviewer_decision is None else item.reviewer_decision.action,
+        )
+        for item in countertops.items
+    ]
+    for finding in others:
+        decision = decisions.get(UUID(finding.key))
+        states.append((finding.outcome, None if decision is None else decision.action.action))
+    return {
+        "countertops": len(countertops.items),
+        "checks": len(others),
+        "pass": sum(outcome == "PASS" for outcome, _ in states),
+        "fail": sum(outcome == "FAIL" and action not in _SETTLED for outcome, action in states),
+        "review": sum(
+            outcome == "REVIEW_REQUIRED" and action is None for outcome, action in states
+        ),
+        "waiting": sum(outcome == "NOT_FOUND" and action is None for outcome, action in states),
+        "not_checked": sum(item.outcome is None for item in countertops.items),
+        "no_countertop_pages": len(countertops.pages_without_countertop),
+        "rows_not_checked": len(countertops.rows_not_checked),
+        "needs_you": readiness.blocking_findings,
+    }
 
 
 def _drop_none(value: object) -> object:

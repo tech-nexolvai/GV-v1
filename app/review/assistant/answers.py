@@ -136,6 +136,8 @@ def publish(
                     )
                 )
 
+    if snapshot.omitted and rendered.citations:
+        sources.append("Some records were left out of what the assistant read, for length")
     return AnswerEvent(
         text=rendered.text,
         citations=tuple(citations),

@@ -1,18 +1,23 @@
 """Placeholders: how every fact in an assistant answer is written by code, never by the model (#1128).
 
 An answer's text is a template. Wherever it states a fact it writes a placeholder, and code fills
-in the record's own display text:
+in the record's own text. Every fill has a grammatical kind, shown to the model with an example:
 
-- a record's facts: `{C1.page}` → "page 4", `{C1.outcome}` → "Needs correction",
-  `{C1.printed}` → 'printed overall 84 1/2"', `{C1.piece.2}` → 'piece 2: 36"', `{F1.reason}`,
-  `{P3.no_countertop}` … (`record_fields` lists exactly what each record holds);
-- the package's counts and sign-off: `{count.needs_you}` → "3 items need your decision",
-  `{signoff.status}` → "Sign-off is blocked: 3 items need your decision."
+- **name** (a subject): `{C1.page}` → "page 4", `{C1.label}`, `{F1.check}`;
+- **verb phrase**: `{C1.outcome}` → "needs correction", "looks right", "was held for your decision;
+  you confirmed it" — the record's state as the screen shows it, its standing decision included;
+- **noun phrase** (a value with its role): `{C1.printed}` → 'the printed overall, 84 1/2"',
+  `{C1.needed}`, `{C1.difference}`, `{C1.piece.2}` → 'piece 2, 36"', `{C1.walls}` …;
+- **sentence**: `{C1.reason}`, `{C1.hold_reason}`, `{C1.decision}`, `{C1.needs_you}`,
+  `{P3.no_countertop}`, `{P9.second_row}`;
+- **clause**: `{count.needs_you}` → "3 findings still need your decision", `{signoff.status}` →
+  "sign-off is blocked: 3 findings still need your decision". Counts come from the uncapped,
+  decision-aware totals and the sign-off readiness numbers, exactly as the screens show them.
 
-Numbers carry their role in the rendered words ("printed overall …", "needed overall …"), so a
-value can never be put in the wrong role. After the last placeholder of each record in a sentence
-code inserts that record's citation marker `[[n]]`, and the citations are the records the
-placeholders name, in order: a citation always matches the fact it follows.
+Code also: puts each record's citation marker `[[n]]` after its last fact in a sentence (the
+citations are the records the placeholders name, in order); starts a sentence that states a
+record's facts without naming it with "On page N," so every fact sentence carries its subject;
+capitalises a fill that starts a sentence and lower-cases one that does not.
 
 An unknown placeholder (an id the records do not have, or a field that record does not hold) is
 `UnknownPlaceholder`.
@@ -28,6 +33,8 @@ from typing import Final
 from app.review.assistant.records import CountertopRecord, FindingRecord, ReviewSnapshot
 
 __all__ = [
+    "COUNT_FIELDS",
+    "KINDS",
     "OUTCOME_PHRASES",
     "PLACEHOLDER",
     "Rendered",
@@ -35,6 +42,7 @@ __all__ = [
     "UnknownPlaceholder",
     "group_for",
     "outcome_phrase",
+    "placeholder_guide",
     "record_fields",
     "render",
     "slots",
@@ -45,7 +53,8 @@ __all__ = [
 #: `{C1.page}`, `{C1.piece.2}`, `{count.needs_you}`, `{signoff.status}`.
 PLACEHOLDER: Final = re.compile(r"\{([A-Za-z]+[0-9]*)\.([a-z_]+)(?:\.([0-9]{1,3}))?\}")
 _RECORD_KEY: Final = re.compile(r"^[CFP][0-9]+$")
-_SENTENCE_BREAK: Final = re.compile(r"(?<=[.!?])\s+|\n+")
+#: A sentence ends at . or ? before a capital letter or a placeholder, or at a line break.
+SENTENCE_BREAK: Final = re.compile(r"(?<=[.?!])\s+(?=[A-Z{])|\n+")
 
 COUNT_FIELDS: Final = (
     "needs_you",
@@ -53,11 +62,39 @@ COUNT_FIELDS: Final = (
     "pass",
     "review",
     "waiting",
+    "not_checked",
     "no_countertop_pages",
     "rows_not_checked",
     "countertops",
     "checks",
 )
+
+#: The grammatical kind of every field, as the prompt shows it.
+KINDS: Final[Mapping[str, str]] = {
+    "page": "name",
+    "label": "name",
+    "check": "name",
+    "outcome": "verb phrase",
+    "printed": "noun phrase",
+    "needed": "noun phrase",
+    "difference": "noun phrase",
+    "field_cut": "noun phrase",
+    "pieces": "noun phrase",
+    "piece": "noun phrase",
+    "walls": "noun phrase",
+    "tolerance": "noun phrase",
+    "comparison": "noun phrase",
+    "reason": "sentence",
+    "hold_reason": "sentence",
+    "drawn_length_note": "sentence",
+    "architect": "sentence",
+    "decision": "sentence",
+    "needs_you": "sentence",
+    "no_countertop": "sentence",
+    "second_row": "sentence",
+    "status": "clause",
+}
+_NAMES: Final = frozenset({"page", "label", "check"})
 
 
 class UnknownPlaceholder(ValueError):
@@ -75,6 +112,10 @@ class Slot:
     @property
     def is_record(self) -> bool:
         return _RECORD_KEY.match(self.key) is not None
+
+    @property
+    def name(self) -> str:
+        return f"{self.key}.{self.field}" + ("" if self.index is None else f".{self.index}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,11 +140,11 @@ def slots(template: str) -> list[Slot]:
 
 def split_sentences(template: str) -> list[str]:
     """Sentences and list lines of a template (placeholders hold no sentence break)."""
-    return [part for part in (piece.strip() for piece in _SENTENCE_BREAK.split(template)) if part]
+    return [part for part in (piece.strip() for piece in SENTENCE_BREAK.split(template)) if part]
 
 
-#: What `{Cn.outcome}` fills in: a verb phrase, so "The countertop on page 4 {C1.outcome}" reads
-#: "… needs correction". The citation chip after it shows the badge word.
+#: What `{Cn.outcome}` fills in for an undecided result: a verb phrase, so "The countertop on
+#: page 4 {C1.outcome}" reads "… needs correction".
 OUTCOME_PHRASES: Final[Mapping[str | None, str]] = {
     "PASS": "looks right",
     "FAIL": "needs correction",
@@ -112,10 +153,40 @@ OUTCOME_PHRASES: Final[Mapping[str | None, str]] = {
     "NO_APPLICABLE_RULE": "has no rule that applies",
     None: "was not checked",
 }
+#: The same outcome once a decision stands on it.
+_DECIDED_PHRASES: Final[Mapping[str | None, str]] = {
+    "REVIEW_REQUIRED": "was held for your decision",
+    "NOT_FOUND": "was waiting on a value",
+}
+_DECISION_PHRASES: Final[Mapping[str, str]] = {
+    "confirm": "you confirmed it",
+    "except": "you accepted it as an exception",
+    "dismiss": "you dismissed it",
+    "correct": "you corrected a value, so the checks need to run again",
+}
 
 
-def outcome_phrase(outcome: str | None) -> str:
-    return OUTCOME_PHRASES.get(outcome, "was not checked")
+def outcome_phrase(
+    outcome: str | None, action: str | None = None, *, carried_over: bool = False
+) -> str:
+    """The result as the screen shows it: the recorded outcome and the decision standing on it."""
+    if action is None:
+        return OUTCOME_PHRASES.get(outcome, "was not checked")
+    if outcome == "REVIEW_REQUIRED" and action == "confirm":
+        phrase = "was confirmed by you"
+    else:
+        base = _DECIDED_PHRASES.get(outcome) or OUTCOME_PHRASES.get(outcome, "was not checked")
+        phrase = f"{base}; {_DECISION_PHRASES.get(action, f'you recorded {action}')}"
+    return phrase + (" (carried over from the earlier run)" if carried_over else "")
+
+
+def _record_outcome(item: CountertopRecord | FindingRecord) -> str:
+    decision = item.decision
+    return outcome_phrase(
+        item.outcome,
+        None if decision is None else decision.action,
+        carried_over=decision is not None and decision.carried_over,
+    )
 
 
 def _plural(count: int, one: str, many: str, none: str) -> str:
@@ -124,70 +195,67 @@ def _plural(count: int, one: str, many: str, none: str) -> str:
     return f"{count} {one if count == 1 else many}"
 
 
+_COUNT_WORDS: Final[Mapping[str, tuple[str, str, str]]] = {
+    "needs_you": (
+        "finding still needs your decision",
+        "findings still need your decision",
+        "no finding needs your decision",
+    ),
+    "fail": (
+        "result needs correction",
+        "results need correction",
+        "no result needs correction",
+    ),
+    "pass": ("result looks right", "results look right", "no result looks right"),
+    "review": (
+        "held result still needs your decision",
+        "held results still need your decision",
+        "no held result needs your decision",
+    ),
+    "waiting": (
+        "result is waiting on a value",
+        "results are waiting on a value",
+        "no result is waiting on a value",
+    ),
+    "not_checked": (
+        "countertop was not checked",
+        "countertops were not checked",
+        "every countertop listed has a check result",
+    ),
+    "no_countertop_pages": (
+        "page has no countertop",
+        "pages have no countertop",
+        "no page is listed as having no countertop",
+    ),
+    "rows_not_checked": (
+        "second countertop was not checked",
+        "second countertops were not checked",
+        "no second countertop is listed",
+    ),
+    "countertops": ("countertop", "countertops", "no countertop"),
+    "checks": ("other check", "other checks", "no other check"),
+}
+
+
 def _count(snapshot: ReviewSnapshot, field: str) -> str | None:
-    records = snapshot.records()
-    by_outcome = {
-        name: sum(item.outcome == name for item in records)
-        for name in ("FAIL", "PASS", "REVIEW_REQUIRED", "NOT_FOUND")
-    }
-    phrases: Mapping[str, Callable[[], str]] = {
-        "needs_you": lambda: _plural(
-            len(snapshot.readiness.needing_you),
-            "item needs your decision",
-            "items need your decision",
-            "no item needs your decision",
-        ),
-        "fail": lambda: _plural(
-            by_outcome["FAIL"],
-            "result needs correction",
-            "results need correction",
-            "no result needs correction",
-        ),
-        "pass": lambda: _plural(
-            by_outcome["PASS"], "result looks right", "results look right", "no result looks right"
-        ),
-        "review": lambda: _plural(
-            by_outcome["REVIEW_REQUIRED"],
-            "result was held for your decision",
-            "results were held for your decision",
-            "no result was held for your decision",
-        ),
-        "waiting": lambda: _plural(
-            by_outcome["NOT_FOUND"],
-            "result is waiting on a value",
-            "results are waiting on a value",
-            "no result is waiting on a value",
-        ),
-        "no_countertop_pages": lambda: _plural(
-            len(snapshot.pages_without_countertop),
-            "page has no countertop",
-            "pages have no countertop",
-            "no page is listed as having no countertop",
-        ),
-        "rows_not_checked": lambda: _plural(
-            len(snapshot.rows_not_checked),
-            "second countertop was not checked",
-            "second countertops were not checked",
-            "no second countertop is listed",
-        ),
-        "countertops": lambda: _plural(
-            len(snapshot.countertops), "countertop", "countertops", "no countertop"
-        ),
-        "checks": lambda: _plural(
-            len(snapshot.other_checks), "other check", "other checks", "no other check"
-        ),
-    }
-    phrase = phrases.get(field)
-    return None if phrase is None else phrase()
+    words = _COUNT_WORDS.get(field)
+    if words is None:
+        return None
+    return _plural(snapshot.totals.get(field, 0), *words)
+
+
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:] if text[1:2].islower() or text[1:2] == " " else text
 
 
 def _signoff(snapshot: ReviewSnapshot) -> str:
+    """Exactly what sign-off readiness says: the screen's numbers, never a second count."""
     readiness = snapshot.readiness
     if readiness.can_sign_off:
-        return "You can sign off"
-    if readiness.needing_you:
-        return f"Sign-off is blocked: {_count(snapshot, 'needs_you')}"
-    return (readiness.reason or "Sign-off is not possible yet").rstrip(".")
+        return "you can sign off"
+    if readiness.blocking_findings:
+        return f"sign-off is blocked: {_count(snapshot, 'needs_you')}"
+    return _lower_first((readiness.reason or "sign-off is not possible yet").rstrip("."))
 
 
 def _pages(pages: tuple[int, ...]) -> str | None:
@@ -201,8 +269,12 @@ def _decision(item: CountertopRecord | FindingRecord) -> str | None:
     if item.decision is None:
         return None
     carried = " (carried over from the earlier run)" if item.decision.carried_over else ""
-    note = f", note: {item.decision.note}" if item.decision.note else ""
-    return f"Decision: {item.decision.words}{carried}{note}"
+    note = f", with the note “{item.decision.note}”" if item.decision.note else ""
+    return f"the decision on record: {item.decision.words}{carried}{note}"
+
+
+def _quoted(text: str) -> str:
+    return f"“{text.rstrip('.')}”"
 
 
 def _countertop_value(item: CountertopRecord, field: str, index: int | None) -> str | None:
@@ -210,65 +282,69 @@ def _countertop_value(item: CountertopRecord, field: str, index: int | None) -> 
         piece = next((piece for piece in item.pieces if piece.number == index), None)
         if piece is None:
             return None
-        return f"piece {piece.number}: {piece.value.display if piece.value else 'not read'}"
+        return f"piece {piece.number}, {piece.value.display if piece.value else 'not read'}"
     if index is not None:
         return None
     rule = item.rule
     architect = item.architect
+
+    def pieces() -> str | None:
+        if not item.pieces:
+            return None
+        values = [piece.value.display if piece.value else "not read" for piece in item.pieces]
+        listed = values[0] if len(values) == 1 else ", ".join(values[:-1]) + " and " + values[-1]
+        return f"the pieces, {listed}"
+
     values: Mapping[str, Callable[[], str | None]] = {
         "page": lambda: f"page {item.page_number}",
         "label": lambda: item.label,
-        "outcome": lambda: outcome_phrase(item.outcome),
+        "outcome": lambda: _record_outcome(item),
         "printed": lambda: (
-            None if item.printed is None else f"printed overall {item.printed.display}"
+            None if item.printed is None else f"the printed overall, {item.printed.display}"
         ),
-        "needed": lambda: None if item.needed is None else f"needed overall {item.needed.display}",
+        "needed": lambda: (
+            None if item.needed is None else f"the needed overall, {item.needed.display}"
+        ),
         "difference": lambda: (
-            None if item.difference is None else f"difference {item.difference.display}"
+            None if item.difference is None else f"the difference, {item.difference.display}"
         ),
         "field_cut": lambda: (
             None
             if item.field_cut_per_end is None
-            else f"field cut {item.field_cut_per_end.display} per end"
+            else f"the field cut, {item.field_cut_per_end.display} per end"
             + ("" if not item.field_cut_count else f" at {item.field_cut_count} ends")
         ),
-        "pieces": lambda: (
-            None
-            if not item.pieces
-            else "pieces "
-            + ", ".join(
-                f"{piece.number}: {piece.value.display if piece.value else 'not read'}"
-                for piece in item.pieces
-            )
-        ),
+        "pieces": pieces,
         "walls": lambda: (
-            None if item.wall is None else f"walls: {item.wall} (from {item.wall_source})"
+            None if item.wall is None else f"the walls, {item.wall} (from {item.wall_source})"
         ),
         "check": lambda: None if rule is None else rule.name,
         "tolerance": lambda: (
-            None if rule is None or not rule.tolerance else f"tolerance {rule.tolerance}"
+            None if rule is None or not rule.tolerance else f"the tolerance, {rule.tolerance}"
         ),
         "comparison": lambda: (
-            None if rule is None or not rule.comparison else f"compared: {rule.comparison}"
+            None if rule is None or not rule.comparison else f"the comparison, {rule.comparison}"
         ),
         "reason": lambda: None if rule is None else rule.reason,
         "hold_reason": lambda: (
-            None if item.hold_reason is None else f"Held because: {item.hold_reason}"
+            None
+            if item.hold_reason is None
+            else f"it is held because {_lower_first(item.hold_reason)}"
         ),
         "drawn_length_note": lambda: item.drawn_length_note,
         "architect": lambda: (
             None
             if architect is None
             else (
-                f"The architect check {outcome_phrase(architect.outcome)}"
+                f"the architect check {outcome_phrase(architect.outcome)}"
                 + (f" ({architect.reason.rstrip('.')})" if architect.reason else "")
-                if architect.outcome_label is not None
+                if architect.outcome is not None
                 else architect.not_compared_reason
             )
         ),
         "decision": lambda: _decision(item),
         "needs_you": lambda: (
-            "It needs your decision in the review queue" if item.needs_you else None
+            "it needs your decision in the review queue" if item.needs_you else None
         ),
     }
     getter = values.get(field)
@@ -281,13 +357,13 @@ def _finding_value(item: FindingRecord, field: str, index: int | None) -> str | 
     values: Mapping[str, Callable[[], str | None]] = {
         "page": lambda: _pages(item.pages),
         "check": lambda: item.check_name,
-        "outcome": lambda: outcome_phrase(item.outcome),
+        "outcome": lambda: _record_outcome(item),
         "reason": lambda: item.reason,
-        "comparison": lambda: None if not item.comparison else f"compared: {item.comparison}",
-        "tolerance": lambda: None if not item.tolerance else f"tolerance {item.tolerance}",
+        "comparison": lambda: None if not item.comparison else f"the comparison, {item.comparison}",
+        "tolerance": lambda: None if not item.tolerance else f"the tolerance, {item.tolerance}",
         "decision": lambda: _decision(item),
         "needs_you": lambda: (
-            "It needs your decision in the review queue" if item.needs_you else None
+            "it needs your decision in the review queue" if item.needs_you else None
         ),
     }
     getter = values.get(field)
@@ -301,19 +377,24 @@ def _page_value(snapshot: ReviewSnapshot, page: int, field: str, index: int | No
         return f"page {page}"
     if field == "no_countertop":
         note = next((n for n in snapshot.pages_without_countertop if n.page_number == page), None)
-        return None if note is None else f"No countertop on page {page}: {note.reason}"
+        return (
+            None
+            if note is None
+            else f"page {page} has no countertop (the readers said: {_quoted(note.reason)})"
+        )
     if field == "second_row":
         note = next((n for n in snapshot.rows_not_checked if n.page_number == page), None)
         return (
             None
             if note is None
-            else f"Second countertop on page {page}, not checked: {note.reason}"
+            else f"page {page} has a second countertop that was not checked (the readers said: "
+            f"{_quoted(note.reason)})"
         )
     return None
 
 
 def value_of(snapshot: ReviewSnapshot, slot: Slot) -> str:
-    """The display text a placeholder stands for, or `UnknownPlaceholder`."""
+    """The text a placeholder stands for, or `UnknownPlaceholder`."""
     value: str | None = None
     if slot.key == "count":
         value = None if slot.index is not None else _count(snapshot, slot.field)
@@ -328,7 +409,7 @@ def value_of(snapshot: ReviewSnapshot, slot: Slot) -> str:
         elif isinstance(record, FindingRecord):
             value = _finding_value(record, slot.field, slot.index)
     if value is None or not value.strip():
-        raise UnknownPlaceholder(f"{slot.key}.{slot.field}")
+        raise UnknownPlaceholder(slot.name)
     return value.strip().rstrip(".")
 
 
@@ -364,31 +445,50 @@ _FINDING_FIELDS: Final = (
 )
 
 
+def _held(snapshot: ReviewSnapshot, key: str, field: str, index: int | None = None) -> bool:
+    try:
+        value_of(snapshot, Slot(key, field, index, 0, 0))
+    except UnknownPlaceholder:
+        return False
+    return True
+
+
 def record_fields(snapshot: ReviewSnapshot) -> dict[str, list[str]]:
     """Every placeholder the records can fill, by key: what the prompt offers the model."""
     fields: dict[str, list[str]] = {}
-
-    def offer(key: str, names: tuple[str, ...]) -> None:
-        held = []
-        for name in names:
-            try:
-                value_of(snapshot, Slot(key, name, None, 0, 0))
-            except UnknownPlaceholder:
-                continue
-            held.append(name)
-        if held:
-            fields[key] = held
-
     for item in snapshot.countertops:
-        offer(item.id, _COUNTERTOP_FIELDS)
-        fields.setdefault(item.id, []).extend(f"piece.{piece.number}" for piece in item.pieces)
+        fields[item.id] = [name for name in _COUNTERTOP_FIELDS if _held(snapshot, item.id, name)]
+        fields[item.id].extend(f"piece.{piece.number}" for piece in item.pieces)
     for finding in snapshot.other_checks:
-        offer(finding.id, _FINDING_FIELDS)
+        fields[finding.id] = [name for name in _FINDING_FIELDS if _held(snapshot, finding.id, name)]
     for page in sorted(snapshot.pages()):
-        offer(f"P{page}", ("page", "no_countertop", "second_row"))
+        held = [
+            name
+            for name in ("page", "no_countertop", "second_row")
+            if _held(snapshot, f"P{page}", name)
+        ]
+        if held:
+            fields[f"P{page}"] = held
     fields["count"] = list(COUNT_FIELDS)
     fields["signoff"] = ["status"]
     return fields
+
+
+def _kind(field: str) -> str:
+    if field.startswith("piece."):
+        return "noun phrase"
+    return KINDS.get(field, "clause")
+
+
+def placeholder_guide(snapshot: ReviewSnapshot) -> list[str]:
+    """One line per placeholder: its kind and the text it fills in here (for the prompt)."""
+    lines: list[str] = []
+    for key, names in record_fields(snapshot).items():
+        for name in names:
+            field, _, index = name.partition(".")
+            slot = Slot(key, field, int(index) if index else None, 0, 0)
+            lines.append(f"{{{key}.{name}}} ({_kind(name)}): {value_of(snapshot, slot)}")
+    return lines
 
 
 def group_for(slot: Slot) -> str | None:
@@ -415,6 +515,22 @@ def _capitalised(sentence: str) -> str:
     return sentence
 
 
+def _with_subject(part: str, header_keys: set[str], snapshot: ReviewSnapshot) -> str:
+    """A sentence stating one record's facts without naming it starts "On page N," (code's)."""
+    in_part = slots(part)
+    keys = {slot.key for slot in in_part if slot.is_record and slot.key[0] in "CF"}
+    if len(keys) != 1:
+        return part
+    key = next(iter(keys))
+    named = any(slot.key == key and slot.field in ("page", "label") for slot in in_part)
+    if named or key in header_keys or not _held(snapshot, key, "page"):
+        return part
+    if any(slot.key == key and slot.field == "outcome" for slot in in_part):
+        return part  # an outcome needs its subject written; the guard refuses it otherwise
+    prefix = "- " if part.startswith("- ") else ""
+    return f"{prefix}On {{{key}.page}}, {part[len(prefix) :]}"
+
+
 def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
     """Fill every placeholder and put each record's marker after its last fact in a sentence."""
     found = slots(template)
@@ -429,22 +545,36 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
             groups.append(group)
 
     pieces: list[str] = []
-    for part in re.split(r"((?<=[.!?])\s+|\n+)", template):
-        if not part or _SENTENCE_BREAK.fullmatch(part):
+    header_keys: set[str] = set()
+    for part in re.split(r"((?<=[.?!])\s+(?=[A-Z{])|\n+)", template):
+        if not part or SENTENCE_BREAK.fullmatch(part):
             pieces.append(part)
             continue
+        if not part.startswith("- "):
+            header_keys = (
+                {slot.key for slot in slots(part) if slot.is_record}
+                if part.rstrip().endswith(":")
+                else set()
+            )
+            part = _with_subject(part, set(), snapshot)
+        else:
+            part = _with_subject(part, header_keys, snapshot)
         in_part = slots(part)
         last = {slot.key: position for position, slot in enumerate(in_part) if slot.is_record}
         cursor = 0
         out: list[str] = []
         for position, slot in enumerate(in_part):
-            out.append(part[cursor : slot.start])
-            out.append(value_of(snapshot, slot))
+            before = part[cursor : slot.start]
+            out.append(before)
+            value = value_of(snapshot, slot)
+            at_start = not part[: slot.start].strip(" -")
+            if not at_start and slot.field not in _NAMES:
+                value = _lower_first(value)
+            out.append(value)
             if slot.is_record and last[slot.key] == position:
                 out.append(f" [[{citations.index(slot.key)}]]")
             cursor = slot.end
         out.append(part[cursor:])
-        pieces.append(
-            _capitalised("".join(out)) if part.lstrip("- ").startswith("{") else "".join(out)
-        )
+        text = "".join(out)
+        pieces.append(_capitalised(text) if part.lstrip("- ").startswith("{") else text)
     return Rendered(text="".join(pieces), citations=tuple(citations), groups=tuple(groups))
