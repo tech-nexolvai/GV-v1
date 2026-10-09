@@ -29,6 +29,7 @@ Source: issues #987, #992, #1051 · Verification: `tests/workflow/test_slot_read
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -637,15 +638,32 @@ _ROW_COLOURS: Final = (
     bytes((220, 125, 0)),
     bytes((0, 135, 150)),
 )
-_DIGIT_PIXELS: Final = {
-    "0": ("111", "101", "101", "101", "111"),
-    "1": ("010", "110", "010", "010", "111"),
-    "2": ("110", "001", "010", "100", "111"),
-    "3": ("110", "001", "010", "001", "110"),
-    "4": ("101", "101", "111", "001", "001"),
-    "5": ("111", "100", "110", "001", "110"),
-    "6": ("011", "100", "110", "101", "010"),
-}
+
+
+@functools.lru_cache(maxsize=64)
+def _digit_mask(number: int, width: int, height: int) -> tuple[tuple[bool, ...], ...]:
+    """Which pixels of a `width` x `height` badge interior the number's strokes cover.
+
+    Drawn with Pillow's own scalable typeface, sized so the digit fills the interior. The badge
+    used a 3x5-dot pattern until a proof run (2026-10-09) where both Claude readers read the dotted
+    "3" as "8", a box that did not exist, and the page went to the reviewer. A real typeface keeps
+    every digit's shape distinct at the size the reader sees.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    text = str(number)
+    size = height
+    font = ImageFont.load_default(size=size)
+    while size > 4:
+        font = ImageFont.load_default(size=size)
+        left, top, right, bottom = font.getbbox(text)
+        if right - left <= width and bottom - top <= height:
+            break
+        size -= 1
+    image = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(image).text((width / 2, height / 2), text, fill=255, font=font, anchor="mm")
+    data = image.tobytes()
+    return tuple(tuple(data[y * width + x] >= 128 for x in range(width)) for y in range(height))
 
 
 def _marked_png(
@@ -702,9 +720,9 @@ def _marked_png(
         paint(x0 - left, y0 - top, x0 - left + thickness, y1 - top, colour)
         paint(x1 - left - thickness, y0 - top, x1 - left, y1 - top, colour)
         scale = badge_scale or max(2, rendered.dpi // 72)
-        glyph = _DIGIT_PIXELS[str(number)]
-        badge_width = len(glyph[0]) * scale + 2 * scale
-        badge_height = len(glyph) * scale + 2 * scale
+        # The badge keeps the measured 3x5-cell size; only the digit inside is a real typeface.
+        badge_width = 3 * scale + 2 * scale
+        badge_height = 5 * scale + 2 * scale
         if badge_beside:
             badge_top = max(0, (y0 + y1) // 2 - top - badge_height // 2)
             badge_left = x0 - left - scale - badge_width
@@ -725,12 +743,13 @@ def _marked_png(
             (badge_left, badge_top, badge_left + badge_width, badge_top + badge_height)
         )
         paint(badge_left, badge_top, badge_left + badge_width, badge_top + badge_height, colour)
-        for glyph_y, glyph_row in enumerate(glyph):
-            for glyph_x, pixel in enumerate(glyph_row):
-                if pixel == "1":
-                    gx = badge_left + scale + glyph_x * scale
-                    gy = badge_top + scale + glyph_y * scale
-                    paint(gx, gy, gx + scale, gy + scale, bytes((255, 255, 255)))
+        mask = _digit_mask(number, 3 * scale, 5 * scale)
+        for glyph_y, mask_row in enumerate(mask):
+            for glyph_x, inked in enumerate(mask_row):
+                if inked:
+                    gx = badge_left + scale + glyph_x
+                    gy = badge_top + scale + glyph_y
+                    paint(gx, gy, gx + 1, gy + 1, bytes((255, 255, 255)))
     factor = -(-max(width, height) // max_side)
     if factor <= 1:
         return encode_png(width, height, bytes(rgb))

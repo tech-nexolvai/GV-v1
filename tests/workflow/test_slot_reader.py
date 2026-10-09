@@ -2287,3 +2287,28 @@ def test_the_configured_effort_reaches_the_runtime_and_the_run_identity() -> Non
     ClaudeOn.claude_reader_effort = "adaptive"
     with pytest.raises(ValueError, match="GV_CLAUDE_READER_EFFORT"):
         configured_slot_reader(ClaudeOn(), form, environ=FRACTION_ENV)
+
+
+def test_box_numbers_are_drawn_in_a_real_typeface_so_three_never_reads_as_eight() -> None:
+    """Input: the digit masks the numbered-rows picture draws. Outcome: every digit's mask is
+    distinct and a 3 has no closed left side. Why: in a proof run both Claude readers read the
+    3x5-dot "3" tag as "8", a box that does not exist, and the page went to the reviewer."""
+    from workflow.slot_reader import _digit_mask
+
+    width, height = 18, 30
+    masks = {digit: _digit_mask(digit, width, height) for digit in range(10)}
+    assert all(any(any(row) for row in mask) for mask in masks.values())
+    for first in range(10):
+        for second in range(first + 1, 10):
+            differing = sum(
+                a != b
+                for row_a, row_b in zip(masks[first], masks[second], strict=True)
+                for a, b in zip(row_a, row_b, strict=True)
+            )
+            assert differing > width * height // 20, (first, second)
+
+    def left_ink(mask: tuple[tuple[bool, ...], ...]) -> int:
+        lower_left = [row[: width // 3] for row in mask[height // 2 + 2 : height - 4]]
+        return sum(sum(row) for row in lower_left)
+
+    assert left_ink(masks[8]) > left_ink(masks[3])
