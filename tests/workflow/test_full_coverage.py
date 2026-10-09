@@ -47,10 +47,15 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 RULEBOOK = pathlib.Path(__file__).resolve().parents[2] / "rules" / "rulebook"
 
-#: The layout this package describes: three cabinets, a filler either side, against a back wall.
-#: 24 + 30 + 36 = 90 of cabinet, 2 + 2 = 4 of filler, and `back_only` means no field cut — so the
-#: countertop is 94 inches. Chosen to add up, because a package that did not would test the
-#: arithmetic rather than the coverage.
+#: The layout this package describes: three cabinets, a filler either side, between a back wall and
+#: two end walls. 24 + 30 + 36 = 90 of cabinet, 2 + 2 = 4 of filler, and the project's field cut is 0,
+#: so the two field cuts of `back_left_right` add nothing — the countertop is 94 inches. Chosen to add
+#: up, because a package that did not would test the arithmetic rather than the coverage.
+#:
+#: Three walls rather than back-only since #1139: the sink-cabinet check applies to three-wall layouts
+#: only, so on a back-only package it is correctly not run and this file could not show that every
+#: check decides. `test_the_sink_cabinet_check_is_not_run_on_a_back_only_package` covers the other
+#: side.
 #:
 #: **Deliberately not a palindrome.** The first version of this was `24, 36, 24`, and reversing the
 #: stored order then changed nothing — the test that claims to pin the layout order could not detect
@@ -131,7 +136,7 @@ PROJECT_PARAMETERS = {
 #: Off the sink's cut sheet, true for this review only.
 RUN_PARAMETERS = {"sink_interior_depth": '16"', "sink_interior_width": '30"'}
 
-DISCRIMINATORS = {"wall_config": "back_only", "filler_symmetry": "equal_unless_noted"}
+DISCRIMINATORS = {"wall_config": "back_left_right", "filler_symmetry": "equal_unless_noted"}
 
 #: Checks that cannot decide, the text their abstention must contain, and who has to act.
 #:
@@ -391,7 +396,30 @@ def test_without_a_discriminator_a_variant_rule_cannot_decide(
 
     outcomes = _outcomes(session, filled)
     assert outcomes["CT-WIDTH-001"] not in ("PASS", "FAIL")
+    # Three-wall layouts only since #1139, so it too waits for the layout.
+    assert outcomes["CT-SINK-CABINET-WIDTH-001"] == "REVIEW_REQUIRED"
     assert outcomes["CAB-FILLER-001"] in ("PASS", "FAIL")
+
+
+def test_the_sink_cabinet_check_is_not_run_on_a_back_only_package(
+    session: Session, filled: PackageRevision
+) -> None:
+    """**#1139: the same complete package, against a back wall only.**
+
+    The sink cabinet's parts add up exactly, and the check still must not PASS: the relation is the
+    three-wall deck's, and on any other layout nothing was checked. NO_APPLICABLE_RULE says that;
+    a PASS would say the cabinet was checked and fine.
+    """
+    operands = operands_for(session, filled.id)
+    DatabaseStages(
+        operands=operands, discriminators={**DISCRIMINATORS, "wall_config": "back_only"}
+    ).run_checks(session, filled.id)
+
+    outcomes = _outcomes(session, filled)
+    assert outcomes["CT-SINK-CABINET-WIDTH-001"] == "NO_APPLICABLE_RULE"
+    # Every other countertop check still runs: the change narrows one rule and nothing else.
+    assert outcomes["CT-WIDTH-001"] in ("PASS", "FAIL")
+    assert outcomes["CT-SINK-CUTOUT-WIDTH-001"] in ("PASS", "FAIL")
 
 
 #: Raj's own worked example, slide 4 — the layout his deck uses to show how they do it.

@@ -22,11 +22,19 @@ from pathlib import Path
 import pytest
 import yaml
 
-from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
+from rules.applicability import CheckContext, resolve
+from rules.parameters import (
+    ParameterLayer,
+    ParameterSet,
+    ParameterValue,
+    Provenance,
+    ResolvedParameter,
+)
+from rules.project import ProjectScope
 from rules.publication import is_production_ready, tolerances_of
-from rules.schema import Quantity, Rule
-from rules.semantic_types import SemanticType
-from rules.snapshot import publish
+from rules.schema import Applicability, Quantity, Rule
+from rules.semantic_types import ProductType, SemanticType, WallConfig
+from rules.snapshot import SnapshotStore, publish
 from units.measurement import Measurement, Unit
 from verdict.engine import execute
 from verdict.operands import EvidenceStatus, VerdictOperand
@@ -48,6 +56,15 @@ CLEARANCE_LEFT = Fraction(9, 2)
 CUTOUT = Fraction(53, 2)
 CLEARANCE_RIGHT = Fraction(7, 2)
 CABINET = Fraction(36)
+
+#: The one layout this relation was authored for: back wall plus both ends (#1139).
+THREE_WALLS = {SemanticType.WALL_CONFIG.value: WallConfig.BACK_LEFT_RIGHT.value}
+
+#: Every other layout the vocabulary knows, read from the enum rather than listed, so a layout
+#: added later (#1138's back wall plus one end) is covered here the day it arrives.
+OTHER_LAYOUTS = tuple(
+    layout.value for layout in WallConfig if layout is not WallConfig.BACK_LEFT_RIGHT
+)
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +150,7 @@ def test_a_cabinet_that_contains_its_parts_exactly_passes() -> None:
         publish(_load()),
         _inputs(),
         {"cabinet_side_thickness": _parameter("cabinet_side_thickness", PANEL)},
+        discriminators=THREE_WALLS,
     )
 
     assert finding.outcome is Outcome.PASS
@@ -149,6 +167,7 @@ def test_a_sixteenth_out_is_a_fail() -> None:
         publish(_load()),
         _inputs(CABINET + Fraction(1, 16)),
         {"cabinet_side_thickness": _parameter("cabinet_side_thickness", PANEL)},
+        discriminators=THREE_WALLS,
     )
 
     assert finding.outcome is Outcome.FAIL
@@ -166,6 +185,7 @@ def test_both_side_panels_are_counted() -> None:
         publish(_load()),
         _inputs(CABINET - PANEL),
         {"cabinet_side_thickness": _parameter("cabinet_side_thickness", PANEL)},
+        discriminators=THREE_WALLS,
     )
 
     assert finding.outcome is Outcome.FAIL
@@ -179,8 +199,104 @@ def test_a_missing_side_panel_thickness_abstains_rather_than_assuming_three_quar
     input `NOT_FOUND` rather than a plausible default.
     """
     rule = _load()
-    finding = execute(publish(rule), _inputs(), {})
+    finding = execute(publish(rule), _inputs(), {}, discriminators=THREE_WALLS)
 
     assert rule.parameters["cabinet_side_thickness"].default is None
     assert finding.outcome is Outcome.NOT_FOUND
     assert "cabinet_side_thickness" in finding.reason
+
+
+# ---------------------------------------------------------------------------
+# Where the relation applies (#1139)
+# ---------------------------------------------------------------------------
+
+
+def _project() -> ProjectScope:
+    return ProjectScope(
+        project_id="PRJ-1",
+        parameter_set=ParameterSet(
+            project_id="PRJ-1", layer=ParameterLayer.PROJECT, version=1, parameters={}
+        ),
+    )
+
+
+def _resolve(discriminators: dict[str, str]) -> tuple[set[str], dict[str, Outcome]]:
+    store = SnapshotStore()
+    store.add(publish(_load()))
+    resolution = resolve(
+        store,
+        CheckContext(
+            product_type=ProductType.COUNTERTOP,
+            project=_project(),
+            discriminators=discriminators,
+        ),
+    )
+    applicable = {entry.rule_id for entry in resolution.applicable}
+    abstained = {
+        entry.rule_id: entry.outcome
+        for entry in resolution.abstentions
+        if entry.rule_id is not None
+    }
+    return applicable, abstained
+
+
+def test_the_rule_names_three_walls_as_its_only_layout() -> None:
+    """**The deck this relation comes from is three-walled, and the rule now says so.**
+
+    Version 1.0.1 declared `scope: global` with a comment saying "three-sided layouts only", so the
+    comment was the only thing limiting it and the engine ran it on back-only and island rows too.
+    The layouts are named explicitly rather than "everything but island": a layout added to the
+    vocabulary later must be added here on purpose, never enter by default.
+    """
+    rule = _load()
+
+    assert isinstance(rule.applicability, Applicability)
+    assert rule.applicability.discriminator == SemanticType.WALL_CONFIG.value
+    assert [variant.when for variant in rule.applicability.variants] == [
+        WallConfig.BACK_LEFT_RIGHT.value
+    ]
+    assert rule.version == "1.1.0"
+
+
+@pytest.mark.parametrize("layout", OTHER_LAYOUTS)
+def test_any_other_layout_is_not_checked_rather_than_passed(layout: str) -> None:
+    """Input: a cabinet whose parts add up exactly, on a layout that is not three walls.
+    Outcome: NO_APPLICABLE_RULE — the check did not run there, which is not a PASS."""
+    finding = execute(
+        publish(_load()),
+        _inputs(),
+        {"cabinet_side_thickness": _parameter("cabinet_side_thickness", PANEL)},
+        discriminators={SemanticType.WALL_CONFIG.value: layout},
+    )
+
+    assert finding.outcome is Outcome.NO_APPLICABLE_RULE
+
+
+@pytest.mark.parametrize("layout", OTHER_LAYOUTS)
+def test_the_resolver_leaves_the_rule_out_of_other_layouts(layout: str) -> None:
+    """The run never reaches the arithmetic: the resolver records why nothing was checked."""
+    applicable, abstained = _resolve({SemanticType.WALL_CONFIG.value: layout})
+
+    assert "CT-SINK-CABINET-WIDTH-001" not in applicable
+    assert abstained["CT-SINK-CABINET-WIDTH-001"] is Outcome.NO_APPLICABLE_RULE
+
+
+def test_the_resolver_runs_the_rule_on_three_walls() -> None:
+    applicable, abstained = _resolve(THREE_WALLS)
+
+    assert applicable == {"CT-SINK-CABINET-WIDTH-001"}
+    assert not abstained
+
+
+def test_an_unstated_layout_asks_the_reviewer_and_never_passes() -> None:
+    """Nobody said which layout this is, so nobody knows whether the relation applies. The engine's
+    own answer for a discriminator nobody established: REVIEW_REQUIRED, never a guess."""
+    finding = execute(
+        publish(_load()),
+        _inputs(),
+        {"cabinet_side_thickness": _parameter("cabinet_side_thickness", PANEL)},
+    )
+    _, abstained = _resolve({})
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+    assert abstained["CT-SINK-CABINET-WIDTH-001"] is Outcome.REVIEW_REQUIRED
