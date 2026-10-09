@@ -2330,6 +2330,14 @@
             "format": "uuid",
             "title": "Revision Id",
             "type": "string"
+          },
+          "rows_not_checked": {
+            "description": "Second countertop rows an AI named on a vendor page whose countertop row was read. Only one countertop row per page is read, so these were not checked. Listed only; nothing to decide.",
+            "items": {
+              "$ref": "#/components/schemas/RowNotCheckedOut"
+            },
+            "title": "Rows Not Checked",
+            "type": "array"
           }
         },
         "required": [
@@ -6281,6 +6289,25 @@
           "polygon"
         ],
         "title": "RowLocation",
+        "type": "object"
+      },
+      "RowNotCheckedOut": {
+        "description": "A second countertop row an AI named on a vendor page whose countertop row was read (#1108).\n\nV1 reads one countertop row per page, so this one was not checked. Listed, not blocking.",
+        "properties": {
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page_number",
+          "reason"
+        ],
+        "title": "RowNotCheckedOut",
         "type": "object"
       },
       "RuleOut": {

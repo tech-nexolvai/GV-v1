@@ -42,10 +42,12 @@ __all__ = [
     "DEFAULT_CLAUDE_EFFORT",
     "OUTPUT_CONFIG_KEY",
     "ROW_CHOICE_SCHEMA",
+    "ROW_KINDS",
     "SPAN_SCHEMA",
     "WALL_SCHEMA",
     "ClaudeEffort",
     "PictureWouldBeResized",
+    "RowKind",
     "claude_answer",
     "is_claude_model",
     "output_config",
@@ -95,9 +97,21 @@ def _object(properties: Mapping[str, Mapping[str, object]]) -> dict[str, object]
 _BOOLEAN: Final = {"type": "boolean"}
 _STRING: Final = {"type": "string"}
 
-#: Row choice (`_RowChoiceReply`). The 0..candidates range is checked by the reader: the schema
-#: subset has no numeric bounds.
-ROW_CHOICE_SCHEMA: Final = _object({"row": {"type": "integer"}, "why": _STRING})
+type RowKind = Literal["row", "no_countertop", "not_among_boxes", "unsure"]
+#: What a row answer says (`slot-row-choice-v3`, #1108): a numbered box is the countertop piece row;
+#: no stone countertop is drawn on the sheet; one is drawn but no numbered box is its row; or the
+#: reader cannot tell.
+ROW_KINDS: Final[tuple[str, ...]] = get_args(RowKind.__value__)
+#: Row choice (`_RowChoiceReply`, v3). The 0..candidates range, the row/kind agreement and the
+#: range of `also` are checked by the reader: the schema subset has no numeric bounds.
+ROW_CHOICE_SCHEMA: Final = _object(
+    {
+        "row": {"type": "integer"},
+        "kind": {"type": "string", "enum": list(ROW_KINDS)},
+        "also": {"type": "array", "items": {"type": "integer"}},
+        "why": _STRING,
+    }
+)
 #: A label read without the ownership question (`_CropAnswer`).
 CROP_SCHEMA: Final = _object(
     {

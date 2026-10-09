@@ -61,6 +61,7 @@ from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_IDS,
     COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT_ID,
+    ROW_BOX_COLOURS,
     ROW_PROMPT_ID,
     ArchPairAnswer,
     CounterBreakAnswer,
@@ -438,6 +439,14 @@ class PageSlotResult:
     """Each row reader's own pick, in reader order: `(model id, row number)`, 0 for "no countertop
     row", `None` when that reader gave no answer (#1093). Stored on an unselected page's record so a
     split can be told from a "both said none" page by data, not by its reason text."""
+    row_choice_kinds: tuple[tuple[str, str], ...] = ()
+    """Each row reader's own kind of answer (`slot-row-choice-v3`, #1108), in reader order:
+    `(model id, kind)`; a reader that gave no answer, or an answer of the older shape, is left out.
+    Stored on an unselected page's record: only a page where every reader said "no_countertop" is
+    listed without blocking."""
+    row_choice_also: tuple[tuple[str, int], ...] = ()
+    """`(model id, box number)` for each other numbered box a row reader named as a second
+    countertop's piece row (#1108). V1 reads one row per page; these are listed, never read."""
     row_candidate_ids: tuple[UUID, ...] = ()
     row_choice_png: bytes | None = None
     row_choice_box_px: tuple[int, int, int, int] | None = None
@@ -680,14 +689,9 @@ def _owner_candidate_key(owner_index: int | None) -> str:
 #: E3's mark colour for the row and its ends: a colour neither the vendor's black nor GV's red,
 #: yellow or blue uses.
 _MAGENTA: Final = bytes((230, 0, 200))
-_ROW_COLOURS: Final = (
-    bytes((220, 20, 60)),
-    bytes((0, 100, 220)),
-    bytes((0, 135, 70)),
-    bytes((145, 70, 190)),
-    bytes((220, 125, 0)),
-    bytes((0, 135, 150)),
-)
+#: The row picture's box colours, box 1 first: the ones the row question names (#1108). None is a
+#: colour of the reviewer's markup; box 1 was crimson while the question said red is the reviewer's.
+_ROW_COLOURS: Final = tuple(colour for _name, colour in ROW_BOX_COLOURS)
 
 
 @functools.lru_cache(maxsize=64)
@@ -1168,6 +1172,8 @@ def read_slot_pages(
     owner_candidate_ids: dict[int, dict[str, UUID]] = {}
     wall_candidate_ids: dict[int, UUID] = {}
     row_picks: dict[int, tuple[tuple[str, int | None], ...]] = {}
+    row_kinds: dict[int, tuple[tuple[str, str], ...]] = {}
+    row_also: dict[int, tuple[tuple[str, int], ...]] = {}
     for page in pages:
         if runtime.question_packets and page.transform is None:
             raise ValueError("reader question packets require the published PageTransform")
@@ -1183,6 +1189,9 @@ def read_slot_pages(
         )
         row_choice, row_number = _agreed_row(asked_rows)
         row_picks[page.page_index] = _row_picks(readers, asked_rows)
+        row_kinds[page.page_index], row_also[page.page_index] = _row_kinds_and_also(
+            readers, asked_rows
+        )
         candidates = page_rows[page.page_index].candidates[:6]
         selected_row = (
             candidates[row_number - 1]
@@ -1549,6 +1558,8 @@ def read_slot_pages(
                 row_choice=row_choice,
                 row_choice_number=row_number,
                 row_choice_picks=row_picks.get(page.page_index, ()),
+                row_choice_kinds=row_kinds.get(page.page_index, ()),
+                row_choice_also=row_also.get(page.page_index, ()),
                 row_candidate_ids=row_ids.get(page.page_index, ()),
                 row_choice_png=row_images.get(page.page_index),
                 row_choice_box_px=(
@@ -2153,6 +2164,8 @@ def persist_slot_readings(
                 flags.append("reader-mode:claude")
             if result.row_choice_number is not None and result.row_choice_number > 0:
                 flags.append(f"row-choice:{result.row_choice_number}")
+                # A second countertop row a reader named (#1108): listed, never read in V1.
+                flags.extend(_row_also_flags(result))
                 if result.row_choice_number <= len(result.row_candidate_ids):
                     flags.append(
                         f"row-choice-candidate:{result.row_candidate_ids[result.row_choice_number - 1]}"
@@ -2276,16 +2289,38 @@ def _agreed_row(
 
     One reader's row choice is not enough: the same page went to the countertop row on one run
     and to a table inside a reviewer's notes box on the next (proof runs 2026-10-08). A row is
-    used only when every reader answered and all named the same number; a missing answer or a
-    disagreement becomes row 0, which sends the page to the reviewer with the reason. Two "no
-    row" answers stay no row. Nothing here can make a row more likely to be used.
+    used only when every reader answered and all named the same number with kind "row" (an answer
+    of the older shape has no kind; its number is taken as before). A missing answer or a
+    disagreement becomes row 0, which sends the page to the reviewer with the reason. Every reader
+    saying "no countertop" stays no row with the AI's own why. Row 0 for any other reason (#1108: a
+    countertop no numbered box measures, or a reader unsure) stays no row with each reader's own
+    words, and is held for the reviewer by its stored kinds (`workflow/slot_row_scope.py`). Nothing
+    here can make a row more likely to be used.
     """
     if not answers:
         return None, None
     choices = [answer for answer in answers if isinstance(answer, RowChoiceAnswer)]
     rows = {choice.row for choice in choices}
     if len(choices) == len(answers) and len(rows) == 1:
-        return choices[0], choices[0].row
+        row = choices[0].row
+        kinds = {choice.kind for choice in choices}
+        if row > 0 and kinds <= {None, "row"}:
+            return choices[0], row
+        if row == 0 and (kinds == {None} or kinds == {"no_countertop"}):
+            return choices[0], 0
+        said = "; ".join(
+            f"{_short_model(choice.model_id)}: {_ROW_KIND_WORDS.get(choice.kind or '', 'no row')}"
+            + (f" ({choice.why[:100]})" if choice.why else "")
+            for choice in choices
+        )
+        return (
+            RowChoiceAnswer(
+                " + ".join(choice.model_id for choice in choices),
+                0,
+                f"{said}; the reviewer chooses",
+            ),
+            0,
+        )
     said = ", ".join(f"{_short_model(choice.model_id)} row {choice.row}" for choice in choices)
     missing = len(answers) - len(choices)
     why = (
@@ -2294,6 +2329,33 @@ def _agreed_row(
         else f"{missing} reader(s) gave no row answer ({said or 'none'}); the reviewer chooses"
     )
     return RowChoiceAnswer(" + ".join(c.model_id for c in choices) or "none", 0, why), 0
+
+
+#: How a code-written reason names a row answer's kind (#1108).
+_ROW_KIND_WORDS: Final = {
+    "row": "a numbered line",
+    "no_countertop": "no countertop on the sheet",
+    "not_among_boxes": "a countertop that none of the numbered lines measures",
+    "unsure": "not sure which line",
+}
+
+
+def _row_kinds_and_also(
+    readers: Sequence[str],
+    answers: Sequence[
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+    ],
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, int], ...]]:
+    """Each reader's kind of answer and the second countertop rows it named, in reader order."""
+    choices = [
+        (model, answer)
+        for model, answer in zip(readers, answers, strict=False)
+        if isinstance(answer, RowChoiceAnswer)
+    ]
+    return (
+        tuple((model, answer.kind) for model, answer in choices if answer.kind is not None),
+        tuple((model, other) for model, answer in choices for other in answer.also),
+    )
 
 
 def _row_picks(
@@ -2307,6 +2369,16 @@ def _row_picks(
         (model, answer.row if isinstance(answer, RowChoiceAnswer) else None)
         for model, answer in zip(readers, answers, strict=False)
     )
+
+
+def _row_also_flags(result: PageSlotResult) -> list[str]:
+    """`row-also:<model>:<n>` for each other box a reader named as a second countertop's row; never
+    the row that was read."""
+    return [
+        f"row-also:{_short_model(model)}:{number}"
+        for model, number in result.row_choice_also
+        if number != result.row_choice_number
+    ]
 
 
 def _short_model(model_id: str) -> str:
@@ -2359,6 +2431,10 @@ def _persist_unselected_row_choice(
                 f"row-pick:{_short_model(model)}:{'none' if pick is None else pick}"
                 for model, pick in result.row_choice_picks
             ),
+            # Each reader's kind of answer (#1108): only "no_countertop" from every reader lets
+            # the page be listed without blocking; "not_among_boxes" or "unsure" reaches a person.
+            *(f"row-kind:{_short_model(model)}:{kind}" for model, kind in result.row_choice_kinds),
+            *_row_also_flags(result),
             *(
                 f"row-candidate:{i}:{candidate_id}"
                 for i, candidate_id in enumerate(result.row_candidate_ids, start=1)

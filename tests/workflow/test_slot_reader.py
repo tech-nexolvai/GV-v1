@@ -119,8 +119,16 @@ class FakeReaders:
         if is_row_question:
             with self.lock:
                 self.row_requests.append((model, pictures[0]))
+            answer = dict(self.row(model))
+            if isinstance(answer.get("row"), int):
+                # An answer written in the older shape gets the v3 fields its number implies
+                # (#1108): a numbered box is a "row"; 0 is "no countertop on the sheet".
+                answer = {
+                    "kind": "row" if answer["row"] > 0 else "no_countertop",
+                    "also": [],
+                } | answer
             return {
-                "output": {"message": {"content": [{"text": json.dumps(dict(self.row(model)))}]}},
+                "output": {"message": {"content": [{"text": json.dumps(answer)}]}},
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
         is_counter_break_question = any(
@@ -384,7 +392,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     asked = sorted(model for model, _image in readers.row_requests)
     assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
     assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -533,7 +541,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
@@ -1455,6 +1463,193 @@ def test_an_unselected_row_record_stores_each_readers_pick(
     (unchosen,) = unchosen_row_pages(session, revision.id)
     assert unchosen.record.id == record.id
     assert unchosen.kind == kind
+
+
+def _two_row_page(page_id: Any = None, version_id: Any = None) -> SlotPage:
+    """The named sheet with two numbered candidate rows (the second a copy of the first)."""
+    page = slot_page(named_sheet())
+    first = page.rows.candidates.rows.candidates[0]
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, replace(first, rank=2)), rejected=()),
+            ),
+        ),
+    )
+    if page_id is None:
+        return page
+    return replace(page, page_id=page_id, document_version_id=version_id)
+
+
+def _read_and_persist_rows(
+    session: Any, answers: Mapping[str, Mapping[str, object]]
+) -> tuple[Any, Any, PageSlotResult]:
+    """Read the two-row page with each reader's row answer, persist it; the revision and run."""
+    from workflow.slot_reader import persist_slot_readings
+
+    revision, version, page_row, run = _scaffold(session)
+    page = _two_row_page(page_row.id, version.id)
+    readers = FakeReaders(lambda _model, _png: '2"', row=lambda model: answers[model])
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    return revision, run, result
+
+
+def _v3(row: int, kind: str, *also: int) -> dict[str, object]:
+    return {"row": row, "kind": kind, "also": list(also), "why": f"synthetic: {kind}"}
+
+
+@pytest.mark.parametrize(
+    ("opus", "sonnet", "kind", "words"),
+    [
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "no_countertop"),
+            "none",
+            "synthetic: no_countertop",
+        ),
+        (
+            _v3(0, "not_among_boxes"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "found a countertop on this page that none of the numbered lines measures",
+        ),
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "unsure"),
+            "split",
+            "An AI was not sure which line on this page is the countertop line",
+        ),
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "did not agree whether this page has a countertop",
+        ),
+        (
+            _v3(0, "unsure"),
+            _v3(0, "unsure"),
+            "split",
+            "An AI was not sure",
+        ),
+        (
+            _v3(1, "row"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "sonnet-5-5 picked a countertop that none of the numbered lines measures",
+        ),
+    ],
+)
+def test_each_kind_of_row_answer_is_stored_and_only_no_countertop_is_listed(
+    session: Any, opus: dict[str, object], sonnet: dict[str, object], kind: str, words: str
+) -> None:
+    """#1108: 0 used to mean both "no countertop" and "a countertop no box measures"; only the
+    first may skip the reviewer. Each reader's kind rides on the record as `row-kind:` flags."""
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+    from workflow.slot_row_scope import unchosen_row_pages
+
+    revision, run, result = _read_and_persist_rows(session, {OPUS: opus, SONNET: sonnet})
+    record = session.scalar(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-row-choice"]),
+        )
+    )
+
+    assert result.plan.row is None
+    assert record is not None
+    assert {flag for flag in record.ambiguity_flags if flag.startswith("row-kind:")} == {
+        f"row-kind:opus-5-5:{opus['kind']}",
+        f"row-kind:sonnet-5-5:{sonnet['kind']}",
+    }
+    (unchosen,) = unchosen_row_pages(session, revision.id)
+    assert unchosen.kind == kind
+    assert words in unchosen.reason
+    if kind == "split":
+        assert "nothing on it was read or checked" in unchosen.reason
+
+
+def test_a_row_named_by_both_readers_is_read_and_a_second_countertop_row_is_kept(
+    session: Any,
+) -> None:
+    """#1108: the agreed row is read as before; a second countertop's row one reader named is
+    stored on the read row as `row-also:` and reaches the row as not checked."""
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+    from workflow.slot_row_scope import slot_rows, unchosen_row_pages
+
+    revision, run, result = _read_and_persist_rows(
+        session, {OPUS: _v3(1, "row", 2), SONNET: _v3(1, "row")}
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"]),
+        )
+    ).all()
+
+    assert result.row_choice_number == 1 and result.plan.row is not None
+    assert result.row_choice_also == ((OPUS, 2),)
+    assert candidates
+    assert all("row-also:opus-5-5:2" in c.ambiguity_flags for c in candidates)
+    assert not any(
+        flag.startswith("row-also:sonnet") for c in candidates for flag in c.ambiguity_flags
+    )
+    (row,) = slot_rows(session, revision.id)
+    assert row.also == (("opus-5-5", 2),)
+    assert unchosen_row_pages(session, revision.id) == ()
+
+
+def test_readers_naming_the_same_box_with_kind_row_is_still_the_only_way_to_a_row() -> None:
+    """A "not among the boxes" or "unsure" answer can never make a row more likely to be used."""
+    agreed = _two_row_claude_read(lambda _model: _v3(2, "row"))
+    unsure = _two_row_claude_read(
+        lambda model: _v3(2, "row") if model == OPUS else _v3(0, "unsure")
+    )
+
+    assert agreed.row_choice_number == 2 and agreed.plan.row is not None
+    assert unsure.row_choice_number == 0 and unsure.plan.row is None
+    assert not unsure.mapping.proposals
+    assert unsure.row_choice_kinds == ((OPUS, "row"), (SONNET, "unsure"))
+
+
+def test_row_box_colours_are_never_the_reviewers_markup_colours() -> None:
+    """Box 1 was crimson while the row question says red numbers are the reviewer's (#1108). No
+    box may be red, yellow or blue (`extraction/ink.py`), and each carries a white number."""
+    import colorsys
+
+    from extraction.slot_reader.bedrock import ROW_BOX_COLOURS
+    from workflow.slot_reader import _ROW_COLOURS
+
+    assert _ROW_COLOURS == tuple(rgb for _name, rgb in ROW_BOX_COLOURS)
+    assert len(set(_ROW_COLOURS)) == 6
+    for colour in _ROW_COLOURS:
+        hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in colour))
+        degrees = hue * 360
+        assert saturation > 0.5, "not grey or black, the vendor's ink"
+        assert not (degrees < 20 or degrees > 340), f"{tuple(colour)} reads as red"
+        assert not 45 <= degrees <= 75, f"{tuple(colour)} reads as yellow"
+        assert not 200 <= degrees <= 255, f"{tuple(colour)} reads as blue"
+        assert value < 0.85, "dark enough for its white number"
 
 
 def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:

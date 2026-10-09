@@ -62,6 +62,7 @@ from extraction.slot_reader.claude_output import (
     WALL_SCHEMA,
     ClaudeEffort,
     PictureWouldBeResized,
+    RowKind,
     claude_answer,
     is_claude_model,
     output_config,
@@ -86,6 +87,8 @@ __all__ = [
     "COUNTER_BREAK_PROMPT_IDS",
     "CROP_PROMPT",
     "CROP_PROMPT_ID",
+    "ROW_BOX_COLOURS",
+    "ROW_BOX_COLOUR_WORDS",
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
@@ -110,9 +113,15 @@ __all__ = [
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
-ROW_PROMPT_ID: Final = "slot-row-choice-v2"
+ROW_PROMPT_ID: Final = "slot-row-choice-v3"
+"""v3 (#1108): the answer says what kind of answer it is (`ROW_KINDS`). v2 gave one answer, 0, for
+two different things: "the sheet has no stone countertop" and "a countertop is drawn but none of
+the numbered boxes is its row"; since #1093 the first is only listed, so the second slipped past the
+reviewer. v3 also asks for a second countertop's row (`also`), which V1 does not read but lists, and
+names the box colours, none of which the reviewer's markup uses (box 1 used to be crimson while the
+same question said red numbers are the reviewer's)."""
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
-ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
+ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v2", "slot-row-choice-v1"})
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v3"
 """v3 (#1104): every answer field is defined, as `CROP_PROMPT` defines them. v2 named `stacked`,
 `combined`, `readable` and `no_dimension` without saying what they mean, so each reader guessed: on
@@ -142,20 +151,61 @@ def parse_stored_reader_answer(text: str) -> Mapping[str, Any]:
     return _extract_json_object(text)
 
 
+#: The row picture's numbered box colours, box 1 first, with the words the row question uses for
+#: them (#1108). None is a colour of the reviewer's markup (red or blue numbers, yellow boxes;
+#: `extraction/ink.py`) or the vendor's black, and each is dark enough for the white number on it.
+ROW_BOX_COLOURS: Final[tuple[tuple[str, bytes], ...]] = (
+    ("green", bytes((0, 135, 70))),
+    ("magenta", bytes((200, 0, 160))),
+    ("brown", bytes((140, 85, 20))),
+    ("purple", bytes((120, 50, 170))),
+    ("teal", bytes((0, 125, 125))),
+    ("lime", bytes((70, 150, 0))),
+)
+ROW_BOX_COLOUR_WORDS: Final = (
+    ", ".join(name for name, _ in ROW_BOX_COLOURS[:-1]) + f" and {ROW_BOX_COLOURS[-1][0]}"
+)
+
+
 ROW_PROMPT: Final = (
-    "This is a vendor's cabinet shop drawing sheet (black ink is the vendor's; ignore coloured "
-    "reviewer marks). Numbered coloured boxes mark candidate dimension rows found on the drawing; "
-    "each box's number is in the filled square of the same colour just left of it. "
+    "This is a vendor's cabinet shop drawing sheet. The vendor drew it in black ink. A reviewer may "
+    "have marked it up: numbers in red or blue, and yellow boxes, are the reviewer's markup, not "
+    "the vendor's; ignore them. "
+    "Numbered coloured boxes mark candidate dimension rows that were found on the drawing. They are "
+    f"drawn in {ROW_BOX_COLOUR_WORDS}, colours the reviewer's markup never uses; each box's number "
+    "is in the filled square of the same colour just left of it. "
     "Task: which numbered box marks the COUNTERTOP PIECE ROW — the horizontal chain of piece "
     "widths (fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that "
     "runs along the stone countertop and measures the pieces under it from one end of the stone "
     "top to the other? It is NOT an upper-cabinet row, NOT a wall-to-wall or room dimension, NOT "
-    "a row inside a plan (top) view or a section view, and NOT the architect's small drawing. "
-    "If the sheet has no stone countertop at all (for example only a wardrobe, closet or tall "
-    "unit), the answer is 0 even when a box marks a chain of widths. "
-    "Numbers in red or inside yellow boxes are the reviewer's markup, not the vendor's. Reply "
-    'with ONLY a JSON object: {"row": <number, or 0 if none of the boxes is it>, '
-    '"why": "<one short sentence>"}'
+    "a row inside a plan (top) view or a section view, and NOT the architect's small drawing.\n"
+    "Answer fields:\n"
+    '- "kind": exactly one of these four words.\n'
+    '  "row": one numbered box is the countertop piece row.\n'
+    '  "no_countertop": no stone countertop is drawn on this sheet at all (for example only a '
+    "wardrobe, closet or tall unit), even when a box marks a chain of widths.\n"
+    '  "not_among_boxes": a stone countertop is drawn on this sheet, but none of the numbered '
+    "boxes is its piece row (for example its row has no box, or the only boxed rows are upper "
+    "cabinets or a plan view).\n"
+    '  "unsure": you cannot tell which of the three above is true.\n'
+    '- "row": the number of that box when "kind" is "row"; 0 for every other kind.\n'
+    '- "also": the numbers of other boxes that are the piece row of a SECOND, separate stone '
+    "countertop on the same sheet (for example an island drawn beside the main run); never the "
+    'box in "row". Usually empty: [].\n'
+    '- "why": one short sentence.\n'
+    "Invented examples, not from this sheet: "
+    '{"row": 2, "kind": "row", "also": [], "why": "Box 2 runs under the stone top in the front '
+    'view from end to end."} '
+    '{"row": 1, "kind": "row", "also": [4], "why": "Box 1 is the sink run; box 4 is a separate '
+    'island top."} '
+    '{"row": 0, "kind": "no_countertop", "also": [], "why": "Only a tall pantry unit is drawn; '
+    'there is no stone top."} '
+    '{"row": 0, "kind": "not_among_boxes", "also": [], "why": "A stone top is drawn, but its '
+    'piece widths are inside no numbered box."} '
+    '{"row": 0, "kind": "unsure", "also": [], "why": "Two boxes could each be the stone top\'s '
+    'row."}\n'
+    "Reply with ONLY one JSON object of that shape: "
+    '{"row": <number>, "kind": "<kind>", "also": [<numbers>], "why": "<one short sentence>"}'
 )
 
 
@@ -306,10 +356,15 @@ class _GroundedCropAnswer(_CropAnswer):
 
 
 class _RowChoiceReply(BaseModel):
+    """`kind` and `also` are new in `slot-row-choice-v3`; a reply of the v1/v2 shape still parses,
+    with no kind and nothing else named."""
+
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     row: StrictInt
     why: StrictStr
+    kind: RowKind | None = None
+    also: tuple[StrictInt, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +372,11 @@ class RowChoiceAnswer:
     model_id: str
     row: int
     why: str
+    kind: RowKind | None = None
+    """What the answer says (`ROW_KINDS`, #1108). `None` for an answer of the v1/v2 shape, where
+    0 meant either "no countertop" or "not among the boxes"."""
+    also: tuple[int, ...] = ()
+    """Other numbered boxes this reader named as a second countertop's piece row (#1108)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,6 +893,10 @@ def read_row_choice(
             )
             if not 0 <= parsed.row <= candidate_count:
                 raise MalformedFormAnswer("row choice is outside the numbered candidates")
+            if parsed.kind is not None and (parsed.kind == "row") != (parsed.row > 0):
+                raise MalformedFormAnswer("row choice's number and kind contradict each other")
+            if any(not 1 <= other <= candidate_count for other in parsed.also):
+                raise MalformedFormAnswer("a second row is outside the numbered candidates")
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -869,7 +933,13 @@ def read_row_choice(
                 question_packet=question_packet,
             )
         )
-        return RowChoiceAnswer(model_id=model_id, row=parsed.row, why=parsed.why[:300])
+        return RowChoiceAnswer(
+            model_id=model_id,
+            row=parsed.row,
+            why=parsed.why[:300],
+            kind=parsed.kind,
+            also=tuple(sorted({other for other in parsed.also if other != parsed.row})),
+        )
     raise AssertionError("unreachable")
 
 
