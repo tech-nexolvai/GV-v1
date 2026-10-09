@@ -455,6 +455,8 @@ def _store(
     the earlier `ParameterValue` itself — its who, when and provenance unchanged — so the record
     still says who set each number. A RUN set belongs to one package revision (#801), so carrying it
     forward stays within that package: `package_revision_id` names it, and is required for RUN.
+    The one exception is a many-valued input sent again: its new list replaces the old one whole
+    (#1081), so a shorter run leaves no stale entries behind.
 
     **A re-submission mints a new version, and that is by design rather than a shortcoming.**
     `ParameterSet.set_id` puts `set_at` *inside* the content hash deliberately —
@@ -511,10 +513,16 @@ def _store(
                     )
                 ).scalars()
             )
+            # **A resent list replaces the whole earlier list (#1081)**, so four cabinets saved
+            # again as two are two: carrying `#2` and `#3` forward would hand the checks a width
+            # the reviewer removed. Only a list sent in this save is replaced; one left out keeps
+            # its entries, as every other value does. Nothing is deleted — the earlier version
+            # still holds all four.
+            resent = {name.partition(LIST_MARKER)[0] for name in values if LIST_MARKER in name}
             carried = {
                 name: value
                 for name, value in from_rows(previous, rows).parameters.items()
-                if name not in values
+                if name not in values and name.partition(LIST_MARKER)[0] not in resent
             }
             carried_from = {row.name: row.id for row in rows if row.name in carried}
 

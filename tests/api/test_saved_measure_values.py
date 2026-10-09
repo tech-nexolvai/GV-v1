@@ -28,11 +28,13 @@ from app.db.session import session_factory
 from app.main import create_app
 from app.models import Package, PackageRevision, PackageState, Project
 from app.models.parameters import ParameterSet as StoredParameterSet
+from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.rules import RuleDefinition, RuleSnapshot
 from rules.schema import Rule
 from rules.snapshot import publish
 from tests.app.postgres_fixture import alembic_config
 from units.normalise import normalise_to_inches
+from workflow.measurements import operands_for
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -246,6 +248,60 @@ def test_a_run_of_values_comes_back_in_layout_order(session: Session) -> None:
         ("30", "1"),
     ]
     assert saved["complete"] is True
+
+
+def _cabinets(*widths: str) -> list[dict[str, Any]]:
+    return [{"rule_id": "CT-WIDTH-001", "name": "cabinet_widths", "values": list(widths)}]
+
+
+def _checked_widths(session: Session, package: UUID) -> list[str]:
+    """The cabinet run the checks will read, as exact inches."""
+    revision = session.scalars(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).one()
+    operand = operands_for(session, revision.id)["CT-WIDTH-001"]["cabinet_widths"]
+    return [str(measurement.exact) for measurement in operand.value]
+
+
+def test_a_shorter_run_saved_again_replaces_the_longer_one(session: Session) -> None:
+    """#1081. Four cabinets, then the same run saved again as two.
+    Outcome: the form and the checks both see exactly two; the earlier version still holds four."""
+    _publish(session, "ct_width_001.yaml")
+    package = _package(session)
+
+    _save(_client(session), package, measurements=_cabinets('24"', '18"', '30"', '36"'))
+    _save(_client(session), package, measurements=_cabinets('21"', '33"'))
+
+    saved = _measured(_form(_client(session), package))[CABINETS]
+    assert [v["text"] for v in saved["values"]] == ['21"', '33"']
+    assert _checked_widths(session, package) == ["21", "33"]
+    rows_per_version = session.execute(
+        select(StoredParameterSet.version, func.count(StoredParameterValue.id))
+        .join(StoredParameterValue, StoredParameterValue.parameter_set_id == StoredParameterSet.id)
+        .group_by(StoredParameterSet.version)
+        .order_by(StoredParameterSet.version)
+    ).all()
+    assert [(version, count) for version, count in rows_per_version] == [(1, 4), (2, 2)]
+
+
+def test_a_save_without_the_run_leaves_the_run_and_a_resent_run_keeps_the_rest(
+    session: Session,
+) -> None:
+    """#1081. A run of three, then a save with only a sink setting, then the run again as one.
+    Outcome: the run is untouched by the save that left it out; resending it replaces only the
+    run, and the sink setting saved in between stays."""
+    _publish(session, "ct_width_001.yaml", *SINK_RULES)
+    package = _package(session)
+
+    _save(_client(session), package, measurements=_cabinets('24"', '18"', '30"'))
+    _save(_client(session), package, measurements=_cutout('30"'))
+    assert _checked_widths(session, package) == ["24", "18", "30"]
+
+    _save(_client(session), package, measurements=_cabinets('27"'))
+    saved = _measured(_form(_client(session), package))
+    assert [v["text"] for v in saved[CABINETS]["values"]] == ['27"']
+    assert [v["text"] for v in saved[CUTOUT]["values"]] == ['30"']
+    assert _checked_widths(session, package) == ["27"]
 
 
 def test_settings_keep_their_layer_source_reference_and_who(session: Session) -> None:

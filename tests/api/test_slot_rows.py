@@ -550,18 +550,42 @@ def test_end_to_end_sealed_row_passes_only_with_its_own_qualified_walls(
         assert all(item.slot_row_review_decision_id is None for item in inputs)
 
 
+@pytest.mark.parametrize("mark", ["\u201d", "\u2033", "''"])
+def test_a_reader_writing_a_typographic_inch_mark_still_supports_the_sealed_width(
+    session: Session, tmp_path: Path, mark: str
+) -> None:
+    """#1090. One reader wrote the inch mark as `”` (or `″`, or two primes), the other as `"`.
+    Outcome: the row is checked exactly as a straight-quote row is, not refused as conflicting."""
+    _project_id, package_id, anchors = _package_rows(
+        session, piece_count=2, widths_add_up=True, wall_source="vendor-drawing-clues"
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate, second_mark=mark)
+
+    findings = _run_current_checks(session, package_id, tmp_path)
+
+    assert {finding.scope_row_candidate_id for finding in findings} == set(anchors.values())
+    assert all(finding.outcome == "PASS" for finding in findings), [f.reason for f in findings]
+
+
 def _reader_support(
     session: Session,
     candidate: ObservationCandidate,
+    *,
+    second_mark: str = '"',
 ) -> list[ObservationCandidate]:
     assert candidate.value_numerator is not None
     supporters: list[ObservationCandidate] = []
-    for reader_id in ("amazon.qwen3-vl", "moonshotai.kimi-k3"):
+    for reader_id, mark in (("amazon.qwen3-vl", '"'), ("moonshotai.kimi-k3", second_mark)):
         support = ObservationCandidate(
             document_version_id=candidate.document_version_id,
             page_id=candidate.page_id,
             extraction_run_id=candidate.extraction_run_id,
-            raw_text=f'{candidate.value_numerator}"',
+            raw_text=f"{candidate.value_numerator}{mark}",
             value_numerator=candidate.value_numerator,
             value_denominator=1,
             unit="in",
