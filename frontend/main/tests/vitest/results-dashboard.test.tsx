@@ -6,10 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CountertopResult } from '@/api/client';
 import type { Finding } from '@/data/types';
 import {
+  bucketCounts,
   bucketOf,
   defaultFilter,
   formatDelta,
   kpis,
+  matchesFilter,
   recordEach,
   sortRows,
 } from '@/lib/countertop-results';
@@ -123,7 +125,7 @@ describe('results dashboard', () => {
     // The legend is inside the lazily loaded chart; on a cold CI runner fetching the chart library
     // can take longer than the default one-second wait.
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
-    expect(legend.textContent).toMatch(/Needs you\s*2/);
+    expect(legend.textContent).toMatch(/Needs your decision\s*2/);
     expect(legend.textContent).toMatch(/Not checkable\s*1/);
   }, 15_000);
 
@@ -131,6 +133,24 @@ describe('results dashboard', () => {
     setup();
     expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['held-p5', 'need-p9']);
   });
+
+  it('a FAIL that still needs a decision is a FAIL everywhere, and also needs you (#1056)', async () => {
+    const user = userEvent.setup();
+    const failNeedsYou = { ...ROWS[1], row_id: 'fail-open-p12', page_number: 12, label: 'Countertop row on page 12', finding_id: 'f-open', needs_decision: true };
+    const rows = [...ROWS, failNeedsYou];
+    expect(kpis(rows)).toMatchObject({ fail: 2, needsYou: 3 });
+    expect(bucketCounts(rows)).toEqual({ 'needs-you': 2, fail: 2, pass: 1, 'not-checkable': 1 });
+    expect(Object.values(bucketCounts(rows)).reduce((a, b) => a + b, 0)).toBe(rows.length);
+    expect(matchesFilter(failNeedsYou, 'fail')).toBe(true);
+    expect(matchesFilter(failNeedsYou, 'needs-you')).toBe(true);
+    const { props, rerender } = setup();
+    rerender(<ResultsDashboard {...props} countertops={{ status: 'ready', rows }} filter="fail" />);
+    expect(tableRows().map((r) => r.dataset.rowId).sort()).toEqual(['fail-open-p12', 'fail-p2']);
+    const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
+    expect(legend.textContent).toMatch(/FAIL\s*2\s*1 needs you/);
+    await user.click(screen.getByRole('radio', { name: /All\s*6/ }));
+    expect(props.onFilterChange).toHaveBeenCalledWith('all');
+  }, 15_000);
 
   it('a KPI card or a chip changes the filter', async () => {
     const user = userEvent.setup();

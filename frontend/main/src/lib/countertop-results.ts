@@ -22,13 +22,6 @@ export function bucketOf(row: Pick<CountertopResult, 'needs_decision' | 'outcome
   return 'not-checkable';
 }
 
-export const BUCKET_LABEL: Record<Bucket, string> = {
-  'needs-you': 'Needs you',
-  fail: 'FAIL',
-  pass: 'PASS',
-  'not-checkable': 'Not checkable',
-};
-
 const BUCKET_ORDER: Record<Bucket, number> = { 'needs-you': 0, fail: 1, pass: 2, 'not-checkable': 3 };
 
 /** Needs you → FAIL → PASS → not checkable, then page, then label. Returns a new array. */
@@ -41,11 +34,32 @@ export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'ou
   );
 }
 
+/**
+ * A row by its recorded result (#1056): FAIL and PASS are what the check recorded, whether or not the
+ * reviewer still has to decide; the rest is either waiting for a decision or decided "not checkable".
+ * The donut and the FAIL / PASS filters use this, so "FAIL" means the same everywhere. `bucketOf`
+ * (needs you first) still orders the table and the queue.
+ */
+export function resultBucket(row: Pick<CountertopResult, 'needs_decision' | 'outcome'>): Bucket {
+  if (row.outcome === 'FAIL') return 'fail';
+  if (row.outcome === 'PASS') return 'pass';
+  return row.needs_decision ? 'needs-you' : 'not-checkable';
+}
+
+/** The donut's words: its undecided slice holds only rows without a PASS or FAIL. */
+export const RESULT_LABEL: Record<Bucket, string> = {
+  'needs-you': 'Needs your decision',
+  fail: 'FAIL',
+  pass: 'PASS',
+  'not-checkable': 'Not checkable',
+};
+
 export function matchesFilter(row: CountertopResult, filter: Filter): boolean {
   if (filter === 'all') return true;
   if (filter === 'held') return row.hold !== null;
   if (filter === 'automatic') return row.outcome === 'PASS' || row.outcome === 'FAIL';
-  return bucketOf(row) === filter;
+  if (filter === 'needs-you') return row.needs_decision;
+  return resultBucket(row) === filter;
 }
 
 export interface Kpis {
@@ -69,10 +83,16 @@ export function kpis(rows: readonly CountertopResult[]): Kpis {
   };
 }
 
+/** The donut's slices, by recorded result; they add up to the number of countertops. */
 export function bucketCounts(rows: readonly CountertopResult[]): Record<Bucket, number> {
   const counts: Record<Bucket, number> = { 'needs-you': 0, fail: 0, pass: 0, 'not-checkable': 0 };
-  for (const row of rows) counts[bucketOf(row)] += 1;
+  for (const row of rows) counts[resultBucket(row)] += 1;
   return counts;
+}
+
+/** Recorded FAILs the reviewer still has to decide: shown beside the donut's FAIL count. */
+export function failsNeedingYou(rows: readonly CountertopResult[]): number {
+  return rows.filter((row) => row.outcome === 'FAIL' && row.needs_decision).length;
 }
 
 /** The filter a reviewer lands on: what needs them, when anything does. */
