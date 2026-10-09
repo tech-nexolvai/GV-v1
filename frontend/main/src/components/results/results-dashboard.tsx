@@ -54,6 +54,7 @@ export function ResultsDashboard({
   onBulkDismiss,
   onShowDrawing,
   onOpenCard,
+  onOpenQueue,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -70,6 +71,8 @@ export function ResultsDashboard({
   onBulkDismiss: (ids: string[], note: string) => Promise<BulkResult>;
   onShowDrawing: (row: CountertopResult) => void;
   onOpenCard: (row: CountertopResult) => void;
+  /** Opens the "Needs you" queue (#1050) from the "Needs you" card. */
+  onOpenQueue?: () => void;
 }) {
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
@@ -130,7 +133,7 @@ export function ResultsDashboard({
       ) : (
         <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-            <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} />
+            <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} onOpenQueue={onOpenQueue} />
             <div className="rounded-xl border bg-card px-4 py-3">
               <Suspense fallback={<Skeleton className="h-32 w-64" />}>
                 <OutcomeChart counts={bucketCounts(rows)} />
@@ -185,6 +188,8 @@ export function ResultsDashboard({
       />
 
       <DecideDialog
+        // One dialog per finding: a draft can never move from one finding to another.
+        key={deciding?.finding.id ?? 'none'}
         finding={deciding?.finding ?? null}
         title={deciding?.title ?? ''}
         open={deciding !== null}
