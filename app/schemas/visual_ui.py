@@ -101,7 +101,16 @@ class ArchitectResultOut(BaseModel):
     needs_decision: bool = False
     compared: tuple[ArchitectComparedOut, ...] = ()
     not_compared_reason: str | None = None
-    pairing_source: Literal["code", "both-ais", "reviewer", "none"] | None = None
+    pairing_source: Literal["code+ais", "code", "both-ais", "reviewer", "none"] | None = None
+    pairing_judgments: (
+        Literal["code and both AIs", "code only", "both AIs only", "reviewer"] | None
+    ) = Field(
+        default=None,
+        description=(
+            "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and "
+            "both AIs) or a reviewer; on one alone the result waits for the reviewer."
+        ),
+    )
 
 
 class CountertopResultOut(BaseModel):

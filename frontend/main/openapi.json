@@ -759,10 +759,29 @@
               }
             ]
           },
+          "pairing_judgments": {
+            "anyOf": [
+              {
+                "enum": [
+                  "code and both AIs",
+                  "code only",
+                  "both AIs only",
+                  "reviewer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and both AIs) or a reviewer; on one alone the result waits for the reviewer.",
+            "title": "Pairing Judgments"
+          },
           "pairing_source": {
             "anyOf": [
               {
                 "enum": [
+                  "code+ais",
                   "code",
                   "both-ais",
                   "reviewer",

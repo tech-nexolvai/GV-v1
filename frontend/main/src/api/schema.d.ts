@@ -2124,8 +2124,13 @@ export interface components {
             /** Not Compared Reason */
             not_compared_reason?: string | null;
             outcome?: components["schemas"]["Outcome"] | null;
+            /**
+             * Pairing Judgments
+             * @description Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and both AIs) or a reviewer; on one alone the result waits for the reviewer.
+             */
+            pairing_judgments?: ("code and both AIs" | "code only" | "both AIs only" | "reviewer") | null;
             /** Pairing Source */
-            pairing_source?: ("code" | "both-ais" | "reviewer" | "none") | null;
+            pairing_source?: ("code+ais" | "code" | "both-ais" | "reviewer" | "none") | null;
             /** Reason */
             reason?: string | null;
         };

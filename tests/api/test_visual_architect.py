@@ -32,8 +32,7 @@ from tests.workflow.test_architect_row_evidence import (
     _run,
     _sealed_rows,
 )
-from workflow.architect_pairing_contract import EffectivePairing
-from workflow.architect_row_plan import CONFIRM_AI_PAIRING
+from workflow.architect_pairing_contract import EffectivePairing, PairingSource
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -90,7 +89,8 @@ def test_a_compared_row_shows_both_values_and_the_exact_difference(
     assert block["outcome"] == "FAIL"
     assert block["needs_decision"] is True
     assert block["not_compared_reason"] is None
-    assert block["pairing_source"] == "code"
+    assert block["pairing_source"] == "code+ais"
+    assert block["pairing_judgments"] == "code and both AIs"
     assert block["compared"] == [
         {
             "kind": "overall",
@@ -106,9 +106,45 @@ def test_a_compared_row_shows_both_values_and_the_exact_difference(
     ]
 
 
-def test_an_ai_only_match_is_shown_as_waiting_for_the_reviewer(
-    session: Session, tmp_path: Path
+@pytest.mark.parametrize(
+    ("source", "judgments", "who"),
+    [("both-ais", "both AIs only", "the two AIs"), ("code", "code only", "code")],
+)
+@pytest.mark.parametrize("printed", ["3' - 7\"", "3' - 6\""])
+def test_a_one_judgment_result_is_shown_as_waiting_for_the_reviewer(
+    session: Session,
+    tmp_path: Path,
+    source: PairingSource,
+    judgments: str,
+    who: str,
+    printed: str,
 ) -> None:
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], printed)
+    _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source=source)},
+    )
+
+    block = _items(session, package_id)[str(anchors[0])]["architect"]
+
+    assert block["outcome"] == "REVIEW_REQUIRED"
+    assert block["needs_decision"] is True
+    assert block["reason"] == (
+        f"Only {who} paired these; confirm that the architect's {printed} and the vendor's 43\" "
+        "measure the same thing."
+    )
+    assert block["pairing_source"] == source
+    assert block["pairing_judgments"] == judgments
+    # The numbers stay visible; no pair reads as decided.
+    assert [pair["outcome"] for pair in block["compared"]] == ["REVIEW_REQUIRED"]
+    assert block["compared"][0]["vendor_display"] == '43"'
+
+
+def test_a_reviewers_pairing_is_shown_as_the_reviewers(session: Session, tmp_path: Path) -> None:
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
     overall = _architect_value(session, run, anchors[0], "3' - 7\"")
@@ -116,16 +152,45 @@ def test_an_ai_only_match_is_shown_as_waiting_for_the_reviewer(
         session,
         package_id,
         tmp_path,
-        {anchors[0]: _pairing(_overall(overall), source="both-ais")},
+        {anchors[0]: _pairing(_overall(overall), source="reviewer", status="reviewer")},
     )
 
     block = _items(session, package_id)[str(anchors[0])]["architect"]
 
-    assert block["outcome"] == "REVIEW_REQUIRED"
-    assert block["reason"] == CONFIRM_AI_PAIRING
-    assert block["pairing_source"] == "both-ais"
-    assert [pair["outcome"] for pair in block["compared"]] == ["REVIEW_REQUIRED"]
-    assert block["compared"][0]["delta_display"] == '0"'
+    assert block["outcome"] == "PASS"
+    assert block["pairing_source"] == "reviewer"
+    assert block["pairing_judgments"] == "reviewer"
+
+
+def test_a_row_not_compared_names_what_the_architects_dimensions_measure(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    pairing = _pairing(
+        source="none",
+        status="none",
+        reasons=(),
+        measures=((uuid4(), "blocking"), (uuid4(), "fixture_centre")),
+    )
+    _run(session, package_id, tmp_path, {anchors[0]: pairing})
+    monkeypatch.setattr(
+        visual_countertops,
+        "effective_architect_pairings",
+        lambda _session, rows: {
+            anchor: pairing if anchor == anchors[0] else None for anchor in rows
+        },
+    )
+
+    block = _items(session, package_id)[str(anchors[0])]["architect"]
+
+    assert block["finding_id"] is None
+    assert block["needs_decision"] is False
+    assert block["not_compared_reason"] == (
+        "The architect's dimensions on this sheet measure blocking and fixture centres, not the "
+        "countertop. No architect dimension is paired with this row."
+    )
+    assert block["pairing_source"] == "none"
+    assert block["pairing_judgments"] is None
 
 
 def test_a_row_with_nothing_compared_says_why_and_needs_no_decision(
@@ -150,7 +215,8 @@ def test_a_row_with_nothing_compared_says_why_and_needs_no_decision(
     assert first["needs_decision"] is False
     assert first["compared"] == []
     assert first["not_compared_reason"] == "every architect span ends on a fixture's centre line."
-    assert first["pairing_source"] == "code"
+    assert first["pairing_source"] == "code+ais"
+    assert first["pairing_judgments"] == "code and both AIs"
     second = items[str(anchors[1])]["architect"]
     assert second["not_compared_reason"] == "No architect dimension is paired with this row."
     assert second["pairing_source"] is None

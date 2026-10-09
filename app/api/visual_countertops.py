@@ -48,6 +48,7 @@ from workflow.architect_row_plan import (
     Disposition,
     PairingLookup,
     effective_architect_pairings,
+    pairing_judgments,
     pairing_source_from_notes,
     plan_architect_row,
 )
@@ -311,6 +312,7 @@ def _architect_block(
                 plan.reason if plan.disposition is Disposition.NOT_COMPARED else NOT_CHECKED_YET
             ),
             pairing_source=None if pairing is None else pairing.source,
+            pairing_judgments=pairing_judgments(None if pairing is None else pairing.source),
         )
     values: dict[tuple[str, int | None], dict[str, Fraction]] = {}
     for name, item in inputs.items():
@@ -321,6 +323,7 @@ def _architect_block(
         key = ("overall", None) if kind == "overall" else ("piece", int(slot))
         values.setdefault(key, {})[side] = Fraction(item.value_numerator, item.value_denominator)
     ordered = sorted(values, key=lambda key: -1 if key[1] is None else key[1])
+    source = pairing_source_from_notes(finding.notes)
     decided = finding.outcome in (Outcome.PASS.value, Outcome.FAIL.value)
     pair_outcomes = _pair_outcomes(finding.trace or {}) if decided else {}
     compared: list[ArchitectComparedOut] = []
@@ -353,7 +356,8 @@ def _architect_block(
         needs_decision=finding.id in blocking,
         compared=tuple(compared),
         not_compared_reason=None,
-        pairing_source=pairing_source_from_notes(finding.notes),
+        pairing_source=source,
+        pairing_judgments=pairing_judgments(source),
     )
 
 
