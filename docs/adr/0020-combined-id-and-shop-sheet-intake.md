@@ -23,7 +23,7 @@ Room 1:
 
 | Panel | Contents |
 |---|---|
-| `ID SET ELEVATION` | `BOARD ROOM 1 ELEVATION`, `8/ID 5.1`, `1/4" = 1'-0"`, dimensions `6'-0"` `3'-1"` `9'-0"` `7'-0"` `1'-2"` `1'-9"`, tags `PT-19` `VB-01` |
+| `ID SET ELEVATION` | `BOARD ROOM 1 ELEVATION`, `8/ID 5.1`, `1/4" = 1'-0"`, dimensions `6'-0"` `3'-1"` `9'-0"` `7'-0"` `1'-2"` `1'-9"`, two finish tags (two letters, a dash, two digits; e.g. `QF-27` `ZC-04`, made up here) |
 | `VENDOR'S SHOP DRAWING ELEVATION` | `ELEVATION A`, cabinets `B15L` `B36` `B18R`, panels `WD-1`, dimensions `914 [36]` `457 [18]` `724 [28 1/2]` `102 [4]`, `74-1/2" (VIF)`, `80-1/2" (VIF)`, note *"Scribe to fit (5" filler to field cut as required on site)"* |
 
 The two halves even use different conventions: the ID set is dimensioned in **feet-inches**, the

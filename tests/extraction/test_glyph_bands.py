@@ -290,17 +290,17 @@ def test_every_number_is_in_the_run_identity() -> None:
 # Where each part of the label was drawn (#834)
 # ---------------------------------------------------------------------------
 
-#: `39 1/2"` in the plotter's proportions (measured on a real label and moved to the origin; the
+#: `37 1/2"` in the plotter's proportions (measured on a real label and moved to the origin; the
 #: digits are synthetic): 5.4 pt digits, the whole number centred on the bar, a numerator `1` with
 #: a little width, a gap of 1.56 pt between the whole number's digits and 0.96 pt before the bar.
 WHOLE_THREE = _d("-9.48", "2.86", "-5.88", "8.26")
-WHOLE_NINE = _d("-4.32", "2.86", "-0.96", "8.26")
+WHOLE_SEVEN = _d("-4.32", "2.86", "-0.96", "8.26")
 LONG_BAR = _d("0", "5.5", "3.72", "5.5")
 ONE = _d("1.2", "6.46", "2.52", "11.86")
 TWO = _d("0", "-0.74", "3.72", "4.66")
 TICKS = [_d("5.52", "7.78", "6.0", "9.34"), _d("7.08", "7.78", "7.56", "9.34")]
 
-THIRTY_NINE_AND_A_HALF = [WHOLE_THREE, WHOLE_NINE, LONG_BAR, ONE, TWO, *TICKS]
+THIRTY_SEVEN_AND_A_HALF = [WHOLE_THREE, WHOLE_SEVEN, LONG_BAR, ONE, TWO, *TICKS]
 
 
 def _layout(boxes: list[GlyphBox], **arguments: object) -> FractionLayout:
@@ -310,13 +310,13 @@ def _layout(boxes: list[GlyphBox], **arguments: object) -> FractionLayout:
 
 
 def test_a_whole_number_and_a_fraction_are_laid_out_part_by_part() -> None:
-    """**`39 1/2"`: two whole-number characters, one over one, and an inch mark.** Each part names
+    """**`37 1/2"`: two whole-number characters, one over one, and an inch mark.** Each part names
     the paths that draw it, in reading order, so a reading can be checked against it and a later
     step can cut each part out to read it alone."""
-    layout = _layout(THIRTY_NINE_AND_A_HALF)
+    layout = _layout(THIRTY_SEVEN_AND_A_HALF)
 
     assert _counts(layout) == (2, 1, 1, 2)
-    assert layout.whole == ((WHOLE_THREE,), (WHOLE_NINE,))
+    assert layout.whole == ((WHOLE_THREE,), (WHOLE_SEVEN,))
     assert layout.numerator == ((ONE,),)
     assert layout.denominator == ((TWO,),)
     assert layout.bar == LONG_BAR
@@ -350,8 +350,8 @@ def test_a_dimension_tick_below_the_label_is_not_a_whole_number() -> None:
 def test_a_whole_number_runs_on_digit_by_digit_and_stops_at_the_gap() -> None:
     """Each character is reached from the one after it, so a whole number of any length is taken
     whole; a character further than `character_gap_pt` from the label's start is another label's."""
-    three_digits = [_shifted([WHOLE_THREE], "-5.04")[0], *THIRTY_NINE_AND_A_HALF]
-    neighbour = [_shifted([WHOLE_THREE], "-9.6")[0], *THIRTY_NINE_AND_A_HALF]
+    three_digits = [_shifted([WHOLE_THREE], "-5.04")[0], *THIRTY_SEVEN_AND_A_HALF]
+    neighbour = [_shifted([WHOLE_THREE], "-9.6")[0], *THIRTY_SEVEN_AND_A_HALF]
 
     assert len(_layout(three_digits).whole) == 3  # 1.44 pt before the `3`: the same label
     assert len(_layout(neighbour).whole) == 2  # 6 pt before it: beyond the 4 pt gap
@@ -419,16 +419,16 @@ def _turned(box: GlyphBox, degrees: int) -> GlyphBox:
 @pytest.mark.parametrize("degrees", [90, 180, 270])
 def test_a_turned_label_is_laid_out_the_way_it_reads(degrees: int) -> None:
     """**Turned, not only swapped.** Which side of the bar is the numerator, and which end the whole
-    number is at, depend on which way the label reads. Turned any quarter, `39 1/2"` still has its
+    number is at, depend on which way the label reads. Turned any quarter, `37 1/2"` still has its
     `1` as the numerator and its two digits before the fraction."""
-    turned = [_turned(box, degrees) for box in THIRTY_NINE_AND_A_HALF]
+    turned = [_turned(box, degrees) for box in THIRTY_SEVEN_AND_A_HALF]
 
     layout = _layout(turned, rotation_degrees=degrees)
 
     assert _counts(layout) == (2, 1, 1, 2)
     assert layout.rotation_degrees == degrees, "and it says which way it is turned (#848)"
     assert layout.numerator == ((_turned(ONE, degrees),),)
-    assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_NINE, degrees),))
+    assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_SEVEN, degrees),))
 
 
 def test_a_rotation_that_is_not_a_quarter_turn_is_refused() -> None:
@@ -449,12 +449,12 @@ def test_ink_must_be_said_for_every_box() -> None:
 # ---------------------------------------------------------------------------
 
 #: A `+` after the inch mark, centred on the bar as a character beside a fraction is: the start of
-#: more label, as in `39 1/2"+6"`.
+#: more label, as in `37 1/2"+6"`.
 PLUS_AFTER = _d("8.5", "3.0", "11.5", "6.0")
 
 
 def test_a_label_with_nothing_beside_it_has_no_neighbours() -> None:
-    assert _layout(THIRTY_NINE_AND_A_HALF).neighbours == ()
+    assert _layout(THIRTY_SEVEN_AND_A_HALF).neighbours == ()
     assert _layout(FRACTION).neighbours == ()
 
 
@@ -469,13 +469,13 @@ def test_a_character_after_the_inch_mark_within_the_gap_is_a_neighbour() -> None
 
 
 def test_a_first_digit_drawn_taller_than_the_band_is_a_neighbour() -> None:
-    """**The miscount that would make `39 1/2"` read as `9 1/2"`.** A `3` reaching below the
-    denominator's foot is not wholly in the digit band, so the whole number is taken as the `9`
+    """**The miscount that would make `37 1/2"` read as `7 1/2"`.** A `3` reaching below the
+    denominator's foot is not wholly in the digit band, so the whole number is taken as the `7`
     alone; it is centred in the band, so it is a neighbour, and the label is not read in parts."""
     tall_three = _d("-9.48", "-1.0", "-5.88", "8.26")
-    layout = _layout([tall_three, WHOLE_NINE, LONG_BAR, ONE, TWO, *TICKS])
+    layout = _layout([tall_three, WHOLE_SEVEN, LONG_BAR, ONE, TWO, *TICKS])
 
-    assert layout.whole == ((WHOLE_NINE,),)
+    assert layout.whole == ((WHOLE_SEVEN,),)
     assert layout.neighbours == (tall_three,)
 
 
@@ -518,18 +518,18 @@ def test_a_turned_label_names_its_neighbour_in_page_space(degrees: int) -> None:
 @pytest.mark.parametrize("degrees", [90, 270])
 def test_a_label_turned_inside_an_upright_stamp_is_found_the_way_it_reads(degrees: int) -> None:
     """**The case #869 exists for.** The vendor draws vertical dimensions turned a quarter inside a
-    stamp that reads upright, so the stamp says 0 and the bar runs up the page. `39 1/2"` turned
+    stamp that reads upright, so the stamp says 0 and the bar runs up the page. `37 1/2"` turned
     either way is found and laid out as it reads: its `1` over its `2`, its two digits before the
     fraction, its inch mark after it, and the direction it reads in. Read up the page or down it,
     the shapes are the same; only the inch mark's place says which. Laid out the other way, its two
     ticks would be counted as a two-digit whole number."""
-    turned = [_turned(box, degrees) for box in THIRTY_NINE_AND_A_HALF]
+    turned = [_turned(box, degrees) for box in THIRTY_SEVEN_AND_A_HALF]
 
     layout = _layout(turned)
 
     assert layout.rotation_degrees == degrees
     assert _counts(layout) == (2, 1, 1, 2)
-    assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_NINE, degrees),))
+    assert layout.whole == ((_turned(WHOLE_THREE, degrees),), (_turned(WHOLE_SEVEN, degrees),))
     assert layout.numerator == ((_turned(ONE, degrees),),)
     assert layout.denominator == ((_turned(TWO, degrees),),)
     assert layout.inch_mark == tuple(_turned(tick, degrees) for tick in TICKS)
@@ -553,11 +553,11 @@ def test_a_turned_bare_fraction_with_a_two_stroke_four_is_laid_out_too(degrees: 
 def test_a_label_running_across_the_page_in_a_turned_stamp_reads_upright() -> None:
     """**Each label's own direction, not the stamp's.** A stamp whose text runs up the page can hold
     a label that reads across it; its bar is flat on the page, across that stamp's baseline."""
-    layout = _layout(THIRTY_NINE_AND_A_HALF, rotation_degrees=90)
+    layout = _layout(THIRTY_SEVEN_AND_A_HALF, rotation_degrees=90)
 
     assert layout.rotation_degrees == 0
     assert _counts(layout) == (2, 1, 1, 2)
-    assert layout.whole == ((WHOLE_THREE,), (WHOLE_NINE,))
+    assert layout.whole == ((WHOLE_THREE,), (WHOLE_SEVEN,))
 
 
 def test_an_upright_letter_stroke_between_two_letters_is_not_a_turned_bar() -> None:

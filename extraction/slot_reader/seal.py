@@ -4,7 +4,7 @@
 file is sealed by the file's own text and one reader on the crop agreeing character for character;
 a label drawn as paths, by two readers of different makers agreeing on the crop. Agreement is on
 the printed text after only the normalisation a picture cannot carry — curly or prime quote glyphs,
-a line break, a run of spaces. Nothing else is forgiven: `13 1/8"` and `131/8"` are different texts.
+a line break, a run of spaces. Nothing else is forgiven: `17 5/8"` and `175/8"` are different texts.
 
 **The value comes from the sealed text alone** (E2 guard 2), parsed by `units/`. The readers are not
 asked for whole, numerator and denominator at all: in E2 both readers once filed identical wrong
@@ -170,7 +170,7 @@ class LabelOutcome:
     """For the person, from the second reader's text where it is a plain dimension; never where
     the label is on the reviewer's ink, cut by an edge, or crowded."""
     sealed_text: str | None
-    """The text both sources agreed on, plain dimension or not (a sealed `3"+2" Filler` is still
+    """The text both sources agreed on, plain dimension or not (a sealed `4"+1" Filler` is still
     evidence of the word `Filler`)."""
     reason_code: str | None
     reason: str | None

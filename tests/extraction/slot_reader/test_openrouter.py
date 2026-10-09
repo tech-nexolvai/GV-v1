@@ -54,7 +54,7 @@ REQUEST: dict[str, object] = {
     "inferenceConfig": {"maxTokens": 3000},
     "anthropicOutputConfig": output_config(SPAN_SCHEMA, "high"),
 }
-SPAN_TEXT = json.dumps({"belongs": True, "text": '13 1/8"', "readable": True})
+SPAN_TEXT = json.dumps({"belongs": True, "text": '17 5/8"', "readable": True})
 
 
 class Response:

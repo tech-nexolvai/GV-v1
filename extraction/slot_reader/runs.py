@@ -3,8 +3,8 @@
 **Why this exists beside `extraction/geometry/rows.py`.** The row builder finds the row, its ticks
 and its slots, and locates a label in each slot by its curves. That is enough to say *where* a label
 is, not to show a reader *all* of it: a `1` or an `l` drawn as one straight stroke is a line, not a
-curve, so a label like `13 1/8"` can be located without its first digit. A crop cut to that box
-would show `3 1/8"`, and two readers would agree on it. So this module rebuilds each label as E2
+curve, so a label like `17 5/8"` can be located without its first digit. A crop cut to that box
+would show `7 5/8"`, and two readers would agree on it. So this module rebuilds each label as E2
 did (Measurements 2026-10-07): from every small stroke and every black or grey character near the
 row — curves, straight strokes and tiny rectangles alike — merged into runs, each run given to the
 row line and the slot it belongs to, and fragments of one label on one baseline joined.

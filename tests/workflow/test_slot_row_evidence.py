@@ -10,8 +10,8 @@ from workflow.slot_row_evidence import _verified_reader_answer
     ("text", "stacked", "combined", "expected"),
     [
         ("127 [5]", True, False, Fraction(5)),
-        ('13 1/8"', True, False, Fraction(105, 8)),
-        ('3"+2"Filler', False, True, Fraction(5)),
+        ('17 5/8"', True, False, Fraction(141, 8)),
+        ('4"+1"Filler', False, True, Fraction(5)),
         ("3/4", True, False, None),
         ('55"', False, False, Fraction(55)),
         ('56"', False, False, None),
@@ -30,8 +30,8 @@ def test_saved_reader_text_must_parse_to_the_sealed_exact_value(
     }
 
     expected_value = (
-        Fraction(105, 8)
-        if text.startswith("13 ")
+        Fraction(141, 8)
+        if text.startswith("17 ")
         else Fraction(55) if text == '55"' else Fraction(5)
     )
     result = _verified_reader_answer(answer, expected_value)

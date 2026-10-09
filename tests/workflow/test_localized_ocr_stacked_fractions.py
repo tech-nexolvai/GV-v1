@@ -42,7 +42,7 @@ from extraction.annotations import read_annotation_layers
 from extraction.glyph_reader import GlyphReading
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
-from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
+from tests.extraction.models.test_validation import THIRTY_SEVEN_AND_A_HALF_LAYOUT, THREE_QUARTERS
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
 from tests.workflow.test_cut_label_guard import whole_labels
@@ -197,7 +197,7 @@ def test_a_reading_of_the_label_without_its_fraction_is_not_flagged(
     [
         # The fraction dropped (#541): a whole number where the drawing has a whole and a fraction.
         ('28"',),
-        # A whole-number digit dropped, as `9 1/2"` for a `39 1/2"`: right shape, wrong count.
+        # A whole-number digit dropped, as `7 1/2"` for a `37 1/2"`: right shape, wrong count.
         ('8 3/4"',),
         # The dual reading the millimetre lane takes on one reader: 28 3/4" is 730.25 mm.
         ("730", "[28 3/4]"),
@@ -350,19 +350,19 @@ def test_a_reading_is_over_a_fraction_exactly_where_a_vision_crop_would_be_refus
 
 
 def test_over_a_laid_out_label_a_reading_is_held_to_its_digit_counts() -> None:
-    """#834's false-PASS cases, through the lanes' check: `3 3/4"` on a `3/4"`, `9 1/2"` on a
-    `39 1/2"`. What the drawing allows is flagged and kept."""
-    (quarters,), (half,) = THREE_QUARTERS, THIRTY_NINE_AND_A_HALF_LAYOUT
+    """#834's false-PASS cases, through the lanes' check: `3 3/4"` on a `3/4"`, `7 1/2"` on a
+    `37 1/2"`. What the drawing allows is flagged and kept."""
+    (quarters,), (half,) = THREE_QUARTERS, THIRTY_SEVEN_AND_A_HALF_LAYOUT
     on_quarters = [_fraction(190, 150, 230, 190, quarters)]
     on_half = [_fraction(190, 150, 230, 190, half)]
     over = _corners((180, 140, 240, 200))
 
     stacked, refusal = stacked_reading_check(over, '3 3/4"', on_quarters)
     assert stacked and refusal is not None and "'3 3/4\"'" in refusal
-    stacked, refusal = stacked_reading_check(over, '9 1/2"', on_half)
+    stacked, refusal = stacked_reading_check(over, '7 1/2"', on_half)
     assert stacked and refusal is not None
     assert stacked_reading_check(over, '3/4"', on_quarters) == (True, None)
-    assert stacked_reading_check(over, '39 1/2"', on_half) == (True, None)
+    assert stacked_reading_check(over, '37 1/2"', on_half) == (True, None)
 
 
 def test_a_fraction_set_in_text_flags_and_never_refuses() -> None:

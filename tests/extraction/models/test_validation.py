@@ -22,7 +22,7 @@ from extraction.models.validation import (
     validate_digits_payload,
     validate_payload,
 )
-from tests.extraction.test_glyph_bands import FRACTION, THIRTY_NINE_AND_A_HALF, _found, _shifted
+from tests.extraction.test_glyph_bands import FRACTION, THIRTY_SEVEN_AND_A_HALF, _found, _shifted
 from units.measurement import Unit
 
 
@@ -483,10 +483,10 @@ def test_every_caller_must_say_whether_its_crop_is_stacked() -> None:
 # A reading the drawing's layout contradicts (#834)
 # ---------------------------------------------------------------------------
 
-#: The layouts the bar detector gives the synthetic `3/4"` and `39 1/2"` of the detector's own tests:
+#: The layouts the bar detector gives the synthetic `3/4"` and `37 1/2"` of the detector's own tests:
 #: no whole number and one over one, and two whole-number characters and one over one.
 THREE_QUARTERS = _found(FRACTION)
-THIRTY_NINE_AND_A_HALF_LAYOUT = _found(THIRTY_NINE_AND_A_HALF)
+THIRTY_SEVEN_AND_A_HALF_LAYOUT = _found(THIRTY_SEVEN_AND_A_HALF)
 
 
 def _stacked_reading(reading: str, layouts: tuple[FractionLayout, ...]) -> object:
@@ -507,13 +507,13 @@ def _stacked_reading(reading: str, layouts: tuple[FractionLayout, ...]) -> objec
         # **The false PASS.** Two readers of different vendors agreed on this for a `3/4"` (#726).
         ('3 3/4"', THREE_QUARTERS),
         # The other way round: a digit of the whole number dropped.
-        ('9 1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
-        ('3/4"', THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ('7 1/2"', THIRTY_SEVEN_AND_A_HALF_LAYOUT),
+        ('3/4"', THIRTY_SEVEN_AND_A_HALF_LAYOUT),
         # The numerator run into the whole number, and the fraction absorbed into it (#541).
-        ('391/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
-        ("392", THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ('371/2"', THIRTY_SEVEN_AND_A_HALF_LAYOUT),
+        ("372", THIRTY_SEVEN_AND_A_HALF_LAYOUT),
         # A millimetre number the label does not have.
-        ("991 [39 1/2]", THIRTY_NINE_AND_A_HALF_LAYOUT),
+        ("953 [37 1/2]", THIRTY_SEVEN_AND_A_HALF_LAYOUT),
     ],
 )
 def test_a_reading_whose_digit_counts_the_layout_contradicts_is_refused(
@@ -532,9 +532,9 @@ def test_a_reading_whose_digit_counts_the_layout_contradicts_is_refused(
 @pytest.mark.parametrize(
     ("reading", "layouts"),
     [
-        ('39 1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),
-        ('39-1/2"', THIRTY_NINE_AND_A_HALF_LAYOUT),  # the trade's hyphen, read as the space
-        ("39 1/2", THIRTY_NINE_AND_A_HALF_LAYOUT),  # the inch mark is not a digit
+        ('37 1/2"', THIRTY_SEVEN_AND_A_HALF_LAYOUT),
+        ('37-1/2"', THIRTY_SEVEN_AND_A_HALF_LAYOUT),  # the trade's hyphen, read as the space
+        ("37 1/2", THIRTY_SEVEN_AND_A_HALF_LAYOUT),  # the inch mark is not a digit
         ('3/4"', THREE_QUARTERS),
     ],
 )
@@ -558,10 +558,10 @@ def test_the_check_counts_and_does_not_read() -> None:
 
 
 def test_with_two_stacked_labels_in_the_crop_a_reading_may_match_either() -> None:
-    both = THREE_QUARTERS + THIRTY_NINE_AND_A_HALF_LAYOUT
+    both = THREE_QUARTERS + THIRTY_SEVEN_AND_A_HALF_LAYOUT
 
     assert stacked_layout_refusal('3/4"', both) is None
-    assert stacked_layout_refusal('39 1/2"', both) is None
+    assert stacked_layout_refusal('37 1/2"', both) is None
     refusal = stacked_layout_refusal('3 3/4"', both)
     assert refusal is not None and "2 stacked labels" in refusal
 
@@ -612,9 +612,9 @@ def test_every_caller_must_state_the_layouts() -> None:
 
 def test_the_layouts_used_here_are_the_ones_the_detector_draws() -> None:
     """The guard is only as good as the counts, so the fixtures are pinned: `3/4"` has no whole
-    number, `39 1/2"` two digits of one, and a layout moved along the sheet is laid out the same."""
-    (quarters,), (half,) = THREE_QUARTERS, THIRTY_NINE_AND_A_HALF_LAYOUT
-    (moved,) = _found(_shifted(THIRTY_NINE_AND_A_HALF, "200"))
+    number, `37 1/2"` two digits of one, and a layout moved along the sheet is laid out the same."""
+    (quarters,), (half,) = THREE_QUARTERS, THIRTY_SEVEN_AND_A_HALF_LAYOUT
+    (moved,) = _found(_shifted(THIRTY_SEVEN_AND_A_HALF, "200"))
 
     assert (len(quarters.whole), len(quarters.numerator), len(quarters.denominator)) == (0, 1, 1)
     assert (len(half.whole), len(half.numerator), len(half.denominator)) == (2, 1, 1)

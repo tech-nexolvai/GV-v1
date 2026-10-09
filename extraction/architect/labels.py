@@ -84,7 +84,7 @@ _QUALIFIER_SPELLINGS: Final = {
 
 #: One written dimension in the plain spelling `plain_marks` gives: feet and inches (`3'-6"`,
 #: `3' - 6 1/2"`, `3'6"`, `3'-1-1/2"`, `0'-1/2"`), feet alone (`3'`), or marked inches (`11"`,
-#: `13 1/8"`, `1/2"`). Used to find labels in a run of text; the parser decides what each one is.
+#: `17 5/8"`, `1/2"`). Used to find labels in a run of text; the parser decides what each one is.
 DIMENSION_PATTERN: Final = re.compile(
     r"\d+\s*'(?:\s*-?\s*(?:\d+(?:(?:\s+|\s*-\s*)\d+/\d+)?|\d+/\d+)\s*\")?"
     r"|\d+(?:(?:\s+|\s*-\s*)\d+/\d+)?\s*\""

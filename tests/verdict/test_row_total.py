@@ -47,8 +47,8 @@ def inches(*values: int | Fraction) -> tuple[Measurement, ...]:
     return tuple(inch(value) for value in values)
 
 
-PIECES = inches(2, Fraction(105, 8), Fraction(3, 4), Fraction(87, 4), 2)  # 39 5/8
-CABINETS = inches(Fraction(105, 8), Fraction(87, 4))  # 34 7/8
+PIECES = inches(2, Fraction(141, 8), Fraction(3, 4), Fraction(93, 4), 2)  # 45 5/8
+CABINETS = inches(Fraction(141, 8), Fraction(93, 4))  # 40 7/8
 FILLERS = inches(2, Fraction(3, 4), 2)  # 4 3/4
 
 
@@ -61,20 +61,20 @@ def test_pieces_alone_are_summed_exactly() -> None:
     result = row_total(pieces=PIECES, cabinets=None, fillers=None)
 
     assert isinstance(result, DerivationResult)
-    assert result.value == Measurement(Fraction(317, 8), Unit.INCH, None)
+    assert result.value == Measurement(Fraction(365, 8), Unit.INCH, None)
     assert isinstance(result.value.exact, Fraction)
     assert dict(result.intermediates)["source"] == "pieces"
-    assert result.expression == "pieces 2 + 13 1/8 + 3/4 + 21 3/4 + 2 = 39 5/8 in"
+    assert result.expression == "pieces 2 + 17 5/8 + 3/4 + 23 1/4 + 2 = 45 5/8 in"
 
 
 def test_cabinets_and_fillers_alone_are_summed_as_before() -> None:
     result = row_total(pieces=None, cabinets=CABINETS, fillers=FILLERS)
 
     assert isinstance(result, DerivationResult)
-    assert result.value == Measurement(Fraction(317, 8), Unit.INCH, None)
+    assert result.value == Measurement(Fraction(365, 8), Unit.INCH, None)
     facts = dict(result.intermediates)
     assert facts["source"] == "cabinets and fillers"
-    assert facts["cabinet_total"] == Measurement(Fraction(279, 8), Unit.INCH, None)
+    assert facts["cabinet_total"] == Measurement(Fraction(327, 8), Unit.INCH, None)
     assert facts["filler_total"] == Measurement(Fraction(19, 4), Unit.INCH, None)
 
 
@@ -82,7 +82,7 @@ def test_both_statements_agreeing_give_the_one_total() -> None:
     result = row_total(pieces=PIECES, cabinets=CABINETS, fillers=FILLERS)
 
     assert isinstance(result, DerivationResult)
-    assert result.value == Measurement(Fraction(317, 8), Unit.INCH, None)
+    assert result.value == Measurement(Fraction(365, 8), Unit.INCH, None)
     assert dict(result.intermediates)["source"] == "pieces, confirmed by cabinets and fillers"
 
 
@@ -96,7 +96,7 @@ def test_both_statements_disagreeing_go_to_the_reviewer(off: Fraction) -> None:
     assert isinstance(result, OperationResult)
     assert result.outcome is Outcome.REVIEW_REQUIRED
     assert result.delta is None
-    assert "39 5/8 in" in result.comparison
+    assert "45 5/8 in" in result.comparison
     assert "disagree" in result.comparison
 
 
@@ -237,7 +237,7 @@ def test_an_input_nobody_supplied_reaches_the_operation_as_not_given() -> None:
     finding = execute(
         publish(_rule()),
         {
-            "overall": _operand("overall", inch(Fraction(317, 8))),
+            "overall": _operand("overall", inch(Fraction(365, 8))),
             "pieces": _operand("pieces", PIECES),
         },
     )
@@ -254,7 +254,7 @@ def test_an_optional_operand_bound_to_a_missing_parameter_is_still_not_found() -
     finding = execute(
         publish(_rule(cabinets_from_parameter=True)),
         {
-            "overall": _operand("overall", inch(Fraction(317, 8))),
+            "overall": _operand("overall", inch(Fraction(365, 8))),
             "pieces": _operand("pieces", PIECES),
         },
     )

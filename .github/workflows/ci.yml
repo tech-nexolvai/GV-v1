@@ -23,9 +23,11 @@ on:
 # draft pull requests do not run, and Python packages install with uv from a cache.
 #
 # **No path filters, deliberately.** A documentation-only change can fail this workflow and must: the
-# client-facts and vendor-neutrality guards scan every tracked file (that is what keeps client values out
-# of GitHub), and the risk register, issue-gate and ADR tests read docs/, README.md and CONTRIBUTING.md.
-# Skipping "docs-only" pushes would skip exactly those guards.
+# risk register, issue-gate and ADR tests read docs/, README.md and CONTRIBUTING.md, so a docs-only
+# change can break the build. Skipping "docs-only" pushes would skip exactly those tests.
+# No check in this workflow scans files for client values: the client-facts test only checks that
+# docs/CLIENT_FACTS.md parses, and the vendor-neutrality test checks imports. Keeping client values out
+# of GitHub is a review rule, not something CI enforces.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

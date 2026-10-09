@@ -14,7 +14,7 @@ const base: CountertopResult = {
   finding_id: 'f', row_id: 'r', page_number: 1, label: 'Synthetic countertop', row_location: null,
   outcome: 'FAIL', needs_decision: false,
   printed_overall: x('42', '1', '42"'),
-  pieces: [piece(0, x('2', '1', '2"'), 'filler'), piece(1, x('105', '8', '13 1/8"')), piece(2, x('87', '4', '21 3/4"')), piece(3, x('2', '1', '2"'), 'filler')],
+  pieces: [piece(0, x('2', '1', '2"'), 'filler'), piece(1, x('101', '8', '12 5/8"')), piece(2, x('89', '4', '22 1/4"')), piece(3, x('2', '1', '2"'), 'filler')],
   field_cut_per_end: x('1', '1', '1"'), field_cut_count: 2,
   expected_total: x('331', '8', '41 3/8"'), delta: x('5', '8', '5/8"'),
   hold: null, reviewer_decision: null,
@@ -47,8 +47,8 @@ describe('countertop picture: layout', () => {
   it('draws pieces in proportion to their exact widths', () => {
     const layout = drawn(OVER);
     const [filler, a, b] = layout.pieces;
-    expect(a.w / b.w).toBeCloseTo((105 / 8) / (87 / 4), 6);
-    expect(a.w / filler.w).toBeCloseTo((105 / 8) / 2, 6);
+    expect(a.w / b.w).toBeCloseTo((101 / 8) / (89 / 4), 6);
+    expect(a.w / filler.w).toBeCloseTo((101 / 8) / 2, 6);
     // Pieces sit side by side, after the left field-cut cap.
     expect(a.x).toBeCloseTo(filler.x + filler.w, 6);
     expect(filler.x).toBeCloseTo(layout.caps.left!.w, 6);
@@ -56,7 +56,7 @@ describe('countertop picture: layout', () => {
 
   it('labels every value with the exact text from the API, never a computed number', () => {
     const layout = drawn(OVER);
-    expect(layout.pieces.map((p) => p.label)).toEqual(['2"', '13 1/8"', '21 3/4"', '2"']);
+    expect(layout.pieces.map((p) => p.label)).toEqual(['2"', '12 5/8"', '22 1/4"', '2"']);
     expect(layout.printed?.label).toBe('42"');
     expect(layout.needed?.label).toBe('41 3/8"');
     expect(layout.caps.left?.label).toBe('+1"');
@@ -97,12 +97,12 @@ describe('countertop picture: layout', () => {
     expect(stripLayout({ ...OVER, pieces: [piece(0, x('1.5', '1', '1.5"'))] }, 1000).status).toBe('refused');
     expect(stripLayout({ ...OVER, pieces: [piece(0, x('3', '0', '?'))] }, 1000).status).toBe('refused');
     expect(stripLayout({ ...OVER, pieces: [piece(0, x('-3', '1', '-3"'))] }, 1000).status).toBe('refused');
-    expect(inchesOf(x('105', '8', '13 1/8"'))).toBe(13.125);
+    expect(inchesOf(x('101', '8', '12 5/8"'))).toBe(12.625);
     expect(inchesOf(x('1e3', '1', 'x'))).toBeNull();
   });
 
   it('summarises the facts in words for screen readers', () => {
-    expect(drawn(SHORT).summary).toBe('Printed 40", needed 41 3/8", short by 1 3/8"; 4 pieces 2", 13 1/8", 21 3/4", 2"; back wall and both ends.');
+    expect(drawn(SHORT).summary).toBe('Printed 40", needed 41 3/8", short by 1 3/8"; 4 pieces 2", 12 5/8", 22 1/4", 2"; back wall and both ends.');
     expect(drawn(OVER).summary).toMatch(/over by 5\/8"/);
     expect(drawn(PASS).summary).toMatch(/no difference/);
   });
@@ -145,7 +145,7 @@ describe('countertop picture: drawing', () => {
     const { container } = render(<CountertopStrip row={OVER} size="full" />);
     const pieces = container.querySelectorAll('[data-piece]');
     expect(pieces[1].getAttribute('tabindex')).toBe('0');
-    expect(pieces[1].querySelector('title')?.textContent).toBe('Cabinet 2: 13 1/8" — both AIs read it the same');
+    expect(pieces[1].querySelector('title')?.textContent).toBe('Cabinet 2: 12 5/8" — both AIs read it the same');
     expect(pieces[0].querySelector('title')?.textContent).toMatch(/^Filler 1/);
   });
 

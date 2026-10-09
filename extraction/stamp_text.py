@@ -8,8 +8,8 @@ sets that is most of `AI_Set_1`'s labels and over a thousand strings on `AI_Set_
 **#738 recorded this text as unreadable, and it is not.** pdfium's `FPDFTextObj_GetText` returned
 nothing for every character, which was read as "the font has no character map". The cause was the
 call: it decodes through the *page's* text page, and an annotation's objects are not on it. The
-fonts map their characters; read through the appearance stream they decode exactly (`2' -5"`,
-`ML-003-CUST`, `3/8" = 1'-0"`).
+fonts map their characters; read through the appearance stream they decode exactly (dimensions like
+`2' -5"`, sheet tags, scales like `3/8" = 1'-0"`).
 
 **How it is read: the page's own reader, on a copy that holds only the pasted drawings.** A private
 copy of the page keeps its `/Stamp` annotations and nothing else — no reviewer markup, no other

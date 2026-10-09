@@ -10,7 +10,7 @@ const row: CountertopResult = {
   outcome: 'FAIL', needs_decision: false, printed_overall: x('72', '1', '72"'),
   pieces: [
     { index: 0, value: x('30', '1', '30"'), kind: 'cabinet', source: 'sealed' },
-    { index: 1, value: x('105', '8', '13 1/8"'), kind: 'filler', source: 'typed' },
+    { index: 1, value: x('101', '8', '12 5/8"'), kind: 'filler', source: 'typed' },
     { index: 2, value: x('18', '1', '18"'), kind: 'appliance_space', source: 'sealed' },
   ],
   field_cut_per_end: x('1', '1', '1"'), field_cut_count: 2, expected_total: x('509', '8', '63 5/8"'),
@@ -27,7 +27,7 @@ assert.match(html, /data-bracket="needed" data-label="63 5\/8&quot;"/);
 assert.match(html, /data-cap="left" data-label="\+1&quot;"/);
 assert.match(html, /data-cap="right" data-label="\+1&quot;"/);
 assert.match(html, /data-wall="back"/);
-assert.match(html, /data-piece="1" data-kind="filler" data-source="typed" data-label="13 1\/8&quot;"/, 'exact fraction text, never a float');
+assert.match(html, /data-piece="1" data-kind="filler" data-source="typed" data-label="12 5\/8&quot;"/, 'exact fraction text, never a float');
 assert.match(html, /data-kind="appliance"/);
 assert.match(html, /\+8 3\/8&quot;/, 'the overrun carries a plus sign');
 assert.match(html, /data-outcome-icon="FAIL"/, 'the difference colour comes with its glyph');
