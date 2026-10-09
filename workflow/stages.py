@@ -47,7 +47,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from functools import cache, partial
 from io import BytesIO
-from typing import Final, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
@@ -155,6 +155,12 @@ from extraction.annotations import (
     page_box_polygon,
     read_annotation_layers,
     read_markup_layer,
+)
+from extraction.architect.reader import (
+    MEASURED_ARCHITECT_SETTINGS,
+    ArchitectPage,
+    ArchitectSettings,
+    read_architect_page,
 )
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ThreadSafeAttemptRecorder
@@ -268,6 +274,11 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
+from workflow.architect_reader import (
+    ARCHITECT_EXTRACTOR,
+    ARCHITECT_EXTRACTOR_VERSION,
+    persist_architect_pages,
+)
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -342,6 +353,9 @@ from workflow.vendor_page_pictures import (
     record_page_picture,
 )
 from workflow.view_roles import record_panel_view, revision_views
+
+if TYPE_CHECKING:
+    from app.config import Settings
 
 #: What produced these readings, recorded on the extraction run so a candidate can say what read it.
 EXTRACTOR = "pdfplumber"
@@ -1638,6 +1652,7 @@ class DatabaseStages:
         slot_reader: SlotReaderRuntime | None = None,
         part_pictures: PartPictureSettings | None = None,
         timings: TimingRecorder | None = None,
+        architect_reader: ArchitectSettings | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1653,6 +1668,10 @@ class DatabaseStages:
         self._store = store
         self._dpi = dpi
         self._timings = timings
+        if architect_reader is not None and not isinstance(architect_reader, ArchitectSettings):
+            raise TypeError("architect_reader must be ArchitectSettings")
+        # The architect's dimensions read by code (#1052), behind GV_ARCHITECT_READER_ENABLED.
+        self._architect_reader = architect_reader
         self._timed_first_page_runs: set[UUID] = set()
         self._timing_document_version_id: str | None = None
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
@@ -2040,6 +2059,15 @@ class DatabaseStages:
                             },
                         )
                     )
+        if self._architect_reader is not None:
+            # Before the readers that use the drawings' roles, so a role code confirms here is the
+            # one the slot reader's architect filter reads.
+            self._read_architect_drawings(
+                session,
+                package_revision_id=package_revision_id,
+                verified_data=verified_data,
+                task_run_id=task_run.id,
+            )
         if self._form_reader is not None:
             for version in _shop_document_versions_for(session, package_revision_id):
                 shop_data = verified_data.get(version)
@@ -2052,6 +2080,64 @@ class DatabaseStages:
                         task_run_id=task_run.id,
                     )
         return tuple(results)
+
+    def _read_architect_drawings(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        verified_data: Mapping[UUID, bytes],
+        task_run_id: UUID,
+    ) -> dict[str, object]:
+        """Read the architect's drawing on every page of the shop upload, by code (#1052).
+
+        A same-file package — the same bytes uploaded as both drawings (#963) — is one combined set
+        whose upload slots say nothing about either drawing, and gets no architect values at all.
+        A page that cannot be read is skipped, never guessed at.
+        """
+        settings = self._architect_reader
+        assert settings is not None
+        if _one_file_as_both_roles(session, package_revision_id):
+            return {
+                "architect": "not read: the same file was uploaded as both the architect's and "
+                "the vendor's drawing"
+            }
+        config = hashlib.sha256(repr(settings).encode()).hexdigest()[:16]
+        payload: dict[str, object] = {}
+        for version in _shop_document_versions_for(session, package_revision_id):
+            data = verified_data.get(version)
+            if data is None:
+                continue
+            pages = list(
+                session.scalars(
+                    select(Page).where(Page.document_version_id == version).order_by(Page.index)
+                )
+            )
+            readings: list[tuple[Page, ArchitectPage]] = []
+            for page in pages:
+                try:
+                    readings.append(
+                        (
+                            page,
+                            read_architect_page(data, page.index, settings=settings, dpi=self._dpi),
+                        )
+                    )
+                except UnreadablePdf:
+                    continue
+            run = open_extraction_run(
+                session,
+                task_run_id=task_run_id,
+                extractor=ARCHITECT_EXTRACTOR,
+                extractor_version=ARCHITECT_EXTRACTOR_VERSION,
+                config_hash=f"dpi={self._dpi};settings={config}",
+                dpi=self._dpi,
+            )
+            counts = persist_architect_pages(
+                session, document_version_id=version, extraction_run_id=run.id, pages=readings
+            )
+            payload[str(version)] = vars(counts)
+        session.flush()
+        return payload
 
     def _run_form_reader_for_document(
         self,
@@ -7017,6 +7103,18 @@ def _document_records_for(
         (version_id, storage_key(document_id, sha), sha, page_count)
         for version_id, document_id, sha, page_count in rows
     ]
+
+
+def configured_architect_reader(settings: Settings) -> ArchitectSettings | None:
+    """The architect reader's settings when `GV_ARCHITECT_READER_ENABLED` is on, else `None` (#1052).
+
+    The thresholds are the ones measured on both client sets (`MEASURED_ARCHITECT_SETTINGS`); the
+    flag only says whether the reading runs. Read as the typed field: a misspelt or missing setting
+    is an error at start, never a reader that is silently off.
+    """
+    if not settings.architect_reader_enabled:
+        return None
+    return MEASURED_ARCHITECT_SETTINGS
 
 
 def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> tuple[UUID, ...]:

@@ -485,6 +485,12 @@ class CountertopRowCandidate:
     """1 for the best-placed candidate on the page; `None` when set aside."""
     rejected_because: str | None
     """Why the row is not a candidate, in plain words; `None` for a candidate."""
+    in_architect_view: bool = False
+    """Whether both of the row's end ticks lie inside an architect's drawing the caller named
+    (`PageInk.architect_boxes`) — decided on its own, whatever the row's first rejection reason
+    (#1052). A row of one slot or of feet-and-inches labels is set aside for its first reason and
+    still says it is the architect's, so the architect reader can keep it. Always `False` for a
+    candidate, and for every row on a page whose drawings' roles are unknown."""
 
     @property
     def x0(self) -> Decimal:
@@ -1247,6 +1253,7 @@ def build_rows(ink: PageInk, settings: RowSettings, *, place: Placement) -> Page
             findings.append(LABEL_TOUCHES_EDGE)
         if any(label.stacked for label in first_labels):
             findings.append(LABEL_IS_STACKED)
+        row_start, row_end = place(row.ticks[0], y), place(row.ticks[-1], y)
         rejected = _rejection(
             row,
             slots,
@@ -1254,8 +1261,8 @@ def build_rows(ink: PageInk, settings: RowSettings, *, place: Placement) -> Page
             settings,
             overall=overall,
             architect_boxes=ink.architect_boxes,
-            row_start=place(row.ticks[0], y),
-            row_end=place(row.ticks[-1], y),
+            row_start=row_start,
+            row_end=row_end,
         )
         built.append(
             (
@@ -1270,6 +1277,9 @@ def build_rows(ink: PageInk, settings: RowSettings, *, place: Placement) -> Page
                     labelled=labelled,
                     rank=None,
                     rejected_because=rejected,
+                    in_architect_view=_inside_architect_view(
+                        ink.architect_boxes, row_start, row_end
+                    ),
                 ),
             )
         )
@@ -1369,12 +1379,19 @@ def _rejection(
         _FEET_AND_INCHES.fullmatch(text) is not None for text in text_labels
     ) * 2 > len(text_labels):
         return FEET_AND_INCHES_ROW
-    if any(
+    if _inside_architect_view(architect_boxes, row_start, row_end):
+        return INSIDE_ARCHITECT_DRAWING
+    return None
+
+
+def _inside_architect_view(
+    architect_boxes: Sequence[StoredBox], row_start: StoredPoint, row_end: StoredPoint
+) -> bool:
+    """Whether both ends of a row lie inside one of the architect's drawings, edges included."""
+    return any(
         box.left <= row_start.x <= box.right
         and box.left <= row_end.x <= box.right
         and box.top <= row_start.y <= box.bottom
         and box.top <= row_end.y <= box.bottom
         for box in architect_boxes
-    ):
-        return INSIDE_ARCHITECT_DRAWING
-    return None
+    )

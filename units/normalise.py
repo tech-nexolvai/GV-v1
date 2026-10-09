@@ -21,6 +21,7 @@ Yards are out of scope by decision, not by omission, and are refused explicitly 
 from __future__ import annotations
 
 import re
+import unicodedata
 from fractions import Fraction
 
 from units.imperial import ImperialParseError, parse_imperial
@@ -48,11 +49,44 @@ _YARD_RE = re.compile(r"\b(yd|yds|yard|yards)\b", re.IGNORECASE)
 #: `984 mm`, `984mm`, `984 MM`.
 _MM_RE = re.compile(r"^(?P<value>\d+(?:\.\d+)?)\s*mm$", re.IGNORECASE)
 
-#: `3 ft`, `3ft`, `3'`, and the feet-and-inches forms `3'-6`, `3'-6"`, `3' 6 1/2"`, `3'-6 1/2`.
+#: `3 ft`, `3ft`, `3'`, and the feet-and-inches forms `3'-6`, `3'-6"`, `3' 6 1/2"`, `3'-6 1/2`,
+#: `3' - 6"` with spaces round the dash, and `3'6"` with no separator at all (#1052). The inch part
+#: is matched loosely here and checked strictly by `_inch_part`, so a malformed one is refused with a
+#: reason rather than half-read.
 _FEET_RE = re.compile(
     r"^(?P<feet>\d+)\s*(?:'|ft|feet)"
-    r"(?:\s*[-\s]\s*(?P<inches>[\d\s/\.]+?)\s*(?:\"|in|inches)?)?$",
+    r"(?:\s*-?\s*(?P<inches>\d[\d\s/\.\-]*?)\s*(?:\"|in|inches)?)?$",
     re.IGNORECASE,
+)
+
+#: The inch part of a feet-and-inches dimension, as a drawing writes it: a whole number under a foot,
+#: a proper fraction, or both — `6`, `1/2`, `6 1/2`, `6-1/2` — or a decimal (`6.5`), which the parser
+#: has always read. Anything else is malformed.
+_INCH_PART_RE = re.compile(
+    r"^(?:(?P<whole>\d+)(?:(?:\s+|\s*-\s*)(?P<num>\d+)/(?P<den>\d+))?"
+    r"|(?P<alone_num>\d+)/(?P<alone_den>\d+)"
+    r"|(?P<decimal>\d+\.\d+))$"
+)
+
+#: The largest denominator a drawn fraction may have. Tapes and drawings stop at sixty-fourths.
+MAXIMUM_DENOMINATOR = 64
+
+#: How a drawing font may write the marks the parser knows (#1052): typographic primes, curly quotes
+#: (a Type 1 font's encoding of the straight ones) and every dash a CAD font sets for the hyphen.
+#: Each is a transcription equivalence; no number changes.
+_WRITTEN_MARKS = (
+    ("″", '"'),
+    ("′", "'"),
+    ("’", "'"),
+    ("‘", "'"),
+    ("”", '"'),
+    ("“", '"'),
+    ("‐", "-"),
+    ("‑", "-"),
+    ("‒", "-"),
+    ("–", "-"),
+    ("—", "-"),
+    ("−", "-"),
 )
 
 #: An inch token, with or without its marker — `38 3/4"`, `4 in`, `2.375 inches`, and the bare
@@ -100,7 +134,7 @@ def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Meas
     if not isinstance(text, str):
         raise UnitNormalisationError("dimension must be text")
 
-    token = text.strip()
+    token = plain_marks(text.strip())
     if not token:
         raise UnitNormalisationError("dimension is empty")
 
@@ -120,12 +154,7 @@ def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Meas
         exact = Fraction(int(feet.group("feet"))) * INCHES_PER_FOOT
         remainder = feet.group("inches")
         if remainder is not None and remainder.strip():
-            try:
-                exact += parse_imperial(remainder.strip())
-            except ImperialParseError as error:
-                raise UnitNormalisationError(
-                    f"unreadable inch part of a feet-and-inches dimension: {text!r}"
-                ) from error
+            exact += _inch_part(remainder.strip(), text)
         return Measurement(exact=exact, unit=Unit.INCH, raw_text=text)
 
     inches = _INCH_RE.match(token)
@@ -146,6 +175,78 @@ def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Meas
         f"no unit could be established for {text!r}. A dimension whose unit is unknown is an "
         "ambiguity, and the caller turns it into REVIEW_REQUIRED rather than assuming inches."
     )
+
+
+def plain_marks(token: str) -> str:
+    """The token with the marks a drawing font writes rewritten into the ones the parser knows.
+
+    A vulgar fraction (`½`) becomes its own digits — taken from Unicode's decomposition of it, never
+    typed out here — with a space in front where a digit precedes it, so `1½` is one and a half and
+    never fifteen over two (the character's NFKC form, read exactly). Then primes, curly quotes and
+    dashes become their plain spellings, the fraction slash becomes `/`, and two primes become one
+    inch mark. Nothing else is folded: superscript and subscript digits are not digits the parser
+    reads (`units/notation.py`). Nothing here is arithmetic: no number changes, only how it is
+    spelled.
+    """
+    written: list[str] = []
+    for character in token:
+        decomposition = unicodedata.decomposition(character)
+        if decomposition.startswith("<fraction>"):
+            parts = unicodedata.normalize("NFKD", character).replace("\u2044", "/")
+            after_a_digit = bool(written) and written[-1][-1:].isdigit()
+            written.append(f" {parts}" if after_a_digit else parts)
+        else:
+            written.append(character)
+    token = "".join(written)
+    for spelling, plain in _WRITTEN_MARKS:
+        token = token.replace(spelling, plain)
+    return token.replace("\u2044", "/").replace("''", '"')
+
+
+def _inch_part(remainder: str, text: str) -> Fraction:
+    """The inch part of a feet-and-inches dimension, exactly, or a refusal saying why.
+
+    Stricter than an inch token on its own, because the form is: the whole inches are under a foot
+    (`3'-14"` is not how anyone writes 4'-2"), a fraction is proper (`3'-61/2"` is a misprint, not
+    thirty and a half inches), and its denominator is a power of two no larger than sixty-four (a
+    drawing never prints thirds). A misprint read as something near would be a wrong number on the
+    side of the comparison that decides; refused, it goes to a person.
+    """
+    part = _INCH_PART_RE.fullmatch(remainder)
+    if part is None:
+        raise UnitNormalisationError(
+            f"unreadable inch part of a feet-and-inches dimension: {text!r}"
+        )
+    if part.group("decimal") is not None:
+        exact = Fraction(part.group("decimal"))
+    else:
+        whole = Fraction(int(part.group("whole") or 0))
+        numerator = part.group("num") or part.group("alone_num")
+        denominator = part.group("den") or part.group("alone_den")
+        exact = whole
+        if numerator is not None and denominator is not None:
+            top, bottom = int(numerator), int(denominator)
+            if not _drawn_denominator(bottom):
+                raise UnitNormalisationError(
+                    f"{text!r} has a fraction over {bottom}; a drawn fraction is over a power of two "
+                    f"no larger than {MAXIMUM_DENOMINATOR}"
+                )
+            if top >= bottom:
+                raise UnitNormalisationError(
+                    f"{text!r} has an improper fraction {top}/{bottom} in its inch part"
+                )
+            exact += Fraction(top, bottom)
+    if exact >= INCHES_PER_FOOT:
+        raise UnitNormalisationError(
+            f"{text!r} has {exact} inches after its feet; the inch part of a feet-and-inches "
+            "dimension is under a foot"
+        )
+    return exact
+
+
+def _drawn_denominator(denominator: int) -> bool:
+    """Whether a fraction's denominator is one a drawing prints: 2, 4, 8, 16, 32 or 64."""
+    return 2 <= denominator <= MAXIMUM_DENOMINATOR and denominator & (denominator - 1) == 0
 
 
 def inches_from_mm(millimetres: Fraction | int | str) -> Fraction:

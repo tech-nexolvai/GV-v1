@@ -35,7 +35,7 @@ from typing import Final
 from evidence.coordinates import StoredPoint
 from extraction.annotations import MarkupNote, VendorStamp
 
-__all__ = ["PANEL_HEADINGS", "PanelRoleProposal", "propose_panel_roles"]
+__all__ = ["PANEL_HEADINGS", "PanelRoleProposal", "printed_headings", "propose_panel_roles"]
 
 #: The labels a combined sheet prints above each drawing, and the role each one names. Matched on
 #: the whole label, ignoring case and spacing: `ID SET ELEVATION NOTES` is not this label.
@@ -59,6 +59,12 @@ class PanelRoleProposal:
 
 def _label(text: str) -> str:
     return " ".join(text.replace("’", "'").upper().split())
+
+
+def printed_headings(notes: Sequence[MarkupNote]) -> tuple[MarkupNote, ...]:
+    """The notes on a page that are one of `PANEL_HEADINGS`, exactly: none on a page that prints
+    no heading at all."""
+    return tuple(note for note in notes if _label(note.text) in PANEL_HEADINGS)
 
 
 def _vertical(points: Sequence[StoredPoint]) -> tuple[Decimal, Decimal]:
