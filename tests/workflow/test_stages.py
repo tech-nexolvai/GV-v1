@@ -200,7 +200,12 @@ def test_nothing_decides_without_operands(session: Session) -> None:
 
     outcomes = {finding.outcome for finding in _live_findings(session, revision.id)}
 
-    assert outcomes <= {Outcome.NOT_FOUND.value, Outcome.REVIEW_REQUIRED.value}
+    # NO_APPLICABLE_RULE is the architect check's "nothing was compared" (#1054): an abstention too.
+    assert outcomes <= {
+        Outcome.NOT_FOUND.value,
+        Outcome.REVIEW_REQUIRED.value,
+        Outcome.NO_APPLICABLE_RULE.value,
+    }
     assert Outcome.PASS.value not in outcomes
     assert Outcome.FAIL.value not in outcomes
 
