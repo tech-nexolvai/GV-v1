@@ -55,6 +55,7 @@ from extraction.slot_reader.bedrock import (
     COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT_ID,
     ROW_PROMPT_ID,
+    ArchPairAnswer,
     CounterBreakAnswer,
     CropJob,
     RowChoiceAnswer,
@@ -118,6 +119,7 @@ from workflow.layout_proposals import (
 
 if TYPE_CHECKING:
     from storage.store import ArtifactStore
+    from workflow.architect_pairing import ArchitectPairing, PairingOutcome
 
 __all__ = [
     "FRACTION_BAR_ENV",
@@ -193,6 +195,9 @@ class SlotReaderRuntime:
     """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
     """The effort every Claude question is asked at (`GV_CLAUDE_READER_EFFORT`, #1051)."""
+    architect_pairing: str | None = None
+    """The architect pairing's prompt and settings when it runs beside this reading (#1053), so
+    the run's identity says so; `None` leaves the identity exactly as before."""
 
     @property
     def prompt_id(self) -> str:
@@ -219,6 +224,7 @@ class SlotReaderRuntime:
                 if self.claude_row_reader
                 else ""
             )
+            + ("" if self.architect_pairing is None else f";arch-pair={self.architect_pairing}")
         )
 
     @property
@@ -398,6 +404,9 @@ class PageSlotResult:
     row_candidate_ids: tuple[UUID, ...] = ()
     row_choice_png: bytes | None = None
     row_choice_box_px: tuple[int, int, int, int] | None = None
+    architect_pairing: PairingOutcome | None = None
+    """Which architect dimension measures which vendor piece (#1053); `None` when the architect
+    reader did not read this page. Never changes a reading, a hold or a proposal above."""
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -899,6 +908,7 @@ def read_slot_pages(
     record_attempt: Callable[[AttemptUsage], None],
     wall_ends: Callable[[SlotPage], frozenset[WallEnd]] = lambda _page: frozenset(),
     store: ArtifactStore | None = None,
+    architect: ArchitectPairing | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -908,6 +918,11 @@ def read_slot_pages(
     drawing and slot span holds the whole
     row; and the row's wall question is asked in the same batch
     (same pacer and limits) and sealed only when both readers agree.
+
+    `architect` (#1053), when the architect reader read these pages: after everything above is
+    settled, each chosen row is paired with the architect's dimensions, by code first and, only
+    where code cannot decide, by one more question to both Claude readers in this same batch (same
+    pacer, effort and spend guard). The pairing is attached to the result and changes nothing else.
 
     `wall_ends` says which ends of a page's row stand against a wall *for naming a piece's kind*;
     the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by
@@ -969,7 +984,7 @@ def read_slot_pages(
         items: Sequence[CropJob],
     ) -> dict[
         tuple[str, str],
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None,
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
     ]:
         return read_crops_parallel(
             items,
@@ -1337,6 +1352,16 @@ def read_slot_pages(
                     else None
                 ),
             )
+        )
+    if architect is not None:
+        return architect.pair(
+            results,
+            pages,
+            ask=run_jobs,
+            readers=readers,
+            ask_the_ais=runtime.claude_row_reader,
+            store=store if runtime.question_packets else None,
+            effort=runtime.claude_effort if runtime.claude_row_reader else None,
         )
     return tuple(results)
 
@@ -2023,7 +2048,9 @@ def persist_slot_readings(
 
 
 def _agreed_row(
-    answers: Sequence[ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None],
+    answers: Sequence[
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+    ],
 ) -> tuple[RowChoiceAnswer | None, int | None]:
     """The row every reader named, or a "no row" answer that says why there is none.
 

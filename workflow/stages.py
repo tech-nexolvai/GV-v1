@@ -241,6 +241,7 @@ from extraction.reader import (
     read_pages,
 )
 from extraction.rows import page_rows_and_ink
+from extraction.slot_reader.bedrock import ARCH_PAIR_PROMPT_ID
 from extraction.stamp_text import (
     ColouredPath,
     PixelBox,
@@ -274,6 +275,15 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
+from workflow.architect_pairing import (
+    MEASURED_PAIRING_SETTINGS,
+    ArchitectPageInput,
+    ArchitectPairing,
+    architect_candidate_ids,
+    architect_page_input,
+    architect_views,
+    persist_architect_pairings,
+)
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
@@ -1672,6 +1682,8 @@ class DatabaseStages:
             raise TypeError("architect_reader must be ArchitectSettings")
         # The architect's dimensions read by code (#1052), behind GV_ARCHITECT_READER_ENABLED.
         self._architect_reader = architect_reader
+        # What it read, by page id, for pairing with the vendor's rows (#1053): set per extraction.
+        self._architect_pages: dict[UUID, ArchitectPageInput] = {}
         self._timed_first_page_runs: set[UUID] = set()
         self._timing_document_version_id: str | None = None
         if missing_space is not None and not isinstance(missing_space, MissingSpace):
@@ -2059,6 +2071,7 @@ class DatabaseStages:
                             },
                         )
                     )
+        self._architect_pages = {}
         if self._architect_reader is not None:
             # Before the readers that use the drawings' roles, so a role code confirms here is the
             # one the slot reader's architect filter reads.
@@ -2136,6 +2149,18 @@ class DatabaseStages:
                 session, document_version_id=version, extraction_run_id=run.id, pages=readings
             )
             payload[str(version)] = vars(counts)
+            # The pairing (#1053) takes the reading with the exact candidates just stored, and only
+            # the drawings whose role is the architect's now (code's or a person's).
+            session.flush()
+            stored = architect_candidate_ids(session, run.id)
+            for page, reading in readings:
+                self._architect_pages[page.id] = architect_page_input(
+                    reading,
+                    page_id=page.id,
+                    architect_views=architect_views(session, page.id),
+                    candidate_ids=stored.get(page.id, {}),
+                    architect_run_id=run.id,
+                )
         session.flush()
         return payload
 
@@ -2407,8 +2432,22 @@ class DatabaseStages:
                 ),
             )
         recorder = ThreadSafeAttemptRecorder()
+        # The architect pairing (#1053) runs only beside the architect reader, on the pages it read.
+        architect = (
+            ArchitectPairing(settings=MEASURED_PAIRING_SETTINGS, pages=dict(self._architect_pages))
+            if self._architect_reader is not None and self._architect_pages
+            else None
+        )
+        if architect is not None:
+            runtime = replace(
+                runtime, architect_pairing=f"{ARCH_PAIR_PROMPT_ID}:{architect.settings!r}"
+            )
         results = read_slot_pages(
-            pages, runtime=runtime, record_attempt=recorder.record, store=self._store
+            pages,
+            runtime=runtime,
+            record_attempt=recorder.record,
+            store=self._store,
+            architect=architect,
         )
         run = open_extraction_run(
             session,
@@ -2428,6 +2467,13 @@ class DatabaseStages:
             store=self._store,
             prompt_id=runtime.prompt_id,
         )
+        if architect is not None:
+            persist_architect_pairings(
+                session,
+                package_revision_id=package_revision_id,
+                extraction_run_id=run.id,
+                results=results,
+            )
         session.flush()
         return count
 
