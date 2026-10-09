@@ -4,7 +4,9 @@ import { ChevronRight, CircleDashed, FileSearch, LayoutPanelTop, Lock, PencilLin
 
 import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
-import { decisionWords, formatDelta, initials, sortValue } from '@/lib/countertop-results';
+import type { Finding } from '@/data/types';
+import { decisionWords, formatDelta, initials, rowNeedsYou, sortValue } from '@/lib/countertop-results';
+import { architectState, awaitsPairing, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -14,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WallGlyph } from './wall-glyph';
 import { CountertopStrip } from './CountertopStrip';
+import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from './architect-line';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -21,6 +24,12 @@ export interface RowActions {
   /** Present only when the row's finding can take a decision here. */
   onDecide: (row: CountertopResult) => void;
   canDecide: (row: CountertopResult) => boolean;
+  /** The row's architect finding as the page holds it (its decision, if any). */
+  architectFinding?: (row: CountertopResult) => Finding | undefined;
+  /** A recorded architect result that needs a decision: the usual Decide dialog. */
+  onDecideArchitect?: (row: CountertopResult) => void;
+  /** A pairing to confirm or make: the queue, at this row's "Matches the architect?" item. */
+  onPairArchitect?: (row: CountertopResult) => void;
 }
 
 /**
@@ -114,7 +123,7 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                     tabIndex={0}
                     aria-expanded={open}
                     onKeyDown={(e) => onRowKey(e, row)}
-                    className={cn('outline-none focus-visible:bg-accent/70', row.needs_decision && 'bg-outcome-review-bg/40')}
+                    className={cn('outline-none focus-visible:bg-accent/70', rowNeedsYou(row) && 'bg-outcome-review-bg/40', architectState(row.architect ?? null) !== 'none' && 'border-b-0')}
                   >
                     <TableCell className="pr-0">
                       <Button variant="ghost" size="icon-xs" aria-label={open ? 'Hide details' : 'Show details'} aria-expanded={open} onClick={() => toggle(row.row_id)}>
@@ -136,6 +145,7 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                     <TableCell><DecidedBy row={row} /></TableCell>
                     <TableCell className="text-right"><Actions row={row} actions={actions} /></TableCell>
                   </TableRow>
+                  <ArchitectRow row={row} actions={actions} />
                   {open && (
                     <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={10} className="bg-muted/30 whitespace-normal">
@@ -155,7 +165,7 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
         {ordered.map((row) => {
           const open = expanded.has(row.row_id);
           return (
-            <li key={row.row_id} className={cn('rounded-xl border bg-card p-3', row.needs_decision && 'border-outcome-review-fg/40')}>
+            <li key={row.row_id} className={cn('rounded-xl border bg-card p-3', rowNeedsYou(row) && 'border-outcome-review-fg/40')}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate font-medium">{row.label}</p>
@@ -176,6 +186,8 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                 <Actions row={row} actions={actions} />
               </div>
               {row.hold && <div className="mt-2"><HoldChip hold={row.hold} /></div>}
+              <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp />
+              <ArchitectAction row={row} actions={actions} />
               <button type="button" className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={open} onClick={() => toggle(row.row_id)}>
                 {open ? 'Hide pieces' : 'Show pieces'}
               </button>
@@ -337,6 +349,103 @@ function RowDetails({ row }: { row: CountertopResult }) {
       </div>
       {row.hold && <p className="text-xs text-muted-foreground"><HoldChip hold={row.hold} /> <span className="ml-1">{row.hold.reason}</span></p>}
       <CountertopStrip row={row} />
+      {row.architect && row.architect.compared.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium">Matches the architect</p>
+          <ArchitectPairs result={row.architect} />
+          {row.architect.reason && <p className="max-w-2xl text-xs text-muted-foreground">{row.architect.reason}</p>}
+        </div>
+      )}
+      {/* The whole "not compared" reason, which the table's one line cuts short. */}
+      {row.architect && architectState(row.architect) === 'not-compared' && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium">Matches the architect</p>
+          <p className="max-w-2xl"><ArchitectStatus result={row.architect} /></p>
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * The architect's line under the vendor's (#1085), in the same columns: what the architect's drawing
+ * says under "Printed", the difference under "Difference", the result under "Result". A row the
+ * architect's drawing has nothing comparable for gets one grey line with the reason.
+ */
+function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowActions }) {
+  const result = row.architect ?? null;
+  const state = architectState(result);
+  if (!result || state === 'none') return null;
+  const needsYou = result.needs_decision;
+  if (state === 'not-compared') {
+    return (
+      <TableRow data-architect-row={row.row_id} className={cn('text-xs hover:bg-transparent', rowNeedsYou(row) && 'bg-outcome-review-bg/40')}>
+        <TableCell colSpan={2} className="py-1.5" />
+        {/* One line: the same reason often repeats on every row; the whole of it is in the title. */}
+        <TableCell colSpan={8} className="max-w-0 py-1.5">
+          <div className="truncate" title={result.not_compared_reason ?? undefined}>
+            <span className="mr-2 font-medium text-muted-foreground">Architect</span>
+            <ArchitectStatus result={result} />
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  }
+  const pair = headlinePair(result);
+  const pairedBy = pairedByWords(result);
+  const finding = actions.architectFinding?.(row);
+  return (
+    <TableRow data-architect-row={row.row_id} className={cn('text-xs hover:bg-transparent', rowNeedsYou(row) && 'bg-outcome-review-bg/40')}>
+      <TableCell colSpan={2} className="py-1.5" />
+      <TableCell className="max-w-40 py-1.5">
+        <div className="flex flex-col">
+          <span className="font-medium text-muted-foreground">Architect</span>
+          {pairedBy && <span className="truncate text-muted-foreground" title={pairedBy}>{pairedBy}</span>}
+          {result.compared.length > 1 && <span className="text-muted-foreground">{result.compared.length} compared: see details</span>}
+        </div>
+      </TableCell>
+      <TableCell className="py-1.5 whitespace-normal"><ArchitectStatus result={result} /></TableCell>
+      <TableCell className="py-1.5 text-right">
+        <span className="sr-only">Architect&apos;s drawing says </span>
+        {/* A piece's width is not the overall: said so, beside the number. */}
+        {pair?.kind === 'piece' && <span className="text-muted-foreground">{pairLabel(pair)}: </span>}
+        <span className="num">{pair?.architect_display ?? '—'}</span>
+      </TableCell>
+      <TableCell className="num py-1.5 text-right text-muted-foreground">—</TableCell>
+      <TableCell className="py-1.5 text-right">{pair ? <ArchitectDelta pair={pair} neutral={awaitsPairing(result)} /> : '—'}</TableCell>
+      <TableCell className="py-1.5" />
+      <TableCell className="py-1.5">
+        {needsYou ? (
+          <span className="text-muted-foreground">Pending</span>
+        ) : finding?.reviewer_action ? (
+          <span>{decisionWords(finding.reviewer_action, result.outcome ?? null)}{finding.reviewed_by ? <span className="text-muted-foreground"> · {finding.reviewed_by}</span> : null}</span>
+        ) : result.outcome === 'PASS' || result.outcome === 'FAIL' ? (
+          <span className="text-muted-foreground">Automatic</span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </TableCell>
+      <TableCell className="py-1.5 text-right"><ArchitectAction row={row} actions={actions} /></TableCell>
+    </TableRow>
+  );
+}
+
+/** The one action an architect line offers, when it needs the reviewer. */
+function ArchitectAction({ row, actions }: { row: CountertopResult; actions: RowActions }) {
+  const result = row.architect ?? null;
+  const state = architectState(result);
+  if (!result?.needs_decision) return null;
+  if ((state === 'confirm' || state === 'unpaired') && actions.onPairArchitect) {
+    return (
+      <Button size="sm" variant="outline" className="ml-1" onClick={() => actions.onPairArchitect?.(row)}>
+        {state === 'confirm' ? 'Confirm the pairing…' : 'Pair it…'}
+      </Button>
+    );
+  }
+  if (state === 'compared' && actions.onDecideArchitect && actions.architectFinding?.(row)) {
+    return (
+      <Button size="sm" className="ml-1" onClick={() => actions.onDecideArchitect?.(row)}>Decide</Button>
+    );
+  }
+  return null;
 }

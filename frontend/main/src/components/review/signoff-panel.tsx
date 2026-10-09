@@ -19,9 +19,11 @@ export interface SignOffScope {
   countertops: SignOffSummary | null;
   /** True when the countertop results could not be loaded (the split is then unavailable). */
   countertopsFailed: boolean;
+  /** The countertops' "matches the architect" results (#1085); null until countertops load. */
+  architect?: number | null;
   /**
-   * Recorded results that are not a countertop row's own, the same set the Results page lists under
-   * "Other checks" (package-level checks, and the architect comparison); null until countertops load.
+   * Recorded results that are not a countertop's own, the same set the Results page lists under
+   * "Other checks" (package-level checks); null until countertops load.
    */
   otherChecks: number | null;
   /** Every recorded result of the revision: the server approves them all. */
@@ -124,6 +126,12 @@ export function SignOffPanel({
         <dd data-part="countertops">
           {scope.countertops ? <CountertopLine summary={scope.countertops} /> : scope.countertopsFailed ? 'Not available: the countertop results did not load.' : 'Loading…'}
         </dd>
+        {scope.architect !== undefined && scope.architect !== null && scope.architect > 0 && (
+          <>
+            <dt className="text-muted-foreground">Matches the architect</dt>
+            <dd data-part="architect-checks"><span className="num">{scope.architect}</span> {results(scope.architect)}</dd>
+          </>
+        )}
         <dt className="text-muted-foreground">Other checks</dt>
         <dd data-part="other-checks">
           {scope.otherChecks !== null

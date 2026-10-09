@@ -945,6 +945,32 @@ export function listSlotReaderRows(projectId: string, packageId: string) {
   );
 }
 
+/** The vendor-vs-architect check on one countertop row (#1054): what was compared, and how it was paired. */
+export type ArchitectResult = components['schemas']['ArchitectResultOut'];
+export type ArchitectCompared = components['schemas']['ArchitectComparedOut'];
+/** One row's architect pairing (#1053): the current record, the one that counts, and every offered span. */
+export type ArchitectPairing = components['schemas']['ArchitectPairingOut'];
+export type ArchitectSpan = ArchitectPairing['spans'][number];
+export type ArchitectPairIn = components['schemas']['ArchitectPairIn'];
+
+export function getArchitectPairing(projectId: string, packageId: string, rowId: string) {
+  return request<ArchitectPairing>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-pairing`);
+}
+
+/**
+ * Record a reviewer's pairing for one row, or `pairs: []` for "nothing on the architect's drawing is
+ * comparable". Refusals come back as 422 with the reason; 409 means someone just changed it (reload).
+ * The result counts only after the checks run again.
+ */
+export function saveArchitectPairing(
+  projectId: string,
+  packageId: string,
+  rowId: string,
+  body: { pairs: ArchitectPairIn[]; note: string | null },
+) {
+  return send<ArchitectPairing>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-pairing`, body);
+}
+
 export function reviewSlotReaderRow(
   projectId: string,
   packageId: string,

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { ImageOff, RefreshCw } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { boundsOf, svgPoints, zoomAt, type Reading, type Size, type Tone, type View, type ViewerTarget } from '@/lib/drawing-viewer';
+import { boundsOf, svgPoints, zoomAt, type Mark, type Reading, type Size, type Tone, type View, type ViewerTarget } from '@/lib/drawing-viewer';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -45,6 +45,8 @@ export function PageCanvas({
   onRetry,
   target,
   others,
+  marks = [],
+  activeMark = null,
   readings,
   activeReading,
   natural,
@@ -59,6 +61,10 @@ export function PageCanvas({
   onRetry: () => void;
   target: ViewerTarget;
   others: ViewerTarget[];
+  /** Grey marks on this page (the architect's dimensions, #1085), drawn from stored locations only. */
+  marks?: Mark[];
+  /** The mark to stand out (a span the reviewer is looking at in the pairing picker). */
+  activeMark?: string | null;
   readings: Reading[];
   activeReading: string | null;
   natural: Size | null;
@@ -235,6 +241,21 @@ export function PageCanvas({
                   )}
                 >
                   <title>{`${reading.label}: ${reading.value}`}</title>
+                </polygon>
+              ) : null,
+            )}
+            {marks.map((mark) =>
+              mark.outline ? (
+                <polygon
+                  key={mark.key}
+                  data-mark={mark.key}
+                  points={svgPoints(mark.outline)}
+                  vectorEffect="non-scaling-stroke"
+                  strokeWidth={activeMark === mark.key ? 2.5 : 1.5}
+                  // Grey, not an outcome colour: the architect's dimension is a reference, not a result.
+                  className={activeMark === mark.key ? 'fill-neutral-900/15 stroke-neutral-900' : 'fill-neutral-500/10 stroke-neutral-500'}
+                >
+                  <title>{mark.label}</title>
                 </polygon>
               ) : null,
             )}

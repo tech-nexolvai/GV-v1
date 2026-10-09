@@ -4,6 +4,7 @@ import { Crosshair, Maximize, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { getFindingChain, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { cn } from '@/lib/utils';
 import {
   boundsOf,
   fitView,
@@ -14,6 +15,7 @@ import {
   samePage,
   scaleLimits,
   zoomAt,
+  type Mark,
   type Reading,
   type Size,
   type StripPage,
@@ -90,6 +92,8 @@ export function DrawingViewer({
   packageId,
   onTargetChange,
   embedded = false,
+  extraMarks = [],
+  activeMark = null,
 }: {
   target: ViewerTarget;
   rows: readonly CountertopResult[];
@@ -102,6 +106,10 @@ export function DrawingViewer({
    * evidence panel or arrow-key paging, and other countertops are not offered.
    */
   embedded?: boolean;
+  /** More grey marks beside the target's own (the spans offered for pairing, #1085). */
+  extraMarks?: readonly Mark[];
+  /** The mark to stand out. */
+  activeMark?: string | null;
 }) {
   const cache = useBlobCache();
   const pictureKey = target.page !== null ? pageKey(projectId, packageId, target.page, target.documentVersionId ?? '') : null;
@@ -132,6 +140,10 @@ export function DrawingViewer({
   const chainData = chain.status === 'ready' ? chain.data : null;
   const readings = chainData ? readingsOf(chainData, target.row) : [];
   const onThisPage = readings.filter((r) => r.page === target.page && (target.documentVersionId === null || r.documentVersionId === target.documentVersionId));
+
+  // Grey marks (#1085) are drawn only on the page they were stored on, and only from a stored outline.
+  const marks = [...target.marks, ...extraMarks];
+  const marksHere = marks.filter((mark) => mark.outline !== null && samePage(mark, target));
 
   const pages = pagesOf(rows, target);
   const currentPage = target.page !== null && target.documentVersionId !== null ? `${target.documentVersionId}:${target.page}` : null;
@@ -276,6 +288,8 @@ export function DrawingViewer({
               onRetry={retryPicture}
               target={target}
               others={embedded ? [] : others}
+              marks={marksHere}
+              activeMark={activeMark}
               readings={onThisPage}
               activeReading={activeReading}
               natural={natural}
@@ -316,6 +330,12 @@ export function DrawingViewer({
                 <NoCrops {...noCropsReason(chainData, target.row ?? (target.findingId ? null : { hold: null, finding_id: null }))} />
               )}
             </section>
+            {target.marks.length > 0 && (
+              <section aria-labelledby="drawing-architect" className="flex flex-col gap-2">
+                <h3 id="drawing-architect" className="text-sm font-medium">Matches the architect</h3>
+                <MarkNotes marks={target.marks} at={target} />
+              </section>
+            )}
             {others.length > 0 && (
               <section aria-labelledby="drawing-others" className="flex flex-col gap-2">
                 <h3 id="drawing-others" className="text-sm font-medium">
@@ -343,5 +363,33 @@ export function DrawingViewer({
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Where each grey mark is (#1085): outlined on this page, on another page, or not outlined because
+ * its position was not stored. Said in words, so a missing outline is never mistaken for a match.
+ */
+export function MarkNotes({ marks, at }: { marks: readonly Mark[]; at: Pick<ViewerTarget, 'page' | 'documentVersionId'> }) {
+  return (
+    <ul className="flex flex-col gap-1 text-xs" data-slot="mark-notes">
+      {marks.map((mark) => (
+        <li key={mark.key} className="flex items-start gap-1.5">
+          <span aria-hidden="true" className={cn('mt-1 inline-block size-2.5 shrink-0 rounded-sm border', mark.outline ? 'border-neutral-500 bg-neutral-500/20' : 'border-dashed border-muted-foreground')} />
+          <span>
+            {mark.label}:{' '}
+            <span className="text-muted-foreground">
+              {mark.outline === null
+                ? 'not outlined (its position on the drawing is not stored)'
+                : samePage(mark, at)
+                  ? 'outlined in grey'
+                  : mark.page === at.page
+                    ? `on page ${mark.page} of the other drawing`
+                    : `on page ${mark.page}, not this page`}
+            </span>
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

@@ -97,6 +97,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SAMPLE_BY_PAGE, SAMPLE_FINDINGS, SAMPLE_TOTALS, type SampleFinding } from './sample-data';
+import type { ArchitectResult } from '@/api/client';
+import { ArchitectLine, ArchitectPairs } from '@/components/results/architect-line';
 
 const ALL_OUTCOMES: Outcome[] = ['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE'];
 
@@ -352,6 +354,60 @@ const FINDING_COLUMNS: ColumnDef<SampleFinding>[] = [
 
 function outcomeRank(outcome: Outcome): number {
   return ['FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE', 'PASS'].indexOf(outcome);
+}
+
+/* ── Matches the architect (#1085) ─────────────────────────────────────────── */
+
+const sampleValue = (numerator: string, display: string) => ({ numerator, denominator: '1', display });
+function sampleArchitect(extra: Partial<ArchitectResult>): ArchitectResult {
+  return {
+    outcome: 'PASS', finding_id: 'sample', reason: null, needs_decision: false, not_compared_reason: null,
+    pairing_source: 'code+ais', pairing_judgments: 'code and both AIs',
+    compared: [{
+      kind: 'overall', vendor_piece: null, vendor: sampleValue('84', '84"'), architect: sampleValue('84', '84"'), delta: sampleValue('0', '0"'),
+      vendor_display: '84"', architect_display: '84"', delta_display: '0"', outcome: 'PASS', architect_location: null,
+    }],
+    ...extra,
+  };
+}
+const FAIL_PAIRS: ArchitectResult['compared'] = [
+  { kind: 'overall', vendor_piece: null, vendor: sampleValue('88', '88"'), architect: sampleValue('84', '84"'), delta: sampleValue('4', '+4"'), vendor_display: '88"', architect_display: '84"', delta_display: '+4"', outcome: 'FAIL', architect_location: null },
+  { kind: 'piece', vendor_piece: 2, vendor: sampleValue('30', '30"'), architect: sampleValue('30', '30"'), delta: sampleValue('0', '0"'), vendor_display: '30"', architect_display: '30"', delta_display: '0"', outcome: 'PASS', architect_location: null },
+];
+// As the API sends a one-judgment result: the pair waits too, so its numbers carry no verdict.
+const WAITING_PAIRS: ArchitectResult['compared'] = [
+  { kind: 'overall', vendor_piece: null, vendor: sampleValue('88', '88"'), architect: sampleValue('84', '84"'), delta: sampleValue('4', '+4"'), vendor_display: '88"', architect_display: '84"', delta_display: '+4"', outcome: 'REVIEW_REQUIRED', architect_location: null },
+];
+const ARCHITECT_SAMPLES: { name: string; result: ArchitectResult }[] = [
+  { name: 'Not compared', result: sampleArchitect({ outcome: null, finding_id: null, compared: [], pairing_source: null, pairing_judgments: null, not_compared_reason: 'the architect prints only sink centre lines here' }) },
+  { name: 'PASS, two judgments', result: sampleArchitect({}) },
+  { name: 'FAIL, two judgments', result: sampleArchitect({ outcome: 'FAIL', compared: FAIL_PAIRS }) },
+  { name: 'One judgment: code only', result: sampleArchitect({ outcome: 'REVIEW_REQUIRED', needs_decision: true, pairing_source: 'code', pairing_judgments: 'code only', compared: WAITING_PAIRS }) },
+  { name: 'One judgment: both AIs only', result: sampleArchitect({ outcome: 'REVIEW_REQUIRED', needs_decision: true, pairing_source: 'both-ais', pairing_judgments: 'both AIs only', compared: WAITING_PAIRS }) },
+  { name: 'A reviewer paired it', result: sampleArchitect({ pairing_source: 'reviewer', pairing_judgments: 'reviewer' }) },
+];
+
+export function ArchitectSection() {
+  return (
+    <Section
+      id="architect"
+      title="Matches the architect"
+      lead="The architect line under a countertop, in each state. Not compared is grey words, never a chip. One judgment asks the reviewer to confirm the pairing."
+    >
+      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+        {ARCHITECT_SAMPLES.map((sample) => (
+          <div key={sample.name} className="flex flex-col gap-1 border-b pb-3 last:border-b-0 last:pb-0">
+            <span className="text-xs text-muted-foreground">{sample.name}</span>
+            <ArchitectLine result={sample.result} />
+          </div>
+        ))}
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted-foreground">Every compared pair (row details)</span>
+          <ArchitectPairs result={sampleArchitect({ outcome: 'FAIL', compared: FAIL_PAIRS })} />
+        </div>
+      </div>
+    </Section>
+  );
 }
 
 export function DataSection() {

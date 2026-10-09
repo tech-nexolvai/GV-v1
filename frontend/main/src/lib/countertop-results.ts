@@ -15,17 +15,37 @@ import type { Finding } from '@/data/types';
 export type Bucket = 'needs-you' | 'fail' | 'pass' | 'not-checkable';
 export type Filter = 'all' | 'needs-you' | 'fail' | 'pass' | 'held' | 'automatic';
 
-export function bucketOf(row: Pick<CountertopResult, 'needs_decision' | 'outcome'>): Bucket {
-  if (row.needs_decision) return 'needs-you';
-  if (row.outcome === 'PASS') return 'pass';
-  if (row.outcome === 'FAIL') return 'fail';
+type RowFacts = Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect'>;
+
+/**
+ * A countertop has two checks (#1085): its own width, and whether it matches the architect. It needs
+ * the reviewer when either does; it is FAIL when either recorded a FAIL; it is PASS only when every
+ * recorded result passed (an architect line that compared nothing adds no result).
+ */
+export function rowNeedsYou(row: RowFacts): boolean {
+  return row.needs_decision || Boolean(row.architect?.needs_decision);
+}
+
+export function rowHasFail(row: RowFacts): boolean {
+  return row.outcome === 'FAIL' || row.architect?.outcome === 'FAIL';
+}
+
+export function rowAllPass(row: RowFacts): boolean {
+  const architect = row.architect?.outcome;
+  return row.outcome === 'PASS' && (architect === null || architect === undefined || architect === 'PASS');
+}
+
+export function bucketOf(row: RowFacts): Bucket {
+  if (rowNeedsYou(row)) return 'needs-you';
+  if (rowHasFail(row)) return 'fail';
+  if (rowAllPass(row)) return 'pass';
   return 'not-checkable';
 }
 
 const BUCKET_ORDER: Record<Bucket, number> = { 'needs-you': 0, fail: 1, pass: 2, 'not-checkable': 3 };
 
 /** Needs you → FAIL → PASS → not checkable, then page, then label. Returns a new array. */
-export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'outcome' | 'page_number' | 'label'>>(rows: readonly T[]): T[] {
+export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect' | 'page_number' | 'label'>>(rows: readonly T[]): T[] {
   return [...rows].sort(
     (a, b) =>
       BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] ||
@@ -40,10 +60,10 @@ export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'ou
  * The donut and the FAIL / PASS filters use this, so "FAIL" means the same everywhere. `bucketOf`
  * (needs you first) still orders the table and the queue.
  */
-export function resultBucket(row: Pick<CountertopResult, 'needs_decision' | 'outcome'>): Bucket {
-  if (row.outcome === 'FAIL') return 'fail';
-  if (row.outcome === 'PASS') return 'pass';
-  return row.needs_decision ? 'needs-you' : 'not-checkable';
+export function resultBucket(row: RowFacts): Bucket {
+  if (rowHasFail(row)) return 'fail';
+  if (rowAllPass(row)) return 'pass';
+  return rowNeedsYou(row) ? 'needs-you' : 'not-checkable';
 }
 
 /** The donut's words: its undecided slice holds only rows without a PASS or FAIL. */
@@ -58,7 +78,7 @@ export function matchesFilter(row: CountertopResult, filter: Filter): boolean {
   if (filter === 'all') return true;
   if (filter === 'held') return row.hold !== null;
   if (filter === 'automatic') return row.outcome === 'PASS' || row.outcome === 'FAIL';
-  if (filter === 'needs-you') return row.needs_decision;
+  if (filter === 'needs-you') return rowNeedsYou(row);
   return resultBucket(row) === filter;
 }
 
@@ -76,9 +96,9 @@ export function kpis(rows: readonly CountertopResult[]): Kpis {
   return {
     countertops: rows.length,
     automatic: rows.filter((r) => r.outcome === 'PASS' || r.outcome === 'FAIL').length,
-    needsYou: rows.filter((r) => r.needs_decision).length,
-    pass: rows.filter((r) => r.outcome === 'PASS').length,
-    fail: rows.filter((r) => r.outcome === 'FAIL').length,
+    needsYou: rows.filter(rowNeedsYou).length,
+    pass: rows.filter(rowAllPass).length,
+    fail: rows.filter(rowHasFail).length,
     held: rows.filter((r) => r.hold !== null).length,
   };
 }
@@ -92,7 +112,7 @@ export function bucketCounts(rows: readonly CountertopResult[]): Record<Bucket, 
 
 /** Recorded FAILs the reviewer still has to decide: shown beside the donut's FAIL count. */
 export function failsNeedingYou(rows: readonly CountertopResult[]): number {
-  return rows.filter((row) => row.outcome === 'FAIL' && row.needs_decision).length;
+  return rows.filter((row) => rowHasFail(row) && rowNeedsYou(row)).length;
 }
 
 /** What a sign-off covers, countertop by countertop (#1064). The five parts add up to the rows. */
@@ -126,7 +146,7 @@ export function signOffSummary(rows: readonly CountertopResult[]): SignOffSummar
 
 /** The filter a reviewer lands on: what needs them, when anything does. */
 export function defaultFilter(rows: readonly CountertopResult[]): Filter {
-  return rows.some((r) => r.needs_decision) ? 'needs-you' : 'all';
+  return rows.some(rowNeedsYou) ? 'needs-you' : 'all';
 }
 
 /** The sign of an exact value, read from its numerator (never computed). */

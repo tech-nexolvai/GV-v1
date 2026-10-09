@@ -9,10 +9,18 @@
 import type { CountertopResult, SlotReaderRow } from '@/api/client';
 import type { Finding } from '@/data/types';
 import { sortRows } from '@/lib/countertop-results';
+import { architectFindingIds } from '@/lib/architect';
 
 export type QueueItem =
   | { kind: 'countertop'; key: string; rowId: string; findingId: string | null; page: number; label: string }
+  /** "Matches the architect?" (#1085): a countertop's architect finding that needs the reviewer. */
+  | { kind: 'architect'; key: string; rowId: string; findingId: string; page: number; label: string }
   | { kind: 'check'; key: string; findingId: string; page: number | null; label: string };
+
+/** The queue key of a row's "Matches the architect?" item, for opening the queue at it. */
+export function architectItemKey(rowId: string): string {
+  return `architect:${rowId}`;
+}
 
 /**
  * Countertops first, in the results table's order (`sortRows`: they all need you, so by page, then
@@ -32,7 +40,20 @@ export function buildQueue(
     page: row.page_number,
     label: row.label,
   }));
-  const countertopFindings = new Set(rows.map((row) => row.finding_id).filter((id): id is string => id !== null));
+  // A countertop's architect finding is its own item, right after the countertops (#1085). It names
+  // its row too, so without this it would fall between the two lists whenever the width is settled.
+  const architect: QueueItem[] = sortRows(rows.filter((row) => row.architect?.needs_decision && row.architect.finding_id)).map((row) => ({
+    kind: 'architect',
+    key: architectItemKey(row.row_id),
+    rowId: row.row_id,
+    findingId: row.architect!.finding_id!,
+    page: row.page_number,
+    label: row.label,
+  }));
+  const countertopFindings = new Set([
+    ...rows.map((row) => row.finding_id).filter((id): id is string => id !== null),
+    ...architectFindingIds(rows),
+  ]);
   const rowIds = new Set(rows.map((row) => row.row_id));
   // A countertop result names its row (`scope_row_candidate_id`). One whose row is on screen belongs
   // to that row's item, even before the rows reload after a run; anything else is listed as a check,
@@ -52,7 +73,7 @@ export function buildQueue(
       label: finding.scope_label ?? finding.name,
     }))
     .sort((a, b) => (a.page ?? Infinity) - (b.page ?? Infinity) || a.label.localeCompare(b.label));
-  return [...countertops, ...checks];
+  return [...countertops, ...architect, ...checks];
 }
 
 /**
@@ -77,6 +98,11 @@ export interface LiveData {
    * keeps such a finding blocking until a new run, whatever was recorded after the correction.
    */
   corrected?: ReadonlySet<string>;
+  /**
+   * Rows whose architect pairing a reviewer recorded after the row's architect finding (#1085):
+   * the server's record times, plus pairings saved in this sitting. Only a new run uses them.
+   */
+  pairingsSaved?: ReadonlySet<string>;
 }
 
 /**
@@ -107,6 +133,14 @@ export function itemStatus(item: QueueItem, live: LiveData): ItemStatus {
     if (live.wallsSaved.has(item.rowId) || inputNewerThanResult(row, finding, live.slots?.get(item.rowId))) return 'waiting-for-run';
     return 'open';
   }
+  if (item.kind === 'architect') {
+    const row = live.rows.get(item.rowId);
+    const findingId = row?.architect?.finding_id ?? item.findingId;
+    if (live.corrected?.has(findingId) || live.findings.get(findingId)?.reviewer_action === 'correct') return 'waiting-for-run';
+    const blocking = live.blocking !== null ? live.blocking.has(findingId) : (row?.architect?.needs_decision ?? true);
+    if (!blocking) return 'decided';
+    return live.pairingsSaved?.has(item.rowId) ? 'waiting-for-run' : 'open';
+  }
   if (live.corrected?.has(item.findingId) || live.findings.get(item.findingId)?.reviewer_action === 'correct') return 'waiting-for-run';
   if (live.blocking === null) return 'open';
   return live.blocking.has(item.findingId) ? 'open' : 'decided';
@@ -114,7 +148,9 @@ export function itemStatus(item: QueueItem, live: LiveData): ItemStatus {
 
 /** The finding an item is about right now (a countertop's comes from its current row). */
 export function findingIdOf(item: QueueItem, live: LiveData): string | null {
-  return item.kind === 'countertop' ? live.rows.get(item.rowId)?.finding_id ?? item.findingId : item.findingId;
+  if (item.kind === 'countertop') return live.rows.get(item.rowId)?.finding_id ?? item.findingId;
+  if (item.kind === 'architect') return live.rows.get(item.rowId)?.architect?.finding_id ?? item.findingId;
+  return item.findingId;
 }
 
 /**
