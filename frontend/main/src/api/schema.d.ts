@@ -4470,11 +4470,8 @@ export interface components {
             actor: string;
             /** Carried From Finding Id */
             carried_from_finding_id?: string | null;
-            /**
-             * Carried Over
-             * @default false
-             */
-            carried_over: boolean;
+            /** Carried Over */
+            carried_over?: boolean;
             /**
              * Created At
              * Format: date-time
@@ -4609,11 +4606,8 @@ export interface components {
             at: string;
             /** Carried From Finding Id */
             carried_from_finding_id?: string | null;
-            /**
-             * Carried Over
-             * @default false
-             */
-            carried_over: boolean;
+            /** Carried Over */
+            carried_over?: boolean;
             /** Note */
             note?: string | null;
         };
@@ -4671,11 +4665,8 @@ export interface components {
             actor: string;
             /** Carried From Finding Id */
             carried_from_finding_id?: string | null;
-            /**
-             * Carried Over
-             * @default false
-             */
-            carried_over: boolean;
+            /** Carried Over */
+            carried_over?: boolean;
             /** Note */
             note: string | null;
             /**

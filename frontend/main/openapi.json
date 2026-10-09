@@ -5660,7 +5660,6 @@
             "title": "Carried From Finding Id"
           },
           "carried_over": {
-            "default": false,
             "title": "Carried Over",
             "type": "boolean"
           },
@@ -5874,7 +5873,6 @@
             "title": "Carried From Finding Id"
           },
           "carried_over": {
-            "default": false,
             "title": "Carried Over",
             "type": "boolean"
           },
@@ -6031,7 +6029,6 @@
             "title": "Carried From Finding Id"
           },
           "carried_over": {
-            "default": false,
             "title": "Carried Over",
             "type": "boolean"
           },
