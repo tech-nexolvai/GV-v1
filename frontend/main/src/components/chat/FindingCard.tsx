@@ -409,7 +409,7 @@ export function FindingCard({
                 <div className="finding-card__actioned-label">
                   {!unresolved && <CheckCircle size={11} />}
                   <div><strong>{unresolved ? `Recorded action: ${finding.reviewer_action} — review not complete` : `Reviewer decision: ${needsNote && finding.reviewer_action === 'confirm' ? 'Checked: OK' : needsNote && finding.reviewer_action === 'dismiss' ? 'Not checkable' : finding.reviewer_action}`}</strong>
-                    <p>{finding.reviewed_by ?? 'Reviewer recorded'}{finding.reviewed_at ? ` · ${new Date(finding.reviewed_at).toLocaleString()}` : ''}</p>
+                    <p>{finding.reviewed_by ?? 'Reviewer recorded'}{finding.reviewed_at ? ` · ${new Date(finding.reviewed_at).toLocaleString()}` : ''}{finding.reviewer_carried_over ? ' · carried over from the previous check run' : ''}</p>
                     {finding.reviewer_note && <p>{finding.reviewer_note}</p>}
                     <small>Recorded check unchanged: {finding.outcome.replaceAll('_', ' ')}</small>
                   </div>

@@ -92,8 +92,10 @@ class FakeReaders:
             "contains_tall_appliance": False,
             "why": "no tall unit is drawn in the marked span",
         },
+        flags: Callable[[str, bytes], Mapping[str, object]] = lambda _model, _png: {},
     ) -> None:
         self.read = read
+        self.flags = flags
         self.walls = walls
         self.row = row
         self.counter_break = counter_break
@@ -119,8 +121,16 @@ class FakeReaders:
         if is_row_question:
             with self.lock:
                 self.row_requests.append((model, pictures[0]))
+            answer = dict(self.row(model))
+            if isinstance(answer.get("row"), int):
+                # An answer written in the older shape gets the v3 fields its number implies
+                # (#1108): a numbered box is a "row"; 0 is "no countertop on the sheet".
+                answer = {
+                    "kind": "row" if answer["row"] > 0 else "no_countertop",
+                    "also": [],
+                } | answer
             return {
-                "output": {"message": {"content": [{"text": json.dumps(dict(self.row(model)))}]}},
+                "output": {"message": {"content": [{"text": json.dumps(answer)}]}},
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
         is_counter_break_question = any(
@@ -181,8 +191,8 @@ class FakeReaders:
             "combined": False,
             "readable": True,
             "no_dimension": not text,
-            "belongs": bool(text),
-        }
+            "belongs": "yes" if text else "no",
+        } | dict(self.flags(model, png))
         return {
             "output": {"message": {"content": [{"text": json.dumps(payload)}]}},
             "usage": {"inputTokens": 10, "outputTokens": 5},
@@ -384,7 +394,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     asked = sorted(model for model, _image in readers.row_requests)
     assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
     assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -459,7 +469,7 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
 
     owner_count = len(result.plan.slots) + (result.plan.overall is not None)
-    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v3"]
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v4"]
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
@@ -533,7 +543,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v2")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
@@ -957,7 +967,7 @@ def test_claude_line_question_holds_a_line_drawn_tall_appliance() -> None:
     assert result.mapping.proposals == ()
     assert {model for model, _row, _view in readers.counter_break_requests} == {OPUS, SONNET}
     assert len(readers.counter_break_requests) == 2
-    assert sum(attempt.prompt_id == "claude-counter-break-v2" for attempt in attempts) == 2
+    assert sum(attempt.prompt_id == "claude-counter-break-v3" for attempt in attempts) == 2
 
 
 def test_claude_line_question_two_no_answers_leave_the_row_unchanged() -> None:
@@ -988,6 +998,33 @@ def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
 
     assert result.row_hold is not None and result.row_hold.code == "counter-break"
     assert result.mapping.proposals == ()
+
+
+@pytest.mark.parametrize(
+    "drawing", [sheets.text_labels(PIECES, OVERALL), sheets.glyph_labels()], ids=["text", "glyph"]
+)
+def test_labels_on_a_page_held_before_reading_carry_the_hold_not_one_reader(
+    drawing: bytes,
+) -> None:
+    """#1114: a vendor counter-break word holds the row before any label is read; its labels say
+    the row waits, never "only one reader", and they stay held."""
+    page = slot_page(sheets.sheet(drawing + sheets.text(230, sheets.CHAIN_Y - 40, "OVEN")))
+    readers = FakeReaders(lambda _model, _png: '99"')
+
+    result = read(page, readers, claude_row_reader=True)
+
+    assert readers.requests == [], "a held page's labels cost no call"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.mapping.proposals == ()
+    owners = [*result.slots, *((result.overall,) if result.overall is not None else ())]
+    labelled = [owner for owner in owners if owner.labels]
+    assert labelled
+    for owner in labelled:
+        assert owner.outcome.state is LabelState.REVIEW and owner.outcome.value is None
+        assert owner.outcome.reason_code == "not-asked"
+        assert owner.outcome.reason == (
+            f"the readers were not asked; this row waits: {result.row_hold.reason}"
+        )
 
 
 def test_reader_only_counter_break_word_does_not_count_as_vendor_ink() -> None:
@@ -1457,6 +1494,193 @@ def test_an_unselected_row_record_stores_each_readers_pick(
     assert unchosen.kind == kind
 
 
+def _two_row_page(page_id: Any = None, version_id: Any = None) -> SlotPage:
+    """The named sheet with two numbered candidate rows (the second a copy of the first)."""
+    page = slot_page(named_sheet())
+    first = page.rows.candidates.rows.candidates[0]
+    page = replace(
+        page,
+        rows=replace(
+            page.rows,
+            candidates=replace(
+                page.rows.candidates,
+                rows=PageRows(candidates=(first, replace(first, rank=2)), rejected=()),
+            ),
+        ),
+    )
+    if page_id is None:
+        return page
+    return replace(page, page_id=page_id, document_version_id=version_id)
+
+
+def _read_and_persist_rows(
+    session: Any, answers: Mapping[str, Mapping[str, object]]
+) -> tuple[Any, Any, PageSlotResult]:
+    """Read the two-row page with each reader's row answer, persist it; the revision and run."""
+    from workflow.slot_reader import persist_slot_readings
+
+    revision, version, page_row, run = _scaffold(session)
+    page = _two_row_page(page_row.id, version.id)
+    readers = FakeReaders(lambda _model, _png: '2"', row=lambda model: answers[model])
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    return revision, run, result
+
+
+def _v3(row: int, kind: str, *also: int) -> dict[str, object]:
+    return {"row": row, "kind": kind, "also": list(also), "why": f"synthetic: {kind}"}
+
+
+@pytest.mark.parametrize(
+    ("opus", "sonnet", "kind", "words"),
+    [
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "no_countertop"),
+            "none",
+            "synthetic: no_countertop",
+        ),
+        (
+            _v3(0, "not_among_boxes"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "found a countertop on this page that none of the numbered lines measures",
+        ),
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "unsure"),
+            "split",
+            "An AI was not sure which line on this page is the countertop line",
+        ),
+        (
+            _v3(0, "no_countertop"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "did not agree whether this page has a countertop",
+        ),
+        (
+            _v3(0, "unsure"),
+            _v3(0, "unsure"),
+            "split",
+            "An AI was not sure",
+        ),
+        (
+            _v3(1, "row"),
+            _v3(0, "not_among_boxes"),
+            "split",
+            "sonnet-5-5 picked a countertop that none of the numbered lines measures",
+        ),
+    ],
+)
+def test_each_kind_of_row_answer_is_stored_and_only_no_countertop_is_listed(
+    session: Any, opus: dict[str, object], sonnet: dict[str, object], kind: str, words: str
+) -> None:
+    """#1108: 0 used to mean both "no countertop" and "a countertop no box measures"; only the
+    first may skip the reviewer. Each reader's kind rides on the record as `row-kind:` flags."""
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+    from workflow.slot_row_scope import unchosen_row_pages
+
+    revision, run, result = _read_and_persist_rows(session, {OPUS: opus, SONNET: sonnet})
+    record = session.scalar(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-row-choice"]),
+        )
+    )
+
+    assert result.plan.row is None
+    assert record is not None
+    assert {flag for flag in record.ambiguity_flags if flag.startswith("row-kind:")} == {
+        f"row-kind:opus-5-5:{opus['kind']}",
+        f"row-kind:sonnet-5-5:{sonnet['kind']}",
+    }
+    (unchosen,) = unchosen_row_pages(session, revision.id)
+    assert unchosen.kind == kind
+    assert words in unchosen.reason
+    if kind == "split":
+        assert "nothing on it was read or checked" in unchosen.reason
+
+
+def test_a_row_named_by_both_readers_is_read_and_a_second_countertop_row_is_kept(
+    session: Any,
+) -> None:
+    """#1108: the agreed row is read as before; a second countertop's row one reader named is
+    stored on the read row as `row-also:` and reaches the row as not checked."""
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+    from workflow.slot_row_scope import slot_rows, unchosen_row_pages
+
+    revision, run, result = _read_and_persist_rows(
+        session, {OPUS: _v3(1, "row", 2), SONNET: _v3(1, "row")}
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"]),
+        )
+    ).all()
+
+    assert result.row_choice_number == 1 and result.plan.row is not None
+    assert result.row_choice_also == ((OPUS, 2),)
+    assert candidates
+    assert all("row-also:opus-5-5:2" in c.ambiguity_flags for c in candidates)
+    assert not any(
+        flag.startswith("row-also:sonnet") for c in candidates for flag in c.ambiguity_flags
+    )
+    (row,) = slot_rows(session, revision.id)
+    assert row.also == (("opus-5-5", 2),)
+    assert unchosen_row_pages(session, revision.id) == ()
+
+
+def test_readers_naming_the_same_box_with_kind_row_is_still_the_only_way_to_a_row() -> None:
+    """A "not among the boxes" or "unsure" answer can never make a row more likely to be used."""
+    agreed = _two_row_claude_read(lambda _model: _v3(2, "row"))
+    unsure = _two_row_claude_read(
+        lambda model: _v3(2, "row") if model == OPUS else _v3(0, "unsure")
+    )
+
+    assert agreed.row_choice_number == 2 and agreed.plan.row is not None
+    assert unsure.row_choice_number == 0 and unsure.plan.row is None
+    assert not unsure.mapping.proposals
+    assert unsure.row_choice_kinds == ((OPUS, "row"), (SONNET, "unsure"))
+
+
+def test_row_box_colours_are_never_the_reviewers_markup_colours() -> None:
+    """Box 1 was crimson while the row question says red numbers are the reviewer's (#1108). No
+    box may be red, yellow or blue (`extraction/ink.py`), and each carries a white number."""
+    import colorsys
+
+    from extraction.slot_reader.bedrock import ROW_BOX_COLOURS
+    from workflow.slot_reader import _ROW_COLOURS
+
+    assert _ROW_COLOURS == tuple(rgb for _name, rgb in ROW_BOX_COLOURS)
+    assert len(set(_ROW_COLOURS)) == 6
+    for colour in _ROW_COLOURS:
+        hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in colour))
+        degrees = hue * 360
+        assert saturation > 0.5, "not grey or black, the vendor's ink"
+        assert not (degrees < 20 or degrees > 340), f"{tuple(colour)} reads as red"
+        assert not 45 <= degrees <= 75, f"{tuple(colour)} reads as yellow"
+        assert not 200 <= degrees <= 255, f"{tuple(colour)} reads as blue"
+        assert value < 0.85, "dark enough for its white number"
+
+
 def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
     from sqlalchemy import select
 
@@ -1727,7 +1951,7 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     ).one()
     assert proposal.discriminator_name == "wall_config"
     assert proposal.proposed_value == "back_left_right"
-    assert proposal.prompt_id == "slot-walls-v1"
+    assert proposal.prompt_id == "slot-walls-v2"
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
@@ -1928,16 +2152,23 @@ def test_the_full_view_mark_stays_visible_after_the_picture_is_shrunk() -> None:
     pixels = view.load()
     assert pixels is not None
 
+    def magenta(x: int, y: int) -> bool:
+        r, g, b = pixels[x, y][:3]
+        return r >= 200 and g <= 60 and b >= 160
+
     def red(x: int, y: int) -> bool:
         r, g, b = pixels[x, y][:3]
         return r >= 200 and g <= 60 and b <= 60
 
-    marked = [(x, y) for y in range(view.height) for x in range(view.width) if red(x, y)]
-    assert marked, "the span is boxed in red"
+    marked = [(x, y) for y in range(view.height) for x in range(view.width) if magenta(x, y)]
+    assert marked, "the span is boxed in magenta, the colour the question names (#1110)"
+    assert not any(
+        red(x, y) for y in range(view.height) for x in range(view.width)
+    ), "never in the reviewer's red, which the readers are told to ignore"
     left = min(x for x, _ in marked)
     middle = (min(y for _, y in marked) + max(y for _, y in marked)) // 2
     thickness = 0
-    while left + thickness < view.width and red(left + thickness, middle):
+    while left + thickness < view.width and magenta(left + thickness, middle):
         thickness += 1
     shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
     assert thickness >= round(4 * page.rendered.dpi / 110 / shrink) - 1
@@ -2100,6 +2331,118 @@ def test_a_stone_ending_at_the_walls_is_not_held() -> None:
     assert result.mapping.proposals
 
 
+def _to_walls(_model: str) -> Mapping[str, object]:
+    return {"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "walls both ends"}
+
+
+def test_an_open_end_holds_nothing_and_changes_nothing_a_wall_end_would_not() -> None:
+    """#1111: `open_end` (an end with no wall at all) behaves like `to_walls` for the hold: no
+    new hold, and the walls, mapping and proposals are exactly what `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "open_end" if model == SONNET else "to_walls",
+            "why": "open floor beyond the right end",
+        }
+    )
+
+    assert result.row_hold is None and result.check_hold is None
+    assert result.no_stone_readers == ()
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome, "no new automation path"
+
+
+def test_a_reader_saying_no_stone_is_recorded_but_holds_and_clears_nothing() -> None:
+    """#1111: `no_stone` was ignored; it is now kept on the row (`no_stone_readers`) and adds no
+    hold and no automation: walls, mapping and proposals stay exactly as `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == SONNET else "to_walls",
+            "why": "no countertop line over the cabinets",
+        }
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    assert result.row_hold is None and result.check_hold is None
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome
+    assert baseline.no_stone_readers == ()
+
+
+def test_a_no_stone_answer_is_never_a_reason_to_lift_a_hold() -> None:
+    """A reader's `no_stone` next to the other's `short_of_ends` keeps the hold."""
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == OPUS else "short_of_ends",
+            "why": "synthetic",
+        }
+    )
+
+    assert result.check_hold is not None and result.check_hold.code == "stone-short-of-ends"
+    assert result.no_stone_readers == (OPUS,)
+
+
+def test_the_wall_and_counter_break_marks_are_magenta_never_a_reviewer_red() -> None:
+    """#1111: the prompts name our marks magenta and call red or yellow reviewer markup; the
+    pictures for these two questions carry magenta marks and no red."""
+    from evidence.crop import decode_rgb_png
+    from extraction.slot_reader.bedrock import COUNTER_BREAK_PROMPT
+    from extraction.slot_reader.walls import WALL_PROMPT
+
+    page = slot_page(sheets.sheet(sheets.text_labels()))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png], counter_break=_to_walls)
+    base = runtime(readers, claude_row_reader=True)
+    read_slot_pages([page], runtime=base, record_attempt=lambda _attempt: None)
+
+    pictures = [
+        png
+        for _model, *pngs in (*readers.wall_requests, *readers.counter_break_requests)
+        for png in pngs
+    ]
+    assert readers.wall_requests and readers.counter_break_requests and pictures
+    magenta, red, crimson = (230, 0, 200), (255, 0, 0), (220, 20, 60)
+    for png in pictures:
+        _width, _height, rgb = decode_rgb_png(png)
+        colours = {tuple(rgb[i : i + 3]) for i in range(0, len(rgb), 3)}
+        assert magenta in colours
+        assert red not in colours and crimson not in colours
+    for prompt in (WALL_PROMPT, COUNTER_BREAK_PROMPT):
+        assert "magenta" in prompt and "Red or yellow marks are a reviewer's markup" in prompt
+
+
+def test_a_no_stone_answer_is_stored_as_a_flag_on_the_rows_readings(session: Any) -> None:
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = claude_crops_to_texts(page, TEXTS)
+        return FakeReaders(
+            lambda _model, png: lookup[png],
+            counter_break=lambda model: {
+                "contains_tall_appliance": False,
+                "stone_ends": "no_stone" if model == SONNET else "to_walls",
+                "why": "synthetic",
+            },
+        )
+
+    _revision, run, result, _count = _read_persisted(
+        session, sheets.sheet(sheets.text_labels()), readers, claude_row_reader=True
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    stored = _by_slot(session, run)
+    readings = [row for key, row in stored.items() if key != "walls"]
+    assert readings
+    for row in readings:
+        assert f"no-stone:{SONNET}" in row.ambiguity_flags
+        assert f"no-stone:{OPUS}" not in row.ambiguity_flags
+        assert not any(flag.startswith("check-hold:") for flag in row.ambiguity_flags)
+
+
 def _fake_rows(
     row_x: tuple[int, int], wall_x: tuple[int, int], words: tuple[str, ...]
 ) -> tuple[Any, Any]:
@@ -2212,7 +2555,7 @@ def test_a_sideways_label_adds_its_upright_close_up_as_a_third_picture() -> None
     upright_spans = {texts for _model, texts in readers.span_texts if CLAUDE_UPRIGHT_NOTE in texts}
     assert len(upright_spans) == 1
     assert all(
-        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
+        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
         for attempt in attempts
         if attempt.prompt_id.startswith("claude-slot-span")
     )
@@ -2502,6 +2845,7 @@ def _equal_share_read(
     shift: Decimal = Decimal(0),
     y: Decimal | None = None,
     blank_text: str = "",
+    blank_flags: Callable[[str], Mapping[str, object]] = lambda _model: {},
 ) -> tuple[PageSlotResult, FakeReaders, Any, Any]:
     """Both readers choose the blank row (box 1); the chain with its overall is box 2."""
     from workflow.slot_reader import _claude_span_plan
@@ -2536,7 +2880,10 @@ def _equal_share_read(
         ): texts.get(owner.index, "")
         for owner in (*chain_plan.slots, *((chain_plan.overall,) if chain_plan.overall else ()))
     }
-    readers = FakeReaders(lambda _model, png: chain_crops.get(png, blank_text))
+    readers = FakeReaders(
+        lambda _model, png: chain_crops.get(png, blank_text),
+        flags=lambda model, png: {} if png in chain_crops else blank_flags(model),
+    )
     (result,) = read_slot_pages(
         [page],
         runtime=runtime(readers, claude_row_reader=True),
@@ -2611,6 +2958,48 @@ def test_a_chain_without_equal_shares_changes_nothing() -> None:
     assert result.plan.row is blank
 
 
+#: #1110: what a reader unsure whether a blank piece's label belongs to its span answers.
+UNSURE_SPAN = {"belongs": "unsure", "no_dimension": False, "readable": False}
+
+
+def test_blank_pieces_both_readers_were_unsure_about_are_never_read_through_the_chain() -> None:
+    """Unsure is never evidence of absence: the chosen row goes to the reviewer as read."""
+    result, readers, blank, _chain = _equal_share_read(blank_flags=lambda _model: UNSURE_SPAN)
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert all(slot.outcome.state is LabelState.REVIEW for slot in result.slots)
+    assert all(slot.outcome.reason_code == "unsure" for slot in result.slots)
+    assert not result.mapping.proposals
+    assert len(readers.requests) == 2 * 2, "the chain is not even read"
+
+
+def test_one_unsure_reader_on_blank_pieces_keeps_them_for_the_reviewer() -> None:
+    result, readers, blank, _chain = _equal_share_read(
+        blank_flags=lambda model: UNSURE_SPAN if model == OPUS else {}
+    )
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert all(slot.outcome.reason_code == "unsure" for slot in result.slots)
+    assert len(readers.requests) == 2 * 2
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{"belongs": "no", "no_dimension": True}, {"belongs": "no", "no_dimension": False}],
+    ids=["no-dimension", "no-with-empty-text"],
+)
+def test_blank_pieces_both_readers_explicitly_called_blank_still_read_through(
+    flags: Mapping[str, object],
+) -> None:
+    """Both readers' explicit answers, `no_dimension` or "no" with no text, still start it."""
+    result, _readers, blank, chain = _equal_share_read(blank_flags=lambda _model: flags)
+
+    assert result.read_through is blank
+    assert result.plan.row is chain
+
+
 def test_a_chain_read_through_persists_its_rows_rank_and_the_chosen_rows(session: Any) -> None:
     from workflow.slot_reader import CLAUDE_SPAN_PROMPT_ID, persist_slot_readings
 
@@ -2634,3 +3023,188 @@ def test_a_chain_read_through_persists_its_rows_rank_and_the_chosen_rows(session
         assert f"equal-shares-for-row-rank:{blank.rank}" in flags
         assert found[key].corroboration_status == "CORROBORATED"
     assert f"row-rank:{chain.rank}" in found["walls"].ambiguity_flags
+
+
+# ---------------------------------------------------------------------------
+# #1107: a reader's `stacked` never removes a check; a skipped check is recorded
+# ---------------------------------------------------------------------------
+
+
+def _drawn_owner(
+    index: int | None,
+    inches: str,
+    *,
+    flags: tuple[str, ...] = (),
+    state: LabelState = LabelState.PROVISIONAL,
+    x0: int | None = None,
+    width: int = 10,
+    sources: tuple[str, str] = ("opus", "sonnet"),
+) -> Any:
+    """One piece (or the overall, `index=None`) sealed by the readers, drawn `width` points long.
+
+    Every piece is drawn 10 points per 10 inches unless told otherwise; values are invented."""
+    from extraction.geometry.rows import Box
+    from extraction.ink import InkClass
+    from extraction.slot_reader.runs import Lane, PlannedLabel, PlannedOwner
+    from extraction.slot_reader.seal import LabelOutcome, OwnerOutcome, plain_dimension
+    from workflow.slot_reader import LabelResult, OwnerResult
+
+    left = Decimal((index or 0) * 10 if x0 is None else x0)
+    right = left + Decimal(width)
+    box = Box(left, Decimal(1), right, Decimal(3))
+    label = PlannedLabel(
+        box=box,
+        crop=box,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=False,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(),
+    )
+    value = plain_dimension(f'{inches}"')
+    assert value is not None
+    provisional = state is LabelState.PROVISIONAL
+    outcome = LabelOutcome(
+        state,
+        None if provisional else value,
+        value if provisional else None,
+        f'{inches}"',
+        None,
+        None,
+        InkClass.VENDOR,
+        ("lane:glyphs", *flags),
+        tuple((source, f'{inches}"') for source in sources),
+    )
+    owner = PlannedOwner(index, left, right, Decimal(2), box, (label,))
+    return OwnerResult(
+        owner,
+        (0, 0, 1, 1),
+        (LabelResult(label, outcome, (0, 0, 1, 1), (0, 0, 1, 1)),),
+        OwnerOutcome(state, None if provisional else value, 0, None, None),
+        None,
+        (),
+    )
+
+
+def _flags(owner: Any) -> tuple[str, ...]:
+    return tuple(owner.labels[owner.outcome.label_index].outcome.flags)
+
+
+def test_one_readers_stacked_flag_no_longer_switches_the_check_off_for_its_neighbours() -> None:
+    """#1107 (c). Input: a three-piece row where one reader says piece 1 is stacked (code does
+    not). Outcome: piece 1 still gives its neighbours a scale, so every reading is checked (none
+    flagged `no-drawn-length-witness`) and a big misread in piece 2 (20 printed where 10 is drawn)
+    is held back; on main piece 2 sealed unchecked. A misread pulls its short row's scale, so its
+    neighbours may be held with it: holding is always safe."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    clean = (
+        _drawn_owner(0, "10"),
+        _drawn_owner(1, "10", flags=("stacked",)),
+        _drawn_owner(2, "10"),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(clean, None)
+    assert vetoed == ()
+    assert [owner.outcome.state for owner in held] == [LabelState.SEALED] * 3
+    assert "stacked" in _flags(held[1]), "the reader's flag stays on the record"
+    assert all("no-drawn-length-witness" not in _flags(owner) for owner in held)
+
+    misread = (*clean[:2], _drawn_owner(2, "20"))
+    held, _overall, vetoed = _veto_by_drawn_length(misread, None)
+    assert 2 in vetoed
+    assert held[2].outcome.state is LabelState.REVIEW
+    assert held[2].outcome.reason_code == "drawn-length"
+    assert held[2].outcome.value is None
+
+
+def test_a_code_confirmed_stacked_piece_is_still_left_out_of_the_scale() -> None:
+    """#1107 (c). Input: the same row, but code confirmed piece 1 is a stacked fraction. Outcome:
+    piece 1 is no scale source, so pieces 0 and 2 have no scale: they seal unchecked and say so,
+    and a big misread in piece 2 is not caught. Piece 1 itself is checked (two others scale it)."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    clean = (
+        _drawn_owner(0, "10"),
+        _drawn_owner(1, "10", flags=("stacked", "stacked-by-code")),
+        _drawn_owner(2, "10"),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(clean, None)
+    assert vetoed == ()
+    assert [owner.outcome.state for owner in held] == [LabelState.SEALED] * 3
+    assert "no-drawn-length-witness" in _flags(held[0])
+    assert "no-drawn-length-witness" not in _flags(held[1])
+    assert "no-drawn-length-witness" in _flags(held[2])
+
+    misread = (*clean[:2], _drawn_owner(2, "20"))
+    held, _overall, vetoed = _veto_by_drawn_length(misread, None)
+    assert 2 not in vetoed
+    assert held[2].outcome.state is LabelState.SEALED
+    assert "no-drawn-length-witness" in _flags(held[2])
+
+
+@pytest.mark.parametrize("state", [LabelState.PROVISIONAL, LabelState.SEALED])
+def test_a_reading_the_check_could_not_reach_seals_and_says_so(state: LabelState) -> None:
+    """#1107 (a). Input: a two-piece row and its overall, sealed by the Claude pair (provisional)
+    or by two makers (sealed). Outcome: automation unchanged — all three seal — but each piece,
+    with only one neighbour to scale by, is flagged `no-drawn-length-witness`; the overall, scaled
+    by both pieces, is not. A three-piece row's readings are all witnessed."""
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    row = (_drawn_owner(0, "10", state=state), _drawn_owner(1, "20", state=state, width=20))
+    whole = _drawn_owner(None, "30", state=state, x0=0, width=30)
+    held, held_overall, vetoed = _veto_by_drawn_length(row, whole)
+
+    assert vetoed == ()
+    assert held_overall is not None
+    assert all(owner.outcome.state is LabelState.SEALED for owner in (*held, held_overall))
+    assert all(owner.outcome.value is not None for owner in (*held, held_overall))
+    assert all("no-drawn-length-witness" in _flags(owner) for owner in held)
+    assert "no-drawn-length-witness" not in _flags(held_overall)
+
+    three = tuple(_drawn_owner(index, "10", state=state) for index in range(3))
+    held, _overall, _vetoed = _veto_by_drawn_length(three, None)
+    assert all("no-drawn-length-witness" not in _flags(owner) for owner in held)
+
+
+def test_a_skipped_drawn_length_check_is_kept_on_the_saved_reading(session: Any) -> None:
+    """#1107 (a). Input: a three-piece row whose first piece the two readers read differently, so
+    two sealed pieces are left, each with one neighbour to scale by. Outcome: the saved readings
+    of those two pieces carry `no-drawn-length-witness`; the overall, scaled by both, does not."""
+
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = crops_to_texts(page, TEXTS)
+        first = crops_to_texts(page, TEXTS | {0: '13"'})
+        return FakeReaders(lambda model, png: (first if model == KIMI else lookup)[png])
+
+    _revision, run, _result, _count = _read_persisted(
+        session, sheets.sheet(sheets.glyph_labels()), readers
+    )
+    by_slot = _by_slot(session, run)
+    assert by_slot["slot:0"].corroboration_status is None
+    assert "no-drawn-length-witness" not in by_slot["slot:0"].ambiguity_flags
+    for slot in ("slot:1", "slot:2"):
+        assert "no-drawn-length-witness" in by_slot[slot].ambiguity_flags, slot
+    assert "no-drawn-length-witness" not in by_slot["slot:overall"].ambiguity_flags
+
+
+def test_a_reading_with_the_files_own_text_is_never_flagged_without_a_witness() -> None:
+    """#1107 (decided 2026-10-09): the file's own text is a non-model witness. Input: a two-piece
+    row whose first piece the file's text and one reader agree on. Outcome: both seal; only the
+    second piece, read by the two AIs alone, is flagged `no-drawn-length-witness`."""
+    from extraction.slot_reader.seal import TEXT_LAYER
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    row = (
+        _drawn_owner(0, "10", state=LabelState.SEALED, sources=(TEXT_LAYER, "kimi")),
+        _drawn_owner(1, "20", state=LabelState.SEALED, width=20),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(row, None)
+
+    assert vetoed == ()
+    assert all(owner.outcome.state is LabelState.SEALED for owner in held)
+    assert "no-drawn-length-witness" not in _flags(held[0])
+    assert "no-drawn-length-witness" in _flags(held[1])

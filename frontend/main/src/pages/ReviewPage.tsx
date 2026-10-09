@@ -611,7 +611,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         corrected_value: correctedValue,
       });
       setFindings(prev =>
-        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct' } : f)),
+        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'correct', reviewer_carried_over: false } : f)),
       );
       await refreshResults();
       return { saved: true };
@@ -639,7 +639,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         expires_at: expiresAt,
       });
       setFindings(prev =>
-        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except' } : f)),
+        prev.map(f => (f.id === findingId ? { ...f, reviewer_action: 'except', reviewer_carried_over: false } : f)),
       );
       await refreshResults();
       return { saved: true };

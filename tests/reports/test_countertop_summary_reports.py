@@ -22,6 +22,7 @@ from app.schemas.visual_ui import (
     ExactValueOut,
     HoldOut,
     ReviewerDecisionOut,
+    RowNotCheckedOut,
     WallLayoutOut,
 )
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
@@ -738,3 +739,135 @@ def test_pdf_countertop_section_has_no_empty_page_and_findings_start_their_own_p
     assert any("COUNTERTOPS" in page for page in pages[:findings_start])
     if len(results) > 4:
         assert any("COUNTERTOPS — CONTINUED" in page for page in pages[:findings_start])
+
+
+# ---------------------------------------------------------------------------
+# #1107: "drawn length not checked (no scale)" in the signed report
+# ---------------------------------------------------------------------------
+
+_NOT_CHECKED = "Drawn length not checked (no scale): piece 1, piece 2."
+
+
+def _unwitnessed_row() -> CountertopResultOut:
+    return _result(
+        "Countertop row A",
+        Outcome.REVIEW_REQUIRED,
+        printed=Fraction(26),
+        pieces=(Fraction(10), Fraction(14)),
+        expected=None,
+        delta=None,
+    ).model_copy(update={"drawn_length_note": _NOT_CHECKED})
+
+
+def test_pdf_card_says_drawn_length_not_checked_for_that_row() -> None:
+    """Input: one row whose two pieces had no drawn-length witness, one row with every reading
+    checked. Outcome: the signed PDF says so on the first card, once."""
+    checked = _checked_row()
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=12),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        countertop_results=(_unwitnessed_row(), checked),
+    )
+
+    text = _pdf_text(write_findings_pdf(source))
+
+    assert text.count(_NOT_CHECKED) == 1
+
+
+def test_workbook_has_a_drawn_length_column_after_the_named_ones() -> None:
+    """Input: the same two rows. Outcome: the Countertops sheet's `drawn_length` column says it
+    for the first row and is empty for the second; no earlier column moves and the per-piece
+    columns still come last."""
+    book = load_workbook(
+        BytesIO(
+            write_stored_workbook(
+                (_stored(),), countertop_results=(_unwitnessed_row(), _checked_row())
+            )
+        )
+    )
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    rows = [
+        {header: sheet.cell(index, column + 1).value for column, header in enumerate(headers)}
+        for index in (2, 3)
+    ]
+    by_outcome = {row["outcome"]: row for row in rows}
+    assert by_outcome["REVIEW_REQUIRED"]["drawn_length"] == _NOT_CHECKED
+    assert by_outcome["PASS"]["drawn_length"] in ("", None)
+    assert headers.index("drawn_length") > headers.index("architect_overall_difference_in")
+    assert headers.index("piece_1_in") > headers.index("drawn_length")
+
+
+# #1108: a second countertop row an AI named on a page whose row was read is listed as not checked.
+SECOND_ROW_REASON = (
+    "An AI found a second countertop on this page (numbered line 3, named by opus-5-5). Only one "
+    "countertop line per page is read, so it was not checked. Check it on the drawing."
+)
+
+
+def _rows_not_checked() -> tuple[RowNotCheckedOut, ...]:
+    return (RowNotCheckedOut(page_number=2, reason=SECOND_ROW_REASON),)
+
+
+def test_pdf_lists_a_second_countertop_row_that_was_not_checked() -> None:
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=15),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        countertop_results=_many_results(1),
+        pages_without_countertop=_pages_without_countertop(),
+        rows_not_checked=_rows_not_checked(),
+    )
+
+    text = _pdf_text(write_findings_pdf(source))
+
+    assert "SECOND COUNTERTOP ROWS NOT CHECKED" in text
+    assert "Page 2: An AI found a second countertop on this page" in text
+    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert text.index("SECOND COUNTERTOP ROWS NOT CHECKED") < text.index("CT-WIDTH-001")
+
+
+def test_pdf_lists_a_second_countertop_row_even_with_no_countertop_item() -> None:
+    pages = _page_texts(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=16),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                rows_not_checked=_rows_not_checked(),
+            )
+        )
+    )
+
+    assert any("SECOND COUNTERTOP ROWS NOT CHECKED" in page for page in pages)
+    assert all(_FOOTER.sub("", page).strip() for page in pages), "a page has only its footer"
+
+
+def test_pdf_refuses_rows_not_checked_of_another_type() -> None:
+    with pytest.raises(TypeError, match="rows_not_checked"):
+        FindingsPdfInput(
+            package_revision_id=UUID(int=17),
+            revision_number=1,
+            vendor=None,
+            findings=(_stored(),),
+            rows_not_checked=_pages_without_countertop(),  # type: ignore[arg-type]
+        )
+
+
+def test_workbook_lists_a_second_countertop_row_that_was_not_checked() -> None:
+    book = load_workbook(
+        BytesIO(write_stored_workbook((_stored(),), rows_not_checked=_rows_not_checked()))
+    )
+
+    sheet = book["Second Rows Not Checked"]
+    assert [cell.value for cell in sheet[1]] == ["page", "reason"]
+    assert [cell.value for cell in sheet[2]] == ["2", SECOND_ROW_REASON]
+    assert (
+        "Second Rows Not Checked"
+        not in load_workbook(BytesIO(write_stored_workbook((_stored(),)))).sheetnames
+    )

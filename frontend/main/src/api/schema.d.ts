@@ -2768,6 +2768,11 @@ export interface components {
             /** @description Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001). */
             architect?: components["schemas"]["ArchitectResultOut"];
             delta: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Drawn Length Note
+             * @description "Drawn length not checked (no scale): ..." naming the row's sealed readings whose drawn length could not be checked, because the row had too few other pieces to give a scale; they rest on the two readers' identical text alone (#1107). Null when every reading was checked.
+             */
+            drawn_length_note?: string | null;
             expected_total: components["schemas"]["ExactValueOut"] | null;
             /** Field Cut Count */
             field_cut_count: number | null;
@@ -2820,6 +2825,11 @@ export interface components {
              * Format: uuid
              */
             revision_id: string;
+            /**
+             * Rows Not Checked
+             * @description Second countertop rows an AI named on a vendor page whose countertop row was read. Only one countertop row per page is read, so these were not checked. Listed only; nothing to decide.
+             */
+            rows_not_checked?: components["schemas"]["RowNotCheckedOut"][];
         };
         /**
          * DecideEvidence
@@ -4792,6 +4802,18 @@ export interface components {
             page_number: number;
             /** Polygon */
             polygon: string[][];
+        };
+        /**
+         * RowNotCheckedOut
+         * @description A second countertop row an AI named on a vendor page whose countertop row was read (#1108).
+         *
+         *     V1 reads one countertop row per page, so this one was not checked. Listed, not blocking.
+         */
+        RowNotCheckedOut: {
+            /** Page Number */
+            page_number: number;
+            /** Reason */
+            reason: string;
         };
         /**
          * RuleOut

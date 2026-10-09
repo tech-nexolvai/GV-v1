@@ -41,11 +41,13 @@ from app.schemas.visual_ui import (
     HoldOut,
     PageWithoutCountertopOut,
     ReviewerDecisionOut,
+    RowNotCheckedOut,
     WallLayoutOut,
 )
 from units.imperial import format_inches
 from verdict.outcomes import Outcome
-from vocabulary.check_holds import CHECK_HOLD_REASONS
+from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
+from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
@@ -435,6 +437,33 @@ def _row_values(
     return overall, pieces, field_per_end, field_count, expected, (located(None), overall_crop)
 
 
+def _drawn_length_note(row: Any, verdict_inputs: dict[str, VerdictInput]) -> str | None:
+    """ "Drawn length not checked (no scale)" for the row's sealed readings the check missed (#1107).
+
+    Only readings: where the recorded check used a value the reviewer typed for that position, the
+    reading's missing witness no longer matters and is not named.
+    """
+    positions: set[int | None] = set()
+    for candidate in row.candidates:
+        flags = candidate.ambiguity_flags or ()
+        if NO_DRAWN_LENGTH_WITNESS not in flags or not candidate_is_sealed(candidate):
+            continue
+        slot = next((flag.removeprefix("slot:") for flag in flags if flag.startswith("slot:")), "")
+        if slot == "overall":
+            position: int | None = None
+            name = "countertop_width"
+        elif slot.isdigit():
+            position = int(slot)
+            name = f"piece_widths[{position}]"
+        else:
+            continue
+        recorded = verdict_inputs.get(name)
+        if recorded is not None and recorded.evidence_status == "HUMAN_CONFIRMED":
+            continue
+        positions.add(position)
+    return not_checked_note(positions)
+
+
 def _wall(row: Any) -> WallLayoutOut:
     decision = row.decision
     candidate = row.wall_candidate
@@ -722,7 +751,11 @@ def _countertop_results_for_revision(
     # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
     # is the source: the check asks nothing there, so neither does this list.
     rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
-    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
+    owned = (
+        reviewer_owned_pages(session, revision.id)
+        if unchosen or any(row.also for row in rows)
+        else set()
+    )
     unchosen = tuple(page for page in unchosen if page.page_number - 1 not in owned)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
@@ -792,6 +825,10 @@ def _countertop_results_for_revision(
             crops,
         )
         decision = None if finding is None else decisions.get(finding.id)
+        drawn_length_note = _drawn_length_note(
+            row,
+            {} if finding is None else verdict_inputs_by_finding.get(finding.check_run_id, {}),
+        )
         wall_flags = set(
             () if row.wall_candidate is None else row.wall_candidate.ambiguity_flags or ()
         )
@@ -843,8 +880,10 @@ def _countertop_results_for_revision(
             )
             hold = HoldOut(
                 code=code,
-                reason=reviewer_reason(flags, row.held_reason)
-                or CHECK_HOLD_REASONS.get(code, code),
+                reason=with_no_stone_note(
+                    reviewer_reason(flags, row.held_reason) or CHECK_HOLD_REASONS.get(code, code),
+                    flags,
+                ),
             )
         # PASS findings may not persist a delta column. When checked, derive the signed difference
         # only from the immutable recorded operand and recorded expected-width trace above.
@@ -885,6 +924,7 @@ def _countertop_results_for_revision(
                     code_clue_used=any(flag.startswith("wall-clue:") for flag in wall_flags),
                 ),
                 hold=hold,
+                drawn_length_note=drawn_length_note,
                 architect=_architect_block(
                     session,
                     row,
@@ -924,6 +964,36 @@ def _countertop_results_for_revision(
             for page in unchosen
             if not page.split
         ),
+        rows_not_checked=_rows_not_checked(rows, owned),
+    )
+
+
+def _rows_not_checked(rows: tuple[SlotRow, ...], owned: set[int]) -> tuple[RowNotCheckedOut, ...]:
+    """One entry per vendor page where an AI named a second countertop row (#1108), in page order.
+
+    V1 reads one countertop row per page, so the second is listed, never checked and never
+    blocking. A page a reviewer-owned run is the source on is left out, as for the pages above.
+    """
+    named: dict[int, dict[int, set[str]]] = {}
+    for row in rows:
+        if row.page_number - 1 in owned:
+            continue
+        for model, number in row.also:
+            named.setdefault(row.page_number, {}).setdefault(number, set()).add(model)
+    return tuple(
+        RowNotCheckedOut(
+            page_number=page_number,
+            reason=(
+                "An AI found a second countertop on this page ("
+                + "; ".join(
+                    f"numbered line {number}, named by {' and '.join(sorted(models))}"
+                    for number, models in sorted(boxes.items())
+                )
+                + "). Only one countertop line per page is read, so it was not checked. Check it "
+                "on the drawing."
+            ),
+        )
+        for page_number, boxes in sorted(named.items())
     )
 
 

@@ -175,6 +175,15 @@ class CountertopResultOut(BaseModel):
     wall_layout: WallLayoutOut
     agreement: AgreementFactsOut
     hold: HoldOut | None
+    drawn_length_note: str | None = Field(
+        default=None,
+        description=(
+            '"Drawn length not checked (no scale): ..." naming the row\'s sealed readings whose '
+            "drawn length could not be checked, because the row had too few other pieces to give "
+            "a scale; they rest on the two readers' identical text alone (#1107). Null when every "
+            "reading was checked."
+        ),
+    )
     architect: ArchitectResultOut = Field(
         default_factory=ArchitectResultOut,
         description="Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001).",
@@ -183,6 +192,17 @@ class CountertopResultOut(BaseModel):
 
 class PageWithoutCountertopOut(BaseModel):
     """A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page_number: int
+    reason: str
+
+
+class RowNotCheckedOut(BaseModel):
+    """A second countertop row an AI named on a vendor page whose countertop row was read (#1108).
+
+    V1 reads one countertop row per page, so this one was not checked. Listed, not blocking."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -203,6 +223,15 @@ class CountertopResultsOut(BaseModel):
             "Vendor pages where both AIs found no countertop line, each with the AI's reason. "
             "Listed only; nothing to decide. A page where the AIs picked different lines is an item "
             "above instead, held `row-choice-split`."
+        ),
+    )
+    rows_not_checked: tuple[RowNotCheckedOut, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Second countertop rows an AI named on a vendor page whose countertop row was read. "
+            "Only one countertop row per page is read, so these were not checked. Listed only; "
+            "nothing to decide."
         ),
     )
 

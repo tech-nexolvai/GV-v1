@@ -444,3 +444,34 @@ def test_signed_report_lists_a_split_page_and_the_pages_with_no_countertop(
     book = load_workbook(io.BytesIO(client.get(base + "/report").content))
     assert SPLIT_REASON in [cell.value for row in book["Countertops"] for cell in row]
     assert [cell.value for cell in book["No Countertop Found"][2]] == ["4", NONE_REASON]
+
+
+def test_signed_report_lists_a_second_countertop_row_that_was_not_checked(
+    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1108: a second countertop row an AI named on a read page reaches the signed PDF and
+    workbook as not checked."""
+    from app.schemas.visual_ui import CountertopResultsOut, RowNotCheckedOut
+    from tests.reports.test_countertop_summary_reports import SECOND_ROW_REASON
+
+    package_id, approval, _ = _legacy(session, store)
+    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+
+    def results(_db: Session, package: Any, revision: Any) -> CountertopResultsOut:
+        return CountertopResultsOut(
+            package_id=package,
+            revision_id=revision.id,
+            items=(),
+            rows_not_checked=(RowNotCheckedOut(page_number=2, reason=SECOND_ROW_REASON),),
+        )
+
+    monkeypatch.setattr("workflow.signed_outputs._countertop_results_for_revision", results)
+    assert client.post(base + "/signed-exports").status_code == 202
+    generate_signed_outputs(session, store, approval.id)
+    session.commit()
+
+    text = _text(client.get(base + "/report.pdf").content)
+    assert "SECOND COUNTERTOP ROWS NOT CHECKED" in text
+    assert "Page 2: An AI found a second countertop on this page" in text
+    book = load_workbook(io.BytesIO(client.get(base + "/report").content))
+    assert [cell.value for cell in book["Second Rows Not Checked"][2]] == ["2", SECOND_ROW_REASON]

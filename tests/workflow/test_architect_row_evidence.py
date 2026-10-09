@@ -1292,13 +1292,12 @@ def test_code_undecided_as_combine_records_it_is_not_compared_with_nothing_usabl
     assert anchors[0] not in findings.get(ARCH_RULE, {})
 
 
-@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit", "nothing_comparable"])
 def test_both_ais_finding_nothing_comparable_stays_not_compared(
-    session: Session, tmp_path: Path, code_status: str
+    session: Session, tmp_path: Path
 ) -> None:
-    """Two judgments that nothing is paired (the AIs agree there is nothing; code found no pairs)
-    stay "not compared": no finding, no click."""
-    pairing = _combined(code_status, "nothing_comparable")
+    """Two judgments that nothing is comparable (the AIs agree there is nothing; code found
+    nothing comparable either) stay "not compared": no finding, no click."""
+    pairing = _combined("nothing_comparable", "nothing_comparable")
     assert pairing.status == "nothing_comparable"
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
@@ -1307,6 +1306,83 @@ def test_both_ais_finding_nothing_comparable_stays_not_compared(
     findings = _run(session, package_id, tmp_path, {anchors[0]: pairing})
 
     assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+# ---------------------------------------------------------------------------
+# #1109: two "nothing" answers keep code's undecided status; "unsure" is the reviewer's. Built from
+# the real `_judge` and `combine()` (`resolve_answers`), read back as the check reads a record.
+# ---------------------------------------------------------------------------
+
+
+def _resolved(
+    code_status: str,
+    pieces: tuple[int, ...] = (0, 0, 0),
+    unsure: tuple[str, ...] = (),
+) -> EffectivePairing:
+    """The pairing recorded when code found no pairs (`code_status`) and both readers answered
+    `pieces` (A-numbers, 0 for none), the first also answering `unsure` for these pairings."""
+    from tests.workflow.test_architect_pairing import WIDTHS, _resolve, arch_row
+
+    outcome = _resolve(
+        arch_row(1, WIDTHS), (0, pieces), code_status=code_status, unsure=(unsure, ())
+    )
+    return EffectivePairing(
+        record_id=uuid4(),
+        source=outcome.source,
+        status=outcome.status,
+        pairs=outcome.pairs,
+        reasons=outcome.reasons,
+    )
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_both_ais_answering_nothing_with_code_undecided_asks_the_reviewer(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    """A reader that could not tell used to answer 0, and two 0 answers overwrote code's undecided
+    status with "nothing comparable": the row was not compared though the architect prints a
+    usable dimension. Code's status is kept, so the reviewer pairs."""
+    pairing = _resolved(code_status)
+    assert (pairing.source, pairing.status, pairing.pairs) == ("none", code_status, ())
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
+    assert _inputs(session, finding) == {}
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_both_ais_answering_nothing_with_code_undecided_and_nothing_usable_is_not_compared(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "1' - 5\"", outline="no")
+
+    findings = _run(session, package_id, tmp_path, {anchors[0]: _resolved(code_status)})
+
+    assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit", "nothing_comparable"])
+def test_an_unsure_reader_sends_the_row_to_the_reviewer(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    """`unsure` is never "nothing comparable", whatever code found: the reviewer pairs."""
+    pairing = _resolved(code_status, unsure=("V2",))
+    assert (pairing.source, pairing.status) == ("none", "ais-refused")
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
 
 
 def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
@@ -1370,3 +1446,81 @@ def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
 
     assert _revisions_with_unchecked_pairings(session, [revision.id]) == set()
     assert approval_readiness(session, revision.id).reason != PAIRING_NEEDS_RERUN
+
+
+# ---------------------------------------------------------------------------
+# #1107: an architect PASS on a vendor reading with no drawn-length witness
+# ---------------------------------------------------------------------------
+
+
+def _sealed_rows_unwitnessed(session: Session, slot: str) -> tuple[UUID, dict[int, UUID]]:
+    """`_sealed_rows`, with the first page's reading at `slot` sealed with no drawn-length
+    witness (its row gave no scale to check it by)."""
+    _project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page, _offset, at: (
+            ["no-drawn-length-witness"] if page == 0 and at == slot else []
+        ),
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+    return package_id, anchors
+
+
+@pytest.mark.parametrize(("printed", "engine"), [("3' - 7\"", "PASS"), ("3' - 6\"", "FAIL")])
+def test_an_architect_pass_on_a_vendor_reading_with_no_drawn_length_witness_waits(
+    session: Session, tmp_path: Path, printed: str, engine: str
+) -> None:
+    """#1107. Input: a pairing on two judgments (code and both AIs), the vendor's overall sealed
+    with no drawn-length witness. Outcome: the engine's PASS waits for one click, with the
+    decided reason and the PASS in the notes; a FAIL stands unchanged."""
+    from vocabulary.drawn_length import NO_WITNESS_REASON
+
+    package_id, anchors = _sealed_rows_unwitnessed(session, "overall")
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], printed)
+
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source="code+ais")},
+    )[ARCH_RULE][anchors[0]]
+
+    if engine == "FAIL":
+        assert finding.outcome == "FAIL", finding.reason
+        return
+    assert finding.outcome == "REVIEW_REQUIRED", finding.reason
+    assert finding.reason == NO_WITNESS_REASON
+    assert finding.trace["outcome"] == "REVIEW_REQUIRED"
+    engine_notes = [note for note in finding.notes if note.startswith("The engine's result")]
+    assert len(engine_notes) == 1 and ": PASS " in engine_notes[0], finding.notes
+    assert "Drawn length not checked (no scale): the overall." in finding.notes
+    assert any(note.startswith("Pairing source: code+ais") for note in finding.notes)
+    assert {"architect_overall", "vendor_overall"} <= set(_inputs(session, finding))
+
+
+def test_an_unwitnessed_vendor_reading_the_architect_check_does_not_compare_changes_nothing(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107. Input: the vendor's first piece has no drawn-length witness, but only the overall is
+    paired with the architect. Outcome: the architect PASS stands; the reading is not compared."""
+    package_id, anchors = _sealed_rows_unwitnessed(session, "0")
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(
+        session,
+        package_id,
+        tmp_path,
+        {anchors[0]: _pairing(_overall(overall), source="code+ais")},
+    )[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "PASS", finding.reason

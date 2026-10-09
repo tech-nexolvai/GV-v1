@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from evidence.crop import encode_png
-from extraction.form_reader.bedrock import AttemptUsage
+from extraction.form_reader.bedrock import AttemptUsage, MalformedFormAnswer
 from extraction.form_reader.runner import ModelPacer
 from extraction.slot_reader.anthropic import BatchSpendGuard
 from extraction.slot_reader.bedrock import (
@@ -41,7 +41,7 @@ from extraction.slot_reader.claude_output import (
     SPAN_SCHEMA,
     WALL_SCHEMA,
 )
-from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.seal import Belongs, ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
@@ -224,7 +224,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
     def response(_request: dict[str, Any]) -> Mapping[str, Any]:
         nonlocal calls
         calls += 1
-        payload = good('2"') if calls == 1 else good('2"') | {"belongs": True}
+        payload = good('2"') if calls == 1 else good('2"') | {"belongs": "yes"}
         return reply(payload)
 
     model = OPUS
@@ -239,7 +239,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
 
     assert calls == 2
     assert answers[("slot", model)] is not None
-    assert answers[("slot", model)].belongs is True
+    assert answers[("slot", model)].belongs is Belongs.YES
 
 
 def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() -> None:
@@ -252,6 +252,97 @@ def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() ->
     assert request["inferenceConfig"]["maxTokens"] == 3000
 
 
+ROW_TWO = {"row": 2, "kind": "row", "also": [], "why": "front elevation"}
+
+
+def _row_answer(
+    payload: object, *, model_id: str = OPUS, candidate_count: int = 4
+) -> tuple[RowChoiceAnswer | None, list[AttemptUsage]]:
+    """One row question answered `payload` every time; `None` when it stayed malformed."""
+    attempts: list[AttemptUsage] = []
+    try:
+        answer = read_row_choice(
+            FakeClients(lambda _request: reply(payload)),
+            model_id=model_id,
+            page_png=PNG,
+            page_index=0,
+            candidate_count=candidate_count,
+            max_tokens=3000,
+            record_attempt=attempts.append,
+        )
+    except MalformedFormAnswer:
+        return None, attempts
+    return answer, attempts
+
+
+@pytest.mark.parametrize(
+    ("payload", "kind"),
+    [
+        ({"row": 3, "kind": "row", "also": [], "why": "synthetic: box 3"}, "row"),
+        ({"row": 0, "kind": "no_countertop", "also": [], "why": "synthetic: tall unit"}, None),
+        ({"row": 0, "kind": "not_among_boxes", "also": [], "why": "synthetic: unboxed"}, None),
+        ({"row": 0, "kind": "unsure", "also": [], "why": "synthetic: cannot tell"}, None),
+    ],
+)
+def test_row_reader_keeps_each_kind_of_answer(payload: dict[str, object], kind: str | None) -> None:
+    """v3 (#1108): "no countertop" and "a countertop no box measures" are two answers, not one 0."""
+    answer, attempts = _row_answer(payload)
+
+    assert answer is not None
+    assert answer.kind == payload["kind"]
+    assert answer.row == payload["row"]
+    assert answer.also == ()
+    assert [attempt.malformed for attempt in attempts] == [False]
+    assert attempts[0].prompt_id == "slot-row-choice-v3"
+
+
+def test_row_reader_keeps_a_second_countertop_row_but_never_the_row_itself() -> None:
+    answer, _ = _row_answer({"row": 1, "kind": "row", "also": [4, 1, 3, 4], "why": "two tops"})
+
+    assert answer is not None and answer.row == 1 and answer.also == (3, 4)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"row": 2, "kind": "no_countertop", "also": [], "why": "contradiction"},
+        {"row": 0, "kind": "row", "also": [], "why": "contradiction"},
+        {"row": 1, "kind": "row", "also": [5], "why": "box 5 does not exist"},
+        {"row": 1, "kind": "row", "also": [0], "why": "box 0 does not exist"},
+        {"row": 1, "kind": "maybe", "also": [], "why": "not a kind"},
+    ],
+)
+def test_a_self_contradicting_or_out_of_range_row_answer_is_malformed(
+    payload: dict[str, object],
+) -> None:
+    """Re-asked once, then the reader abstains, which sends the page to the reviewer."""
+    answer, attempts = _row_answer(payload)
+
+    assert answer is None
+    assert [attempt.malformed for attempt in attempts] == [True, True]
+
+
+def test_a_row_answer_of_the_older_shape_still_parses_with_no_kind() -> None:
+    """A non-Claude reader's (or a stored v2) answer has no kind and names no second row."""
+    answer, _ = _row_answer({"row": 0, "why": "synthetic: none"}, model_id=QWEN)
+
+    assert answer == RowChoiceAnswer(QWEN, 0, "synthetic: none", None, ())
+
+
+def test_row_prompt_names_its_box_colours_and_none_is_the_reviewers() -> None:
+    """Box 1 was crimson while the same question said red numbers are the reviewer's (#1108)."""
+    from extraction.slot_reader.bedrock import ROW_BOX_COLOURS, ROW_PROMPT_IDS
+
+    assert {"slot-row-choice-v1", "slot-row-choice-v2", "slot-row-choice-v3"} == ROW_PROMPT_IDS
+    for name, _rgb in ROW_BOX_COLOURS:
+        assert name in ROW_PROMPT
+    assert "numbers in red or blue, and yellow boxes, are the reviewer's markup" in ROW_PROMPT
+    for name in ("red", "crimson", "blue", "yellow", "orange"):
+        assert name not in {colour for colour, _ in ROW_BOX_COLOURS}
+    for kind in ("no_countertop", "not_among_boxes", "unsure", '"also"'):
+        assert kind in ROW_PROMPT
+
+
 def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -> None:
     calls = 0
     attempts: list[AttemptUsage] = []
@@ -259,7 +350,7 @@ def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -
     def answer(_request: dict[str, Any]) -> Mapping[str, Any]:
         nonlocal calls
         calls += 1
-        return reply("not json" if calls == 1 else {"row": 2, "why": "front elevation"})
+        return reply("not json" if calls == 1 else ROW_TWO)
 
     result = read_row_choice(
         FakeClients(answer),
@@ -271,19 +362,20 @@ def test_row_reader_reasks_only_a_malformed_answer_and_records_both_attempts() -
         record_attempt=attempts.append,
     )
 
-    assert result == RowChoiceAnswer(OPUS, 2, "front elevation")
+    assert result == RowChoiceAnswer(OPUS, 2, "front elevation", "row", ())
     assert calls == 2
     assert [attempt.malformed for attempt in attempts] == [True, False]
-    assert [attempt.raw_response_text for attempt in attempts] == [
-        "not json",
-        '{"row": 2, "why": "front elevation"}',
-    ]
+    assert [attempt.raw_response_text for attempt in attempts] == ["not json", json.dumps(ROW_TWO)]
 
 
 def test_row_reader_zero_is_a_valid_reviewer_choice_not_a_retry() -> None:
     attempts: list[AttemptUsage] = []
     result = read_row_choice(
-        FakeClients(lambda _request: reply({"row": 0, "why": "no candidate fits"})),
+        FakeClients(
+            lambda _request: reply(
+                {"row": 0, "kind": "no_countertop", "also": [], "why": "no candidate fits"}
+            )
+        ),
         model_id=OPUS,
         page_png=PNG,
         page_index=0,
@@ -299,14 +391,18 @@ def test_row_reader_zero_is_a_valid_reviewer_choice_not_a_retry() -> None:
 def test_row_question_uses_the_same_read_pool_result_shape() -> None:
     model = OPUS
     answers = run(
-        FakeClients(lambda _request: reply({"row": 1, "why": "countertop row"})),
+        FakeClients(
+            lambda _request: reply({"row": 1, "kind": "row", "also": [2], "why": "countertop row"})
+        ),
         [CropJob("p0:row-choice", model, 0, PNG, row_question=True, candidate_count=2)],
         rates=AnthropicRates(),
         calls_per_minute={model: 6000},
         max_tokens=3000,
     )
 
-    assert answers == {("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row")}
+    assert answers == {
+        ("p0:row-choice", model): RowChoiceAnswer(model, 1, "countertop row", "row", (2,))
+    }
 
 
 def test_counter_break_question_is_a_hold_only_two_picture_question() -> None:
@@ -505,7 +601,7 @@ def test_label_crops_and_wall_questions_share_one_batch_and_each_gets_its_own_an
         Side.UNSURE,
         "plan",
     )
-    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v1"}
+    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v2"}
     assert all(attempt.raw_response_text for attempt in attempts), "raw answers are kept (#985)"
 
 
@@ -548,6 +644,95 @@ def test_counter_break_answer_carries_where_the_stone_ends() -> None:
     assert '"stone_ends"' in COUNTER_BREAK_PROMPT
 
 
+def _definition(prompt: str, field: str) -> str:
+    """The prompt's definition of one answer field or value: its own line, `- "field": ...`."""
+    lines = [
+        line
+        for line in prompt.splitlines()
+        if re.match(rf'\s*-? ?(?:"[a-z_]+", )*"{field}"(?:, "[a-z_]+")*:', line)
+    ]
+    assert len(lines) == 1, f"{field} is defined once, on its own line: {lines}"
+    return lines[0]
+
+
+def test_the_counter_break_question_defines_every_field_and_value_with_examples() -> None:
+    """#1111: every field the reader answers, and every `stone_ends` value but `unsure`, has a
+    definition with an invented example; the yes/no fields show one of each."""
+    assert COUNTER_BREAK_PROMPT_ID == "claude-counter-break-v3"
+    for field in COUNTER_BREAK_SCHEMA["properties"]:  # type: ignore[attr-defined]
+        assert _definition(COUNTER_BREAK_PROMPT, field)
+    appliance = _definition(COUNTER_BREAK_PROMPT, "contains_tall_appliance")
+    assert "Example true:" in appliance and "Example false:" in appliance
+    why = _definition(COUNTER_BREAK_PROMPT, "why")
+    assert "Example:" in why and "Not an example:" in why
+    values = COUNTER_BREAK_SCHEMA["properties"]["stone_ends"]["enum"]  # type: ignore[index]
+    assert "open_end" in values
+    for value in values:
+        definition = _definition(COUNTER_BREAK_PROMPT, value)
+        assert value == "unsure" or "Example" in definition, value
+    assert "Example not to_walls:" in COUNTER_BREAK_PROMPT
+    assert re.search(r"[0-9]+ ?(\"|in|mm)", COUNTER_BREAK_PROMPT) is None, "no client value"
+
+
+def test_the_counter_break_question_says_which_span_and_which_colour_is_ours() -> None:
+    """The marked span is between the two magenta verticals of Picture 2, which shows the drawing
+    beyond each end; our marks are magenta, never the reviewer's red or yellow."""
+    text = COUNTER_BREAK_PROMPT
+    assert "Picture 2" in text and "between those two magenta verticals" in text
+    assert "beyond each end" in text and "neighbour" in text
+    assert "magenta" in text and "no reviewer markup uses" in text
+    assert "red" not in text.replace("Red or yellow", "").lower().split()
+
+
+def test_an_open_end_answer_parses_for_every_reader() -> None:
+    view = encode_png(4, 2, bytes(24))
+    for model in (OPUS, KIMI):
+        answers = read_crops_parallel(
+            [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
+            clients=FakeClients(
+                lambda _request: reply(
+                    {
+                        "contains_tall_appliance": False,
+                        "stone_ends": "open_end",
+                        "why": "open floor beyond the right end",
+                    }
+                )
+            ),
+            rates=AnthropicRates() if model == OPUS else Rates(),
+            calls_per_minute={model: 6000},
+            max_concurrent_calls=1,
+            max_tokens=100,
+            max_throttle_retries=0,
+            retry_backoff_seconds=0.001,
+            record_attempt=lambda _attempt: None,
+        )
+        answer = answers[("p0:counter-break", model)]
+        assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "open_end", model
+
+
+@pytest.mark.parametrize(
+    ("stored", "stone_ends"),
+    [
+        ({"contains_tall_appliance": True, "why": "fridge"}, "unsure"),  # v1: no stone_ends
+        ({"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "w"}, "to_walls"),
+        ({"contains_tall_appliance": False, "stone_ends": "no_stone", "why": "w"}, "no_stone"),
+    ],
+)
+def test_stored_v1_and_v2_counter_break_answers_still_parse(
+    stored: dict[str, object], stone_ends: str
+) -> None:
+    from extraction.slot_reader.bedrock import (
+        COUNTER_BREAK_PROMPT_IDS,
+        _CounterBreakReply,
+        parse_stored_reader_answer,
+    )
+
+    assert {"claude-counter-break-v1", "claude-counter-break-v2"} <= COUNTER_BREAK_PROMPT_IDS
+    assert COUNTER_BREAK_PROMPT_ID in COUNTER_BREAK_PROMPT_IDS
+    parsed = _CounterBreakReply.model_validate(parse_stored_reader_answer(json.dumps(stored)))
+    assert parsed.stone_ends == stone_ends
+
+
 # ---------------------------------------------------------------------------------------------
 # The Claude readers' fixed answer shape, effort and picture limits (#1051)
 # ---------------------------------------------------------------------------------------------
@@ -557,7 +742,7 @@ CLAUDE_PACE = {OPUS: 6000, SONNET: 6000}
 
 
 def span(text: str = '2"', **changes: object) -> dict[str, object]:
-    return good(text) | {"belongs": True} | changes
+    return good(text) | {"belongs": "yes"} | changes
 
 
 def claude_requests() -> dict[str, tuple[dict[str, Any], dict[str, object]]]:
@@ -716,7 +901,7 @@ def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() ->
 
     assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
     assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
 
 
 def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
@@ -739,7 +924,69 @@ def test_the_claude_label_question_defines_every_answer_field() -> None:
     assert "A single dimension is not combined, even with a stacked fraction" in CLAUDE_SPAN_PROMPT
     assert "inches in brackets" in CLAUDE_SPAN_PROMPT and "is not combined" in CLAUDE_SPAN_PROMPT
     assert CLAUDE_SPAN_PROMPT_IDS == {
+        "claude-slot-span-v4",
         "claude-slot-span-v3",
         "claude-slot-span-v2",
         "claude-slot-span-v1",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# #1110: "unsure" is its own answer, and the span's box has a colour the reviewer never uses
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_claude_label_question_asks_yes_no_or_unsure_and_names_the_magenta_box() -> None:
+    """v3 told a reader to answer false when merely unsure, and two such answers counted as "no
+    label". It also called the span's mark a red box while telling the reader to ignore red
+    markup. v4 defines `belongs` as yes / no / unsure and names the box's real colour."""
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+    assert '- "belongs": "yes" if you are sure' in CLAUDE_SPAN_PROMPT
+    assert '"no" only if you are sure the marked span has no printed dimension label' in (
+        CLAUDE_SPAN_PROMPT
+    )
+    assert '"unsure" if you cannot tell' in CLAUDE_SPAN_PROMPT
+    assert "Being unsure is never a no" in CLAUDE_SPAN_PROMPT
+    assert '"belongs": "yes|no|unsure"' in CLAUDE_SPAN_PROMPT
+    assert "or you are unsure, set belongs to false" not in CLAUDE_SPAN_PROMPT
+    assert "magenta" in CLAUDE_SPAN_PROMPT and "magenta-boxed span" in CLAUDE_SPAN_PROMPT
+    assert "red box" not in CLAUDE_SPAN_PROMPT and "red-boxed" not in CLAUDE_SPAN_PROMPT
+    assert "red, blue or yellow reviewer markup" in CLAUDE_SPAN_PROMPT
+    assert SPAN_SCHEMA["properties"]["belongs"] == {  # type: ignore[index]
+        "type": "string",
+        "enum": ["yes", "no", "unsure"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [("yes", Belongs.YES), ("no", Belongs.NO), ("unsure", Belongs.UNSURE)],
+)
+def test_a_claude_span_answer_keeps_each_of_its_three_words(word: str, expected: Belongs) -> None:
+    clients = FakeClients(lambda _request: reply(span('2"' if word == "yes" else "", belongs=word)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    answer = answers[("slot", OPUS)]
+    assert isinstance(answer, ReaderAnswer) and answer.belongs is expected
+    assert answer.usable is (word == "yes")
+
+
+def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> None:
+    """The live v4 question takes only its three words; the old boolean is for stored answers."""
+    clients = FakeClients(lambda _request: reply(span(belongs=False)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    assert answers[("slot", OPUS)] is None
+    assert len(clients.requests) == 2, "asked once more, then abstained"
