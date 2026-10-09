@@ -19,6 +19,7 @@ import { CountertopStrip } from './CountertopStrip';
 import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from './architect-line';
 import { SplitPageNote } from './split-page-note';
 import { CarriedOver } from './carried-over';
+import { DrawnLengthNote } from './drawn-length-note';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -48,7 +49,19 @@ const COLUMNS: ColumnDef<CountertopResult>[] = [
   { id: 'difference', accessorFn: (r) => sortValue(r.delta) },
 ];
 
-export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; actions: RowActions }) {
+export function CountertopTable({
+  rows,
+  actions,
+  architectNotice = false,
+}: {
+  rows: CountertopResult[];
+  actions: RowActions;
+  /**
+   * Every countertop is "not compared" with the architect for the same reason, and the dashboard
+   * says so once above the table (#1126): no "not compared" line under each row.
+   */
+  architectNotice?: boolean;
+}) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const body = useRef<HTMLTableSectionElement>(null);
   // Column sorting is the reviewer's choice; until they pick one, rows keep the order they came in
@@ -125,7 +138,7 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                     tabIndex={0}
                     aria-expanded={open}
                     onKeyDown={(e) => onRowKey(e, row)}
-                    className={cn('outline-none focus-visible:bg-accent/70', rowNeedsYou(row) && 'bg-outcome-review-bg/40', architectState(row.architect ?? null) !== 'none' && 'border-b-0')}
+                    className={cn('outline-none focus-visible:bg-accent/70', rowNeedsYou(row) && 'bg-outcome-review-bg/40', hasArchitectLine(row, architectNotice) && 'border-b-0')}
                   >
                     <TableCell className="pr-0">
                       <Button variant="ghost" size="icon-xs" aria-label={open ? 'Hide details' : 'Show details'} aria-expanded={open} onClick={() => toggle(row.row_id)}>
@@ -141,17 +154,18 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
                         {row.hold && isSplitPage(row) && (
                           <span data-slot="split-reason" className="line-clamp-3 text-xs whitespace-normal text-muted-foreground" title={row.hold.reason}>{row.hold.reason}</span>
                         )}
+                        <DrawnLengthNote row={row} clamp />
                       </div>
                     </TableCell>
                     <TableCell><ResultCell row={row} /></TableCell>
                     <TableCell className="num text-right">{row.printed_overall?.display ?? '—'}</TableCell>
                     <TableCell className="num text-right">{row.expected_total?.display ?? '—'}</TableCell>
                     <TableCell className="text-right"><Delta row={row} /></TableCell>
-                    <TableCell>{isSplitPage(row) ? <SplitWalls /> : <WallGlyph layout={row.wall_layout} compactSource />}</TableCell>
+                    <TableCell>{isSplitPage(row) ? <SplitWalls /> : <WallGlyph layout={row.wall_layout} compactSource labelled />}</TableCell>
                     <TableCell><DecidedBy row={row} /></TableCell>
                     <TableCell className="text-right"><Actions row={row} actions={actions} /></TableCell>
                   </TableRow>
-                  <ArchitectRow row={row} actions={actions} />
+                  {hasArchitectLine(row, architectNotice) && <ArchitectRow row={row} actions={actions} />}
                   {open && (
                     <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={10} className="bg-muted/30 whitespace-normal">
@@ -196,7 +210,8 @@ export function CountertopTable({ rows, actions }: { rows: CountertopResult[]; a
               ) : row.hold ? (
                 <div className="mt-2"><HoldChip hold={row.hold} /></div>
               ) : null}
-              <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp />
+              <DrawnLengthNote row={row} className="mt-2" />
+              {hasArchitectLine(row, architectNotice) && <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp />}
               <ArchitectAction row={row} actions={actions} />
               {/* A split page has no pieces to show: its note above says why. */}
               {!isSplitPage(row) && (
@@ -268,7 +283,7 @@ function DecidedBy({ row }: { row: CountertopResult }) {
       <Tooltip>
         <TooltipTrigger asChild>
           <span tabIndex={0} className="inline-flex items-center gap-1.5 rounded-md text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <span aria-hidden="true" className="num flex size-6 items-center justify-center rounded-full bg-secondary text-[10px] font-medium">{initials(decision.actor)}</span>
+            <span aria-hidden="true" className="num flex size-6 items-center justify-center rounded-full bg-secondary text-xs font-medium">{initials(decision.actor)}</span>
             <span>{decisionWords(decision.action, row.outcome)}</span>
             {decision.carried_over && <CarriedOver />}
           </span>
@@ -331,6 +346,13 @@ function HoldChip({ hold }: { hold: NonNullable<CountertopResult['hold']> }) {
       <TooltipContent className="max-w-80">{hold.reason}</TooltipContent>
     </Tooltip>
   );
+}
+
+/** Whether the row gets its own architect line: not when the shared notice already says it (#1126). */
+function hasArchitectLine(row: CountertopResult, architectNotice: boolean): boolean {
+  const state = architectState(row.architect ?? null);
+  if (state === 'none') return false;
+  return !(architectNotice && state === 'not-compared');
 }
 
 /** No walls to ask about on a split page (#1093): no line was chosen, and it has no countertop card. */
@@ -399,6 +421,7 @@ function ReadDetails({ row }: { row: CountertopResult }) {
         )}
       </div>
       {row.hold && <p className="text-xs text-muted-foreground"><HoldChip hold={row.hold} /> <span className="ml-1">{row.hold.reason}</span></p>}
+      <DrawnLengthNote row={row} />
       <CountertopStrip row={row} />
     </>
   );

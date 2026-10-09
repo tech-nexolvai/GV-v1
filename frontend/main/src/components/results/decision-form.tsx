@@ -33,17 +33,17 @@ export function DecisionFields({
         className="w-full"
       >
         <ToggleGroupItem value="confirm" className={choiceClass}>
-          {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">1</kbd>}
+          {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-xs text-muted-foreground sm:inline">1</kbd>}
           {labels.confirm}
         </ToggleGroupItem>
         {allowProblem && (
           <ToggleGroupItem value="problem" className={choiceClass}>
-            {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">2</kbd>}
+            {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-xs text-muted-foreground sm:inline">2</kbd>}
             {labels.problem}
           </ToggleGroupItem>
         )}
         <ToggleGroupItem value="dismiss" className={choiceClass}>
-          {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-[10px] text-muted-foreground sm:inline">3</kbd>}
+          {big && <kbd className="num mr-1.5 hidden rounded border px-1 text-xs text-muted-foreground sm:inline">3</kbd>}
           {labels.dismiss}
         </ToggleGroupItem>
       </ToggleGroup>

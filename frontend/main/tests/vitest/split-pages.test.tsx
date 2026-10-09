@@ -49,7 +49,8 @@ const SPLIT = row('split', 3, {
   hold: { code: 'row-choice-split', reason: SPLIT_REASON },
   architect: notChosen,
 });
-const PASSED = row('ok', 5, { architect: notChosen });
+// A countertop with a chosen line has its own reason, so the split page keeps its own Architect line.
+const PASSED = row('ok', 5, { architect: { ...notChosen, not_compared_reason: 'Synthetic: the architect prints only centre lines on this page.' } });
 const NO_COUNTERTOP = [
   { page_number: 15, reason: 'Synthetic: both AIs saw only tall units on this page.' },
   { page_number: 17, reason: 'Synthetic: both AIs saw a cover sheet.' },

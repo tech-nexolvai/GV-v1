@@ -31,6 +31,7 @@ import { ArchitectPairingPanel } from './architect-pairing';
 import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
 import { WallGlyph, WallLayoutPicture } from '@/components/results/wall-glyph';
+import { DrawnLengthNote } from '@/components/results/drawn-length-note';
 import { DrawingViewer, MarkNotes } from '@/components/drawing/drawing-viewer';
 import { TonePill } from '@/components/drawing/page-canvas';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -325,13 +326,13 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
           </div>
           <div className="flex items-center gap-1">
             <Button size="sm" variant="outline" onClick={() => go(index - 1)} disabled={draft.saving || savingWall || index <= 0 || list.length === 0} aria-label="Previous item (K)">
-              <ChevronLeft /> <kbd className="num text-[10px] text-muted-foreground">K</kbd>
+              <ChevronLeft /> <kbd className="num text-xs text-muted-foreground">K</kbd>
             </Button>
             <span className="num w-14 text-center text-xs text-muted-foreground" aria-live="polite">
               {list.length ? `${index + 1} / ${list.length}` : '—'}
             </span>
             <Button size="sm" variant="outline" onClick={() => go(index + 1)} disabled={draft.saving || savingWall || index >= list.length - 1} aria-label="Next item (J)">
-              <kbd className="num text-[10px] text-muted-foreground">J</kbd> <ChevronRight />
+              <kbd className="num text-xs text-muted-foreground">J</kbd> <ChevronRight />
             </Button>
             <DialogClose asChild>
               <Button size="icon-sm" variant="ghost" aria-label="Close the queue">
@@ -526,7 +527,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="submit" disabled={!draft.ready || draft.saving}>
                     {draft.saving ? 'Saving…' : 'Record decision'}
-                    <kbd className="num ml-1 hidden text-[10px] opacity-70 sm:inline">Enter</kbd>
+                    <kbd className="num ml-1 hidden text-xs opacity-70 sm:inline">Enter</kbd>
                   </Button>
                   {changing && (
                     <Button type="button" variant="ghost" onClick={() => { draft.reset(); setChanging(false); }}>
@@ -544,27 +545,33 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   );
 }
 
-/** Three or four facts as chips: printed, needed, the difference, the walls. */
+/**
+ * Three or four facts as chips: printed, needed, the difference, the walls; then the row's "drawn
+ * length not checked" note when the API has one (#1107).
+ */
 function Facts({ row }: { row: CountertopResult }) {
   const { text, sign } = formatDelta(row.delta);
   return (
-    <dl data-slot="queue-facts" className="flex flex-wrap gap-2 text-xs">
-      <Chip term="Printed" value={row.printed_overall?.display ?? '—'} />
-      <Chip term="Needed" value={row.expected_total?.display ?? '—'} />
-      <div className="flex items-center gap-1.5 rounded-full border px-2.5 py-1">
-        <dt className="text-muted-foreground">Difference</dt>
-        <dd className={cn('num inline-flex items-center gap-1 font-medium', sign === null ? 'text-muted-foreground' : sign === 0 ? 'text-outcome-pass-fg' : 'text-outcome-fail-fg')}>
-          {sign !== null && <OutcomeIcon outcome={sign === 0 ? 'PASS' : 'FAIL'} size={12} />}
-          {sign === null ? '—' : text}
-        </dd>
-      </div>
-      <div className="flex items-center gap-1.5 rounded-full border px-2.5 py-1">
-        <dt className="text-muted-foreground">Walls</dt>
-        <dd>
-          <WallGlyph layout={row.wall_layout} />
-        </dd>
-      </div>
-    </dl>
+    <div className="flex flex-col gap-2">
+      <dl data-slot="queue-facts" className="flex flex-wrap gap-2 text-xs">
+        <Chip term="Printed" value={row.printed_overall?.display ?? '—'} />
+        <Chip term="Needed" value={row.expected_total?.display ?? '—'} />
+        <div className="flex items-center gap-1.5 rounded-full border px-2.5 py-1">
+          <dt className="text-muted-foreground">Difference</dt>
+          <dd className={cn('num inline-flex items-center gap-1 font-medium', sign === null ? 'text-muted-foreground' : sign === 0 ? 'text-outcome-pass-fg' : 'text-outcome-fail-fg')}>
+            {sign !== null && <OutcomeIcon outcome={sign === 0 ? 'PASS' : 'FAIL'} size={12} />}
+            {sign === null ? '—' : text}
+          </dd>
+        </div>
+        <div className="flex items-center gap-1.5 rounded-full border px-2.5 py-1">
+          <dt className="text-muted-foreground">Walls</dt>
+          <dd>
+            <WallGlyph layout={row.wall_layout} labelled />
+          </dd>
+        </div>
+      </dl>
+      <DrawnLengthNote row={row} />
+    </div>
   );
 }
 
@@ -737,7 +744,7 @@ function HistoryList({ findingId, outcome, projectId, packageId }: { findingId: 
           <span className="font-medium">
             {decisionWords(action.action, outcome)}
             {action.carried_over && <> <CarriedOver /></>}
-            {i === 0 && <span className="ml-1.5 rounded-full border px-1.5 text-[10px] font-normal">latest</span>}
+            {i === 0 && <span className="ml-1.5 rounded-full border px-1.5 text-xs font-normal">latest</span>}
           </span>
           <span className="text-xs">
             {action.actor} · <span className="num">{new Date(action.created_at).toLocaleString()}</span>

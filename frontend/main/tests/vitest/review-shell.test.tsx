@@ -53,8 +53,19 @@ describe('review stepper', () => {
     expect(items).toHaveLength(6);
     expect(items[3].getAttribute('aria-current')).toBe('step');
     expect(nav.textContent).toContain('Step 3 of 6: Checks, done, 9 recorded');
-    expect(nav.textContent).toContain('Step 4 of 6: Decisions, current step, 3 need you');
+    expect(nav.textContent).toContain('Step 4 of 6: Decisions, current step');
     expect(nav.textContent).toContain('Step 6 of 6: Report, not started');
+  });
+
+  it('the Decisions step shows where the review stands, not how many need you (that is on the header and the tab, #1126)', () => {
+    render(<Stepper {...base} readiness={{ blockingFindings: 15, canApprove: false, reason: '15 findings need a decision' }} />);
+    const nav = screen.getByRole('navigation', { name: 'Review progress' });
+    const decisions = nav.querySelector('[data-step="decisions"]') as HTMLElement;
+    expect(decisions.getAttribute('data-state')).toBe('current');
+    expect(decisions.textContent).not.toContain('15');
+    expect(nav.textContent).not.toContain('15');
+    // The checks step keeps its own, different number.
+    expect(nav.querySelector('[data-step="checks"]')?.textContent).toContain('9');
   });
 
   it('a blocked step says why, and the reason is reachable by keyboard', async () => {
@@ -172,13 +183,13 @@ describe('app shell', () => {
     localStorage.clear();
   });
 
-  function Shell({ children }: { children?: React.ReactNode }) {
+  function Shell({ children, openPackage = 'p1' }: { children?: React.ReactNode; openPackage?: string | null }) {
     return (
       <AppShell
         title="Synthetic vendor A"
         crumbs={[{ label: 'Documents', onSelect: () => {} }, { label: 'Synthetic vendor A' }, { label: 'Revision 1' }]}
-        activePage="review"
-        activePackage="p1"
+        activePage={openPackage ? 'review' : 'documents'}
+        activePackage={openPackage}
         theme="light"
         sidebarRefreshKey={0}
         liveNeedYou={null}
@@ -209,11 +220,18 @@ describe('app shell', () => {
   });
 
   it('lists recent reviews with their status and how many need you', async () => {
-    render(<Shell />);
+    render(<Shell openPackage={null} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     expect(await within(sidebar).findByText('Synthetic vendor A')).toBeTruthy();
-    expect(await screen.findByText('need you')).toBeTruthy();
+    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 need you'));
     expect(document.querySelector('[data-status="APPROVED"]')).not.toBeNull();
+  });
+
+  it('the open review says only that it needs you: its number is on its header and tab (#1126)', async () => {
+    render(<Shell />);
+    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
+    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('Needs you'));
+    expect(sidebar.querySelector('[data-slot="need-you"] [data-outcome-icon="REVIEW_REQUIRED"]')).not.toBeNull();
   });
 
   it('keyboard order: skip link, navigation, header (where you are → status → action), then the page', async () => {

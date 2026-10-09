@@ -41,10 +41,12 @@ interface Item {
   hold: { code: string; reason: string } | null;
   reviewer_decision: { action: string; carried_over?: boolean } | null;
   architect?: { outcome: string | null; finding_id: string | null; needs_decision: boolean; not_compared_reason: string | null } | null;
+  drawn_length_note?: string | null;
 }
 interface Results {
   items: Item[];
   pages_without_countertop?: { page_number: number; reason: string }[];
+  rows_not_checked?: { page_number: number; reason: string }[];
 }
 interface Readiness {
   can_approve: boolean;
@@ -158,6 +160,12 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
     const answer = await results();
     const table = page.locator('[data-slot="countertop-table"] table');
     await expect(table).toBeVisible();
+    // The one "not compared" reason every row with an architect result shares, or null (#1126).
+    // As the screen's architectState: a result is recorded only with both a finding and an outcome.
+    const recorded = (i: Item) => Boolean(i.architect?.finding_id) && i.architect?.outcome !== null && i.architect?.outcome !== undefined;
+    const withArchitect = answer.items.filter((i) => i.architect && (recorded(i) || i.architect.not_compared_reason));
+    const reasons = new Set(withArchitect.map((i) => (recorded(i) ? null : i.architect!.not_compared_reason)));
+    const sharedReason = withArchitect.length > 0 && reasons.size === 1 && !reasons.has(null) ? [...reasons][0] : null;
     await expect(table.locator('tbody tr[data-row-id]')).toHaveCount(answer.items.length);
     for (const item of answer.items) {
       const tr = table.locator(`tr[data-row-id="${item.row_id}"]`);
@@ -167,16 +175,26 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       await expect(cells.nth(4), `${when}: printed on p${item.page_number}`).toHaveText(item.printed_overall?.display ?? '—');
       await expect(cells.nth(5), `${when}: needed on p${item.page_number}`).toHaveText(item.expected_total?.display ?? '—');
       await expect(cells.nth(6), `${when}: difference on p${item.page_number}`).toContainText(differenceWords(item.delta));
+      // The drawn-length note (#1107), only where the API sends one.
+      if (item.drawn_length_note) await expect(tr.locator('[data-slot="drawn-length-note"]'), `${when}: drawn-length note on p${item.page_number}`).toHaveText(item.drawn_length_note);
+      else await expect(tr.locator('[data-slot="drawn-length-note"]')).toHaveCount(0);
       if (item.hold) await expect(tr.locator(`[data-hold="${item.hold.code}"]`), `${when}: hold on p${item.page_number}`).toBeVisible();
       else await expect(tr.locator('[data-hold]')).toHaveCount(0);
       // "Carried over" exactly where the API says so, and never beside a fresh decision.
       if (item.reviewer_decision?.carried_over) await expect(tr.locator('[data-slot="carried-over"]'), `${when}: carried over on p${item.page_number}`).toBeVisible();
       else await expect(tr.locator('[data-slot="carried-over"]'), `${when}: no carried-over label on p${item.page_number}`).toHaveCount(0);
-      // "Matches the architect": a line under every row; "not compared" asks for nothing.
-      if (item.architect?.not_compared_reason) {
+      // "Matches the architect": a line under the row; "not compared" asks for nothing. When every
+      // row shares one "not compared" reason it is said once above the table instead (#1126).
+      if (item.architect?.not_compared_reason && sharedReason === null) {
         await expect(table.locator(`tr[data-architect-row="${item.row_id}"]`)).toContainText('Not compared');
         await expect(table.locator(`tr[data-architect-row="${item.row_id}"] button`)).toHaveCount(0);
       }
+    }
+    const notice = page.locator('[data-slot="architect-notice"]');
+    if (sharedReason === null) await expect(notice, `${when}: no shared architect notice`).toHaveCount(0);
+    else {
+      await expect(notice, `${when}: one architect notice`).toHaveCount(1);
+      await expect(table.locator('tr[data-architect-row]'), `${when}: no per-row "not compared" lines`).toHaveCount(0);
     }
     const cards = page.locator('[data-slot="kpi-cards"] button');
     const card = (word: string) => cards.filter({ has: page.getByText(word, { exact: true }) }).locator('.num');
@@ -192,6 +210,8 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       else if (needsYou(i)) slices['Needs your decision'] += 1;
       else slices['Not checkable'] += 1;
     }
+    // Each slice's count is in the legend (visible only for "Not checkable"; the rest for screen
+    // readers, since the cards show them, #1126).
     for (const [word, count] of Object.entries(slices)) {
       const slice = legend.locator('li').filter({ has: page.getByText(word, { exact: true }) }).locator('span.num').first();
       await expect(slice, `${when}: donut ${word}`).toHaveText(String(count));
@@ -204,6 +224,15 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       await expect(list.locator('li')).toHaveCount(pages.length);
       for (const p of pages) await expect(list.locator('li').filter({ hasText: `Page ${p.page_number}` })).toContainText(p.reason.slice(0, 40));
       await expect(list.locator('button')).toHaveCount(0);
+    }
+    // Countertop lines not checked (#1108): listed only when the API sends any, nothing to click.
+    const notChecked = answer.rows_not_checked ?? [];
+    const lines = page.getByRole('region', { name: 'Countertop lines not checked' });
+    if (notChecked.length === 0) await expect(lines).toHaveCount(0);
+    else {
+      await expect(lines.locator('li')).toHaveCount(notChecked.length);
+      for (const r of notChecked) await expect(lines.locator('li').filter({ hasText: `Page ${r.page_number}` }).first()).toContainText(r.reason.slice(0, 40));
+      await expect(lines.locator('button')).toHaveCount(0);
     }
     return answer;
   }

@@ -11,6 +11,7 @@
  */
 import type { CountertopResult, ExactValue } from '@/api/client';
 import type { Finding } from '@/data/types';
+import { architectState } from './architect';
 
 export type Bucket = 'needs-you' | 'fail' | 'pass' | 'not-checkable';
 export type Filter = 'all' | 'needs-you' | 'fail' | 'pass' | 'held' | 'automatic';
@@ -153,6 +154,25 @@ export function signOffSummary(rows: readonly CountertopResult[]): SignOffSummar
     else summary.byYou += 1;
   }
   return summary;
+}
+
+/**
+ * The one "not compared" reason every countertop shares (#1126), or null. When every row with an
+ * architect result is "not compared" for the same reason, the screen says it once above the table
+ * instead of under each row. Any row that was compared, waits for a pairing or has another reason
+ * keeps the per-row lines. The reason is the API's own text, never reworded here.
+ */
+export function sharedNotComparedReason(rows: readonly Pick<CountertopResult, 'architect'>[]): string | null {
+  let shared: string | null = null;
+  for (const row of rows) {
+    const result = row.architect ?? null;
+    const state = architectState(result);
+    if (state === 'none') continue;
+    if (state !== 'not-compared' || !result?.not_compared_reason) return null;
+    if (shared === null) shared = result.not_compared_reason;
+    else if (shared !== result.not_compared_reason) return null;
+  }
+  return shared;
 }
 
 /** The filter a reviewer lands on: what needs them, when anything does. */

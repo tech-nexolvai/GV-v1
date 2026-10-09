@@ -15,12 +15,20 @@ const ICONS: Record<StepId, typeof Check> = {
 
 const STATE_WORDS = { done: 'done', current: 'current step', blocked: 'blocked', upcoming: 'not started' } as const;
 
+/**
+ * The number a step shows, or null. Decisions shows none (#1126): how many need the reviewer is on
+ * the header's "Review N items" and the Results tab; the step shows only where the review stands.
+ */
+function shownCount(step: ReviewStep): number | null {
+  return step.id === 'decisions' ? null : step.count;
+}
+
 /** What a step's number means, said for a screen reader. */
 function countWords(step: ReviewStep): string {
-  if (step.count === null) return '';
-  if (step.id === 'checks') return `, ${step.count} recorded`;
-  if (step.id === 'decisions') return `, ${step.count} need you`;
-  return `, ${step.count}`;
+  const count = shownCount(step);
+  if (count === null) return '';
+  if (step.id === 'checks') return `, ${count} recorded`;
+  return `, ${count}`;
 }
 
 /**
@@ -46,7 +54,7 @@ export function ReviewStepper({ steps, className }: { steps: ReviewStep[]; class
       {active && (
         <p aria-hidden="true" className="mt-1.5 flex items-center gap-1.5 text-xs sm:hidden">
           <span className="font-medium">{active.label}</span>
-          {active.count !== null && <span className="num rounded-full bg-muted px-1.5">{active.count}</span>}
+          {shownCount(active) !== null && <span className="num rounded-full bg-muted px-1.5">{shownCount(active)}</span>}
           {active.note && <span className="truncate text-muted-foreground">{active.note}</span>}
         </p>
       )}
@@ -83,17 +91,9 @@ function StepItem({ step, position, total }: { step: ReviewStep; position: numbe
       </span>
       <Icon aria-hidden="true" className={cn('hidden size-4 shrink-0', active ? 'sm:block' : 'md:block')} />
       <span className={cn('hidden', active ? 'sm:inline' : 'lg:inline')}>{step.label}</span>
-      {step.count !== null && (
-        <span
-          aria-hidden="true"
-          className={cn(
-            'num rounded-full px-1.5 text-xs',
-            step.id === 'decisions' && step.count > 0 ? 'bg-outcome-review-bg text-outcome-review-fg' : 'bg-muted text-muted-foreground',
-            'hidden',
-            active ? 'sm:inline' : 'lg:inline',
-          )}
-        >
-          {step.count}
+      {shownCount(step) !== null && (
+        <span aria-hidden="true" className={cn('num hidden rounded-full bg-muted px-1.5 text-xs text-muted-foreground', active ? 'sm:inline' : 'lg:inline')}>
+          {shownCount(step)}
         </span>
       )}
       {active && step.id === 'reading' && (

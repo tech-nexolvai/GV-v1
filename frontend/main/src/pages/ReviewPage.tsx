@@ -249,7 +249,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   useEffect(() => {
     let current = true;
     getCountertopResults(projectId(), packageId).then(
-      (answer) => { if (current) setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [] }); },
+      (answer) => { if (current) setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [] }); },
       (error: unknown) => {
         if (!current) return;
         const message = error instanceof Error ? error.message : String(error);

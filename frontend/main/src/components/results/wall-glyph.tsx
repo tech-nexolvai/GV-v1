@@ -5,19 +5,50 @@ import type { CountertopResult } from '@/api/client';
 /**
  * The wall layout as a tiny plan view (#1039): the back wall across the top, the end walls down
  * the sides, the stone as the bar between them. Walls that are there are solid; walls that are not
- * are faint dashes; an unknown layout is a "?" — never a guessed drawing.
+ * are faint dashes. A layout that is not established is said in words ("Walls not set", #1126),
+ * never a guessed drawing and never a lone "?".
  */
-export function WallGlyph({ layout, className, compactSource = false }: { layout: CountertopResult['wall_layout']; className?: string; /** Hide the source word below 1536px (it stays in the tooltip). */ compactSource?: boolean }) {
+export function WallGlyph({
+  layout,
+  className,
+  compactSource = false,
+  labelled = false,
+}: {
+  layout: CountertopResult['wall_layout'];
+  className?: string;
+  /** Hide the source word below 1536px (it stays in the tooltip). */
+  compactSource?: boolean;
+  /** A "Walls" term is already beside it, so an unknown layout says only "Not set". */
+  labelled?: boolean;
+}) {
   const walls = wallsOf(layout.config);
+  if (walls === null) {
+    return (
+      <span data-slot="wall-glyph" data-walls="not-set" title={WALL_SOURCE_TITLE[layout.source]} className={cn('inline-flex items-center gap-1 text-xs text-muted-foreground', className)}>
+        <span className="inline-block h-3 w-4 shrink-0 rounded-[2px] border border-dashed border-muted-foreground/60" aria-hidden="true" />
+        {unknownWords(layout, labelled)}
+      </span>
+    );
+  }
   return (
     <span className={cn('inline-flex items-center gap-1.5', className)} data-slot="wall-glyph">
-      {walls === null ? <UnknownWalls label={labelOf(layout)} /> : <WallLines walls={walls} label={labelOf(layout)} />}
-      <span title={WALL_SOURCE_TITLE[layout.source]} className={cn('rounded-full border px-1.5 text-[11px] leading-4 text-muted-foreground', compactSource && 'hidden 2xl:inline')}>
+      <WallLines walls={walls} label={labelOf(layout)} />
+      <span title={WALL_SOURCE_TITLE[layout.source]} className={cn('rounded-full border px-1.5 text-xs leading-4 text-muted-foreground', compactSource && 'hidden 2xl:inline')}>
         {WALL_SOURCE_WORD[layout.source]}
         <span className="sr-only"> ({WALL_SOURCE_TITLE[layout.source]})</span>
       </span>
     </span>
   );
+}
+
+/**
+ * "Walls not set" when nobody has set them. A layout the rulebook publishes no picture for is named by
+ * the API's human label, or "Walls set (no picture)": never a raw code such as `l_shape`.
+ */
+function unknownWords(layout: CountertopResult['wall_layout'], labelled: boolean): string {
+  if (layout.source === 'not established' || (!layout.label && !layout.config)) return labelled ? 'Not set' : 'Walls not set';
+  if (layout.label) return labelled ? `${layout.label} (no picture)` : `Walls: ${layout.label} (no picture)`;
+  return labelled ? 'Set (no picture)' : 'Walls set (no picture)';
 }
 
 /**
@@ -29,13 +60,11 @@ export function WallLayoutPicture({ config, className }: { config: string; class
   return walls === null ? null : <WallLines walls={walls} className={className} />;
 }
 
-function labelOf(layout: CountertopResult['wall_layout']): string {
-  const walls = wallsOf(layout.config);
-  return `${walls === null ? 'Walls not established' : `Walls: ${layout.label ?? layout.config}`} — ${WALL_SOURCE_TITLE[layout.source]}`;
-}
+/** Words for the three published layouts, used only when the API sends no label of its own. */
+const LAYOUT_WORDS: Record<string, string> = { back_left_right: 'back wall and both ends', back_only: 'back wall only', island: 'island, no walls' };
 
-function UnknownWalls({ label }: { label: string }) {
-  return <span aria-label={label} title={label} role="img" className="num inline-flex size-6 items-center justify-center rounded border border-dashed text-xs text-muted-foreground">?</span>;
+function labelOf(layout: CountertopResult['wall_layout']): string {
+  return `Walls: ${layout.label ?? LAYOUT_WORDS[layout.config ?? ''] ?? 'set'} — ${WALL_SOURCE_TITLE[layout.source]}`;
 }
 
 /** The plan view: back wall across the top, the end walls down the sides, the stone between. */

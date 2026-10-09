@@ -24,6 +24,7 @@ import {
 } from '@/lib/drawing-viewer';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { SplitPageNote } from '@/components/results/split-page-note';
+import { DrawnLengthNote } from '@/components/results/drawn-length-note';
 import { isSplitPage } from '@/lib/countertop-results';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
@@ -311,8 +312,13 @@ export function DrawingViewer({
             {target.row?.hold && isSplitPage(target.row) ? (
               <SplitPageNote hold={target.row.hold} />
             ) : target.row && (
-              <section aria-label="Countertop picture">
+              <section aria-label="Countertop picture" className="flex flex-col gap-2">
                 <CountertopStrip row={target.row} showHoldReason={false} />
+                {/* A held row's reason, said here unless "No readings used" below already says it. */}
+                {target.row.hold && chain.status !== 'loading' && !(readings.length === 0 && chainData?.trace.kind === 'abstention') && (
+                  <p data-slot="drawing-hold-reason" className="text-xs text-muted-foreground">{target.row.hold.reason}</p>
+                )}
+                <DrawnLengthNote row={target.row} />
               </section>
             )}
             <section aria-labelledby="drawing-readings" className="flex flex-col gap-2">

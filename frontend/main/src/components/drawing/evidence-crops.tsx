@@ -33,7 +33,7 @@ export function EvidenceCrops({
       {roles.map((role) => (
         <section key={role} aria-label={ROLE_WORD[role] ?? role} className="flex min-w-0 flex-col gap-2">
           <h4 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <span className="rounded border px-1 font-mono text-[10px] tracking-wide">{role}</span>
+            <span className="num rounded border px-1 text-xs tracking-wide">{role}</span>
             {ROLE_WORD[role] ?? role}
           </h4>
           <div className="grid grid-cols-2 gap-2">
@@ -71,7 +71,7 @@ function Crop({ reading, cache, projectId, packageId, active, onPick }: { readin
         {state.status === 'loading' && <Skeleton className="size-full rounded-none" />}
         {state.status === 'ready' && <img src={state.url} alt={`${reading.label}, stored crop`} className="max-h-full max-w-full object-contain" />}
         {(state.status === 'error' || state.status === 'not-ready') && (
-          <span className="flex flex-col items-center gap-1 px-2 text-center text-[11px] text-muted-foreground">
+          <span className="flex flex-col items-center gap-1 px-2 text-center text-xs text-muted-foreground">
             <FileImage className="size-4" aria-hidden="true" />
             Crop not available
           </span>
@@ -81,7 +81,7 @@ function Crop({ reading, cache, projectId, packageId, active, onPick }: { readin
         </span>
       </button>
       {(state.status === 'error' || state.status === 'not-ready') && (
-        <button type="button" onClick={retry} className="self-start text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground">
+        <button type="button" onClick={retry} className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
           Try again
         </button>
       )}
@@ -93,21 +93,24 @@ function Crop({ reading, cache, projectId, packageId, active, onPick }: { readin
  * One line for a result with no crops, and the reason behind a "?". It brings its own tooltip
  * provider, so the legacy evidence panel can use it too.
  */
-export function NoCrops({ line, why }: { line: string; why: string }) {
+export function NoCrops({ line, why, reason }: { line: string; why: string; /** Said on screen under the line: the hold reason (#1126). */ reason?: string }) {
   return (
     <TooltipProvider delayDuration={250}>
-      <p data-slot="no-crops" className="flex items-center gap-1.5 font-sans text-sm text-muted-foreground">
-        <FileImage className="size-4 shrink-0" aria-hidden="true" />
-        {line}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button type="button" className="inline-flex size-5 items-center justify-center rounded-full border text-xs" aria-label={`Why: ${line}`}>
-              ?
-            </button>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-64">{why}</TooltipContent>
-        </Tooltip>
-      </p>
+      <div data-slot="no-crops" className="flex flex-col gap-1 font-sans text-sm text-muted-foreground">
+        <p className="flex items-center gap-1.5">
+          <FileImage className="size-4 shrink-0" aria-hidden="true" />
+          {line}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" className="inline-flex size-5 items-center justify-center rounded-full border text-xs" aria-label={`Why: ${line}`}>
+                ?
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-64">{why}</TooltipContent>
+          </Tooltip>
+        </p>
+        {reason && <p data-slot="no-crops-reason" className="text-xs">{reason}</p>}
+      </div>
     </TooltipProvider>
   );
 }

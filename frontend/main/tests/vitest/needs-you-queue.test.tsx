@@ -186,6 +186,19 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(title()).toBe('Synthetic countertop fail');
   });
 
+  it('an item\'s facts say the walls in words, and carry the row\'s drawn-length note only when it has one (#1126, #1107)', () => {
+    const NOTE = 'Drawn length not checked (no scale): piece 2, the overall';
+    setup({ rows: [FAIL, DONE, PANELS, { ...WALLS, drawn_length_note: NOTE }] });
+    expect(title()).toBe('Synthetic countertop walls');
+    const item = () => document.querySelector('[data-slot="queue-item"]') as HTMLElement;
+    expect(item().querySelector('[data-slot="drawn-length-note"]')?.textContent).toBe(NOTE);
+    const walls = [...item().querySelectorAll('[data-slot="queue-facts"] > div')].find((chip) => chip.querySelector('dt')?.textContent === 'Walls')!;
+    expect(walls.querySelector('dd')?.textContent).toBe('Not set');
+    key('j');
+    expect(title()).toBe('Synthetic countertop panels');
+    expect(item().querySelector('[data-slot="drawn-length-note"]')).toBeNull();
+  });
+
   it('opening puts focus on the queue, not a button, so Enter saves', async () => {
     const { props } = setup();
     expect(document.activeElement?.getAttribute('data-slot')).toBe('needs-you-queue');

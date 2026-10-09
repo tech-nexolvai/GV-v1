@@ -11,6 +11,7 @@ import {
   isSplitPage,
   kpis as computeKpis,
   matchesFilter,
+  sharedNotComparedReason,
   sortRows,
   type Filter,
 } from '@/lib/countertop-results';
@@ -24,7 +25,8 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
-import { NoCountertopPages } from './no-countertop-pages';
+import { ListedPages, type RowNotChecked } from './no-countertop-pages';
+import { ArchitectNotice } from './architect-line';
 
 // The chart library is fetched only when a review has results to draw.
 const OutcomeChart = lazy(() => import('./outcome-chart'));
@@ -37,14 +39,18 @@ export type CountertopsState =
       rows: CountertopResult[];
       /** Pages where both AIs found no countertop line (#1093): listed, never blocking. */
       pagesWithoutCountertop?: readonly PageWithoutCountertop[];
+      /** Second countertop lines an AI named on a page (#1108): one line per page is read; listed, never blocking. */
+      rowsNotChecked?: readonly RowNotChecked[];
     };
 
-const CHIPS: { value: Filter; word: string }[] = [
+// The chips filter the table. Their counts are on the cards above (#1126), so a chip carries a
+// number only when no card shows it: "Held".
+const CHIPS: { value: Filter; word: string; counted?: boolean }[] = [
   { value: 'all', word: 'All' },
   { value: 'needs-you', word: 'Needs you' },
   { value: 'fail', word: 'FAIL' },
   { value: 'pass', word: 'PASS' },
-  { value: 'held', word: 'Held' },
+  { value: 'held', word: 'Held', counted: true },
 ];
 
 /**
@@ -115,15 +121,8 @@ export function ResultsDashboard({
   const countertopIds = new Set([...rows.map((r) => r.finding_id).filter(Boolean), ...architectFindingIds(rows)]);
   const others = findings.filter((f) => !countertopIds.has(f.id));
   const blocking = blockingIds ?? new Set<string>();
-
-  const chipCount: Record<Filter, number> = {
-    all: counts.countertops,
-    'needs-you': counts.needsYou,
-    fail: counts.fail,
-    pass: counts.pass,
-    held: counts.held,
-    automatic: counts.automatic,
-  };
+  // Said once above the table when every countertop shares it (#1126); per row otherwise.
+  const sharedReason = sharedNotComparedReason(rows);
 
   const actions: RowActions = {
     onShowDrawing,
@@ -162,6 +161,7 @@ export function ResultsDashboard({
         <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
             <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} onOpenQueue={onOpenQueue ? () => onOpenQueue() : undefined} />
+            {/* On a phone the ring is left out (it would push the first countertop down); its legend stays. */}
             <div className="rounded-xl border bg-card px-4 py-3">
               <Suspense fallback={<Skeleton className="h-32 w-64" />}>
                 <OutcomeChart counts={bucketCounts(rows)} failNeedsYou={failsNeedingYou(rows)} />
@@ -182,7 +182,7 @@ export function ResultsDashboard({
               {CHIPS.concat(filter === 'automatic' ? [{ value: 'automatic', word: 'Automatic' }] : []).map((chip) => (
                 <ToggleGroupItem key={chip.value} value={chip.value} className="gap-1.5 px-2.5">
                   {chip.word}
-                  <span className="num text-xs text-muted-foreground">{chipCount[chip.value]}</span>
+                  {chip.counted && <span className="num text-xs text-muted-foreground">{counts.held}</span>}
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
@@ -197,17 +197,19 @@ export function ResultsDashboard({
             </div>
           </div>
 
+          {sharedReason !== null && <ArchitectNotice reason={sharedReason} />}
+
           {visible.length === 0 ? (
             <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
               {query ? `Nothing matches “${search.trim()}”.` : filter === 'needs-you' ? 'Nothing needs you here.' : 'No countertops in this group.'}
             </p>
           ) : (
-            <CountertopTable rows={visible} actions={actions} />
+            <CountertopTable rows={visible} actions={actions} architectNotice={sharedReason !== null} />
           )}
         </>
       )}
 
-      <NoCountertopPages pages={countertops.pagesWithoutCountertop ?? []} />
+      <ListedPages pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []} rowsNotChecked={countertops.rowsNotChecked ?? []} />
 
       <OtherChecks
         findings={others}
