@@ -505,7 +505,7 @@ def test_label_crops_and_wall_questions_share_one_batch_and_each_gets_its_own_an
         Side.UNSURE,
         "plan",
     )
-    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v1"}
+    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v2"}
     assert all(attempt.raw_response_text for attempt in attempts), "raw answers are kept (#985)"
 
 
@@ -546,6 +546,95 @@ def test_counter_break_answer_carries_where_the_stone_ends() -> None:
     answer = answers[("p0:counter-break", model)]
     assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "into_walls"
     assert '"stone_ends"' in COUNTER_BREAK_PROMPT
+
+
+def _definition(prompt: str, field: str) -> str:
+    """The prompt's definition of one answer field or value: its own line, `- "field": ...`."""
+    lines = [
+        line
+        for line in prompt.splitlines()
+        if re.match(rf'\s*-? ?(?:"[a-z_]+", )*"{field}"(?:, "[a-z_]+")*:', line)
+    ]
+    assert len(lines) == 1, f"{field} is defined once, on its own line: {lines}"
+    return lines[0]
+
+
+def test_the_counter_break_question_defines_every_field_and_value_with_examples() -> None:
+    """#1111: every field the reader answers, and every `stone_ends` value but `unsure`, has a
+    definition with an invented example; the yes/no fields show one of each."""
+    assert COUNTER_BREAK_PROMPT_ID == "claude-counter-break-v3"
+    for field in COUNTER_BREAK_SCHEMA["properties"]:  # type: ignore[attr-defined]
+        assert _definition(COUNTER_BREAK_PROMPT, field)
+    appliance = _definition(COUNTER_BREAK_PROMPT, "contains_tall_appliance")
+    assert "Example true:" in appliance and "Example false:" in appliance
+    why = _definition(COUNTER_BREAK_PROMPT, "why")
+    assert "Example:" in why and "Not an example:" in why
+    values = COUNTER_BREAK_SCHEMA["properties"]["stone_ends"]["enum"]  # type: ignore[index]
+    assert "open_end" in values
+    for value in values:
+        definition = _definition(COUNTER_BREAK_PROMPT, value)
+        assert value == "unsure" or "Example" in definition, value
+    assert "Example not to_walls:" in COUNTER_BREAK_PROMPT
+    assert re.search(r"[0-9]+ ?(\"|in|mm)", COUNTER_BREAK_PROMPT) is None, "no client value"
+
+
+def test_the_counter_break_question_says_which_span_and_which_colour_is_ours() -> None:
+    """The marked span is between the two magenta verticals of Picture 2, which shows the drawing
+    beyond each end; our marks are magenta, never the reviewer's red or yellow."""
+    text = COUNTER_BREAK_PROMPT
+    assert "Picture 2" in text and "between those two magenta verticals" in text
+    assert "beyond each end" in text and "neighbour" in text
+    assert "magenta" in text and "no reviewer markup uses" in text
+    assert "red" not in text.replace("Red or yellow", "").lower().split()
+
+
+def test_an_open_end_answer_parses_for_every_reader() -> None:
+    view = encode_png(4, 2, bytes(24))
+    for model in (OPUS, KIMI):
+        answers = read_crops_parallel(
+            [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
+            clients=FakeClients(
+                lambda _request: reply(
+                    {
+                        "contains_tall_appliance": False,
+                        "stone_ends": "open_end",
+                        "why": "open floor beyond the right end",
+                    }
+                )
+            ),
+            rates=AnthropicRates() if model == OPUS else Rates(),
+            calls_per_minute={model: 6000},
+            max_concurrent_calls=1,
+            max_tokens=100,
+            max_throttle_retries=0,
+            retry_backoff_seconds=0.001,
+            record_attempt=lambda _attempt: None,
+        )
+        answer = answers[("p0:counter-break", model)]
+        assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "open_end", model
+
+
+@pytest.mark.parametrize(
+    ("stored", "stone_ends"),
+    [
+        ({"contains_tall_appliance": True, "why": "fridge"}, "unsure"),  # v1: no stone_ends
+        ({"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "w"}, "to_walls"),
+        ({"contains_tall_appliance": False, "stone_ends": "no_stone", "why": "w"}, "no_stone"),
+    ],
+)
+def test_stored_v1_and_v2_counter_break_answers_still_parse(
+    stored: dict[str, object], stone_ends: str
+) -> None:
+    from extraction.slot_reader.bedrock import (
+        COUNTER_BREAK_PROMPT_IDS,
+        _CounterBreakReply,
+        parse_stored_reader_answer,
+    )
+
+    assert {"claude-counter-break-v1", "claude-counter-break-v2"} <= COUNTER_BREAK_PROMPT_IDS
+    assert COUNTER_BREAK_PROMPT_ID in COUNTER_BREAK_PROMPT_IDS
+    parsed = _CounterBreakReply.model_validate(parse_stored_reader_answer(json.dumps(stored)))
+    assert parsed.stone_ends == stone_ends
 
 
 # ---------------------------------------------------------------------------------------------

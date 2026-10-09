@@ -40,7 +40,7 @@ from extraction.slot_reader.bedrock import (
     CROP_PROMPT_ID,
     ROW_PROMPT_IDS,
 )
-from extraction.slot_reader.walls import WALL_PROMPT_ID
+from extraction.slot_reader.walls import WALL_PROMPT_IDS
 from rules.parameters import ParameterSet, resolve_all
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation
@@ -113,10 +113,10 @@ def audit_saved_attempts(
         row
         for row in attempts
         if row.prompt_id
-        in {*label_prompts, WALL_PROMPT_ID, *ROW_PROMPT_IDS, *COUNTER_BREAK_PROMPT_IDS}
+        in {*label_prompts, *WALL_PROMPT_IDS, *ROW_PROMPT_IDS, *COUNTER_BREAK_PROMPT_IDS}
     )
     label_attempts = sum(row.prompt_id in label_prompts for row in relevant)
-    wall_attempts = sum(row.prompt_id == WALL_PROMPT_ID for row in relevant)
+    wall_attempts = sum(row.prompt_id in WALL_PROMPT_IDS for row in relevant)
     row_attempts = sum(row.prompt_id in ROW_PROMPT_IDS for row in relevant)
     counter_break_attempts = sum(row.prompt_id in COUNTER_BREAK_PROMPT_IDS for row in relevant)
 
@@ -208,7 +208,7 @@ def audit_saved_attempts(
             return result(False, "the sealed wall candidates lack both readers")
         observed_walls: Counter[tuple[int, str, str, str, str, str]] = Counter()
         for row in relevant:
-            if row.prompt_id != WALL_PROMPT_ID or row.outcome != "ok":
+            if row.prompt_id not in WALL_PROMPT_IDS or row.outcome != "ok":
                 continue
             parsed = _answer(row.private_raw_response)
             if parsed is None or row.reader_page_index is None:
@@ -316,7 +316,7 @@ def product_case_for_page(
                     (
                         CROP_PROMPT_ID,
                         *CLAUDE_SPAN_PROMPT_IDS,
-                        WALL_PROMPT_ID,
+                        *WALL_PROMPT_IDS,
                         *ROW_PROMPT_IDS,
                         *COUNTER_BREAK_PROMPT_IDS,
                     )
