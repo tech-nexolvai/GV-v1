@@ -132,9 +132,14 @@ def test_no_stylesheet_hard_codes_a_role_chip_colour_again() -> None:
     A hex here would look right in whichever theme its author had open, which is how the previous
     values survived.
     """
-    panel = Path("frontend/main/src/components/chat/EvidencePanel.css").read_text(encoding="utf-8")
-    role_rules = re.findall(r"\.pdf-pane__role-tag--\w+\s*\{[^}]*\}", panel)
+    # The evidence panel's role tags went with the old chat (#1129); the role marks that remain are
+    # the findings table's and the elevation's, so every stylesheet's role rules are checked.
+    role_rules = [
+        rule
+        for sheet in sorted(Path("frontend/main/src").rglob("*.css"))
+        for rule in re.findall(r"\.[\w-]*__role[\w-]*\s*\{[^}]*\}", sheet.read_text(encoding="utf-8"))
+    ]
 
-    assert role_rules, "the role-tag rules have moved; this guard is now checking nothing"
+    assert role_rules, "the role rules have moved; this guard is now checking nothing"
     for rule in role_rules:
         assert "#" not in rule, f"a role chip hard-codes a colour again:\n{rule}"

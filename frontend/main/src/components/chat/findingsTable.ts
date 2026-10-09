@@ -7,8 +7,8 @@ import type { Finding } from '../../data/types';
 export { OUTCOME_LABELS };
 
 /**
- * The cells of one finding's row, shared by the markdown table and the `FindingsTable` component
- * so the two can never disagree about what a finding read, where, and against what.
+ * The cells of one finding's row, as the `FindingsTable` component shows them: what a finding read,
+ * where, and against what.
  */
 export interface FindingCells {
   check: string;
@@ -26,21 +26,6 @@ export function findingCells(finding: Finding): FindingCells {
     comparison: comparisonFor(finding),
     outcome: OUTCOME_LABELS[finding.outcome],
   };
-}
-
-export function findingsTableMarkdown(findings: readonly Finding[]): string {
-  if (findings.length === 0) return '';
-
-  const rows = findings.map((finding) => {
-    const cells = findingCells(finding);
-    return [cells.check, cells.reading, cells.sheet, cells.comparison, cells.outcome];
-  });
-
-  return [
-    '| Check | Reading | Sheet | Compared against | Outcome |',
-    '| --- | --- | --- | --- | --- |',
-    ...rows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`),
-  ].join('\n');
 }
 
 function readingFor(finding: Finding): string {
@@ -88,8 +73,4 @@ function valueFromTraceSource(finding: Finding, role: 'ARCH' | 'SHOP'): string {
 
 function unique(values: readonly string[]): string[] {
   return Array.from(new Set(values));
-}
-
-function escapeCell(value: string): string {
-  return value.replace(/\s+/g, ' ').replaceAll('|', '/').trim() || 'Not recorded';
 }

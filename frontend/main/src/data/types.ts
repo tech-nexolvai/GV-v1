@@ -147,36 +147,6 @@ export interface Finding {
   created_at?: string;
 }
 
-/** One turn in the review thread. */
-export interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-  findings?: Finding[];
-  /**
-   * The guarded narrative for each finding, by finding id. Shown under that finding's row when the
-   * reviewer opens it, instead of being joined into the message text where nobody reads it.
-   */
-  narratives?: Record<string, string>;
-  /**
-   * True between a streamed reply's findings and its explanation: the server has said a model is
-   * writing. Cleared when the guarded narration arrives, or when it cannot be produced.
-   */
-  narrating?: boolean;
-  /** A progress stage actually emitted by the chat stream, never inferred from elapsed time. */
-  streamStage?: string;
-  /** Explicit disclosure of whether Bedrock narration was accepted for this response. The
-   * deterministic findings and verdicts remain the backing record in either mode. */
-  narration?: {
-    mode: 'llm' | 'structured_fallback';
-    modelId?: string;
-    /** Why narration was not used, when applicable. */
-    fallbackReason?: string | null;
-  };
-  is_typing?: boolean;
-}
-
 /** A package as the list and the sidebar show it.
  *
  *  `pass_count` and friends have **no backend source yet** — there is no package-summary endpoint.
@@ -193,16 +163,6 @@ export interface PackageSummary {
   fail_count: number;
   review_count: number;
   missing_count: number;
-}
-
-/** A review session in the sidebar. */
-export interface Session {
-  id: string;
-  package_id: string;
-  package_label: string;
-  vendor: string;
-  status: PackageStatus;
-  messages: ChatMessage[];
 }
 
 // The fixtures were here: MOCK_FINDINGS, MOCK_PACKAGE, MOCK_PACKAGES_LIST, MOCK_MESSAGES,

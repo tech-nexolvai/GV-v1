@@ -58,11 +58,14 @@ try {
     assert.match(html, /Not found|Waiting on a value/, 'the recorded outcome badge stays');
     assert.doesNotMatch(html, />Decide<\/button>/);
   });
-  await test('the chat card also restores unresolved review controls', () => {
-    // Chat uses the same tested card, mounted when its table disclosure is opened.
-    const source = readFileSync('src/components/chat/ChatThread.tsx', 'utf8');
-    assert.match(source, /needsDecision=\{blockingFindingIds\?\.includes\(finding.id\)\}/);
-    assert.match(readFileSync('src/pages/ReviewPage.tsx', 'utf8'), /blockingFindingIds=\{readiness\?\.blocking_finding_ids\}/);
+  await test('the review assistant explains and points, and cannot record a decision', () => {
+    // #1129 replaced the chat's finding cards (which carried decision buttons) with the assistant
+    // panel, whose buttons only open the drawing or the queue. The decision forms live there.
+    for (const file of ['src/components/assistant/assistant-panel.tsx', 'src/components/assistant/assistant-answer.tsx', 'src/lib/assistant.ts']) {
+      const source = readFileSync(file, 'utf8');
+      assert.doesNotMatch(source, /recordReviewAction|decideEvidence|grantException|approvePackage|onAction|onCorrect|onExcept/, file);
+    }
+    assert.match(readFileSync('src/pages/ReviewPage.tsx', 'utf8'), /<AssistantPanel/);
   });
   await test('wall sources are reviewer words, not storage codes', () => {
     for (const source of ['drawing clues', 'both readers', 'reviewer', 'between panels', 'not established']) {

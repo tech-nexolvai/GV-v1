@@ -96,6 +96,8 @@
   .shell__partner { display: none; }
 }
 .shell[data-evidence-open='true'] .shell__partner { display: none; }
+/* Nor on the review assistant's composer, docked at the bottom right (#1129). */
+.shell:has([data-slot='assistant-panel']:not([hidden])) .shell__partner { display: none; }
 
 /* ── Skip link ─────────────────────────────────────────────── */
 .shell__skip {

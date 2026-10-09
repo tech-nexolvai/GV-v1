@@ -6,8 +6,8 @@
  * *phases finished*, which the endpoint knows because the sequence has a fixed length; the elapsed
  * clock is measured here. Nothing is on a timer.
  *
- * That distinction is why this component exists beside `ThinkingStream` rather than replacing it.
- * `ThinkingStream` is deliberately indeterminate — a chat request reports no internal position, so
+ * That distinction is why this bar is determinate while the review assistant's working line (#1129)
+ * is a spinner: a chat request reports no internal position, so
  * a fill that grows would assert a completion fraction nothing measured. This request *does* report
  * its position, so a determinate bar is the honest rendering and an indeterminate one would be
  * throwing away a fact.

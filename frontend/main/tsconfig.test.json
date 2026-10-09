@@ -25,7 +25,6 @@
   "include": [
     "tests/**/*.ts",
     "tests/**/*.tsx",
-    "src/components/chat/ChatMarkdown.tsx",
     "src/components/chat/findingsTable.ts",
     "src/components/measure/FillerDistributionPanel.tsx",
     "src/components/measure/fillerDistribution.ts",
@@ -37,8 +36,6 @@
     "src/components/output/FindingsTable.tsx",
     "src/components/output/findingsOrder.ts",
     "src/api/sse.ts",
-    "src/api/chatStreamTypes.ts",
-    "src/components/chat/chatReply.ts",
     "src/components/measure/DrawingRolesList.tsx",
     "src/components/measure/drawingRoleChoices.ts",
     "src/components/measure/DrawingPartsList.tsx",

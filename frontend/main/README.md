@@ -203,9 +203,20 @@ How it works:
   - **A PASS or FAIL** uses the decision form.
 - **Show on drawing** outlines the architect's compared dimension in grey (`compared[].architect_location`), and the picker outlines each offered span (`spans[].location`). A missing location is said in words.
 
-**Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
-an element with `data-legacy`. Tailwind's scoped reset stops there, and the
-legacy element rules apply again inside it.
+**The review assistant** (`components/assistant/`, rules in `lib/assistant.ts`, client `streamAssistant`, #1129)
+replaces the old chat. The header's "Assistant" button opens it: docked beside the review when the review area is 1180px or
+wider (so the review keeps 760px), laid over its right side otherwise, and the whole screen (a modal) at 900px and below. Esc closes it and focus
+returns to the button; it stays mounted while hidden, so the conversation survives.
+- **Words from the model, everything else from the records.** `[[n]]` markers become page chips; evidence
+  (a countertop card, what still blocks sign-off, listed pages) is drawn from the API's own rows by id, and an
+  id the records do not hold is skipped. "Matches the records" shows only when the server's guard checked
+  the answer (`checked`, mode `llm` or `records_only`).
+- **Navigation only.** Chips and buttons open the drawing viewer or the queue (only at an item the queue
+  lists); nothing in the panel records a decision. On a phone the panel closes first.
+- **Context:** the page or countertop last opened goes with the question as `focus`, until its chip is removed.
+
+**Legacy islands.** A legacy component shown inside new UI is wrapped in an element with `data-legacy`.
+Tailwind's scoped reset stops there, and the legacy element rules apply again inside it.
 
 ## Imports
 

@@ -29,12 +29,13 @@ describe('legacy stylesheets', () => {
   const files = cssFiles(SRC);
 
   it('finds the legacy stylesheets', () => {
-    // 15 since #1124 retired MeasurementPanel.css, DrawingParts.css, SlotReaderRows.css and
-    // AssignmentProgress.css (#1125 retired PageFrame.css, WelcomePage.css and NewReviewForm.css,
-    // #1072 CompanySettingsPage.css, RulebookPage.css and UsagePage.css, #1064 PackagesPage.css and
-    // SignedDownloads.css, #1045 DrawingResultPanel.css, #1039 ResultsPanel.css); the number only
-    // guards against the walk finding nothing.
-    expect(files.length).toBeGreaterThanOrEqual(15);
+    // 8 since #1129 retired the old chat's stylesheets (ChatThread, ThinkingStream, StreamingText,
+    // ChatInput, EvidencePanel, FindingCard and PdfViewer). Earlier: #1124 MeasurementPanel.css,
+    // DrawingParts.css, SlotReaderRows.css and AssignmentProgress.css; #1125 PageFrame.css,
+    // WelcomePage.css and NewReviewForm.css; #1072 CompanySettingsPage.css, RulebookPage.css and
+    // UsagePage.css; #1064 PackagesPage.css and SignedDownloads.css; #1045 DrawingResultPanel.css;
+    // #1039 ResultsPanel.css. The number only guards against the walk finding nothing.
+    expect(files.length).toBeGreaterThanOrEqual(8);
   });
 
   it.each(files.map((f) => [path.relative(SRC, f), f]))('%s is wrapped in @layer legacy', (_name, file) => {
