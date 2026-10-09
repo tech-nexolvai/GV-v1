@@ -2039,6 +2039,19 @@
       },
       "CountertopPieceOut": {
         "properties": {
+          "canonical_observation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a sealed reading only: its confirmed observation, when a stored crop of it exists (`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise.",
+            "title": "Canonical Observation Id"
+          },
           "index": {
             "title": "Index",
             "type": "integer"
@@ -2053,6 +2066,17 @@
               }
             ],
             "title": "Kind"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where this piece's slot was read on the drawing: the slot reader's box for it, in the same stored space and shape as `row_location`. Null when that box is missing or cannot be placed exactly; never borrowed from the row or a neighbour."
           },
           "source": {
             "enum": [
@@ -2192,6 +2216,30 @@
                 "type": "null"
               }
             ]
+          },
+          "printed_overall_canonical_observation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a sealed printed overall only: its confirmed observation, when a stored crop exists. Null otherwise.",
+            "title": "Printed Overall Canonical Observation Id"
+          },
+          "printed_overall_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the printed overall's slot was read; null when unknown (see pieces)."
           },
           "reviewer_decision": {
             "anyOf": [
@@ -2612,6 +2660,30 @@
           "y"
         ],
         "title": "EndIn",
+        "type": "object"
+      },
+      "ErrorEnvelope": {
+        "description": "The only error body this API returns.",
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorEnvelope",
         "type": "object"
       },
       "EvidenceLocation": {
@@ -10528,7 +10600,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
       "get": {
-        "description": "The stored picture of page `page_number`, or 404 while the worker has not rendered it.",
+        "description": "The stored picture of page `page_number`, or 404 while the worker has not rendered it.\n\nThe two 404s differ by `error` code: `page_picture_not_ready` for a page of this package that\nhas no picture yet (ask for it with `POST .../pages/pictures`), `http_error` for no such page.",
         "operationId": "page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get",
         "parameters": [
           {
@@ -10589,6 +10661,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "`error` is `page_picture_not_ready` while the page has no picture yet; `http_error` when there is no such page in this package."
           },
           "422": {
             "content": {

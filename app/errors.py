@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -38,6 +38,18 @@ class ErrorEnvelope(BaseModel):
     error: str
     message: str
     request_id: str
+
+
+class CodedHTTPException(HTTPException):
+    """A 4xx whose envelope carries its own stable `error` code instead of `http_error`.
+
+    For the few refusals a client must tell apart from a plain "not found" without reading the
+    wording, e.g. `page_picture_not_ready` (#1049). Only 4xx: a 5xx is still `internal_error`.
+    """
+
+    def __init__(self, status_code: int, code: str, detail: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.code = code
 
 
 def _envelope(request: Request, code: str, message: str, http_status: int) -> JSONResponse:
@@ -100,7 +112,8 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
             "Something went wrong on our side. Quote the request id when reporting it.",
             exc.status_code,
         )
-    return _envelope(request, "http_error", str(exc.detail), exc.status_code)
+    code = exc.code if isinstance(exc, CodedHTTPException) else "http_error"
+    return _envelope(request, code, str(exc.detail), exc.status_code)
 
 
 async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:

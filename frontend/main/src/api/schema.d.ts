@@ -975,6 +975,9 @@ export interface paths {
         /**
          * View a drawing page (vendor layer only)
          * @description The stored picture of page `page_number`, or 404 while the worker has not rendered it.
+         *
+         *     The two 404s differ by `error` code: `page_picture_not_ready` for a page of this package that
+         *     has no picture yet (ask for it with `POST .../pages/pictures`), `http_error` for no such page.
          */
         get: operations["page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get"];
         put?: never;
@@ -2735,10 +2738,17 @@ export interface components {
         };
         /** CountertopPieceOut */
         CountertopPieceOut: {
+            /**
+             * Canonical Observation Id
+             * @description For a sealed reading only: its confirmed observation, when a stored crop of it exists (`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise.
+             */
+            canonical_observation_id?: string | null;
             /** Index */
             index: number;
             /** Kind */
             kind?: string | null;
+            /** @description Where this piece's slot was read on the drawing: the slot reader's box for it, in the same stored space and shape as `row_location`. Null when that box is missing or cannot be placed exactly; never borrowed from the row or a neighbour. */
+            location?: components["schemas"]["RowLocation"] | null;
             /**
              * Source
              * @enum {string}
@@ -2769,6 +2779,13 @@ export interface components {
             /** Pieces */
             pieces: components["schemas"]["CountertopPieceOut"][];
             printed_overall: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Printed Overall Canonical Observation Id
+             * @description For a sealed printed overall only: its confirmed observation, when a stored crop exists. Null otherwise.
+             */
+            printed_overall_canonical_observation_id?: string | null;
+            /** @description Where the printed overall's slot was read; null when unknown (see pieces). */
+            printed_overall_location?: components["schemas"]["RowLocation"] | null;
             reviewer_decision: components["schemas"]["ReviewerDecisionOut"] | null;
             /**
              * Row Id
@@ -2970,6 +2987,18 @@ export interface components {
             x: string;
             /** Y */
             y: string;
+        };
+        /**
+         * ErrorEnvelope
+         * @description The only error body this API returns.
+         */
+        ErrorEnvelope: {
+            /** Error */
+            error: string;
+            /** Message */
+            message: string;
+            /** Request Id */
+            request_id: string;
         };
         /**
          * EvidenceLocation
@@ -6905,6 +6934,15 @@ export interface operations {
                 };
                 content: {
                     "image/png": string;
+                };
+            };
+            /** @description `error` is `page_picture_not_ready` while the page has no picture yet; `http_error` when there is no such page in this package. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Validation Error */

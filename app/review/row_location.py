@@ -1,4 +1,8 @@
-"""Display-only outlines in the published stored space: a slot row's, and an architect dimension's.
+"""Display-only outlines in the published stored space: a slot row's, each of its slots', and an
+architect dimension's.
+
+`slot_location` (#1049) places one slot-reader slot from its own `slot-box:` record, with the same
+transform as the row outline; `row_and_slot_locations` gives both from one statement.
 
 `architect_location` (#1066) outlines one architect span the architect reader stored
 (`workflow/architect_reader.py`): its ticks (`arch-ticks:<x0>:<x1>`, page points in pdfplumber's
@@ -53,8 +57,22 @@ def row_location(db: Session, row_id: UUID | None) -> RowLocation | None:
 
 def row_locations(db: Session, row_ids: tuple[UUID, ...]) -> dict[UUID, RowLocation]:
     """Resolve many row outlines with one bounded query plan, rather than four queries per row."""
+    return row_and_slot_locations(db, row_ids)[0]
+
+
+def row_and_slot_locations(
+    db: Session, row_ids: tuple[UUID, ...]
+) -> tuple[dict[UUID, RowLocation], dict[UUID, RowLocation]]:
+    """The row outlines, and where each of their slots was read, from the same single statement.
+
+    The second map is keyed by slot-reader candidate (#1049): the slot's own `slot-box:` placed
+    with the transform the reading was made under, exactly as `_location_from_candidates` places it
+    for the row outline. A slot is placed on its own record only: one with no box, a malformed box,
+    more than one box, or a box off the page is left out (the API shows `null`), and never borrows
+    the row's or a neighbour's outline.
+    """
     if not row_ids:
-        return {}
+        return {}, {}
     anchor = aliased(ObservationCandidate)
     requested_pairs = (
         select(
@@ -89,6 +107,7 @@ def row_locations(db: Session, row_ids: tuple[UUID, ...]) -> dict[UUID, RowLocat
             by_row[candidate.id] = (candidate, page, run)
 
     output: dict[UUID, RowLocation] = {}
+    slots: dict[UUID, RowLocation] = {}
     for row_id, (anchor_candidate, page, run) in by_row.items():
         rank = next(
             (
@@ -110,7 +129,65 @@ def row_locations(db: Session, row_ids: tuple[UUID, ...]) -> dict[UUID, RowLocat
         )
         if location is not None:
             output[row_id] = location
-    return output
+        for candidate in by_pair[key]:
+            flags = candidate.ambiguity_flags or ()
+            if "slot-reader" not in flags or rank not in flags:
+                continue
+            slot = slot_location(candidate, page, run)
+            if slot is not None:
+                slots[candidate.id] = slot
+    return output, slots
+
+
+def _slot_box(flags: Sequence[str]) -> tuple[int, int, int, int] | None:
+    """The one well-formed `slot-box:x0,y0,x1,y1` record (whole pixels, x0 < x1, y0 < y1)."""
+    found = [flag.removeprefix("slot-box:") for flag in flags if flag.startswith("slot-box:")]
+    if len(found) != 1:
+        return None
+    parts = found[0].split(",")
+    if len(parts) != 4 or not all(part.isascii() and part.isdigit() for part in parts):
+        return None
+    x0, y0, x1, y1 = (int(part) for part in parts)
+    if x0 >= x1 or y0 >= y1:
+        return None
+    return x0, y0, x1, y1
+
+
+def slot_location(
+    candidate: ObservationCandidate, page: Page, run: ExtractionRun
+) -> RowLocation | None:
+    """Where one slot-reader slot was read: its `slot-box:` in the published stored space.
+
+    `None` when the candidate is not on `page` or from `run`, its box is missing, repeated or
+    malformed, the reading's transform was not recorded, or the box does not lie on the page.
+    """
+    if candidate.page_id != page.id or candidate.extraction_run_id != run.id:
+        return None
+    box = _slot_box(candidate.ambiguity_flags or ())
+    transform = reading_transform(page, run)
+    if box is None or transform is None:
+        return None
+    try:
+        corners = [
+            transform.to_stored(ImagePoint(x, y)) for x, y in ((box[0], box[1]), (box[2], box[3]))
+        ]
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if any(not v.is_finite() or v < 0 or v > 1 for point in corners for v in point):
+        return None
+    left, top = min(p.x for p in corners), min(p.y for p in corners)
+    right, bottom = max(p.x for p in corners), max(p.y for p in corners)
+    if left == right or top == bottom:
+        return None
+    return RowLocation(
+        page_id=page.id,
+        document_version_id=page.document_version_id,
+        page_number=page.index + 1,
+        polygon=[
+            [str(x), str(y)]
+            for x, y in ((left, top), (right, top), (right, bottom), (left, bottom))
+        ],
+    )
 
 
 def _location_from_candidates(

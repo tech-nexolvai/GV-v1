@@ -8,7 +8,7 @@ picture or says it is not ready and lets the screen ask for it.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -20,6 +20,7 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.api.drawing_parts import _verified_page_picture
 from app.api.drawing_views import NOT_FOUND_DETAIL, _revision
 from app.auth import Principal, require_project_access
+from app.errors import CodedHTTPException, ErrorEnvelope
 from app.models import OutboxEntry, Page
 from app.models.document import Document, DocumentKind, PackageRevisionDocument
 from storage.store import ArtifactStore
@@ -31,6 +32,9 @@ from workflow.vendor_page_pictures import (
 from workflow.vendor_page_pictures import page_picture as recorded_page_picture
 
 router = APIRouter(tags=["drawings"])
+
+#: The `error` code of the 404 for a page that has no picture yet (#1049).
+PAGE_PICTURE_NOT_READY: Final = "page_picture_not_ready"
 
 
 class PagePicturesQueuedOut(BaseModel):
@@ -68,7 +72,14 @@ def _page(
     responses={
         status.HTTP_200_OK: {
             "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}
-        }
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorEnvelope,
+            "description": (
+                f"`error` is `{PAGE_PICTURE_NOT_READY}` while the page has no picture yet; "
+                "`http_error` when there is no such page in this package."
+            ),
+        },
     },
     summary="View a drawing page (vendor layer only)",
 )
@@ -81,15 +92,19 @@ def page_picture(
     page_number: int,
     document_version_id: UUID | None = None,
 ) -> Response:
-    """The stored picture of page `page_number`, or 404 while the worker has not rendered it."""
+    """The stored picture of page `page_number`, or 404 while the worker has not rendered it.
+
+    The two 404s differ by `error` code: `page_picture_not_ready` for a page of this package that
+    has no picture yet (ask for it with `POST .../pages/pictures`), `http_error` for no such page.
+    """
     revision = _revision(session, project_id, package_id)
     page = _page(session, revision.id, page_number, document_version_id)
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
     picture = recorded_page_picture(session, page.id)
     if picture is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="the page picture is not ready yet"
+        raise CodedHTTPException(
+            status.HTTP_404_NOT_FOUND, PAGE_PICTURE_NOT_READY, "the page picture is not ready yet"
         )
     content = _verified_page_picture(store, picture)
     return Response(

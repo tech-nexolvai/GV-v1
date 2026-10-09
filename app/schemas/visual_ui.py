@@ -29,6 +29,21 @@ class CountertopPieceOut(BaseModel):
     value: ExactValueOut | None
     source: Literal["sealed", "typed", "missing"]
     kind: str | None = None
+    location: RowLocation | None = Field(
+        default=None,
+        description=(
+            "Where this piece's slot was read on the drawing: the slot reader's box for it, in the "
+            "same stored space and shape as `row_location`. Null when that box is missing or "
+            "cannot be placed exactly; never borrowed from the row or a neighbour."
+        ),
+    )
+    canonical_observation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "For a sealed reading only: its confirmed observation, when a stored crop of it exists "
+            "(`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise."
+        ),
+    )
 
 
 class ReviewerDecisionOut(BaseModel):
@@ -133,6 +148,17 @@ class CountertopResultOut(BaseModel):
     reviewer_decision: ReviewerDecisionOut | None
     needs_decision: bool
     printed_overall: ExactValueOut | None
+    printed_overall_location: RowLocation | None = Field(
+        default=None,
+        description="Where the printed overall's slot was read; null when unknown (see pieces).",
+    )
+    printed_overall_canonical_observation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "For a sealed printed overall only: its confirmed observation, when a stored crop "
+            "exists. Null otherwise."
+        ),
+    )
     pieces: tuple[CountertopPieceOut, ...]
     field_cut_per_end: ExactValueOut | None
     field_cut_count: int | None
