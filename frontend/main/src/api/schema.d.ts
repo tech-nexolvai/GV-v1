@@ -4274,6 +4274,16 @@ export interface components {
             /** Rules Published */
             rules_published: number;
             /**
+             * Saved Measurements
+             * @default []
+             */
+            saved_measurements: components["schemas"]["SavedQuantityOut"][];
+            /**
+             * Saved Parameters
+             * @default []
+             */
+            saved_parameters: components["schemas"]["SavedParameterOut"][];
+            /**
              * Still Reading
              * @default false
              */
@@ -4736,6 +4746,75 @@ export interface components {
             wall_layout_choices: string[];
             /** Why Not */
             why_not: string | null;
+        };
+        /**
+         * SavedParameterOut
+         * @description The setting value in force for one parameter, as saved, with where it came from (#1074).
+         */
+        SavedParameterOut: {
+            /** Citation */
+            citation?: string | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "project" | "run";
+            /** Name */
+            name: string;
+            /** Reference */
+            reference?: string | null;
+            /** Source */
+            source: string;
+            value: components["schemas"]["SavedValueOut"];
+        };
+        /**
+         * SavedQuantityOut
+         * @description What this review already holds for one quantity of the form, keyed like `QuantityOut.key`.
+         *
+         *     A quantity feeds one or more rule inputs (`QuantityOut.consumers`) and the form saves it once per
+         *     input. `values` are those of the input saved most recently — one value, or a run in layout order
+         *     for a many-valued quantity.
+         */
+        SavedQuantityOut: {
+            /** Complete */
+            complete: boolean;
+            /** Key */
+            key: string;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /** Values */
+            values: components["schemas"]["SavedValueOut"][];
+        };
+        /**
+         * SavedValueOut
+         * @description One value a reviewer saved, exactly as stored, with who saved it and when (#1074).
+         *
+         *     `numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same
+         *     number written the way the form takes it (`25 1/2"`), and reads back to exactly these two numbers
+         *     when sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is
+         *     `38 94/127"`), because the characters first typed are not stored — only the number is.
+         */
+        SavedValueOut: {
+            /** Denominator */
+            denominator: string;
+            /** Numerator */
+            numerator: string;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /** Text */
+            text: string | null;
+            /** Unit */
+            unit: string;
         };
         /**
          * SettingPointerOut
