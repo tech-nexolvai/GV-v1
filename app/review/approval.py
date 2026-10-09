@@ -28,16 +28,10 @@ from app.auth.roles import Action, Principal
 from app.db.base import utc_now
 from app.lifecycle.states import transition
 from app.models.package import PackageRevision, PackageState, PackageStateEvent
-from app.models.review import (
-    Approval,
-    ApprovedFinding,
-    ReviewAction,
-    ReviewException,
-    ReviewSession,
-)
+from app.models.review import Approval, ApprovedFinding, ReviewSession
 from app.models.verdicts import CheckRun, Finding
-from app.review.exceptions import ExceptionGrant, FindingRef, decide
-from app.review.requirements import BLOCKING_OUTCOMES, needs_note
+from app.review.carry_over import DecisionRecords, decision_holds, decision_records
+from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -162,73 +156,29 @@ def _unaddressed(db: Session, findings: tuple[Finding, ...]) -> tuple[UUID, ...]
     Even a correction with its proper ledger row cannot decide the old check. Nor can a later
     confirm/except dismiss that pending rerun: only superseding the old run removes it from here.
     This also protects a previously passing finding whose evidence was subsequently corrected.
+
+    The decision may be the reviewer's own on this finding or one carried over an unchanged re-run
+    (#1073); `decision_records` is the one reader both use, and `decision_holds` the one rule.
     """
-    finding_ids = {finding.id for finding in findings}
-    if not finding_ids:
+    if not findings:
         return ()
-    actions = tuple(
-        db.scalars(
-            select(ReviewAction)
-            .where(ReviewAction.finding_id.in_(finding_ids))
-            .order_by(ReviewAction.created_at, ReviewAction.id)
-        ).all()
-    )
-    latest: dict[UUID, ReviewAction] = {}
-    for action in actions:
-        latest[action.finding_id] = action
-    grants = {
-        grant.review_action_id: ExceptionGrant.from_stored(grant)
-        for grant in db.scalars(
-            select(ReviewException).where(
-                ReviewException.review_action_id.in_([action.id for action in latest.values()])
-            )
-        ).all()
-    }
-    return _unaddressed_from_records(findings, actions, grants, when=utc_now())
+    records = decision_records(db, [finding.id for finding in findings])
+    return _unaddressed_from_records(findings, records, when=utc_now())
 
 
 def _unaddressed_from_records(
     findings: tuple[Finding, ...] | list[Finding],
-    actions: tuple[ReviewAction, ...] | list[ReviewAction],
-    grants: dict[UUID, ExceptionGrant],
+    records: DecisionRecords,
     *,
     when: datetime,
 ) -> tuple[UUID, ...]:
     """Shared decision rule for single-revision and batched readiness reads."""
-    by_id = {finding.id: finding for finding in findings}
-    if not by_id:
+    if not findings:
         return ()
     required = {finding.id for finding in findings if finding.outcome in BLOCKING_OUTCOMES}
-    latest: dict[UUID, ReviewAction] = {}
-    corrected: set[UUID] = set()
-    for action in actions:
-        latest[action.finding_id] = action
-        if action.action == "correct":
-            corrected.add(action.finding_id)
-    addressed: set[UUID] = set()
-    for identity, action in latest.items():
-        if identity in corrected:
-            continue
-        finding = by_id[identity]
-        if action.action in {"confirm", "dismiss"}:
-            if not needs_note(finding.outcome, action.action) or bool(
-                action.note and action.note.strip()
-            ):
-                addressed.add(identity)
-        elif (
-            action.action == "except"
-            and action.id in grants
-            and decide(
-                FindingRef(
-                    finding_id=identity,
-                    package_revision_id=finding.package_revision_id,
-                    item_id=finding.scope_item_id,
-                ),
-                (grants[action.id],),
-                when=when,
-            ).is_excepted
-        ):
-            addressed.add(identity)
+    ids = {finding.id for finding in findings}
+    corrected = set(records.corrected) & ids
+    addressed = {finding.id for finding in findings if decision_holds(finding, records, when=when)}
     return tuple(sorted((required | corrected) - addressed, key=str))
 
 
@@ -243,8 +193,20 @@ class ApprovalReadiness:
 
 def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
     """The live finding set and lifecycle, shared by the screen and the approval write."""
+    return readiness_and_decisions(db, revision_id)[0]
+
+
+def readiness_and_decisions(
+    db: Session, revision_id: UUID
+) -> tuple[ApprovalReadiness, DecisionRecords]:
+    """Readiness plus the decision records it was computed from, for a screen that shows both.
+
+    The countertop results read the standing decision of every row from the very records sign-off
+    readiness used, so the two cannot disagree and the decisions are not read twice.
+    """
     findings = _findings(db, revision_id)
-    blocked = _unaddressed(db, findings)
+    records = decision_records(db, [finding.id for finding in findings])
+    blocked = _unaddressed_from_records(findings, records, when=utc_now())
     revision = db.get(PackageRevision, revision_id)
     reason = None
     if not findings:
@@ -253,7 +215,7 @@ def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
         reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
     elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         reason = "The package is not awaiting review."
-    return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason)
+    return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason), records
 
 
 def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID, ApprovalReadiness]:
@@ -275,27 +237,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
     for finding in found:
         findings_by_revision[finding.package_revision_id].append(finding)
         finding_by_id[finding.id] = finding
-    actions: list[ReviewAction] = []
-    if finding_by_id:
-        actions = list(
-            db.scalars(
-                select(ReviewAction)
-                .where(ReviewAction.finding_id.in_(finding_by_id))
-                .order_by(ReviewAction.created_at, ReviewAction.id)
-            ).all()
-        )
-    latest_actions: dict[UUID, ReviewAction] = {}
-    for action in actions:
-        latest_actions[action.finding_id] = action
-    grants = {}
-    action_ids = [action.id for action in latest_actions.values()]
-    if action_ids:
-        grants = {
-            grant.review_action_id: ExceptionGrant.from_stored(grant)
-            for grant in db.scalars(
-                select(ReviewException).where(ReviewException.review_action_id.in_(action_ids))
-            ).all()
-        }
+    records = decision_records(db, list(finding_by_id))
     revisions = {
         revision.id: revision
         for revision in db.scalars(
@@ -305,12 +247,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
     when = utc_now()
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
-        revision_findings = tuple(findings)
-        revision_finding_ids = {finding.id for finding in findings}
-        revision_actions = tuple(
-            action for action in actions if action.finding_id in revision_finding_ids
-        )
-        blocked = _unaddressed_from_records(revision_findings, revision_actions, grants, when=when)
+        blocked = _unaddressed_from_records(tuple(findings), records, when=when)
         revision = revisions.get(revision_id)
         reason = None
         if not findings:

@@ -94,6 +94,7 @@ from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import ExtractionRun, ModelInvocation, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
+from app.review.carry_over import carry_decisions_over, live_finding_ids
 from app.runs.invocations import (
     BedrockConverseInvocationRecorder,
 )
@@ -6494,6 +6495,9 @@ class DatabaseStages:
         #
         # No discriminator can be established without extraction, so a rule that declares one
         # abstains rather than being resolved to a variant nobody read off a drawing.
+        # The results about to be replaced, so an unchanged one can keep its reviewer's decision
+        # once the new set is written (#1073, `carry_decisions_over` below).
+        previous_findings = live_finding_ids(session, package_revision_id)
         superseded = supersede_runs(session, package_revision_id)
 
         selected_product = package_product(package)
@@ -7053,10 +7057,22 @@ class DatabaseStages:
             )
             written += 1
 
+        # **A reviewer's decision carries over only an unchanged result (#1073).** In this same
+        # transaction, after the last new finding: each new result whose stored fingerprint equals
+        # exactly one result it replaced inherits that result's still-valid decision, as an
+        # append-only link to the reviewer's own action. Nothing is decided here and no action is
+        # written; anything that changed asks the reviewer again.
+        carried = carry_decisions_over(
+            session,
+            package_revision_id=package_revision_id,
+            previous_finding_ids=previous_findings,
+        )
+
         return {
             "implemented": True,
             "ran": True,
             "findings": written,
+            "decisions_carried_over": carried,
             "rules_published": len(store.rule_ids()),
             "product_type": None if selected_product is None else selected_product.value,
             "rules_not_in_scope": not_in_scope,

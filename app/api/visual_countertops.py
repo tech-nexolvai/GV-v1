@@ -20,12 +20,11 @@ from app.models import (
     Finding,
     Package,
     PackageRevision,
-    ReviewAction,
     RuleDefinition,
     RuleSnapshot,
     VerdictInput,
 )
-from app.review.approval import approval_readiness
+from app.review.approval import readiness_and_decisions
 from app.review.row_location import RowLocation, architect_locations, row_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
@@ -497,20 +496,10 @@ def _countertop_results_for_revision(
     )
     row_ids = tuple(row.anchor.id for row in rows)
     locations = row_locations(session, row_ids)
-    finding_ids = [finding.id for finding, _ in findings]
-    latest_action = {}
-    if finding_ids:
-        actions = (
-            session.execute(
-                select(ReviewAction)
-                .where(ReviewAction.finding_id.in_(finding_ids))
-                .order_by(ReviewAction.created_at, ReviewAction.id)
-            )
-            .scalars()
-            .all()
-        )
-        latest_action = {action.finding_id: action for action in actions}
-    readiness = approval_readiness(session, revision.id)
+    # The decision standing on each result: the reviewer's own latest, or the one it carried over an
+    # unchanged re-run (#1073). Read once, with sign-off readiness, so the two cannot disagree.
+    readiness, records = readiness_and_decisions(session, revision.id)
+    decisions = records.decisions
     need_ids = set(readiness.blocking_finding_ids)
     items: list[CountertopResultOut] = []
     for row in rows:
@@ -520,7 +509,7 @@ def _countertop_results_for_revision(
             finding,
             {} if finding is None else verdict_inputs_by_finding.get(finding.check_run_id, {}),
         )
-        action = None if finding is None else latest_action.get(finding.id)
+        decision = None if finding is None else decisions.get(finding.id)
         wall_flags = set(
             () if row.wall_candidate is None else row.wall_candidate.ambiguity_flags or ()
         )
@@ -592,12 +581,14 @@ def _countertop_results_for_revision(
                 outcome=None if finding is None else Outcome(finding.outcome),
                 reviewer_decision=(
                     None
-                    if action is None
+                    if decision is None
                     else ReviewerDecisionOut(
-                        action=action.action,
-                        note=action.note,
-                        actor=action.actor,
-                        time=action.created_at,
+                        action=decision.action.action,
+                        note=decision.action.note,
+                        actor=decision.action.actor,
+                        time=decision.action.created_at,
+                        carried_over=decision.carried_over,
+                        carried_from_finding_id=decision.carried_from_finding_id,
                     )
                 ),
                 needs_decision=finding is None or finding.id in need_ids,
