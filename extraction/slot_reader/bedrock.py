@@ -113,11 +113,17 @@ CROP_PROMPT_ID: Final = "slot-crop-v1"
 ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
-CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v2"
-"""v2 (#1051): a fixed answer shape and stated effort, and an upright third picture for a span
-whose label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`). The two-picture wording is unchanged."""
+CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v3"
+"""v3 (#1104): every answer field is defined, as `CROP_PROMPT` defines them. v2 named `stacked`,
+`combined`, `readable` and `no_dimension` without saying what they mean, so each reader guessed: on
+the keyed set one reader called a plain piece label "combined" because the close-up also shows its
+neighbours' labels, and that one answer held a label both readers had copied right.
+v2 (#1051): a fixed answer shape and stated effort, and an upright third picture for a span whose
+label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`)."""
 #: Earlier wordings, still recognised when a stored run is replayed.
-CLAUDE_SPAN_PROMPT_IDS: Final = frozenset({CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v1"})
+CLAUDE_SPAN_PROMPT_IDS: Final = frozenset(
+    {CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v2", "claude-slot-span-v1"}
+)
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
 ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v2"
 """The architect-pairing question (#1053), asked of both Claude readers on every page with an
@@ -249,7 +255,19 @@ CLAUDE_SPAN_PROMPT: Final = (
     "reviewer markup. If it belongs, copy its characters exactly as printed, including inch marks, "
     "fractions, metric text in brackets, and words. Do not calculate, convert, correct, or complete "
     "the text. If the label does not belong to the marked span, is absent, or you are unsure, set "
-    "belongs to false and return an empty text. Return only this JSON: "
+    "belongs to false and return an empty text.\n"
+    "The other fields describe only that one label, the one that belongs to the red-boxed span:\n"
+    '- "stacked": true if a fraction in it is drawn with its numerator above its denominator.\n'
+    '- "combined": true only if that label is itself a sum, an expression, a count or has words, '
+    'such as 4"+1", 2"+1" Filler, 96"(4EQ) or INCLUDING FIELD CUT. A single dimension is not '
+    "combined, even with a stacked fraction; a millimetre value with inches in brackets, such as "
+    "610 [24], is not combined. Labels of neighbouring spans that also show in Picture 2 never make "
+    "it combined.\n"
+    '- "readable": false if any character of that label is cut off at the picture\'s edge, '
+    "overlapped, blurred, or you are not sure of it.\n"
+    '- "no_dimension": true if Picture 2 shows no dimension label for the span at all (only a '
+    "symbol, an arrow, a letter or a line).\n"
+    "Return only this JSON: "
     '{"belongs": true|false, "text": "exact printed label or empty string", '
     '"stacked": true|false, "combined": true|false, "readable": true|false, '
     '"no_dimension": true|false}'

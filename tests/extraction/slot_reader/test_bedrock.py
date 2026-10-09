@@ -716,9 +716,30 @@ def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() ->
 
     assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
     assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v2"
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
 
 
 def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
     with pytest.raises(ValueError, match="upright"):
         build_crop_request(model_id=QWEN, crop_png=PNG, max_tokens=400, upright_png=PNG)
+
+
+def test_the_claude_label_question_defines_every_answer_field() -> None:
+    """#1104: v2 named the fields without saying what they mean, so each reader guessed; one called a
+    plain piece label "combined" because its neighbours' labels showed in the close-up. Each field is
+    now defined for the one label that belongs to the span, and neighbours never make it combined.
+    Earlier wordings stay recognised for stored runs."""
+    from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS
+
+    for field in ('"stacked":', '"combined":', '"readable":', '"no_dimension":'):
+        assert f"- {field}" in CLAUDE_SPAN_PROMPT, field
+    assert "Labels of neighbouring spans that also show in Picture 2 never make it combined" in (
+        CLAUDE_SPAN_PROMPT
+    )
+    assert "A single dimension is not combined, even with a stacked fraction" in CLAUDE_SPAN_PROMPT
+    assert "inches in brackets" in CLAUDE_SPAN_PROMPT and "is not combined" in CLAUDE_SPAN_PROMPT
+    assert CLAUDE_SPAN_PROMPT_IDS == {
+        "claude-slot-span-v3",
+        "claude-slot-span-v2",
+        "claude-slot-span-v1",
+    }
