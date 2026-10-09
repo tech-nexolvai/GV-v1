@@ -392,8 +392,12 @@
       "ArchitectPairingEffectiveOut": {
         "description": "The pairing that counts, re-checked against the architect's dimensions as they stand.",
         "properties": {
-          "ai_only": {
-            "title": "Ai Only",
+          "judgments": {
+            "title": "Judgments",
+            "type": "integer"
+          },
+          "needs_confirmation": {
+            "title": "Needs Confirmation",
             "type": "boolean"
           },
           "pairs": {
@@ -430,7 +434,8 @@
           "status",
           "pairs",
           "reasons",
-          "ai_only"
+          "judgments",
+          "needs_confirmation"
         ],
         "title": "ArchitectPairingEffectiveOut",
         "type": "object"

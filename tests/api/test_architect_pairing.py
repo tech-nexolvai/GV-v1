@@ -63,7 +63,9 @@ class Row:
     """A synthetic row of three pieces, and three architect spans on its page: a cabinet, a
     centre-line dimension and a held one; one automatic record whose AIs disagreed."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self, session: Session, *, source: str = "none", status: str = "ais-disagree"
+    ) -> None:
         self.project_id, self.package_id, anchors = _package_rows(session, piece_count=3)
         self.anchor = session.get_one(ObservationCandidate, anchors[0])
         slot_run = session.get_one(ExtractionRun, self.anchor.extraction_run_id)
@@ -117,9 +119,19 @@ class Row:
             page_id=self.anchor.page_id,
             row_anchor_candidate_id=self.anchor.id,
             extraction_run_id=slot_run.id,
-            source="none",
-            status="ais-disagree",
-            pairs=[],
+            source=source,
+            status=status,
+            pairs=(
+                []
+                if status != "paired"
+                else [
+                    {
+                        "kind": "piece",
+                        "architect_candidate_id": str(self.cabinet.id),
+                        "vendor_slot_indices": [0],
+                    }
+                ]
+            ),
             details={"architect_run_id": str(architect_run.id), "reasons": ["they differ"]},
         )
         session.add(self.automatic)
@@ -170,6 +182,33 @@ def test_get_shows_the_record_and_every_architect_span_with_why_it_can_or_cannot
     assert shown.piece_count == 3
 
 
+@pytest.mark.parametrize(
+    ("source", "status", "judgments", "needs_confirmation"),
+    [
+        ("code+ais", "paired", 2, False),
+        ("code", "paired", 1, True),
+        ("both-ais", "paired", 1, True),
+        ("none", "nothing_comparable", 0, False),
+    ],
+)
+def test_every_automatic_source_is_stored_and_shows_how_many_judgments_it_rests_on(
+    session: Session, source: str, status: str, judgments: int, needs_confirmation: bool
+) -> None:
+    row = Row(session, source=source, status=status)
+
+    shown = get_architect_pairing(
+        row.principal, session, row.project_id, row.package_id, row.anchor.id
+    )
+
+    assert shown.current is not None and shown.current.source == source
+    assert shown.effective is not None
+    assert (shown.effective.judgments, shown.effective.needs_confirmation) == (
+        judgments,
+        needs_confirmation,
+    )
+    assert len(shown.effective.pairs) == (1 if status == "paired" else 0)
+
+
 def test_one_click_pairs_supersedes_and_is_audited(session: Session) -> None:
     row = Row(session)
 
@@ -182,7 +221,8 @@ def test_one_click_pairs_supersedes_and_is_audited(session: Session) -> None:
     assert saved.current.supersedes_id == row.automatic.id
     assert saved.current.decided_by == "reviewer (synthetic test)"
     assert saved.current.note == "cabinet split"
-    assert saved.effective is not None and not saved.effective.ai_only
+    assert saved.effective is not None
+    assert (saved.effective.judgments, saved.effective.needs_confirmation) == (0, False)
     assert [pair.vendor_slot_indices for pair in saved.effective.pairs] == [[0, 1]]
     audited = session.scalars(
         select(AuditEvent).where(AuditEvent.target_id == saved.current.record_id)

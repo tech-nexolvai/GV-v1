@@ -2003,8 +2003,10 @@ export interface components {
          * @description The pairing that counts, re-checked against the architect's dimensions as they stand.
          */
         ArchitectPairingEffectiveOut: {
-            /** Ai Only */
-            ai_only: boolean;
+            /** Judgments */
+            judgments: number;
+            /** Needs Confirmation */
+            needs_confirmation: boolean;
             /** Pairs */
             pairs: components["schemas"]["ArchitectPairOut"][];
             /** Reasons */

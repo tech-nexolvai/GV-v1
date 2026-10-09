@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from fractions import Fraction
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -378,6 +378,11 @@ class ArchitectPairingIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+#: Independent automatic judgments behind each pairing source (#1053): code by drawn position, and
+#: both AIs by what each dimension measures.
+_JUDGMENTS: Final = {"code+ais": 2, "code": 1, "both-ais": 1}
+
+
 class ArchitectPairOut(BaseModel):
     kind: str
     architect_candidate_id: UUID
@@ -404,8 +409,13 @@ class ArchitectPairingEffectiveOut(BaseModel):
     status: str
     pairs: list[ArchitectPairOut]
     reasons: list[str]
-    ai_only: bool
-    """Paired only by the two AIs: a PASS resting on it waits for a reviewer's confirmation."""
+    judgments: int
+    """How many independent automatic judgments the pairing rests on: 2 for `code+ais` (code's
+    drawn position and both AIs agree), 1 for `code` or `both-ais`, 0 for a reviewer's pairing or
+    none."""
+    needs_confirmation: bool
+    """One judgment only (`code` or `both-ais`) with pairs: any result resting on it, PASS or FAIL,
+    waits for a reviewer's confirmation of the pairing. `code+ais` and `reviewer` stand."""
 
 
 class ArchitectSpanOut(BaseModel):
@@ -482,7 +492,9 @@ def _architect_pairing_out(session: Session, row: SlotRow) -> ArchitectPairingOu
                     for pair in effective.pairs
                 ],
                 reasons=list(effective.reasons),
-                ai_only=effective.source == "both-ais",
+                judgments=_JUDGMENTS.get(effective.source, 0),
+                needs_confirmation=effective.source in {"code", "both-ais"}
+                and bool(effective.pairs),
             )
         ),
         spans=[
