@@ -19,75 +19,6 @@
   margin-inline: auto;
 }
 
-.measure-guidance {
-  width: fit-content;
-  max-width: 100%;
-  margin-bottom: var(--space-4);
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-}
-
-.measure-guidance summary {
-  min-height: 2.75rem;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-  color: var(--text-primary);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-
-.measure-guidance summary::before { content: '+ '; padding-right: var(--space-2); text-decoration: none; }
-.measure-guidance[open] summary::before { content: '− '; }
-
-.measure-guidance[open] {
-  width: min(100%, 45rem);
-  padding: var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-base);
-}
-
-.measure-guidance p { margin: var(--space-2) 0 0; }
-
-.measure-steps {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2);
-  margin-bottom: var(--space-5);
-}
-
-.measure-steps button {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 3.25rem;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  font-size: var(--text-xs);
-  line-height: 1.35;
-  text-decoration: none;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.measure-steps button span {
-  flex: none;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semi);
-  color: var(--text-muted);
-}
-
-.measure-steps button:hover,
-.measure-steps button:focus-visible {
-  border-color: var(--text-primary);
-  outline-offset: 2px;
-}
-
 .measure-step-target { scroll-margin-top: var(--space-4); }
 
 .measure-step-intro {
@@ -115,12 +46,6 @@
 
 @media (max-width: 48rem) {
   .enter-values { padding: var(--space-4); }
-  .measure-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 27rem) {
-  .measure-steps { grid-template-columns: 1fr 1fr; }
-  .measure-steps button { align-items: flex-start; flex-direction: column; }
 }
 
 .enter-values__head h1 {
@@ -829,15 +754,6 @@
   cursor: not-allowed;
 }
 
-.enter-values__actions {
-  display: flex;
-  gap: var(--space-3);
-  margin-top: var(--space-5);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border-subtle);
-  flex-wrap: wrap;
-}
-
 .enter-values__error {
   margin-top: var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -856,13 +772,6 @@
   font-size: var(--text-sm);
   color: var(--text-muted);
   line-height: 1.7;
-}
-
-.enter-values__note {
-  margin-top: var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  line-height: 1.5;
 }
 
 /* One labelled field: what to measure, which sheet it is on, and which checks use it. */

@@ -149,7 +149,8 @@ assert.match(html, />Confirm the picked reading<\/button>/);
 
 // **There is no "confirm all".** Two buttons per part, both about that part.
 assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
-assert.equal((html.match(/<button/g) ?? []).length, 4);
+// The decision buttons only: the step's "?" explanation (#1061) is not one of them.
+assert.equal((html.match(/<button(?![^>]*aria-label="About )/g) ?? []).length, 4);
 assert.equal((html.match(/role="group"/g) ?? []).length, 2);
 // Nothing to take back yet, and the filler with nothing picked cannot be confirmed.
 assert.equal((html.match(/disabled=""[^>]*>Take the link back/g) ?? []).length, 2);

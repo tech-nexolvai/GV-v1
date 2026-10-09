@@ -12,6 +12,7 @@ import {
   type RunDrawing,
   type RunsList,
 } from './countertopRunChoices.js';
+import { InfoTip } from './info-tip';
 
 /**
  * Which confirmed parts sit beneath each countertop: what the computer suggests, and a person
@@ -47,10 +48,11 @@ export function CountertopRunsList({
     <section className="enter-values__section drawing-parts" aria-labelledby="countertop-runs-title">
       <h2 id="countertop-runs-title">Parts under each countertop</h2>
       <p className="enter-values__hint">
-        For each countertop you confirmed above, the computer suggests the cabinets and fillers that
-        sit beneath it, left to right, leaving out anything drawn above the top, as a wall cabinet
-        is. A suggestion counts for nothing until you decide it. Confirm the run, tick different
-        parts and confirm that instead, or say it is not this countertop&apos;s run.{' '}
+        Decide the parts under each countertop.{' '}
+        <InfoTip label="About countertop runs">
+          <p>For each countertop you confirmed in step 1, the computer suggests the cabinets and fillers that sit beneath it, left to right, leaving out anything drawn above the top, as a wall cabinet is.</p>
+          <p>A suggestion counts for nothing until you decide it. Confirm the run, tick different parts and confirm that instead, or say it is not this countertop&apos;s run.</p>
+        </InfoTip>{' '}
         {runs.can_suggest && (
           <strong>{open === 0 ? 'Nothing left to decide.' : `${open} still to decide.`}</strong>
         )}

@@ -176,7 +176,8 @@ assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
 for (const label of ['Cabinet', 'Filler', 'Countertop', 'Not a part']) {
   assert.equal((html.match(new RegExp(`>${label}</button>`, 'g')) ?? []).length, 3, label);
 }
-assert.equal((html.match(/<button/g) ?? []).length, 3 * 4);
+// The decision buttons only: the step's "?" explanation (#1061) is not one of them.
+assert.equal((html.match(/<button(?![^>]*aria-label="About )/g) ?? []).length, 3 * 4);
 assert.equal((html.match(/role="group"/g) ?? []).length, 3);
 // Adding is click-to-place on the vendor-only drawing, not a selection of existing part ends.
 assert.match(html, /mark its two ends on the vendor&#x27;s drawing/);

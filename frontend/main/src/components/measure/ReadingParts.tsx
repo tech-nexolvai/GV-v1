@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { ApiError, confirmReadingPart, listReadingParts, withdrawReadingPart } from '../../api/client';
 import { projectId } from '../../api/config';
 import { PartPicture } from './PartPicture.js';
-import { partName, type LinkPart, type ReadingLinks } from './readingPartChoices.js';
+import { linkCount, partName, type LinkPart, type ReadingLinks } from './readingPartChoices.js';
+import type { StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { ReadingPartsList } from './ReadingPartsList.js';
 import './DrawingParts.css';
@@ -17,13 +18,16 @@ import './DrawingParts.css';
  * change what can be suggested. After each decision here the list is read again, so the link shown
  * is always the server's.
  */
-export function ReadingParts({ packageId, refresh }: { packageId: string; refresh: number }) {
+export function ReadingParts({ packageId, refresh, onProgress }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void }) {
   const [links, setLinks] = useState<ReadingLinks | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
+  useEffect(() => {
+    if (links) onProgress?.(linkCount(links));
+  }, [links, onProgress]);
 
   useEffect(() => {
     let live = true;

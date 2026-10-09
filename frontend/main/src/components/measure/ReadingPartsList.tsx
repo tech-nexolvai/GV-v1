@@ -15,6 +15,7 @@ import {
 } from './readingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
+import { InfoTip } from './info-tip';
 
 /**
  * Which confirmed reading is each confirmed part's width: what the computer suggests, and a person
@@ -54,10 +55,11 @@ export function ReadingPartsList({
     <section className="enter-values__section drawing-parts" aria-labelledby="reading-parts-title">
       <h2 id="reading-parts-title">Which reading is each part&apos;s width</h2>
       <p className="enter-values__hint">
-        For each part you confirmed above, the computer suggests the confirmed reading whose
-        dimension line reaches both ends of the part. A suggestion counts for nothing until you
-        decide it. Confirm it, pick another reading on the same drawing and confirm that instead, or
-        take a link back. A part&apos;s width is one reading.{' '}
+        Link each part to the reading of its width.{' '}
+        <InfoTip label="About width links">
+          <p>For each part you confirmed in step 1, the computer suggests the confirmed reading whose dimension line reaches both ends of the part. A part&apos;s width is one reading.</p>
+          <p>A suggestion counts for nothing until you decide it. Confirm it, pick another reading on the same drawing and confirm that instead, or take a link back.</p>
+        </InfoTip>{' '}
         <strong>{open === 0 ? 'Nothing left to link.' : `${open} still without a reading.`}</strong>
       </p>
       {links.why_not && <p className="drawing-parts__why-not">{links.why_not}</p>}
@@ -67,8 +69,8 @@ export function ReadingPartsList({
           {drawing.why_not && <p className="drawing-parts__why-not">{drawing.why_not}</p>}
           {drawing.readings.length === 0 && (
             <p className="enter-values__hint">
-              No reading on this drawing is confirmed yet. Say what its readings are under
-              &quot;Measurements&quot; first; each part&apos;s width can be linked after that.
+              No reading on this drawing is confirmed yet. Say what its readings are in step 3
+              (Values) first; each part&apos;s width can be linked after that.
             </p>
           )}
           <ol className="drawing-parts__list">

@@ -16,6 +16,7 @@ import {
 import { GvMarksWarning } from './GvMarksWarning.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
 import { VendorPagePlacement } from './VendorPagePlacement.js';
+import { InfoTip } from './info-tip';
 
 /** A part a person adds, as the form hands it over. */
 export interface NewPart {
@@ -71,10 +72,11 @@ export function DrawingPartsList({
     <section className="enter-values__section drawing-parts" aria-labelledby="drawing-parts-title">
       <h2 id="drawing-parts-title">Parts of each drawing</h2>
       <p className="enter-values__hint">
-        The computer suggests the parts it finds in each vendor&apos;s drawing. A suggestion counts
-        for nothing until you say what it is. Decide each one on its own: say whether it is a cabinet,
-        a filler or a countertop (a filler is drawn like a cabinet, so it is suggested as one), correct
-        its code if the drawing prints it differently, or say it is not a part.{' '}
+        Decide each suggested part.{' '}
+        <InfoTip label="About suggested parts">
+          <p>The computer suggests the parts it finds in each vendor&apos;s drawing. A suggestion counts for nothing until you say what it is.</p>
+          <p>Decide each one on its own: say whether it is a cabinet, a filler or a countertop (a filler is drawn like a cabinet, so it is suggested as one), correct its code if the drawing prints it differently, or say it is not a part.</p>
+        </InfoTip>{' '}
         <strong>{open === 0 ? 'Nothing left to decide.' : `${open} still to decide.`}</strong>
       </p>
       {drawings.map((drawing) => (

@@ -1,4 +1,5 @@
 import type { components } from '../../api/schema';
+import { countOf, type StepCount } from '../../lib/measure-steps';
 
 /** One drawing on a sheet, as the API lists it: its page, its printed label, its role if confirmed. */
 export type DrawingView = components['schemas']['ViewOut'];
@@ -24,5 +25,10 @@ export function roleLabel(role: string | null | undefined): string | null {
  */
 export function stillToConfirm(views: readonly DrawingView[]): number {
   return views.filter((view) => view.role === null && !view.upload_side).length;
+}
+
+/** For the Measurements step bar (#1061): every drawing, and how many are settled. */
+export function roleCount(views: readonly DrawingView[]): StepCount {
+  return countOf(views.length, stillToConfirm(views));
 }
 

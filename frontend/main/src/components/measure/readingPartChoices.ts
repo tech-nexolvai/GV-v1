@@ -1,4 +1,5 @@
 import type { components } from '../../api/schema';
+import { countOf, type StepCount } from '../../lib/measure-steps';
 
 /** Every confirmed part and its link, as `GET …/reading-parts` lists them (#913). */
 export type ReadingLinks = components['schemas']['ReadingPartsOut'];
@@ -57,6 +58,12 @@ export function partsStillToLink(links: ReadingLinks): number {
   return links.drawings
     .filter((drawing) => drawing.can_confirm)
     .reduce((open, drawing) => open + drawing.parts.filter((part) => part.links.length === 0).length, 0);
+}
+
+/** For the Measurements step bar (#1061): the parts that can be linked, and how many are. */
+export function linkCount(links: ReadingLinks): StepCount {
+  const total = links.drawings.filter((drawing) => drawing.can_confirm).reduce((sum, drawing) => sum + drawing.parts.length, 0);
+  return countOf(total, partsStillToLink(links));
 }
 
 /**
