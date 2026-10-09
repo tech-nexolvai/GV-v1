@@ -62,8 +62,8 @@ def test_an_open_dependency_blocks(issues: dict[str, tuple[str, str]]) -> None:
 
 def test_a_closed_dependency_does_not_block(issues: dict[str, tuple[str, str]]) -> None:
     """The check has to be able to say yes, or it would simply stop all work."""
-    issues["191"] = ("closed", "C1.1 — SQLAlchemy base")
-    assert open_issue_dependencies([191]) == []
+    issues["188"] = ("closed", "C1.1 — SQLAlchemy base")
+    assert open_issue_dependencies([188]) == []
 
 
 def test_an_unresolvable_dependency_blocks(issues: dict[str, tuple[str, str]]) -> None:

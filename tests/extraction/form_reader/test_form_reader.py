@@ -150,7 +150,7 @@ def _parsed_chain_label(text: str, whole: str, numerator: str, denominator: str)
     [
         ('2"', "2", "", "", Fraction(2)),
         ('3/4"', "", "3", "4", Fraction(3, 4)),
-        ('39 1/2"', "39", "1", "2", Fraction(79, 2)),
+        ('37 1/2"', "37", "1", "2", Fraction(75, 2)),
     ],
 )
 def test_empty_component_strings_are_missing_parts_not_a_mismatch(
@@ -550,11 +550,11 @@ def test_non_run_overall_is_not_corroborated() -> None:
 
 
 def test_overall_spanning_an_appliance_space_stays_with_the_person() -> None:
-    overall = _dimension('39 1/2"', whole=39, numerator=1, denominator=2, position=0)
+    overall = _dimension('37 1/2"', whole=37, numerator=1, denominator=2, position=0)
     chain = (
-        _dimension('13 1/8"', whole=13, numerator=1, denominator=8, kind="cabinet"),
+        _dimension('17 5/8"', whole=17, numerator=5, denominator=8, kind="cabinet"),
         _dimension('24"', whole=24, denominator=1, kind="appliance_space"),
-        _dimension('21 3/4"', whole=21, numerator=3, denominator=4, kind="cabinet"),
+        _dimension('23 1/4"', whole=23, numerator=1, denominator=4, kind="cabinet"),
     )
     result = compare_page_answers(
         _answer(overall=overall, scope="run", chain=chain),

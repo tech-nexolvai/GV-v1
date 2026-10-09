@@ -143,10 +143,10 @@ API_PID=$!
 #
 # **It is 6, not 5, because the client's digits are 5.4-5.5 pt tall (#715).** At 5 no digit was a
 # glyph, so a region formed from the inch mark or a tick beside the number, and the vision crop cut
-# round it showed part of the label: `91"` of `191"`, `9 1/2"` of `39 1/2"`. A reader that read that
-# crop correctly returned a wrong dimension that parses, and two vendors agreed on it. On the four
-# such crops in the human-read key (#666), 7 readers were right 6 times in 28 with the crops cut at
-# 5, and 26 times in 28 cut at 6; accepted-but-wrong fell from 19 to 1. At 6 it equals
+# round it showed part of the label (say `73"` of `173"`, or `7 1/2"` of `37 1/2"`). A reader
+# that read that crop correctly returned a wrong dimension that parses, and two vendors agreed on
+# it. On the four such crops in the human-read key (#666), 7 readers were right 6 times in 28 with
+# the crops cut at 5, and 26 times in 28 cut at 6; accepted-but-wrong fell from 19 to 1. At 6 it equals
 # `LINE_MINIMUM_PT`, so no stroke is in both categories except a short diagonal, and on the 17-page
 # set the line segments (23,069) and dimension lines (1,515) are unchanged while label-to-line
 # associations rise from 1,193 to 1,236.
@@ -166,7 +166,8 @@ API_PID=$!
 # **`CHARACTER_GAP_PT` lays each one out (#834)**: how far apart along the baseline the whole number's
 # digits, the fraction and the inch mark may be. A reading whose digit counts the layout contradicts
 # — `3 3/4"` on a `3/4"` — is refused. On those 12 fractions every value from 3.2 to 6 pt counts every
-# part right; the widest gap inside a label is 3.12 pt, between the `1` and `3` of a `13 1/8"`.
+# part right; the widest gap inside a label is 3.12 pt, between the two whole-number digits of a
+# two-digit label.
 #
 # **`TURNED_ASPECT_MIN` finds the sideways ones (#869).** `AI_Set 2` draws its vertical dimensions
 # turned a quarter inside stamps that read upright, so their bars run up the page and the six above

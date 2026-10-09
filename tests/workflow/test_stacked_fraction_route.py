@@ -32,7 +32,7 @@ from extraction.models.context import AssembledContext
 from extraction.models.nova import NovaConfig, NovaInvocation, NovaInvocationOutcome, NovaRequest
 from extraction.ocr import OcrItem
 from storage.local import LocalStore
-from tests.extraction.models.test_validation import THIRTY_NINE_AND_A_HALF_LAYOUT, THREE_QUARTERS
+from tests.extraction.models.test_validation import THIRTY_SEVEN_AND_A_HALF_LAYOUT, THREE_QUARTERS
 from tests.extraction.test_annotations import STACKED_APPEARANCE, _appearance, _pdf, _stamp
 from tests.extraction.test_reader import MISSING_SPACE
 from tests.workflow.test_association import LOCALIZED, SETTINGS, _revision, _upgrade
@@ -288,7 +288,7 @@ def test_unstacked_crop_has_no_pre_call_refusal() -> None:
 def test_a_crop_has_the_layouts_of_the_fractions_it_shows_and_no_others() -> None:
     """**By the same rule as whether it shows one** (#834): what a reading of the crop is checked
     against is every stacked label in it, and nothing elsewhere on the page."""
-    (quarters,), (half,) = THREE_QUARTERS, THIRTY_NINE_AND_A_HALF_LAYOUT
+    (quarters,), (half,) = THREE_QUARTERS, THIRTY_SEVEN_AND_A_HALF_LAYOUT
     fractions = [_fraction(190, 150, 230, 190, quarters), _fraction(300, 300, 340, 360, half)]
 
     assert stacked_layouts_shown((100, 100, 200, 200), fractions) == (quarters,)

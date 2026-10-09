@@ -11,7 +11,7 @@ const drafts = {
   newPart: { kind: 'countertop', code: 'TOP-A' },
   wallLayout: 'back_left_right',
   widthLink: 'reading-13',
-  typedValue: '39 1/2 in',
+  typedValue: '37 1/2 in',
 };
 
 let currentPackage: string | null = 'package-1';
@@ -45,7 +45,7 @@ assert.equal(retainedDrafts?.newPart.kind, 'countertop');
 assert.equal(retainedDrafts?.newPart.code, 'TOP-A');
 assert.equal(retainedDrafts?.wallLayout, 'back_left_right');
 assert.equal(retainedDrafts?.widthLink, 'reading-13');
-assert.equal(retainedDrafts?.typedValue, '39 1/2 in');
+assert.equal(retainedDrafts?.typedValue, '37 1/2 in');
 
 // A genuine package switch still resets the form; retaining one package's drafts in another would
 // risk submitting values against the wrong drawing pair.

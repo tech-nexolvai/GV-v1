@@ -23,7 +23,7 @@ export interface StripPiece {
   /** Left edge and width, in drawing units (0 … `width`). */
   x: number;
   w: number;
-  /** The API's exact text, e.g. `13 1/8"`; null when the piece was not read. */
+  /** The API's exact text, e.g. `12 5/8"`; null when the piece was not read. */
   label: string | null;
   kind: PieceKind;
   source: CountertopResult['pieces'][number]['source'];
@@ -157,7 +157,7 @@ export function stripLayout(row: CountertopResult, width: number): StripLayout {
   };
 }
 
-/** "Printed 42", needed 44", short by 2"; 3 pieces 13 1/8", 21 3/4", ? ; walls: back wall and both ends." */
+/** "Printed 42", needed 44", short by 2"; 3 pieces 12 5/8", 22 1/4", ? ; walls: back wall and both ends." */
 export function summaryOf(row: CountertopResult, difference: { text: string; sign: -1 | 0 | 1 } | null, toScale: boolean): string {
   const parts: string[] = [];
   parts.push(row.printed_overall ? `Printed ${row.printed_overall.display}` : 'Printed overall not read');

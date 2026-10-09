@@ -54,7 +54,7 @@ REQUEST: dict[str, object] = {
 SPAN_TEXT = json.dumps(
     {
         "belongs": True,
-        "text": '13 1/8"',
+        "text": '17 5/8"',
         "stacked": False,
         "combined": False,
         "readable": True,
@@ -133,7 +133,7 @@ def test_response_is_adapted_to_the_existing_reader_shape_without_losing_usage()
         {
             "model": "claude-opus-5-5",
             "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": '{"label":"13 1/8\\""}'}],
+            "content": [{"type": "text", "text": '{"label":"17 5/8\\""}'}],
             "usage": {"input_tokens": 45, "output_tokens": 12},
         }
     ).encode()

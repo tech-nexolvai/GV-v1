@@ -155,7 +155,7 @@ class FractionPartsReading:
     """One stacked label read piece by piece: what it says, its exact value, and where it is."""
 
     text: str
-    """The label as one line, `39 1/2"` or `3/4"`, written from the digits read."""
+    """The label as one line, `37 1/2"` or `3/4"`, written from the digits read."""
 
     value: Measurement
     """The exact value in inches, put together in code from the pieces."""

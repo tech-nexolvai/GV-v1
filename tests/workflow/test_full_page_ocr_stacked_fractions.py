@@ -249,7 +249,7 @@ def test_a_stacked_label_read_by_full_page_ocr_is_stored_flagged(
     [
         # The fraction dropped (#541): a whole number where the drawing has a whole and a fraction.
         ('28"',),
-        # A whole-number digit dropped, as `9 1/2"` for a `39 1/2"`: right shape, wrong count.
+        # A whole-number digit dropped, as `7 1/2"` for a `37 1/2"`: right shape, wrong count.
         ('8 3/4"',),
         # The dual reading the millimetre lane takes on one reader: 28 3/4" is 730.25 mm.
         ("730", "[28 3/4]"),

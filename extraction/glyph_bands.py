@@ -123,7 +123,7 @@ class FractionBarGeometry:
     neighbour (`FractionLayout.neighbours`, #848).
 
     It decides only the layout, never whether a fraction is found. Too small, and a whole number's
-    first digit is left out, so a reading that drops it — `9 1/2"` for `39 1/2"` — would match the
+    first digit is left out, so a reading that drops it — `7 1/2"` for `37 1/2"` — would match the
     count. Too large, and a neighbouring label's character is counted as part of this one."""
 
     turned_aspect_min: Decimal
@@ -216,8 +216,8 @@ class FractionLayout:
     are none.
 
     **Each one may be a character the count is missing.** A whole number's first digit drawn a
-    little taller than the band is not taken into it, and then `39 1/2"` lays out as `9 1/2"`; a
-    `+` after the inch mark is the start of more label, as in `39 1/2"+6"`. A reading of the label
+    little taller than the band is not taken into it, and then `37 1/2"` lays out as `7 1/2"`; a
+    `+` after the inch mark is the start of more label, as in `37 1/2"+6"`. A reading of the label
     put together from its parts is refused while any is here. A dimension tick below a label is not
     one: it is centred below the band, though it may reach into it."""
 

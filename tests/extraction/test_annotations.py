@@ -955,8 +955,8 @@ def _demo_setting(name: str) -> Decimal:
 
 def test_the_demo_glyph_limit_keeps_a_label_whole() -> None:
     """**#715.** At `GLYPH_MAXIMUM_PT=5` a 5.5 pt digit is not a glyph, so the only region formed at a
-    label was its inch mark, and the vision crop cut round it showed part of the number — `91"` of
-    `191"`. Readers then read that crop correctly and returned a wrong dimension that parses.
+    label was its inch mark, and the vision crop cut round it showed part of the number — say `73"` of
+    a `173"`. Readers then read that crop correctly and returned a wrong dimension that parses.
 
     Read from `scripts/demo.sh` itself, so lowering the shipped value fails here rather than on a
     client's drawing."""

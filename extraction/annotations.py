@@ -22,9 +22,10 @@ file as strings.
    vision seam is for, and since #756 what `extraction/glyph_reader.py` reads from the paths
    themselves once a person has labelled each character's shape.
 
-**And the layers contradict each other, which is the point.** On page 3 the vendor drawing says
-`191"` where the markup says `185 1/4"`; elsewhere the drawing says `3"+2"Filler` and the markup
-`2"+3"(filler)` — the same numbers in the opposite order. Flattened into one image they are
+**And the layers contradict each other, which is the point.** On a real sheet the vendor drawing gives
+one width where the markup gives another (say `173"` against `168 3/4"`); elsewhere the drawing
+writes a filler pair as `4"+1"Filler` and the markup as `1"+4"(filler)` — the same numbers in the
+opposite order (examples synthetic). Flattened into one image they are
 indistinguishable except by colour, and a model asked to read the result returns a blend of two
 sources with different authority. That disagreement is a review signal and it survives only if the
 layers are kept apart, so nothing here reconciles them, picks one, or even compares them.

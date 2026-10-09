@@ -351,7 +351,7 @@ def test_an_answer_the_validator_refuses_is_refused_for_the_same_reason_as_on_th
 def test_a_stacked_crop_is_refused_on_this_path_too() -> None:
     """**#726 holds.** A JSON reading of a crop the geometry says shows a stacked fraction is
     refused, however it was answered."""
-    adapter, _client, _sink = _adapter(_text('{"reading": "13 1/8\\""}'))
+    adapter, _client, _sink = _adapter(_text('{"reading": "17 5/8\\""}'))
 
     with pytest.raises(NovaPayloadRejectedError) as raised:
         adapter.extract(_request(stacked=True))

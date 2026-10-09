@@ -302,7 +302,7 @@ def _stacked_fraction_refusal(reading: str, *, stacked: bool) -> str | None:
 STACKED_LAYOUT_REASON: Final = "reading_contradicts_stacked_layout"
 
 #: A reading written the way a stacked label is drawn: a whole number or none, a fraction, and an inch
-#: mark or none. Matched on the canonical form, where `39-1/2"` is already `39 1/2"`.
+#: mark or none. Matched on the canonical form, where `37-1/2"` is already `37 1/2"`.
 _STACKED_READING_RE = re.compile(
     r'^\s*(?:(?P<whole>\d+)\s+)?(?P<numerator>\d+)\s*/\s*(?P<denominator>\d+)\s*"?\s*$'
 )
@@ -319,8 +319,8 @@ def stacked_layout_refusal(reading: str, layouts: Sequence[FractionLayout]) -> s
     `3 3/4"` and agreed (#726). Nothing in the string shows it — it has its `/` and parses — but the
     drawing does: the label has no whole number. So a reading is checked against where the label's
     parts were drawn (`extraction/glyph_bands.py`): as many whole-number digits as the drawing has
-    characters before the fraction, as many above the bar and as many below. `9 1/2"` read from a
-    `39 1/2"` is refused the same way.
+    characters before the fraction, as many above the bar and as many below. `7 1/2"` read from a
+    `37 1/2"` is refused the same way.
 
     **It reads the string and the layout and nothing else**, so a reading from any lane — a model,
     OCR, the shape reader — can be held to it; `validate_payload` holds the model readers' to it.
