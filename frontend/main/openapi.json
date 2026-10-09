@@ -4328,6 +4328,7 @@
         "type": "object"
       },
       "PackageReadingTimeOut": {
+        "description": "The spread of saved AI call times in one extraction run. Not the reading time (#1071).\n\nFirst to last `ModelInvocation.created_at` of the run. The calls of a reading are saved together\nwhen the reading finishes, so this is usually a few milliseconds whatever the reading took. Use\n`ReadingTimeOut` for how long reading a drawing set took.",
         "properties": {
           "duration_ms": {
             "title": "Duration Ms",
@@ -5343,6 +5344,89 @@
           "drawings"
         ],
         "title": "ReadingPartsOut",
+        "type": "object"
+      },
+      "ReadingTimeOut": {
+        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI\nbudget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or\nat a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so\nthe time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "finished_at minus started_at in whole milliseconds; null while reading.",
+            "title": "Duration Ms"
+          },
+          "end_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The state the reading ended in (hand-over or stop); null while reading.",
+            "title": "End State"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the reading reached review or stopped; null while still reading.",
+            "title": "Finished At"
+          },
+          "outcome": {
+            "enum": [
+              "finished",
+              "failed",
+              "reading"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "started_at": {
+            "description": "When the revision first entered EXTRACTING.",
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "revision_number",
+          "started_at",
+          "finished_at",
+          "outcome",
+          "end_state",
+          "duration_ms"
+        ],
+        "title": "ReadingTimeOut",
         "type": "object"
       },
       "RecordAction": {
@@ -7356,10 +7440,19 @@
             "type": "array"
           },
           "package_reading_times": {
+            "description": "The spread of saved AI call times per extraction run, not the reading time: the calls are saved together when a reading finishes, so this is usually about zero. Use reading_times.",
             "items": {
               "$ref": "#/components/schemas/PackageReadingTimeOut"
             },
             "title": "Package Reading Times",
+            "type": "array"
+          },
+          "reading_times": {
+            "description": "How long each package revision's reading took, from its recorded state events (first EXTRACTING to the hand-over to a person, or to the failure that ended it). Filtered by from/to on started_at.",
+            "items": {
+              "$ref": "#/components/schemas/ReadingTimeOut"
+            },
+            "title": "Reading Times",
             "type": "array"
           },
           "to": {
@@ -7383,7 +7476,8 @@
           "group_by",
           "totals",
           "groups",
-          "package_reading_times"
+          "package_reading_times",
+          "reading_times"
         ],
         "title": "UsageOut",
         "type": "object"
