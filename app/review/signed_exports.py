@@ -256,6 +256,12 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
         review = db.get(ReviewSession, action.review_session_id)
         if review is None or review.created_at > approval.created_at:
             raise SignedExportRefused("historical review session is unavailable or ambiguous")
+
+    def _history(finding_id: UUID) -> list[ReviewAction]:
+        """The carried decision first (it predates the finding), then the finding's own actions."""
+        own = [action for action in actions if action.finding_id == finding_id]
+        return [carried[finding_id], *own] if finding_id in carried else own
+
     review_record = SignedReview(
         approval_id=approval.id,
         approved_by=approval.approved_by,
@@ -277,10 +283,7 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
                             None if action.finding_id == finding.id else action.finding_id
                         ),
                     )
-                    for action in (
-                        *((carried[finding.id],) if finding.id in carried else ()),
-                        *(action for action in actions if action.finding_id == finding.id),
-                    )
+                    for action in _history(finding.id)
                 ),
             )
             for finding, _, _, definition in rows
