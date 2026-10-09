@@ -1003,53 +1003,21 @@ def read_slot_pages(
             claude_effort=runtime.claude_effort,
         )
 
-    row_answers = run_jobs(row_jobs) if row_jobs else {}
-    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None]] = []
-    jobs: list[CropJob] = []
-    crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
-    walls_asked: dict[int, WallQuestion] = {}
-    owner_candidate_ids: dict[int, dict[str, UUID]] = {}
-    wall_candidate_ids: dict[int, UUID] = {}
-    for page in pages:
-        if runtime.question_packets and page.transform is None:
-            raise ValueError("reader question packets require the published PageTransform")
-        if page.ink is not None and page.ink.dpi != page.rendered.dpi:
-            raise ValueError(
-                f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
-                f"at {page.rendered.dpi} dpi"
-            )
-        row_choice, row_number = _agreed_row(
-            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
-            if runtime.claude_row_reader and page.page_index in row_ids
-            else []
-        )
-        candidates = page_rows[page.page_index].candidates[:6]
-        selected_row = (
-            candidates[row_number - 1]
-            if row_number is not None and 0 < row_number <= len(candidates)
-            else None
-        )
-        source_plan = plan_slots(
-            page.rows.candidates.rows,
-            page.rows.ink,
-            settings=runtime.crop_settings,
-            row_settings=runtime.row_settings,
-            selected_row=selected_row,
-            row_choice_made=runtime.claude_row_reader and bool(candidates),
-        )
-        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
-        planned.append((page, plan, source_plan, row_choice, row_number))
+    def label_jobs(
+        page: SlotPage,
+        plan: SlotPlan,
+        source_plan: SlotPlan,
+        candidate_ids: Mapping[str, UUID],
+        *,
+        row_key: str = "",
+        held: bool = False,
+    ) -> list[CropJob]:
+        """Cut every label's close-up of `plan`'s row and ask its readers; `crops` keeps the boxes.
+
+        `row_key` tells a second row read on the same page (#1086) from the chosen one.
+        """
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
-        page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
-        owner_candidate_ids[page.page_index] = page_candidate_ids
-        # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
-        # never become a proposal, so it is not read at paid prices; the hold is applied below
-        # exactly as before. Claude path only.
-        held_before_reading = (
-            runtime.claude_row_reader
-            and plan.row is not None
-            and _counter_break_row_hold(page, plan, (), runtime) is not None
-        )
+        found: list[CropJob] = []
         # Spans whose label code found drawn sideways (#1051): the Claude span is the slot's band,
         # so the label runs come from the plan code made before the spans replaced them.
         sideways_owners = (
@@ -1069,12 +1037,12 @@ def read_slot_pages(
         )
         for owner in owners:
             for position, label in enumerate(owner.labels):
-                key = _key(page.page_index, owner.index, position)
+                key = _key(page.page_index, owner.index, position, row_key)
                 box_px = _pixels(page.rows, label.box, page.rendered)
                 crop_px = _pixels(page.rows, label.crop, page.rendered)
                 ink = None if page.ink is None else page.ink.at(crop_px)
                 crops[key] = (box_px, crop_px, ink)
-                if held_before_reading:
+                if held:
                     continue
                 if not runtime.claude_row_reader and (
                     _hard_guarded(label, ink) or not label.has_digit
@@ -1109,7 +1077,7 @@ def read_slot_pages(
                     packet = _question_packet(
                         page,
                         question_id=key,
-                        candidate_id=page_candidate_ids[_owner_candidate_key(owner.index)],
+                        candidate_id=candidate_ids[_owner_candidate_key(owner.index)],
                         prompt_id=runtime.prompt_id,
                         full_view_png=view_png,
                         close_up_png=png,
@@ -1117,7 +1085,7 @@ def read_slot_pages(
                         upright_png=upright_png,
                         effort=runtime.claude_effort if runtime.claude_row_reader else None,
                     )
-                    jobs.extend(
+                    found.extend(
                         CropJob(
                             key,
                             model,
@@ -1131,7 +1099,7 @@ def read_slot_pages(
                         for model in wanted
                     )
                 else:
-                    jobs.extend(
+                    found.extend(
                         CropJob(
                             key,
                             model,
@@ -1143,6 +1111,60 @@ def read_slot_pages(
                         )
                         for model in wanted
                     )
+        return found
+
+    row_answers = run_jobs(row_jobs) if row_jobs else {}
+    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, bool]] = (
+        []
+    )
+    jobs: list[CropJob] = []
+    crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
+    walls_asked: dict[int, WallQuestion] = {}
+    owner_candidate_ids: dict[int, dict[str, UUID]] = {}
+    wall_candidate_ids: dict[int, UUID] = {}
+    for page in pages:
+        if runtime.question_packets and page.transform is None:
+            raise ValueError("reader question packets require the published PageTransform")
+        if page.ink is not None and page.ink.dpi != page.rendered.dpi:
+            raise ValueError(
+                f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
+                f"at {page.rendered.dpi} dpi"
+            )
+        row_choice, row_number = _agreed_row(
+            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
+            if runtime.claude_row_reader and page.page_index in row_ids
+            else []
+        )
+        candidates = page_rows[page.page_index].candidates[:6]
+        selected_row = (
+            candidates[row_number - 1]
+            if row_number is not None and 0 < row_number <= len(candidates)
+            else None
+        )
+        source_plan = plan_slots(
+            page.rows.candidates.rows,
+            page.rows.ink,
+            settings=runtime.crop_settings,
+            row_settings=runtime.row_settings,
+            selected_row=selected_row,
+            row_choice_made=runtime.claude_row_reader and bool(candidates),
+        )
+        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
+        owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
+        page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
+        owner_candidate_ids[page.page_index] = page_candidate_ids
+        # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
+        # never become a proposal, so it is not read at paid prices; the hold is applied below
+        # exactly as before. Claude path only.
+        held_before_reading = (
+            runtime.claude_row_reader
+            and plan.row is not None
+            and _counter_break_row_hold(page, plan, (), runtime) is not None
+        )
+        planned.append((page, plan, source_plan, row_choice, row_number, held_before_reading))
+        jobs.extend(
+            label_jobs(page, plan, source_plan, page_candidate_ids, held=held_before_reading)
+        )
         wall_pictures_for = (
             None if held_before_reading else _wall_job_pictures(page, plan, runtime.wall_settings)
         )
@@ -1223,7 +1245,7 @@ def read_slot_pages(
         key: answer for key, answer in answers.items() if isinstance(answer, ReaderAnswer)
     }
     results: list[PageSlotResult] = []
-    for page, plan, source_plan, row_choice, row_number in planned:
+    for page, plan, source_plan, row_choice, row_number, _held in planned:
 
         def owner_result(
             owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
@@ -1811,8 +1833,8 @@ def _owner_result(
     )
 
 
-def _key(page_index: int, owner: int | None, position: int) -> str:
-    return f"p{page_index}:{'overall' if owner is None else f'slot{owner}'}:{position}"
+def _key(page_index: int, owner: int | None, position: int, row: str = "") -> str:
+    return f"p{page_index}:{row}{'overall' if owner is None else f'slot{owner}'}:{position}"
 
 
 def _box_flag(name: str, box: tuple[int, int, int, int]) -> str:
