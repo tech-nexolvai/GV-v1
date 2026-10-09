@@ -15,15 +15,34 @@ export function formatUsd(cost: string): string {
   return `$${value.toFixed(2)}`;
 }
 
+/**
+ * What a cost is, said honestly (#1072 review): "Not priced" when no call has a price; "at least
+ * $X" when some calls have none (the figure leaves them out); otherwise the cost itself.
+ */
+export function costText(cost: string, calls: number, unpriced: number): string {
+  if (calls > 0 && unpriced >= calls) return 'Not priced';
+  if (unpriced > 0) return `at least ${formatUsd(cost)}`;
+  return formatUsd(cost);
+}
+
+function utcDay(day: string): Date {
+  const [year, month, date] = day.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, date));
+}
+
 /** "8 Oct" for a `2026-10-08` day (the API's days are UTC dates). */
 export function dayLabel(day: string): string {
-  const [year, month, date] = day.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, date)).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  return utcDay(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+/** "8 Oct 2026", for tables and tooltips. */
+export function fullDayLabel(day: string): string {
+  return utcDay(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 export interface UsageKpis {
-  /** Drawing sets with at least one AI call. */
-  setsRead: number;
+  /** Drawing sets with at least one AI call (reading or chat, failed or not): not "sets read". */
+  setsWithCalls: number;
   calls: number;
   failedCalls: number;
   cost: string;
@@ -33,7 +52,7 @@ export interface UsageKpis {
 
 export function usageKpis(totals: Usage['totals'], bySet: readonly UsageGroup[]): UsageKpis {
   return {
-    setsRead: bySet.filter((group) => group.calls > 0).length,
+    setsWithCalls: bySet.filter((group) => group.calls > 0).length,
     calls: totals.calls,
     failedCalls: totals.failed_calls,
     cost: totals.cost_usd,
@@ -44,16 +63,39 @@ export function usageKpis(totals: Usage['totals'], bySet: readonly UsageGroup[])
 export interface CostDay {
   day: string;
   label: string;
+  fullLabel: string;
   cost: number;
   calls: number;
   failed: number;
+  /** Calls with no price: that day's cost leaves them out. */
+  unpriced: number;
 }
 
+/** Days between the first and last with calls are filled with zero, up to this many days. */
+const FILL_DAYS = 62;
+
+/**
+ * Cost per UTC day, oldest first. Days with no calls between the first and the last are included at
+ * zero (so the bars are not side by side across a gap), unless the range is longer than two months.
+ */
 export function costByDay(byDay: readonly UsageGroup[]): CostDay[] {
-  return byDay
+  const days = byDay
     .filter((group): group is UsageGroup & { day: string } => typeof group.day === 'string')
-    .map((group) => ({ day: group.day, label: dayLabel(group.day), cost: Number(group.cost_usd), calls: group.calls, failed: group.failed_calls }))
+    .map((group) => ({
+      day: group.day, label: dayLabel(group.day), fullLabel: fullDayLabel(group.day),
+      cost: Number(group.cost_usd), calls: group.calls, failed: group.failed_calls, unpriced: group.unpriced_calls,
+    }))
     .sort((a, b) => a.day.localeCompare(b.day));
+  if (days.length < 2) return days;
+  const first = utcDay(days[0].day).getTime();
+  const last = utcDay(days[days.length - 1].day).getTime();
+  const span = Math.round((last - first) / 86_400_000) + 1;
+  if (span > FILL_DAYS) return days;
+  const byKey = new Map(days.map((day) => [day.day, day]));
+  return Array.from({ length: span }, (_, index) => {
+    const key = new Date(first + index * 86_400_000).toISOString().slice(0, 10);
+    return byKey.get(key) ?? { day: key, label: dayLabel(key), fullLabel: fullDayLabel(key), cost: 0, calls: 0, failed: 0, unpriced: 0 };
+  });
 }
 
 export interface SetUsage {
@@ -65,6 +107,8 @@ export interface SetUsage {
   inputTokens: number;
   outputTokens: number;
   cost: string;
+  /** Calls with no price: the cost leaves them out. */
+  unpriced: number;
   models: string[];
 }
 
@@ -80,6 +124,7 @@ export function usageBySet(bySet: readonly UsageGroup[], summaries: readonly Pac
       inputTokens: group.input_tokens,
       outputTokens: group.output_tokens,
       cost: group.cost_usd,
+      unpriced: group.unpriced_calls,
       models: group.models.map((model) => model.model),
     }));
 }
@@ -87,6 +132,7 @@ export function usageBySet(bySet: readonly UsageGroup[], summaries: readonly Pac
 export interface OutcomeDay extends SummaryOutcomes {
   day: string;
   label: string;
+  fullLabel: string;
   sets: number;
 }
 
@@ -98,7 +144,7 @@ export function outcomesByUploadDay(summaries: readonly PackageSummary[]): Outco
   const days = new Map<string, OutcomeDay>();
   for (const summary of summaries) {
     const day = summary.created_at.slice(0, 10);
-    const into = days.get(day) ?? { day, label: dayLabel(day), sets: 0, pass: 0, fail: 0, review: 0, not_found: 0, no_rule: 0 };
+    const into = days.get(day) ?? { day, label: dayLabel(day), fullLabel: fullDayLabel(day), sets: 0, pass: 0, fail: 0, review: 0, not_found: 0, no_rule: 0 };
     into.sets += 1;
     into.pass += summary.outcomes.pass;
     into.fail += summary.outcomes.fail;
@@ -110,7 +156,15 @@ export function outcomesByUploadDay(summaries: readonly PackageSummary[]): Outco
   return [...days.values()].sort((a, b) => a.day.localeCompare(b.day));
 }
 
-/** Short model names for a table cell: `anthropic.claude-opus-5-5` → `claude-opus-5-5`. */
+/** Short model names for a table cell: `us.anthropic.claude-opus-5-5` → `claude-opus-5-5`. */
 export function modelWord(model: string): string {
-  return model.replace(/^[a-z]+\./, '').replace(/:\d+$/, '');
+  return model.replace(/^([a-z]+\.)+/, '').replace(/:\d+$/, '');
+}
+
+/** Recorded results over all the days shown, for the visible totals beside the chart. */
+export function outcomeTotals(days: readonly OutcomeDay[]): SummaryOutcomes {
+  return days.reduce(
+    (sum, day) => ({ pass: sum.pass + day.pass, fail: sum.fail + day.fail, review: sum.review + day.review, not_found: sum.not_found + day.not_found, no_rule: sum.no_rule + day.no_rule }),
+    { pass: 0, fail: 0, review: 0, not_found: 0, no_rule: 0 },
+  );
 }

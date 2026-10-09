@@ -75,14 +75,16 @@ export function RulebookPage() {
               <span className="num">{all.length}</span> {all.length === 1 ? 'rule' : 'rules'} published
             </h2>
             {filter && (
-              <p className="flex items-center gap-2 text-sm" role="status">
-                Showing {productWord(filter.product).toLowerCase()}
-                {filter.checkType && <> · {checkTypeWord(filter.checkType).toLowerCase()}</>}: <span className="num">{shown.length}</span>
+              <div className="flex items-center gap-2 text-sm">
+                <p role="status">
+                  Showing {productWord(filter.product).toLowerCase()}
+                  {filter.checkType && <> · {checkTypeWord(filter.checkType).toLowerCase()}</>}: <span className="num">{shown.length}</span>
+                </p>
                 <Button type="button" size="sm" variant="outline" onClick={() => setFilter(null)}>Show all rules</Button>
-              </p>
+              </div>
             )}
           </div>
-          <RulesTable rules={shown} sharedNote={sharedReleaseNote(all)} emptyMessage={rulebookEmptyState(all.length).message} />
+          <RulesTable rules={shown} sharedNote={sharedReleaseNote(all)} emptyMessage="No rules match." />
         </section>
       </div>
     </PageFrame>

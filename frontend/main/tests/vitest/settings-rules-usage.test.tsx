@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,7 +8,7 @@ import { CompanySettingsPage } from '@/pages/CompanySettingsPage';
 import { RulebookPage } from '@/pages/RulebookPage';
 import { UsagePage } from '@/pages/UsagePage';
 import { checkTypeWord, matchesRuleFilter, ruleGrid, severityCounts, sharedReleaseNote } from '@/lib/rulebook-overview';
-import { costByDay, formatUsd, modelWord, outcomesByUploadDay, usageBySet, usageKpis } from '@/lib/usage';
+import { costByDay, costText, formatUsd, fullDayLabel, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis } from '@/lib/usage';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
@@ -46,12 +46,12 @@ describe('Company settings', () => {
     routes['GET /company-settings'] = () => json(SETTINGS);
     render(<CompanySettingsPage />);
     const table = await screen.findByRole('table', { name: "GV's standard numbers" });
-    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'meter').textContent).toContain('2 of 3 have a value · 1 set by GV · 1 not set yet');
-    expect(screen.getByRole('progressbar', { name: '2 of 3 have a value' }).getAttribute('aria-valuenow')).toBe(String((2 / 3) * 100));
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'meter').textContent).toContain('1 of 3 set by GV · 1 on the rulebook\'s default · 1 not set yet');
+    expect(screen.getByRole('progressbar', { name: '1 of 3 set by GV' }).getAttribute('aria-valuenow')).toBe(String((1 / 3) * 100));
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows.map((row) => row.getAttribute('data-source'))).toEqual(['rulebook', 'company', 'none']);
     expect(within(rows[0]).getByText('Synthetic note on the default.')).toBeTruthy();
-    expect(within(rows[1]).getByText('Can use its own')).toBeTruthy();
+    expect(table.textContent).not.toMatch(/Same on every project|Can use its own/); // no lock the system does not have
     expect(rows[1].textContent).toContain('by Synthetic Admin on');
     expect(within(rows[1]).getByText('1/4 in')).toBeTruthy(); // the rulebook default it replaced
     expect(within(rows[2]).getByText('Not set — checks that need it say "not found" until it is.')).toBeTruthy();
@@ -68,7 +68,7 @@ describe('Company settings', () => {
     await user.click(screen.getByRole('button', { name: 'Save 1 change' }));
     await screen.findByText('Saved. Every project now starts from these numbers.');
     expect(requests.filter((r) => r.method === 'POST').map((r) => JSON.parse(r.body ?? '{}'))).toEqual([{ values: [{ name: 'back_offset', value: '2 1/2"' }] }]);
-    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'meter').textContent).toContain('3 of 3 have a value · 2 set by GV');
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'meter').textContent).toContain('2 of 3 set by GV · 1 on the rulebook\'s default');
   });
 
   it('says plainly that only an admin can save', async () => {
@@ -134,7 +134,7 @@ describe('Rulebook page', () => {
     const grid = await screen.findByRole('table', { name: /What the rulebook checks/ });
     expect(within(grid).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Product', 'Shop drawing only', 'Architect vs shop', 'Against a standard', 'All']);
     expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'severity').textContent).toBe('Every rule has severity FLAG. There is no severity split yet.');
-    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'releasable').textContent).toBe('5 of 5 releasable: every tolerance this rule uses is a client-confirmed value.');
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'releasable').textContent).toBe(`All 5 releasable. Each rule's note: “${SHARED_NOTE}”`);
     expect(document.querySelectorAll('[data-part="release-note"]')).toHaveLength(0); // not repeated per rule
     expect(document.body.textContent?.match(/Rules are authored in YAML/g) ?? []).toHaveLength(0); // behind "?", once
 
@@ -155,9 +155,24 @@ describe('Rulebook page', () => {
     const blocked = within(table).getByText('CAB-B').closest('tr')!;
     expect(within(blocked).getByText(/unconfirmed tolerance/).textContent).toBe('1 unconfirmed tolerance');
     expect(within(blocked).getByText('Blocked: 1 tolerance awaits the client.')).toBeTruthy();
-    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'releasable').textContent).toBe('5 of 6 releasable.');
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'releasable').textContent).toBe('5 of 6 releasable; each one held back says why in the table.');
     await user.type(screen.getByRole('textbox', { name: 'Search rules' }), 'CAB');
     expect(within(table).getAllByRole('row')).toHaveLength(3);
+    await user.clear(screen.getByRole('textbox', { name: 'Search rules' }));
+    await user.type(screen.getByRole('textbox', { name: 'Search rules' }), 'unconfirmed');
+    expect(within(table).getAllByRole('row')).toHaveLength(2); // the release column is searchable
+  });
+
+  it('never hides why a rule is held back, even when its note matches the others', async () => {
+    // Held back for a missing setting: the backend's note speaks of tolerances only.
+    const rules = [rule('CT-A'), rule('CT-B'), rule('CT-C', { production_ready: false })];
+    routes['GET /rules'] = () => json(rules);
+    render(<RulebookPage />);
+    const table = await screen.findByRole('table', { name: 'Published rules' });
+    expect(screen.getByText((_, el) => el?.getAttribute('data-part') === 'releasable').textContent).toBe('2 of 3 releasable; each one held back says why in the table.');
+    const held = within(table).getByText('CT-C').closest('tr')!;
+    expect(within(held).getByText('Not releasable')).toBeTruthy();
+    expect(held.querySelector('[data-part="release-note"]')?.textContent).toBe(SHARED_NOTE);
   });
 
   it('says when nothing is published, and a failure is not "no rules"', async () => {
@@ -210,14 +225,21 @@ describe('usage arithmetic', () => {
     expect(formatUsd('1.717358')).toBe('$1.72');
     expect(formatUsd('0.004')).toBe('< $0.01');
     expect(formatUsd('0.000000')).toBe('$0.00');
+    // A cost nobody priced is never $0.00, and a partly priced one is a lower bound.
+    expect(costText('0.000000', 4, 4)).toBe('Not priced');
+    expect(costText('1.2', 10, 3)).toBe('at least $1.20');
+    expect(costText('1.2', 10, 0)).toBe('$1.20');
   });
 
   it('counts sets read, calls and cost, and keeps unpriced calls visible', () => {
-    expect(usageKpis(BY_SET.totals, BY_SET.groups as UsageGroup[])).toEqual({ setsRead: 2, calls: 150, failedCalls: 10, cost: '1.717358', unpricedCalls: 2 });
+    expect(usageKpis(BY_SET.totals, BY_SET.groups as UsageGroup[])).toEqual({ setsWithCalls: 2, calls: 150, failedCalls: 10, cost: '1.717358', unpricedCalls: 2 });
   });
 
   it('orders days, names sets, and adds recorded results by upload day', () => {
     expect(costByDay(BY_DAY.groups as UsageGroup[]).map((d) => [d.day, d.cost])).toEqual([['2026-10-08', 1.7], ['2026-10-09', 0.017358]]);
+    // Days with no calls between two with calls are drawn at zero, so bars are not side by side across a gap.
+    const gap = [{ ...BY_DAY.groups[0], day: '2026-10-01' }, { ...BY_DAY.groups[1], day: '2026-10-04' }] as UsageGroup[];
+    expect(costByDay(gap).map((d) => [d.day, d.calls])).toEqual([['2026-10-01', 140], ['2026-10-02', 0], ['2026-10-03', 0], ['2026-10-04', 10]]);
     expect(usageBySet(BY_SET.groups as UsageGroup[], SUMMARY.items).map((s) => s.vendor)).toEqual(['Synthetic set-a', null]);
     expect(outcomesByUploadDay(SUMMARY.items).map((d) => [d.day, d.sets, d.pass, d.review, d.not_found])).toEqual([
       ['2026-10-08', 2, 1, 8, 6],
@@ -225,6 +247,8 @@ describe('usage arithmetic', () => {
     ]);
     expect(modelWord('anthropic.claude-opus-5-5')).toBe('claude-opus-5-5');
     expect(modelWord('amazon.nova-lite-v1:0')).toBe('nova-lite-v1');
+    expect(modelWord('us.anthropic.claude-sonnet-5-5')).toBe('claude-sonnet-5-5');
+    expect(outcomeTotals(outcomesByUploadDay(SUMMARY.items))).toEqual({ pass: 1, fail: 1, review: 8, not_found: 6, no_rule: 0 });
   });
 });
 
@@ -240,9 +264,9 @@ describe('Usage page', () => {
     render(<UsagePage />);
     const kpis = await screen.findByText((_, el) => el?.getAttribute('data-part') === 'kpis');
     const cards = within(kpis).getAllByText((_, el) => el?.getAttribute('data-part') === 'kpi').map((card) => card.textContent);
-    expect(cards[0]).toBe('Sets read2drawing sets with AI calls');
+    expect(cards[0]).toBe('Sets with AI calls2drawing sets (reading or chat)');
     expect(cards[1]).toBe('AI calls15010 failed');
-    expect(cards[2]).toBe('Cost$1.722 calls have no price, so the real cost is higher');
+    expect(cards[2]).toBe('Costat least $1.722 calls have no price, so the real cost is higher');
     expect(cards[3]).toContain('Not measured yet');
     expect(cards.join(' ')).not.toMatch(/\d+ ?(ms|min)/); // never a reading-time number
 
@@ -252,13 +276,37 @@ describe('Usage page', () => {
     expect(rows[0].textContent).toContain('$1.70');
     expect(rows[1].textContent).toContain('Not on the loaded list');
     expect(rows[1].textContent).toContain('10 failed');
+    expect(screen.getByText(/Not among the newest 3 drawing sets loaded here/)).toBeTruthy();
 
-    await waitFor(() => expect(document.querySelector('[data-slot="cost-chart"]')).toBeTruthy(), { timeout: 10_000 });
-    await waitFor(() => expect(document.querySelector('[data-slot="outcomes-chart"]')).toBeTruthy(), { timeout: 10_000 });
-    expect(screen.getByRole('list', { name: 'Result shapes' })).toBeTruthy();
+    // The charts' numbers are there for a screen reader, and the results never rest on colour alone.
+    const costTable = await screen.findByRole('table', { name: 'AI cost by day (UTC)' }, { timeout: 10_000 });
+    const cells = within(costTable).getAllByRole('row').slice(1).map((row) => [...row.children].map((cell) => cell.textContent));
+    expect(cells).toEqual([
+      [fullDayLabel('2026-10-08'), '140', '0', '0', '$1.70'],
+      [fullDayLabel('2026-10-09'), '10', '10', '0', '$0.02'],
+    ]);
+    const totalsList = await screen.findByRole('list', { name: 'Recorded results in all' }, { timeout: 10_000 });
+    expect(within(totalsList).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Looks right 1', 'Needs correction 1', 'Needs your decision 8', 'Waiting on a value 6', 'Not applicable 0']);
+    expect(document.querySelectorAll('[data-slot="outcomes-chart"] [data-outcome-icon]')).toHaveLength(5);
+    // No invisible keyboard stops inside the hidden charts.
+    expect(document.querySelectorAll('[data-slot="chart"] [tabindex="0"]')).toHaveLength(0);
 
     // Three reads, no per-review requests (the old page asked each review's findings).
     expect(requests.map((r) => r.url).sort()).toEqual(['/projects/p/packages-summary?limit=200', '/projects/p/usage?group_by=day', '/projects/p/usage?group_by=package']);
+  });
+
+  it('never shows a cost nobody priced as $0.00, and sorts it last', async () => {
+    serve();
+    routes['GET /projects/p/usage?group_by=package'] = () => json({
+      ...BY_SET,
+      totals: totals(150, '1.700000', { unpriced_calls: 10 }),
+      groups: [BY_SET.groups[0], { ...BY_SET.groups[1], cost_usd: '0.000000', unpriced_calls: 10 }],
+    });
+    render(<UsagePage />);
+    const bySet = await screen.findByRole('table', { name: 'AI usage by drawing set' });
+    const rows = within(bySet).getAllByRole('row').slice(1);
+    expect(rows.at(-1)?.textContent).toContain('Not priced');
+    expect(rows.at(-1)?.textContent).not.toContain('$0.00');
   });
 
   it('says when there are no AI calls, without a chart of zeroes', async () => {

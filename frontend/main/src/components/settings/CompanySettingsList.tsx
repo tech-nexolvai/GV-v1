@@ -33,8 +33,9 @@ function SourceBadge({ setting }: { setting: CompanySetting }) {
  * GV's standard numbers as one table (#812; table #1072).
  *
  * Each row: what the number is, the value in use and where it comes from (GV's standard, the
- * rulebook's default, or nothing), whether a project may use its own, the checks that read it, and a
- * box for a new value. A blank box leaves the value as it is. Above it, how many have a value.
+ * rulebook's default, or nothing), the checks that read it, and a box for a new value. A blank box
+ * leaves the value as it is. Above it, how many GV has set. Every one of them can still be set
+ * differently for one project, in that review's Measurements, so the table does not suggest a lock.
  */
 export function CompanySettingsList({
   settings,
@@ -52,18 +53,19 @@ export function CompanySettingsList({
     <section data-tw className="flex flex-col gap-3 font-sans" aria-labelledby="company-settings-title">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h2 id="company-settings-title" className="text-base font-semibold">GV&apos;s standard numbers</h2>
+        {/* The bar counts what GV has set: the rulebook gives most of these a default, so "has a
+            value" would be full before GV had decided anything (#1072 review). */}
         <div className="flex min-w-56 flex-col gap-1" data-part="meter">
           <p className="text-sm">
-            <span className="num">{counts.inUse}</span> of <span className="num">{counts.total}</span> have a value
-            {' · '}
-            <span className="num">{counts.byCompany}</span> set by GV
+            <span className="num">{counts.byCompany}</span> of <span className="num">{counts.total}</span> set by GV
+            {counts.byRulebook > 0 && <> · <span className="num">{counts.byRulebook}</span> on the rulebook&apos;s default</>}
             {counts.inUse < counts.total && (
               <> · <strong><span className="num">{counts.total - counts.inUse}</span> not set yet</strong></>
             )}
           </p>
           <Progress
-            value={counts.total === 0 ? 0 : (counts.inUse / counts.total) * 100}
-            aria-label={`${counts.inUse} of ${counts.total} have a value`}
+            value={counts.total === 0 ? 0 : (counts.byCompany / counts.total) * 100}
+            aria-label={`${counts.byCompany} of ${counts.total} set by GV`}
           />
         </div>
       </div>
@@ -73,7 +75,6 @@ export function CompanySettingsList({
             <tr className="border-b">
               <th scope="col" className="px-3 py-2 font-medium">Setting</th>
               <th scope="col" className="px-3 py-2 font-medium">In use · new value</th>
-              <th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">On a project</th>
               <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Used by</th>
             </tr>
           </thead>
@@ -100,13 +101,14 @@ export function CompanySettingsList({
                       </span>
                     )}
                     {/* The same facts as one sentence, for a screen reader. */}
-                    <span className="sr-only">{inUseSentence(setting)}</span>
+                    <span className="sr-only" id={`company-${setting.name}-now`}>{inUseSentence(setting)}</span>
                     {/* The new value sits under the one in use, so it stays in view on a phone. */}
                     <Input
                       id={`company-${setting.name}`}
                       type="text"
                       className="num mt-1 w-32"
-                      placeholder={setting.in_use ?? 'e.g. 2 1/2"'}
+                      placeholder={'e.g. 2 1/2"'}
+                      aria-describedby={`company-${setting.name}-now`}
                       value={drafts[setting.name] ?? ''}
                       disabled={saving}
                       onChange={(event) => onDraft(setting.name, event.target.value)}
@@ -117,9 +119,6 @@ export function CompanySettingsList({
                       </p>
                     )}
                   </div>
-                </td>
-                <td className="hidden px-3 py-2 text-muted-foreground md:table-cell">
-                  {setting.scope === 'project' ? 'Can use its own' : 'Same on every project'}
                 </td>
                 <td className="hidden px-3 py-2 lg:table-cell" data-part="used-by">
                   <span className="sr-only">Used by </span>

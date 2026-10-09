@@ -90,7 +90,7 @@ export function CompanySettingsPage() {
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
             Set once here, these apply to every project.
             <InfoTip label="About company settings">
-              <p>These are GV&apos;s standards only. A project can still use its own number for one job where the table says so.</p>
+              <p>These are GV&apos;s standards only. Any of them can still be set differently for one project, in that review&apos;s Measurements.</p>
               <p>Side panel, overhang, backsplash, cabinet depth and the cabinet width limits are entered per project, in each review&apos;s Measurements.</p>
               <p>A check whose number is set nowhere says &ldquo;not found&rdquo; rather than guessing. Only an admin can save.</p>
             </InfoTip>

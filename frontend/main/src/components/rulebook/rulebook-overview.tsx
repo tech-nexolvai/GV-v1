@@ -34,7 +34,10 @@ export function RuleGridCard({
   const grid = ruleGrid(rules);
   const severities = severityCounts(rules);
   const releasable = rules.filter((rule) => rule.production_ready).length;
-  const sharedNote = sharedReleaseNote(rules);
+  // The shared note is quoted only when every rule is releasable and the note says so: the note
+  // speaks of tolerances only, while a rule can also be held back for a missing setting.
+  const sharedNote = releasable === rules.length ? sharedReleaseNote(rules) : null;
+  const quotedNote = sharedNote && /^Releasable:/i.test(sharedNote) ? sharedNote : null;
   const pick = (next: RuleFilter) =>
     onFilter(filter && filter.product === next.product && filter.checkType === next.checkType ? null : next);
 
@@ -125,8 +128,10 @@ export function RuleGridCard({
           )}
         </li>
         <li data-part="releasable">
-          <span className="num">{releasable}</span> of <span className="num">{grid.total}</span> releasable
-          {sharedNote ? <>: {sharedNote.replace(/^Releasable:\s*/i, '')}</> : '.'}
+          {releasable === grid.total
+            ? <>All <span className="num">{grid.total}</span> releasable.</>
+            : <><span className="num">{releasable}</span> of <span className="num">{grid.total}</span> releasable; each one held back says why in the table.</>}
+          {quotedNote && <> Each rule&apos;s note: &ldquo;{quotedNote}&rdquo;</>}
         </li>
       </ul>
     </section>
@@ -142,12 +147,15 @@ function columns(sharedNote: string | null): ColumnDef<Rule>[] {
       accessorFn: (rule) => `${rule.rule_id} ${rule.name}`,
       header: ({ column }) => <SortableHeader column={column}>Rule</SortableHeader>,
       sortingFn: (a, b) => a.original.rule_id.localeCompare(b.original.rule_id),
+      // Long notes wrap (the table cells do not by default).
+      meta: { className: 'whitespace-normal' },
       cell: ({ row }) => (
-        <div className="flex min-w-48 flex-col">
+        <div className="flex max-w-md min-w-48 flex-col">
           <code className="text-xs text-muted-foreground">{row.original.rule_id}</code>
           <span className="font-medium">{row.original.name}</span>
-          {/* Only a note that differs from the one every rule shares (shown once above). */}
-          {row.original.release_note.trim() !== '' && row.original.release_note.trim() !== sharedNote && (
+          {/* A note that differs from the one every rule shares (said once above), and always the
+              note of a rule that is held back, so its reason is never hidden. */}
+          {row.original.release_note.trim() !== '' && (!row.original.production_ready || row.original.release_note.trim() !== sharedNote) && (
             <span className="mt-0.5 text-xs text-muted-foreground" data-part="release-note">{row.original.release_note}</span>
           )}
         </div>
@@ -187,9 +195,10 @@ function columns(sharedNote: string | null): ColumnDef<Rule>[] {
     },
     {
       id: 'release',
-      accessorFn: (rule) => (rule.production_ready ? 0 : rule.unconfirmed_tolerances || 1),
+      // Text, so a search for "releasable" or "unconfirmed" finds it; held-back rules sort first.
+      accessorFn: (rule) => (rule.production_ready ? 'Releasable' : rule.unconfirmed_tolerances > 0 ? `${rule.unconfirmed_tolerances} unconfirmed tolerances` : 'Not releasable'),
+      sortingFn: (a, b) => Number(a.original.production_ready) - Number(b.original.production_ready),
       header: ({ column }) => <SortableHeader column={column}>Release</SortableHeader>,
-      sortDescFirst: true,
       cell: ({ row }) =>
         row.original.production_ready ? (
           <span className="inline-flex items-center gap-1 text-xs whitespace-nowrap">

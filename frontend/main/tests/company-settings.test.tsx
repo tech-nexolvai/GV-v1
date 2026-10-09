@@ -55,12 +55,12 @@ const html = renderToStaticMarkup(
 );
 
 // One row each (#1072: a table), with a readable name and the code beside it, and a meter: how many
-// have a value, how many GV set, and how many are still missing.
+// GV set, how many use the rulebook's default, and how many are still missing.
 assert.match(html, /Cabinet depth<\/label> <code[^>]*>cabinet_depth<\/code>/);
 assert.equal((html.match(/<tr [^>]*data-source=/g) ?? []).length, 3);
-assert.match(html, /<span class="num">2<\/span> of <span class="num">3<\/span> have a value · <span class="num">1<\/span> set by GV/);
+assert.match(html, /<span class="num">1<\/span> of <span class="num">3<\/span> set by GV · <span class="num">1<\/span> on the rulebook&#x27;s default/);
 assert.match(html, /<span class="num">1<\/span> not set yet/);
-assert.match(html, /aria-label="2 of 3 have a value"/);
+assert.match(html, /aria-label="1 of 3 set by GV"/);
 
 // Where each number comes from, as a word with its own edge, never colour alone.
 for (const [source, word] of [['company', 'GV standard'], ['rulebook', 'Rulebook default'], ['none', 'Not set']]) {
@@ -78,9 +78,10 @@ assert.match(html, /awaiting his confirmation \(#674\)/);
 assert.match(html, /Rulebook default: <span class="num">2 1\/2 in<\/span>/);
 assert.equal((html.match(/Rulebook default:/g) ?? []).length, 1);
 
-// Which checks use each one, and whether a project may use its own.
+// Which checks use each one. No column suggests a project cannot use its own number: every one of
+// these can be set differently for one project, in that review's Measurements (#1072 review).
 assert.match(html, /Used by <\/span><span[^>]*><code[^>]*>CT-DEPTH-001<\/code>/);
-assert.match(html, /Can use its own/);
+assert.doesNotMatch(html, /Same on every project|Can use its own/);
 
 // Only typed, non-blank values are sent; a blank box leaves a standard as it was.
 assert.deepEqual(changedValues({ cabinet_depth: ' 24" ', filler_max: '', back_offset_minimum: '  ' }), [

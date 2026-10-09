@@ -22,9 +22,9 @@ import { useAsync } from '../api/useAsync';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
 import { DataTable, SortableHeader } from '@/components/data-table/data-table';
 import { InfoTip } from '@/components/ui/info-tip';
-import { OutcomeLegend } from '@/components/documents/outcome-bar';
 import { Skeleton } from '@/components/ui/skeleton';
-import { costByDay, formatUsd, modelWord, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
+import { resultTotal } from '@/lib/documents-table';
+import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
 import '../components/ui/PageFrame.css';
 
 // The chart library is fetched the first time Usage opens (#1072).
@@ -58,7 +58,7 @@ const SET_COLUMNS: ColumnDef<SetUsage>[] = [
     header: ({ column }) => <SortableHeader column={column}>Drawing set</SortableHeader>,
     cell: ({ row }) => row.original.vendor
       ? <span className="font-medium">{row.original.vendor}</span>
-      : <span className="text-muted-foreground">Not on the loaded list <code className="text-xs">{row.original.packageId.slice(0, 8)}</code></span>,
+      : <span className="text-muted-foreground">Not on the loaded list* <code className="text-xs">{row.original.packageId.slice(0, 8)}</code></span>,
   },
   {
     id: 'calls',
@@ -90,10 +90,15 @@ const SET_COLUMNS: ColumnDef<SetUsage>[] = [
   },
   {
     id: 'cost',
-    accessorFn: (row) => Number(row.cost),
+    // A set nobody priced sorts below every priced one, never as the cheapest.
+    accessorFn: (row) => (row.calls > 0 && row.unpriced >= row.calls ? -1 : Number(row.cost)),
     header: ({ column }) => <SortableHeader column={column}>Cost</SortableHeader>,
     sortDescFirst: true,
-    cell: ({ row }) => <span className="num" title={`$${row.original.cost}`}>{formatUsd(row.original.cost)}</span>,
+    cell: ({ row }) => (
+      <span className="whitespace-nowrap" title={`$${row.original.cost}${row.original.unpriced > 0 ? `, ${row.original.unpriced} calls not priced` : ''}`}>
+        <span className="num">{costText(row.original.cost, row.original.calls, row.original.unpriced)}</span>
+      </span>
+    ),
   },
 ];
 
@@ -117,10 +122,12 @@ export function UsagePage() {
         const days = costByDay(byDay.groups);
         const sets = usageBySet(bySet.groups, summary.items);
         const outcomeDays = outcomesByUploadDay(summary.items);
+        const recorded = resultTotal(outcomeTotals(outcomeDays));
+        const allUnpriced = kpis.calls > 0 && kpis.unpricedCalls >= kpis.calls;
         return (
           <div data-tw className="flex flex-col gap-4 font-sans">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-part="kpis">
-              <Kpi label="Sets read" value={<span className="num">{kpis.setsRead}</span>} sub="drawing sets with AI calls" />
+              <Kpi label="Sets with AI calls" value={<span className="num">{kpis.setsWithCalls}</span>} sub="drawing sets (reading or chat)" />
               <Kpi
                 label="AI calls"
                 value={<span className="num">{kpis.calls.toLocaleString()}</span>}
@@ -128,10 +135,16 @@ export function UsagePage() {
               />
               <Kpi
                 label="Cost"
-                value={<span className="num" title={`$${kpis.cost}`}>{formatUsd(kpis.cost)}</span>}
-                sub={kpis.unpricedCalls > 0
-                  ? <><span className="num">{kpis.unpricedCalls}</span> {kpis.unpricedCalls === 1 ? 'call has' : 'calls have'} no price, so the real cost is higher</>
-                  : 'every call priced'}
+                value={allUnpriced
+                  ? <span className="text-base font-medium text-muted-foreground">Not priced</span>
+                  : <span className="num" title={`$${kpis.cost}`}>{costText(kpis.cost, kpis.calls, kpis.unpricedCalls)}</span>}
+                sub={kpis.calls === 0
+                  ? 'no AI calls yet'
+                  : allUnpriced
+                    ? 'no call has a recorded price'
+                    : kpis.unpricedCalls > 0
+                      ? <><span className="num">{kpis.unpricedCalls}</span> {kpis.unpricedCalls === 1 ? 'call has' : 'calls have'} no price, so the real cost is higher</>
+                      : 'every call priced'}
               />
               <Kpi
                 label="Reading time per set"
@@ -157,6 +170,9 @@ export function UsagePage() {
                 <Suspense fallback={<Skeleton className="h-48 w-full" />}>
                   <CostByDayChart days={days} />
                 </Suspense>
+                {days.some((day) => day.unpriced > 0) && (
+                  <p className="text-xs text-muted-foreground">Some calls have no price; on those days the bar shows at least the cost.</p>
+                )}
               </section>
             )}
 
@@ -164,6 +180,9 @@ export function UsagePage() {
               <section aria-labelledby="cost-by-set" className="flex flex-col gap-2">
                 <h2 id="cost-by-set" className="text-base font-semibold">By drawing set</h2>
                 <DataTable label="AI usage by drawing set" columns={SET_COLUMNS} data={sets} getRowId={(row) => row.packageId} initialSorting={[{ id: 'cost', desc: true }]} />
+                {sets.some((set) => set.vendor === null) && (
+                  <p className="text-xs text-muted-foreground">* Not among the newest {summary.items.length} drawing sets loaded here, so shown by its id.</p>
+                )}
               </section>
             )}
 
@@ -173,13 +192,16 @@ export function UsagePage() {
                   Recorded results over time
                   <InfoTip label="About recorded results over time">
                     <p>Each drawing set&apos;s recorded results, added up by the day it was uploaded (UTC). These count checks, not drawings or dimensions, and a reviewer&apos;s decision does not change them.</p>
-                    {summary.next_cursor && <p>Only the newest {summary.items.length} sets are counted here.</p>}
                   </InfoTip>
                 </h2>
-                <OutcomeLegend />
               </div>
+              {summary.next_cursor && (
+                <p className="text-xs text-muted-foreground">Only the newest <span className="num">{summary.items.length}</span> drawing sets are counted here.</p>
+              )}
               {outcomeDays.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No drawing sets yet.</p>
+              ) : recorded === 0 ? (
+                <p className="text-sm text-muted-foreground">No recorded results yet.</p>
               ) : (
                 <Suspense fallback={<Skeleton className="h-48 w-full" />}>
                   <OutcomesByDayChart days={outcomeDays} />
