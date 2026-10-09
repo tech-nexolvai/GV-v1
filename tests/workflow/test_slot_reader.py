@@ -2649,6 +2649,7 @@ def _drawn_owner(
     state: LabelState = LabelState.PROVISIONAL,
     x0: int | None = None,
     width: int = 10,
+    sources: tuple[str, str] = ("opus", "sonnet"),
 ) -> Any:
     """One piece (or the overall, `index=None`) sealed by the readers, drawn `width` points long.
 
@@ -2687,7 +2688,7 @@ def _drawn_owner(
         None,
         InkClass.VENDOR,
         ("lane:glyphs", *flags),
-        (("opus", f'{inches}"'), ("sonnet", f'{inches}"')),
+        tuple((source, f'{inches}"') for source in sources),
     )
     owner = PlannedOwner(index, left, right, Decimal(2), box, (label,))
     return OwnerResult(
@@ -2799,3 +2800,22 @@ def test_a_skipped_drawn_length_check_is_kept_on_the_saved_reading(session: Any)
     for slot in ("slot:1", "slot:2"):
         assert "no-drawn-length-witness" in by_slot[slot].ambiguity_flags, slot
     assert "no-drawn-length-witness" not in by_slot["slot:overall"].ambiguity_flags
+
+
+def test_a_reading_with_the_files_own_text_is_never_flagged_without_a_witness() -> None:
+    """#1107 (decided 2026-10-09): the file's own text is a non-model witness. Input: a two-piece
+    row whose first piece the file's text and one reader agree on. Outcome: both seal; only the
+    second piece, read by the two AIs alone, is flagged `no-drawn-length-witness`."""
+    from extraction.slot_reader.seal import TEXT_LAYER
+    from workflow.slot_reader import _veto_by_drawn_length
+
+    row = (
+        _drawn_owner(0, "10", state=LabelState.SEALED, sources=(TEXT_LAYER, "kimi")),
+        _drawn_owner(1, "20", state=LabelState.SEALED, width=20),
+    )
+    held, _overall, vetoed = _veto_by_drawn_length(row, None)
+
+    assert vetoed == ()
+    assert all(owner.outcome.state is LabelState.SEALED for owner in held)
+    assert "no-drawn-length-witness" not in _flags(held[0])
+    assert "no-drawn-length-witness" in _flags(held[1])

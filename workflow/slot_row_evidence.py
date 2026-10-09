@@ -48,7 +48,7 @@ from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
 from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS, parse_stored_reader_answer
 from extraction.slot_reader.labels import expand_label, plain_dimension
-from extraction.slot_reader.seal import _CLAUDE_PAIR, normalise_text
+from extraction.slot_reader.seal import _CLAUDE_PAIR, TEXT_LAYER, normalise_text
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.finding import Finding
@@ -120,13 +120,17 @@ def unwitnessed_positions(
     """The sealed readings, by position, flagged `no-drawn-length-witness` (#1107).
 
     `_seal_row` takes a position's sealed reading whenever there is one, so these are exactly the
-    readings among the row's operands that rest on the readers' identical text alone.
+    readings among the row's operands that rest on the readers' identical text alone. A reading
+    whose sources include the file's own text (`reader-id:pdf-text-layer`) has its non-model
+    witness and is never listed.
     """
     return tuple(
         position
         for position, candidate in candidates_by_position.items()
         if candidate_is_sealed(candidate)
         and NO_DRAWN_LENGTH_WITNESS in (candidate.ambiguity_flags or ())
+        # The file's own text is a non-model witness: such a reading never needs the click.
+        and f"reader-id:{TEXT_LAYER}" not in (candidate.ambiguity_flags or ())
     )
 
 
@@ -390,6 +394,8 @@ class VendorRowOperands:
     reason: str | None
     operands: dict[str, VerdictOperand]
     """`countertop_width` and `piece_widths[i]`, exactly as the width check seals them."""
+    unwitnessed: tuple[int | None, ...] = ()
+    """As `SlotRowCheck.unwitnessed`: the sealed readings with no drawn-length witness (#1107)."""
 
 
 def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
@@ -411,7 +417,7 @@ def vendor_row_operands(session: Session, row: SlotRow) -> VendorRowOperands:
     sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
     if isinstance(sealed, str):
         return VendorRowOperands(False, sealed, {})
-    return VendorRowOperands(True, None, sealed[0])
+    return VendorRowOperands(True, None, sealed[0], unwitnessed_positions(candidates_by_position))
 
 
 def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:

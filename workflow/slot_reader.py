@@ -98,6 +98,7 @@ from extraction.slot_reader.runs import (
 )
 from extraction.slot_reader.seal import (
     STACKED_BY_CODE,
+    TEXT_LAYER,
     LabelOutcome,
     LabelState,
     OwnerOutcome,
@@ -1897,6 +1898,20 @@ def _drawn(owner: OwnerResult) -> DrawnReading | None:
     )
 
 
+def _read_from_file_text(owner: OwnerResult) -> bool:
+    """Whether the owner's reading has the file's own text among its sources.
+
+    That text is a non-model witness of its own (8 Oct rule: "PDF text where real"), so a missing
+    drawn-length scale does not leave such a reading on the two AIs' judgment alone (#1107).
+    """
+    position = owner.outcome.label_index
+    if position is None:
+        return False
+    return any(
+        source == TEXT_LAYER for source, _text in owner.labels[position].outcome.reader_texts
+    )
+
+
 def _veto_by_drawn_length(
     slots: tuple[OwnerResult, ...], overall: OwnerResult | None
 ) -> tuple[tuple[OwnerResult, ...], OwnerResult | None, tuple[int | None, ...]]:
@@ -1904,8 +1919,8 @@ def _veto_by_drawn_length(
 
     The reading's value becomes its label's suggestion — shown to the person, never a value — and
     nothing else about it changes. A reading the check could not reach (no scale in its row, or no
-    drawn length) still seals, flagged `no-drawn-length-witness` so the skipped check is on record
-    (#1107).
+    drawn length) still seals, flagged `no-drawn-length-witness` so the skipped check is on record —
+    unless the file's own text is among its sources, which is its non-model witness (#1107).
     """
     pieces = [reading for owner in slots if (reading := _drawn(owner)) is not None]
     whole = None if overall is None else _drawn(overall)
@@ -1966,7 +1981,9 @@ def _veto_by_drawn_length(
         # can veto a clear misfit, never hold a reading merely because scale is unavailable — but a
         # reading it could not reach says so (#1107), and a width PASS resting on one waits for
         # the reviewer (`workflow/stages.py`).
-        unwitnessed = _drawn(owner) is None or owner.owner.index not in witnessed
+        unwitnessed = (_drawn(owner) is None or owner.owner.index not in witnessed) and not (
+            _read_from_file_text(owner)
+        )
         if owner.outcome.state is LabelState.PROVISIONAL or unwitnessed:
             return finalize(owner, unwitnessed=unwitnessed)
         return owner

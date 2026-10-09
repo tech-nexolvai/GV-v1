@@ -1113,3 +1113,34 @@ def test_the_countertop_results_say_drawn_length_not_checked_for_that_row(
     assert by_row[anchors[0]].needs_decision
     assert by_row[anchors[1]].drawn_length_note is None
     assert by_row[anchors[1]].outcome == "PASS"
+
+
+def test_a_reading_with_the_files_own_text_among_its_sources_never_needs_the_click(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1107 (decided 2026-10-09): the file's own text is a non-model witness. Input: the
+    unwitnessed row, its pieces read from the PDF text and one reader. Outcome: automatic PASS."""
+    _project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page, _offset, slot: (
+            [NO_WITNESS, "reader-id:pdf-text-layer", "reader-id:amazon.qwen3-vl"]
+            if page == 0 and slot != "overall"
+            else []
+        ),
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+
+    by_row = {
+        finding.scope_row_candidate_id: finding
+        for finding in _run_current_checks(session, package_id, tmp_path)
+    }
+
+    assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason

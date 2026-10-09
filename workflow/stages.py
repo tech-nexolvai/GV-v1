@@ -6424,6 +6424,10 @@ class DatabaseStages:
                             *finding.notes,
                         ),
                     )
+                else:
+                    # A PASS on a vendor reading whose drawn length could not be checked rests
+                    # on the two readers' text alone: one reviewer click, as for the width (#1107).
+                    finding = confirm_unwitnessed_pass(finding, built.vendor_unwitnessed)
         record_finding(
             session,
             package_revision_id=package_revision_id,
