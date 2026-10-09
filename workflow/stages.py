@@ -108,7 +108,11 @@ from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
-from evidence.corroborate import corroborate, is_consistent_dual_label
+from evidence.corroborate import (
+    corroborate,
+    is_consistent_dual_label,
+    one_dual_label_across_agreements,
+)
 from evidence.crop import (
     BoxCropSpec,
     CropSpec,
@@ -780,6 +784,16 @@ def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
         Fraction(row.value_numerator, row.value_denominator),
         Unit(row.unit),
         row.raw_text,
+    )
+
+
+def _agreeing(rows: Sequence[ObservationCandidate]) -> tuple[ObservationCandidate, ...]:
+    """The readings that hold an agreement: the second-reader lane, not marked conflicting (#928)."""
+    return tuple(
+        row
+        for row in rows
+        if row.corroboration_lane == CorroborationLane.SECOND_READER.value
+        and row.corroboration_status != EvidenceStatus.CONFLICTING.value
     )
 
 
@@ -3669,6 +3683,13 @@ class DatabaseStages:
         `CONFLICTING`, every row of the region is marked so. Any other judgement changes nothing,
         so this can take an agreement away and can never make one.
 
+        **Nor two agreements on one dual label's inches with different millimetres (#928).** The
+        first pass's pair agrees on `914 [36]`, the agent's pair on `915 [36]`: each pair agreed, so
+        `corroborate` over the region finds no conflict in the inches, and the region would hold two
+        agreements on 36" — sealable — though one group misread the millimetres. Where the region's
+        agreeing readings do not state one dual label (`one_dual_label_across_agreements`), it is a
+        conflict for a reviewer, marked as above.
+
         Only regions holding an agent row written by this delivery are judged. A redelivered stage
         reuses its agent rows rather than writing them, and leaves what the first delivery decided.
         """
@@ -3700,7 +3721,16 @@ class DatabaseStages:
                     for row in valued
                 )
             )
-            if result.status is not EvidenceStatus.CONFLICTING or result.lane is None:
+            status: EvidenceStatus
+            lane: CorroborationLane
+            if result.status is EvidenceStatus.CONFLICTING and result.lane is not None:
+                status, lane = result.status, result.lane
+            elif not one_dual_label_across_agreements(
+                tuple((_stored_measurement(row), row.raw_text) for row in _agreeing(valued))
+            ):
+                # **Two groups, one dual label's inches, different millimetres (#928).**
+                status, lane = EvidenceStatus.CONFLICTING, CorroborationLane.SECOND_READER
+            else:
                 continue
             # **Only readings not yet saved (#790).** A reading is append-only once it is in the
             # database, and the page's panel step saves earlier routes' readings before the vision
@@ -3711,8 +3741,8 @@ class DatabaseStages:
             for row in rows:
                 if not inspect(row).pending:
                     continue
-                row.corroboration_status = result.status.value
-                row.corroboration_lane = result.lane.value
+                row.corroboration_status = status.value
+                row.corroboration_lane = lane.value
 
     def _run_bounded_agent_for_ambiguous_regions(
         self,
