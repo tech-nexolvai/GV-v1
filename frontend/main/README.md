@@ -250,3 +250,47 @@ made-up data. It is the reference for the redesign and loads as its own chunk.
 Python checks in the repository root also read this frontend: `tests/test_frontend_tokens.py`
 (every `var(--x)` is defined), `test_contrast.py`, `test_outcome_labels.py`,
 `test_no_confidence_on_review_screens.py` and `test_api_client_paths.py`.
+
+## Acceptance walkthrough (P10, #1106): local only
+
+`e2e/v1-acceptance.spec.ts` (Playwright) walks the screens exactly as a reviewer would. Its steps:
+1. Documents, then the set.
+2. Results against the API.
+3. Show on drawing (stored outline, or none for a split page).
+4. The "Needs you" queue: walls, and held rows "not checkable" with `TEST ONLY` notes.
+5. Run the checks again, and see the decisions on unchanged results **carried over**.
+6. The rest of the queue, and bulk "not checkable" for the other checks.
+7. Sign off through the confirmation.
+8. The PDF, workbook and redline; the PDF's text is checked.
+
+**Any difference between the screen and the API fails the walk.** Differences from earlier runs (the AIs vary run to run) are only written to `differences.md`.
+
+**It stays out of CI:** it needs a real drawing set. Run it locally, against a **restored copy** behind a local API with the reader off:
+
+1. **Make a mid-review copy** with the backend's acceptance kit, which reads the set and checks it once, answering nothing. This step makes paid AI calls: ask the admin first. Then restore it into a new database on the local Postgres (never the main one). Render its page pictures with `POST .../pages/pictures` (free, no AI).
+2. **Run the API and worker** on that copy with `GV_CLAUDE_READER_ENABLED=0` and no keys or cloud credentials reachable. Run this app's dev server with `VITE_API_TARGET` pointing at that API.
+3. **Write an expectations file outside the repo** (it holds the set's facts, so never commit it):
+   ```json
+   {
+     "set": "name for the notes",
+     "package_id": "…",
+     "walls": { "4": "back_only", "9": "proposal" },
+     "first": [{ "page_number": 3, "outcome": "REVIEW_REQUIRED", "hold": null }],
+     "after": { "4": ["PASS"] },
+     "no_countertop": [6, 8]
+   }
+   ```
+   - `first` is the kit's first-run table;
+   - `walls` says which wall answer to give on which page (`"proposal"` confirms what the readers propose);
+   - `after` and `no_countertop` are only compared and written down, never asserted.
+4. **Run the walk:**
+   ```
+   GV_E2E_BASE_URL=http://localhost:<dev port> GV_E2E_API=http://127.0.0.1:<api port>/api/v1 \
+   GV_E2E_PROJECT=<project id> GV_E2E_EXPECT=/path/expect.json GV_E2E_OUT=/path/outside/repo \
+   GV_E2E_PYTHON=<a python with pypdf> npx playwright test
+   ```
+   - It uses the installed Chrome, so no browser is downloaded.
+   - The video needs Playwright's ffmpeg (`npx playwright install ffmpeg`), or set `GV_E2E_VIDEO=off`.
+   - Everything it saves goes to `GV_E2E_OUT`: video, numbered screenshots, the three files, `report.txt` and `differences.md`. Keep that folder out of the repo; it shows client drawings.
+
+**It writes decisions and a sign-off into the copy.** Restore the copy before running it again.

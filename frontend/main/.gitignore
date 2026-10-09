@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright acceptance walkthrough output (#1106): local only, may show client drawings.
+test-results
+playwright-report
