@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Principal, require_project_access
+from app.evidence.crop_marks import current_crop_marks
 from app.models import (
     CanonicalObservation,
     CheckRun,
@@ -485,7 +486,9 @@ def _crop_marks(
     crops = evidence_crop_artifacts(
         session, [observation.id for _, observation, _ in operand_rows if observation is not None]
     )
-    return {observation_id: crop.shows_gv_marks for observation_id, crop in crops.items()}
+    # The newest re-check of a crop cut before #1078 wins over its stored flag (#1141).
+    marks = current_crop_marks(session, {crop.id: crop.shows_gv_marks for crop in crops.values()})
+    return {observation_id: marks[crop.id] for observation_id, crop in crops.items()}
 
 
 def _assemble(

@@ -415,6 +415,17 @@ def _crop_rgb(rendered: RenderedPage, box: tuple[int, int, int, int]) -> bytes:
     )
 
 
+def crop_png(rendered: RenderedPage, spec: CropSpec | BoxCropSpec) -> bytes:
+    """The PNG bytes `generate_crop` stores for `spec` on `rendered`, without storing anything.
+
+    The one cut and encoding both use, so a job that must know it is looking at the very pixels of a
+    crop stored earlier can cut them again and compare digests (#1141). Raises `ValueError` where
+    the polygon gives no pixels.
+    """
+    left, top, right, bottom = crop_pixel_box(rendered, spec)
+    return encode_png(right - left, bottom - top, _crop_rgb(rendered, (left, top, right, bottom)))
+
+
 def generate_crop(
     rendered: RenderedPage,
     spec: CropSpec | BoxCropSpec,
@@ -446,10 +457,7 @@ def generate_crop(
         if rendered.dpi != spec.dpi:
             raise ValueError("crop specification DPI does not match the rendered pixels")
 
-        left, top, right, bottom = crop_pixel_box(rendered, spec)
-        rgb = _crop_rgb(rendered, (left, top, right, bottom))
-        png = encode_png(right - left, bottom - top, rgb)
-        stream = BytesIO(png)
+        stream = BytesIO(crop_png(rendered, spec))
         digest, _ = sha256_stream(stream)
         key = content_key(
             f"evidence-crops/{rendered.document_version_id}/pages/{rendered.page_index}",

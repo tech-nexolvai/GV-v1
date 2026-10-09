@@ -42,6 +42,7 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.api.drawing_parts import _verified_page_picture
 from app.api.finding_chain import NOT_FOUND_DETAIL, evidence_crop_artifacts, revision_observation
 from app.auth import Principal, require_project_access
+from app.evidence.crop_marks import current_crop_marks
 from app.evidence.sides import page_transform_at, reading_transform
 from app.models import Page, VendorPagePicture
 from app.models.document import DocumentVersion, PackageRevisionDocument
@@ -237,9 +238,18 @@ def _view(session: Session, region: _Region) -> _View:
         else None
     )
 
+    # The newest re-check of a crop cut before #1078 wins over its stored flag (#1141).
+    crop_mark = (
+        None
+        if region.crop is None
+        else current_crop_marks(session, {region.crop.id: region.crop.shows_gv_marks})[
+            region.crop.id
+        ]
+    )
+
     def out(**fields: object) -> VendorOnlyRegionOut:
         return VendorOnlyRegionOut(
-            crop_shows_gv_mark=None if region.crop is None else region.crop.shows_gv_marks,
+            crop_shows_gv_mark=crop_mark,
             document_version_id=page.document_version_id,
             page_id=page.id,
             page_number=page.index + 1,

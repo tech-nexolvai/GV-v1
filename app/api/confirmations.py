@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.auth import Principal, authenticate, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
+from app.evidence.crop_marks import current_crop_marks
 from app.evidence.sides import ReadingSides, SideRefusal
 from app.models.document import (
     DocumentVersion,
@@ -199,6 +200,7 @@ def list_candidates(
             Page.index,
             EvidenceArtifact.storage_key,
             EvidenceArtifact.shows_gv_marks,
+            EvidenceArtifact.id,
         )
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
@@ -243,6 +245,10 @@ def list_candidates(
         return found.value, None
 
     placed = {row.id: side(row) for row, *_ in rows}
+    # The newest re-check of a crop cut before #1078 wins over its stored flag (#1141).
+    marks = current_crop_marks(
+        session, {crop_id: stored for *_, stored, crop_id in rows if crop_id is not None}
+    )
     return CandidatesOut(
         candidates=tuple(
             CandidateOut(
@@ -256,7 +262,7 @@ def list_candidates(
                     f"{row.unit}"
                 ),
                 crop_key=crop_key,
-                crop_shows_gv_mark=crop_shows_gv_mark,
+                crop_shows_gv_mark=None if crop_id is None else marks[crop_id],
                 confidence=None if row.confidence is None else str(row.confidence),
                 corroboration_status=row.corroboration_status,
                 corroboration_lane=row.corroboration_lane,
@@ -264,7 +270,7 @@ def list_candidates(
                 source=placed[row.id][0],
                 source_refusal=placed[row.id][1],
             )
-            for row, page_index, crop_key, crop_shows_gv_mark in rows
+            for row, page_index, crop_key, _, crop_id in rows
         ),
         total=len(rows),
         page_number=page_number,

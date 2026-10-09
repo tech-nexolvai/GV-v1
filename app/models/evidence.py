@@ -297,6 +297,45 @@ class EvidenceArtifact(Base, TimestampedUUID, Immutable):
         return hashlib.sha256(content).hexdigest() == self.sha256
 
 
+class EvidenceMarkRecheck(Base, TimestampedUUID, Immutable):
+    """A later answer to "does this evidence crop show GV's markup?" for a crop already stored (#1141).
+
+    **Why it exists.** Crops cut before #1078 asked only whether GV's marks were baked into the
+    vendor's drawing, never about GV's own annotation layer that the both-layer picture paints on,
+    so many say "no GV markup" over GV's yellow box. `EvidenceArtifact` is append-only (0013), so its
+    `shows_gv_marks` cannot be corrected in place. A one-time job (`workflow/crop_mark_rechecks.py`)
+    asks the corrected check again about the very same pixels and writes the answer here, only where
+    it differs from the stored one. The crop, its bytes, its reading and every finding stay as they
+    were.
+
+    **Readers use the newest re-check, else the crop's own flag** (`app/evidence/crop_marks.py`).
+
+    **The record of the run.** `run_by` and `created_at` say who and when; `run_id` groups one run's
+    rows, so how many it changed is a count. One row per crop per `check_version`, held by the
+    database, so re-running the same check adds nothing. Append-only like every other record table.
+    """
+
+    __tablename__ = "evidence_mark_rechecks"
+
+    crop_artifact_id: Mapped[UUID] = mapped_column(
+        ForeignKey("evidence_artifacts.id", ondelete="RESTRICT"), index=True
+    )
+    shows_gv_marks: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    """`True`, `False`, or `None` for "not checked", exactly as `crop_mark_state` answers."""
+
+    check_version: Mapped[str] = mapped_column(String(64))
+    """Which check gave the answer, so a later, better check can add its own row."""
+
+    run_id: Mapped[UUID]
+    run_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        UniqueConstraint("crop_artifact_id", "check_version"),
+        CheckConstraint("check_version !~ '^[[:space:]]*$'", name="mark_recheck_version_named"),
+        CheckConstraint("run_by !~ '^[[:space:]]*$'", name="mark_recheck_run_by_named"),
+    )
+
+
 def _require_normalized_rational(numerator: int | None, denominator: int | None) -> None:
     if numerator is None and denominator is None:
         return
