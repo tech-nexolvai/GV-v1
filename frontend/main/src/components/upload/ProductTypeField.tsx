@@ -9,7 +9,12 @@
  * on the server as in the browser and its test needs no network.
  */
 
-import type { ProductChoice, ProductType } from '../../api/uploadState';
+import { useId } from 'react';
+import { ChevronDown } from 'lucide-react';
+
+import type { ProductChoice, ProductType } from '@/api/uploadState';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 
 export type ProductChoicesState =
   | { status: 'loading' }
@@ -23,47 +28,62 @@ interface ProductTypeFieldProps {
   disabled?: boolean;
 }
 
+/**
+ * A native select in the shadcn input's clothes (#1125): it keeps the phone's own picker and renders
+ * its options on the server, which a Radix Select does not.
+ */
 export function ProductTypeField({ state, value, onChange, disabled = false }: ProductTypeFieldProps) {
+  const id = useId();
   const choices = state.status === 'ready' ? state.choices : [];
+  const unusable = disabled || state.status !== 'ready' || choices.length === 0;
   return (
-    <label className="new-review__product">
-      <span className="new-review__label">What is this drawing set for?</span>
-      <select
-        className="new-review__product-select"
-        value={value ?? ''}
-        disabled={disabled || state.status !== 'ready' || choices.length === 0}
-        onChange={(event) => {
-          const chosen = choices.find((choice) => choice.value === event.target.value);
-          if (chosen) onChange(chosen.value);
-        }}
-        required
-      >
-        {state.status === 'loading' && <option value="">Loading the products…</option>}
-        {state.status === 'ready' && choices.length === 0 && (
-          <option value="">No checks are published yet</option>
-        )}
-        {choices.map((choice) => (
-          <option key={choice.value} value={choice.value}>
-            {choice.label}
-          </option>
-        ))}
-      </select>
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={id}>What is this drawing set for?</Label>
+      <div className="relative w-full sm:w-64">
+        <select
+          id={id}
+          aria-describedby={state.status === 'loading' ? undefined : `${id}-note`}
+          className={cn(
+            'h-9 w-full appearance-none rounded-md border border-input bg-transparent py-1 pr-9 pl-3 text-base shadow-xs outline-none md:text-sm dark:bg-input/30',
+            'focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50',
+            unusable && 'cursor-not-allowed opacity-50',
+          )}
+          value={value ?? ''}
+          disabled={unusable}
+          onChange={(event) => {
+            const chosen = choices.find((choice) => choice.value === event.target.value);
+            if (chosen) onChange(chosen.value);
+          }}
+          required
+        >
+          {state.status === 'loading' && <option value="">Loading the products…</option>}
+          {state.status === 'ready' && choices.length === 0 && (
+            <option value="">No checks are published yet</option>
+          )}
+          {choices.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+      </div>
       {state.status === 'error' && (
-        <span className="new-review__product-note" role="alert">
+        <p id={`${id}-note`} className="text-xs text-destructive" role="alert">
           The list of products could not be loaded: {state.message}
-        </span>
+        </p>
       )}
       {state.status === 'ready' && choices.length === 0 && (
-        <span className="new-review__product-note">
+        <p id={`${id}-note`} className="text-xs text-muted-foreground">
           No checks are published yet, so a drawing set could not be checked. Publish the rulebook
           first.
-        </span>
+        </p>
       )}
       {state.status === 'ready' && choices.length > 0 && (
-        <span className="new-review__product-note">
+        <p id={`${id}-note`} className="text-xs text-muted-foreground">
           Only the checks for this product are run.
-        </span>
+        </p>
       )}
-    </label>
+    </div>
   );
 }

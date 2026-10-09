@@ -50,19 +50,23 @@ export function OutcomeBar({ outcomes }: { outcomes: SummaryOutcomes }) {
 
 const LEGEND: readonly Outcome[] = ['PASS', 'FAIL', 'REVIEW_REQUIRED', 'NOT_FOUND', 'NO_APPLICABLE_RULE'];
 
-/** The words for the bar's shapes, once above the table. */
+/**
+ * The words for the bar's shapes, always visible above the table: outcome colours are never shown
+ * without their glyph and word (decision 2026-10-08). One wrapping row on a wide screen, a two-column
+ * grid on a phone instead of a ragged three-line caption (#1125).
+ */
 export function OutcomeLegend() {
   return (
     <ul
       data-slot="outcome-legend"
       aria-label="Result shapes"
-      className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"
+      className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs text-muted-foreground sm:flex sm:flex-wrap sm:gap-x-4"
     >
       {LEGEND.map((outcome) => (
-        <li key={outcome} className="inline-flex items-center gap-1">
-          <span className="inline-block size-2 rounded-full" style={{ background: OUTCOME_FILL[outcome] }} aria-hidden="true" />
+        <li key={outcome} className="inline-flex min-w-0 items-center gap-1.5">
+          <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: OUTCOME_FILL[outcome] }} aria-hidden="true" />
           <OutcomeIcon outcome={outcome} size={12} />
-          {OUTCOME_LABELS[outcome]}
+          <span className="truncate">{OUTCOME_LABELS[outcome]}</span>
         </li>
       ))}
     </ul>

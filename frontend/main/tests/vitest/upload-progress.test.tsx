@@ -132,7 +132,8 @@ describe('NewReviewForm while uploading', () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
     const { container } = render(<NewReviewForm onCreated={onCreated} />);
-    await user.type(screen.getByPlaceholderText('Who sent these drawings?'), 'Synthetic vendor');
+    // #1125: the vendor field is a labelled shadcn Input (the placeholder is only a hint now).
+    await user.type(screen.getByLabelText('Vendor'), 'Synthetic vendor');
     const [architectInput, shopInput] = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]'));
     fireEvent.change(architectInput, { target: { files: [new window.File(['architect bytes'], 'arch.pdf', { type: 'application/pdf' })] } });
     fireEvent.change(shopInput, { target: { files: [new window.File(['shop drawing bytes!'], 'shop.pdf', { type: 'application/pdf' })] } });

@@ -18,7 +18,7 @@ import './design/components.css';
 const UiKitPage = lazy(() => import('./pages/ui-kit/UiKitPage'));
 
 const PAGE_TITLES: Record<Page, string> = {
-  review: 'New review',
+  review: 'Start a review',
   documents: 'Documents',
   rulebook: 'Rulebook',
   settings: 'Company settings',

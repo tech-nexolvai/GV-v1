@@ -4,9 +4,8 @@ import { getPackagesSummary, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
 import { DocumentsTable } from '@/components/documents/documents-table';
 import { Button } from '@/components/ui/button';
-import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { PageFrame, PageLoadError } from '@/components/ui/PageFrame';
 import { documentListReducer, documentNavigation, documentRowsOf, restoreDocumentList } from './documentRows';
-import '../components/ui/PageFrame.css';
 
 /** One request per page (#1064): `packages-summary` carries every column the table shows. */
 async function loadRows(cursor?: string) {
@@ -47,11 +46,11 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
 
   return (
     <PageFrame title="Documents"
-      description="Every drawing review in this project. Open one to check its results and decide what needs you."
+      description="Every drawing review in this project. Open one to see its results."
       actions={<Button type="button" onClick={onNewPackage}>
-        <Plus aria-hidden="true" /> New Document
+        <Plus aria-hidden="true" /> New review
       </Button>}>
-      <div data-tw className="flex flex-col gap-3 font-sans">
+      <div className="flex flex-col gap-3">
         {positionNotice && <p className="text-sm text-muted-foreground" role="status">{positionNotice}</p>}
         {state.loading && (
           <p className="text-sm text-muted-foreground" role="status">
@@ -85,7 +84,7 @@ export function PackagesPage({ onOpenReview, onNewPackage, initialCursors = [], 
             rows={data.rows}
             onOpen={onOpenReview}
             morePages={morePages}
-            emptyMessage={navigation.page === 1 ? 'No reviews yet. Start one with New Document.' : 'No reviews on this page. Use Previous page to go back.'}
+            emptyMessage={navigation.page === 1 ? 'No reviews yet. Start one with New review.' : 'No reviews on this page. Use Previous page to go back.'}
           />
         )}
         {data && morePages && (

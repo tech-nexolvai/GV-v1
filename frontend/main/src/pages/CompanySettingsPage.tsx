@@ -17,10 +17,9 @@ import {
 } from '../api/client';
 import { CompanySettingsList } from '../components/settings/CompanySettingsList';
 import { changedValues } from '../components/settings/companySettings';
-import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { PageFrame, PageLoadError } from '@/components/ui/PageFrame';
 import { Button } from '@/components/ui/button';
 import { InfoTip } from '@/components/ui/info-tip';
-import '../components/ui/PageFrame.css';
 
 export function CompanySettingsPage() {
   const [current, setCurrent] = useState<CompanySettings | null>(null);
@@ -71,11 +70,11 @@ export function CompanySettingsPage() {
 
   return (
     <PageFrame title="Company settings" description={<>
-          GV&apos;s house rules: the numbers that are the same on every job and written on no
-          drawing. Type a value with its unit, <code>24&quot;</code> or <code>610 mm</code>, and save.
+          GV&apos;s standard numbers, the same on every job. Type a value with its unit, such as{' '}
+          <span className="num whitespace-nowrap">24&quot;</span> or <span className="num whitespace-nowrap">610 mm</span>.
         </>}>
       {error && current === null && <PageLoadError title="Company settings could not be loaded" message={error} onRetry={() => { setError(null); setAttempt((value) => value + 1); }} />}
-      <div data-tw className="flex flex-col gap-3 font-sans">
+      <div className="flex flex-col gap-3">
       {error && current !== null && (
         <p className="text-sm text-destructive" role="alert">
           {error}

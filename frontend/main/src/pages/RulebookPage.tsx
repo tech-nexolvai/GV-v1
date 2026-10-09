@@ -17,15 +17,14 @@
 import { useState } from 'react';
 import { listRules } from '../api/client';
 import { useAsync } from '../api/useAsync';
-import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { PageFrame, PageLoadError, PageLoading } from '@/components/ui/PageFrame';
 import { RuleGridCard, RulesTable } from '@/components/rulebook/rulebook-overview';
 import { Button } from '@/components/ui/button';
 import { productWord } from '@/lib/documents-table';
 import { checkTypeWord, matchesRuleFilter, sharedReleaseNote, type RuleFilter } from '@/lib/rulebook-overview';
 import { rulebookEmptyState } from './rulebookState';
-import '../components/ui/PageFrame.css';
 
-const DESCRIPTION = 'Published checks and the exact rule snapshots used by the engine.';
+const DESCRIPTION = 'The published checks, exactly as the engine applies them.';
 
 export function RulebookPage() {
   const [attempt, setAttempt] = useState(0);
@@ -35,7 +34,7 @@ export function RulebookPage() {
   if (rules.status === 'loading') {
     return (
       <PageFrame title="Rulebook" description={DESCRIPTION}>
-        <p className="page-frame__state" role="status">Loading the rulebook…</p>
+        <PageLoading>Loading the rulebook…</PageLoading>
       </PageFrame>
     );
   }
@@ -56,7 +55,7 @@ export function RulebookPage() {
     const empty = rulebookEmptyState(0);
     return (
       <PageFrame title="Rulebook" description={DESCRIPTION}>
-        <div data-tw className="flex flex-col gap-1 font-sans">
+        <div className="flex flex-col gap-1">
           <h2 className="text-base font-semibold">{empty.title}</h2>
           <p className="text-sm text-muted-foreground">{empty.message}</p>
         </div>
@@ -67,7 +66,7 @@ export function RulebookPage() {
   const shown = all.filter((rule) => matchesRuleFilter(rule, filter));
   return (
     <PageFrame title="Rulebook" description={DESCRIPTION}>
-      <div data-tw className="flex flex-col gap-4 font-sans">
+      <div className="flex flex-col gap-4">
         <RuleGridCard rules={all} filter={filter} onFilter={setFilter} />
         <section aria-labelledby="rules-title" className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-2">

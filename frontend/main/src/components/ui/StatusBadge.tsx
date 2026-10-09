@@ -16,24 +16,24 @@ const OUTCOME_CONFIG: Record<Outcome, { cls: string }> = {
   NO_APPLICABLE_RULE: { cls: 'badge--none' },
 };
 
-const STATUS_CONFIG: Record<PackageStatus, { label: string; cls: string }> = {
-  CREATED:             { label: 'Created',            cls: 'badge--muted'      },
-  UPLOADING:           { label: 'Uploading',          cls: 'badge--processing' },
-  UPLOADED:            { label: 'Uploaded',           cls: 'badge--processing' },
-  INGESTING:           { label: 'Ingesting',          cls: 'badge--processing' },
-  EXTRACTING:          { label: 'Extracting',         cls: 'badge--processing' },
-  MATCHING:            { label: 'Matching',           cls: 'badge--processing' },
-  VALIDATING_EVIDENCE: { label: 'Validating',         cls: 'badge--processing' },
-  RUNNING_CHECKS:      { label: 'Running Checks',     cls: 'badge--processing' },
-  GENERATING_OUTPUTS:  { label: 'Generating Outputs', cls: 'badge--processing' },
-  AWAITING_REVIEW:     { label: 'Awaiting Review',    cls: 'badge--review'     },
-  APPROVED:            { label: 'Approved',           cls: 'badge--pass'       },
-  CHANGES_REQUESTED:   { label: 'Changes Requested',  cls: 'badge--fail'       },
-  FAILED_RETRYABLE:    { label: 'Failed — Retrying',  cls: 'badge--processing' },
-  FAILED_PERMANENT:    { label: 'Failed',             cls: 'badge--fail'       },
-  NEEDS_INPUT:         { label: 'Needs Input',        cls: 'badge--review'     },
-  CANCELLED:           { label: 'Cancelled',          cls: 'badge--muted'      },
-  SUPERSEDED:          { label: 'Superseded',         cls: 'badge--muted'      },
+const STATUS_LABELS: Record<PackageStatus, string> = {
+  CREATED: 'Created',
+  UPLOADING: 'Uploading',
+  UPLOADED: 'Uploaded',
+  INGESTING: 'Ingesting',
+  EXTRACTING: 'Extracting',
+  MATCHING: 'Matching',
+  VALIDATING_EVIDENCE: 'Validating',
+  RUNNING_CHECKS: 'Running Checks',
+  GENERATING_OUTPUTS: 'Generating Outputs',
+  AWAITING_REVIEW: 'Awaiting Review',
+  APPROVED: 'Approved',
+  CHANGES_REQUESTED: 'Changes Requested',
+  FAILED_RETRYABLE: 'Failed — Retrying',
+  FAILED_PERMANENT: 'Failed',
+  NEEDS_INPUT: 'Needs Input',
+  CANCELLED: 'Cancelled',
+  SUPERSEDED: 'Superseded',
 };
 
 // ── OutcomeBadge ─────────────────────────────────────────────
@@ -55,42 +55,14 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
   );
 }
 
-// ── StatusBadge ──────────────────────────────────────────────
-interface StatusBadgeProps {
-  /**
-   * Widened to `string` because that is what the API actually sends.
-   *
-   * `data/types.ts` says so directly: the package `state` is published as a bare `string` with no
-   * named schema behind it, so `PackageStatus` is the one list in this app that can drift without
-   * the compiler noticing. Requiring the union here did not prevent that drift — it only forced
-   * every caller to assert its way past it, and `STATUS_CONFIG[unknown]` is `undefined`, so the
-   * next state the server adds would have taken the badge down with `cfg.label` on undefined.
-   */
-  status: PackageStatus | string;
-  size?: 'sm' | 'md';
-}
+// ── Package state words ──────────────────────────────────────
+// The legacy StatusBadge that wore these is gone (#1125); the shadcn PackageStatusBadge uses them.
+// The state is a bare `string` on the wire (`data/types.ts`), so an unknown one is shown by its own
+// name rather than taking the badge down.
 
 /** The words for a package state, shared with the shadcn status badge so both say the same thing. */
 export function packageStatusLabel(status: string): string {
-  return STATUS_CONFIG[status as PackageStatus]?.label ?? humanise(status);
-}
-
-export function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
-  const cfg = STATUS_CONFIG[status as PackageStatus];
-  // An unrecognised state shows its own name in a neutral badge. A reviewer seeing
-  // "Awaiting Second Look" they cannot find in the docs is a far better outcome than a blank
-  // screen, and it makes the drift visible instead of fatal.
-  const label = cfg?.label ?? humanise(status);
-  const cls = cfg?.cls ?? 'badge--muted';
-
-  return (
-    <span
-      className={`badge ${cls}`}
-      style={size === 'sm' ? { fontSize: 'var(--text-xs)', padding: '1px 6px' } : undefined}
-    >
-      {label}
-    </span>
-  );
+  return STATUS_LABELS[status as PackageStatus] ?? humanise(status);
 }
 
 /** `AWAITING_REVIEW` → `Awaiting Review`, for a state this file has never heard of. */

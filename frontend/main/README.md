@@ -218,8 +218,9 @@ legacy element rules apply again inside it.
 
 ## shadcn/ui components
 
-The primitives live in `src/components/ui/` (lower-case file names; the legacy `StatusBadge.tsx`,
-`OutcomeIcon.tsx` and `PageFrame.tsx` sit beside them). Add one with:
+The primitives live in `src/components/ui/` (lower-case file names). Beside them sit the legacy
+`StatusBadge.tsx` (outcome badges and the package-state words) and `OutcomeIcon.tsx`, and
+`PageFrame.tsx`, the Tailwind page header every supporting page shares (#1125). Add one with:
 
 ```bash
 npx shadcn@latest add <name>
