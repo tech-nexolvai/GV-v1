@@ -42,7 +42,7 @@ export function CostByDayChart({ days }: { days: readonly CostDay[] }) {
               />
             )}
           />
-          <Bar dataKey="cost" fill="var(--color-cost)" radius={[4, 4, 0, 0]} maxBarSize={MAX_BAR} isAnimationActive={false} />
+          <Bar dataKey="cost" fill="var(--chart-2)" radius={[4, 4, 0, 0]} maxBarSize={MAX_BAR} isAnimationActive={false} />
         </BarChart>
       </ChartContainer>
       <table className="sr-only">
@@ -92,12 +92,14 @@ export function OutcomesByDayChart({ days }: { days: readonly OutcomeDay[] }) {
           <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} />
           <YAxis allowDecimals={false} tickLine={false} axisLine={false} width={36} />
           <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, payload) => (payload?.[0]?.payload as OutcomeDay | undefined)?.fullLabel ?? ''} />} />
-          {STACK.map(({ key }, index) => (
+          {STACK.map(({ key, outcome }, index) => (
             <Bar
               key={key}
               dataKey={key}
               stackId="results"
-              fill={`var(--color-${key})`}
+              // The defined outcome tokens themselves (the chart's runtime --color-* names are not
+              // visible to the design-token check, tests/test_frontend_tokens.py).
+              fill={OUTCOME_FILL[outcome]}
               radius={index === STACK.length - 1 ? [4, 4, 0, 0] : undefined}
               maxBarSize={MAX_BAR}
               isAnimationActive={false}
