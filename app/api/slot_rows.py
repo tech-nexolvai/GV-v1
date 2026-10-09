@@ -34,7 +34,7 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from vocabulary.check_holds import STONE_SHORT_OF_ENDS
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
-from workflow.architect_pairing import (
+from workflow.architect_pairing_records import (
     DecidedPair,
     ReviewerPairingRefused,
     architect_spans_for_row,

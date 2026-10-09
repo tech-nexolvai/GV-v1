@@ -27,6 +27,8 @@ makes and records that pairing for every vendor row the slot reader chose and re
 on the casework outline (decision D4); a held architect value; a span from another page.
 
 `latest_architect_pairing` is the read path the rule uses (`workflow/architect_pairing_contract.py`).
+It and the reviewer's helpers live in `workflow/architect_pairing_records.py`, which reads no drawing
+so the API may import it; they are re-exported here unchanged.
 
 Source: issue #1053 · Plan: "Type 1 vendor vs architect (reasoned, 2026-10-09)" §3, §5 T2, §7 ·
 Verification: `tests/workflow/test_architect_pairing.py`, `tests/api/test_architect_pairing.py`
@@ -36,20 +38,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from itertools import pairwise
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from sqlalchemy import exists, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.models import DrawingView, ViewRole
 from app.models.evidence import ArchitectPairingRecord, ObservationCandidate
-from app.models.runs import ExtractionRun, ModelInvocation
+from app.models.runs import ModelInvocation
 from evidence.crop import RenderedPage, _crop_rgb, encode_png
 from extraction.architect.pairing import (
     DrawnRow,
@@ -65,8 +66,17 @@ from extraction.ink import InkClass
 from extraction.slot_reader.bedrock import ARCH_PAIR_PROMPT_ID, ArchPairAnswer, CropJob
 from extraction.slot_reader.seal import LabelState
 from units.measurement import Unit
-from workflow.architect_pairing_contract import EffectivePair, EffectivePairing, PairingSource
-from workflow.architect_reader import ARCHITECT_EXTRACTOR
+from workflow.architect_pairing_contract import PairingSource
+from workflow.architect_pairing_records import (
+    DecidedPair,
+    ReviewerPairingRefused,
+    _contiguous,
+    _span_key,
+    architect_spans_for_row,
+    latest_architect_pairing,
+    latest_record,
+    record_reviewer_pairing,
+)
 
 if TYPE_CHECKING:
     from storage.store import ArtifactStore
@@ -126,8 +136,6 @@ MEASURED_PAIRING_SETTINGS: Final = PairingSettings(
 #: cabinet is well inside it).
 AI_DRAWN_LENGTH_BAND: Final = Fraction(1, 4)
 
-_AUTOMATIC: Final = ("code", "both-ais", "none")
-_REASON_LIMIT: Final = 500
 _PICTURE_MAX_SIDE: Final = 1800
 _VENDOR_COLOUR: Final = bytes((220, 20, 60))
 _ARCHITECT_COLOUR: Final = bytes((0, 90, 220))
@@ -237,21 +245,6 @@ class ArchitectPageInput:
 
 
 @dataclass(frozen=True, slots=True)
-class DecidedPair:
-    kind: Literal["piece", "overall"]
-    architect_candidate_id: UUID
-    vendor_slot_indices: tuple[int, ...]
-    """Contiguous `slot:<i>` indices; empty for the overall."""
-
-    def as_json(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "architect_candidate_id": str(self.architect_candidate_id),
-            "vendor_slot_indices": list(self.vendor_slot_indices),
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class PairQuestion:
     """The one picture both readers are shown, and what its numbers stand for."""
 
@@ -315,11 +308,6 @@ def vendor_scale(pieces: Sequence[VendorPiece]) -> Fraction | None:
     if len(ratios) < 2:
         return None
     return _median(ratios)
-
-
-def _contiguous(indices: Sequence[int]) -> bool:
-    ordered = sorted(indices)
-    return all(right == left + 1 for left, right in pairwise(ordered))
 
 
 # --- building the inputs ---------------------------------------------------------------------------
@@ -1168,310 +1156,3 @@ def architect_candidate_ids(
         if key is not None:
             found.setdefault(candidate.page_id, {})[key] = candidate.id
     return found
-
-
-def _flag(flags: Iterable[str], prefix: str) -> str | None:
-    return next((flag.removeprefix(prefix) for flag in flags if flag.startswith(prefix)), None)
-
-
-def _span_key(flags: Sequence[str]) -> tuple[int, int, int] | None:
-    parts = [_flag(flags, prefix) for prefix in ("arch-view:", "arch-row:", "arch-slot:")]
-    if any(part is None or not part.isdigit() for part in parts):
-        return None
-    view, rank, slot = (int(part) for part in parts if part is not None)
-    return view, rank, slot
-
-
-def architect_views(session: Session, page_id: UUID) -> set[int]:
-    """The annotation indices of the page's drawings whose role is now the architect's."""
-    found: set[int] = set()
-    for tag in session.scalars(
-        select(DrawingView.tag).where(
-            DrawingView.page_id == page_id, DrawingView.role == ViewRole.ARCH.value
-        )
-    ):
-        number = tag.removeprefix("panel-")
-        if tag.startswith("panel-") and number.isdigit():
-            found.add(int(number))
-    return found
-
-
-# --- 4. the read path and the reviewer -------------------------------------------------------------
-
-
-def latest_record(
-    session: Session, row_anchor_id: UUID, *, sources: Collection[str] | None = None
-) -> ArchitectPairingRecord | None:
-    """The newest record for this row, optionally only of these sources."""
-    query = select(ArchitectPairingRecord).where(
-        ArchitectPairingRecord.row_anchor_candidate_id == row_anchor_id
-    )
-    if sources is not None:
-        query = query.where(ArchitectPairingRecord.source.in_(tuple(sources)))
-    return session.execute(
-        query.order_by(
-            ArchitectPairingRecord.created_at.desc(), ArchitectPairingRecord.id.desc()
-        ).limit(1)
-    ).scalar_one_or_none()
-
-
-def _chain_tip(session: Session, row_anchor_id: UUID) -> ArchitectPairingRecord | None:
-    later = aliased(ArchitectPairingRecord)
-    return session.execute(
-        select(ArchitectPairingRecord)
-        .where(
-            ArchitectPairingRecord.row_anchor_candidate_id == row_anchor_id,
-            ~exists().where(later.supersedes_id == ArchitectPairingRecord.id),
-        )
-        .order_by(ArchitectPairingRecord.created_at.desc(), ArchitectPairingRecord.id.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
-
-@dataclass(frozen=True, slots=True)
-class EligibleSpan:
-    """One architect span on the row's page, as the reviewer is offered it."""
-
-    candidate: ObservationCandidate
-    row: int | None
-    slot: int | None
-    on_outline: bool | None
-    held_reason: str | None
-    inches: Fraction | None
-
-    @property
-    def comparable(self) -> bool:
-        return self.on_outline is True and self.held_reason is None and self.inches is not None
-
-    def refusal(self) -> str:
-        if self.on_outline is False:
-            return "it runs to a fixture's centre line, so it never measures a cabinet"
-        if self.on_outline is None:
-            return "its ends are not known to sit on the casework outline"
-        return f"its value is held: {self.held_reason or 'no value was stored'}"
-
-
-def _eligible(candidate: ObservationCandidate, views: Collection[int]) -> EligibleSpan:
-    flags = candidate.ambiguity_flags or []
-    outline = _flag(flags, "arch-ticks-on-outline:")
-    key = _span_key(flags)
-    held = _flag(flags, "arch-held:")
-    if held is None and (key is None or key[0] not in views):
-        held = "this drawing is no longer confirmed as the architect's"
-    inches = (
-        None
-        if candidate.value_numerator is None
-        or candidate.value_denominator is None
-        or candidate.value_denominator <= 0
-        or candidate.unit != Unit.INCH.value
-        else Fraction(candidate.value_numerator, candidate.value_denominator)
-    )
-    if held is None and inches is None:
-        held = "no value was stored"
-    return EligibleSpan(
-        candidate=candidate,
-        row=None if key is None else key[1],
-        slot=None if key is None else key[2],
-        on_outline={"yes": True, "no": False}.get(outline or ""),
-        held_reason=held,
-        inches=inches,
-    )
-
-
-def architect_spans_for_row(
-    session: Session, anchor: ObservationCandidate, record: ArchitectPairingRecord | None
-) -> list[EligibleSpan]:
-    """Every architect span the architect reader stored on the row's page, in the run the row's
-    automatic pairing used. Empty when the row has no automatic pairing (the reader was off)."""
-    automatic = record
-    while automatic is not None and automatic.source == "reviewer":
-        if automatic.supersedes_id is None:
-            automatic = None
-            break
-        automatic = session.get(ArchitectPairingRecord, automatic.supersedes_id)
-    if automatic is None:
-        return []
-    run_id = automatic.details.get("architect_run_id")
-    if not isinstance(run_id, str):
-        return []
-    run = session.get(ExtractionRun, UUID(run_id))
-    if run is None or run.extractor != ARCHITECT_EXTRACTOR:
-        return []
-    views = architect_views(session, anchor.page_id)
-    candidates = session.scalars(
-        select(ObservationCandidate)
-        .where(
-            ObservationCandidate.extraction_run_id == run.id,
-            ObservationCandidate.page_id == anchor.page_id,
-        )
-        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
-    ).all()
-    spans = [_eligible(candidate, views) for candidate in candidates]
-    return sorted(spans, key=lambda span: (span.row or 0, span.slot or 0))
-
-
-class ReviewerPairingRefused(ValueError):
-    """A reviewer's pairing that may not be recorded, with the reason in plain words."""
-
-
-def record_reviewer_pairing(
-    session: Session,
-    *,
-    anchor: ObservationCandidate,
-    package_revision_id: UUID,
-    piece_count: int,
-    pairs: Sequence[DecidedPair],
-    note: str | None,
-    actor: str,
-) -> ArchitectPairingRecord:
-    """Append a reviewer's pairing for one row, superseding the latest record (not committed).
-
-    `pairs` empty means the reviewer states that nothing on the architect's drawing is comparable.
-    Refused (`ReviewerPairingRefused`): a span not stored on this row's page in its pairing's run, a
-    held span, a centre-line or unknown-outline span, a vendor split that is not contiguous or not on
-    this row, a span or a vendor piece used twice, more than one overall, or a row with no pairing.
-    """
-    current = _chain_tip(session, anchor.id)
-    spans = {span.candidate.id: span for span in architect_spans_for_row(session, anchor, current)}
-    if current is None or not spans and pairs:
-        raise ReviewerPairingRefused(
-            "This row has no architect reading to pair with; the architect reader did not read it."
-        )
-    used_spans: set[UUID] = set()
-    used_pieces: set[int] = set()
-    overall = 0
-    for pair in pairs:
-        span = spans.get(pair.architect_candidate_id)
-        if span is None:
-            raise ReviewerPairingRefused(
-                "That architect dimension is not on this row's page of this drawing set."
-            )
-        if not span.comparable:
-            raise ReviewerPairingRefused(
-                f"The architect's {span.candidate.raw_text} cannot be paired: {span.refusal()}."
-            )
-        if span.candidate.id in used_spans:
-            raise ReviewerPairingRefused("Each architect dimension can be paired only once.")
-        used_spans.add(span.candidate.id)
-        if pair.kind == "overall":
-            overall += 1
-            if pair.vendor_slot_indices:
-                raise ReviewerPairingRefused("The overall pairs with the whole row, not pieces.")
-            continue
-        indices = pair.vendor_slot_indices
-        if not indices or any(index < 0 or index >= piece_count for index in indices):
-            raise ReviewerPairingRefused("Choose one or more of this row's own pieces.")
-        if not _contiguous(indices) or len(set(indices)) != len(indices):
-            raise ReviewerPairingRefused(
-                "Pieces paired with one architect dimension must be next to each other."
-            )
-        if used_pieces & set(indices):
-            raise ReviewerPairingRefused("Each vendor piece can be paired only once.")
-        used_pieces.update(indices)
-    if overall > 1:
-        raise ReviewerPairingRefused("Only one architect dimension can pair with the overall.")
-    record = ArchitectPairingRecord(
-        package_revision_id=package_revision_id,
-        page_id=anchor.page_id,
-        row_anchor_candidate_id=anchor.id,
-        extraction_run_id=None,
-        source="reviewer",
-        status="reviewer",
-        pairs=[
-            DecidedPair(
-                pair.kind, pair.architect_candidate_id, tuple(sorted(pair.vendor_slot_indices))
-            ).as_json()
-            for pair in pairs
-        ],
-        details={
-            "note": None if note is None else note[:_REASON_LIMIT],
-            "architect_run_id": _run_of(current),
-            "reasons": [
-                (
-                    "A reviewer paired the architect's dimensions with this row."
-                    if pairs
-                    else "A reviewer states that nothing on the architect's drawing is "
-                    "comparable with this row."
-                )
-            ],
-        },
-        supersedes_id=current.id,
-        decided_by=actor,
-    )
-    session.add(record)
-    return record
-
-
-def _run_of(record: ArchitectPairingRecord) -> object:
-    return record.details.get("architect_run_id")
-
-
-def latest_architect_pairing(session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
-    """The pairing that counts for one vendor countertop row (its `slot:0` candidate), or `None`.
-
-    The reviewer's latest record wins; otherwise the latest automatic record (code, both AIs, or
-    nobody). Its pairs are re-checked against the architect candidates as they stand: only a span
-    that is stored on the row's page, unheld, has a value, sits on the drawn outline and is in a
-    drawing still confirmed as the architect's is returned; any other pair is left out with the
-    reason. `vendor_slot_indices` is empty for the overall. `source == "both-ais"` is AI-only
-    information: a PASS resting on it needs a reviewer's confirmation (the rule's job, T3).
-    """
-    record = latest_record(session, row_anchor_id, sources=("reviewer",)) or latest_record(
-        session, row_anchor_id, sources=_AUTOMATIC
-    )
-    if record is None:
-        return None
-    anchor = session.get(ObservationCandidate, row_anchor_id)
-    views = set() if anchor is None else architect_views(session, anchor.page_id)
-    stored_reasons = record.details.get("reasons")
-    reasons = [str(reason) for reason in stored_reasons] if isinstance(stored_reasons, list) else []
-    pairs: list[EffectivePair] = []
-    for raw in record.pairs:
-        try:
-            candidate_id = UUID(str(raw["architect_candidate_id"]))
-            kind = raw["kind"]
-            stored_indices = raw.get("vendor_slot_indices")
-            if not isinstance(stored_indices, list):
-                raise TypeError("vendor_slot_indices is not a list")
-            indices = tuple(int(index) for index in stored_indices)
-        except (KeyError, TypeError, ValueError):
-            reasons.append("A stored pair could not be read and is left out.")
-            continue
-        if kind not in ("piece", "overall"):
-            reasons.append("A stored pair has no kind and is left out.")
-            continue
-        candidate = session.get(ObservationCandidate, candidate_id)
-        run = None if candidate is None else session.get(ExtractionRun, candidate.extraction_run_id)
-        if (
-            candidate is None
-            or anchor is None
-            or candidate.page_id != anchor.page_id
-            or run is None
-            or run.extractor != ARCHITECT_EXTRACTOR
-        ):
-            reasons.append("A paired architect dimension is not on this row's page; left out.")
-            continue
-        span = _eligible(candidate, views)
-        if not span.comparable:
-            reasons.append(f"The architect's {candidate.raw_text} is left out: {span.refusal()}.")
-            continue
-        if kind == "piece" and (not indices or not _contiguous(indices)):
-            reasons.append("A paired vendor split is not contiguous; left out.")
-            continue
-        pairs.append(
-            EffectivePair(
-                kind=kind,
-                architect_candidate_id=candidate_id,
-                vendor_slot_indices=() if kind == "overall" else indices,
-            )
-        )
-    source = record.source
-    if source not in ("code", "both-ais", "reviewer", "none"):
-        return None
-    return EffectivePairing(
-        record_id=record.id,
-        source=source,  # type: ignore[arg-type]
-        status=record.status,
-        pairs=tuple(pairs),
-        reasons=tuple(reasons),
-    )

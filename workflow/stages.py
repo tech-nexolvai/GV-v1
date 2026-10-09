@@ -281,9 +281,9 @@ from workflow.architect_pairing import (
     ArchitectPairing,
     architect_candidate_ids,
     architect_page_input,
-    architect_views,
     persist_architect_pairings,
 )
+from workflow.architect_pairing_records import architect_views
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,

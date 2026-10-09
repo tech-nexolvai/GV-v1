@@ -269,7 +269,9 @@ def test_a_race_on_the_same_record_is_409(
     row = Row(session)
     row.post(session, ArchitectPairingIn(pairs=[]))
     stale = session.get_one(ArchitectPairingRecord, row.automatic.id)
-    monkeypatch.setattr("workflow.architect_pairing._chain_tip", lambda _session, _anchor: stale)
+    monkeypatch.setattr(
+        "workflow.architect_pairing_records._chain_tip", lambda _session, _anchor: stale
+    )
 
     with pytest.raises(HTTPException) as raced:
         row.post(session, ArchitectPairingIn(pairs=[_pair(row.cabinet, 0)]))

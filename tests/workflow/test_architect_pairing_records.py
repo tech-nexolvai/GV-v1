@@ -1,7 +1,8 @@
 """Architect pairings stored append-only, and the read path the rule uses (#1053).
 
 Verification for `persist_architect_pairings`, `latest_architect_pairing`,
-`record_reviewer_pairing` and migration `0076_architect_pairing_records`. Invented values only.
+`latest_architect_pairings`, `record_reviewer_pairing` and migration `0076_architect_pairing_records`.
+Invented values only.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, select, text
+from sqlalchemy import Engine, event, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,6 +47,7 @@ from workflow.architect_pairing import (
     record_reviewer_pairing,
 )
 from workflow.architect_pairing_contract import EffectivePair
+from workflow.architect_pairing_records import latest_architect_pairings
 from workflow.architect_reader import ARCHITECT_EXTRACTOR, ARCHITECT_EXTRACTOR_VERSION
 from workflow.view_roles import confirm_view_role
 
@@ -469,6 +471,78 @@ def test_a_row_with_no_record_has_no_pairing(session: Session) -> None:
 
     assert latest_architect_pairing(session, stored.anchor.id) is None
     assert latest_architect_pairing(session, UUID(int=0)) is None
+
+
+def test_many_rows_read_at_once_give_each_rows_own_answer_in_five_statements(
+    session: Session,
+) -> None:
+    """The countertop results ask every row of a revision: the batched read must answer exactly
+    what asking each row alone answers, and in a number of statements that does not grow."""
+    paired = Stored(session, arch_row(1, WIDTHS))
+    paired.pair(session)
+    reviewed = Stored(session, arch_row(1, WIDTHS), held={1: "label disagrees"})
+    reviewed.pair(session)
+    (automatic,) = [
+        record
+        for record in _records(session)
+        if record.row_anchor_candidate_id == reviewed.anchor.id
+    ]
+    session.add(
+        ArchitectPairingRecord(
+            package_revision_id=reviewed.revision.id,
+            page_id=reviewed.page.id,
+            row_anchor_candidate_id=reviewed.anchor.id,
+            source="reviewer",
+            status="reviewer",
+            pairs=[
+                {
+                    "kind": "piece",
+                    "architect_candidate_id": str(reviewed.candidates[0].id),
+                    "vendor_slot_indices": [0],
+                },
+                {
+                    "kind": "piece",
+                    "architect_candidate_id": str(reviewed.candidates[1].id),
+                    "vendor_slot_indices": [1],
+                },
+                {"kind": "piece", "vendor_slot_indices": [2]},
+                {
+                    "kind": "sideways",
+                    "architect_candidate_id": str(reviewed.candidates[2].id),
+                    "vendor_slot_indices": [2],
+                },
+            ],
+            details={"reasons": ["checked by hand"]},
+            supersedes_id=automatic.id,
+            decided_by="reviewer-1",
+        )
+    )
+    unpaired = Stored(session, arch_row(1, WIDTHS))
+    session.flush()
+    rows = [paired.anchor.id, reviewed.anchor.id, unpaired.anchor.id, UUID(int=0)]
+    one_by_one = {row: latest_architect_pairing(session, row) for row in rows}
+
+    statements = 0
+
+    def count(*_args: object) -> None:
+        nonlocal statements
+        statements += 1
+
+    bind = session.get_bind()
+    event.listen(bind, "before_cursor_execute", count)
+    try:
+        batched = latest_architect_pairings(session, rows)
+    finally:
+        event.remove(bind, "before_cursor_execute", count)
+
+    assert batched == one_by_one
+    assert statements <= 5
+    reviewer = batched[reviewed.anchor.id]
+    assert reviewer is not None and reviewer.source == "reviewer"
+    assert reviewer.pairs == (EffectivePair("piece", reviewed.candidates[0].id, (0,)),)
+    assert reviewer.reasons[0] == "checked by hand" and len(reviewer.reasons) == 4
+    assert batched[unpaired.anchor.id] is None and batched[UUID(int=0)] is None
+    assert latest_architect_pairings(session, []) == {}
 
 
 # --- the stage hands the pairing exactly what the architect reader stored --------------------------
