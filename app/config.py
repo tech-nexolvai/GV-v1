@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -102,6 +103,10 @@ class Settings(BaseSettings):
     # Per drawing set. The admin raised it on 2026-10-08: at $2 the cap's worst-case reservation
     # refused the last calls of a $1.72 run; cost is optimised later. $5 is the hard ceiling.
     claude_reader_budget_usd: Decimal = Field(default=Decimal("2.50"), gt=0, le=5)
+    # How hard both Claude readers think before answering (#1051), stated on every call so a run
+    # never depends on a model's own default (Opus 5.5's is `medium`). Accuracy first: `high`.
+    # Kept in step with `extraction/slot_reader/claude_output.py` `CLAUDE_EFFORTS`.
+    claude_reader_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False

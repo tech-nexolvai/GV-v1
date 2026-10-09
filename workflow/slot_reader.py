@@ -19,7 +19,12 @@ a layout sealed only on their agreement and recorded as a `wall_config` layout *
 a check may use only under the conditions `workflow/layout_proposals.py` states, and only when the
 reviewer has stated no layout. Agreed `a"+b"` and `N"(K EQ)` labels are expanded in `seal.py`.
 
-Source: issues #987, #992 · Verification: `tests/workflow/test_slot_reader.py`
+**The Claude readers (#1051)** are asked at a stated effort (`GV_CLAUDE_READER_EFFORT`, recorded in
+the run's configuration and on every question packet), with a fixed answer shape, and never with a
+picture the API would resize. A span whose label is drawn sideways (a label run at least twice as
+tall as wide that is not a stacked fraction) is also shown its close-up turned upright.
+
+Source: issues #987, #992, #1051 · Verification: `tests/workflow/test_slot_reader.py`
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 from evidence.coordinates import PageTransform
-from evidence.crop import RenderedPage, _crop_rgb, encode_png
+from evidence.crop import RenderedPage, _crop_rgb, decode_rgb_png, encode_png
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ModelPacer
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, CountertopRowCandidate, RowSettings
@@ -45,6 +50,7 @@ from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.rows import RowsAndInk
 from extraction.slot_reader.bedrock import (
     CLAUDE_SPAN_PROMPT_ID,
+    CLAUDE_SPAN_PROMPT_IDS,
     COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT_ID,
     ROW_PROMPT_ID,
@@ -53,6 +59,11 @@ from extraction.slot_reader.bedrock import (
     RowChoiceAnswer,
     crop_prompt_id,
     read_crops_parallel,
+)
+from extraction.slot_reader.claude_output import (
+    CLAUDE_EFFORTS,
+    DEFAULT_CLAUDE_EFFORT,
+    ClaudeEffort,
 )
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
 from extraction.slot_reader.labels import (
@@ -179,6 +190,8 @@ class SlotReaderRuntime:
     """Per-reading-batch maximum when using the direct Claude route; otherwise unset."""
     claude_row_reader: bool = False
     """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
+    """The effort every Claude question is asked at (`GV_CLAUDE_READER_EFFORT`, #1051)."""
 
     @property
     def prompt_id(self) -> str:
@@ -199,6 +212,12 @@ class SlotReaderRuntime:
             f"walls={self.wall_settings.config_hash};"
             "rules=drawn-length-veto,label-expansion,counter-break"
             f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=3000' if self.claude_row_reader else ''}"
+            + (
+                f";claude=effort:{self.claude_effort},structured-output-v1,oversized-image-error,"
+                f"upright-sideways:height>={_SIDEWAYS_HEIGHT_TO_WIDTH}xwidth"
+                if self.claude_row_reader
+                else ""
+            )
         )
 
     @property
@@ -259,6 +278,11 @@ def configured_slot_reader(
             key_value,
             timeout_seconds=int(getattr(settings, "claude_reader_timeout_seconds", 180)),
         )
+        effort = getattr(settings, "claude_reader_effort", DEFAULT_CLAUDE_EFFORT)
+        if effort not in CLAUDE_EFFORTS:
+            raise ValueError(
+                f"GV_CLAUDE_READER_EFFORT must be one of {', '.join(CLAUDE_EFFORTS)}: {effort!r}"
+            )
         form = replace(
             form,
             reader_ids=model_ids,
@@ -286,6 +310,7 @@ def configured_slot_reader(
             else None
         ),
         claude_row_reader=claude_enabled,
+        claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
     )
 
 
@@ -501,14 +526,21 @@ def _question_packet(
     full_view_png: bytes,
     close_up_png: bytes,
     store: ArtifactStore | None,
+    upright_png: bytes | None = None,
+    effort: str | None = None,
 ) -> dict[str, object]:
-    """Bind the exact encoded images, prompt, candidate key and coordinate transform."""
+    """Bind the exact encoded images, prompt, candidate key and coordinate transform.
+
+    A Claude question also records the effort it was asked at and, for a sideways label, the
+    upright third picture (#1051)."""
     from io import BytesIO
 
     full_hash = hashlib.sha256(full_view_png).hexdigest()
     close_hash = hashlib.sha256(close_up_png).hexdigest()
+    upright_hash = None if upright_png is None else hashlib.sha256(upright_png).hexdigest()
     full_key: str | None = None
     close_key: str | None = None
+    upright_key: str | None = None
     if store is not None:
         if page.transform is None:
             raise ValueError("a persisted reader packet requires the published PageTransform")
@@ -519,6 +551,11 @@ def _question_packet(
         close_saved = store.put(close_key, BytesIO(close_up_png), content_type="image/png")
         if full_saved.sha256 != full_hash or close_saved.sha256 != close_hash:
             raise ValueError("stored reader question image hash does not match its request bytes")
+        if upright_png is not None:
+            upright_key = f"{base}/upright-{upright_hash}.png"
+            upright_saved = store.put(upright_key, BytesIO(upright_png), content_type="image/png")
+            if upright_saved.sha256 != upright_hash:
+                raise ValueError("stored upright question image hash does not match its bytes")
     packet_body: dict[str, object] = {
         "question_id": question_id,
         "document_version_id": str(page.document_version_id),
@@ -530,7 +567,13 @@ def _question_packet(
         "images": {
             "full_view": {"sha256": full_hash, "storage_key": full_key},
             "close_up": {"sha256": close_hash, "storage_key": close_key},
+            **(
+                {}
+                if upright_png is None
+                else {"upright_close_up": {"sha256": upright_hash, "storage_key": upright_key}}
+            ),
         },
+        **({} if effort is None else {"effort": effort}),
     }
     packet_body["packet_sha256"] = hashlib.sha256(
         json.dumps(packet_body, sort_keys=True, separators=(",", ":")).encode()
@@ -544,6 +587,7 @@ def _row_question_packet(
     candidate_ids: Sequence[UUID],
     numbered_view_png: bytes,
     store: ArtifactStore | None,
+    effort: str | None = None,
 ) -> dict[str, object]:
     """Bind the exact numbered vendor view and the ordered code candidates to a row attempt."""
     from io import BytesIO
@@ -570,6 +614,7 @@ def _row_question_packet(
         "candidate_count": len(candidate_ids),
         "page_transform": _transform_packet(page.transform),
         "images": {"numbered_vendor_view": {"sha256": digest, "storage_key": storage_key}},
+        **({} if effort is None else {"effort": effort}),
     }
     packet["packet_sha256"] = hashlib.sha256(
         json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
@@ -778,6 +823,39 @@ def _wall_job_pictures(
     return row_png, view_png, row_px, view_px, pictures.hatch
 
 
+#: A label run at least this many times as tall as it is wide is drawn sideways (#1051). Measured on
+#: both client sets (2026-10-09, every label run on the first six candidate rows of every page):
+#: upright single-line labels are wider than tall; a millimetre line over its [inch] line or a stacked
+#: fraction stands up to 1.9 times as tall as wide, and stacked fractions are excluded by name below.
+_SIDEWAYS_HEIGHT_TO_WIDTH: Final = Decimal(2)
+
+
+def _sideways(label: PlannedLabel, height: Decimal, geometry: FractionBarGeometry) -> bool:
+    """Whether a label run stands sideways on its horizontal row: clearly taller than wide, and not
+    a stacked fraction (set as text, or found by the fraction-bar detector), which has its own
+    handling and is never turned."""
+    box = label.box
+    return (
+        box.width > 0
+        and box.height >= _SIDEWAYS_HEIGHT_TO_WIDTH * box.width
+        and not label.text_stacked
+        and not _stacked_by_bar(label, height, geometry)
+    )
+
+
+def _upright_png(png: bytes) -> bytes:
+    """The picture turned a quarter clockwise: a label reading bottom to top then stands upright.
+
+    Every sideways label on both client sets reads bottom to top (the vendors' and architects'
+    vertical dimensions, rendered and checked 2026-10-09), so one turn is enough."""
+    import numpy as np
+
+    width, height, rgb = decode_rgb_png(png)
+    pixels = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
+    turned = np.ascontiguousarray(np.rot90(pixels, k=-1))
+    return encode_png(height, width, turned.tobytes())
+
+
 def _stacked_by_bar(label: PlannedLabel, height: Decimal, geometry: FractionBarGeometry) -> bool:
     """Whether the fraction-bar detector finds a stacked fraction among the label's strokes."""
     if not label.path_boxes:
@@ -840,6 +918,7 @@ def read_slot_pages(
                     candidate_ids=candidate_ids,
                     numbered_view_png=numbered_png,
                     store=store,
+                    effort=runtime.claude_effort,
                 )
                 if runtime.question_packets
                 else None
@@ -887,6 +966,7 @@ def read_slot_pages(
             spend_guard=shared_spend_guard,
             spend_cap_usd=runtime.spend_cap_usd if shared_spend_guard is None else None,
             pacer=shared_pacer,
+            claude_effort=runtime.claude_effort,
         )
 
     row_answers = run_jobs(row_jobs) if row_jobs else {}
@@ -936,6 +1016,23 @@ def read_slot_pages(
             and plan.row is not None
             and _counter_break_row_hold(page, plan, (), runtime) is not None
         )
+        # Spans whose label code found drawn sideways (#1051): the Claude span is the slot's band,
+        # so the label runs come from the plan code made before the spans replaced them.
+        sideways_owners = (
+            {
+                owner.index
+                for owner in (
+                    *source_plan.slots,
+                    *((source_plan.overall,) if source_plan.overall is not None else ()),
+                )
+                if any(
+                    _sideways(label, page.rows.ink.height, runtime.fraction_bar)
+                    for label in owner.labels
+                )
+            }
+            if runtime.claude_row_reader
+            else set()
+        )
         for owner in owners:
             for position, label in enumerate(owner.labels):
                 key = _key(page.page_index, owner.index, position)
@@ -968,6 +1065,11 @@ def read_slot_pages(
                     if runtime.claude_row_reader or runtime.question_packets
                     else None
                 )
+                upright_png = (
+                    _upright_png(png)
+                    if runtime.claude_row_reader and owner.index in sideways_owners
+                    else None
+                )
                 if runtime.question_packets:
                     assert view_png is not None
                     packet = _question_packet(
@@ -978,6 +1080,8 @@ def read_slot_pages(
                         full_view_png=view_png,
                         close_up_png=png,
                         store=store,
+                        upright_png=upright_png,
+                        effort=runtime.claude_effort if runtime.claude_row_reader else None,
                     )
                     jobs.extend(
                         CropJob(
@@ -988,6 +1092,7 @@ def read_slot_pages(
                             view_png,
                             grounded_claude=runtime.claude_row_reader,
                             question_packet=packet,
+                            upright_png=upright_png,
                         )
                         for model in wanted
                     )
@@ -1000,6 +1105,7 @@ def read_slot_pages(
                             png,
                             view_png=view_png,
                             grounded_claude=runtime.claude_row_reader,
+                            upright_png=upright_png,
                         )
                         for model in wanted
                     )
@@ -1031,6 +1137,7 @@ def read_slot_pages(
                         full_view_png=view_png,
                         close_up_png=row_png,
                         store=store,
+                        effort=runtime.claude_effort,
                     )
                     if runtime.question_packets
                     else None
@@ -1058,6 +1165,7 @@ def read_slot_pages(
                     full_view_png=view_png,
                     close_up_png=row_png,
                     store=store,
+                    effort=runtime.claude_effort if runtime.claude_row_reader else None,
                 )
                 if runtime.question_packets
                 else None
@@ -1772,14 +1880,14 @@ def persist_slot_readings(
                 f"row-rank:{result.plan.row.rank}",
                 f"row-slot-count:{len(result.slots)}",
             ]
-            if prompt_id == CLAUDE_SPAN_PROMPT_ID and (
+            if prompt_id in CLAUDE_SPAN_PROMPT_IDS and (
                 sum(1 for slot_index in offered if slot_index is not None) < len(result.slots)
                 or None not in offered
             ):
                 # Persist the completeness boundary with the proposal. The check stage uses this
                 # to keep a sparse form list from becoming a shorter unscoped operand.
                 flags.append("row-partial")
-            if prompt_id == CLAUDE_SPAN_PROMPT_ID:
+            if prompt_id in CLAUDE_SPAN_PROMPT_IDS:
                 flags.append("reader-mode:claude")
             if result.row_choice_number is not None and result.row_choice_number > 0:
                 flags.append(f"row-choice:{result.row_choice_number}")

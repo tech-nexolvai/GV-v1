@@ -15,7 +15,7 @@ from dataclasses import replace
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
@@ -101,12 +101,17 @@ class FakeReaders:
         self.wall_requests: list[tuple[str, bytes, bytes]] = []
         self.counter_break_requests: list[tuple[str, bytes, bytes]] = []
         self.row_requests: list[tuple[str, bytes]] = []
+        self.span_pictures: list[tuple[str, tuple[bytes, ...]]] = []
+        self.span_texts: list[tuple[str, tuple[str, ...]]] = []
         self.lock = threading.Lock()
 
     def for_current_thread(self) -> FakeReaders:
         return self
 
     def converse(self, **kwargs: Any) -> Mapping[str, Any]:
+        return {"stopReason": "end_turn", **self._answer(**kwargs)}
+
+    def _answer(self, **kwargs: Any) -> Mapping[str, Any]:
         model = kwargs["modelId"]
         content = kwargs["messages"][0]["content"]
         pictures = [part["image"]["source"]["bytes"] for part in content if "image" in part]
@@ -126,7 +131,15 @@ class FakeReaders:
                 self.counter_break_requests.append((model, pictures[0], pictures[1]))
             return {
                 "output": {
-                    "message": {"content": [{"text": json.dumps(dict(self.counter_break(model)))}]}
+                    "message": {
+                        "content": [
+                            {
+                                "text": json.dumps(
+                                    {"stone_ends": "unsure"} | dict(self.counter_break(model))
+                                )
+                            }
+                        ]
+                    }
                 },
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
@@ -135,12 +148,32 @@ class FakeReaders:
             with self.lock:
                 self.wall_requests.append((model, pictures[0], pictures[1]))
             return {
-                "output": {"message": {"content": [{"text": json.dumps(dict(self.walls(model)))}]}},
+                "output": {
+                    "message": {
+                        "content": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "left_evidence": "",
+                                        "right_evidence": "",
+                                        "behind_evidence": "",
+                                    }
+                                    | dict(self.walls(model))
+                                )
+                            }
+                        ]
+                    }
+                },
                 "usage": {"inputTokens": 20, "outputTokens": 9},
             }
-        png = pictures[-1]
+        # A sideways span's upright copy comes third (#1051); the close-up is always second.
+        png = pictures[1] if len(pictures) == 3 else pictures[-1]
         with self.lock:
             self.requests.append((model, png))
+            self.span_pictures.append((model, tuple(pictures)))
+            self.span_texts.append(
+                (model, tuple(part["text"] for part in content if "text" in part))
+            )
         text = self.read(model, png)
         payload = {
             "text": text,
@@ -426,7 +459,7 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
 
     owner_count = len(result.plan.slots) + (result.plan.overall is not None)
-    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v1"]
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v2"]
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
@@ -2050,3 +2083,207 @@ def test_the_claude_reader_budget_is_two_fifty_by_default_and_five_at_most() -> 
     )
     with pytest.raises(ValidationError):
         Settings(database_url=url, claude_reader_budget_usd=Decimal("5.01"))
+
+
+# ---------------------------------------------------------------------------------------------
+# #1051: effort on every Claude call, upright copies of sideways labels
+# ---------------------------------------------------------------------------------------------
+
+
+def sideways_sheet() -> bytes:
+    """The middle slot's label drawn sideways: a glyph run 4 pt wide and 10 pt tall."""
+    marks = b"".join(
+        (
+            f"{248:.2f} {sheets.CHAIN_Y + 2 + k * 3.5:.2f} m {252:.2f} "
+            f"{sheets.CHAIN_Y + 2 + k * 3.5:.2f} {252:.2f} {sheets.CHAIN_Y + 3.5 + k * 3.5:.2f} "
+            f"{252:.2f} {sheets.CHAIN_Y + 5 + k * 3.5:.2f} c {248:.2f} "
+            f"{sheets.CHAIN_Y + 5 + k * 3.5:.2f} l h f\n"
+        ).encode()
+        for k in range(3)
+    )
+    drawing = sheets.text(168, sheets.CHAIN_Y + 4, '12"') + sheets.text(
+        318, sheets.CHAIN_Y + 4, '12"'
+    )
+    return sheets.sheet(drawing + marks + sheets.text(243, sheets.OVERALL_Y + 4, '48"'))
+
+
+def claude_runtime(readers: FakeReaders, **changes: Any) -> SlotReaderRuntime:
+    base = runtime(readers)
+    return replace(
+        base,
+        form=replace(
+            base.form,
+            reader_ids=(OPUS, SONNET),
+            calls_per_minute={OPUS: 6000, SONNET: 6000},
+        ),
+        claude_row_reader=True,
+        **changes,
+    )
+
+
+def test_a_sideways_label_adds_its_upright_close_up_as_a_third_picture() -> None:
+    from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID, CLAUDE_UPRIGHT_NOTE
+    from workflow.slot_reader import _upright_png
+
+    page = slot_page(sideways_sheet())
+    readers = FakeReaders(lambda _model, _png: '2"')
+    attempts: list[AttemptUsage] = []
+
+    (result,) = read_slot_pages(
+        [page], runtime=claude_runtime(readers), record_attempt=attempts.append
+    )
+
+    three = [pictures for _model, pictures in readers.span_pictures if len(pictures) == 3]
+    two = [pictures for _model, pictures in readers.span_pictures if len(pictures) == 2]
+    owners = len(result.plan.slots) + (result.plan.overall is not None)
+    assert len(three) == 2, "the sideways span, asked of both readers"
+    assert len(two) == 2 * (owners - 1), "every other span keeps its two pictures"
+    for _view, close_up, upright in three:
+        assert upright == _upright_png(close_up)
+    upright_spans = {texts for _model, texts in readers.span_texts if CLAUDE_UPRIGHT_NOTE in texts}
+    assert len(upright_spans) == 1
+    assert all(
+        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v2"
+        for attempt in attempts
+        if attempt.prompt_id.startswith("claude-slot-span")
+    )
+
+
+def test_a_label_that_is_not_sideways_keeps_exactly_two_pictures() -> None:
+    page = slot_page(named_sheet())
+    readers = FakeReaders(lambda _model, _png: '2"')
+
+    read_slot_pages([page], runtime=claude_runtime(readers), record_attempt=lambda _a: None)
+
+    assert readers.span_pictures
+    assert all(len(pictures) == 2 for _model, pictures in readers.span_pictures)
+
+
+def test_a_stacked_fraction_is_never_taken_for_a_sideways_label() -> None:
+    from extraction.slot_reader.runs import Lane, PlannedLabel
+    from workflow.slot_reader import _sideways, fraction_bar_from_environment
+
+    tall = Box(Decimal(0), Decimal(0), Decimal(4), Decimal(10))
+    label = PlannedLabel(
+        box=tall,
+        crop=tall,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=False,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(),
+    )
+    geometry = fraction_bar_from_environment(FRACTION_ENV)
+    height = Decimal(792)
+
+    assert _sideways(label, height, geometry) is True
+    assert _sideways(replace(label, text_stacked=True), height, geometry) is False
+    # Measured on both client sets: a stacked fraction or a millimetre line over its [inch] line
+    # stands up to 1.9 times as tall as wide; none of them is turned.
+    almost = Box(Decimal(0), Decimal(0), Decimal(10), Decimal(19))
+    assert _sideways(replace(label, box=almost), height, geometry) is False
+
+
+def test_the_upright_copy_is_the_close_up_turned_a_quarter_clockwise() -> None:
+    from evidence.crop import decode_rgb_png, encode_png
+    from workflow.slot_reader import _upright_png
+
+    red, blue, white = bytes((255, 0, 0)), bytes((0, 0, 255)), bytes((255, 255, 255))
+    # 3 wide, 2 tall: the top-left pixel red, the bottom-left blue.
+    original = encode_png(3, 2, red + white + white + blue + white + white)
+
+    width, height, rgb = decode_rgb_png(_upright_png(original))
+
+    assert (width, height) == (2, 3)
+    # Turned clockwise, the left column becomes the top row, read from bottom to top.
+    assert rgb[0:3] == blue and rgb[3:6] == red
+
+
+def test_every_claude_question_packet_records_the_effort_it_was_asked_at() -> None:
+    class MemoryStore:
+        def __init__(self) -> None:
+            self.objects: dict[str, bytes] = {}
+
+        def put(self, key: str, data: BytesIO, *, content_type: str) -> SimpleNamespace:
+            content = data.read()
+            self.objects[key] = content
+            return SimpleNamespace(sha256=hashlib.sha256(content).hexdigest())
+
+    page = replace(
+        slot_page(sideways_sheet()),
+        transform=PageTransform(
+            dpi=DPI,
+            rotation=0,
+            media_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+            crop_box=(Decimal(0), Decimal(0), Decimal(612), Decimal(792)),
+        ),
+    )
+    readers = FakeReaders(lambda _model, _png: '2"')
+    attempts: list[AttemptUsage] = []
+    store = MemoryStore()
+
+    read_slot_pages(
+        [page],
+        runtime=claude_runtime(readers, question_packets=True, claude_effort="xhigh"),
+        record_attempt=attempts.append,
+        store=store,
+    )
+
+    assert attempts
+    assert all(
+        attempt.question_packet is not None and attempt.question_packet["effort"] == "xhigh"
+        for attempt in attempts
+    )
+    upright = [
+        attempt.question_packet["images"]["upright_close_up"]
+        for attempt in attempts
+        if attempt.question_packet is not None
+        and "upright_close_up" in attempt.question_packet["images"]
+    ]
+    assert len(upright) == 2
+    for image in upright:
+        assert hashlib.sha256(store.objects[image["storage_key"]]).hexdigest() == image["sha256"]
+
+
+def test_the_effort_setting_defaults_to_high_and_refuses_an_unknown_level() -> None:
+    from pydantic import ValidationError
+
+    assert (
+        Settings(database_url="postgresql+psycopg://x@localhost/x").claude_reader_effort == "high"
+    )
+    assert (
+        Settings(
+            database_url="postgresql+psycopg://x@localhost/x", claude_reader_effort="max"
+        ).claude_reader_effort
+        == "max"
+    )
+    with pytest.raises(ValidationError, match="claude_reader_effort"):
+        Settings(database_url="postgresql+psycopg://x@localhost/x", claude_reader_effort="adaptive")
+
+
+def test_the_configured_effort_reaches_the_runtime_and_the_run_identity() -> None:
+    form = runtime(FakeReaders(lambda _m, _p: "")).form
+
+    class ClaudeOn:
+        slot_reader_enabled = True
+        slot_reader_stacked_agreement = False
+        claude_reader_enabled = True
+        anthropic_api_key = SecretStr("private-test-key")
+        claude_reader_model_rpm: ClassVar[dict[str, int]] = {OPUS: 60, SONNET: 60}
+        claude_reader_timeout_seconds = 180
+        claude_reader_effort = "medium"
+
+    configured = configured_slot_reader(ClaudeOn(), form, environ=FRACTION_ENV)
+    assert configured is not None and configured.claude_effort == "medium"
+    assert "effort:medium" in configured.config_detail
+    assert len(f"dpi=300;{configured.config_hash}") <= 200
+    high = replace(configured, claude_effort="high")
+    assert high.config_hash != configured.config_hash
+
+    ClaudeOn.claude_reader_effort = "adaptive"
+    with pytest.raises(ValueError, match="GV_CLAUDE_READER_EFFORT"):
+        configured_slot_reader(ClaudeOn(), form, environ=FRACTION_ENV)
