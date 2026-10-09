@@ -19,10 +19,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, CircleDashed, MinusCircle, RefreshCw, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, CircleDashed, MinusCircle, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
 import { GVMark } from '../brand/GVMark';
 import type { AssignmentStep, ProposedMeasurements } from '../../api/client';
-import './AssignmentProgress.css';
+import { InfoTip } from '@/components/ui/info-tip';
+import { Progress } from '@/components/ui/progress';
+import { cn } from '@/lib/utils';
 
 export function AssignmentProgress({
   steps,
@@ -65,53 +67,52 @@ export function AssignmentProgress({
 
   return (
     <section
-      className="assign"
+      data-slot="assignment-progress"
+      className="flex flex-col gap-3 rounded-xl border bg-card p-4"
       role="status"
       aria-live="polite"
       aria-busy={running}
       data-state={error ? 'error' : result ? 'done' : 'running'}
     >
-      <header className="assign__head">
-        <span className="assign__halo" aria-hidden="true">
+      <header className="flex items-start gap-3">
+        <span className="shrink-0" aria-hidden="true">
           <GVMark size={24} animated={running} />
         </span>
-        <div className="assign__titles">
-          <h3 className="assign__title">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <h4 className="text-sm font-semibold">
             {error ? 'The fields were left for you' : result ? 'Filled' : 'Filling the measurements'}
-          </h3>
-          <p className="assign__subtitle">
-            {latest && running
-              ? latest.label
-              : result
-                ? `${result.fields_filled} of ${result.fields_total} fields filled from ${result.readings_attached} attached readings`
-                : 'Nothing was changed. Type the values yourself, or try again.'}
+          </h4>
+          <p className="text-xs text-muted-foreground">
+            {latest && running ? (
+              latest.label
+            ) : result ? (
+              <>
+                <span className="num">{result.fields_filled}</span> of <span className="num">{result.fields_total}</span> fields filled from{' '}
+                <span className="num">{result.readings_attached}</span> attached readings
+              </>
+            ) : (
+              'Nothing was changed. Type the values yourself, or try again.'
+            )}
           </p>
         </div>
-        <div className="assign__percent">
-          <span className="assign__percent-value mono">{percent}</span>
-          <span className="assign__percent-unit">%</span>
-        </div>
+        <span className="num shrink-0 text-lg font-semibold">
+          {percent}
+          <span className="text-xs text-muted-foreground">%</span>
+        </span>
       </header>
 
-      {/* Determinate, because the server reports its position. The width is set inline and the
-          transition that animates it is in CSS, with the rest of the motion system. */}
-      <div
-        className="assign__track"
-        role="progressbar"
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label="phases finished"
-      >
-        <span className="assign__bar" style={{ width: `${percent}%` }} />
-      </div>
+      {/* Determinate, because the server reports its position. */}
+      <Progress value={percent} aria-label="phases finished" />
 
-      <p className="assign__legend">
-        {percent}% is <strong>phases finished</strong>, not confidence in the answer and not a
-        guess at how long the model will take. {running && <span className="mono">{(elapsed / 1000).toFixed(1)}s</span>}
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+        Phases finished
+        <InfoTip label="What the percentage means">
+          <p>The percentage is phases finished: not confidence in the answer, and not a guess at how long the model will take.</p>
+        </InfoTip>
+        {running && <span className="num">{(elapsed / 1000).toFixed(1)}s</span>}
       </p>
 
-      <ol className="assign__phases">
+      <ol className="flex flex-col gap-1.5">
         {labels.map((label, position) => {
           const index = position + 1;
           const step = byIndex.get(index) ?? null;
@@ -129,27 +130,39 @@ export function AssignmentProgress({
                     ? 'active'
                     : 'waiting';
           return (
-            <li className="assign__phase" key={label} data-state={state}>
-              <span className="assign__marker" aria-hidden="true">
-                {state === 'done' ? (
-                  <CheckCircle2 size={13} />
+            <li
+              className={cn(
+                'flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm',
+                (state === 'waiting' || state === 'skipped') && 'text-muted-foreground',
+                state === 'error' && 'text-outcome-fail-fg',
+              )}
+              key={label}
+              data-state={state}
+            >
+              <span className="flex size-4 items-center justify-center" aria-hidden="true">
+                {state === 'error' ? (
+                  <XCircle size={14} />
+                ) : state === 'done' ? (
+                  <CheckCircle2 size={14} />
                 ) : state === 'active' ? (
-                  <CircleDashed size={13} className="anim-spin" />
+                  <CircleDashed size={14} className="animate-spin motion-reduce:animate-none" />
                 ) : state === 'skipped' ? (
-                  <MinusCircle size={13} />
+                  <MinusCircle size={14} />
                 ) : (
-                  <CircleDashed size={13} />
+                  <CircleDashed size={14} />
                 )}
               </span>
-              <span className="assign__phase-label">{label}</span>
-              {state === 'skipped' ? (
-                <span className="assign__phase-detail">not reached</span>
+              <span>{label}</span>
+              {state === 'error' ? (
+                <span className="text-xs font-medium">stopped here</span>
+              ) : state === 'skipped' ? (
+                <span className="text-xs text-muted-foreground">not reached</span>
               ) : (
-                step?.detail && <span className="assign__phase-detail">{step.detail}</span>
+                step?.detail && <span className="text-xs text-muted-foreground">{step.detail}</span>
               )}
               {step && step.attempt > 1 && (
-                <span className="assign__retry">
-                  <RefreshCw size={11} aria-hidden="true" /> attempt {step.attempt}
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <RefreshCw size={12} aria-hidden="true" /> attempt <span className="num">{step.attempt}</span>
                 </span>
               )}
             </li>
@@ -158,25 +171,34 @@ export function AssignmentProgress({
       </ol>
 
       {retried && (
-        <p className="assign__note">
-          <ShieldCheck size={13} aria-hidden="true" /> A deterministic check refused the first
-          answer and the model was asked again with the reason. The bar did not move, because
-          rejected work is not progress.
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <ShieldCheck className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          <span>
+            A check refused the first answer; the model was asked again with the reason.{' '}
+            <InfoTip label="Why the bar did not move">
+              <p>A deterministic check refused the first answer and the model was asked again with the reason. The bar did not move, because rejected work is not progress.</p>
+            </InfoTip>
+          </span>
         </p>
       )}
 
       {result?.unfilled_reason && (
-        <p className="assign__note assign__note--refused">
-          <ShieldCheck size={13} aria-hidden="true" /> {result.unfilled_reason}. The fields stay
-          empty for you, which is what happens without this step at all.
+        <p className="flex items-start gap-1.5 text-xs text-outcome-review-fg">
+          <ShieldCheck className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          <span>{result.unfilled_reason}. The fields stay empty for you, which is what happens without this step at all.</span>
         </p>
       )}
 
-      {error && <p className="assign__note assign__note--refused">{error}</p>}
+      {error && (
+        <p className="flex items-start gap-1.5 text-xs text-outcome-fail-fg">
+          <ShieldCheck className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+          <span>{error}</span>
+        </p>
+      )}
 
       {result && result.model_id && (
-        <p className="assign__model mono">
-          proposed by {result.model_id} · checked by seven structural rules · saved by nobody yet
+        <p className="text-xs text-muted-foreground">
+          Proposed by <span className="num">{result.model_id}</span> · checked by seven structural rules · saved by nobody yet
         </p>
       )}
     </section>

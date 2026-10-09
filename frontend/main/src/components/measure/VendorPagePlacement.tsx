@@ -3,6 +3,8 @@ import { useEffect, useState, type MouseEvent } from 'react';
 import type { NewPart } from './DrawingPartsList.js';
 import type { PartDrawing, PartKind, PartPoint } from './drawingPartChoices.js';
 import { clickToStoredPoint, nearestPlacementSnap } from './placementGeometry.js';
+import { Button } from '@/components/ui/button';
+import { Hint, LoadError } from './wizard-ui.js';
 
 type Selection = { clicked: PartPoint; chosen: PartPoint | null; snap?: PartPoint; source?: string };
 
@@ -75,33 +77,35 @@ export function VendorPagePlacement({
   const distinct = Boolean(first && second && (first.x !== second.x || first.y !== second.y));
 
   if (!metadata) {
-    return <p className="enter-values__hint">Preparing the vendor-only drawing picture for placement…</p>;
+    return <Hint>Preparing the vendor-only drawing picture for placement…</Hint>;
   }
-  if (image.error) return <p className="enter-values__error" role="alert">The vendor drawing picture could not be loaded: {image.error}</p>;
-  if (!image.url) return <p className="enter-values__hint">Loading the vendor-only drawing…</p>;
+  if (image.error) return <LoadError>The vendor drawing picture could not be loaded: {image.error}</LoadError>;
+  if (!image.url) return <Hint>Loading the vendor-only drawing…</Hint>;
 
   return (
-    <div className="vendor-placement">
-      <p className="enter-values__hint">Click the first end, then the second. A nearby detected line end is suggested; accept it or use your clicked point.</p>
-      <div className="vendor-placement__image-wrap">
-        <div className="vendor-placement__canvas">
+    <div className="flex flex-col gap-3">
+      <Hint>Click the first end, then the second; a nearby line end is offered to snap to.</Hint>
+      {/* On a phone the drawing keeps a readable 520 px and scrolls inside its frame, not the page. */}
+      <div className="max-h-[55vh] overflow-auto rounded-lg border bg-white sm:max-h-none">
+        <div className="relative w-[520px] sm:w-full">
           <img
-            className="vendor-placement__image"
+            className="block w-full max-w-none cursor-crosshair"
             src={image.url}
             alt={`Vendor-only drawing, page ${drawing.page_index + 1}. Click to place two ends.`}
             onClick={place}
           />
+          {/* Dark on purpose: the vendor-only picture is always black on white, in either theme. */}
           {first && second && (
-            <svg className="vendor-placement__overlay" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
-              <line x1={first.x} y1={first.y} x2={second.x} y2={second.y} />
+            <svg className="pointer-events-none absolute inset-0 size-full" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+              <line x1={first.x} y1={first.y} x2={second.x} y2={second.y} className="stroke-neutral-900" strokeWidth={3} strokeDasharray="8 4" vectorEffect="non-scaling-stroke" />
             </svg>
           )}
         </div>
       </div>
-      <ol className="vendor-placement__ends">
+      <ol className="flex flex-col gap-2 text-sm">
         {ends.map((selection, index) => (
-          <li key={index}>
-            <strong>{index === 0 ? 'First end' : 'Second end'}:</strong>{' '}
+          <li key={index} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <strong className="font-medium">{index === 0 ? 'First end' : 'Second end'}:</strong>{' '}
             {!selection
               ? 'click the drawing'
               : selection.snap && !selection.chosen
@@ -110,23 +114,26 @@ export function VendorPagePlacement({
                   ? `using the detected ${selection.source} end`
                   : 'free point'}
             {selection?.snap && (
-              <span className="vendor-placement__choice">
-                <button type="button" className="btn btn--sm btn--subtle" disabled={disabled} aria-pressed={selection.chosen === selection.snap} onClick={() => choose(index as 0 | 1, true)}>Use snap</button>
-                <button type="button" className="btn btn--sm btn--subtle" disabled={disabled} aria-pressed={selection.chosen === selection.clicked} onClick={() => choose(index as 0 | 1, false)}>Use clicked point</button>
+              <span className="flex flex-wrap gap-1.5">
+                <Button type="button" size="xs" variant={selection.chosen === selection.snap ? 'default' : 'outline'} disabled={disabled} aria-pressed={selection.chosen === selection.snap} onClick={() => choose(index as 0 | 1, true)}>Use snap</Button>
+                <Button type="button" size="xs" variant={selection.chosen === selection.clicked ? 'default' : 'outline'} disabled={disabled} aria-pressed={selection.chosen === selection.clicked} onClick={() => choose(index as 0 | 1, false)}>Use clicked point</Button>
               </span>
             )}
           </li>
         ))}
       </ol>
-      <button
-        type="button"
-        className="btn btn--sm btn--subtle"
-        disabled={disabled || !distinct}
-        onClick={() => first && second && onAdd({ kind, code, ends: [first, second] })}
-      >
-        Confirm this part
-      </button>
-      <button type="button" className="btn btn--sm btn--subtle" disabled={disabled || (!ends[0] && !ends[1])} onClick={() => setEnds([null, null])}>Clear points</button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={disabled || !distinct}
+          onClick={() => first && second && onAdd({ kind, code, ends: [first, second] })}
+        >
+          Confirm this part
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={disabled || (!ends[0] && !ends[1])} onClick={() => setEnds([null, null])}>Clear points</Button>
+      </div>
     </div>
   );
 }

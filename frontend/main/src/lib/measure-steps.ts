@@ -50,3 +50,24 @@ export function stepBefore(step: MeasureStep): MeasureStep | null {
 export function sameCount(a: StepCount | null | undefined, b: StepCount | null | undefined): boolean {
   return (a ?? null) === (b ?? null) || (a !== null && a !== undefined && b !== null && b !== undefined && a.done === b.done && a.total === b.total);
 }
+
+/**
+ * A step's count in words (#1124): "6 of 9 done", "All 3 done", never a bare "6/9".
+ */
+export function stepCountWords(count: StepCount | null): string {
+  if (count === null) return 'Counting…';
+  if (count.total === 0) return 'Nothing to do';
+  if (isComplete(count)) return `All ${count.total} done`;
+  return `${count.done} of ${count.total} done`;
+}
+
+/**
+ * What one section of a step has shown so far (#1124). An explicit flag, so "nothing to do here" is
+ * never guessed from a count: a section still loading, or one whose request failed, also counts 0.
+ */
+export type SectionState = 'loading' | 'empty' | 'shown' | 'error';
+
+/** A step is empty only when every one of its sections has loaded, found nothing, and not failed. */
+export function stepIsEmpty(states: readonly (SectionState | undefined)[]): boolean {
+  return states.length > 0 && states.every((state) => state === 'empty');
+}

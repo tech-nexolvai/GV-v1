@@ -14,8 +14,10 @@ import {
   type ReadingLinks,
 } from './readingPartChoices.js';
 import { GvMarksWarning } from './GvMarksWarning.js';
-import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
-import { InfoTip } from '@/components/ui/info-tip';
+import type { DecisionFeedback } from './decisionFeedback.js';
+import { Button } from '@/components/ui/button';
+import { Caution, DecisionLine, Hint, SELECT_CLASS, StepSection } from './wizard-ui.js';
+import { countWords } from './wizardWords.js';
 
 /**
  * Which confirmed reading is each confirmed part's width: what the computer suggests, and a person
@@ -52,28 +54,32 @@ export function ReadingPartsList({
 }) {
   const open = partsStillToLink(links);
   return (
-    <section className="enter-values__section drawing-parts" aria-labelledby="reading-parts-title">
-      <h2 id="reading-parts-title">Which reading is each part&apos;s width</h2>
-      <p className="enter-values__hint">
-        Link each part to the reading of its width.{' '}
-        <InfoTip label="About width links">
+    <StepSection
+      id="reading-parts-title"
+      slot="reading-parts"
+      title="Which reading is each part's width"
+      line={
+        <strong className="font-medium text-foreground">
+          {open === 0 ? 'Nothing left to link.' : `${countWords(open, 'part')} still without a reading.`}
+        </strong>
+      }
+      tipLabel="About width links"
+      tip={
+        <>
           <p>For each part you confirmed in step 1, the computer suggests the confirmed reading whose dimension line reaches both ends of the part. A part&apos;s width is one reading.</p>
           <p>A suggestion counts for nothing until you decide it. Confirm it, pick another reading on the same drawing and confirm that instead, or take a link back.</p>
-        </InfoTip>{' '}
-        <strong>{open === 0 ? 'Nothing left to link.' : `${open} still without a reading.`}</strong>
-      </p>
-      {links.why_not && <p className="drawing-parts__why-not">{links.why_not}</p>}
+        </>
+      }
+    >
+      {links.why_not && <Hint>{links.why_not}</Hint>}
       {links.drawings.map((drawing) => (
-        <article className="drawing-parts__drawing" key={drawing.view_id}>
-          <h3>Page {drawing.page_index + 1}: the vendor&apos;s drawing</h3>
-          {drawing.why_not && <p className="drawing-parts__why-not">{drawing.why_not}</p>}
+        <article className="flex flex-col gap-3" key={drawing.view_id}>
+          <h4 className="text-sm font-medium">Page {drawing.page_index + 1}: the vendor&apos;s drawing</h4>
+          {drawing.why_not && <Hint>{drawing.why_not}</Hint>}
           {drawing.readings.length === 0 && (
-            <p className="enter-values__hint">
-              No reading on this drawing is confirmed yet. Say what its readings are in step 3
-              (Values) first; each part&apos;s width can be linked after that.
-            </p>
+            <Hint>No reading on this drawing is confirmed yet: confirm its readings in step 3 (Values) first.</Hint>
           )}
-          <ol className="drawing-parts__list">
+          <ol className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {drawing.parts.map((part) => (
               <PartLinkRow
                 // A new decision starts the pick again from what was decided.
@@ -90,7 +96,7 @@ export function ReadingPartsList({
           </ol>
         </article>
       ))}
-    </section>
+    </StepSection>
   );
 }
 
@@ -119,35 +125,40 @@ function PartLinkRow({
   const pickable = readingOn(drawing, picked) !== null;
   const pending = saving || feedback?.kind === 'saving';
   const canConfirm = drawing.can_confirm && pickable && !pending;
+  const pickId = `link-reading-${part.item_id}`;
 
   return (
-    <li className="drawing-parts__item" data-decided={part.links.length > 0}>
-      <div className="drawing-parts__picture">
-        {picture ?? <p className="drawing-parts__no-picture">No picture of this part is stored yet.</p>}
+    <li
+      data-slot="reading-part"
+      data-decided={part.links.length > 0}
+      className="flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-3 data-[decided=true]:bg-muted/40"
+    >
+      <div className="flex flex-col gap-2">
+        {picture ?? <Hint className="rounded-lg border border-dashed p-3">No picture of this part is stored yet.</Hint>}
         {picture && <GvMarksWarning marks={part.picture_gv_marks} />}
       </div>
-      <div className="drawing-parts__facts">
-        <strong>{name}</strong>
+      <div className="flex flex-col gap-0.5">
+        <p className="text-sm font-medium">{name}</p>
         {suggestion && (
           <>
-            <span>
-              {suggested ? `Suggested width: ${readingLabel(suggested)}.` : 'No reading is suggested.'}
-            </span>
-            <span>{suggestion.said}</span>
+            <Hint>{suggested ? `Suggested width: ${readingLabel(suggested)}.` : 'No reading is suggested.'}</Hint>
+            <Hint>{suggestion.said}</Hint>
           </>
         )}
-        <span className="drawing-parts__decision">{linkLabel(drawing, part)}</span>
+        <p className="text-xs font-medium">{linkLabel(drawing, part)}</p>
         {part.links
           .filter((link) => !link.read && link.why_not_read)
           .map((link) => (
-            <span key={link.reading_id} className="countertop-runs__warning" role="status">
-              {link.why_not_read}
-            </span>
+            <Caution key={link.reading_id}>{link.why_not_read}</Caution>
           ))}
       </div>
-      <label className="drawing-parts__code">
-        Its width is the reading
+      <div className="flex flex-col gap-1">
+        <label htmlFor={pickId} className="text-xs text-muted-foreground">
+          Its width is the reading
+        </label>
         <select
+          id={pickId}
+          className={SELECT_CLASS}
           value={picked}
           disabled={!drawing.can_confirm || pending || drawing.readings.length === 0}
           onChange={(event) => setPicked(event.target.value)}
@@ -159,30 +170,32 @@ function PartLinkRow({
             </option>
           ))}
         </select>
-      </label>
+      </div>
       <div
-        className="drawing-parts__choices"
+        className="flex flex-wrap gap-2"
         role="group"
         aria-label={`The reading for ${name.toLowerCase()} on page ${drawing.page_index + 1}`}
       >
-        <button
+        <Button
           type="button"
-          className="btn btn--sm btn--subtle"
+          size="sm"
+          variant="outline"
           disabled={!canConfirm}
           onClick={() => onConfirm(part, picked)}
         >
           {isTheSuggestion(part, picked) ? 'Confirm the suggested reading' : 'Confirm the picked reading'}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="btn btn--sm btn--subtle"
+          size="sm"
+          variant="ghost"
           disabled={pending || part.links.length === 0}
           onClick={() => onWithdraw(part)}
         >
           Take the link back
-        </button>
+        </Button>
       </div>
-      {feedback && <p className="drawing-parts__feedback" role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedbackText(feedback)}</p>}
+      <DecisionLine feedback={feedback} />
     </li>
   );
 }

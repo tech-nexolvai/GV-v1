@@ -8,10 +8,10 @@ import {
 } from '../../api/client';
 import { projectId } from '../../api/config';
 import { runCount, type RunCountertop, type RunsList } from './countertopRunChoices.js';
-import type { StepCount } from '../../lib/measure-steps';
+import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { CountertopRunsList } from './CountertopRunsList.js';
-import './DrawingParts.css';
+import { LoadError } from './wizard-ui.js';
 
 /**
  * Loads each confirmed countertop's suggested run and saves a person's decision on one countertop
@@ -22,7 +22,7 @@ import './DrawingParts.css';
  * taken back changes what can be suggested. After each decision here the list is read again, so
  * the run shown is always the server's, in the server's order.
  */
-export function CountertopRuns({ packageId, refresh, onProgress }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void }) {
+export function CountertopRuns({ packageId, refresh, onProgress, onState }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void; /** For the step's "nothing here" line (#1124). */ onState?: (state: SectionState) => void }) {
   const [runs, setRuns] = useState<RunsList | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
@@ -32,6 +32,9 @@ export function CountertopRuns({ packageId, refresh, onProgress }: { packageId: 
   useEffect(() => {
     if (runs) onProgress?.(runCount(runs));
   }, [runs, onProgress]);
+  useEffect(() => {
+    onState?.(loadError ? 'error' : runs === null ? 'loading' : runs.drawings.length === 0 ? 'empty' : 'shown');
+  }, [runs, loadError, onState]);
 
   useEffect(() => {
     let live = true;
@@ -67,20 +70,18 @@ export function CountertopRuns({ packageId, refresh, onProgress }: { packageId: 
 
   if (runs === null || runs.drawings.length === 0) {
     return loadError ? (
-      <p className="enter-values__error" role="alert">
-        The runs under each countertop could not be listed: {loadError}{' '}
-        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-      </p>
+      <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+        The runs under each countertop could not be listed: {loadError}
+      </LoadError>
     ) : null;
   }
   return (
     <>
       <CountertopRunsList runs={runs} saving={null} feedback={feedback} onConfirm={confirm} onWithdraw={withdraw} />
       {loadError && (
-        <p className="enter-values__error" role="alert">
-          The countertop runs could not refresh: {loadError}{' '}
-          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-        </p>
+        <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+          The countertop runs could not refresh: {loadError}
+        </LoadError>
       )}
     </>
   );

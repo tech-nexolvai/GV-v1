@@ -128,7 +128,8 @@ for (const marks of ['not_shown', 'not_checked'] as const) {
 // The question is asked, and how much is left is stated.
 assert.match(html, /Which reading is each part&#x27;s width/);
 assert.match(html, /Page 2: the vendor&#x27;s drawing/);
-assert.match(html, /2 still without a reading\./);
+// #1124: the count names what it counts.
+assert.match(html, /2 parts still without a reading\./);
 assert.equal(partsStillToLink(links), 2);
 
 // The suggestion is shown beside its part with its value, what it was confirmed as, and why; the
@@ -211,7 +212,8 @@ const notReadHtml = renderToStaticMarkup(
     onWithdraw={() => undefined}
   />,
 );
-assert.match(notReadHtml, /role="status">The reading was corrected in review\./);
+// #1124: the note carries a warning glyph before its words now.
+assert.match(notReadHtml, /role="status"[^>]*>(?:<svg[\s\S]*?<\/svg>)?<span[^>]*>The reading was corrected in review\./);
 
 // On a drawing no longer the vendor's, a link made there before can be taken back, but nothing can
 // be picked or confirmed, and the page says why; with no tolerance stated, nothing is suggested and
@@ -239,7 +241,8 @@ const closed = renderToStaticMarkup(
 assert.match(closed, /GV_RUN_EDGE_TOLERANCE has not been set/);
 assert.match(closed, /no longer confirmed as the vendor/);
 assert.doesNotMatch(closed, /Suggested width/);
-assert.match(closed, /<select disabled="">/);
+// #1124: the select carries its Tailwind classes and a label id now.
+assert.match(closed, /<select[^>]*disabled=""/);
 assert.match(closed, /disabled=""[^>]*>Confirm the picked reading/);
 assert.doesNotMatch(closed, /disabled=""[^>]*>Take the link back/);
 assert.match(closed, /Nothing left to link\./);

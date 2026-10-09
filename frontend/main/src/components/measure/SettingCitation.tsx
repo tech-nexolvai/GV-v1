@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 
 import { uploadLabel, type SettingPointer } from './settingPointers.js';
+import { Button } from '@/components/ui/button';
+import { Hint, INPUT_CLASS } from './wizard-ui.js';
 
 /**
  * "Found in the architect's drawing": type the value you see (#866, step 3.3 of #798).
@@ -35,20 +37,20 @@ export function SettingCitation({
 }) {
   const page = pointer.page_index + 1;
   return (
-    <div className="setting-citation">
-      <p className="setting-citation__title">
+    <div data-slot="setting-citation" className="flex flex-col gap-2">
+      <p className="text-sm font-medium">
         Found in the architect&apos;s drawing, page {page}: type the value you see
       </p>
       {pointer.has_crop ? (
         crop
       ) : (
-        <p className="setting-citation__note">
+        <Hint>
           No picture of this passage was cut. Open page {page} of the {uploadLabel(pointer.document_kind)}{' '}
           and read it there.
-        </p>
+        </Hint>
       )}
       <input
-        className="value-input value-input--wide"
+        className={`${INPUT_CLASS} num`}
         id={`p-${name}`}
         aria-label={`${name}, as the architect's drawing writes it on page ${page}`}
         placeholder="Type it as written, with its inch mark"
@@ -56,13 +58,13 @@ export function SettingCitation({
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
-      <p className="enter-values__hint enter-values__hint--tight">
+      <Hint>
         Page {page} of the {uploadLabel(pointer.document_kind)}. The number the app read there is not
         shown: it is saved only if what you type matches the drawing.
-      </p>
-      <button type="button" className="value-secondary setting-citation__decline" onClick={onDecline}>
+      </Hint>
+      <Button type="button" size="sm" variant="ghost" className="self-start" onClick={onDecline}>
         Enter it another way
-      </button>
+      </Button>
     </div>
   );
 }

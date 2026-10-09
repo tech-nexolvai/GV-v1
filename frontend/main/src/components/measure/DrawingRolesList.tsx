@@ -6,8 +6,10 @@ import {
   type DrawingRole,
   type DrawingView,
 } from './drawingRoleChoices.js';
-import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
-import { InfoTip } from '@/components/ui/info-tip';
+import type { DecisionFeedback } from './decisionFeedback.js';
+import { Button } from '@/components/ui/button';
+import { ChoiceMark, DecisionLine, StepSection } from './wizard-ui.js';
+import { choiceVariant, countWords } from './wizardWords.js';
 
 /**
  * Which drawing is which, on sheets that hold both (#795).
@@ -35,67 +37,79 @@ export function DrawingRolesList({
 }) {
   const open = stillToConfirm(views);
   return (
-    <section className="enter-values__section drawing-roles" aria-labelledby="drawing-roles-title">
-      <h2 id="drawing-roles-title">Which drawing is which?</h2>
-      <p className="enter-values__hint">
-        Say which side of each sheet is whose.{' '}
-        <InfoTip label="About drawing roles">
-          <p>These sheets show the architect&apos;s drawing and the vendor&apos;s side by side.</p>
+    <StepSection
+      id="drawing-roles-title"
+      slot="drawing-roles"
+      title="Which drawing is which?"
+      line={
+        <strong className="font-medium text-foreground">
+          {open === 0 ? `All ${countWords(views.length, 'drawing')} confirmed.` : `${countWords(open, 'drawing')} still to confirm.`}
+        </strong>
+      }
+      tipLabel="About drawing roles"
+      tip={
+        <>
+          <p>These sheets show the architect&apos;s drawing and the vendor&apos;s side by side. Say which side of each sheet is whose.</p>
           <p>A reading is used only on the side of the drawing it sits in, and a reading on a drawing nobody has confirmed is used on neither.</p>
-        </InfoTip>{' '}
-        <strong>{open === 0 ? 'All confirmed.' : `${open} still to confirm.`}</strong>
-      </p>
-      <ul className="drawing-roles__list">
+        </>
+      }
+    >
+      <ul className="divide-y rounded-xl border bg-card">
         {views.map((view) => {
           const suggested = roleLabel(view.suggested_role);
           const fromUpload = view.role === null ? roleLabel(view.upload_side) : null;
           return (
-            <li className="drawing-roles__item" key={view.view_id} data-confirmed={view.role !== null}>
-              <div className="drawing-roles__facts">
-                <strong>Page {view.page_index + 1}</strong>
-                <span>
-                  {view.suggested_from
-                    ? `labelled “${view.suggested_from.trim()}”`
-                    : 'no label read on the sheet'}
-                </span>
-                {fromUpload ? (
-                  <span className="drawing-roles__suggested">
-                    from the upload: {fromUpload} (confirm to change it)
+            <li
+              key={view.view_id}
+              data-confirmed={view.role !== null}
+              className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
+            >
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <p className="text-sm">
+                  <span className="font-medium">
+                    Page <span className="num">{view.page_index + 1}</span>
                   </span>
+                  <span className="text-muted-foreground">
+                    {' · '}
+                    {view.suggested_from ? `labelled “${view.suggested_from.trim()}”` : 'no label read on the sheet'}
+                  </span>
+                </p>
+                {fromUpload ? (
+                  <p className="text-xs text-muted-foreground">from the upload: {fromUpload} (confirm to change it)</p>
                 ) : (
                   view.role === null &&
-                  suggested && (
-                    <span className="drawing-roles__suggested">the label suggests: {suggested}</span>
-                  )
+                  suggested && <p className="text-xs text-muted-foreground">the label suggests: {suggested}</p>
                 )}
               </div>
               <div
-                className="drawing-roles__choices"
+                className="flex shrink-0 flex-wrap gap-2"
                 role="group"
                 aria-label={`Page ${view.page_index + 1}, drawing ${view.tag}`}
               >
                 {DRAWING_ROLES.map((role) => (
-                  <button
+                  <Button
                     key={role}
                     type="button"
-                    className={`btn btn--sm ${view.role === role ? 'btn--primary' : 'btn--subtle'}`}
+                    size="sm"
+                    variant={choiceVariant(view.role === role)}
                     aria-pressed={view.role === role}
                     disabled={saving === view.view_id || feedback?.[view.view_id]?.kind === 'saving'}
                     onClick={() => onChoose(view, role)}
                   >
+                    <ChoiceMark chosen={view.role === role} />
                     {ROLE_LABEL[role]}
-                  </button>
+                  </Button>
                 ))}
               </div>
               {feedback?.[view.view_id] && (
-                <p className="drawing-parts__feedback" role={feedback[view.view_id].kind === 'error' ? 'alert' : 'status'}>
-                  {feedbackText(feedback[view.view_id])}
-                </p>
+                <div className="sm:basis-full">
+                  <DecisionLine feedback={feedback[view.view_id]} />
+                </div>
               )}
             </li>
           );
         })}
       </ul>
-    </section>
+    </StepSection>
   );
 }

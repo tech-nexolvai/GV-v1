@@ -12,11 +12,12 @@ import {
 } from '../../api/client';
 import { projectId } from '../../api/config';
 import { partCount, type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
-import type { StepCount } from '../../lib/measure-steps';
+import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture } from './PartPicture.js';
-import './DrawingParts.css';
+import { Button } from '@/components/ui/button';
+import { Hint, LoadError } from './wizard-ui.js';
 
 /**
  * Loads a package's suggested parts and saves a person's decision on each, one at a time (#882).
@@ -32,6 +33,7 @@ export function DrawingParts({
   refresh,
   onDecided,
   onProgress,
+  onState,
 }: {
   packageId: string;
   refresh: number;
@@ -39,6 +41,8 @@ export function DrawingParts({
   onDecided?: () => void;
   /** Its count for the Measurements step bar (#1061): reported whenever the list changes. */
   onProgress?: (count: StepCount | null) => void;
+  /** Loaded and empty, shown, loading or failed: for the step's "nothing here" line (#1124). */
+  onState?: (state: SectionState) => void;
 }) {
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
@@ -50,6 +54,9 @@ export function DrawingParts({
   useEffect(() => {
     if (drawings) onProgress?.(partCount(drawings));
   }, [drawings, onProgress]);
+  useEffect(() => {
+    onState?.(loadError ? 'error' : drawings === null ? 'loading' : drawings.length === 0 ? 'empty' : 'shown');
+  }, [drawings, loadError, onState]);
   const loadPagePicture = useCallback(
     (viewId: string) => downloadVendorPagePicture(projectId(), packageId, viewId),
     [packageId],
@@ -109,10 +116,9 @@ export function DrawingParts({
 
   if (drawings === null || drawings.length === 0) {
     return loadError ? (
-      <p className="enter-values__error" role="alert">
-        The parts of these drawings could not be listed: {loadError}{' '}
-        <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-      </p>
+      <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+        The parts of these drawings could not be listed: {loadError}
+      </LoadError>
     ) : null;
   }
   return (
@@ -135,10 +141,9 @@ export function DrawingParts({
         onAdd={add}
       />
       {loadError && (
-        <p className="enter-values__error" role="alert">
-          The parts list could not refresh: {loadError}{' '}
-          <button type="button" onClick={() => setLoadAttempt((count) => count + 1)}>Try again</button>
-        </p>
+        <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
+          The parts list could not refresh: {loadError}
+        </LoadError>
       )}
     </>
   );
@@ -167,11 +172,18 @@ function PartCrop({ packageId, part }: { packageId: string; part: SuggestedPart 
     };
   }, [packageId, part.proposal_id, attempt]);
 
-  if (state.error) return <p className="drawing-parts__no-picture">{state.error} <button type="button" className="btn btn--sm btn--subtle" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry code crop</button></p>;
-  if (!state.url) return <p className="drawing-parts__no-picture">Loading the picture…</p>;
+  if (state.error) {
+    return (
+      <Hint className="flex flex-wrap items-center gap-2">
+        {state.error}
+        <Button type="button" size="xs" variant="outline" onClick={() => { setState({}); setAttempt((count) => count + 1); }}>Retry code crop</Button>
+      </Hint>
+    );
+  }
+  if (!state.url) return <Hint>Loading the picture…</Hint>;
   return (
     <img
-      className="drawing-parts__crop"
+      className="max-h-16 w-fit max-w-full rounded-md border bg-white object-contain"
       src={state.url}
       alt={`Where the code is printed on part ${part.position}, page ${part.page_index + 1}`}
     />

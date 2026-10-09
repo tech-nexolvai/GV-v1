@@ -1,6 +1,8 @@
 import { GV_MARKS_WARNING, showsGvMarks, type PictureGvMarks } from './drawingPartChoices.js';
 import { TriangleAlert } from 'lucide-react';
 
+import { cn } from '@/lib/utils';
+
 /**
  * The plain warning under a part's picture that shows GV's own coloured marks (#921).
  *
@@ -11,8 +13,8 @@ import { TriangleAlert } from 'lucide-react';
 export function GvMarksWarning({ marks }: { marks: PictureGvMarks | null }) {
   if (!showsGvMarks(marks)) return null;
   return (
-    <p className="drawing-parts__gv-marks" role="note">
-      <TriangleAlert size={16} aria-hidden="true" />
+    <p data-slot="gv-marks-warning" role="note" className={cn('flex items-start gap-1.5 text-xs text-outcome-review-fg')}>
+      <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
       {GV_MARKS_WARNING}
     </p>
   );

@@ -33,7 +33,8 @@ const html = renderToStaticMarkup(
 
 // The question is asked, and how much is left is stated.
 assert.match(html, /Which drawing is which\?/);
-assert.match(html, /2 still to confirm\./);
+// #1124: the count now names what it counts ("2 drawings still to confirm"), never a bare number.
+assert.match(html, /2 drawings still to confirm\./);
 assert.equal(stillToConfirm(unconfirmed), 2);
 
 // **The suggestion is shown, never applied.** Nothing is pressed until a reviewer presses it.
@@ -53,7 +54,7 @@ const confirmed = renderToStaticMarkup(
     onChoose={() => undefined}
   />,
 );
-assert.match(confirmed, /1 still to confirm\./);
+assert.match(confirmed, /1 drawing still to confirm\./);
 assert.equal((confirmed.match(/aria-pressed="true"/g) ?? []).length, 1);
 assert.equal((confirmed.match(/the label suggests/g) ?? []).length, 1);
 // The drawing being saved cannot be answered twice.
@@ -68,7 +69,7 @@ const fromUpload = renderToStaticMarkup(
   />,
 );
 assert.match(fromUpload, /from the upload: Vendor&#x27;s drawing/);
-assert.match(fromUpload, /All confirmed\./);
+assert.match(fromUpload, /All \d+ drawings? confirmed\./);
 assert.doesNotMatch(fromUpload, /the label suggests/);
 
 assert.equal(roleLabel('arch'), "Architect's drawing");

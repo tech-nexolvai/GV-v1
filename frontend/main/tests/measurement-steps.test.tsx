@@ -16,8 +16,10 @@ const counted = renderToStaticMarkup(
   <MeasurementSectionNav current="runs" counts={{ drawings: { done: 3, total: 3 }, runs: { done: 1, total: 4 }, values: { done: 0, total: 0 }, settings: null }} />,
 );
 assert.ok(counted.includes('aria-current="step" data-step="runs"'), 'the shown step is marked');
-assert.ok(counted.includes('3/3 done'), 'a finished step says so');
-assert.ok(counted.includes('1/4'), 'a step in progress shows done/total');
+// #1124: counts in words, never a bare "1/4".
+assert.ok(counted.includes('All 3 done'), 'a finished step says so');
+assert.ok(counted.includes('1 of 4 done'), 'a step in progress says how many of how many');
+assert.ok(!/\d\/\d/.test(counted), 'no bare done/total');
 assert.ok(counted.includes('Nothing to do'), 'an empty step is not shown as done');
 const sparseProposal = [
   { value: '1 in', position: 0 },

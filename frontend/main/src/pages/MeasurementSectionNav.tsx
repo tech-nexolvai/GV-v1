@@ -1,10 +1,10 @@
 import { Check } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { MEASURE_STEPS, isComplete, type MeasureStep, type StepCount } from '@/lib/measure-steps';
+import { MEASURE_STEPS, isComplete, stepCountWords, type MeasureStep, type StepCount } from '@/lib/measure-steps';
 
 /**
- * The Measurements wizard's step bar (#1061): four steps, each with "done/total" and a check mark
+ * The Measurements wizard's step bar (#1061): four steps, each with its count in words and a check mark
  * when everything in it is done. Choosing a step shows it; the others stay mounted (and hidden), so
  * their unsaved drafts survive. The app routes through `#`, so these are buttons, never links.
  */
@@ -47,9 +47,9 @@ export function MeasurementSectionNav({
                   {complete ? <Check className="size-3.5" /> : step.number}
                 </span>
                 <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm font-medium">{step.label}</span>
-                  <span className="num text-xs text-muted-foreground" data-slot="step-count">
-                    {count === null ? '…' : count.total === 0 ? 'Nothing to do' : `${count.done}/${count.total}${complete ? ' done' : ''}`}
+                  <span className="text-sm leading-tight font-medium">{step.label}</span>
+                  <span className="text-xs text-muted-foreground" data-slot="step-count">
+                    {stepCountWords(count)}
                   </span>
                 </span>
               </button>

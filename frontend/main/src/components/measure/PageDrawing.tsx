@@ -9,7 +9,7 @@ import { PageDrawingView } from './PageDrawingView';
  * The page being reviewed, vendor layer only, so the reviewer reads the vendor's numbers while
  * filling the form. It shows the page; it decides nothing.
  */
-export function PageDrawing({ packageId, pageNumber }: { packageId: string; pageNumber: number }) {
+export function PageDrawing({ packageId, pageNumber, className }: { packageId: string; pageNumber: number; className?: string }) {
   const key = `${packageId}:${pageNumber}`;
   /** Bumped to try again while the worker is still rendering the page. */
   const [attempt, setAttempt] = useState(0);
@@ -50,5 +50,5 @@ export function PageDrawing({ packageId, pageNumber }: { packageId: string; page
     };
   }, [packageId, pageNumber, attempt]);
 
-  return <PageDrawingView pageNumber={pageNumber} url={state?.url} error={state?.error} />;
+  return <PageDrawingView pageNumber={pageNumber} url={state?.url} error={state?.error} className={className} />;
 }

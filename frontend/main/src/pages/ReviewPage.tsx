@@ -130,6 +130,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [countertops, setCountertops] = useState<CountertopsState>({ status: 'loading' });
   const [countertopsVersion, setCountertopsVersion] = useState(0);
   const [measureVisited, setMeasureVisited] = useState(false);
+  // Each header "Run checks" opens the wizard's last step, where its Run checks button is (#1124).
+  const [runChecksRequest, setRunChecksRequest] = useState(0);
   const [targetRow, setTargetRow] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<ApprovalReadiness | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -797,6 +799,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
       // reviewer there rather than queue a run that skips that save.
       setMeasureVisited(true);
       setActiveTab('measure');
+      setRunChecksRequest((count) => count + 1);
       window.setTimeout(() => {
         const button = document.getElementById('measure-run-checks');
         button?.scrollIntoView({ block: 'center' });
@@ -1058,13 +1061,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           <MeasurementPanel
             packageId={packageId}
             onChoosePackage={onBackToDocuments}
-            onDone={() => { setActiveTab('results'); void refreshResults(); }}
             onChecksQueued={checksQueued}
             onValuesSaved={() => { if (findings.length > 0) setValuesChangedSinceRun(true); }}
             targetRow={activeTab === 'measure' ? targetRow : null}
             onTargetReached={() => setTargetRow(null)}
             onReviewRow={(rowId) => { setResultsFilter('all'); setActiveTab('results'); setTimeout(() => { const row = document.querySelector<HTMLElement>(`[data-slot="countertop-table"] tr[data-row-id="${rowId}"]`); row?.scrollIntoView({ block: 'center' }); row?.focus(); }, 80); }}
             onOpenQueue={() => openQueue()}
+            runChecksRequest={runChecksRequest}
           />
         </div>
       )}
