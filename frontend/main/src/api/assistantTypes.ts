@@ -87,6 +87,6 @@ export interface AssistantAnswer {
  * server sends today; any other code is shown the same way (its message, and Try again).
  */
 export interface AssistantStreamError {
-  code: 'model_busy' | 'model_unavailable' | 'records_unavailable' | (string & {});
+  code: 'model_busy' | 'model_account' | 'model_unavailable' | 'records_unavailable' | (string & {});
   message: string;
 }
