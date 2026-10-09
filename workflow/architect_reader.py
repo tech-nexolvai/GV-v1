@@ -5,7 +5,9 @@ for. This module writes its result down, behind `GV_ARCHITECT_READER_ENABLED`:
 
 * **The drawing's role, by code, only where both judgments agree.** The exact printed heading and
   the drawing's own content giving the same role is recorded as a code confirmation
-  (`workflow/view_roles.confirm_view_role_by_code`, decision D2). A drawing with an earlier
+  (`workflow/view_roles.confirm_view_role_by_code`, decision D2). On a page that prints no heading
+  at all, the content of both drawings — one clearly the architect's, another clearly the vendor's
+  — is recorded the same way, naming `CODE_CONTENT_CONFIRMER`. A drawing with an earlier
   confirmation — a person's above all — is left exactly as it is.
 * **One candidate per printed span, only in a drawing confirmed by code as the architect's.**
   `raw_text` is the label as printed; the value is stored **only when nothing holds it** (exact,
@@ -40,7 +42,13 @@ from app.models.evidence import ObservationCandidate
 from extraction.architect.reader import ArchitectPage, ArchitectView
 from extraction.architect.views import Role
 from units.measurement import Unit
-from workflow.view_roles import confirm_view_role_by_code, panel_tag, record_panel_view
+from workflow.view_roles import (
+    CODE_CONFIRMER,
+    CODE_CONTENT_CONFIRMER,
+    confirm_view_role_by_code,
+    panel_tag,
+    record_panel_view,
+)
 
 __all__ = [
     "ARCHITECT_EXTRACTOR",
@@ -131,7 +139,13 @@ def persist_architect_pages(
             row = _view(session, page, view)
             if (
                 confirm_view_role_by_code(
-                    session, view=row, role=_ROLES[agreed], reason=view.judgment.reason
+                    session,
+                    view=row,
+                    role=_ROLES[agreed],
+                    reason=view.judgment.reason,
+                    confirmed_by=(
+                        CODE_CONTENT_CONFIRMER if view.judgment.by_content_alone else CODE_CONFIRMER
+                    ),
                 )
                 is not None
             ):

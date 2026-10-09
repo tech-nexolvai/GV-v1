@@ -37,6 +37,7 @@ from app.models import (
 
 __all__ = [
     "CODE_CONFIRMER",
+    "CODE_CONTENT_CONFIRMER",
     "PANEL_SOURCE",
     "RevisionView",
     "confirm_view_role",
@@ -52,6 +53,13 @@ PANEL_SOURCE = "panel-heading-label/v1"
 #: Who a code confirmation names (#1052, decision D2): code, from the exact printed heading and the
 #: drawing's own content agreeing. Never a person's name, so the record says plainly no one looked.
 CODE_CONFIRMER = "code:panel-heading+drawing-content/v1"
+
+#: Who a code confirmation names on a page that prints no heading at all, where the role came from
+#: the content of both drawings, each clearly one side's (#1052, `extraction/architect/views.
+#: decide_without_headings`).
+CODE_CONTENT_CONFIRMER = "code:content-of-both-drawings/v1"
+
+_CODE_CONFIRMERS = frozenset({CODE_CONFIRMER, CODE_CONTENT_CONFIRMER})
 
 
 def panel_tag(annotation_index: int) -> str:
@@ -147,7 +155,12 @@ def confirm_view_role(
 
 
 def confirm_view_role_by_code(
-    session: Session, *, view: DrawingView, role: ViewRole, reason: str
+    session: Session,
+    *,
+    view: DrawingView,
+    role: ViewRole,
+    reason: str,
+    confirmed_by: str = CODE_CONFIRMER,
 ) -> ViewRoleConfirmation | None:
     """Code deciding a drawing's role because two independent judgments agree (#1052, D2).
 
@@ -159,9 +172,15 @@ def confirm_view_role_by_code(
     person's, or code's from an earlier read — so code never overrides anyone and never repeats
     itself; and a person confirming afterwards writes a newer row, which the view then carries.
     Returns the new confirmation, or `None` when one already existed.
+
+    `confirmed_by` names which code decided: `CODE_CONFIRMER` (heading and content agreeing) or
+    `CODE_CONTENT_CONFIRMER` (a page with no heading, the content of both drawings). Nothing else:
+    a person's confirmation goes through `confirm_view_role`.
     """
     if not isinstance(role, ViewRole):
         raise TypeError("role must be a ViewRole")
+    if confirmed_by not in _CODE_CONFIRMERS:
+        raise ValueError(f"confirmed_by must be one of {sorted(_CODE_CONFIRMERS)}")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("a code confirmation needs the reason both judgments gave")
     existing = session.execute(
@@ -172,7 +191,7 @@ def confirm_view_role_by_code(
     if existing is not None or view.role is not None:
         return None
     confirmation = ViewRoleConfirmation(
-        drawing_view_id=view.id, role=role.value, confirmed_by=CODE_CONFIRMER
+        drawing_view_id=view.id, role=role.value, confirmed_by=confirmed_by
     )
     session.add(confirmation)
     view.role = role.value
@@ -180,7 +199,7 @@ def confirm_view_role_by_code(
     emit(
         session,
         category=AuditCategory.EVIDENCE_QUALIFICATION,
-        actor=CODE_CONFIRMER,
+        actor=confirmed_by,
         target_id=confirmation.id,
         target_type="view_role_confirmation",
     )

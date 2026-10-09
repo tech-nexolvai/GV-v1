@@ -120,12 +120,34 @@ def test_spans_carry_what_the_pairing_needs(page: ArchitectPage) -> None:
     assert [row.rank for row in page.rows] == list(range(1, len(page.rows) + 1))
 
 
-def test_a_sheet_with_no_heading_decides_nothing_and_holds_every_value() -> None:
+def test_a_sheet_with_no_heading_is_decided_by_the_content_of_both_drawings() -> None:
+    """No heading anywhere: the architect's drawing prints its scale and feet-and-inches labels, the
+    vendor's a ratio scale and millimetres. Code gives both roles, saying it decided by content."""
     page = _read(headings=False)
-    (view,) = [view for view in page.views if view.annotation_index == 1]
+    views = {view.annotation_index: view for view in page.views}
 
-    assert view.judgment.heading_role is None
-    assert view.judgment.agreed is None
+    assert views[1].judgment.heading_role is None
+    assert views[1].judgment.agreed is Role.ARCH and views[1].judgment.by_content_alone
+    assert views[3].judgment.agreed is Role.SHOP and views[3].judgment.by_content_alone
+    assert "content of both drawings" in views[1].judgment.reason
+    span = _spans(page)["3' - 4\""]
+    assert span.held_reason is None and span.inches == Fraction(40)
+
+
+def test_with_no_heading_and_no_scale_note_the_drawn_scale_stands_for_it() -> None:
+    page = _read(headings=False, scale_note=False)
+    views = {view.annotation_index: view for view in page.views}
+
+    assert views[1].scale_note is None
+    assert views[1].judgment.agreed is Role.ARCH, views[1].judgment.reason
+    assert '1/4" = 1\'-0"' in views[1].judgment.reason
+    assert views[3].judgment.agreed is Role.SHOP
+
+
+def test_with_no_heading_and_a_silent_vendor_drawing_nothing_is_decided() -> None:
+    page = _read(headings=False, vendor_text=False)
+
+    assert all(view.judgment.agreed is None for view in page.views)
     spans = [span for row in page.rows for span in row.spans if span.text is not None]
     assert spans, "the architect's labels are still read and reported"
     assert all(span.inches is None for span in spans)

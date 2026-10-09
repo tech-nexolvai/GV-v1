@@ -174,28 +174,6 @@ class StampCharacters:
 _SHOWS_TEXT: Final = frozenset({"Tj", "TJ", "'", '"'})
 _PAINTS_PATH: Final = frozenset({"S", "s", "f", "F", "f*", "B", "B*", "b", "b*"})
 
-#: Annotation types that are a reviewer's own marks whatever their appearance holds: typed notes,
-#: lines, polygons, ink, highlights. Never a pasted drawing.
-_NEVER_A_DRAWING: Final = frozenset(
-    {
-        "/FreeText",
-        "/Text",
-        "/Line",
-        "/PolyLine",
-        "/Polygon",
-        "/Ink",
-        "/Highlight",
-        "/Underline",
-        "/StrikeOut",
-        "/Squiggly",
-        "/Caret",
-        "/Circle",
-        "/Popup",
-        "/Link",
-        "/Widget",
-    }
-)
-
 
 @dataclass(frozen=True, slots=True)
 class AppearanceContent:
@@ -270,13 +248,13 @@ def carries_drawing(annotation: Any) -> bool:
 
 
 def pasted_picture(annotation: Any) -> bool:
-    """Whether an annotation is a pasted picture: an image and no text, so nothing a code reader can
-    read (a raster snapshot of a drawing, pasted as a `/Stamp` or a `/Square` image)."""
-    subtype = annotation.get("/Subtype")
-    if str(subtype) in _NEVER_A_DRAWING or subtype not in (
-        pikepdf.Name("/Stamp"),
-        pikepdf.Name("/Square"),
-    ):
+    """Whether an annotation is a pasted picture: a `/Square` holding an image and no text (a
+    viewer's "paste image", a raster snapshot of a drawing), so nothing a code reader can read.
+
+    A `/Stamp` is never one here: a stamp is a pasted drawing (`carries_drawing`) even when it holds
+    images among its line-work, as the client's vendor snapshots do.
+    """
+    if annotation.get("/Subtype") != pikepdf.Name("/Square"):
         return False
     try:
         content = appearance_content(annotation)

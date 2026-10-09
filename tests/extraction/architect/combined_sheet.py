@@ -88,7 +88,9 @@ def _extras() -> bytes:
     return stream
 
 
-def architect_stream(*, centre_mark: bool = True, extras: bool = False) -> bytes:
+def architect_stream(
+    *, centre_mark: bool = True, extras: bool = False, scale_note: bool = True
+) -> bytes:
     """The architect's drawing, in its own space (0..500 by 0..300)."""
     parts = [
         b"0 0 0 RG 0.5 w",
@@ -118,16 +120,21 @@ def architect_stream(*, centre_mark: bool = True, extras: bool = False) -> bytes
     stream += _row(250, [300, 360])
     stream += _text(320, 253, "9' - 9\"", colour=b"1 0 0 rg")
     # The scale note, as the client's title bubble prints it.
-    stream += _text(200, 280, '1/4" = 1\'-0"', size=8)
+    if scale_note:
+        stream += _text(200, 280, '1/4" = 1\'-0"', size=8)
     if extras:
         stream += _extras()
     return stream
 
 
-def vendor_stream() -> bytes:
-    """The vendor's drawing: a ratio scale and millimetre labels with bracketed inches."""
+def vendor_stream(*, text: bool = True) -> bytes:
+    """The vendor's drawing: a ratio scale and millimetre labels with bracketed inches; with
+    `text=False`, line-work only (nothing in it says whose drawing it is)."""
+    lines = b"0 0 0 RG 0.5 w 40 100 m 300 100 l S\n"
+    if not text:
+        return lines
     return (
-        b"0 0 0 RG 0.5 w 40 100 m 300 100 l S\n"
+        lines
         + _text(60, 110, "457 [18]")
         + _text(160, 110, "610 [24]")
         + _text(200, 20, "1:10", size=8)
@@ -220,10 +227,14 @@ def combined_sheet(
     architect_subtype: str = "Stamp",
     picture: bool = False,
     reviewer_marks: bool = False,
+    scale_note: bool = True,
+    vendor_text: bool = True,
 ) -> bytes:
     """The whole one-page PDF. `headings=False` leaves the two labels off; `architect_subtype`
     pastes the architect's drawing as another annotation type (`Square`); `picture` adds a pasted
-    picture; `reviewer_marks` adds a reviewer's red box and a typed note over the cabinets."""
+    picture; `reviewer_marks` adds a reviewer's red box and a typed note over the cabinets;
+    `scale_note=False` leaves the architect's scale off and `vendor_text=False` every word off the
+    vendor's drawing."""
     annotations = [
         _note("ID SET ELEVATION", (10, 760, 300, 780)),
         _stamp(ARCH_RECT, 9, architect_subtype),
@@ -263,8 +274,12 @@ def combined_sheet(
         ),
         b"<< /Length 0 >>\nstream\n\nendstream",
         *head,
-        _appearance(architect_stream(centre_mark=centre_mark, extras=extras), ARCH_RECT, 11),
-        _appearance(vendor_stream(), VENDOR_RECT, 11),
+        _appearance(
+            architect_stream(centre_mark=centre_mark, extras=extras, scale_note=scale_note),
+            ARCH_RECT,
+            11,
+        ),
+        _appearance(vendor_stream(text=vendor_text), VENDOR_RECT, 11),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         *extra_objects,
         *tail,

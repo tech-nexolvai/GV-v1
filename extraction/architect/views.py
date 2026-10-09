@@ -25,6 +25,15 @@ architectural one, and its feet-and-inches labels do not outnumber its vendor-st
 no scale at all, when it has at least two vendor-style labels and no feet-and-inches label.
 Inch-only labels under a foot (`11"`) are written by both and count for neither.
 
+**A page with no headings at all** (the client's first set prints none) is decided by the content of
+its drawings alone, only when it is clear on both sides (`decide_without_headings`): exactly one
+drawing is clearly the architect's — feet-and-inches labels outnumbering the vendor-style ones,
+**and** an architectural scale, printed in it or (when it prints no scale at all) the scale its own
+labels are drawn to, through the factor it was pasted at, being a standard architectural one
+(`drawn_architectural_scale`); at least one other drawing is clearly the vendor's by (b); and every
+other drawing is neither (no role, labels not leaning to feet and inches). Then both roles are code's,
+recorded as decided by "the content of both drawings". Anything else: no role, a person decides.
+
 Pure: plain values in, plain values out. Source: issue #1052 · Verification:
 `tests/extraction/architect/test_views.py`
 """
@@ -32,8 +41,9 @@ Pure: plain values in, plain values out. Source: issue #1052 · Verification:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
 from typing import Final
@@ -48,9 +58,29 @@ __all__ = [
     "Role",
     "ViewJudgment",
     "count_labels",
+    "decide_without_headings",
+    "drawn_architectural_scale",
     "judge_content",
     "judge_view",
 ]
+
+#: The architectural scales an architect draws to, as paper per real length, with how each is
+#: written: `x" = 1'-0"` for x from 1/16" to 3".
+ARCHITECTURAL_SCALES: Final = {
+    Fraction(1, 192): '1/16" = 1\'-0"',
+    Fraction(1, 128): '3/32" = 1\'-0"',
+    Fraction(1, 96): '1/8" = 1\'-0"',
+    Fraction(1, 64): '3/16" = 1\'-0"',
+    Fraction(1, 48): '1/4" = 1\'-0"',
+    Fraction(1, 32): '3/8" = 1\'-0"',
+    Fraction(1, 24): '1/2" = 1\'-0"',
+    Fraction(1, 16): '3/4" = 1\'-0"',
+    Fraction(1, 12): '1" = 1\'-0"',
+    Fraction(1, 8): '1 1/2" = 1\'-0"',
+    Fraction(1, 4): '3" = 1\'-0"',
+}
+
+_POINTS_PER_INCH: Final = Decimal(72)
 
 #: A millimetre value with its inches in brackets, `457 [18]`, or the bracketed inches alone.
 _MM_BRACKET: Final = re.compile(r"\[\s*\d[\d\s/\-]*\]")
@@ -97,6 +127,8 @@ class ViewJudgment:
     content: ContentJudgment
     agreed: Role | None
     reason: str
+    by_content_alone: bool = False
+    """The role was decided on a page with no headings, by the content of both drawings."""
 
 
 def count_labels(
@@ -223,3 +255,100 @@ def judge_view(proposal: PanelRoleProposal, content: ContentJudgment) -> ViewJud
         agreed=agreed,
         reason=reason,
     )
+
+
+def drawn_architectural_scale(
+    points_per_inch: Decimal | None, paste: Decimal | None, agreement: Decimal
+) -> str | None:
+    """The architectural scale a drawing is drawn to, from the page points per real inch its own
+    witnessed labels give and the factor it was pasted at; `None` when either is unknown or no
+    standard architectural scale is within `agreement` (a fraction) of it."""
+    if points_per_inch is None or paste is None or paste <= 0 or points_per_inch <= 0:
+        return None
+    paper_per_real = points_per_inch / paste / _POINTS_PER_INCH
+    for scale, written in ARCHITECTURAL_SCALES.items():
+        exact = Decimal(scale.numerator) / Decimal(scale.denominator)
+        if abs(paper_per_real - exact) <= agreement * exact:
+            return written
+    return None
+
+
+def _clearly_architect(view: ViewJudgment, drawn: str | None) -> str | None:
+    """Why the drawing is clearly the architect's by its content, or `None`."""
+    content = view.content
+    if content.role is Role.ARCH:
+        return content.reason
+    counts = content.counts
+    if (
+        drawn is not None
+        and not counts.architectural_scales
+        and not counts.ratio_scales
+        and counts.feet_and_inches > counts.vendor_style
+    ):
+        return (
+            f"it prints no scale, but its {counts.feet_and_inches} feet-and-inches labels "
+            f"(against {counts.vendor_style} inch or millimetre labels) are drawn to {drawn}"
+        )
+    return None
+
+
+def decide_without_headings(
+    views: Sequence[ViewJudgment], drawn_scales: Mapping[int, str | None]
+) -> tuple[ViewJudgment, ...]:
+    """Both roles on a page that prints no heading at all, from the content of both drawings.
+
+    `drawn_scales` gives, by annotation index, the architectural scale each drawing's labels are
+    drawn to (`drawn_architectural_scale`), where known. Returns `views` unchanged unless every
+    drawing is headless, exactly one is clearly the architect's, at least one other is clearly the
+    vendor's, and every remaining drawing is neither and does not lean to feet and inches.
+    """
+    if any(view.heading_role is not None or view.heading is not None for view in views):
+        return tuple(views)
+    architect = {
+        view.annotation_index: why
+        for view in views
+        for why in [_clearly_architect(view, drawn_scales.get(view.annotation_index))]
+        if why is not None
+    }
+    vendor = {
+        view.annotation_index
+        for view in views
+        if view.annotation_index not in architect and view.content.role is Role.SHOP
+    }
+    others = [
+        view
+        for view in views
+        if view.annotation_index not in architect and view.annotation_index not in vendor
+    ]
+    if (
+        len(architect) != 1
+        or not vendor
+        or any(
+            view.content.role is not None or view.content.labels_lean is Role.ARCH
+            for view in others
+        )
+    ):
+        return tuple(views)
+    ((architect_index, architect_why),) = architect.items()
+    vendor_why = "; ".join(view.content.reason for view in views if view.annotation_index in vendor)
+    decided: list[ViewJudgment] = []
+    for view in views:
+        if view.annotation_index == architect_index:
+            role: Role | None = Role.ARCH
+        elif view.annotation_index in vendor:
+            role = Role.SHOP
+        else:
+            decided.append(view)
+            continue
+        decided.append(
+            replace(
+                view,
+                agreed=role,
+                by_content_alone=True,
+                reason=(
+                    "no heading is printed on this page; decided by the content of both drawings: "
+                    f"the architect's because {architect_why}; the vendor's because {vendor_why}"
+                ),
+            )
+        )
+    return tuple(decided)

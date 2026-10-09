@@ -68,6 +68,8 @@ from extraction.architect.views import (
     Role,
     ViewJudgment,
     count_labels,
+    decide_without_headings,
+    drawn_architectural_scale,
     judge_content,
     judge_view,
 )
@@ -79,7 +81,7 @@ from extraction.geometry.rows import (
     TickSource,
     build_rows,
 )
-from extraction.panels import propose_panel_roles
+from extraction.panels import printed_headings, propose_panel_roles
 from extraction.reader import UnreadablePdf, page_frame, pixel_placement
 from extraction.rows import ink_from_page
 from extraction.stamp_text import carries_drawing, drawing_ink, pasted_picture, stamps_only
@@ -668,6 +670,7 @@ def read_architect_page(
     work = line_work(ink, settings.outline)
     views: list[ArchitectView] = []
     rows: list[tuple[Decimal, Decimal, ArchitectRow]] = []
+    pending: list[tuple[int, list[_Line], list[list[_Draft]]]] = []
     for stamp in drawings:
         box, paste = stamps[stamp.annotation_index]
         inside = [
@@ -784,10 +787,7 @@ def read_architect_page(
                         "no outline runs from one to the other as one object's top and bottom; "
                         + draft.outline_reason
                     )
-        if judgment.agreed is not Role.ARCH:
-            for drafts in drafts_by_row:
-                for draft in drafts:
-                    draft.hold(f"this drawing's role is not decided by code: {judgment.reason}")
+        pending.append((len(views), view_rows, drafts_by_row))
         views.append(
             ArchitectView(
                 annotation_index=stamp.annotation_index,
@@ -804,6 +804,27 @@ def read_architect_page(
                 scale_reason=scale_reason,
             )
         )
+    if not printed_headings(layers.markup):
+        # A page printing no heading at all: both roles from the content of both drawings, only
+        # when that is clear on both sides (`views.decide_without_headings`).
+        drawn = {
+            view.annotation_index: drawn_architectural_scale(
+                view.points_per_inch, view.paste_factor, settings.scale_agreement
+            )
+            for view in views
+            if view.read and view.scale_note is None and view.absolute_points_per_inch is None
+        }
+        decided = decide_without_headings([view.judgment for view in views], drawn)
+        views = [
+            replace(view, judgment=judgment) for view, judgment in zip(views, decided, strict=True)
+        ]
+    for position, view_rows, drafts_by_row in pending:
+        view = views[position]
+        judgment = view.judgment
+        if judgment.agreed is not Role.ARCH:
+            for drafts in drafts_by_row:
+                for draft in drafts:
+                    draft.hold(f"this drawing's role is not decided by code: {judgment.reason}")
         for row, drafts in zip(view_rows, drafts_by_row, strict=True):
             if not any(draft.label is not None for draft in drafts):
                 continue
@@ -842,13 +863,13 @@ def read_architect_page(
                     row.y,
                     row.x0,
                     ArchitectRow(
-                        view_annotation_index=stamp.annotation_index,
+                        view_annotation_index=view.annotation_index,
                         rank=0,
                         y=row.y,
                         ticks=row.ticks,
                         tick_source=row.source,
                         spans=spans,
-                        points_per_inch=chosen,
+                        points_per_inch=view.points_per_inch,
                     ),
                 )
             )

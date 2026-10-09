@@ -42,7 +42,12 @@ from tests.extraction.test_reader import MISSING_SPACE
 from vocabulary.semantic_types import DocumentRole
 from workflow.architect_reader import ARCHITECT_EXTRACTOR
 from workflow.stages import DatabaseStages, configured_architect_reader
-from workflow.view_roles import CODE_CONFIRMER, confirm_view_role, confirm_view_role_by_code
+from workflow.view_roles import (
+    CODE_CONFIRMER,
+    CODE_CONTENT_CONFIRMER,
+    confirm_view_role,
+    confirm_view_role_by_code,
+)
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -198,10 +203,28 @@ def test_coloured_text_is_never_stored(session: Session, store: LocalStore) -> N
     assert all(row.value_numerator != 117 for row in rows)
 
 
-def test_a_sheet_with_no_heading_decides_no_role_and_stores_no_value(
+def test_a_sheet_with_no_heading_is_decided_by_the_content_of_both_drawings(
     session: Session, store: LocalStore
 ) -> None:
+    """No heading anywhere, both drawings clear by their content: code confirms both roles and
+    says so — "the content of both drawings", not a heading — and stores the architect's values."""
     _extract(session, store, _upload(session, store, combined_sheet(headings=False)))
+
+    views = _views(session)
+    assert views["panel-1"].role == ViewRole.ARCH.value
+    assert views["panel-3"].role == ViewRole.SHOP.value
+    confirmations = session.scalars(select(ViewRoleConfirmation)).all()
+    assert {row.confirmed_by for row in confirmations} == {CODE_CONTENT_CONFIRMER}
+    cabinet = _by_text(_architect_rows(session))["3' - 4\""]
+    assert Fraction(cabinet.value_numerator, cabinet.value_denominator) == 40  # type: ignore[arg-type]
+
+
+def test_a_sheet_with_no_heading_and_a_silent_vendor_drawing_decides_nothing(
+    session: Session, store: LocalStore
+) -> None:
+    _extract(
+        session, store, _upload(session, store, combined_sheet(headings=False, vendor_text=False))
+    )
 
     assert session.scalars(select(ViewRoleConfirmation)).all() == []
     assert _architect_rows(session) == []
