@@ -150,6 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page_pictures,
         reading_parts,
         review,
+        review_assistant,
         reviewer_chat,
         rules,
         slot_rows,
@@ -206,6 +207,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # D4.1; this is what lets the workspace reach it.
     app.include_router(review.router, prefix=API_PREFIX)
     app.include_router(reviewer_chat.router, prefix=API_PREFIX)
+    # The review assistant (#1128): answers from one review's records, guarded; points, never decides.
+    app.include_router(review_assistant.router, prefix=API_PREFIX)
 
     @app.middleware("http")
     async def _request_id(

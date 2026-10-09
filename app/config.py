@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     # picker then offers that single model, which is exactly today's behaviour made visible.
     bedrock_chat_models: tuple[ChatModelChoice, ...] = ()
 
+    # The review assistant (#1128): grounded answers about one review, from its records only, by
+    # Claude Sonnet 5.5 through OpenRouter on the readers' keep-no-data route (Google Vertex global,
+    # no fallbacks, no data kept). Off unless enabled AND `OPENROUTER_API_KEY` is set; off, it still
+    # refuses decision requests and answers the starter questions from the records, with no call.
+    review_assistant_enabled: bool = False
+    review_assistant_model: Literal["anthropic.claude-sonnet-5-5"] = "anthropic.claude-sonnet-5-5"
+    # No spending cap for now (Anant, 2026-10-10); each call's cost is recorded for the Usage page
+    # from `GV_MODEL_RATES_FILE`, or as unknown when no price is stated.
+    review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
+    # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
+    review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)
+
     # Form-first reading is a separate, experimental proposal lane. It defaults off; when enabled,
     # every operational bound and per-reader throttle rate must be stated rather than inferred.
     form_reader_enabled: bool = False
