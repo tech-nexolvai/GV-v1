@@ -152,6 +152,7 @@ def seal_label(
     allow_stacked: bool,
     row_ambiguity: str | None,
     allow_claude_pair: bool = False,
+    held_before_reading: str | None = None,
 ) -> LabelOutcome:
     """Seal one label's reading, or say why the person decides.
 
@@ -160,6 +161,10 @@ def seal_label(
     reader that abstained is simply absent. Two answers from readers of one maker are refused —
     same-maker agreement never seals (Measurements 2026-10-06: Kimi × 2 agreed on wrong values).
     `ink` is `None` when the page's ink could not be read, which holds a reading back.
+
+    `held_before_reading` is the page's own hold reason when the whole row was held before any
+    reader was asked (#1114). It changes only the words of a label no reader answered — `not-asked`
+    with that reason, never "only one reader" — and never what is held or sealed.
     """
     sources: list[tuple[str, str, bool]] = []  # (source, text, usable)
     claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
@@ -263,6 +268,13 @@ def seal_label(
         and plain_dimension(normalise_text(label.text or ""), allow_explicit_mm=claude_pair) is None
     ):
         return review("not-plain", "the label has words or a sum; review the value")
+    if not answers and held_before_reading is not None:
+        return review(
+            "not-asked", f"the readers were not asked; this row waits: {held_before_reading}"
+        )
+    if not sources:
+        # A drawn label no reader answered: never asked, or every reader abstained (#1114).
+        return review("not-asked", "no reader read this label")
     if len(sources) < 2:
         return review("one-reader-missing", "only one reader")
     if not all(usable for _, _, usable in sources):
