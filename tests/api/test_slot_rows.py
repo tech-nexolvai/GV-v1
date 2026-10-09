@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -72,7 +72,9 @@ def _package_rows(
     piece_count: int = 1,
     widths_add_up: bool = False,
     rows_per_page: int = 1,
+    slot_flags: Callable[[int, int, str], list[str]] | None = None,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
+    """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot."""
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
     session.add(project)
@@ -176,6 +178,7 @@ def _package_rows(
                             if page_index == 0 and row_offset == 0 and extra_hold is not None
                             else []
                         ),
+                        *(() if slot_flags is None else slot_flags(page_index, row_offset, slot)),
                     ],
                     review_reason="synthetic held row" if page_index == held_page else None,
                     corroboration_status=(

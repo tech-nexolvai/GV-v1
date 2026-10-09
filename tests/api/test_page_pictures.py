@@ -68,3 +68,31 @@ def test_any_page_of_a_package_can_be_shown_as_a_picture(
     exact = client.get(f"{base}/1/picture?document_version_id={page.document_version_id}")
     assert exact.status_code == 200
     assert exact.content == shown.content
+
+
+def test_not_ready_and_no_such_page_have_different_error_codes(
+    session: Session, store: LocalStore  # noqa: F811
+) -> None:
+    """The screen branches on the code, never on the wording (#1049)."""
+    revision = _read(session, store, kind="shop")
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    client = _client(session, store, package.project_id)
+    base = f"/api/v1/projects/{package.project_id}/packages/{package.id}/pages"
+
+    not_ready = client.get(f"{base}/1/picture")
+    assert not_ready.status_code == 404
+    assert not_ready.json()["error"] == "page_picture_not_ready"
+    assert not_ready.json()["message"] == "the page picture is not ready yet"
+
+    no_page = client.get(f"{base}/9/picture")
+    assert no_page.status_code == 404
+    assert no_page.json()["error"] == "http_error"
+
+    # Another project's reviewer learns nothing, not even "not ready".
+    elsewhere = _client(session, store, uuid4()).get(f"{base}/1/picture")
+    assert elsewhere.status_code == 404
+    assert elsewhere.json()["error"] == "http_error"
+    other_project = client.get(f"/api/v1/projects/{uuid4()}/packages/{package.id}/pages/1/picture")
+    assert other_project.status_code == 404
+    assert other_project.json()["error"] == "http_error"
