@@ -13,20 +13,23 @@ original actor, time and note) and the hash both results share. Every reader ask
 findings list, the history and the signed record cannot disagree.
 
 **"The same result"** (`result_fingerprints`) is a sha256 over canonical JSON built only from stored
-rows: the revision; rule id, snapshot row and content hash; engine version; defaults set; the scope
-(item, slot-reader row, label); variant, outcome, severity, reason, exact delta and notes; the whole
-stored trace; `parameter_set_versions`; every sealed `verdict_inputs` row (exact numerator and
-denominator, unit, status, observation and row-review ids); every `finding_evidence` link; and the
-reviewer inputs on the scope that were in force when the run was written (a slot-reader row's wall
-and width decisions and its architect pairing records; a hand-confirmed countertop's run decisions).
-That last part matters for a held row, whose stored result records no operand: changing its walls
-still changes its fingerprint, so it asks again.
+rows: the revision; rule id, snapshot row and content hash; engine version; the rulebook defaults by
+content (values, units, provenance, author; only the run-time stamp `declared_defaults` puts on them
+is left out, see `_defaults_content`); the scope (item, slot-reader row, label); variant, outcome,
+severity, reason, exact delta and notes; the whole stored trace; `parameter_set_versions`; every
+sealed `verdict_inputs` row (exact numerator and denominator, unit, status, observation and
+row-review ids); every `finding_evidence` link; and the reviewer inputs on a slot-reader row that
+were in force when the run was written (its wall and width decisions and its architect pairing
+records). That last part matters for a held row, whose stored result records no operand: changing
+its walls still changes its fingerprint, so it asks again.
 
 **Never carried:** a `correct` (the re-run is what consumes it), or anything from a finding whose
 history has one; an exception whose grant has run out; a confirm or dismiss without the note
 `needs_note` requires; anything from another revision (and so another project). If the latest
 decision is not valid, nothing is carried; an older one is never dug out instead. Two old or two new
-results sharing one fingerprint are ambiguous, and nothing is carried for them either.
+results sharing one fingerprint are ambiguous, and nothing is carried for them either. A
+hand-confirmed countertop's result (the legacy manual path) never carries: its inputs live in the
+countertop-run tables, which only the confirmed-structure resolver reads.
 
 Nothing here imports `verdict/`, `rules/`, `extraction/` or `retrieval/`.
 
@@ -48,7 +51,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.base import utc_now
-from app.models.drawing import CountertopRunDecision
 from app.models.evidence import ArchitectPairingRecord, SlotRowReviewDecision
 from app.models.review import FindingDecisionCarryover, ReviewAction, ReviewException
 from app.models.rules import RuleDefinition, RuleSnapshot
@@ -251,7 +253,7 @@ def _inputs_in_force(
 
 
 def result_fingerprints(db: Session, findings: Collection[Finding]) -> dict[UUID, str]:
-    """The "same result" hash of each finding, from stored rows only. Six statements in all."""
+    """The "same result" hash of each finding, from stored rows only. Five statements in all."""
     return {
         identity: hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
         for identity, body in fingerprint_bodies(db, findings).items()
@@ -310,7 +312,6 @@ def fingerprint_bodies(db: Session, findings: Collection[Finding]) -> dict[UUID,
         evidence[link.finding_id].append([str(link.canonical_observation_id), link.role])
 
     rows = {f.scope_row_candidate_id for f in findings if f.scope_row_candidate_id is not None}
-    items = {f.scope_item_id for f in findings if f.scope_item_id is not None}
     row_decisions = _inputs_in_force(
         db.execute(
             select(
@@ -331,17 +332,6 @@ def fingerprint_bodies(db: Session, findings: Collection[Finding]) -> dict[UUID,
             ).where(ArchitectPairingRecord.row_anchor_candidate_id.in_(rows))
         ).all()
         if rows
-        else ()
-    )
-    run_decisions = _inputs_in_force(
-        db.execute(
-            select(
-                CountertopRunDecision.id,
-                CountertopRunDecision.countertop_item_id,
-                CountertopRunDecision.created_at,
-            ).where(CountertopRunDecision.countertop_item_id.in_(items))
-        ).all()
-        if items
         else ()
     )
 
@@ -400,9 +390,6 @@ def fingerprint_bodies(db: Session, findings: Collection[Finding]) -> dict[UUID,
             "architect_pairing_records": in_force(
                 pairings, finding.scope_row_candidate_id, run.created_at
             ),
-            "countertop_run_decisions": in_force(
-                run_decisions, finding.scope_item_id, run.created_at
-            ),
         }
         result[finding.id] = body
     return result
@@ -435,6 +422,9 @@ def carry_decisions_over(
     if not previous:
         return 0
     previous_ids = {finding.id for finding in previous}
+    # A hand-confirmed countertop's result (the legacy manual path, `scope_item_id`) never carries:
+    # its reviewer inputs live in the countertop-run tables this module does not read, so it always
+    # asks again, which is the safe direction.
     current = [
         finding
         for finding in db.scalars(
@@ -445,7 +435,7 @@ def carry_decisions_over(
                 CheckRun.superseded_at.is_(None),
             )
         ).all()
-        if finding.id not in previous_ids
+        if finding.id not in previous_ids and finding.scope_item_id is None
     ]
     if not current:
         return 0
