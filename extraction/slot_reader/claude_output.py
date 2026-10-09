@@ -35,7 +35,9 @@ from extraction.form_reader.bedrock import MalformedFormAnswer, _response_text
 
 __all__ = [
     "ARCH_MEASURES",
-    "ARCH_PAIR_SCHEMA",
+    "ARCH_PAIR_NONE",
+    "ARCH_PAIR_UNSURE",
+    "ARCH_PAIR_V2_SCHEMA",
     "CLAUDE_EFFORTS",
     "COUNTER_BREAK_SCHEMA",
     "CROP_SCHEMA",
@@ -46,6 +48,7 @@ __all__ = [
     "WALL_SCHEMA",
     "ClaudeEffort",
     "PictureWouldBeResized",
+    "arch_pair_schema",
     "claude_answer",
     "is_claude_model",
     "output_config",
@@ -147,7 +150,7 @@ WALL_SCHEMA: Final = _object(
 
 
 #: What one architect dimension measures, in the words of the architect-pairing question
-#: (`arch-pair-v2`, #1053). Code, not the model, decides which of these may pair with what.
+#: (`arch-pair-v2` and `-v3`, #1053). Code, not the model, decides which may pair with what.
 ARCH_MEASURES: Final[tuple[str, ...]] = (
     "countertop",
     "cabinet_run",
@@ -162,12 +165,12 @@ ARCH_MEASURES: Final[tuple[str, ...]] = (
     "unsure",
 )
 
-#: The architect-pairing question (#1053, v2): first what EVERY numbered architect dimension
-#: measures (`architect`, one entry per A-number), then for the vendor's overall and each vendor
-#: piece the A-number of the architect dimension that measures the same physical thing, or 0.
-#: Structure only; the ranges (every A once, 0..A, one entry per vendor piece) are checked by the
-#: reader: the schema subset has no bounds.
-ARCH_PAIR_SCHEMA: Final = _object(
+#: The answer shape of the earlier architect-pairing question (#1053, `arch-pair-v2`): first what
+#: EVERY numbered architect dimension measures (`architect`, one entry per A-number), then for the
+#: vendor's overall and each vendor piece the A-number of the architect dimension that measures the
+#: same physical thing, or 0 (which then meant both "none" and, for want of a choice, "unsure").
+#: Kept so an answer in this shape still parses; v3 asks with `arch_pair_schema`.
+ARCH_PAIR_V2_SCHEMA: Final = _object(
     {
         "architect": {
             "type": "array",
@@ -183,6 +186,45 @@ ARCH_PAIR_SCHEMA: Final = _object(
         "why": _STRING,
     }
 )
+
+#: A v3 pairing answer (#1109): the architect prints no dimension of the same thing ...
+ARCH_PAIR_NONE: Final = "none"
+#: ... or the reader cannot tell whether one of them measures it, or which one.
+ARCH_PAIR_UNSURE: Final = "unsure"
+
+
+def arch_pair_schema(architect_spans: int) -> dict[str, object]:
+    """The answer shape of the architect-pairing question `arch-pair-v3` (#1109) for a picture
+    with `architect_spans` blue marks: what every A measures, as in v2, then each pairing as one
+    word from a closed list: `A1` .. `A<m>`, `none` or `unsure`. The list is per picture, so an
+    A-number that is not marked cannot be given. Every A said once and one entry per vendor piece
+    are still checked by the reader: the schema subset has no counts."""
+    if isinstance(architect_spans, bool) or architect_spans < 1:
+        raise ValueError("an architect-pairing question needs at least one architect mark")
+    pairing = {
+        "type": "string",
+        "enum": [
+            *(f"A{k}" for k in range(1, architect_spans + 1)),
+            ARCH_PAIR_NONE,
+            ARCH_PAIR_UNSURE,
+        ],
+    }
+    return _object(
+        {
+            "architect": {
+                "type": "array",
+                "items": _object(
+                    {
+                        "a": {"type": "integer"},
+                        "measures": {"type": "string", "enum": list(ARCH_MEASURES)},
+                    }
+                ),
+            },
+            "overall": pairing,
+            "pieces": {"type": "array", "items": pairing},
+            "why": _STRING,
+        }
+    )
 
 
 def output_config(schema: Mapping[str, object], effort: str) -> dict[str, object]:
