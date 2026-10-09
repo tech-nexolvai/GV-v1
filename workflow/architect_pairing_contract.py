@@ -14,9 +14,12 @@ from uuid import UUID
 
 __all__ = ["EffectivePair", "EffectivePairing", "PairingSource"]
 
-type PairingSource = Literal["code", "both-ais", "reviewer", "none"]
-"""Who decided the pairing. `both-ais` is AI-only information: a PASS resting on it needs a
-reviewer's confirmation before it counts (the walls rule, Decision log 2026-10-08)."""
+type PairingSource = Literal["code+ais", "code", "both-ais", "reviewer", "none"]
+"""Who decided the pairing. Two independent judgments are needed for an automatic result:
+`code+ais` means code's drawn-position pairing AND both AIs' identical pairing (including what each
+architect dimension measures) agree. `code` alone or `both-ais` alone is one judgment: any result
+resting on it, PASS or FAIL, needs a reviewer's confirmation of the pairing before it counts.
+`reviewer` is a person's decision. `none` means nothing was paired."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,3 +45,7 @@ class EffectivePairing:
     pairs: tuple[EffectivePair, ...]
     reasons: tuple[str, ...]
     """Plain English: why this pairing, and why any architect span was left out."""
+    architect_measures: tuple[tuple[UUID, str], ...] = ()
+    """What both AIs agreed each architect dimension on the row's page measures (architect
+    candidate id, kind such as `countertop`, `cabinet_run`, `blocking`, `fixture_centre`), when
+    they agreed; used for the plain "not compared" reason."""

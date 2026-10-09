@@ -920,9 +920,9 @@ def read_slot_pages(
     (same pacer and limits) and sealed only when both readers agree.
 
     `architect` (#1053), when the architect reader read these pages: after everything above is
-    settled, each chosen row is paired with the architect's dimensions, by code first and, only
-    where code cannot decide, by one more question to both Claude readers in this same batch (same
-    pacer, effort and spend guard). The pairing is attached to the result and changes nothing else.
+    settled, each chosen row is paired with the architect's dimensions, by code and by one more
+    question to both Claude readers in this same batch (same pacer, effort and spend guard), the two
+    judgments weighed together. The pairing is attached to the result and changes nothing else.
 
     `wall_ends` says which ends of a page's row stand against a wall *for naming a piece's kind*;
     the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by

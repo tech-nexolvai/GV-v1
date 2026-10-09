@@ -1,4 +1,4 @@
-"""Pair the architect's dimensions with the vendor's countertop row: code first, AI second, reviewer last (#1053).
+"""Pair the architect's dimensions with the vendor's countertop row: code and both AIs, then a reviewer (#1053).
 
 Type 1 compares the vendor's printed sizes with the architect's. Exact arithmetic can do that only
 once each architect dimension is paired with the vendor piece (or pieces) it measures. This module
@@ -11,17 +11,23 @@ makes and records that pairing for every vendor row the slot reader chose and re
    from the architect reader (#1052), only inside a drawing whose role is the architect's (code's two
    judgments, or a person), each through that drawing's own scale. One clear alignment pairs. A
    held architect span still gives the alignment its geometry but is never a compared pair.
-2. **Both Claude readers, only when code cannot decide** (no clear alignment, or none), and only
-   when at least one architect span could be compared: one numbered picture (vendor pieces in red,
-   V1..Vn; the comparable architect spans in blue, A1..Am), the fixed question `arch-pair-v1`, the
-   same readers, effort, spend guard and batch as the slot reader. Only two **identical** answers
-   count, and code then checks every pair they name: the span must be unheld and on the drawn
-   outline, a vendor split must be contiguous, and the two drawn lengths through their scales must
-   agree within a quarter (rejecting nonsense, keeping real mismatches). Anything else is dropped
-   with its reason. Disagreement or a refusal leaves the row for the reviewer, both answers kept.
-3. **The reviewer** pairs with one click (`app/api/slot_rows.py`), a new record superseding the
-   latest; a pairing the two AIs alone made is *AI-only information*, which the rule must not let a
-   PASS rest on without a reviewer's confirmation (decision log 2026-10-09; recorded as `both-ais`).
+2. **Both Claude readers, on every page with an architect span code has not refused** (stored,
+   unheld, not a centre line), whatever code decided: one numbered picture (vendor pieces in red,
+   V1..Vn; those architect spans in blue, A1..Am), the fixed question `arch-pair-v2`, the same
+   readers, effort, spend guard and batch as the slot reader. Each AI says what EVERY A measures
+   (countertop, cabinet run, one cabinet, filler, blocking, a centre line, a clearance...) and which
+   A measures the same physical thing as the vendor's overall and each piece. Only two
+   **identical** answers count (same pairing, same measure for every A they pair), and code then
+   checks every pair: what it measures must be the same kind of thing (`MEASURES_FOR_OVERALL`,
+   `MEASURES_FOR_PIECES`), the span must be unheld and on the drawn outline, a vendor split must be
+   contiguous, and the two drawn lengths through their scales must agree within a quarter.
+   Anything else is dropped with its reason; both raw answers are kept.
+3. **Weighed together** (`combine`): code's pairs and the AIs' accepted pairs identical →
+   `code+ais`, the only automatic pairing. Code alone (`code`) or the AIs alone (`both-ais`) is one
+   judgment: the rule must not let a PASS or a FAIL rest on it without a reviewer's confirmation
+   (decision log 2026-10-09). Neither → `none`, with the reasons in plain words.
+4. **The reviewer** pairs with one click (`app/api/slot_rows.py`), a new record superseding the
+   latest (`reviewer`).
 
 **What never pairs.** A span running to a fixture centre line, or whose ends are not known to sit
 on the casework outline (decision D4); a held architect value; a span from another page.
@@ -63,7 +69,12 @@ from extraction.architect.pairing import (
 from extraction.architect.reader import ArchitectPage, ArchitectView
 from extraction.geometry.rows import Box
 from extraction.ink import InkClass
-from extraction.slot_reader.bedrock import ARCH_PAIR_PROMPT_ID, ArchPairAnswer, CropJob
+from extraction.slot_reader.bedrock import (
+    ARCH_PAIR_PROMPT_ID,
+    ARCH_PAIR_PROMPT_IDS,
+    ArchPairAnswer,
+    CropJob,
+)
 from extraction.slot_reader.seal import LabelState
 from units.measurement import Unit
 from workflow.architect_pairing_contract import PairingSource
@@ -85,6 +96,8 @@ if TYPE_CHECKING:
 __all__ = [
     "AI_DRAWN_LENGTH_BAND",
     "MEASURED_PAIRING_SETTINGS",
+    "MEASURES_FOR_OVERALL",
+    "MEASURES_FOR_PIECES",
     "ArchitectPageInput",
     "ArchitectPairing",
     "ArchitectRowInput",
@@ -97,6 +110,7 @@ __all__ = [
     "VendorRowInput",
     "architect_page_input",
     "architect_spans_for_row",
+    "combine",
     "latest_architect_pairing",
     "latest_record",
     "pair_by_code",
@@ -135,6 +149,30 @@ MEASURED_PAIRING_SETTINGS: Final = PairingSettings(
 #: filler and a wide cabinet) and keeps every real mismatch the compare must flag (a few inches on a
 #: cabinet is well inside it).
 AI_DRAWN_LENGTH_BAND: Final = Fraction(1, 4)
+
+#: What an architect dimension must measure, as both AIs agree (`arch-pair-v2`), to be paired with
+#: the vendor's whole run: the countertop or a run of cabinets.
+MEASURES_FOR_OVERALL: Final = frozenset({"countertop", "cabinet_run"})
+#: ... and to be paired with vendor pieces: one cabinet or a filler/end panel (several vendor
+#: pieces may split one), or a run of cabinets only when the pieces are the whole run. A dimension to
+#: a centre line, to blocking or backing, or between a wall and an object's edge never pairs.
+MEASURES_FOR_PIECES: Final = frozenset({"single_cabinet", "filler_or_end_panel"})
+_OVERALL_MEASURES: Final = MEASURES_FOR_OVERALL
+_PIECE_MEASURES: Final = MEASURES_FOR_PIECES
+#: Each measure in plain words, for the reasons a reviewer reads.
+_MEASURE_WORDS: Final = {
+    "countertop": "the countertop",
+    "cabinet_run": "a run of cabinets",
+    "single_cabinet": "one cabinet",
+    "filler_or_end_panel": "a filler or end panel",
+    "wall_to_wall": "wall to wall",
+    "clearance_or_gap": "a clearance or gap",
+    "blocking_or_backing": "blocking or backing",
+    "fixture_or_appliance_centre": "to a fixture or appliance centre line",
+    "appliance_opening": "an appliance opening",
+    "height_or_other": "a height or something else",
+    "unsure": "something neither AI is sure of",
+}
 
 _PICTURE_MAX_SIDE: Final = 1800
 _VENDOR_COLOUR: Final = bytes((220, 20, 60))
@@ -541,7 +579,7 @@ def pair_by_code(
         )
         return (
             PairingOutcome(
-                "code", PairingStatus.NO_FIT.value, (), (reason,), {**base, "reasons": [reason]}
+                "none", PairingStatus.NO_FIT.value, (), (reason,), {**base, "reasons": [reason]}
             ),
             None,
         )
@@ -594,6 +632,12 @@ def pair_by_code(
                     vendor_slot_indices=() if pair.kind == "overall" else slots,
                 )
             )
+    status = result.status.value
+    if result.status is PairingStatus.PAIRED and not pairs:
+        status = PairingStatus.NOTHING_COMPARABLE.value
+        reasons.append(
+            "Code lined the rows up, but no architect dimension that lines up can be compared."
+        )
     details = {
         **base,
         "code": _result_details(result),
@@ -601,7 +645,7 @@ def pair_by_code(
         "reasons": reasons,
     }
     return (
-        PairingOutcome("code", result.status.value, tuple(pairs), tuple(reasons), details),
+        PairingOutcome("code" if pairs else "none", status, tuple(pairs), tuple(reasons), details),
         result,
     )
 
@@ -747,8 +791,17 @@ def pair_picture(
     return encode_png(small_w, small_h, shrunk.astype(np.uint8).tobytes())
 
 
-def _comparable_spans(page: ArchitectPageInput) -> list[tuple[int, ArchitectSpanInput]]:
-    return [(row.rank, span) for row in page.rows for span in row.spans if span.comparable]
+def _askable(span: ArchitectSpanInput) -> bool:
+    """Whether the two AIs are shown this span: stored, unheld, and not refused by code as a
+    centre-line (or other off-outline) dimension. An unknown outline is shown, so the AIs can say
+    what it measures; a pair with it is still dropped by the code witness."""
+    return (
+        span.on_outline is not False and span.held_reason is None and span.candidate_id is not None
+    )
+
+
+def _askable_spans(page: ArchitectPageInput) -> list[tuple[int, ArchitectSpanInput]]:
+    return [(row.rank, span) for row in page.rows for span in row.spans if _askable(span)]
 
 
 def pair_question(
@@ -764,7 +817,7 @@ def pair_question(
 
     from workflow.slot_reader import _transform_packet
 
-    spans = _comparable_spans(architect)
+    spans = _askable_spans(architect)
     if not spans or not vendor.pieces:
         return None
     picture = pair_picture(
@@ -816,23 +869,47 @@ def _answer_json(answer: ArchPairAnswer | None, model: str) -> dict[str, object]
         "answered": True,
         "overall": answer.overall,
         "pieces": list(answer.pieces),
+        "measures": list(answer.measures),
         "why": answer.why,
     }
 
 
-def resolve_answers(
+def _measure_words(measure: str) -> str:
+    return _MEASURE_WORDS.get(measure, measure.replace("_", " "))
+
+
+@dataclass(frozen=True, slots=True)
+class _AiJudgment:
+    """What both AIs' answers, checked by code, pair on their own (before code's pairing is
+    weighed): `paired`, `nothing_comparable`, `ais-disagree` or `ais-refused`."""
+
+    status: str
+    pairs: tuple[DecidedPair, ...]
+    reasons: tuple[str, ...]
+    dropped: tuple[dict[str, object], ...]
+    measures: tuple[tuple[ArchitectSpanInput, str], ...]
+    """Every numbered span whose measure both AIs gave alike, in A order."""
+    complete: bool
+    """Whether both AIs agree what every numbered span measures."""
+    ai: dict[str, object]
+    answers: tuple[ArchPairAnswer | None, ...]
+
+
+def _judge(
     question: PairQuestion,
     answers: Sequence[tuple[str, ArchPairAnswer | None]],
     vendor: VendorRowInput,
     architect: ArchitectPageInput,
-    code: PairingOutcome,
-) -> PairingOutcome:
-    """Both readers' answers to one pairing question, checked by code.
+) -> _AiJudgment:
+    """Both readers' answers to one pairing question, checked by code (the AIs' judgment alone).
 
-    Only identical answers count. Then every pair is witnessed: its architect span must be
-    comparable (unheld, on the outline), several vendor pieces given one A-number must be next to
-    each other, an A-number for the whole run must not also name only some of its pieces, and the two
-    drawn lengths through their scales must agree within `AI_DRAWN_LENGTH_BAND`.
+    Only identical answers count: the same overall, the same pieces, and the same measure for every
+    architect dimension they pair. Then every pair is witnessed. What it measures must be the same
+    kind of thing (`_OVERALL_MEASURES` for the vendor's overall; `_PIECE_MEASURES` for pieces, or a
+    run of cabinets only when the pieces are the whole run). Its architect span must be comparable
+    (unheld, on the outline); several vendor pieces given one A-number must be next to each other;
+    an A-number for the whole run must not also name only some of its pieces; and the two drawn
+    lengths through their scales must agree within `AI_DRAWN_LENGTH_BAND`.
     """
     numbering = {
         "vendor": {f"V{k}": slot for k, slot in enumerate(question.vendor_slots, start=1)},
@@ -843,56 +920,58 @@ def resolve_answers(
             )
         },
     }
-    details: dict[str, object] = {
-        **code.details,
-        "ai": {
-            "prompt_id": ARCH_PAIR_PROMPT_ID,
-            "picture_sha256": question.picture_sha256,
-            "packet_sha256": question.packet.get("packet_sha256"),
-            "numbering": numbering,
-            "answers": [_answer_json(answer, model) for model, answer in answers],
-        },
+    ai: dict[str, object] = {
+        "prompt_id": ARCH_PAIR_PROMPT_ID,
+        "picture_sha256": question.picture_sha256,
+        "packet_sha256": question.packet.get("packet_sha256"),
+        "numbering": numbering,
+        "answers": [_answer_json(answer, model) for model, answer in answers],
     }
-    code_reasons = list(code.reasons)
-    given = [answer for _model, answer in answers]
-    if not given or any(answer is None for answer in given):
-        reason = (
-            "Code could not pair the architect's dimensions with this row, and a reader gave no "
-            "usable answer; the reviewer pairs them."
-        )
-        return PairingOutcome(
-            "none",
+    given = tuple(answer for _model, answer in answers)
+    count = len(question.architect)
+    usable = [answer for answer in given if answer is not None and len(answer.measures) == count]
+    if not given or len(usable) != len(given):
+        return _AiJudgment(
             "ais-refused",
             (),
-            (*code_reasons, reason),
-            {**details, "reasons": [*code_reasons, reason]},
-            question,
-            tuple(given),
-        )
-    first = given[0]
-    assert first is not None
-    if any(
-        answer is not None and (answer.overall, answer.pieces) != (first.overall, first.pieces)
-        for answer in given
-    ):
-        reason = (
-            "Code could not pair the architect's dimensions with this row, and the two readers "
-            "paired them differently; the reviewer pairs them."
-        )
-        return PairingOutcome(
-            "none",
-            "ais-disagree",
+            ("A reader gave no usable answer to the pairing question.",),
             (),
-            (*code_reasons, reason),
-            {**details, "reasons": [*code_reasons, reason]},
-            question,
-            tuple(given),
+            (),
+            False,
+            ai,
+            given,
+        )
+    first = usable[0]
+    agreed = {
+        a_number: first.measures[a_number - 1]
+        for a_number in range(1, count + 1)
+        if all(answer.measures[a_number - 1] == first.measures[a_number - 1] for answer in usable)
+    }
+    measures = tuple((question.architect[a - 1], measure) for a, measure in agreed.items())
+    complete = len(agreed) == count
+
+    def disagree(reason: str) -> _AiJudgment:
+        return _AiJudgment("ais-disagree", (), (reason,), (), measures, complete, ai, given)
+
+    if any((answer.overall, answer.pieces) != (first.overall, first.pieces) for answer in usable):
+        return disagree("The two readers paired the architect's dimensions differently.")
+    groups: dict[int, list[int]] = {}
+    for position, a_number in enumerate(first.pieces):
+        if a_number:
+            groups.setdefault(a_number, []).append(position)
+    named = sorted({*groups, *([first.overall] if first.overall else [])})
+    unsettled = [a_number for a_number in named if a_number not in agreed]
+    if unsettled:
+        return disagree(
+            "The two readers paired the same dimensions but disagree about what "
+            + ", ".join(f"A{a_number}" for a_number in unsettled)
+            + " measures."
         )
 
     rows = {row.rank: row for row in architect.rows}
     vendor_pt = vendor_scale(vendor.pieces)
     dropped: list[dict[str, object]] = []
-    reasons: list[str] = [*code_reasons, "Both readers gave the same pairing; code checked it."]
+    reasons: list[str] = ["Both readers gave the same pairing; code checked it."]
 
     def drop(a_number: int, why: str) -> None:
         dropped.append({"architect": f"A{a_number}", "reason": why})
@@ -916,10 +995,12 @@ def resolve_answers(
             return False
         return True
 
-    groups: dict[int, list[int]] = {}
-    for position, a_number in enumerate(first.pieces):
-        if a_number:
-            groups.setdefault(a_number, []).append(position)
+    def other_thing(span: ArchitectSpanInput, measure: str) -> str:
+        return (
+            f"the architect's {span.text or 'unlabelled dimension'} measures "
+            f"{_measure_words(measure)}, not the same thing"
+        )
+
     pairs: list[DecidedPair] = []
     every = list(range(len(vendor.pieces)))
     whole = (
@@ -927,9 +1008,9 @@ def resolve_answers(
         if vendor.overall_x is not None
         else Fraction(vendor.pieces[-1].x1_pt) - Fraction(vendor.pieces[0].x0_pt)
     )
-    named = sorted({*groups, *([first.overall] if first.overall else [])})
     for a_number in named:
         rank, span = question.architect_rows[a_number - 1], question.architect[a_number - 1]
+        measure = agreed[a_number]
         if not span.comparable or span.candidate_id is None:
             drop(a_number, span.not_comparable_reason())
             continue
@@ -942,10 +1023,19 @@ def resolve_answers(
             continue
         architect_in = drawn_in(span, rank)
         if first.overall == a_number:
+            if measure not in _OVERALL_MEASURES:
+                drop(a_number, other_thing(span, measure))
+                continue
             if not plausible(a_number, architect_in, whole):
                 continue
             pairs.append(DecidedPair("overall", span.candidate_id, ()))
         if positions:
+            if not (
+                measure in _PIECE_MEASURES or (measure == "cabinet_run" and positions == every)
+            ):
+                if first.overall != a_number:
+                    drop(a_number, other_thing(span, measure))
+                continue
             long = sum(
                 (
                     Fraction(vendor.pieces[k].x1_pt) - Fraction(vendor.pieces[k].x0_pt)
@@ -963,26 +1053,134 @@ def resolve_answers(
                 )
     if not named:
         reasons.append("Both readers say the architect prints nothing comparable for this row.")
-    details["dropped"] = dropped
+    return _AiJudgment(
+        PairingStatus.PAIRED.value if pairs else PairingStatus.NOTHING_COMPARABLE.value,
+        tuple(pairs),
+        tuple(reasons),
+        tuple(dropped),
+        measures,
+        complete,
+        ai,
+        given,
+    )
+
+
+def _pair_set(pairs: Sequence[DecidedPair]) -> frozenset[tuple[str, UUID, tuple[int, ...]]]:
+    return frozenset(
+        (pair.kind, pair.architect_candidate_id, tuple(sorted(pair.vendor_slot_indices)))
+        for pair in pairs
+    )
+
+
+def combine(
+    code: PairingOutcome,
+    judged: _AiJudgment | None,
+    question: PairQuestion | None = None,
+) -> PairingOutcome:
+    """Code's pairing and both AIs' pairing, weighed together: the outcome that is recorded.
+
+    * Code paired, and both AIs' accepted pairing is identical: `code+ais` (two independent
+      judgments, automatic).
+    * Code paired, and the AIs paired differently, disagreed, refused or were not asked: `code`
+      with code's pairs (one judgment: a reviewer confirms the pairing).
+    * Only the AIs paired: `both-ais` (one judgment: a reviewer confirms the pairing).
+    * Neither: `none`, with the reasons; when both AIs agree what every numbered architect
+      dimension measures, the reason says so in plain words.
+    """
+    code_pairs = code.pairs if code.status == PairingStatus.PAIRED.value else ()
+    reasons = list(code.reasons)
+    details: dict[str, object] = dict(code.details)
+    if judged is not None:
+        details["ai"] = judged.ai
+        details["dropped"] = list(judged.dropped)
+        details["architect_measures"] = {
+            str(span.candidate_id): measure for span, measure in judged.measures
+        }
+        reasons.extend(judged.reasons)
+    source: PairingSource
+    if code_pairs:
+        pairs = code_pairs
+        status = PairingStatus.PAIRED.value
+        if (
+            judged is not None
+            and judged.status == PairingStatus.PAIRED.value
+            and _pair_set(judged.pairs) == _pair_set(code_pairs)
+        ):
+            source = "code+ais"
+            reasons.append(
+                "Code (by where the dimensions are drawn) and both AIs (by what each dimension "
+                "measures) paired the same dimensions."
+            )
+        else:
+            source = "code"
+            if judged is None:
+                why = "the AIs were not asked"
+            elif judged.status == PairingStatus.PAIRED.value:
+                why = "both AIs paired them differently"
+            elif judged.status == PairingStatus.NOTHING_COMPARABLE.value:
+                why = "both AIs found nothing on the architect's drawing to pair"
+            elif judged.status == "ais-disagree":
+                why = "the two AIs disagreed with each other"
+            else:
+                why = "an AI gave no usable answer"
+            reasons.append(
+                f"Only code paired these dimensions ({why}); a reviewer confirms the pairing "
+                "before any result on it counts."
+            )
+    elif judged is not None and judged.status == PairingStatus.PAIRED.value:
+        source, status, pairs = "both-ais", PairingStatus.PAIRED.value, judged.pairs
+        reasons.append(
+            "Only the two AIs paired these dimensions (code could not line the rows up); a "
+            "reviewer confirms the pairing before any result on it counts."
+        )
+    else:
+        source, pairs = "none", ()
+        if judged is None:
+            status = code.status
+        elif judged.status in {"ais-disagree", "ais-refused"}:
+            status = judged.status
+        else:
+            status = PairingStatus.NOTHING_COMPARABLE.value
+        if judged is not None and judged.complete and judged.measures:
+            reasons.append(
+                "Both AIs agree what the architect's dimensions here measure: "
+                + "; ".join(
+                    f"{span.text or 'an unlabelled dimension'} {_measure_words(measure)}"
+                    for span, measure in judged.measures
+                )
+                + ". None of them is paired with the vendor's row, so nothing is compared."
+            )
+        if status != PairingStatus.NOTHING_COMPARABLE.value or judged is None:
+            reasons.append("Nothing is paired; the reviewer can pair them.")
     details["reasons"] = reasons
     return PairingOutcome(
-        "both-ais",
-        PairingStatus.PAIRED.value if pairs else PairingStatus.NOTHING_COMPARABLE.value,
+        source,
+        status,
         tuple(pairs),
         tuple(reasons),
         details,
         question,
-        tuple(given),
+        () if judged is None else judged.answers,
     )
 
 
-def _needs_the_ais(code: PairingOutcome, vendor: VendorRowInput, page: ArchitectPageInput) -> bool:
-    return (
-        code.status in {PairingStatus.AMBIGUOUS.value, PairingStatus.NO_FIT.value}
-        and vendor.held_reason is None
-        and bool(vendor.pieces)
-        and bool(_comparable_spans(page))
-    )
+def resolve_answers(
+    question: PairQuestion,
+    answers: Sequence[tuple[str, ArchPairAnswer | None]],
+    vendor: VendorRowInput,
+    architect: ArchitectPageInput,
+    code: PairingOutcome,
+) -> PairingOutcome:
+    """Both readers' answers to one pairing question, checked by code (`_judge`) and weighed
+    with code's own pairing (`combine`)."""
+    return combine(code, _judge(question, answers, vendor, architect), question)
+
+
+def _ask_the_ais(vendor: VendorRowInput, page: ArchitectPageInput) -> bool:
+    """Whether a row's page is worth one question: the vendor row is not held, and at least one
+    architect span is stored, unheld and not refused by code. Asked whatever code decided: an
+    automatic pairing needs both judgments."""
+    return vendor.held_reason is None and bool(vendor.pieces) and bool(_askable_spans(page))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1007,8 +1205,9 @@ class ArchitectPairing:
         store: ArtifactStore | None,
         effort: str | None,
     ) -> tuple[PageSlotResult, ...]:
-        """Every result with its pairing: code first; one batched question to both readers for the
-        rows code could not decide (`ask_the_ais` only when both readers are the Claude pair)."""
+        """Every result with its pairing: code's, and one batched question to both readers for
+        every row whose page has an architect span code has not refused (`ask_the_ais` only when
+        both readers are the Claude pair), weighed together by `combine`."""
         by_index = {page.page_index: page for page in pages}
         pending: dict[int, tuple[VendorRowInput, ArchitectPageInput, PairingOutcome]] = {}
         decided: dict[int, PairingOutcome] = {}
@@ -1020,14 +1219,14 @@ class ArchitectPairing:
             if architect is None or vendor is None:
                 continue
             code, _raw = pair_by_code(vendor, architect, self.settings)
-            if not (ask_the_ais and _needs_the_ais(code, vendor, architect)):
-                decided[result.page_index] = code
+            if not (ask_the_ais and _ask_the_ais(vendor, architect)):
+                decided[result.page_index] = combine(code, None)
                 continue
             question = pair_question(
                 by_index[result.page_index], vendor, architect, store=store, effort=effort
             )
             if question is None:
-                decided[result.page_index] = code
+                decided[result.page_index] = combine(code, None)
                 continue
             pending[result.page_index] = (vendor, architect, code)
             questions[result.page_index] = question
@@ -1090,7 +1289,7 @@ def _invocations(
         select(ModelInvocation.id, ModelInvocation.model_id, ModelInvocation.reader_question_packet)
         .where(
             ModelInvocation.extraction_run_id == extraction_run_id,
-            ModelInvocation.prompt_id == ARCH_PAIR_PROMPT_ID,
+            ModelInvocation.prompt_id.in_(tuple(ARCH_PAIR_PROMPT_IDS)),
             ModelInvocation.outcome == "ok",
         )
         .order_by(ModelInvocation.reader_attempt_number)

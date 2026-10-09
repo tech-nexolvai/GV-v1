@@ -53,6 +53,8 @@ from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
+CABINET = ("single_cabinet",)
+
 
 @pytest.fixture
 def session(postgres_engine: Engine) -> Iterator[Session]:
@@ -229,6 +231,103 @@ def test_code_pairing_is_stored_once_per_row_and_read_back_exactly(session: Sess
     )
 
 
+def test_code_and_both_ais_agreeing_is_stored_as_code_plus_ais_with_the_measures(
+    session: Session,
+) -> None:
+    stored = Stored(session, arch_row(1, WIDTHS))
+    measures = ("single_cabinet", "single_cabinet", "filler_or_end_panel")
+
+    stored.pair(
+        session,
+        answers={
+            model: ArchPairAnswer(model, 0, (1, 2, 3), "each bay is its cabinet", measures)
+            for model in (OPUS, SONNET)
+        },
+    )
+
+    (record,) = _records(session)
+    assert (record.source, record.status) == ("code+ais", "paired")
+    effective = latest_architect_pairing(session, stored.anchor.id)
+    assert effective is not None
+    assert (effective.source, effective.status) == ("code+ais", "paired")
+    assert effective.pairs == tuple(
+        EffectivePair("piece", candidate.id, (k,)) for k, candidate in enumerate(stored.candidates)
+    )
+    assert effective.architect_measures == tuple(
+        sorted(
+            (
+                (candidate.id, measure)
+                for candidate, measure in zip(stored.candidates, measures, strict=True)
+            ),
+            key=lambda item: str(item[0]),
+        )
+    )
+
+
+def test_the_ais_saying_what_each_dimension_measures_is_read_back_when_nothing_pairs(
+    session: Session,
+) -> None:
+    stored = Stored(session, arch_row(1, (30,)))
+
+    stored.pair(
+        session,
+        answers={
+            model: ArchPairAnswer(model, 0, (0, 0, 0), "a hatched strip", ("blocking_or_backing",))
+            for model in (OPUS, SONNET)
+        },
+    )
+
+    effective = latest_architect_pairing(session, stored.anchor.id)
+    assert effective is not None
+    assert (effective.source, effective.status, effective.pairs) == (
+        "none",
+        "nothing_comparable",
+        (),
+    )
+    assert effective.architect_measures == ((stored.candidates[0].id, "blocking_or_backing"),)
+    assert any("blocking or backing" in reason for reason in effective.reasons)
+
+
+@pytest.mark.parametrize("source", ["code+ais", "code", "both-ais", "none"])
+def test_every_automatic_source_commits(session: Session, source: str) -> None:
+    stored = Stored(session, arch_row(1, WIDTHS))
+    session.add(
+        ArchitectPairingRecord(
+            package_revision_id=stored.revision.id,
+            page_id=stored.page.id,
+            row_anchor_candidate_id=stored.anchor.id,
+            extraction_run_id=stored.run.id,
+            source=source,
+            status="paired" if source != "none" else "nothing_comparable",
+            pairs=[],
+            details={},
+        )
+    )
+    session.commit()
+
+    (record,) = _records(session)
+    assert record.source == source
+
+
+def test_an_unknown_source_is_refused_by_the_database(session: Session) -> None:
+    stored = Stored(session, arch_row(1, WIDTHS))
+    session.add(
+        ArchitectPairingRecord(
+            package_revision_id=stored.revision.id,
+            page_id=stored.page.id,
+            row_anchor_candidate_id=stored.anchor.id,
+            extraction_run_id=stored.run.id,
+            source="one-ai",
+            status="paired",
+            pairs=[],
+            details={},
+        )
+    )
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
 def test_records_cannot_be_edited_or_deleted(session: Session) -> None:
     stored = Stored(session, arch_row(1, WIDTHS))
     stored.pair(session)
@@ -249,8 +348,8 @@ def test_both_ais_pairing_keeps_both_answers_and_their_invocations(session: Sess
     stored.pair(
         session,
         answers={
-            OPUS: ArchPairAnswer(OPUS, 0, (1, 0, 0), "A1 is the first cabinet"),
-            SONNET: ArchPairAnswer(SONNET, 0, (1, 0, 0), "same cabinet"),
+            OPUS: ArchPairAnswer(OPUS, 0, (1, 0, 0), "A1 is the first cabinet", CABINET),
+            SONNET: ArchPairAnswer(SONNET, 0, (1, 0, 0), "same cabinet", CABINET),
         },
     )
 
@@ -274,8 +373,8 @@ def test_disagreeing_ais_leave_the_row_unpaired_for_the_reviewer(session: Sessio
     stored.pair(
         session,
         answers={
-            OPUS: ArchPairAnswer(OPUS, 0, (1, 0, 0), "x"),
-            SONNET: ArchPairAnswer(SONNET, 0, (0, 1, 0), "y"),
+            OPUS: ArchPairAnswer(OPUS, 0, (1, 0, 0), "x", CABINET),
+            SONNET: ArchPairAnswer(SONNET, 0, (0, 1, 0), "y", CABINET),
         },
     )
 

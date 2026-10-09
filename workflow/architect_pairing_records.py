@@ -55,7 +55,8 @@ __all__ = [
 #: The route the architect's values are recorded under. Text read by code: never a model.
 ARCHITECT_EXTRACTOR: Final = "architect-text"
 
-_AUTOMATIC: Final = ("code", "both-ais", "none")
+_AUTOMATIC: Final = ("code+ais", "code", "both-ais", "none")
+_SOURCES: Final = (*_AUTOMATIC, "reviewer")
 _REASON_LIMIT: Final = 500
 
 
@@ -329,12 +330,15 @@ def _run_of(record: ArchitectPairingRecord) -> object:
 def latest_architect_pairing(session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
     """The pairing that counts for one vendor countertop row (its `slot:0` candidate), or `None`.
 
-    The reviewer's latest record wins; otherwise the latest automatic record (code, both AIs, or
-    nobody). Its pairs are re-checked against the architect candidates as they stand: only a span
-    that is stored on the row's page, unheld, has a value, sits on the drawn outline and is in a
-    drawing still confirmed as the architect's is returned; any other pair is left out with the
-    reason. `vendor_slot_indices` is empty for the overall. `source == "both-ais"` is AI-only
-    information: a PASS resting on it needs a reviewer's confirmation (the rule's job, T3).
+    The reviewer's latest record wins; otherwise the latest automatic record (code and both AIs,
+    code alone, both AIs alone, or nobody). Its pairs are re-checked against the architect
+    candidates as they stand: only a span that is stored on the row's page, unheld, has a value,
+    sits on the drawn outline and is in a drawing still confirmed as the architect's is returned;
+    any other pair is left out with the reason. `vendor_slot_indices` is empty for the overall.
+    Only `code+ais` (two independent judgments) or `reviewer` stands on its own: a result resting
+    on `code` or `both-ais` needs a reviewer's confirmation of the pairing (the rule's job, T3).
+    `architect_measures` is what both AIs agreed each architect dimension on the page measures
+    (an automatic record only).
     """
     return latest_architect_pairings(session, (row_anchor_id,))[row_anchor_id]
 
@@ -476,7 +480,7 @@ def _effective(
             )
         )
     source = record.source
-    if source not in ("code", "both-ais", "reviewer", "none"):
+    if source not in _SOURCES:
         return None
     return EffectivePairing(
         record_id=record.id,
@@ -484,4 +488,19 @@ def _effective(
         status=record.status,
         pairs=tuple(pairs),
         reasons=tuple(reasons),
+        architect_measures=_measures(record.details.get("architect_measures")),
     )
+
+
+def _measures(stored: object) -> tuple[tuple[UUID, str], ...]:
+    """The stored `{candidate id: measure}` the two AIs agreed on, in a fixed order; anything that
+    cannot be read is left out."""
+    found: list[tuple[UUID, str]] = []
+    for key, measure in stored.items() if isinstance(stored, dict) else ():
+        try:
+            candidate_id = UUID(str(key))
+        except ValueError:
+            continue
+        if isinstance(measure, str):
+            found.append((candidate_id, measure))
+    return tuple(sorted(found, key=lambda item: str(item[0])))
