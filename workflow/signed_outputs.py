@@ -149,6 +149,7 @@ def generate_signed_outputs(
             sha256=sha,
             media_type=media,
             findings=len(findings),
+            size=len(content),
         )
         db.add(artifact)
         artifacts[kind] = artifact.id

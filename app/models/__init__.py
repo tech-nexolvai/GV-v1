@@ -109,6 +109,7 @@ from app.models.signed_exports import (
     ApprovalExportAction,
     ApprovalExportBundle,
     ApprovalExportFailure,
+    ApprovalExportRetry,
     ApprovalExportSnapshot,
 )
 from app.models.verdicts import (
@@ -128,6 +129,7 @@ __all__ = [
     "ApprovalExportAction",
     "ApprovalExportBundle",
     "ApprovalExportFailure",
+    "ApprovalExportRetry",
     "ApprovalExportSnapshot",
     "ApprovalSource",
     "ApprovedFinding",

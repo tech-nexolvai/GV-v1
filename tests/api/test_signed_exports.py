@@ -264,3 +264,151 @@ def test_later_approval_cannot_download_an_earlier_bundle(
     response = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/report.pdf")
     assert response.status_code == 409
     assert "not been requested" in response.text
+
+
+def _outbox_requests(db: Session, approval_id: Any) -> int:
+    from app.models.outbox import OutboxEntry
+    from app.review.signed_exports import WORKFLOW
+
+    return sum(
+        1
+        for entry in db.scalars(select(OutboxEntry).where(OutboxEntry.workflow == WORKFLOW))
+        if entry.payload.get("approval_id") == str(approval_id)
+    )
+
+
+def test_ready_status_lists_each_signed_file_with_its_recorded_size(
+    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_id, approval, _ = _legacy(session, store)
+    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+    assert client.post(base + "/signed-exports").json()["files"] is None
+    assert client.get(base + "/signed-exports").json()["files"] is None
+    bundle = generate_signed_outputs(session, store, approval.id)
+    session.commit()
+
+    # The status call answers from the database: it never opens a stored file.
+    def no_reading(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the status call must not read stored files")
+
+    monkeypatch.setattr(LocalStore, "get", no_reading)
+    body = client.get(base + "/signed-exports").json()
+    monkeypatch.undo()
+    assert body["status"] == "ready"
+    stored = {
+        kind: session.get(OutputArtifact, artifact_id)
+        for kind, artifact_id in (
+            ("findings_pdf", bundle.pdf_id),
+            ("workbook", bundle.workbook_id),
+            ("redline", bundle.redline_id),
+        )
+    }
+    assert [item["kind"] for item in body["files"]] == ["findings_pdf", "workbook", "redline"]
+    for item in body["files"]:
+        artifact = stored[item["kind"]]
+        assert artifact is not None
+        assert item["bytes"] == len(store.get(artifact.storage_key).read()) > 0
+        assert item["media_type"] == artifact.media_type
+    assert client.post(base + "/signed-exports").json()["files"] == body["files"]
+
+
+def test_an_older_bundle_without_a_recorded_size_says_null(
+    session: Session, store: LocalStore, client: Any
+) -> None:
+    package_id, approval, findings = _legacy(session, store)
+    snapshot = request_signed_exports(session, approval.id)
+    ids = {}
+    for kind in ("findings_pdf", "findings_workbook", "redline"):
+        saved = store.put(f"older/{kind}", io.BytesIO(b"older bundle"), content_type="x/y")
+        artifact = OutputArtifact(
+            package_revision_id=approval.package_revision_id,
+            kind=kind,
+            storage_key=saved.key,
+            sha256=saved.sha256,
+            media_type="application/pdf",
+            findings=len(findings),
+        )
+        session.add(artifact)
+        session.flush()
+        ids[kind] = artifact.id
+    session.add(
+        ApprovalExportBundle(
+            snapshot_id=snapshot.id,
+            package_revision_id=approval.package_revision_id,
+            pdf_id=ids["findings_pdf"],
+            workbook_id=ids["findings_workbook"],
+            redline_id=ids["redline"],
+        )
+    )
+    session.commit()
+    body = client.get(f"/api/v1/projects/{PROJECT}/packages/{package_id}/signed-exports").json()
+    assert body["status"] == "ready"
+    assert [item["bytes"] for item in body["files"]] == [None, None, None]
+
+
+def test_retry_after_a_failure_requeues_once_for_the_same_approval_and_snapshot(
+    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy.orm import sessionmaker
+
+    from workflow.signed_outputs import record_publication_failure
+
+    package_id, approval, findings = _legacy(session, store)
+    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}/signed-exports"
+    first = client.post(base)
+    assert first.json()["status"] == "preparing"
+    snapshot = session.scalars(select(ApprovalExportSnapshot)).one()
+    facts = canonical(deterministic_facts(session, approval))
+    assert _outbox_requests(session, approval.id) == 1
+    # Asking again while the first request is still being prepared queues nothing.
+    assert client.post(base).json()["status"] == "preparing"
+    assert _outbox_requests(session, approval.id) == 1
+
+    factory = sessionmaker(bind=session.get_bind())
+    record_publication_failure(factory, approval.id, OSError("synthetic"))
+    session.expire_all()
+    assert client.get(base).json()["status"] == "failed"
+
+    retried = client.post(base)
+    assert retried.status_code == 202, retried.text
+    assert retried.json() == {
+        "approval_id": str(approval.id),
+        "status": "preparing",
+        "files": None,
+    }
+    assert _outbox_requests(session, approval.id) == 2
+    assert client.get(base).json()["status"] == "preparing"
+    # A second press while the retry is preparing does not queue twice.
+    assert client.post(base).json()["status"] == "preparing"
+    assert _outbox_requests(session, approval.id) == 2
+
+    # The retry failed too: one more press, one more request.
+    record_publication_failure(factory, approval.id, OSError("synthetic"))
+    session.expire_all()
+    assert client.get(base).json()["status"] == "failed"
+    assert client.post(base).json()["status"] == "preparing"
+    assert _outbox_requests(session, approval.id) == 3
+
+    # Same approval, same frozen snapshot, nothing re-signed, no outcome changed.
+    session.expire_all()
+    assert session.scalars(select(ApprovalExportSnapshot)).one().id == snapshot.id
+    assert [a.id for a in session.scalars(select(Approval))] == [approval.id]
+    assert canonical(deterministic_facts(session, approval)) == facts
+    assert [session.get(Finding, f.id).outcome for f in findings] == [  # type: ignore[union-attr]
+        "FAIL"
+    ] + ["NOT_FOUND"] * 8
+
+    generate_signed_outputs(session, store, approval.id)
+    session.commit()
+    assert client.get(base).json()["status"] == "ready"
+    # Once ready, asking again queues nothing.
+    assert client.post(base).json()["status"] == "ready"
+    assert _outbox_requests(session, approval.id) == 3
+
+
+def test_retry_is_project_scoped(session: Session, store: LocalStore, client: Any) -> None:
+    from uuid import uuid4
+
+    package_id, _approval, _ = _legacy(session, store)
+    response = client.post(f"/api/v1/projects/{uuid4()}/packages/{package_id}/signed-exports")
+    assert response.status_code == 404

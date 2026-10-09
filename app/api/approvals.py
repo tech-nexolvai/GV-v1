@@ -22,7 +22,7 @@ from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,11 +30,7 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.api.review import _session_is_in_project
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
-from app.models.signed_exports import (
-    ApprovalExportBundle,
-    ApprovalExportFailure,
-    ApprovalExportSnapshot,
-)
+from app.models.signed_exports import ApprovalExportBundle, ApprovalExportSnapshot
 from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
     ApprovalNotAuthorised,
@@ -43,7 +39,12 @@ from app.review.approval import (
     approve_package,
 )
 from app.review.publication import UnapprovedContent, sign_off
-from app.review.signed_exports import SignedExportRefused, load_snapshot, request_signed_exports
+from app.review.signed_exports import (
+    SignedExportRefused,
+    load_snapshot,
+    publication_status,
+    request_signed_exports,
+)
 from storage.store import ArtifactStore
 
 router = APIRouter(tags=["approvals"])
@@ -207,16 +208,9 @@ def _download_artifact(
             select(ApprovalExportBundle).where(ApprovalExportBundle.snapshot_id == snapshot.id)
         )
         if bundle is None:
-            if (
-                session.scalar(
-                    select(ApprovalExportFailure.id)
-                    .where(ApprovalExportFailure.snapshot_id == snapshot.id)
-                    .limit(1)
-                )
-                is not None
-            ):
+            if publication_status(session, snapshot) == "failed":
                 raise SignedExportRefused(
-                    "signed export generation failed; no final files were published. Check worker logs and retry availability; before-review files are not final reports"
+                    "signed export generation failed; no final files were published. Ask for the signed files again to retry; before-review files are not final reports"
                 )
             raise SignedExportRefused(
                 "signed exports are being prepared; before-review files cannot be downloaded as final reports"
@@ -268,9 +262,75 @@ def _download_artifact(
     )
 
 
+SignedFileKind = Literal["findings_pdf", "workbook", "redline"]
+
+
+class SignedExportFileOut(BaseModel):
+    """One signed file of a ready bundle, described from what was recorded when it was written."""
+
+    kind: SignedFileKind
+    bytes: int | None = Field(
+        description=(
+            "The stored file's size in bytes, recorded when the bundle was written. Null for "
+            "bundles written before sizes were recorded; never measured on read."
+        )
+    )
+    media_type: str
+
+
 class SignedExportRequestOut(BaseModel):
     approval_id: UUID
     status: Literal["not_requested", "preparing", "ready", "failed"]
+    files: tuple[SignedExportFileOut, ...] | None = Field(
+        default=None,
+        description=(
+            "Only when `status` is `ready`: the findings PDF, the workbook and the redline, in that "
+            "order. Null otherwise."
+        ),
+    )
+
+
+#: The API's names for the three files of a bundle, in the order they are listed.
+_BUNDLE_FILES: Final[tuple[tuple[SignedFileKind, str], ...]] = (
+    ("findings_pdf", "pdf_id"),
+    ("workbook", "workbook_id"),
+    ("redline", "redline_id"),
+)
+
+
+def _signed_export_out(
+    session: Session, approval_id: UUID, snapshot: ApprovalExportSnapshot
+) -> SignedExportRequestOut:
+    """The status of one frozen snapshot, with its files once ready. Reads rows, never files."""
+    state = publication_status(session, snapshot)
+    if state != "ready":
+        return SignedExportRequestOut(approval_id=approval_id, status=state)
+    bundle = session.scalar(
+        select(ApprovalExportBundle).where(ApprovalExportBundle.snapshot_id == snapshot.id)
+    )
+    if bundle is None:  # pragma: no cover - `ready` means the bundle row exists
+        raise SignedExportRefused("signed export bundle is not available")
+    ids = {name: getattr(bundle, column) for name, column in _BUNDLE_FILES}
+    artifacts = {
+        artifact.id: artifact
+        for artifact in session.scalars(
+            select(OutputArtifact).where(
+                OutputArtifact.id.in_(ids.values()),
+                OutputArtifact.package_revision_id == snapshot.package_revision_id,
+            )
+        )
+    }
+    files = []
+    for name, _column in _BUNDLE_FILES:
+        artifact = artifacts.get(ids[name])
+        if artifact is None:
+            raise SignedExportRefused(
+                "signed export bundle is incomplete or belongs to a different revision"
+            )
+        files.append(
+            SignedExportFileOut(kind=name, bytes=artifact.size, media_type=artifact.media_type)
+        )
+    return SignedExportRequestOut(approval_id=approval_id, status="ready", files=tuple(files))
 
 
 @router.get(
@@ -297,22 +357,7 @@ def export_status(
         if snapshot is None:
             return SignedExportRequestOut(approval_id=signed.approval_id, status="not_requested")
         load_snapshot(session, snapshot)
-        bundle = session.scalar(
-            select(ApprovalExportBundle.id).where(ApprovalExportBundle.snapshot_id == snapshot.id)
-        )
-        if (
-            bundle is None
-            and session.scalar(
-                select(ApprovalExportFailure.id)
-                .where(ApprovalExportFailure.snapshot_id == snapshot.id)
-                .limit(1)
-            )
-            is not None
-        ):
-            return SignedExportRequestOut(approval_id=signed.approval_id, status="failed")
-        return SignedExportRequestOut(
-            approval_id=signed.approval_id, status="ready" if bundle is not None else "preparing"
-        )
+        return _signed_export_out(session, signed.approval_id, snapshot)
     except (SignedExportRefused, UnapprovedContent) as refusal:
         raise HTTPException(status_code=409, detail=str(refusal)) from refusal
 
@@ -324,12 +369,17 @@ def export_status(
 )
 def request_exports(
     _access: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.APPROVE_PACKAGE))],
+    principal: Annotated[Principal, Depends(require_action(Action.APPROVE_PACKAGE))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
 ) -> SignedExportRequestOut:
-    """Explicitly prepare the signed files for an existing approval, without signing again."""
+    """Prepare the signed files for an existing approval, without signing again.
+
+    After a recorded failure this queues publication again for the same approval and the same
+    frozen snapshot; nothing is re-signed. While a request is still preparing, or once the files are
+    ready, it queues nothing and answers with the current status.
+    """
     revision = _revision(session, project_id, package_id)
     if revision.state != PackageState.APPROVED.value:
         raise HTTPException(
@@ -337,22 +387,13 @@ def request_exports(
         )
     try:
         signed = sign_off(session, revision.id)
-        snapshot = request_signed_exports(session, signed.approval_id)
-        ready = (
-            session.scalar(
-                select(ApprovalExportBundle.id).where(
-                    ApprovalExportBundle.snapshot_id == snapshot.id
-                )
-            )
-            is not None
-        )
+        snapshot = request_signed_exports(session, signed.approval_id, requested_by=principal.id)
+        answer = _signed_export_out(session, signed.approval_id, snapshot)
         session.commit()
     except (SignedExportRefused, UnapprovedContent) as refusal:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(refusal)) from refusal
-    return SignedExportRequestOut(
-        approval_id=signed.approval_id, status="ready" if ready else "preparing"
-    )
+    return answer
 
 
 @router.get(
