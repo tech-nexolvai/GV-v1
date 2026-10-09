@@ -71,13 +71,17 @@ from extraction.reader import (
 )
 
 __all__ = [
+    "AppearanceContent",
     "ColouredPath",
     "PixelBox",
     "StampCharacters",
     "StampText",
+    "appearance_content",
+    "carries_drawing",
     "coloured_paths",
     "coloured_text",
     "drawing_ink",
+    "pasted_picture",
     "pasted_stamps",
     "path_ink",
     "read_stamp_text",
@@ -166,11 +170,127 @@ class StampCharacters:
     """Mapped, but set in colour: possibly somebody's markup inside the snapshot, so not read."""
 
 
+#: The operators that show text and those that paint a path (PDF 32000-1 §9.4.3, §8.5.3.1).
+_SHOWS_TEXT: Final = frozenset({"Tj", "TJ", "'", '"'})
+_PAINTS_PATH: Final = frozenset({"S", "s", "f", "F", "f*", "B", "B*", "b", "b*"})
+
+#: Annotation types that are a reviewer's own marks whatever their appearance holds: typed notes,
+#: lines, polygons, ink, highlights. Never a pasted drawing.
+_NEVER_A_DRAWING: Final = frozenset(
+    {
+        "/FreeText",
+        "/Text",
+        "/Line",
+        "/PolyLine",
+        "/Polygon",
+        "/Ink",
+        "/Highlight",
+        "/Underline",
+        "/StrikeOut",
+        "/Squiggly",
+        "/Caret",
+        "/Circle",
+        "/Popup",
+        "/Link",
+        "/Widget",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AppearanceContent:
+    """What an annotation's normal appearance draws, counted over its nested forms too."""
+
+    text_shown: int
+    paths_painted: int
+    images: int
+
+
+def appearance_content(annotation: Any) -> AppearanceContent:
+    """Count the text, paths and images an annotation's normal appearance (`/AP /N`) draws,
+    following the form XObjects it draws in turn. An annotation without one draws nothing."""
+    counts = [0, 0, 0]
+    seen: set[tuple[int, int]] = set()
+
+    def walk(form: Any) -> None:
+        key = form.objgen
+        if key != (0, 0):
+            if key in seen:
+                return
+            seen.add(key)
+        resources = form.get("/Resources")
+        xobjects = resources.get("/XObject") if resources is not None else None
+        for instruction in pikepdf.parse_content_stream(form):
+            if isinstance(instruction, pikepdf.ContentStreamInlineImage):
+                counts[2] += 1
+                continue
+            operands, name = instruction.operands, str(instruction.operator)
+            if name in _SHOWS_TEXT:
+                counts[0] += 1
+            elif name in _PAINTS_PATH:
+                counts[1] += 1
+            elif name == "Do" and xobjects is not None and operands:
+                target = xobjects.get(str(operands[0]))
+                if target is None:
+                    continue
+                subtype = target.get("/Subtype")
+                if subtype == pikepdf.Name("/Image"):
+                    counts[2] += 1
+                elif subtype == pikepdf.Name("/Form"):
+                    walk(target)
+
+    appearance = annotation.get("/AP")
+    normal = appearance.get("/N") if appearance is not None else None
+    if isinstance(normal, pikepdf.Stream):
+        walk(normal)
+    return AppearanceContent(*counts)
+
+
+def carries_drawing(annotation: Any) -> bool:
+    """Whether an annotation is a pasted drawing, which this module and its callers read.
+
+    **A `/Stamp` always is** — the client's snapshots of the architect's and the vendor's sheets.
+    **A `/Square` is when its appearance holds a drawing**: it shows text in a font and paints
+    line-work (some viewers paste a snapshot as a rectangle annotation with the drawing as its
+    appearance). A `/Square` that only paints its own box — a reviewer's rectangle, with or without
+    a fill — shows no text and is not one; nor is one holding only a picture (`pasted_picture`).
+    A reviewer's notes, lines, polygons, clouds and ink never are, whatever they draw. Text set in
+    colour inside a drawing is still never read (`drawing_ink`).
+    """
+    subtype = annotation.get("/Subtype")
+    if subtype == pikepdf.Name("/Stamp"):
+        return True
+    if subtype != pikepdf.Name("/Square"):
+        return False
+    try:
+        content = appearance_content(annotation)
+    except (pikepdf.PdfError, TypeError, ValueError, AttributeError):
+        return False
+    return content.text_shown > 0 and content.paths_painted > 0
+
+
+def pasted_picture(annotation: Any) -> bool:
+    """Whether an annotation is a pasted picture: an image and no text, so nothing a code reader can
+    read (a raster snapshot of a drawing, pasted as a `/Stamp` or a `/Square` image)."""
+    subtype = annotation.get("/Subtype")
+    if str(subtype) in _NEVER_A_DRAWING or subtype not in (
+        pikepdf.Name("/Stamp"),
+        pikepdf.Name("/Square"),
+    ):
+        return False
+    try:
+        content = appearance_content(annotation)
+    except (pikepdf.PdfError, TypeError, ValueError, AttributeError):
+        return False
+    return content.images > 0 and content.text_shown == 0
+
+
 def stamps_only(data: bytes, page_index: int) -> bytes:
     """A copy of the document in which this page shows only its pasted drawings, merged into it.
 
-    The other pages are untouched, so `page_index` names the same page in the copy. The original
-    bytes are never modified.
+    A pasted drawing is what `carries_drawing` says: every `/Stamp`, and a `/Square` whose
+    appearance holds a drawing. The other pages are untouched, so `page_index` names the same page
+    in the copy. The original bytes are never modified.
     """
     try:
         with pikepdf.open(io.BytesIO(data)) as pdf:
@@ -182,11 +302,7 @@ def stamps_only(data: bytes, page_index: int) -> bytes:
                 ) from error
             annotations = page.obj.get("/Annots") or pikepdf.Array()
             page.obj["/Annots"] = pikepdf.Array(
-                [
-                    annotation
-                    for annotation in annotations
-                    if annotation.get("/Subtype") == pikepdf.Name("/Stamp")
-                ]
+                [annotation for annotation in annotations if carries_drawing(annotation)]
             )
             page.obj["/Contents"] = pdf.make_stream(b"")
             pdf.flatten_annotations(mode="all")

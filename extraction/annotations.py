@@ -60,6 +60,7 @@ from typing import Any, Final
 from uuid import UUID
 
 import pdfplumber
+import pikepdf
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
 import pypdfium2.raw as pdfium_raw  # type: ignore[import-untyped]
 
@@ -68,6 +69,7 @@ from evidence.polygon import Polygon
 from extraction.geometry.containment import DimensionExtent
 from extraction.glyph_bands import FractionBarGeometry, FractionLayout, GlyphBox, stacked_fractions
 from extraction.reader import UnreadablePdf, page_boxes_in_pdf_space
+from extraction.stamp_text import carries_drawing
 
 __all__ = [
     "Colour",
@@ -1081,6 +1083,23 @@ def read_annotation_layers(
     )
 
 
+def _drawings_in_squares(data: bytes, page_index: int) -> frozenset[int]:
+    """The `/Annots` indices of this page's `/Square` annotations that hold a pasted drawing
+    (`stamp_text.carries_drawing`): a drawing pasted as a rectangle annotation is the same drawing
+    as one pasted as a stamp. Empty on a page whose file cannot be opened this way."""
+    try:
+        with pikepdf.open(io.BytesIO(data)) as pdf:
+            annotations = pdf.pages[page_index].obj.get("/Annots") or ()
+            return frozenset(
+                index
+                for index, annotation in enumerate(annotations)
+                if annotation.get("/Subtype") == pikepdf.Name("/Square")
+                and carries_drawing(annotation)
+            )
+    except (pikepdf.PdfError, IndexError, TypeError, ValueError):
+        return frozenset()
+
+
 def _read_layers(
     data: bytes,
     page_index: int,
@@ -1132,11 +1151,14 @@ def _read_layers(
             )
             annotations = [annotation["data"] for annotation in page.annots]
 
+        squares_with_drawings = _drawings_in_squares(data, page_index)
         pdfium_document = pdfium.PdfDocument(data)
         try:
             for index, annotation in enumerate(annotations):
                 subtype = _subtype(annotation)
                 layer = _layer_of(annotation, subtype)
+                if layer is DrawingLayer.OTHER and index in squares_with_drawings:
+                    layer = DrawingLayer.VENDOR_DRAWING
                 try:
                     rect = _rect(annotation.get("Rect"))
                     seen = _pdfium_rect(pdfium_document, page_index, index)

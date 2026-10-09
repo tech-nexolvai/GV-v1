@@ -21,7 +21,7 @@ from extraction.architect.views import Role
 from tests.extraction.architect.combined_sheet import combined_sheet
 
 
-def _read(**kwargs: bool) -> ArchitectPage:
+def _read(**kwargs: bool | str) -> ArchitectPage:
     return read_architect_page(
         combined_sheet(**kwargs), 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150
     )
@@ -154,6 +154,44 @@ def test_the_cabinets_stay_on_the_outline_beside_the_hatching_and_the_wall() -> 
 
     assert spans["3' - 4\""].on_outline is True, spans["3' - 4\""].outline_reason
     assert spans["2' - 2\""].on_outline is True, spans["2' - 2\""].outline_reason
+
+
+def test_a_drawing_pasted_as_a_square_annotation_is_read_like_a_stamp() -> None:
+    """Some viewers paste a drawing as a `/Square` whose appearance holds the drawing's text and
+    line-work. It is the same drawing: the same judgments, the same values, the same edges."""
+    page = _read(architect_subtype="Square")
+    views = {view.annotation_index: view for view in page.views}
+    spans = _spans(page)
+
+    assert views[1].judgment.agreed is Role.ARCH
+    assert spans["3' - 4\""].inches == Fraction(40)
+    assert spans["3' - 4\""].on_outline is True
+    assert spans["2' - 2\""].inches == Fraction(26)
+
+
+def test_a_pasted_picture_is_reported_and_never_read() -> None:
+    """A `/Square` holding only an image has no text or line-work: it is listed with the reason, and
+    nothing is read from it."""
+    page = _read(picture=True)
+
+    assert [picture.annotation_index for picture in page.pictures] == [4]
+    assert "picture" in page.pictures[0].reason
+    assert {view.annotation_index for view in page.views} == {1, 3}
+
+
+def test_reviewer_markup_never_becomes_a_drawing_or_a_value() -> None:
+    """A reviewer's red `/Square` over the cabinets and a typed `/FreeText` dimension: neither is a
+    pasted drawing, and the note's number is never read."""
+    page = _read(reviewer_marks=True, architect_subtype="Square")
+
+    assert {view.annotation_index for view in page.views} == {1, 3}
+    assert page.pictures == ()
+    printed = {span.printed_inches for row in page.rows for span in row.spans}
+    assert Fraction(48) not in printed
+    assert all("4' - 0" not in (span.text or "") for row in page.rows for span in row.spans)
+    spans = _spans(page)
+    assert spans["3' - 4\""].inches == Fraction(40)
+    assert spans["3' - 4\""].on_outline is True
 
 
 def test_the_reader_holds_no_float(page: ArchitectPage) -> None:

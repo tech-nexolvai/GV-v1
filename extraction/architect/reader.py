@@ -82,11 +82,12 @@ from extraction.geometry.rows import (
 from extraction.panels import propose_panel_roles
 from extraction.reader import UnreadablePdf, page_frame, pixel_placement
 from extraction.rows import ink_from_page
-from extraction.stamp_text import drawing_ink, stamps_only
+from extraction.stamp_text import carries_drawing, drawing_ink, pasted_picture, stamps_only
 
 __all__ = [
     "MEASURED_ARCHITECT_SETTINGS",
     "ArchitectPage",
+    "ArchitectPicture",
     "ArchitectRow",
     "ArchitectSettings",
     "ArchitectSpan",
@@ -203,10 +204,21 @@ class ArchitectRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchitectPicture:
+    """A drawing pasted as a picture: an image with no text or line-work, so code reads nothing in
+    it. Listed so a missing reading has its reason; a person reads it."""
+
+    annotation_index: int
+    box: Box
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchitectPage:
     page_index: int
     views: tuple[ArchitectView, ...]
     rows: tuple[ArchitectRow, ...]
+    pictures: tuple[ArchitectPicture, ...] = ()
 
 
 #: Measured on both client sets (#1052, report `1052-report.md`): the row finder's E1 thresholds,
@@ -325,9 +337,24 @@ def _paste_factor(annotation: Any) -> Decimal | None:
     return factor_x
 
 
-def _stamps(data: bytes, page_index: int) -> dict[int, tuple[Box, Decimal | None]]:
-    """Each `/Stamp`'s rectangle in pdfplumber's frame and its paste factor, by `/Annots` index."""
+def _page_box(annotation: Any, left_edge: Decimal, top_edge: Decimal) -> Box:
+    x0, y0, x1, y1 = (_decimal(value) for value in annotation["/Rect"])
+    return Box(
+        min(x0, x1) - left_edge,
+        top_edge - max(y0, y1),
+        max(x0, x1) - left_edge,
+        top_edge - min(y0, y1),
+    )
+
+
+def _stamps(
+    data: bytes, page_index: int
+) -> tuple[dict[int, tuple[Box, Decimal | None]], tuple[ArchitectPicture, ...]]:
+    """Each pasted drawing's rectangle in pdfplumber's frame and its paste factor, by `/Annots`
+    index (`stamp_text.carries_drawing`: every `/Stamp`, and a `/Square` holding a drawing); and
+    every pasted picture, which holds nothing code can read."""
     found: dict[int, tuple[Box, Decimal | None]] = {}
+    pictures: list[ArchitectPicture] = []
     with pikepdf.open(io.BytesIO(data)) as pdf:
         page = pdf.pages[page_index]
         media = [_decimal(value) for value in page.obj.get("/MediaBox", [0, 0, 612, 792])]
@@ -335,19 +362,22 @@ def _stamps(data: bytes, page_index: int) -> dict[int, tuple[Box, Decimal | None
         top_edge = crop[3]
         left_edge = crop[0]
         for index, annotation in enumerate(page.obj.get("/Annots") or ()):
-            if annotation.get("/Subtype") != pikepdf.Name("/Stamp"):
+            if pasted_picture(annotation):
+                pictures.append(
+                    ArchitectPicture(
+                        annotation_index=index,
+                        box=_page_box(annotation, left_edge, top_edge),
+                        reason=(
+                            "a drawing pasted as a picture (an image, no text or line-work): code "
+                            "cannot read it, a person does"
+                        ),
+                    )
+                )
                 continue
-            x0, y0, x1, y1 = (_decimal(value) for value in annotation["/Rect"])
-            found[index] = (
-                Box(
-                    min(x0, x1) - left_edge,
-                    top_edge - max(y0, y1),
-                    max(x0, x1) - left_edge,
-                    top_edge - min(y0, y1),
-                ),
-                _paste_factor(annotation),
-            )
-    return found
+            if not carries_drawing(annotation):
+                continue
+            found[index] = (_page_box(annotation, left_edge, top_edge), _paste_factor(annotation))
+    return found, tuple(pictures)
 
 
 def _pattern_fill(colour: object) -> bool:
@@ -579,7 +609,7 @@ def read_architect_page(
     # A page with pasted drawings and no notes is "unreadable" to the markup reader (it has no
     # markup), and still has its drawings: only the stamps and headings are used here.
     layers = read_markup_layer(data, page_index, document_version_id=_UNSTORED, dpi=dpi)
-    stamps = _stamps(data, page_index)
+    stamps, pictures = _stamps(data, page_index)
     proposals = {
         proposal.annotation_index: proposal
         for proposal in propose_panel_roles(layers.vendor_stamps, layers.markup)
@@ -835,4 +865,4 @@ def read_architect_page(
         )
         for rank, (_y, _x, row) in enumerate(ordered, start=1)
     )
-    return ArchitectPage(page_index=page_index, views=tuple(views), rows=ranked)
+    return ArchitectPage(page_index=page_index, views=tuple(views), rows=ranked, pictures=pictures)

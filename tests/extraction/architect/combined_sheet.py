@@ -146,9 +146,9 @@ def _appearance(stream: bytes, rect: tuple[int, int, int, int], font_object: int
     )
 
 
-def _stamp(rect: tuple[int, int, int, int], appearance_object: int) -> bytes:
+def _stamp(rect: tuple[int, int, int, int], appearance_object: int, subtype: str) -> bytes:
     return (
-        f"<< /Type /Annot /Subtype /Stamp /Rect [{rect[0]} {rect[1]} {rect[2]} {rect[3]}] "
+        f"<< /Type /Annot /Subtype /{subtype} /Rect [{rect[0]} {rect[1]} {rect[2]} {rect[3]}] "
         f"/T (DESIGNER) /AP << /N {appearance_object} 0 R >> >>".encode()
     )
 
@@ -160,31 +160,114 @@ def _note(text: str, rect: tuple[int, int, int, int]) -> bytes:
     )
 
 
+#: A pasted picture: a `/Square` whose appearance is only an image (and its cloud border), as a
+#: viewer's "paste image" writes it. Placed beside the two drawings.
+PICTURE_RECT = (560, 600, 590, 700)
+
+
+def _picture(appearance_object: int) -> bytes:
+    x0, y0, x1, y1 = PICTURE_RECT
+    return (
+        f"<< /Type /Annot /Subtype /Square /IT /SquareImage /Rect [{x0} {y0} {x1} {y1}] "
+        f"/C [1 0 0] /T (DESIGNER) /AP << /N {appearance_object} 0 R >> >>".encode()
+    )
+
+
+def _picture_appearance(image_object: int) -> bytes:
+    x0, y0, x1, y1 = PICTURE_RECT
+    body = f"1 0 0 RG 0.5 w {x0} {y0} {x1 - x0} {y1 - y0} re S q {x1 - x0} 0 0 {y1 - y0} {x0} {y0} cm /Im Do Q".encode()
+    return (
+        f"<< /Type /XObject /Subtype /Form /BBox [{x0} {y0} {x1} {y1}] "
+        f"/Resources << /XObject << /Im {image_object} 0 R >> >> /Length {len(body)} >>\n"
+        "stream\n".encode() + body + b"\nendstream"
+    )
+
+
+def _image() -> bytes:
+    pixels = bytes([0, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 0])
+    return (
+        f"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB "
+        f"/BitsPerComponent 8 /Length {len(pixels)} >>\nstream\n".encode() + pixels + b"\nendstream"
+    )
+
+
+#: A reviewer's red box drawn over the architect's cabinets, and a note typed over them.
+REVIEWER_NOTE = "4' - 0\""
+
+
+def _reviewer_box(appearance_object: int) -> bytes:
+    return (
+        b"<< /Type /Annot /Subtype /Square /Rect [105 485 215 555] /C [1 0 0] /T (REVIEWER) "
+        + f"/AP << /N {appearance_object} 0 R >> >>".encode()
+    )
+
+
+def _reviewer_box_appearance() -> bytes:
+    body = b"1 0 0 RG 1 w 106 486 108 68 re S"
+    return (
+        b"<< /Type /XObject /Subtype /Form /BBox [105 485 215 555] "
+        + f"/Length {len(body)} >>\nstream\n".encode()
+        + body
+        + b"\nendstream"
+    )
+
+
 def combined_sheet(
-    *, headings: bool = True, centre_mark: bool = True, extras: bool = False
+    *,
+    headings: bool = True,
+    centre_mark: bool = True,
+    extras: bool = False,
+    architect_subtype: str = "Stamp",
+    picture: bool = False,
+    reviewer_marks: bool = False,
 ) -> bytes:
-    """The whole one-page PDF. `headings=False` leaves the two labels off."""
+    """The whole one-page PDF. `headings=False` leaves the two labels off; `architect_subtype`
+    pastes the architect's drawing as another annotation type (`Square`); `picture` adds a pasted
+    picture; `reviewer_marks` adds a reviewer's red box and a typed note over the cabinets."""
     annotations = [
         _note("ID SET ELEVATION", (10, 760, 300, 780)),
-        _stamp(ARCH_RECT, 9),
+        _stamp(ARCH_RECT, 9, architect_subtype),
         _note("VENDOR'S SHOP DRAWING ELEVATION", (10, 400, 300, 420)),
-        _stamp(VENDOR_RECT, 10),
+        _stamp(VENDOR_RECT, 10, "Stamp"),
     ]
     if not headings:
         annotations[0] = _note("GENERAL NOTES", (10, 760, 300, 780))
         annotations[2] = _note("SEE SPECIFICATION", (10, 400, 300, 420))
+    extra_objects: list[bytes] = []
+    first_extra = 12
+    if picture:
+        number = first_extra + len(extra_objects)
+        extra_objects += [_picture(number + 1), _picture_appearance(number + 2), _image()]
+        annotations.append(b"%d 0 R" % number)
+    if reviewer_marks:
+        number = first_extra + len(extra_objects)
+        extra_objects += [_reviewer_box(number + 1), _reviewer_box_appearance()]
+        annotations.append(b"%d 0 R" % number)
+        annotations.append(_note(REVIEWER_NOTE, (120, 500, 170, 515)))
+    inline = [body for body in annotations if not body.endswith(b" 0 R")]
+    referenced = [body for body in annotations if body.endswith(b" 0 R")]
+    # Inline annotations are objects 5.., then the two appearances and the font (9, 10, 11) when
+    # there are four of them; any further inline note is put after the extra objects.
+    head, tail = inline[:4], inline[4:]
+    tail_first = first_extra + len(extra_objects)
+    annots = [f"{5 + index} 0 R".encode() for index in range(len(head))]
+    annots += referenced
+    annots += [f"{tail_first + index} 0 R".encode() for index in range(len(tail))]
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800]"
-            b" /Annots [5 0 R 6 0 R 7 0 R 8 0 R] /Contents 4 0 R >>"
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Annots ["
+            + b" ".join(annots)
+            + b"] /Contents 4 0 R >>"
         ),
         b"<< /Length 0 >>\nstream\n\nendstream",
-        *annotations,
+        *head,
         _appearance(architect_stream(centre_mark=centre_mark, extras=extras), ARCH_RECT, 11),
         _appearance(vendor_stream(), VENDOR_RECT, 11),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        *extra_objects,
+        *tail,
     ]
     out = bytearray(b"%PDF-1.7\n")
     offsets: list[int] = []
