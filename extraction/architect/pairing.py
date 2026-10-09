@@ -435,8 +435,9 @@ def pair_rows(
             PairingStatus.NOTHING_COMPARABLE,
             [
                 (
-                    "No architect dimension has both ends on the drawn casework outline (they run to "
-                    "fixture centre lines, or it is not known), so none can measure a cabinet."
+                    "No architect dimension measures a cabinet or countertop from edge to edge: each "
+                    "runs to a fixture centre line, to hatched blocking or a wall, or between "
+                    "different things, or this is not known."
                 )
             ],
         )
