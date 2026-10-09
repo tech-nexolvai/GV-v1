@@ -7,7 +7,8 @@ import {
   withdrawCountertopRun,
 } from '../../api/client';
 import { projectId } from '../../api/config';
-import { type RunCountertop, type RunsList } from './countertopRunChoices.js';
+import { runCount, type RunCountertop, type RunsList } from './countertopRunChoices.js';
+import type { StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { CountertopRunsList } from './CountertopRunsList.js';
 import './DrawingParts.css';
@@ -21,13 +22,16 @@ import './DrawingParts.css';
  * taken back changes what can be suggested. After each decision here the list is read again, so
  * the run shown is always the server's, in the server's order.
  */
-export function CountertopRuns({ packageId, refresh }: { packageId: string; refresh: number }) {
+export function CountertopRuns({ packageId, refresh, onProgress }: { packageId: string; refresh: number; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void }) {
   const [runs, setRuns] = useState<RunsList | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
+  useEffect(() => {
+    if (runs) onProgress?.(runCount(runs));
+  }, [runs, onProgress]);
 
   useEffect(() => {
     let live = true;

@@ -8,8 +8,17 @@ for (const destination of ['measure-drawings', 'measure-runs', 'measure-values',
   assert.ok(markup.includes(`aria-controls="${destination}"`), `${destination} must remain reachable`);
 }
 assert.ok(!markup.includes('href="#measure-'), 'step navigation must not replace the hash-based package route');
-assert.ok(markup.includes('Confirm runs and widths'));
-assert.ok(markup.includes('Review measurements'));
+// The wizard's step names (#1061); each step is a button that shows it, never a link.
+for (const label of ['Drawings &amp; parts', 'Countertops', 'Values', 'Settings &amp; run checks']) {
+  assert.ok(markup.includes(label), `${label} is a step`);
+}
+const counted = renderToStaticMarkup(
+  <MeasurementSectionNav current="runs" counts={{ drawings: { done: 3, total: 3 }, runs: { done: 1, total: 4 }, values: { done: 0, total: 0 }, settings: null }} />,
+);
+assert.ok(counted.includes('aria-current="step" data-step="runs"'), 'the shown step is marked');
+assert.ok(counted.includes('3/3 done'), 'a finished step says so');
+assert.ok(counted.includes('1/4'), 'a step in progress shows done/total');
+assert.ok(counted.includes('Nothing to do'), 'an empty step is not shown as done');
 const sparseProposal = [
   { value: '1 in', position: 0 },
   { value: '3 in', position: 2 },

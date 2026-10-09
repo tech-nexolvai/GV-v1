@@ -10,21 +10,34 @@ import {
 } from '../../api/client';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { projectId } from '../../api/config';
-import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, type SlotReaderReviewPayload } from './slotReaderReview.js';
+import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, slotRowCount, unsavedRowCount, type SlotReaderReviewPayload } from './slotReaderReview.js';
+import type { StepCount } from '../../lib/measure-steps';
+import { wallWords } from '@/lib/needs-you-queue';
+import { InfoTip } from '@/components/measure/info-tip';
+import { WallLayoutPicture } from '@/components/results/wall-glyph';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import './SlotReaderRows.css';
 
 /** One reviewer decision per slot-reader row; no value or wall choice is revision-wide. */
-export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached, onReviewRow }: { packageId: string; refresh: number; targetRow?: string | null; onTargetReached?: () => void; onReviewRow?: (rowId: string) => void }) {
+export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached, onReviewRow, onOpenQueue, onProgress, onUnsaved }: { packageId: string; refresh: number; targetRow?: string | null; onTargetReached?: () => void; onReviewRow?: (rowId: string) => void; /** Opens the "Needs you" queue (#1050), where a held row is decided. */ onOpenQueue?: () => void; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void; /** How many rows hold changes "Save this row" has not sent (#1061). */ onUnsaved?: (count: number) => void }) {
   const [rows, setRows] = useState<SlotReaderRow[]>([]);
   const [wallDrafts, setWallDrafts] = useState<Record<string, string>>({});
   const [valueDrafts, setValueDrafts] = useState<Record<string, Record<string, string>>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Nothing is counted before the first answer, or after a failed one: "nothing to do" must be earned.
+  const [loaded, setLoaded] = useState(false);
   const [attempt, setAttempt] = useState(0);
   // The countertop picture for each row (#1043), from the same countertop-results the dashboard
   // reads. Optional: if it cannot be loaded, the card keeps its text list of widths.
   const [pictures, setPictures] = useState<Map<string, CountertopResult>>(new Map());
+  useEffect(() => {
+    onProgress?.(loaded && !error ? slotRowCount(rows) : null);
+  }, [rows, loaded, error, onProgress]);
+  useEffect(() => {
+    onUnsaved?.(unsavedRowCount(rows, wallDrafts, valueDrafts));
+  }, [rows, wallDrafts, valueDrafts, onUnsaved]);
 
   useEffect(() => {
     let live = true;
@@ -33,6 +46,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
         if (live) {
           setRows(result.rows);
           setError(null);
+          setLoaded(true);
         }
       })
       .catch((caught: unknown) => {
@@ -95,9 +109,11 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
     <section className="enter-values__section slot-reader-rows" aria-labelledby="slot-rows-title">
       <h2 id="slot-rows-title">Countertop rows read from the drawing</h2>
       <p className="enter-values__hint">
-        Complete, unheld rows with walls found in the drawing can be checked automatically. A wall
-        suggestion from the readers is only a proposal until you confirm it for this row. Missing
-        widths can be entered here and stay attached to this row.
+        Fill missing widths and confirm each row&apos;s walls.{' '}
+        <InfoTip label="About countertop rows">
+          <p>Complete, unheld rows with walls found in the drawing can be checked automatically.</p>
+          <p>A wall suggestion from the readers is only a proposal until you confirm it for this row. Missing widths can be entered here and stay attached to this row.</p>
+        </InfoTip>
       </p>
       {rows.map((row) => {
         const selectedWall = rowWallSelection(wallDrafts[row.row_id], row.wall_config);
@@ -113,8 +129,14 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
               <span>{row.piece_count} pieces</span>
             </header>
             {pictures.has(row.row_id) && <CountertopStrip row={pictures.get(row.row_id)!} size="full" showHoldReason={false} className="slot-reader-rows__picture" />}
+            {/* Held: the whole reason, as before, and where it is decided (#1061: the queue too). */}
             {row.held_reason && <p className="slot-reader-rows__hold" role="status">Needs review: {row.held_reason}</p>}
-            {row.held_reason && onReviewRow && <button type="button" className="btn btn--subtle" onClick={() => onReviewRow(row.row_id)}>Record a decision in Results</button>}
+            {row.held_reason && (onOpenQueue || onReviewRow) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {onOpenQueue && <button type="button" className="btn btn--sm" onClick={onOpenQueue}>Decide in the queue</button>}
+                {onReviewRow && <button type="button" className="btn btn--subtle btn--sm" onClick={() => onReviewRow(row.row_id)}>Record a decision in Results</button>}
+              </div>
+            )}
             <ul className="slot-reader-rows__values">
               {/* With the picture shown, the read-only widths are in it; only the inputs stay listed. */}
               {row.values.filter((item) => item.needs_value || !pictures.has(row.row_id)).map((item) => (
@@ -154,27 +176,33 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                 Wall layout from drawing clues: {row.wall_proposal.replaceAll('_', ' ')}. This is the row&apos;s check input.
               </p>
             )}
+            {/* The wall choice as picture buttons (#1061). Choosing is only a draft: the saved answer is
+                selected, a reader proposal never is, and nothing is sent until "Use this wall layout". */}
             {shouldOfferRowWallControl(row) && (
-              <label className="slot-reader-rows__wall">
-                Wall layout for this row
-                <select
+              <div className="slot-reader-rows__wall flex flex-col gap-1.5 font-sans" data-tw>
+                <span className="text-sm font-medium" id={`slot-walls-${row.row_id}`}>Wall layout for this row</span>
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
                   value={selectedWall}
                   disabled={!row.wall_confirmation_allowed || saving === row.row_id}
-                  onChange={(event) => setWallDrafts((current) => ({ ...current, [row.row_id]: event.target.value }))}
+                  onValueChange={(next) => setWallDrafts((current) => ({ ...current, [row.row_id]: next }))}
+                  aria-labelledby={`slot-walls-${row.row_id}`}
+                  className="flex-wrap justify-start"
                 >
-                  <option value="">Choose this row&apos;s wall layout</option>
                   {row.wall_layout_choices.map((choice) => (
-                    <option value={choice} key={choice}>
-                      {row.wall_source === 'between-panels' && choice === 'back_only'
-                        ? 'No field cut at the ends (back only)' : choice.replaceAll('_', ' ')}
-                    </option>
+                    <ToggleGroupItem key={choice} value={choice} className="gap-1.5 px-2.5">
+                      <WallLayoutPicture config={choice} />
+                      {row.wall_source === 'between-panels' && choice === 'back_only' ? 'No field cut at the ends (back only)' : wallWords(choice)}
+                    </ToggleGroupItem>
                   ))}
-                </select>
+                </ToggleGroup>
                 {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers') && row.wall_proposal && row.wall_config === null && (
-                  <small>Suggested partly or fully by the readers. Choose it for this row before saving it.</small>
+                  <small className="text-xs text-muted-foreground">Suggested partly or fully by the readers. Choose it for this row before saving it.</small>
                 )}
-                {row.wall_reason && <small>{row.wall_reason}</small>}
-              </label>
+                {row.wall_reason && <small className="text-xs text-muted-foreground">{row.wall_reason}</small>}
+              </div>
             )}
             {selectedWall && selectedWall !== row.wall_config && row.wall_confirmation_allowed && (
               <button

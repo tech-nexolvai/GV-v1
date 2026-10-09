@@ -142,6 +142,28 @@ checks. It opens from the header's "Review N items" and the "Needs you" card.
 - **Keys:** J / K, 1 / 2 / 3, N, Enter. **"Change decision"** records a new action; the history
   popover reads `GET .../findings/{id}/actions`.
 
+**The Measurements wizard** (`pages/MeasurementPanel.tsx`, step bar in `pages/MeasurementSectionNav.tsx`,
+counting in `lib/measure-steps.ts`, #1061) shows the screen as four steps:
+1. Drawings & parts.
+2. Countertops.
+3. Values.
+4. Settings & run checks.
+
+How it works:
+- **The other steps stay mounted and are only hidden,** so drafts inside them survive a switch. A plain
+  wrapper does the hiding, because the Values section's own grid would override `hidden`.
+- **The counts:** each section reports its count (`onProgress`, from the same "still to do" helpers it
+  prints). Values and Settings count from the form.
+- **The action bar:** Save values / Run checks / See findings live in a bar that stays visible.
+  - They record the values and settings (steps 3–4) from any step; steps 1–2 save through their own buttons.
+  - The bar says what saving also records (AI-filled values it confirms, layout answers) and warns about
+    countertop rows with unsaved changes.
+  - `#measure-run-checks` is where the header's "Run checks" lands, and "Open countertop card" switches
+    to step 2.
+- **Behaviour and API calls are unchanged.** Only layout and wording moved: paragraphs now sit behind
+  "?" (`components/measure/info-tip.tsx`), the wall choice is picture buttons, and fields are
+  two-column rows.
+
 **Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
 an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.

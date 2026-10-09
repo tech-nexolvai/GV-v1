@@ -96,7 +96,8 @@ assert.match(html, /disabled=""[^>]*>Confirm this run<\/button>/);
 
 // **There is no "confirm all".** Two buttons, both about this one countertop.
 assert.doesNotMatch(html, /confirm all|accept all|confirm every/i);
-assert.equal((html.match(/<button/g) ?? []).length, 2);
+// The decision buttons only: the step's "?" explanation (#1061) is not one of them.
+assert.equal((html.match(/<button(?![^>]*aria-label="About )/g) ?? []).length, 2);
 assert.match(html, />Not this countertop&#x27;s run<\/button>/);
 assert.equal((html.match(/role="group"/g) ?? []).length, 1);
 assert.doesNotMatch(html, /aria-pressed="true"/);

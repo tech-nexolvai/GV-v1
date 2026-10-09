@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, confirmDrawingRole, listDrawingViews } from '../../api/client';
 import { projectId } from '../../api/config';
-import { type DrawingRole, type DrawingView } from './drawingRoleChoices.js';
+import { roleCount, type DrawingRole, type DrawingView } from './drawingRoleChoices.js';
+import type { StepCount } from '../../lib/measure-steps';
 import { DrawingRolesList } from './DrawingRolesList.js';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 
@@ -16,15 +17,21 @@ import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.j
 export function DrawingRoles({
   packageId,
   onConfirmed,
+  onProgress,
 }: {
   packageId: string;
   onConfirmed: () => void;
+  /** Its count for the Measurements step bar (#1061): reported whenever the list changes. */
+  onProgress?: (count: StepCount | null) => void;
 }) {
   const [views, setViews] = useState<DrawingView[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  useEffect(() => {
+    if (views) onProgress?.(roleCount(views));
+  }, [views, onProgress]);
 
   // Loaded once per mount; the page mounts one per package (`key`), so a package switch starts empty
   // rather than showing the last package's drawings while the next one's load.

@@ -970,6 +970,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             targetRow={activeTab === 'measure' ? targetRow : null}
             onTargetReached={() => setTargetRow(null)}
             onReviewRow={(rowId) => { setResultsFilter('all'); setActiveTab('results'); setTimeout(() => { const row = document.querySelector<HTMLElement>(`[data-slot="countertop-table"] tr[data-row-id="${rowId}"]`); row?.scrollIntoView({ block: 'center' }); row?.focus(); }, 80); }}
+            onOpenQueue={openQueue}
           />
         </div>
       )}

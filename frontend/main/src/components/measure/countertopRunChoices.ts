@@ -1,4 +1,5 @@
 import type { components } from '../../api/schema';
+import { countOf, type StepCount } from '../../lib/measure-steps';
 
 /** Every confirmed countertop and its run, as `GET …/countertop-runs` lists them (#893). */
 export type RunsList = components['schemas']['RunsOut'];
@@ -40,6 +41,13 @@ export function runsStillToDecide(runs: RunsList): number {
   return runs.drawings
     .filter((drawing) => drawing.can_confirm)
     .reduce((open, drawing) => open + drawing.countertops.filter((top) => !top.decision).length, 0);
+}
+
+/** For the Measurements step bar (#1061): nothing while no run can be suggested, as on the page. */
+export function runCount(runs: RunsList): StepCount | null {
+  if (!runs.can_suggest) return null;
+  const total = runs.drawings.filter((drawing) => drawing.can_confirm).reduce((sum, drawing) => sum + drawing.countertops.length, 0);
+  return countOf(total, runsStillToDecide(runs));
 }
 
 /**

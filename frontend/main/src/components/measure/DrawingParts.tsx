@@ -11,7 +11,8 @@ import {
   withdrawDrawingPart,
 } from '../../api/client';
 import { projectId } from '../../api/config';
-import { type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
+import { partCount, type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
+import type { StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture } from './PartPicture.js';
@@ -30,11 +31,14 @@ export function DrawingParts({
   packageId,
   refresh,
   onDecided,
+  onProgress,
 }: {
   packageId: string;
   refresh: number;
   /** Told after each decision is saved, so what depends on the parts can be read again. */
   onDecided?: () => void;
+  /** Its count for the Measurements step bar (#1061): reported whenever the list changes. */
+  onProgress?: (count: StepCount | null) => void;
 }) {
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
@@ -43,6 +47,9 @@ export function DrawingParts({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
   const [picturePoll, setPicturePoll] = useState(0);
+  useEffect(() => {
+    if (drawings) onProgress?.(partCount(drawings));
+  }, [drawings, onProgress]);
   const loadPagePicture = useCallback(
     (viewId: string) => downloadVendorPagePicture(projectId(), packageId, viewId),
     [packageId],

@@ -7,6 +7,7 @@ import {
   type DrawingView,
 } from './drawingRoleChoices.js';
 import { feedbackText, type DecisionFeedback } from './decisionFeedback.js';
+import { InfoTip } from './info-tip';
 
 /**
  * Which drawing is which, on sheets that hold both (#795).
@@ -37,9 +38,11 @@ export function DrawingRolesList({
     <section className="enter-values__section drawing-roles" aria-labelledby="drawing-roles-title">
       <h2 id="drawing-roles-title">Which drawing is which?</h2>
       <p className="enter-values__hint">
-        These sheets show the architect&apos;s drawing and the vendor&apos;s side by side. A reading
-        is used only on the side of the drawing it sits in, and a reading on a drawing nobody has
-        confirmed is used on neither.{' '}
+        Say which side of each sheet is whose.{' '}
+        <InfoTip label="About drawing roles">
+          <p>These sheets show the architect&apos;s drawing and the vendor&apos;s side by side.</p>
+          <p>A reading is used only on the side of the drawing it sits in, and a reading on a drawing nobody has confirmed is used on neither.</p>
+        </InfoTip>{' '}
         <strong>{open === 0 ? 'All confirmed.' : `${open} still to confirm.`}</strong>
       </p>
       <ul className="drawing-roles__list">

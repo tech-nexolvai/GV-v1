@@ -1,4 +1,5 @@
 import type { components } from '../../api/schema';
+import { countOf, type StepCount } from '../../lib/measure-steps';
 
 /** One drawing and its suggested parts, left to right, as `GET …/parts` lists it (#882). */
 export type PartDrawing = components['schemas']['DrawingOut'];
@@ -54,6 +55,12 @@ export function stillToDecide(drawings: readonly PartDrawing[]): number {
   return drawings
     .filter((drawing) => drawing.can_confirm)
     .reduce((open, drawing) => open + drawing.parts.filter((part) => !part.decision).length, 0);
+}
+
+/** For the Measurements step bar (#1061): the suggestions that can be decided, and how many are. */
+export function partCount(drawings: readonly PartDrawing[]): StepCount {
+  const total = drawings.filter((drawing) => drawing.can_confirm).reduce((sum, drawing) => sum + drawing.parts.length, 0);
+  return countOf(total, stillToDecide(drawings));
 }
 
 /** What a person last said about a part, in a sentence. */
