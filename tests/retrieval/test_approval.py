@@ -142,5 +142,5 @@ def test_approval_timestamps_must_be_timezone_aware() -> None:
         approve_by_human(
             _candidate(),
             reviewer="keyur",
-            approved_at=datetime(2026, 8, 22, 9, 0),
+            approved_at=datetime(2026, 8, 22, 9, 0),  # noqa: DTZ001 - refusal fixture
         )

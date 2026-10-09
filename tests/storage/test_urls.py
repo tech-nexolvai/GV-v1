@@ -141,7 +141,7 @@ def test_naive_clock_is_refused() -> None:
         secret=SECRET,
         artifact_uri=lambda key: f"https://evidence.invalid/{key}",
         recorder=RecordingAudit(),
-        clock=lambda: datetime(2026, 8, 21, 10, 30),
+        clock=lambda: datetime(2026, 8, 21, 10, 30),  # noqa: DTZ001 - refusal fixture
     )
 
     with pytest.raises(ValueError, match="timezone-aware"):
