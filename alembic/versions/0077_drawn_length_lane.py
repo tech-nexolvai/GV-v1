@@ -1,7 +1,7 @@
 """Name the lane that qualifies the architect's printed value: its drawn-length witness (#1054).
 
-Revision ID: 0076_drawn_length_lane
-Revises: 0075_slot_row_review_scope
+Revision ID: 0077_drawn_length_lane
+Revises: 0076_architect_pairing_records
 
 The architect's dimensions on the client's combined sheets are real text, read exactly by code
 (#1052), and kept only when the length drawn between their ticks, through the drawing's scale,
@@ -19,8 +19,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0076_drawn_length_lane"
-down_revision: str | None = "0075_slot_row_review_scope"
+revision: str = "0077_drawn_length_lane"
+down_revision: str | None = "0076_architect_pairing_records"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
