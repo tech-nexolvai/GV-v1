@@ -17,6 +17,17 @@ export type Filter = 'all' | 'needs-you' | 'fail' | 'pass' | 'held' | 'automatic
 
 type RowFacts = Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect'>;
 
+/** The hold the API puts on a page the two AIs picked different countertop lines on (#1093). */
+export const ROW_CHOICE_SPLIT = 'row-choice-split';
+
+/**
+ * A page the two AIs split on (#1093): no line was chosen, so nothing on it was read. It is a held
+ * item that needs the reviewer, but it has no pieces, no picture, no outline and no countertop card.
+ */
+export function isSplitPage(row: Pick<CountertopResult, 'hold'>): boolean {
+  return row.hold?.code === ROW_CHOICE_SPLIT;
+}
+
 /**
  * A countertop has two checks (#1085): its own width, and whether it matches the architect. It needs
  * the reviewer when either does; it is FAIL when either recorded a FAIL; it is PASS only when every

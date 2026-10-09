@@ -4,7 +4,7 @@ import { CheckCircle2, ChevronLeft, ChevronRight, History, X } from 'lucide-reac
 import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, isSplitPage } from '@/lib/countertop-results';
 import { targetFromArchitect, targetFromFinding, targetFromRow, type Mark } from '@/lib/drawing-viewer';
 import { architectState, pairedByWords } from '@/lib/architect';
 import {
@@ -24,6 +24,7 @@ import {
 import type { NextAction, NextActionKind } from '@/lib/review-stage';
 import { cn } from '@/lib/utils';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
+import { SplitPageNote } from '@/components/results/split-page-note';
 import { ArchitectLine, ArchitectPairs, ArchitectStatus } from '@/components/results/architect-line';
 import { ArchitectPairingPanel } from './architect-pairing';
 import { DecisionFields } from '@/components/results/decision-form';
@@ -191,6 +192,8 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const item: QueueItem | undefined = list[index];
   const status: ItemStatus = item ? itemStatus(item, live) : 'decided';
   const row = item?.kind === 'countertop' ? live.rows.get(item.rowId) ?? null : null;
+  // A split page (#1093): nothing was read, so it is checked or not checkable, never "Problem".
+  const split = row !== null && isSplitPage(row);
   // "Matches the architect?" (#1085): the row it belongs to, and whether its pairing needs the reviewer.
   const architectRow = item?.kind === 'architect' ? live.rows.get(item.rowId) ?? null : null;
   const architect = architectRow?.architect ?? null;
@@ -278,7 +281,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
       ...(deciding
         ? {
             '1': () => draft.choose('confirm'),
-            '2': () => draft.choose('problem'),
+            '2': () => { if (!split) draft.choose('problem'); },
             '3': () => draft.choose('dismiss'),
             n: () => noteRef.current?.focus(),
             Enter: () => void saveDecision(),
@@ -407,8 +410,15 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   </div>
                 </div>
 
-                {row && <CountertopStrip row={row} size="full" />}
-                {row && <Facts row={row} />}
+                {/* A split page (#1093): no line was chosen, so no picture and no numbers, only why. */}
+                {row?.hold && isSplitPage(row) ? (
+                  <SplitPageNote hold={row.hold} />
+                ) : row && (
+                  <>
+                    <CountertopStrip row={row} size="full" />
+                    <Facts row={row} />
+                  </>
+                )}
                 {row && <ArchitectLine result={row.architect} />}
                 {item.kind === 'architect' && architect && (
                   <div className="flex flex-col gap-2" data-slot="queue-architect">
@@ -469,7 +479,10 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
 
-                {status === 'open' && !finding && row && !question && (
+                {status === 'open' && !finding && split && (
+                  <p data-slot="split-unchecked" className="rounded-lg border border-dashed p-3 text-sm">Not checked yet. Run the checks; then this page needs your decision.</p>
+                )}
+                {status === 'open' && !finding && row && !question && !split && (
                   <div className="flex flex-col items-start gap-2 rounded-lg border border-dashed p-3 text-sm">
                     <p>Not checked yet. Its missing widths or walls are filled in its countertop card; then run the checks.</p>
                     <Button size="sm" variant="outline" onClick={() => { onOpenChange(false); onOpenCard(row); }}>
@@ -508,7 +521,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   void saveDecision();
                 }}
               >
-                <DecisionFields draft={draft} idPrefix="queue" big noteRef={noteRef} />
+                <DecisionFields draft={draft} idPrefix="queue" big noteRef={noteRef} allowProblem={!split} />
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="submit" disabled={!draft.ready || draft.saving}>
                     {draft.saving ? 'Saving…' : 'Record decision'}

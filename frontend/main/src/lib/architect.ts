@@ -38,11 +38,14 @@ export function architectState(result: ArchitectResult | null): ArchitectState {
 }
 
 /**
- * The server's own words for a row whose architect check has not run yet
- * (`app/api/visual_countertops.py`): said as they are, not as "Not compared: Not checked yet: …".
+ * True when the server's reason already says what it is (`app/api/visual_countertops.py`): a row
+ * whose architect check has not run yet ("Not checked yet: …"), or a page where no countertop line
+ * was chosen ("Not compared: no countertop line was chosen…", #1093). Said as they are, never as
+ * "Not compared: Not checked yet: …" or "Not compared: Not compared: …".
  */
-export function notCheckedYet(result: Pick<ArchitectResult, 'not_compared_reason'>): boolean {
-  return (result.not_compared_reason ?? '').startsWith('Not checked yet');
+export function reasonSaysItself(result: Pick<ArchitectResult, 'not_compared_reason'>): boolean {
+  const reason = result.not_compared_reason ?? '';
+  return reason.startsWith('Not checked yet') || reason.startsWith('Not compared');
 }
 
 /** True while the pairing waits for the reviewer: its numbers are not a result yet, so no verdict colour. */
