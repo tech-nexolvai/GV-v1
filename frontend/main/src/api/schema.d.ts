@@ -2809,6 +2809,11 @@ export interface components {
              */
             package_id: string;
             /**
+             * Pages Without Countertop
+             * @description Vendor pages where both AIs found no countertop line, each with the AI's reason. Listed only; nothing to decide. A page where the AIs picked different lines is an item above instead, held `row-choice-split`.
+             */
+            pages_without_countertop?: components["schemas"]["PageWithoutCountertopOut"][];
+            /**
              * Revision Id
              * Format: uuid
              */
@@ -3949,6 +3954,16 @@ export interface components {
         PageProposalIn: {
             /** Page Number */
             page_number: number;
+        };
+        /**
+         * PageWithoutCountertopOut
+         * @description A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking.
+         */
+        PageWithoutCountertopOut: {
+            /** Page Number */
+            page_number: number;
+            /** Reason */
+            reason: string;
         };
         /**
          * ParameterEntry

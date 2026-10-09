@@ -181,12 +181,30 @@ class CountertopResultOut(BaseModel):
     )
 
 
+class PageWithoutCountertopOut(BaseModel):
+    """A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page_number: int
+    reason: str
+
+
 class CountertopResultsOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     package_id: UUID
     revision_id: UUID
     items: tuple[CountertopResultOut, ...]
+    pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Vendor pages where both AIs found no countertop line, each with the AI's reason. "
+            "Listed only; nothing to decide. A page where the AIs picked different lines is an item "
+            "above instead, held `row-choice-split`."
+        ),
+    )
 
 
 class OutcomeCountsOut(BaseModel):

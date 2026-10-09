@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from fractions import Fraction
 from io import BytesIO
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
@@ -26,6 +27,10 @@ from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import StoredFinding, write_stored_workbook
 from units.imperial import format_inches
 from verdict.outcomes import Outcome
+
+if TYPE_CHECKING:
+    # Imported late in the tests below, so each fails on its own assertion on main (#1093).
+    from app.schemas.visual_ui import PageWithoutCountertopOut
 
 
 def _exact(value: Fraction) -> ExactValueOut:
@@ -361,7 +366,7 @@ def test_architect_line_says_to_confirm_a_one_judgment_result(source: str) -> No
             reason=reason,
             needs_decision=True,
             compared=(_compared_overall(Fraction(163, 4), Fraction(44), Outcome.REVIEW_REQUIRED),),
-            pairing_source=source,  # type: ignore[arg-type]
+            pairing_source=source,
             pairing_judgments="code only" if source == "code" else "both AIs only",
         ),
     )
@@ -544,3 +549,130 @@ def test_workbook_says_why_a_row_was_not_compared() -> None:
     row = {header: sheet.cell(2, index + 1).value for index, header in enumerate(headers)}
     assert row["architect_outcome"] == "NOT COMPARED"
     assert row["architect_not_compared_reason"] == "No architect dimension is paired with this row."
+
+
+# ---------------------------------------------------------------------------
+# A page whose countertop line the AIs did not agree on, and pages with none (#1093)
+# ---------------------------------------------------------------------------
+
+SPLIT_REASON = (
+    "The two AIs did not agree on this page's countertop line (opus-5-5 picked line 2; "
+    "sonnet-5-5 picked line 3), so nothing on it was read or checked. The reviewer decides "
+    "this page."
+)
+NONE_REASON = "synthetic: this page shows only a wall elevation, no countertop dimension line"
+
+
+def _split_item() -> CountertopResultOut:
+    return _result(
+        "Countertop row on page 3",
+        Outcome.REVIEW_REQUIRED,
+        printed=None,
+        pieces=(),
+        expected=None,
+        delta=None,
+        hold=HoldOut(code="row-choice-split", reason=SPLIT_REASON),
+        decision=ReviewerDecisionOut(
+            action="dismiss",
+            note="TEST ONLY synthetic: the second line is the countertop",
+            actor="Reviewer Example",
+            time=datetime(2026, 10, 9, 12, tzinfo=UTC),
+        ),
+        wall=WallLayoutOut(config=None, label=None, source="not established"),
+    ).model_copy(update={"page_number": 3, "field_cut_per_end": None, "field_cut_count": None})
+
+
+def _pages_without_countertop() -> tuple[PageWithoutCountertopOut, ...]:
+    from app.schemas.visual_ui import PageWithoutCountertopOut
+
+    return (PageWithoutCountertopOut(page_number=4, reason=NONE_REASON),)
+
+
+def test_pdf_lists_a_split_page_without_a_picture_and_the_pages_with_no_countertop() -> None:
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=12),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        countertop_results=(_split_item(),),
+        pages_without_countertop=_pages_without_countertop(),
+    )
+
+    text = _pdf_text(write_findings_pdf(source))
+
+    assert "Countertop row on page 3" in text and "REVIEW_REQUIRED" in text
+    assert "nothing on it was read or checked" in text
+    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert f"Page 4: {NONE_REASON}" in text
+    assert text.index("PAGES WITH NO COUNTERTOP FOUND") < text.index("CT-WIDTH-001")
+
+
+def test_pdf_lists_pages_with_no_countertop_even_with_no_countertop_item() -> None:
+    source = FindingsPdfInput(
+        package_revision_id=UUID(int=13),
+        revision_number=1,
+        vendor=None,
+        findings=(_stored(),),
+        pages_without_countertop=_pages_without_countertop(),
+    )
+
+    assert f"Page 4: {NONE_REASON}" in _pdf_text(write_findings_pdf(source))
+
+
+def test_pdf_card_with_no_pieces_draws_no_countertop_picture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reports import findings_pdf
+
+    drawn: list[str] = []
+    monkeypatch.setattr(
+        findings_pdf,
+        "_draw_countertop_strip",
+        lambda _canvas, result, **_kwargs: drawn.append(result.label),
+    )
+    held = _result(
+        "Countertop row A",
+        None,
+        printed=None,
+        pieces=(Fraction(10), None),
+        expected=None,
+        delta=None,
+        hold=HoldOut(code="row-partial", reason="A piece is missing."),
+    )
+    write_findings_pdf(
+        FindingsPdfInput(
+            package_revision_id=UUID(int=14),
+            revision_number=1,
+            vendor=None,
+            findings=(_stored(),),
+            countertop_results=(held, _split_item()),
+        )
+    )
+
+    assert drawn == ["Countertop row A"]
+
+
+def test_workbook_has_the_split_page_and_the_pages_with_no_countertop() -> None:
+    book = load_workbook(
+        BytesIO(
+            write_stored_workbook(
+                (_stored(),),
+                countertop_results=(_split_item(),),
+                pages_without_countertop=_pages_without_countertop(),
+            )
+        )
+    )
+
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    row = {header: sheet.cell(2, index + 1).value for index, header in enumerate(headers)}
+    assert row["page"] == 3
+    assert row["label"] == "Countertop row on page 3"
+    assert row["outcome"] == "REVIEW_REQUIRED"
+    assert row["pieces"] == "none recorded"
+    assert row["hold_reason"] == SPLIT_REASON
+    assert row["decision"] == "dismiss"
+
+    empty = book["No Countertop Found"]
+    assert [cell.value for cell in empty[1]] == ["page", "reason"]
+    assert [cell.value for cell in empty[2]] == ["4", NONE_REASON]

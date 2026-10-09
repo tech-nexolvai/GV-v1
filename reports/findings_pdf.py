@@ -17,7 +17,7 @@ Source: docs/DEMO_PLAN.md, ADR-0001.  Verification: tests/reports/test_findings_
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
@@ -28,7 +28,7 @@ from reportlab.lib.pagesizes import A4  # type: ignore[import-untyped]
 from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
-from app.schemas.visual_ui import CountertopResultOut, ExactValueOut
+from app.schemas.visual_ui import CountertopResultOut, ExactValueOut, PageWithoutCountertopOut
 from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line
 from verdict.outcomes import Outcome
@@ -68,6 +68,9 @@ class FindingsPdfInput:
     that product's checks were run and the cover says so, so a check that was not run can never be
     read as one that passed. ``None`` — a set from before #994 — draws nothing: every product's
     checks ran, and the cover is exactly what it was."""
+    pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = ()
+    """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093). Listed
+    after the countertops so a page that was not checked can never pass unnoticed."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.package_revision_id, UUID):
@@ -92,6 +95,10 @@ class FindingsPdfInput:
             isinstance(result, CountertopResultOut) for result in self.countertop_results
         ):
             raise TypeError("countertop_results must contain CountertopResultOut values")
+        if not isinstance(self.pages_without_countertop, tuple) or not all(
+            isinstance(page, PageWithoutCountertopOut) for page in self.pages_without_countertop
+        ):
+            raise TypeError("pages_without_countertop must contain PageWithoutCountertopOut values")
 
 
 def _text(value: object, *, absent: str = NOT_RECORDED) -> str:
@@ -264,6 +271,14 @@ def _countertop_strip_y(top: float, detail_line_count: int) -> float:
     last_detail_y = top - 31 - (detail_line_count - 1) * 9
     # Strip labels extend 48 points above and 25 below its baseline.
     return last_detail_y - 56
+
+
+def _countertop_card_bottom(
+    top: float, detail_line_count: int, pictured: bool
+) -> tuple[float, float]:
+    """The strip's baseline and the card's bottom; a card with no picture ends after its words."""
+    strip_y = _countertop_strip_y(top, detail_line_count)
+    return strip_y, (strip_y - 34 if pictured else top - 31 - detail_line_count * 9 - 4)
 
 
 def _wrapped(value: str, *, width: float, font: str, size: float) -> tuple[str, ...]:
@@ -506,7 +521,8 @@ class _Document:
 
     def _countertops(self) -> None:
         results = self.source.countertop_results
-        if not results:
+        empty_pages = self.source.pages_without_countertop
+        if not results and not empty_pages:
             return
 
         def new_page(continued: bool = False) -> None:
@@ -556,13 +572,14 @@ class _Document:
                 for detail in details
                 for line in _wrapped(detail, width=_CONTENT_WIDTH - 16, font=_BODY_FONT, size=7)
             )
-            strip_y = _countertop_strip_y(self.y, len(detail_lines))
-            card_bottom = strip_y - 34
+            # An item with no pieces read (a page whose countertop line was not chosen, #1093) has
+            # nothing to draw, so its card ends after its words, with no countertop picture.
+            pictured = bool(result.pieces)
+            strip_y, card_bottom = _countertop_card_bottom(self.y, len(detail_lines), pictured)
             card_height = self.y - card_bottom
             if self.y - card_height < 48:
                 new_page(continued=True)
-                strip_y = _countertop_strip_y(self.y, len(detail_lines))
-                card_bottom = strip_y - 34
+                strip_y, card_bottom = _countertop_card_bottom(self.y, len(detail_lines), pictured)
             top = self.y
             self.canvas.setStrokeColorRGB(_BLACK, _BLACK, _BLACK)
             self.canvas.rect(
@@ -607,14 +624,51 @@ class _Document:
             self.canvas.setFont(_BODY_FONT, 7)
             for index, line in enumerate(detail_lines):
                 self.canvas.drawString(_MARGIN + 8, top - 31 - (index * 9), line)
-            _draw_countertop_strip(
-                self.canvas,
-                result,
-                x=_MARGIN + 8,
-                y=strip_y,
-                width=_CONTENT_WIDTH - 16,
-            )
+            if pictured:
+                _draw_countertop_strip(
+                    self.canvas,
+                    result,
+                    x=_MARGIN + 8,
+                    y=strip_y,
+                    width=_CONTENT_WIDTH - 16,
+                )
             self.y = card_bottom - 12
+        if empty_pages:
+            self._pages_without_countertop(lambda: new_page(continued=True))
+
+    def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
+        """The pages both AIs found no countertop line on, each with the AI's reason (#1093)."""
+        lines = [
+            line
+            for page in sorted(
+                self.source.pages_without_countertop, key=lambda item: item.page_number
+            )
+            for line in _wrapped(
+                f"Page {page.page_number}: {page.reason}",
+                width=_CONTENT_WIDTH - 16,
+                font=_BODY_FONT,
+                size=7.5,
+            )
+        ]
+        if self.y - 40 < 48:
+            new_page()
+        self.canvas.setFillColorRGB(_BLACK, _BLACK, _BLACK)
+        self.canvas.setFont(_BOLD_FONT, 9)
+        self.canvas.drawString(_MARGIN + 8, self.y - 4, "PAGES WITH NO COUNTERTOP FOUND")
+        self.canvas.setFont(_BODY_FONT, 7)
+        self.canvas.drawString(
+            _MARGIN + 8,
+            self.y - 15,
+            "Both AIs found no countertop line on these pages, so nothing on them was checked.",
+        )
+        self.y -= 29
+        for line in lines:
+            if self.y < 60:
+                new_page()
+            self.canvas.setFont(_BODY_FONT, 7.5)
+            self.canvas.drawString(_MARGIN + 8, self.y, line)
+            self.y -= 10
+        self.y -= 12
 
     def build(self) -> bytes:
         self.cover()

@@ -413,6 +413,10 @@ class PageSlotResult:
     wall_candidate_id: UUID | None = None
     row_choice: RowChoiceAnswer | None = None
     row_choice_number: int | None = None
+    row_choice_picks: tuple[tuple[str, int | None], ...] = ()
+    """Each row reader's own pick, in reader order: `(model id, row number)`, 0 for "no countertop
+    row", `None` when that reader gave no answer (#1093). Stored on an unselected page's record so a
+    split can be told from a "both said none" page by data, not by its reason text."""
     row_candidate_ids: tuple[UUID, ...] = ()
     row_choice_png: bytes | None = None
     row_choice_box_px: tuple[int, int, int, int] | None = None
@@ -1142,6 +1146,7 @@ def read_slot_pages(
     walls_asked: dict[int, WallQuestion] = {}
     owner_candidate_ids: dict[int, dict[str, UUID]] = {}
     wall_candidate_ids: dict[int, UUID] = {}
+    row_picks: dict[int, tuple[tuple[str, int | None], ...]] = {}
     for page in pages:
         if runtime.question_packets and page.transform is None:
             raise ValueError("reader question packets require the published PageTransform")
@@ -1150,11 +1155,13 @@ def read_slot_pages(
                 f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
                 f"at {page.rendered.dpi} dpi"
             )
-        row_choice, row_number = _agreed_row(
+        asked_rows = (
             [row_answers.get((_row_key(page.page_index), model)) for model in readers]
             if runtime.claude_row_reader and page.page_index in row_ids
             else []
         )
+        row_choice, row_number = _agreed_row(asked_rows)
+        row_picks[page.page_index] = _row_picks(readers, asked_rows)
         candidates = page_rows[page.page_index].candidates[:6]
         selected_row = (
             candidates[row_number - 1]
@@ -1520,6 +1527,7 @@ def read_slot_pages(
                 wall_candidate_id=wall_candidate_ids.get(page.page_index),
                 row_choice=row_choice,
                 row_choice_number=row_number,
+                row_choice_picks=row_picks.get(page.page_index, ()),
                 row_candidate_ids=row_ids.get(page.page_index, ()),
                 row_choice_png=row_images.get(page.page_index),
                 row_choice_box_px=(
@@ -2267,6 +2275,19 @@ def _agreed_row(
     return RowChoiceAnswer(" + ".join(c.model_id for c in choices) or "none", 0, why), 0
 
 
+def _row_picks(
+    readers: Sequence[str],
+    answers: Sequence[
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+    ],
+) -> tuple[tuple[str, int | None], ...]:
+    """Each reader's own row pick, in reader order; `None` for a reader that gave no row answer."""
+    return tuple(
+        (model, answer.row if isinstance(answer, RowChoiceAnswer) else None)
+        for model, answer in zip(readers, answers, strict=False)
+    )
+
+
 def _short_model(model_id: str) -> str:
     return model_id.removeprefix("anthropic.").removeprefix("claude-")
 
@@ -2311,6 +2332,12 @@ def _persist_unselected_row_choice(
         ambiguity_flags=[
             "slot-reader-row-choice",
             f"row-choice:{result.row_choice_number or 0}",
+            # Each reader's own pick (#1093), so the check and the screen can tell a split page
+            # (blocking) from one where every reader said "no countertop row" (listed only).
+            *(
+                f"row-pick:{_short_model(model)}:{'none' if pick is None else pick}"
+                for model, pick in result.row_choice_picks
+            ),
             *(
                 f"row-candidate:{i}:{candidate_id}"
                 for i, candidate_id in enumerate(result.row_candidate_ids, start=1)

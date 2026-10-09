@@ -2306,6 +2306,14 @@
             "title": "Package Id",
             "type": "string"
           },
+          "pages_without_countertop": {
+            "description": "Vendor pages where both AIs found no countertop line, each with the AI's reason. Listed only; nothing to decide. A page where the AIs picked different lines is an item above instead, held `row-choice-split`.",
+            "items": {
+              "$ref": "#/components/schemas/PageWithoutCountertopOut"
+            },
+            "title": "Pages Without Countertop",
+            "type": "array"
+          },
           "revision_id": {
             "format": "uuid",
             "title": "Revision Id",
@@ -4644,6 +4652,25 @@
           "page_number"
         ],
         "title": "PageProposalIn",
+        "type": "object"
+      },
+      "PageWithoutCountertopOut": {
+        "description": "A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking.",
+        "properties": {
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page_number",
+          "reason"
+        ],
+        "title": "PageWithoutCountertopOut",
         "type": "object"
       },
       "ParameterEntry": {
