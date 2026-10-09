@@ -97,6 +97,7 @@ from extraction.slot_reader.runs import (
     plan_slots,
 )
 from extraction.slot_reader.seal import (
+    STACKED_BY_CODE,
     LabelOutcome,
     LabelState,
     OwnerOutcome,
@@ -106,7 +107,11 @@ from extraction.slot_reader.seal import (
     plain_dimension,
     seal_label,
 )
-from extraction.slot_reader.veto import DrawnReading, drawn_length_vetoes
+from extraction.slot_reader.veto import (
+    DrawnReading,
+    drawn_length_vetoes,
+    drawn_length_witnessed,
+)
 from extraction.slot_reader.walls import (
     E3_WALL_SETTINGS,
     WALL_PROMPT_ID,
@@ -120,6 +125,7 @@ from extraction.slot_reader.walls import (
     wall_pictures,
 )
 from vocabulary.check_holds import STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
+from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
 from workflow.form_reader import FormReaderRuntime
 from workflow.layout_proposals import (
@@ -1884,7 +1890,11 @@ def _drawn(owner: OwnerResult) -> DrawnReading | None:
     drawn = Fraction(owner.owner.x1 - owner.owner.x0)
     if drawn <= 0:
         return None
-    return DrawnReading(owner.owner.index, value.exact, drawn, "stacked" in label.outcome.flags)
+    # Only a stacked fraction code confirmed leaves the scale; a reader's `stacked` alone stays a
+    # flag for the record and never weakens the check for the piece's neighbours (#1107).
+    return DrawnReading(
+        owner.owner.index, value.exact, drawn, STACKED_BY_CODE in label.outcome.flags
+    )
 
 
 def _veto_by_drawn_length(
@@ -1893,14 +1903,21 @@ def _veto_by_drawn_length(
     """Hand back to the person every sealed reading the drawn length rejects (#992).
 
     The reading's value becomes its label's suggestion — shown to the person, never a value — and
-    nothing else about it changes.
+    nothing else about it changes. A reading the check could not reach (no scale in its row, or no
+    drawn length) still seals, flagged `no-drawn-length-witness` so the skipped check is on record
+    (#1107).
     """
     pieces = [reading for owner in slots if (reading := _drawn(owner)) is not None]
     whole = None if overall is None else _drawn(overall)
     vetoes = drawn_length_vetoes(pieces, whole)
+    witnessed = drawn_length_witnessed(pieces, whole)
 
     def finalize(
-        owner: OwnerResult, *, code: str | None = None, reason: str | None = None
+        owner: OwnerResult,
+        *,
+        code: str | None = None,
+        reason: str | None = None,
+        unwitnessed: bool = False,
     ) -> OwnerResult:
         position = owner.outcome.label_index
         if position is None:
@@ -1919,7 +1936,11 @@ def _veto_by_drawn_length(
             suggestion=candidate_value if code is not None else None,
             reason_code=code,
             reason=reason,
-            flags=(*chosen.outcome.flags, *((code,) if code is not None else ())),
+            flags=(
+                *chosen.outcome.flags,
+                *((code,) if code is not None else ()),
+                *((NO_DRAWN_LENGTH_WITNESS,) if unwitnessed and code is None else ()),
+            ),
         )
         labels = list(owner.labels)
         labels[position] = replace(chosen, outcome=label_outcome)
@@ -1936,15 +1957,19 @@ def _veto_by_drawn_length(
         )
 
     def checked(owner: OwnerResult) -> OwnerResult:
-        if owner.outcome.state is LabelState.PROVISIONAL:
-            reason = vetoes.get(owner.owner.index)
-            if reason is not None:
-                return finalize(owner, code="drawn-length", reason=reason)
-            # No derived scale means no drawn-length evidence either way. This check is reject-only:
-            # it can veto a clear misfit, never hold a reading merely because scale is unavailable.
-            return finalize(owner)
+        if owner.outcome.state not in {LabelState.SEALED, LabelState.PROVISIONAL}:
+            return owner
         reason = vetoes.get(owner.owner.index)
-        return owner if reason is None else finalize(owner, code="drawn-length", reason=reason)
+        if reason is not None:
+            return finalize(owner, code="drawn-length", reason=reason)
+        # No derived scale means no drawn-length evidence either way. This check is reject-only: it
+        # can veto a clear misfit, never hold a reading merely because scale is unavailable — but a
+        # reading it could not reach says so (#1107), and a width PASS resting on one waits for
+        # the reviewer (`workflow/stages.py`).
+        unwitnessed = _drawn(owner) is None or owner.owner.index not in witnessed
+        if owner.outcome.state is LabelState.PROVISIONAL or unwitnessed:
+            return finalize(owner, unwitnessed=unwitnessed)
+        return owner
 
     held_slots = tuple(checked(owner) for owner in slots)
     held_overall = None if overall is None else checked(overall)

@@ -39,6 +39,7 @@ from units.measurement import Measurement
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
+    "STACKED_BY_CODE",
     "TEXT_LAYER",
     "LabelOutcome",
     "LabelState",
@@ -52,6 +53,10 @@ __all__ = [
 
 #: The file's own text, as a source. Its "maker" is the drawing, which no model shares.
 TEXT_LAYER: Final = "pdf-text-layer"
+#: The flag on a label *code* found to be a stacked fraction — the file's own text, or the
+#: fraction-bar detector — beside `stacked`, which any source may set (#1107). Only this one takes a
+#: piece out of its row's drawn-length scale: a reader's answer may add a hold, never remove a check.
+STACKED_BY_CODE: Final = "stacked-by-code"
 
 _QUOTES: Final = {
     "“": '"',
@@ -202,9 +207,12 @@ def seal_label(
         soft.append(("row-ambiguous", f"not sure which row is the countertop: {row_ambiguity}"))
     if label.ambiguous_slot:
         soft.append(("slot-ambiguous", "the label sits between two pieces"))
-    stacked = label.text_stacked or stacked_by_bar or any(answer.stacked for answer in answers)
+    stacked_by_code = label.text_stacked or stacked_by_bar
+    stacked = stacked_by_code or any(answer.stacked for answer in answers)
     if stacked:
         flags.append("stacked")
+        if stacked_by_code:
+            flags.append(STACKED_BY_CODE)
         if not allow_stacked:
             soft.append(("stacked", "stacked fraction"))
     if any(answer.combined for answer in answers):

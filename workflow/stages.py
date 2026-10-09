@@ -370,7 +370,7 @@ from workflow.slot_reader import (
     persist_slot_readings,
     read_slot_pages,
 )
-from workflow.slot_row_evidence import slot_row_check
+from workflow.slot_row_evidence import confirm_unwitnessed_pass, slot_row_check
 from workflow.slot_row_scope import SlotRow, slot_rows_and_unchosen_pages
 from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
@@ -6968,6 +6968,9 @@ class DatabaseStages:
                                 finding,
                                 notes=(*finding.notes, row_check.wall_provenance),
                             )
+                        # A PASS on a reading whose drawn length could not be checked rests on
+                        # the two readers' text alone: one reviewer click (#1107).
+                        finding = confirm_unwitnessed_pass(finding, row_check.unwitnessed)
                         operands = row_check.operands
                     elif refused_width is not None:
                         finding = _unresolved(width_snapshot, refused_width)
