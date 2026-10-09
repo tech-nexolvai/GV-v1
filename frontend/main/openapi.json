@@ -1063,6 +1063,73 @@
         "title": "AssignmentStepOut",
         "type": "object"
       },
+      "AssistantInfoOut": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "keeps_no_data": {
+            "default": true,
+            "title": "Keeps No Data",
+            "type": "boolean"
+          },
+          "model_label": {
+            "default": "Claude Sonnet 5.5",
+            "title": "Model Label",
+            "type": "string"
+          },
+          "starters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Starters",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "starters"
+        ],
+        "title": "AssistantInfoOut",
+        "type": "object"
+      },
+      "AssistantRequest": {
+        "additionalProperties": false,
+        "description": "A reviewer question. It carries no value, outcome or decision the server would accept.",
+        "properties": {
+          "focus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Focus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HistoryTurn"
+            },
+            "maxItems": 6,
+            "title": "History",
+            "type": "array"
+          },
+          "question": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AssistantRequest",
+        "type": "object"
+      },
       "AwaitingToleranceOut": {
         "additionalProperties": false,
         "description": "One rule that cannot be released, and how much of it is still a guess.",
@@ -3685,6 +3752,39 @@
         "title": "FindingPage",
         "type": "object"
       },
+      "Focus": {
+        "additionalProperties": false,
+        "description": "What the reviewer is looking at: a page, a record (countertop row id or finding id), both.",
+        "properties": {
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          }
+        },
+        "title": "Focus",
+        "type": "object"
+      },
       "GrantException": {
         "additionalProperties": false,
         "description": "Accept one specific deviation, until one specific moment.\n\n**Every field is required, and `expires_at` most of all.** A permanent silent exception is not\nrepresentable anywhere in this system: the column is `NOT NULL`, `ExceptionGrant` has no default\nfor it, and this schema will not accept its absence. An exception with no end date is how a check\ngets switched off and nobody remembers.\n\nNo `approved_by`. The approver is the authenticated caller \u2014 `AGENTS.md` \u00a72.6 calls an anonymous\nexception nobody's decision, and a client-supplied approver answers \"who says so?\" with \"whoever\nwas asked\".",
@@ -3745,6 +3845,31 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HistoryTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "HistoryTurn",
         "type": "object"
       },
       "HoldOut": {
@@ -9005,6 +9130,139 @@
         "summary": "Get Approval Readiness",
         "tags": [
           "approvals"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/assistant": {
+      "get": {
+        "description": "Starters come from the records and work with the assistant off.\n\n`enabled` is read from the same runtime the stream uses, so it is true exactly when a\nquestion can reach the model.",
+        "operationId": "review_assistant_info_api_v1_projects__project_id__packages__package_id__assistant_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantInfoOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Whether the review assistant answers here, and starter questions for this review",
+        "tags": [
+          "review assistant"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/assistant/stream": {
+      "post": {
+        "description": "`stage` events as each real step starts (records, model, guard), then `answer`, or `error`.\n\nRuns in a worker thread; the request's session stays open until the stream ends, and the one\nwrite (the model call's usage row) is committed as soon as it is made.",
+        "operationId": "review_assistant_stream_api_v1_projects__project_id__packages__package_id__assistant_stream_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask the review assistant about this review, streamed",
+        "tags": [
+          "review assistant"
         ]
       }
     },
