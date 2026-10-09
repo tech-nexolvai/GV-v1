@@ -90,13 +90,19 @@ def test_rule_selects_identifier_keyed_cabinets_from_both_documents() -> None:
 
 
 def test_rule_authors_q2_as_exact_zero_tolerance() -> None:
+    """The zero is stated in inches, the unit the rule's arithmetic is in (#1054).
+
+    Version 1.1.0 said `0 mm` while its arithmetic was inches. Zero is zero in any unit, so no
+    outcome changes, but a rule must state its tolerance in the unit it decides in: a reader of
+    `0 mm` could think millimetres decide, and Raj's word is inches only.
+    """
     rule = _load_rule()
 
-    assert rule.version == "1.1.0"
+    assert rule.version == "1.1.1"
     assert rule.arithmetic_unit is Unit.INCH
     assert rule.operation.tolerance is not None
     assert rule.operation.tolerance.value == Fraction(0)
-    assert rule.operation.tolerance.unit is Unit.MM
+    assert rule.operation.tolerance.unit is Unit.INCH
     assert unconfirmed_tolerance_count(rule) == 0
     assert is_production_ready(rule)
 
@@ -108,7 +114,7 @@ def test_publication_report_has_no_unconfirmed_cabinet_tolerances() -> None:
 
     latest = store.latest("CAB-ARCH-VS-SHOP-001")
     assert latest is not None
-    assert latest.version == "1.1.0"
+    assert latest.version == "1.1.1"
     assert unconfirmed_tolerance_count(latest.rule) == 0
     assert "CAB-ARCH-VS-SHOP-001" not in {waiting.rule_id for waiting in awaiting_tolerance(store)}
 
@@ -204,3 +210,54 @@ def test_any_mismatched_cabinet_fails_with_exact_zero_tolerance() -> None:
     assert pairs["CAB-2"].delta == Measurement(Fraction(0), Unit.MM, None)
     assert pairs["CAB-2"].outcome is Outcome.PASS
     assert result.outcome is Outcome.FAIL
+
+
+def _previous_millimetre_rule() -> Rule:
+    authored = deepcopy(_load_authored())
+    authored["version"] = "1.1.0"
+    operation = authored["operation"]
+    assert isinstance(operation, dict)
+    operation["tolerance"] = {"value": 0, "unit": "mm"}
+    return Rule.model_validate(authored)
+
+
+def test_the_inch_tolerance_is_a_new_version_beside_the_published_one() -> None:
+    """Publishing the fix next to 1.1.0 is a new snapshot, not a conflict, and the newest wins."""
+    store = SnapshotStore()
+    previous = store.add(publish(_previous_millimetre_rule()))
+    current = store.add(publish(_load_rule()))
+
+    assert previous.snapshot_id != current.snapshot_id
+    assert store.latest("CAB-ARCH-VS-SHOP-001") == current
+    assert '"unit":"mm"' in previous.canonical_json
+
+
+def test_the_unit_fix_changes_no_outcome() -> None:
+    """Same inputs, same outcome, under 1.1.0 (0 mm) and 1.1.1 (0 in)."""
+
+    def run(rule: Rule, shop: int) -> Outcome:
+        return execute(
+            publish(rule),
+            {
+                "architectural_cabinets": VerdictOperand(
+                    name="architectural_cabinets",
+                    value=(Measurement(Fraction(24), Unit.INCH, None),),
+                    status=EvidenceStatus.HUMAN_CONFIRMED,
+                    source="USER_INPUT",
+                ),
+                "shop_cabinets": VerdictOperand(
+                    name="shop_cabinets",
+                    value=(Measurement(Fraction(shop), Unit.INCH, None),),
+                    status=EvidenceStatus.HUMAN_CONFIRMED,
+                    source="USER_INPUT",
+                ),
+            },
+        ).outcome
+
+    from verdict.operations import register_all
+
+    register_all()
+    for shop in (24, 25):
+        assert run(_previous_millimetre_rule(), shop) is run(_load_rule(), shop)
+    assert run(_load_rule(), 24) is Outcome.PASS
+    assert run(_load_rule(), 25) is Outcome.FAIL
