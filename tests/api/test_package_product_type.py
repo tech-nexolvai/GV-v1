@@ -192,7 +192,7 @@ def test_the_choices_are_the_products_the_published_rulebook_checks(session: Ses
         {
             "value": "countertop",
             "label": "Countertop",
-            "published_checks": 7,
+            "published_checks": 8,
         }
     ]
 
@@ -200,4 +200,4 @@ def test_the_choices_are_the_products_the_published_rulebook_checks(session: Ses
     choices = client.get("/api/v1/product-types").json()
     assert [choice["value"] for choice in choices] == ["countertop", "cabinet"]
     assert [choice["label"] for choice in choices] == ["Countertop", "Cabinets"]
-    assert [choice["published_checks"] for choice in choices] == [7, 2]
+    assert [choice["published_checks"] for choice in choices] == [8, 2]
