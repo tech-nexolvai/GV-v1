@@ -17,6 +17,7 @@ import pytest
         ("reviewer-markup", "covered by reviewer markup"),
         ("incomplete-row", "incomplete"),
         ("wall-layout-needed", "wall layout"),
+        ("not-asked", "no reader read this label"),
     ],
 )
 def test_reviewer_codes_have_plain_words(code: str, phrase: str) -> None:
@@ -31,6 +32,15 @@ def test_counter_break_outranks_only_one_reader() -> None:
     assert "tall appliance" in reviewer_reason(
         ["row-hold:counter-break", "row-partial"], "only one reader"
     )
+
+
+def test_a_held_rows_own_reason_outranks_not_asked() -> None:
+    """#1114: a label the readers were never asked about shows the row's hold, not a reader gap."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(["row-hold:counter-break", "not-asked"], "the readers were not asked")
+    assert words is not None and "tall appliance" in words
+    assert "only one reader" not in words.lower()
 
 
 def test_markup_never_quotes_interleaved_characters() -> None:

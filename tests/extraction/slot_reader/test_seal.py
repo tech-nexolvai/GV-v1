@@ -62,6 +62,7 @@ def seal(
     allow_stacked: bool = False,
     row_ambiguity: str | None = None,
     allow_claude_pair: bool = False,
+    held_before_reading: str | None = None,
 ) -> LabelOutcome:
     return seal_label(
         label,
@@ -71,6 +72,7 @@ def seal(
         allow_stacked=allow_stacked,
         row_ambiguity=row_ambiguity,
         allow_claude_pair=allow_claude_pair,
+        held_before_reading=held_before_reading,
     )
 
 
@@ -300,6 +302,35 @@ def test_a_reader_that_is_unsure_or_abstains_holds_the_reading() -> None:
     assert unsure.state is LabelState.REVIEW and unsure.reason_code == "unreadable"
     alone = seal(answers=(answer(QWEN, '2"'),))
     assert alone.state is LabelState.REVIEW and alone.reason_code == "one-reader-missing"
+    assert alone.reason == "only one reader"
+
+
+def test_a_glyph_label_no_reader_answered_is_not_called_one_reader() -> None:
+    """#1114: zero answers on a drawn label is its own case, never "only one reader"."""
+    outcome = seal(answers=())
+    assert outcome.state is LabelState.REVIEW and outcome.value is None
+    assert outcome.reason_code == "not-asked"
+    assert outcome.reason is not None and "only one reader" not in outcome.reason
+    assert "not-asked" in outcome.flags
+
+
+@pytest.mark.parametrize("label", [GLYPH, TEXT], ids=["glyph", "text"])
+def test_a_label_on_a_page_held_before_reading_carries_the_pages_hold(
+    label: PlannedLabel,
+) -> None:
+    """#1114: the page waited before any reader was asked; its labels say so, still held."""
+    outcome = seal(label, (), held_before_reading="a made-up bay sits in this row")
+    assert outcome.state is LabelState.REVIEW and outcome.value is None
+    assert outcome.reason_code == "not-asked"
+    assert outcome.reason == (
+        "the readers were not asked; this row waits: a made-up bay sits in this row"
+    )
+
+
+def test_a_text_label_whose_one_reader_did_not_answer_still_says_only_one_reader() -> None:
+    """The file's text is one source; a reader asked but silent leaves one, as before."""
+    outcome = seal(TEXT, ())
+    assert outcome.reason_code == "one-reader-missing" and outcome.reason == "only one reader"
 
 
 def test_both_readers_saying_no_dimension_is_not_a_dimension() -> None:

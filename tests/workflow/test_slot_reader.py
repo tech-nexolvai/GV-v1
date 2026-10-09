@@ -990,6 +990,33 @@ def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
     assert result.mapping.proposals == ()
 
 
+@pytest.mark.parametrize(
+    "drawing", [sheets.text_labels(PIECES, OVERALL), sheets.glyph_labels()], ids=["text", "glyph"]
+)
+def test_labels_on_a_page_held_before_reading_carry_the_hold_not_one_reader(
+    drawing: bytes,
+) -> None:
+    """#1114: a vendor counter-break word holds the row before any label is read; its labels say
+    the row waits, never "only one reader", and they stay held."""
+    page = slot_page(sheets.sheet(drawing + sheets.text(230, sheets.CHAIN_Y - 40, "OVEN")))
+    readers = FakeReaders(lambda _model, _png: '99"')
+
+    result = read(page, readers, claude_row_reader=True)
+
+    assert readers.requests == [], "a held page's labels cost no call"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.mapping.proposals == ()
+    owners = [*result.slots, *((result.overall,) if result.overall is not None else ())]
+    labelled = [owner for owner in owners if owner.labels]
+    assert labelled
+    for owner in labelled:
+        assert owner.outcome.state is LabelState.REVIEW and owner.outcome.value is None
+        assert owner.outcome.reason_code == "not-asked"
+        assert owner.outcome.reason == (
+            f"the readers were not asked; this row waits: {result.row_hold.reason}"
+        )
+
+
 def test_reader_only_counter_break_word_does_not_count_as_vendor_ink() -> None:
     page = slot_page(sheets.sheet(text_labels()))
     lookup = crops_to_texts(page, TEXTS)

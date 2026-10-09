@@ -1159,9 +1159,9 @@ def read_slot_pages(
         return found
 
     row_answers = run_jobs(row_jobs) if row_jobs else {}
-    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, bool]] = (
-        []
-    )
+    planned: list[
+        tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, RowHold | None]
+    ] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
     walls_asked: dict[int, WallQuestion] = {}
@@ -1203,18 +1203,27 @@ def read_slot_pages(
         owner_candidate_ids[page.page_index] = page_candidate_ids
         # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
         # never become a proposal, so it is not read at paid prices; the hold is applied below
-        # exactly as before. Claude path only.
+        # exactly as before, and its labels say the row waits, not "only one reader" (#1114).
+        # Claude path only.
         held_before_reading = (
-            runtime.claude_row_reader
-            and plan.row is not None
-            and _counter_break_row_hold(page, plan, (), runtime) is not None
+            _counter_break_row_hold(page, plan, (), runtime)
+            if runtime.claude_row_reader and plan.row is not None
+            else None
         )
         planned.append((page, plan, source_plan, row_choice, row_number, held_before_reading))
         jobs.extend(
-            label_jobs(page, plan, source_plan, page_candidate_ids, held=held_before_reading)
+            label_jobs(
+                page,
+                plan,
+                source_plan,
+                page_candidate_ids,
+                held=held_before_reading is not None,
+            )
         )
         wall_pictures_for = (
-            None if held_before_reading else _wall_job_pictures(page, plan, runtime.wall_settings)
+            None
+            if held_before_reading is not None
+            else _wall_job_pictures(page, plan, runtime.wall_settings)
         )
         if wall_pictures_for is not None:
             code_clues = _code_wall_clues(page, plan, wall_pictures_for)
@@ -1300,7 +1309,7 @@ def read_slot_pages(
     chain_jobs: list[CropJob] = []
     if runtime.claude_row_reader:
         for page, plan, _source_plan, _row_choice, _row_number, held in planned:
-            if held or plan.row is None:
+            if held is not None or plan.row is None:
                 continue
             chosen = [
                 _owner_result(
@@ -1355,10 +1364,14 @@ def read_slot_pages(
             if isinstance(answer, ReaderAnswer)
         )
     results: list[PageSlotResult] = []
-    for page, plan, source_plan, row_choice, row_number, _held in planned:
+    for page, plan, source_plan, row_choice, row_number, held in planned:
 
         def owner_result(
-            owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
+            owner: PlannedOwner,
+            count: int,
+            page: SlotPage = page,
+            plan: SlotPlan = plan,
+            held: RowHold | None = held,
         ) -> OwnerResult:
             return _owner_result(
                 page,
@@ -1369,6 +1382,7 @@ def read_slot_pages(
                 answers=label_answers,
                 runtime=runtime,
                 wall_ends=wall_ends(page),
+                held_before_reading=None if held is None else held.reason,
             )
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
@@ -1968,8 +1982,12 @@ def _owner_result(
     runtime: SlotReaderRuntime,
     wall_ends: frozenset[WallEnd],
     row_key: str = "",
+    held_before_reading: str | None = None,
 ) -> OwnerResult:
-    """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind."""
+    """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind.
+
+    `held_before_reading` is the page's hold reason when its labels were never sent (#1114).
+    """
     height = page.rows.ink.height
     labels: list[LabelResult] = []
     for position, label in enumerate(owner.labels):
@@ -1989,6 +2007,7 @@ def _owner_result(
             allow_stacked=runtime.allow_stacked,
             row_ambiguity=plan.ambiguity,
             allow_claude_pair=runtime.claude_row_reader,
+            held_before_reading=held_before_reading,
         )
         labels.append(LabelResult(label, sealed, box_px, crop_px))
     outcome = owner_outcome([item.outcome for item in labels])
