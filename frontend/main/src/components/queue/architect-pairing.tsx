@@ -71,8 +71,15 @@ export function ArchitectPairingPanel({
     }
     setSaving(true);
     setProblem(null);
+    // The record on screen (#1101): if a colleague has saved a newer one since, the server says 409
+    // and records nothing, instead of this save silently superseding theirs.
+    const shown = data?.current?.record_id;
     try {
-      await saveArchitectPairing(projectId, packageId, row.row_id, { pairs, note: note.trim() || null });
+      await saveArchitectPairing(projectId, packageId, row.row_id, {
+        pairs,
+        note: note.trim() || null,
+        ...(shown ? { expected_record_id: shown } : {}),
+      });
       onSaved();
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {

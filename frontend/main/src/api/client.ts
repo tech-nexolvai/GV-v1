@@ -960,13 +960,15 @@ export function getArchitectPairing(projectId: string, packageId: string, rowId:
 /**
  * Record a reviewer's pairing for one row, or `pairs: []` for "nothing on the architect's drawing is
  * comparable". Refusals come back as 422 with the reason; 409 means someone just changed it (reload).
- * The result counts only after the checks run again.
+ * `expected_record_id` names the record the reviewer was shown (#1101): if the row's pairing has moved
+ * on since, the server refuses with 409 and records nothing. The result counts only after the checks
+ * run again.
  */
 export function saveArchitectPairing(
   projectId: string,
   packageId: string,
   rowId: string,
-  body: { pairs: ArchitectPairIn[]; note: string | null },
+  body: { pairs: ArchitectPairIn[]; note: string | null; expected_record_id?: string },
 ) {
   return send<ArchitectPairing>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-pairing`, body);
 }

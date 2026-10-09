@@ -13,6 +13,11 @@ import { ReviewPage } from '@/pages/ReviewPage';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
+// The queue itself is tested in architect-match.test.tsx; here it only says "a pairing was saved".
+vi.mock('@/components/queue/needs-you-queue', () => ({
+  NeedsYouQueue: ({ open, onPairingSaved }: { open: boolean; onPairingSaved?: () => void }) =>
+    open ? <button type="button" onClick={() => onPairingSaved?.()}>Synthetic: save a pairing</button> : null,
+}));
 
 const exact = (numerator: string, display: string) => ({ numerator, denominator: '1', display });
 const row = (id: string, extra: Partial<CountertopResult> = {}): CountertopResult => ({
@@ -212,6 +217,45 @@ describe('ReviewPage: sign-off, then the signed report', () => {
     // Still exactly one approval, and nothing offers Sign off any more.
     expect(posts.filter((url) => url.endsWith('/approve'))).toHaveLength(1);
     expect(screen.queryByRole('button', { name: /^Sign off/ })).toBeNull();
+  });
+
+  // #1100: sign-off waits for a check run after a reviewer pairs architect dimensions. Two guards
+  // for the screen's side of it, true before #1101 and kept true.
+  const PAIRING_NEEDS_RERUN = "A reviewer paired the architect's dimensions after the last check run. Run the checks so the pairing is compared before signing off.";
+  function serveReadiness(readiness: () => ApprovalReadiness) {
+    const served = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input).endsWith('/approval-readiness') ? json(readiness()) : served(input, init));
+  }
+
+  it('after a pairing is saved, the page asks for a check run and offers no sign-off', async () => {
+    const user = userEvent.setup();
+    serveReadiness(() => ({ revision_id: 'rev', can_approve: false, blocking_findings: 1, blocking_finding_ids: ['f-a'], reason: '1 findings still need a valid reviewer decision or a check rerun after correction. Add a note when required.' }));
+    render(<Page />);
+    const header = screen.getByTestId('header-actions');
+    await user.click(await within(header).findByRole('button', { name: 'Review 1 item' }));
+    expect(within(header).queryByRole('button', { name: 'Run checks' })).toBeNull();
+    await user.click(await screen.findByRole('button', { name: 'Synthetic: save a pairing' }));
+
+    // The saved pairing turns the next step into a check run: the header stops offering the review
+    // and never offers sign-off; the stepper says why.
+    expect(await within(header).findByRole('button', { name: 'Run checks' })).toBeTruthy();
+    expect(within(header).queryByRole('button', { name: 'Review 1 item' })).toBeNull();
+    expect(within(header).queryByRole('button', { name: 'Sign off' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Sign off' })).toBeNull();
+    expect(screen.getAllByText('Values changed since the last run').length).toBeGreaterThan(0);
+    expect(posts.filter((url) => url.endsWith('/approve'))).toEqual([]);
+  });
+
+  it("while the server holds sign-off for a pairing, the panel shows its reason and Sign off stays off", async () => {
+    serveReadiness(() => ({ revision_id: 'rev', can_approve: false, blocking_findings: 0, blocking_finding_ids: [], reason: PAIRING_NEEDS_RERUN }));
+    render(<Page />);
+    const panel = await screen.findByRole('region', { name: 'Sign off' });
+    await waitFor(() => expect(within(panel).getByText('Not ready')).toBeTruthy());
+    expect(within(panel).getByText(PAIRING_NEEDS_RERUN)).toBeTruthy();
+    expect(within(panel).queryByText(/still need/)).toBeNull();
+    expect(within(panel).getByRole('button', { name: 'Sign off…' }).hasAttribute('disabled')).toBe(true);
+    expect(within(screen.getByTestId('header-actions')).getByRole('button', { name: 'Sign off' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('a refused sign-off keeps the dialog open and says nothing was signed', async () => {
