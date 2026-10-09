@@ -223,6 +223,68 @@ def test_an_architect_view_box_does_not_remove_a_neighbouring_vendor_row() -> No
     assert architect_row.y == Decimal(200)
 
 
+#: The architect's drawing's box in stored coordinates, round the rows at top 200 (y=100).
+ARCHITECT_BOX = StoredBox(
+    left=Decimal("0.1"), top=Decimal("0.55"), right=Decimal("0.9"), bottom=Decimal("0.8")
+)
+
+
+def test_a_feet_and_inches_row_inside_the_architect_box_says_so_whatever_its_first_reason() -> None:
+    """Membership is its own fact (#1052): the row's first reason is feet-and-inches, and it is
+    still marked as inside the architect's drawing, so the architect reader can keep it."""
+    feet_labels = (
+        _text(65, ROW_Y + 4, "1'-9\"")
+        + _text(130, ROW_Y + 4, "2'-6\"")
+        + _text(270, ROW_Y + 4, "2'-4\"")
+    )
+    rows = _rows(CHAIN + feet_labels, architect_boxes=(ARCHITECT_BOX,))
+
+    (row,) = [row for row in rows.rejected if len(row.slots) == 3]
+    assert row.rejected_because == "feet-and-inches: the architect's drawing, not the vendor's"
+    assert row.in_architect_view is True
+
+
+def test_a_one_slot_architect_row_is_kept_and_marked() -> None:
+    """An overall-only span — a unit's one printed width — is a span, not a chain, so never a
+    countertop candidate; inside the architect's drawing it is kept with its membership."""
+    span = _line(50, ROW_Y, 350) + _slash(50, ROW_Y) + _slash(350, ROW_Y)
+    span += _text(190, ROW_Y + 4, "3'-6\"")
+
+    rows = _rows(span, architect_boxes=(ARCHITECT_BOX,))
+
+    assert rows.candidates == ()
+    (row,) = rows.rejected
+    assert row.rejected_because == "one slot: a span, not a chain of pieces"
+    assert row.in_architect_view is True
+    label = row.slots[0].label
+    # The test font writes the apostrophe as a curly quote, as the client's fonts do.
+    assert label is not None and (label.text or "").replace("’", "'") == "3'-6\""
+
+
+def test_rows_outside_the_architect_box_and_rows_with_no_box_are_not_marked() -> None:
+    """A vendor row, and every row on a page whose drawings' roles nobody knows, are not marked:
+    the attribute changes nothing about which rows are candidates."""
+    vendor_y = 150.0
+    sheet = SHEET + _line(50, vendor_y, 350) + b"".join(_slash(x, vendor_y) for x in TICKS)
+    sheet += _text(70, vendor_y + 4, '12"') + _text(145, vendor_y + 4, '24"')
+    sheet += _text(270, vendor_y + 4, '36"')
+    inside = StoredBox(
+        left=Decimal("0.1"), top=Decimal("0.6"), right=Decimal("0.9"), bottom=Decimal("0.75")
+    )
+
+    marked = _rows(sheet, architect_boxes=(inside,))
+    unknown = _rows(sheet)
+
+    assert [row.y for row in marked.candidates] == [Decimal(150)]
+    assert all(row.in_architect_view is False for row in marked.candidates)
+    # The chain at top 200 and its overall at top 215 lie in the box; the vendor row does not.
+    assert {row.y for row in marked.rejected if row.in_architect_view} == {
+        Decimal(200),
+        Decimal(215),
+    }
+    assert all(row.in_architect_view is False for row in (*unknown.candidates, *unknown.rejected))
+
+
 def test_row_is_unchanged_when_drawing_roles_are_unknown() -> None:
     assert len(_rows(SHEET).candidates) == 1
 
