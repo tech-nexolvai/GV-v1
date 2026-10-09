@@ -36,6 +36,7 @@ from app.models.runs import ExtractionRun
 from app.models.verdicts import Finding, VerdictInput
 from app.review.row_location import (
     ARCHITECT_LABEL_REACH_PT,
+    ARCHITECT_LINE_MARGIN_PT,
     RowLocation,
     architect_location,
     architect_locations,
@@ -122,6 +123,13 @@ def test_the_reach_is_the_architect_readers_own() -> None:
     assert ARCHITECT_LABEL_REACH_PT == MEASURED_ARCHITECT_SETTINGS.label_reach_pt
 
 
+def test_the_line_margin_is_how_far_the_readers_tick_slashes_can_reach() -> None:
+    """A slash's centre is within `slash_reach_pt` of the line and it is at most `slash_maximum_pt`
+    across: its ends are never further from the line (or its tick) than the margin (#1068)."""
+    rows = MEASURED_ARCHITECT_SETTINGS.rows
+    assert ARCHITECT_LINE_MARGIN_PT == rows.slash_reach_pt + rows.slash_maximum_pt / 2
+
+
 # --- the outline, on the real reader's stored spans ------------------------------------------------
 
 #: The combined sheet's rows on the page, in PDF space: the drawing is pasted at 1:1 at ARCH_RECT.
@@ -152,9 +160,12 @@ def test_a_stored_span_is_outlined_from_tick_to_tick_over_its_line_and_label(
         assert _covers(location, _stored_pdf(session, candidate, x, line_y)), (text, x)
     for corner in _stored_label(session, candidate):
         assert _covers(location, corner), (text, corner)
-    # Tick to tick, not the whole drawing: nothing left of the left tick or right of the label.
+    # Tick to tick, not the whole drawing: nothing past the left tick's slash or right of the label.
     left, _top, right, _bottom = _corners(location)
-    outside_left = _stored_pdf(session, candidate, _X + Decimal(str(left_tick)) - 3, line_y)
+    past_slash = ARCHITECT_LINE_MARGIN_PT + 2
+    outside_left = _stored_pdf(
+        session, candidate, _X + Decimal(str(left_tick)) - past_slash, line_y
+    )
     assert outside_left.x < left
     assert right < _stored_pdf(session, candidate, _X + Decimal(str(right_tick)) + 30, line_y).x
 
@@ -199,6 +210,12 @@ def _variant(candidate: ObservationCandidate, **changes: object) -> ObservationC
 def _without_ticks(candidate: ObservationCandidate, *flags: str) -> list[str]:
     return [
         flag for flag in candidate.ambiguity_flags or () if not flag.startswith("arch-ticks:")
+    ] + list(flags)
+
+
+def _without_line(candidate: ObservationCandidate, *flags: str) -> list[str]:
+    return [
+        flag for flag in candidate.ambiguity_flags or () if not flag.startswith("arch-line:")
     ] + list(flags)
 
 
@@ -294,6 +311,167 @@ def test_a_candidate_on_another_page_gives_no_location(session: Session) -> None
     assert other is not None
 
     assert architect_location(candidate, other, run) is None
+
+
+# --- tight to the stored line (#1068) -------------------------------------------------------------
+
+
+def _label_pdf_ys(session: Session, candidate: ObservationCandidate) -> list[Decimal]:
+    page, run = _context(session, candidate)
+    transform = reading_transform(page, run)
+    assert transform is not None
+    return [transform.to_pdf(ImagePoint(int(x), int(y))).y for x, y in candidate.polygon]
+
+
+def _height(location: RowLocation | None) -> Decimal:
+    assert location is not None
+    _left, top, _right, bottom = _corners(location)
+    return bottom - top
+
+
+@pytest.mark.parametrize("text", sorted(_LINES))
+def test_with_its_line_a_span_is_outlined_tight_over_its_slashes_line_and_label(
+    session: Session, store: LocalStore, text: str
+) -> None:
+    _extract(session, store, _upload(session, store, combined_sheet()))
+    candidate = _by_text(_architect_rows(session))[text]
+    assert any(flag.startswith("arch-line:") for flag in candidate.ambiguity_flags)
+    line_y, left_tick, right_tick = _LINES[text]
+    ticks = (_X + Decimal(str(left_tick)), _X + Decimal(str(right_tick)))
+
+    location = architect_locations(session, (candidate.id,))[candidate.id]
+
+    # Each tick is a slash 4 pt across, centred on the line (`combined_sheet._slash`): all its ends.
+    for x in ticks:
+        for dx, dy in ((-2, -2), (2, 2), (-2, 2), (2, -2), (0, 0)):
+            assert _covers(location, _stored_pdf(session, candidate, x + dx, line_y + dy)), (x, dy)
+    for corner in _stored_label(session, candidate):
+        assert _covers(location, corner), (text, corner)
+    # Tight: no further than the margin below the line (the label is above it here) or above the
+    # label, where the band of 12 pt around the label reached.
+    label_top = max(_label_pdf_ys(session, candidate))
+    beyond = ARCHITECT_LINE_MARGIN_PT + 2
+    middle = ticks[0] + 5
+    assert not _covers(location, _stored_pdf(session, candidate, middle, line_y - beyond))
+    assert not _covers(location, _stored_pdf(session, candidate, middle, label_top + beyond))
+    band = architect_location(
+        _variant(candidate, ambiguity_flags=_without_line(candidate)), *_context(session, candidate)
+    )
+    assert _height(location) < _height(band)
+
+
+def test_a_value_stored_before_the_line_height_keeps_the_band(
+    session: Session, store: LocalStore
+) -> None:
+    """Old data: no `arch-line:` flag, so the band of the reader's reach around the label."""
+    _extract(session, store, _upload(session, store, combined_sheet()))
+    candidate = _by_text(_architect_rows(session))["3' - 4\""]
+    old = _variant(candidate, ambiguity_flags=_without_line(candidate))
+
+    location = architect_location(old, *_context(session, candidate))
+
+    assert location is not None
+    ys = _label_pdf_ys(session, candidate)
+    label_middle = (min(ys) + max(ys)) / 2
+    x = _X + LEFT + 5
+    for y in (label_middle - ARCHITECT_LABEL_REACH_PT, label_middle + ARCHITECT_LABEL_REACH_PT):
+        assert _covers(location, _stored_pdf(session, candidate, x, y))
+
+
+#: `_architect_value`'s page is 792 pt tall and read at 150 dpi: a pixel is 0.48 pt. Two rows' labels
+#: 44 pixels (21.12 pt) apart, each line 2.8 pt below its label: the lower row's label is 11.12 pt
+#: below the upper row's line, inside the 12 pt band.
+_UPPER = ((300, 200, 400, 215), "arch-line:106")
+_LOWER = ((300, 244, 400, 259), "arch-line:127.12")
+
+
+def _stacked(session: Session, *, with_lines: bool) -> tuple[RowLocation, RowLocation]:
+    package_id, anchors = _sealed_rows(session)
+    del package_id
+    run = _architect_drawing(session, anchors[0])
+    placed = []
+    for slot, (box, line) in enumerate((_UPPER, _LOWER)):
+        candidate = _architect_value(
+            session,
+            run,
+            anchors[0],
+            "3' - 7\"",
+            slot=slot,
+            box=box,
+            extra_flags=(line,) if with_lines else (),
+        )
+        location = architect_location(candidate, *_context(session, candidate))
+        assert location is not None
+        placed.append(location)
+    return placed[0], placed[1]
+
+
+def _overlap(first: RowLocation, second: RowLocation) -> bool:
+    a_left, a_top, a_right, a_bottom = _corners(first)
+    b_left, b_top, b_right, b_bottom = _corners(second)
+    return a_left < b_right and b_left < a_right and a_top < b_bottom and b_top < a_bottom
+
+
+def test_rows_stacked_inside_the_band_no_longer_overlap_with_their_lines(session: Session) -> None:
+    upper, lower = _stacked(session, with_lines=True)
+
+    assert not _overlap(upper, lower)
+
+
+def test_rows_stacked_inside_the_band_overlap_without_their_lines(session: Session) -> None:
+    """Why the line height is stored: with only the band, the two outlines overlap."""
+    upper, lower = _stacked(session, with_lines=False)
+
+    assert _overlap(upper, lower)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param(("arch-line:abc",), id="not a number"),
+        pytest.param(("arch-line:",), id="empty"),
+        pytest.param(("arch-line:106:3",), id="two numbers"),
+        pytest.param(("arch-line:NaN",), id="not finite"),
+        pytest.param(("arch-line:Infinity",), id="infinite"),
+        pytest.param(("arch-line:-5",), id="above the page"),
+        pytest.param(("arch-line:99999",), id="below the page"),
+        pytest.param(("arch-line:300",), id="out of the label's reach"),
+        pytest.param(("arch-line:112", "arch-line:113"), id="two line records"),
+    ],
+)
+def test_a_malformed_line_height_keeps_the_band(session: Session, flags: tuple[str, ...]) -> None:
+    candidate = _stored_span(session)
+    page, run = _context(session, candidate)
+    band = architect_location(
+        _variant(candidate, ambiguity_flags=_without_line(candidate)), page, run
+    )
+    assert band is not None
+
+    changed = _variant(candidate, ambiguity_flags=_without_line(candidate, *flags))
+
+    assert architect_location(changed, page, run) == band
+
+
+def test_a_well_formed_line_height_is_used(session: Session) -> None:
+    """The control for the malformed cases: the synthetic label sits 96 to 110.4 pt down the page;
+    a line 2 pt below it gives a box that ends a margin below the line, not where the band does."""
+    candidate = _stored_span(session)
+    page, run = _context(session, candidate)
+    band = architect_location(
+        _variant(candidate, ambiguity_flags=_without_line(candidate)), page, run
+    )
+
+    tight = architect_location(
+        _variant(candidate, ambiguity_flags=_without_line(candidate, "arch-line:112.4")), page, run
+    )
+
+    assert tight is not None and tight != band
+    beyond_line = Decimal(792) - (Decimal("112.4") + ARCHITECT_LINE_MARGIN_PT + 2)
+    assert not _covers(tight, _stored_pdf(session, candidate, Decimal(140), beyond_line))
+    for corner in _stored_label(session, candidate):
+        assert _covers(tight, corner)
+    for x in (Decimal(110), Decimal(170)):
+        assert _covers(tight, _stored_pdf(session, candidate, x, Decimal(792) - Decimal("112.4")))
 
 
 # --- the pairing picker ---------------------------------------------------------------------------
@@ -435,6 +613,37 @@ def test_reading_the_compared_locations_changes_no_outcome_or_decision(
 
     assert _results(session, package_id) == first
     assert _snapshot(session) == before
+
+
+def test_the_line_height_changes_no_outcome_and_only_tightens_the_compared_box(
+    session: Session, tmp_path: Path
+) -> None:
+    """The same value compared with and without `arch-line:`: identical outcomes and reasons, and
+    the compared dimension is outlined tighter with the line (#1068)."""
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    old = _architect_value(session, run, anchors[0], "3' - 7\"")
+    new = _architect_value(session, run, anchors[0], "3' - 7\"", extra_flags=("arch-line:112.4",))
+
+    def outcomes(candidate: ObservationCandidate) -> tuple[dict[str, object], dict[str, str]]:
+        found = _run(session, package_id, tmp_path, {anchors[0]: _pairing(_overall(candidate))})
+        session.commit()
+        compared = _results(session, package_id)[str(anchors[0])]["architect"]["compared"]
+        return (
+            {
+                f"{rule}/{scope}": (finding.outcome, finding.reason)
+                for rule, findings in found.items()
+                for scope, finding in findings.items()
+            },
+            compared[0]["architect_location"],
+        )
+
+    before, band = outcomes(old)
+    after, tight = outcomes(new)
+
+    assert after == before
+    assert tight == architect_location(new, *_context(session, new)).model_dump(mode="json")  # type: ignore[union-attr]
+    assert tight != band
 
 
 def test_reading_the_offered_locations_changes_no_pairing(session: Session) -> None:

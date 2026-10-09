@@ -15,7 +15,8 @@ for. This module writes its result down, behind `GV_ARCHITECT_READER_ENABLED`:
   its reason, so a person sees it and nothing can use it. Its polygon is the label's box, so
   `app/evidence/sides.py` places it inside the architect's drawing and gives it the ARCH side.
 * Flags carry what the pairing needs (#1052 T2): `arch-row:<rank>`, `arch-slot:<i>`,
-  `arch-ticks:<x0>:<x1>` in page points, `arch-scale:<pt per inch>|none`,
+  `arch-ticks:<x0>:<x1>` and `arch-line:<y>` (the height of the row's dimension line, #1068) in page
+  points in pdfplumber's frame, `arch-scale:<pt per inch>|none`,
   `arch-ticks-on-outline:yes|no|unknown`, `arch-view:<annotation>`, `arch-qualifier:<word>`, and
   `arch-held:<reason>` for a held span.
 
@@ -165,6 +166,7 @@ def persist_architect_pages(
                     f"arch-row:{architect_row.rank}",
                     f"arch-slot:{span.index}",
                     f"arch-ticks:{span.x0_pt}:{span.x1_pt}",
+                    f"arch-line:{architect_row.y}",
                     _scale_flag(architect_row.points_per_inch),
                     "arch-ticks-on-outline:"
                     + {True: "yes", False: "no", None: "unknown"}[span.on_outline],
