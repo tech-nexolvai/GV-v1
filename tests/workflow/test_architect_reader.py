@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import tempfile
 from collections.abc import Iterator
+from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
@@ -37,7 +38,7 @@ from app.models.runs import ExtractionRun
 from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
-from tests.extraction.architect.combined_sheet import combined_sheet
+from tests.extraction.architect.combined_sheet import ARCH_RECT, PAGE_HEIGHT, combined_sheet
 from tests.extraction.test_reader import MISSING_SPACE
 from vocabulary.semantic_types import DocumentRole
 from workflow.architect_reader import ARCHITECT_EXTRACTOR
@@ -181,6 +182,32 @@ def test_architect_values_are_stored_as_the_architects_with_their_flags(
     assert "arch-ticks-on-outline:no" in rows["1' - 5\""].ambiguity_flags
 
     assert ReadingSides(session).of(cabinet) is DocumentRole.ARCH
+
+
+def test_every_architect_value_carries_its_rows_line_height(
+    session: Session, store: LocalStore
+) -> None:
+    """`arch-line:<y>` (#1068): the height of the span's dimension line, in page points in
+    pdfplumber's frame (`top` downward), like `arch-ticks`, so a box can be drawn tight to it."""
+    _extract(session, store, _upload(session, store, combined_sheet()))
+
+    rows = _by_text(_architect_rows(session))
+    # The combined sheet pastes the architect's drawing 1:1 at ARCH_RECT: its rows at 40, 25 and
+    # 10 pt above the drawing's bottom are at these heights from the top of the page.
+    bottom = PAGE_HEIGHT - ARCH_RECT[1]
+    expected = {
+        "3' - 4\"": bottom - 40,
+        "2' - 2\"": bottom - 40,
+        "1' - 5\"": bottom - 25,
+        "2' - 7\"": bottom - 10,
+    }
+    assert set(expected) <= set(rows)
+    for candidate in _architect_rows(session):
+        lines = [flag for flag in candidate.ambiguity_flags if flag.startswith("arch-line:")]
+        assert len(lines) == 1, candidate.raw_text
+    for text, height in expected.items():
+        (line,) = [flag for flag in rows[text].ambiguity_flags if flag.startswith("arch-line:")]
+        assert Decimal(line.removeprefix("arch-line:")) == height, text
 
 
 def test_a_held_span_is_stored_with_its_reason_and_no_value(
