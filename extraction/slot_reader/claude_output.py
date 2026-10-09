@@ -34,6 +34,7 @@ from typing import Any, Final, Literal, get_args
 from extraction.form_reader.bedrock import MalformedFormAnswer, _response_text
 
 __all__ = [
+    "ARCH_PAIR_SCHEMA",
     "CLAUDE_EFFORTS",
     "COUNTER_BREAK_SCHEMA",
     "CROP_SCHEMA",
@@ -143,6 +144,18 @@ WALL_SCHEMA: Final = _object(
 )
 
 
+#: The architect-pairing question (#1053): for the vendor's overall and each vendor piece, the
+#: A-number of the architect dimension that measures the same physical thing, or 0. The ranges
+#: (0..A, one entry per vendor piece) are checked by the reader: the schema subset has no bounds.
+ARCH_PAIR_SCHEMA: Final = _object(
+    {
+        "overall": {"type": "integer"},
+        "pieces": {"type": "array", "items": {"type": "integer"}},
+        "why": _STRING,
+    }
+)
+
+
 def output_config(schema: Mapping[str, object], effort: str) -> dict[str, object]:
     """The `output_config` a Claude request carries: the answer's schema and the stated effort."""
     if effort not in CLAUDE_EFFORTS:
@@ -168,6 +181,8 @@ def _conforms(value: object, schema: Mapping[str, Any]) -> bool:
         return isinstance(value, bool)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "array":
+        return isinstance(value, list) and all(_conforms(item, schema["items"]) for item in value)
     return False
 
 

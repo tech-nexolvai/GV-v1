@@ -51,6 +51,7 @@ from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
 from extraction.product_context import product_context_line, with_product
 from extraction.slot_reader.claude_output import (
+    ARCH_PAIR_SCHEMA,
     COUNTER_BREAK_SCHEMA,
     CROP_SCHEMA,
     DEFAULT_CLAUDE_EFFORT,
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
     from extraction.slot_reader.anthropic import BatchSpendGuard
 
 __all__ = [
+    "ARCH_PAIR_PROMPT_ID",
     "CLAUDE_SPAN_PROMPT",
     "CLAUDE_SPAN_PROMPT_ID",
     "CLAUDE_SPAN_PROMPT_IDS",
@@ -85,15 +87,19 @@ __all__ = [
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
+    "ArchPairAnswer",
     "CounterBreakAnswer",
     "CropJob",
     "RowChoiceAnswer",
+    "arch_pair_prompt",
+    "build_arch_pair_request",
     "build_counter_break_request",
     "build_crop_request",
     "build_row_request",
     "build_wall_request",
     "crop_prompt_id",
     "parse_stored_reader_answer",
+    "read_arch_pair",
     "read_counter_break",
     "read_crop",
     "read_crops_parallel",
@@ -111,6 +117,9 @@ whose label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`). The two-picture wording i
 #: Earlier wordings, still recognised when a stored run is replayed.
 CLAUDE_SPAN_PROMPT_IDS: Final = frozenset({CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v1"})
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
+ARCH_PAIR_PROMPT_ID: Final = "arch-pair-v1"
+"""The architect-pairing question (#1053): asked of both Claude readers only when code cannot pair
+the architect's dimensions with the vendor's row by drawn position."""
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
 COUNTER_BREAK_PROMPT_IDS: Final = frozenset({COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v1"})
 
@@ -135,6 +144,40 @@ ROW_PROMPT: Final = (
     'with ONLY a JSON object: {"row": <number, or 0 if none of the boxes is it>, '
     '"why": "<one short sentence>"}'
 )
+
+
+def arch_pair_prompt(*, vendor_pieces: int, architect_spans: int) -> str:
+    """The architect-pairing question for one picture with `vendor_pieces` red and
+    `architect_spans` blue numbered marks (#1053).
+
+    It asks only which marked dimensions measure the same physical thing. It never asks for, or
+    lets the model use, a printed number: pairing by value is circular (it could only pair numbers
+    that already agree), and the comparison is exact arithmetic done afterwards by code.
+    """
+    if vendor_pieces < 1 or architect_spans < 1:
+        raise ValueError("an architect-pairing question needs at least one mark of each kind")
+    return (
+        "This sheet shows an architect's elevation and a vendor's cabinet shop drawing of the same "
+        "run of cabinets (black ink is the drawings'; ignore coloured reviewer marks). The vendor's "
+        "countertop row is outlined in red; its pieces are numbered "
+        f"V1 to V{vendor_pieces}, left to right, in the red tags. Some of the architect's "
+        "dimensions are outlined in blue and numbered "
+        f"A1 to A{architect_spans} in the blue tags. "
+        "Task: for each vendor piece, and for the vendor's whole run (from the left end of V1 to "
+        "the right end of the last piece), say which architect dimension measures the SAME "
+        "PHYSICAL THING: the same cabinet, filler, opening or run, judged only by where its two "
+        "ends are drawn. Do not compare, read or add up the printed numbers, and never pair two "
+        "dimensions because their numbers are equal or close: the numbers are compared later. "
+        "A dimension that runs to a fixture's centre line (an outlet, a sink, an appliance, an "
+        "artwork, a light) is never a cabinet width. Several vendor pieces may together measure "
+        "one architect dimension (the vendor split one cabinet or bay into pieces): give that "
+        "A-number for each of those pieces. Use 0 where the architect prints no dimension for the "
+        "same thing. Reply with ONLY a JSON object: "
+        '{"overall": <A-number for the whole run, or 0>, '
+        f'"pieces": [<A-number or 0 for V1>, ..., <for V{vendor_pieces}>], '
+        '"why": "<one short sentence>"}'
+    )
+
 
 COUNTER_BREAK_PROMPT: Final = (
     "Picture 1 is the vendor's full drawing view. Picture 2 is the same view close around the "
@@ -227,6 +270,25 @@ class RowChoiceAnswer:
     model_id: str
     row: int
     why: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArchPairAnswer:
+    """One reader's answer to the architect-pairing question: A-numbers, 0 for none (#1053)."""
+
+    model_id: str
+    overall: int
+    pieces: tuple[int, ...]
+    """One entry per vendor piece, V1 first."""
+    why: str
+
+
+class _ArchPairReply(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    overall: StrictInt
+    pieces: list[StrictInt]
+    why: StrictStr
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +421,152 @@ def build_row_request(
     else:
         request["inferenceConfig"]["temperature"] = 0
     return _with_claude_output(request, ROW_CHOICE_SCHEMA, claude_effort)
+
+
+def build_arch_pair_request(
+    *,
+    model_id: str,
+    picture_png: bytes,
+    vendor_pieces: int,
+    architect_spans: int,
+    max_tokens: int,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> dict[str, Any]:
+    """One numbered picture and the pairing question (#1053); Claude states its shape and effort."""
+    if not model_id.strip():
+        raise ValueError("an architect-pairing reader model id must be stated")
+    if not picture_png.startswith(_PNG_SIGNATURE):
+        raise ValueError("an architect-pairing question requires a rendered PNG picture")
+    if isinstance(max_tokens, bool) or max_tokens < 1:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": picture_png}}},
+                    {
+                        "text": arch_pair_prompt(
+                            vendor_pieces=vendor_pieces, architect_spans=architect_spans
+                        )
+                    },
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return _with_claude_output(request, ARCH_PAIR_SCHEMA, claude_effort)
+
+
+def read_arch_pair(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    picture_png: bytes,
+    page_index: int,
+    vendor_pieces: int,
+    architect_spans: int,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+    question_packet: Mapping[str, object] | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> ArchPairAnswer:
+    """Ask once, re-asking only a malformed answer: not one entry per vendor piece, or an A-number
+    outside the marks shown. Malformed twice raises `MalformedFormAnswer` (the job abstains)."""
+    for attempt in range(2):
+        request = build_arch_pair_request(
+            model_id=model_id,
+            picture_png=picture_png,
+            vendor_pieces=vendor_pieces,
+            architect_spans=architect_spans,
+            max_tokens=max_tokens,
+            claude_effort=claude_effort,
+        )
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ARCH_PAIR_PROMPT_ID,
+                    ARCH_PAIR_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
+        try:
+            raw = _response_text(response)
+            parsed = _ArchPairReply.model_validate(
+                _parsed_answer(model_id, response, raw, ARCH_PAIR_SCHEMA)
+            )
+            numbers = (parsed.overall, *parsed.pieces)
+            if len(parsed.pieces) != vendor_pieces:
+                raise MalformedFormAnswer("the answer does not give one entry per vendor piece")
+            if any(not 0 <= number <= architect_spans for number in numbers):
+                raise MalformedFormAnswer("the answer names an A-number that is not marked")
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ARCH_PAIR_PROMPT_ID,
+                    ARCH_PAIR_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "architect-pairing answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                ARCH_PAIR_PROMPT_ID,
+                ARCH_PAIR_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
+                question_packet=question_packet,
+            )
+        )
+        return ArchPairAnswer(
+            model_id=model_id,
+            overall=parsed.overall,
+            pieces=tuple(parsed.pieces),
+            why=parsed.why[:300],
+        )
+    raise AssertionError("unreachable")
 
 
 class _CounterBreakReply(BaseModel):
@@ -905,6 +1113,11 @@ class CropJob:
     question_packet: Mapping[str, object] | None = None
     upright_png: bytes | None = None
     """A grounded Claude span whose label is drawn sideways: its close-up turned upright (#1051)."""
+    arch_pair_question: bool = False
+    """The architect-pairing question (#1053): `png` is the one numbered picture, and
+    `vendor_pieces` / `architect_spans` say how many V and A marks it shows."""
+    vendor_pieces: int | None = None
+    architect_spans: int | None = None
 
     @property
     def pictures(self) -> tuple[bytes, ...]:
@@ -917,6 +1130,8 @@ class CropJob:
 
 
 def _job_prompt_id(job: CropJob, product: ProductType | None) -> str:
+    if job.arch_pair_question:
+        return ARCH_PAIR_PROMPT_ID
     if job.row_question:
         return ROW_PROMPT_ID
     if job.counter_break_question:
@@ -944,7 +1159,10 @@ def read_crops_parallel(
     spend_guard: BatchSpendGuard | None = None,
     pacer: ModelPacer | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
-) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None]:
+) -> dict[
+    tuple[str, str],
+    ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
+]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
     A Claude job whose picture the API would resize is not sent: it abstains, and its attempt is
@@ -983,7 +1201,7 @@ def read_crops_parallel(
         job: CropJob,
     ) -> tuple[
         tuple[str, str],
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None,
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
     ]:
         if is_claude_model(job.model_id):
             try:
@@ -1015,8 +1233,35 @@ def read_crops_parallel(
                     )
 
                     client = SpendLimitedClient(client, spend_guard)
-                answer: ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer
-                if job.row_question:
+                answer: (
+                    ReaderAnswer
+                    | WallAnswer
+                    | RowChoiceAnswer
+                    | CounterBreakAnswer
+                    | ArchPairAnswer
+                )
+                if job.arch_pair_question:
+                    pieces, spans = job.vendor_pieces, job.architect_spans
+                    if (
+                        isinstance(pieces, bool)
+                        or isinstance(spans, bool)
+                        or not isinstance(pieces, int)
+                        or not isinstance(spans, int)
+                    ):
+                        raise ValueError("an architect-pairing question must state its numbering")
+                    answer = read_arch_pair(
+                        client,
+                        model_id=job.model_id,
+                        picture_png=job.png,
+                        page_index=job.page_index,
+                        vendor_pieces=pieces,
+                        architect_spans=spans,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                        question_packet=job.question_packet,
+                        claude_effort=claude_effort,
+                    )
+                elif job.row_question:
                     count = job.candidate_count
                     if isinstance(count, bool) or not isinstance(count, int):
                         raise ValueError("a row question must record its candidate count")
@@ -1094,7 +1339,8 @@ def read_crops_parallel(
         raise AssertionError("unreachable")
 
     answers: dict[
-        tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None
+        tuple[str, str],
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
     ] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
         futures = [executor.submit(invoke, job) for job in jobs]
