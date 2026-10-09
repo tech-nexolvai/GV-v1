@@ -83,6 +83,14 @@ class ArchitectComparedOut(BaseModel):
     architect_display: str | None
     delta_display: str | None
     outcome: Outcome | None
+    architect_location: RowLocation | None = Field(
+        default=None,
+        description=(
+            "Where the compared architect dimension is on the drawing: its line from tick to tick "
+            "with its printed label, in the same stored space as `row_location`. Null when the "
+            "position the architect reader stored cannot be used exactly."
+        ),
+    )
 
 
 class ArchitectResultOut(BaseModel):

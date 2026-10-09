@@ -16,6 +16,7 @@ from app.auth import Action, Principal, require_action, require_project_access
 from app.evidence.sides import ReadingSides
 from app.models import (
     CheckRun,
+    EvidenceSupportingCandidate,
     Finding,
     Package,
     PackageRevision,
@@ -25,7 +26,7 @@ from app.models import (
     VerdictInput,
 )
 from app.review.approval import approval_readiness
-from app.review.row_location import row_locations
+from app.review.row_location import RowLocation, architect_locations, row_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectComparedOut,
@@ -293,6 +294,47 @@ def _pair_outcomes(trace: dict[str, Any]) -> dict[int, Outcome]:
     return found
 
 
+def _architect_positions(
+    session: Session, check_run_ids: list[UUID]
+) -> dict[UUID, dict[str, RowLocation]]:
+    """Where each architect operand the check recorded was read, by check run and operand name.
+
+    Followed through the recorded operand's own evidence (`VerdictInput.canonical_observation_id`
+    to its one primary supporting candidate, `workflow/architect_row_evidence.py`), never by
+    matching values and never through a pairing made after the check ran. Two statements for any
+    number of rows; an operand whose candidate is not exactly one, or cannot be placed, is left out.
+    """
+    if not check_run_ids:
+        return {}
+    supporting: dict[tuple[UUID, str], set[UUID]] = {}
+    for check_run_id, name, candidate_id in session.execute(
+        select(
+            VerdictInput.check_run_id,
+            VerdictInput.operand_name,
+            EvidenceSupportingCandidate.candidate_id,
+        )
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id
+            == VerdictInput.canonical_observation_id,
+        )
+        .where(
+            VerdictInput.check_run_id.in_(check_run_ids),
+            VerdictInput.operand_name.startswith("architect_"),
+            EvidenceSupportingCandidate.role == "primary",
+        )
+    ):
+        supporting.setdefault((check_run_id, name), set()).add(candidate_id)
+    single = {key: next(iter(ids)) for key, ids in supporting.items() if len(ids) == 1}
+    placed = architect_locations(session, set(single.values()))
+    positions: dict[UUID, dict[str, RowLocation]] = {}
+    for (check_run_id, name), candidate_id in single.items():
+        location = placed.get(candidate_id)
+        if location is not None:
+            positions.setdefault(check_run_id, {})[name] = location
+    return positions
+
+
 def _architect_block(
     session: Session,
     row: SlotRow,
@@ -302,6 +344,7 @@ def _architect_block(
     blocking: set[UUID],
     pairing_lookup: PairingLookup,
     sides: ReadingSides,
+    positions: dict[str, RowLocation] | None = None,
 ) -> ArchitectResultOut:
     """What the architect check recorded for this row, or why nothing was compared."""
     if finding is None:
@@ -346,6 +389,9 @@ def _architect_block(
                     pair_outcomes.get(position)
                     if decided
                     else Outcome(finding.outcome) if vendor is not None else None
+                ),
+                architect_location=(positions or {}).get(
+                    "architect_overall" if slot is None else f"architect_piece[{slot}]"
                 ),
             )
         )
@@ -446,6 +492,9 @@ def _countertop_results_for_revision(
             verdict_inputs_by_finding.setdefault(input_row.check_run_id, {})[
                 input_row.operand_name
             ] = input_row
+    positions = _architect_positions(
+        session, [finding.check_run_id for finding in architect_by_row.values()]
+    )
     row_ids = tuple(row.anchor.id for row in rows)
     locations = row_locations(session, row_ids)
     finding_ids = [finding.id for finding, _ in findings]
@@ -584,6 +633,11 @@ def _countertop_results_for_revision(
                     blocking=need_ids,
                     pairing_lookup=lookup,
                     sides=sides,
+                    positions=(
+                        None
+                        if (architect := architect_by_row.get(row.anchor.id)) is None
+                        else positions.get(architect.check_run_id)
+                    ),
                 ),
             )
         )
