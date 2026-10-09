@@ -183,4 +183,7 @@ def test_the_reviewer_layer_counts_where_it_overlaps_the_crop(
 
 def test_a_popup_is_never_counted_because_no_render_paints_it() -> None:
     """A `/Popup` is the closed bubble of a note; the page render never draws it."""
-    assert crop_shows_the_reviewer_layer((10, 10, 100, 100), [_note("Popup", ((0, 0), (500, 500)))]) is False
+    assert (
+        crop_shows_the_reviewer_layer((10, 10, 100, 100), [_note("Popup", ((0, 0), (500, 500)))])
+        is False
+    )
