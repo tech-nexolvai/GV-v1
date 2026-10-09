@@ -62,7 +62,7 @@ __all__ = [
 
 #: Prompt ids whose layout proposals represent two-reader agreement, not one answer. Kept local so
 #: the API does not import the extraction layer.
-READER_AGREEMENT_PROMPT_IDS: Final = frozenset({"slot-walls-v1"})
+READER_AGREEMENT_PROMPT_IDS: Final = frozenset({"slot-walls-v2", "slot-walls-v1"})
 DRAWING_CLUE_WALL_PROMPT_ID: Final = "slot-walls-drawing-clues-v1"
 DRAWING_CLUE_WALL_PROMPT_IDS: Final = frozenset({DRAWING_CLUE_WALL_PROMPT_ID})
 #: How the slot reader marks each row's wall candidate, and its outcome.

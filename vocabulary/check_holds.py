@@ -13,7 +13,8 @@ the width check's arithmetic does not apply.
 
 from __future__ import annotations
 
-from typing import Final
+from collections.abc import Iterable
+from typing import Final, overload
 
 STONE_SHORT_OF_ENDS: Final = (
     "stone-short-of-ends",
@@ -34,3 +35,24 @@ STONE_INTO_WALLS: Final = (
 CHECK_HOLD_REASONS: Final = {
     code: reason for code, reason in (STONE_SHORT_OF_ENDS, STONE_INTO_WALLS)
 }
+
+#: A counter-break reader that said no stone top is drawn over the row (`no_stone`, #1111) is
+#: recorded on the row's candidates as `no-stone:<model>`. It is a note, never a hold: it neither
+#: holds a row nor clears one, and it is named only in a reason the row already has.
+NO_STONE_FLAG: Final = "no-stone:"
+NO_STONE_NOTE: Final = "A reader also said no stone top is drawn over this row."
+
+
+@overload
+def with_no_stone_note(reason: str, flags: Iterable[str]) -> str: ...
+@overload
+def with_no_stone_note(reason: None, flags: Iterable[str]) -> None: ...
+@overload
+def with_no_stone_note(reason: str | None, flags: Iterable[str]) -> str | None: ...
+def with_no_stone_note(reason: str | None, flags: Iterable[str]) -> str | None:
+    """The row's reason with the no-stone note added; `None` stays `None` (a note adds no hold)."""
+    if reason is None or NO_STONE_NOTE in reason:
+        return reason
+    if not any(flag.startswith(NO_STONE_FLAG) for flag in flags):
+        return reason
+    return f"{reason} {NO_STONE_NOTE}"

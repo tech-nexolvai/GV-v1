@@ -119,7 +119,7 @@ from extraction.slot_reader.walls import (
     seal_walls,
     wall_pictures,
 )
-from vocabulary.check_holds import STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
+from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.semantic_types import ProductType
 from workflow.form_reader import FormReaderRuntime
 from workflow.layout_proposals import (
@@ -448,6 +448,10 @@ class PageSlotResult:
     """The row the readers chose, when it had nothing printed on any piece and its widths are read
     from the vendor's `X"(N EQ)` chain for the same run (#1086); `plan.row` is then that chain.
     `None` otherwise."""
+    no_stone_readers: tuple[str, ...] = ()
+    """The counter-break readers that said no stone top is drawn over the row (`no_stone`, #1111).
+    Recorded on the row as `no-stone:<model>` and named in its reason text; it holds nothing and
+    clears nothing."""
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -1557,6 +1561,9 @@ def read_slot_pages(
                     else None
                 ),
                 read_through=read_through,
+                no_stone_readers=tuple(
+                    answer.model_id for answer in line_answers if answer.stone_ends == "no_stone"
+                ),
             )
         )
     if architect is not None:
@@ -1595,7 +1602,9 @@ def _stone_end_hold(
 
     Code first: a line the vendor labels "wall to wall" that sits inside both ends of the row
     means the stone runs past the wall faces. Then either reader saying the stone stops short of
-    an end, or runs into the walls.
+    an end, or runs into the walls. `to_walls`, `open_end` (an end with no wall at all, #1111),
+    `no_stone` and `unsure` hold nothing here: an open end's field cut is the wall layout's
+    question, and `no_stone` is only recorded on the row (`no_stone_readers`).
     """
     row = plan.row
     if row is None:
@@ -2165,6 +2174,7 @@ def persist_slot_readings(
                 flags.append(f"check-hold:{result.check_hold.code}")
             if result.read_through is not None:
                 flags.append(f"equal-shares-for-row-rank:{result.read_through.rank}")
+            flags.extend(f"{NO_STONE_FLAG}{model}" for model in result.no_stone_readers)
             if owner.kind is not None:
                 flags.append(f"kind:{owner.kind.kind.value}")
                 flags.append(f"kind-evidence:{owner.kind.evidence}")

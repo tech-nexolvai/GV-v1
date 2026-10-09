@@ -957,7 +957,7 @@ def test_claude_line_question_holds_a_line_drawn_tall_appliance() -> None:
     assert result.mapping.proposals == ()
     assert {model for model, _row, _view in readers.counter_break_requests} == {OPUS, SONNET}
     assert len(readers.counter_break_requests) == 2
-    assert sum(attempt.prompt_id == "claude-counter-break-v2" for attempt in attempts) == 2
+    assert sum(attempt.prompt_id == "claude-counter-break-v3" for attempt in attempts) == 2
 
 
 def test_claude_line_question_two_no_answers_leave_the_row_unchanged() -> None:
@@ -1727,7 +1727,7 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     ).one()
     assert proposal.discriminator_name == "wall_config"
     assert proposal.proposed_value == "back_left_right"
-    assert proposal.prompt_id == "slot-walls-v1"
+    assert proposal.prompt_id == "slot-walls-v2"
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
@@ -2098,6 +2098,118 @@ def test_a_stone_ending_at_the_walls_is_not_held() -> None:
 
     assert result.row_hold is None and result.check_hold is None
     assert result.mapping.proposals
+
+
+def _to_walls(_model: str) -> Mapping[str, object]:
+    return {"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "walls both ends"}
+
+
+def test_an_open_end_holds_nothing_and_changes_nothing_a_wall_end_would_not() -> None:
+    """#1111: `open_end` (an end with no wall at all) behaves like `to_walls` for the hold: no
+    new hold, and the walls, mapping and proposals are exactly what `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "open_end" if model == SONNET else "to_walls",
+            "why": "open floor beyond the right end",
+        }
+    )
+
+    assert result.row_hold is None and result.check_hold is None
+    assert result.no_stone_readers == ()
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome, "no new automation path"
+
+
+def test_a_reader_saying_no_stone_is_recorded_but_holds_and_clears_nothing() -> None:
+    """#1111: `no_stone` was ignored; it is now kept on the row (`no_stone_readers`) and adds no
+    hold and no automation: walls, mapping and proposals stay exactly as `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == SONNET else "to_walls",
+            "why": "no countertop line over the cabinets",
+        }
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    assert result.row_hold is None and result.check_hold is None
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome
+    assert baseline.no_stone_readers == ()
+
+
+def test_a_no_stone_answer_is_never_a_reason_to_lift_a_hold() -> None:
+    """A reader's `no_stone` next to the other's `short_of_ends` keeps the hold."""
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == OPUS else "short_of_ends",
+            "why": "synthetic",
+        }
+    )
+
+    assert result.check_hold is not None and result.check_hold.code == "stone-short-of-ends"
+    assert result.no_stone_readers == (OPUS,)
+
+
+def test_the_wall_and_counter_break_marks_are_magenta_never_a_reviewer_red() -> None:
+    """#1111: the prompts name our marks magenta and call red or yellow reviewer markup; the
+    pictures for these two questions carry magenta marks and no red."""
+    from evidence.crop import decode_rgb_png
+    from extraction.slot_reader.bedrock import COUNTER_BREAK_PROMPT
+    from extraction.slot_reader.walls import WALL_PROMPT
+
+    page = slot_page(sheets.sheet(sheets.text_labels()))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png], counter_break=_to_walls)
+    base = runtime(readers, claude_row_reader=True)
+    read_slot_pages([page], runtime=base, record_attempt=lambda _attempt: None)
+
+    pictures = [
+        png
+        for _model, *pngs in (*readers.wall_requests, *readers.counter_break_requests)
+        for png in pngs
+    ]
+    assert readers.wall_requests and readers.counter_break_requests and pictures
+    magenta, red, crimson = (230, 0, 200), (255, 0, 0), (220, 20, 60)
+    for png in pictures:
+        _width, _height, rgb = decode_rgb_png(png)
+        colours = {tuple(rgb[i : i + 3]) for i in range(0, len(rgb), 3)}
+        assert magenta in colours
+        assert red not in colours and crimson not in colours
+    for prompt in (WALL_PROMPT, COUNTER_BREAK_PROMPT):
+        assert "magenta" in prompt and "Red or yellow marks are a reviewer's markup" in prompt
+
+
+def test_a_no_stone_answer_is_stored_as_a_flag_on_the_rows_readings(session: Any) -> None:
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = claude_crops_to_texts(page, TEXTS)
+        return FakeReaders(
+            lambda _model, png: lookup[png],
+            counter_break=lambda model: {
+                "contains_tall_appliance": False,
+                "stone_ends": "no_stone" if model == SONNET else "to_walls",
+                "why": "synthetic",
+            },
+        )
+
+    _revision, run, result, _count = _read_persisted(
+        session, sheets.sheet(sheets.text_labels()), readers, claude_row_reader=True
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    stored = _by_slot(session, run)
+    readings = [row for key, row in stored.items() if key != "walls"]
+    assert readings
+    for row in readings:
+        assert f"no-stone:{SONNET}" in row.ambiguity_flags
+        assert f"no-stone:{OPUS}" not in row.ambiguity_flags
+        assert not any(flag.startswith("check-hold:") for flag in row.ambiguity_flags)
 
 
 def _fake_rows(
