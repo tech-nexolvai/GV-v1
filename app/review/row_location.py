@@ -2,8 +2,10 @@
 
 `architect_location` (#1066) outlines one architect span the architect reader stored
 (`workflow/architect_reader.py`): its ticks (`arch-ticks:<x0>:<x1>`, page points in pdfplumber's
-frame) and its printed label's box (the candidate's `image` polygon). Read-only; `None` whenever
-that geometry or the page's recorded transform is missing or malformed, never a guess.
+frame), the height of its dimension line (`arch-line:<y>`, same frame, #1068; absent on values
+stored before it) and its printed label's box (the candidate's `image` polygon). Read-only; `None`
+whenever the ticks, the label or the page's recorded transform are missing or malformed, never a
+guess.
 """
 
 from collections.abc import Collection, Sequence
@@ -23,9 +25,17 @@ from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
 
 #: How far from its dimension line the architect reader accepts a printed label, in page points
 #: (`MEASURED_ARCHITECT_SETTINGS.label_reach_pt` in `extraction/architect/reader.py`, which the
-#: control plane may not import; `tests/api/test_architect_locations.py` keeps the two equal). The
-#: reader does not store the line's height, so this band around the label is where it lies.
+#: control plane may not import; `tests/api/test_architect_locations.py` keeps the two equal). A
+#: value stored without its line's height (before #1068) is outlined with this band around its label,
+#: which is where its line lies.
 ARCHITECT_LABEL_REACH_PT: Final = Decimal(12)
+
+#: How far a tick's slash can reach from its tick and from its line, in page points: the reader
+#: takes a slash whose centre is within `slash_reach_pt` (1.6) of the line and which is at most
+#: `slash_maximum_pt` (6) across (`MEASURED_ARCHITECT_SETTINGS.rows`), so its ends are within
+#: 1.6 + 6 / 2. The tight outline (#1068) keeps this margin on every side so no slash is clipped;
+#: `tests/api/test_architect_locations.py` keeps it equal to the reader's settings.
+ARCHITECT_LINE_MARGIN_PT: Final = Decimal("4.6")
 
 
 class RowLocation(BaseModel):
@@ -200,17 +210,44 @@ def _label_pixels(candidate: ObservationCandidate) -> list[ImagePoint] | None:
     return corners
 
 
+def _line(flags: Sequence[str], page: Page) -> Decimal | None:
+    """The row's dimension line as a PDF `y`, from its one well-formed `arch-line:` record.
+
+    Stored in pdfplumber's frame (`top` down from the page's height), as the reader placed every
+    label (`extraction/reader.page_frame`, whose height is the page's `height_pt`). `None` for no
+    record, more than one, or one that is not a finite height on the page.
+    """
+    found = [flag.removeprefix("arch-line:") for flag in flags if flag.startswith("arch-line:")]
+    height = page.height_pt
+    if len(found) != 1 or not isinstance(height, Decimal) or not height.is_finite():
+        return None
+    try:
+        top = Decimal(found[0])
+    except InvalidOperation:
+        return None
+    if not top.is_finite() or not Decimal(0) <= top <= height:
+        return None
+    return height - top
+
+
 def architect_location(
     candidate: ObservationCandidate, page: Page, run: ExtractionRun
 ) -> RowLocation | None:
-    """Where one stored architect span is on its page: tick to tick, with its label.
+    """Where one stored architect span is on its page: tick to tick, with its line and label.
 
     Built in PDF space with the transform the reading was made under (`reading_transform`), the
-    way the reader placed the label (`extraction/reader.pixel_placement`): across, from the left
-    tick (or the label, if it overhangs) to the right one; up and down, the label's box and the band
-    of `ARCHITECT_LABEL_REACH_PT` around its centre, in which the reader found the line, widened by
-    one pixel for the label's rounding to whole pixels. `None` when the candidate is not the
-    architect reader's, is not on `page`, or any geometry is missing or malformed.
+    way the reader placed the label (`extraction/reader.pixel_placement`). Across, from the left
+    tick (or the label, if it overhangs) to the right one. Up and down:
+
+    * with its stored line (`arch-line:`, #1068): from the line to the far side of the label, and
+      `ARCHITECT_LINE_MARGIN_PT` on every side so the tick slashes are inside;
+    * without it (a value stored before #1068, or a line record that is malformed or not within the
+      reader's reach of the label): the label's box and the band of `ARCHITECT_LABEL_REACH_PT`
+      around its centre, in which the reader found the line.
+
+    Widened by one pixel for the label's rounding to whole pixels. `None` when the candidate is not
+    the architect reader's, is not on `page`, or its ticks, label or transform are missing or
+    malformed.
     """
     if (
         run.extractor != ARCHITECT_EXTRACTOR
@@ -218,7 +255,8 @@ def architect_location(
         or candidate.page_id != page.id
     ):
         return None
-    ticks = _ticks(candidate.ambiguity_flags or ())
+    flags = candidate.ambiguity_flags or ()
+    ticks = _ticks(flags)
     label = _label_pixels(candidate)
     transform = reading_transform(page, run)
     if ticks is None or label is None or transform is None or run.dpi is None:
@@ -228,19 +266,42 @@ def architect_location(
         label_xs = [corner.x for corner in corners]
         label_ys = [corner.y for corner in corners]
         middle = (min(label_ys) + max(label_ys)) / 2
-        reach = ARCHITECT_LABEL_REACH_PT + POINTS_PER_INCH / Decimal(run.dpi)
+        pixel = POINTS_PER_INCH / Decimal(run.dpi)
         left, right = min(ticks[0], *label_xs), max(ticks[1], *label_xs)
-        low, high = min(middle - reach, *label_ys), max(middle + reach, *label_ys)
-        points = [
+        line = _line(flags, page)
+        if line is not None and abs(line - middle) <= ARCHITECT_LABEL_REACH_PT + pixel:
+            margin = ARCHITECT_LINE_MARGIN_PT + pixel
+            low, high = min(line, *label_ys), max(line, *label_ys)
+        else:
+            margin = Decimal(0)
+            reach = ARCHITECT_LABEL_REACH_PT + pixel
+            low, high = min(middle - reach, *label_ys), max(middle + reach, *label_ys)
+        core = [
             transform.to_stored(transform.to_image(PdfPoint(x, y)))
             for x, y in ((left, low), (right, low), (right, high), (left, high))
         ]
+        points = [
+            transform.to_stored(transform.to_image(PdfPoint(x, y)))
+            for x, y in (
+                (left - margin, low - margin),
+                (right + margin, low - margin),
+                (right + margin, high + margin),
+                (left - margin, high + margin),
+            )
+        ]
     except (ArithmeticError, TypeError, ValueError):
         return None
-    if any(not value.is_finite() or value < 0 or value > 1 for point in points for value in point):
+    if any(not value.is_finite() or value < 0 or value > 1 for point in core for value in point):
         return None
-    top_left = StoredPoint(min(p.x for p in points), min(p.y for p in points))
-    bottom_right = StoredPoint(max(p.x for p in points), max(p.y for p in points))
+    if any(not value.is_finite() for point in points for value in point):
+        return None
+    # The margin may run past the page's edge, where nothing is drawn: kept on the page.
+    top_left = StoredPoint(
+        max(Decimal(0), min(p.x for p in points)), max(Decimal(0), min(p.y for p in points))
+    )
+    bottom_right = StoredPoint(
+        min(Decimal(1), max(p.x for p in points)), min(Decimal(1), max(p.y for p in points))
+    )
     if top_left.x == bottom_right.x or top_left.y == bottom_right.y:
         return None
     return RowLocation(
