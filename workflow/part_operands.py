@@ -135,6 +135,17 @@ def manual_run_pages(session: Session, revision_id: UUID) -> set[int]:
     )
 
 
+def reviewer_owned_pages(session: Session, revision_id: UUID) -> set[int]:
+    """Page indexes where a reviewer-owned (manual) countertop run is the source.
+
+    The same set the check stage yields slot-reader scopes to; the countertop results read it so a
+    page is not offered there for a decision the check never asks for (#1093).
+    """
+    return {
+        subject.page_index for subject in countertop_scopes(session, revision_id) or ()
+    } | manual_run_pages(session, revision_id)
+
+
 def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopScope, ...] | None:
     """Current confirmed vendor countertops, or None for the untouched legacy form path.
 

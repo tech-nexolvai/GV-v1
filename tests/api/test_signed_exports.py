@@ -412,3 +412,35 @@ def test_retry_is_project_scoped(session: Session, store: LocalStore, client: An
     package_id, _approval, _ = _legacy(session, store)
     response = client.post(f"/api/v1/projects/{uuid4()}/packages/{package_id}/signed-exports")
     assert response.status_code == 404
+
+
+def test_signed_report_lists_a_split_page_and_the_pages_with_no_countertop(
+    session: Session, store: LocalStore, client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The signed PDF and workbook carry what the countertop results say (#1093): the page the AIs
+    picked different lines on, held, and the pages both AIs found no countertop line on."""
+    from app.schemas.visual_ui import CountertopResultsOut, PageWithoutCountertopOut
+    from tests.reports.test_countertop_summary_reports import NONE_REASON, SPLIT_REASON, _split_item
+
+    package_id, approval, _ = _legacy(session, store)
+    base = f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+
+    def results(_db: Session, package: Any, revision: Any) -> CountertopResultsOut:
+        return CountertopResultsOut(
+            package_id=package,
+            revision_id=revision.id,
+            items=(_split_item(),),
+            pages_without_countertop=(PageWithoutCountertopOut(page_number=4, reason=NONE_REASON),),
+        )
+
+    monkeypatch.setattr("workflow.signed_outputs._countertop_results_for_revision", results)
+    assert client.post(base + "/signed-exports").status_code == 202
+    generate_signed_outputs(session, store, approval.id)
+    session.commit()
+
+    text = _text(client.get(base + "/report.pdf").content)
+    assert "Countertop row on page 3" in text and SPLIT_REASON in text
+    assert "PAGES WITH NO COUNTERTOP FOUND" in text and f"Page 4: {NONE_REASON}" in text
+    book = load_workbook(io.BytesIO(client.get(base + "/report").content))
+    assert SPLIT_REASON in [cell.value for row in book["Countertops"] for cell in row]
+    assert [cell.value for cell in book["No Countertop Found"][2]] == ["4", NONE_REASON]

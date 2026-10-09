@@ -73,8 +73,11 @@ def _package_rows(
     widths_add_up: bool = False,
     rows_per_page: int = 1,
     slot_flags: Callable[[int, int, str], list[str]] | None = None,
+    row_pages: tuple[int, ...] = (0, 1),
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
-    """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot."""
+    """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot.
+
+    `row_pages` are the page indexes (of 0 and 1) that get rows; `()` makes a run with none."""
     _publish_rulebook(session)
     project = Project(name="row-scoped API tests")
     session.add(project)
@@ -138,7 +141,7 @@ def _package_rows(
     session.flush()
 
     anchors: dict[int, UUID] = {}
-    for page_index in (0, 1):
+    for page_index in row_pages:
         for row_offset in range(rows_per_page):
             rank = str(row_offset * 2 + page_index + 1)
             slots = [

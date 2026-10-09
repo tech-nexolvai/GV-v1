@@ -39,6 +39,7 @@ from app.schemas.visual_ui import (
     CountertopResultsOut,
     ExactValueOut,
     HoldOut,
+    PageWithoutCountertopOut,
     ReviewerDecisionOut,
     WallLayoutOut,
 )
@@ -56,7 +57,15 @@ from workflow.architect_row_plan import (
     pairing_source_from_notes,
     plan_architect_row,
 )
-from workflow.slot_row_scope import SlotRow, candidate_is_sealed, candidate_value, slot_rows
+from workflow.part_operands import reviewer_owned_pages
+from workflow.slot_row_scope import (
+    ROW_CHOICE_SPLIT,
+    SlotRow,
+    UnchosenRowPage,
+    candidate_is_sealed,
+    candidate_value,
+    slot_rows_and_unchosen_pages,
+)
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -635,6 +644,58 @@ def countertop_results(
     return _countertop_results_for_revision(session, package_id, revision)
 
 
+#: Why a page whose countertop row was not chosen has no architect comparison (#1093).
+NO_ROW_CHOSEN: Final = (
+    "Not compared: no countertop line was chosen on this page, so nothing was read to compare "
+    "with the architect's drawing."
+)
+
+
+def _decision_out(decision: Any) -> ReviewerDecisionOut | None:
+    if decision is None:
+        return None
+    return ReviewerDecisionOut(
+        action=decision.action.action,
+        note=decision.action.note,
+        actor=decision.action.actor,
+        time=decision.action.created_at,
+        carried_over=decision.carried_over,
+        carried_from_finding_id=decision.carried_from_finding_id,
+    )
+
+
+def _split_page_item(
+    page: UnchosenRowPage, finding: Finding | None, decision: Any, need_ids: set[UUID]
+) -> CountertopResultOut:
+    """A page the AIs picked different countertop lines on (#1093): one held item, nothing read.
+
+    No pieces, no walls and no architect comparison, because no row was chosen to read. It needs the
+    reviewer until its check result is decided, exactly like a held row.
+    """
+    return CountertopResultOut(
+        finding_id=None if finding is None else finding.id,
+        row_id=page.record.id,
+        page_number=page.page_number,
+        label=page.label,
+        row_location=None,
+        outcome=None if finding is None else Outcome(finding.outcome),
+        reviewer_decision=_decision_out(decision),
+        needs_decision=finding is None or finding.id in need_ids,
+        printed_overall=None,
+        pieces=(),
+        field_cut_per_end=None,
+        field_cut_count=None,
+        expected_total=None,
+        delta=None,
+        wall_layout=WallLayoutOut(config=None, label=None, source="not established"),
+        agreement=AgreementFactsOut(
+            both_readers_agreed_on_row=False, values_agreed=(), code_clue_used=False
+        ),
+        hold=HoldOut(code=ROW_CHOICE_SPLIT, reason=page.reason),
+        architect=ArchitectResultOut(not_compared_reason=NO_ROW_CHOSEN),
+    )
+
+
 def _batched_pairings(session: Session, row_anchor_ids: list[UUID]) -> PairingLookup:
     """Every listed row's pairing read at once, answered row by row as a `PairingLookup`."""
     pairings = effective_architect_pairings(session, row_anchor_ids)
@@ -658,7 +719,11 @@ def _countertop_results_for_revision(
     compared; by default every such row's pairing record (#1053) is read in one batch
     (`effective_architect_pairings`), so the statement count does not grow with the rows.
     """
-    rows = slot_rows(session, revision.id)
+    # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
+    # is the source: the check asks nothing there, so neither does this list.
+    rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
+    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
+    unchosen = tuple(page for page in unchosen if page.page_number - 1 not in owned)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
@@ -796,18 +861,7 @@ def _countertop_results_for_revision(
                 label=row.label,
                 row_location=locations.get(row.anchor.id),
                 outcome=None if finding is None else Outcome(finding.outcome),
-                reviewer_decision=(
-                    None
-                    if decision is None
-                    else ReviewerDecisionOut(
-                        action=decision.action.action,
-                        note=decision.action.note,
-                        actor=decision.action.actor,
-                        time=decision.action.created_at,
-                        carried_over=decision.carried_over,
-                        carried_from_finding_id=decision.carried_from_finding_id,
-                    )
-                ),
+                reviewer_decision=_decision_out(decision),
                 needs_decision=finding is None or finding.id in need_ids,
                 printed_overall=_exact(overall),
                 printed_overall_location=overall_read[0],
@@ -851,7 +905,26 @@ def _countertop_results_for_revision(
                 ),
             )
         )
-    return CountertopResultsOut(package_id=package_id, revision_id=revision.id, items=tuple(items))
+    for page in unchosen:
+        if not page.split:
+            continue
+        finding = finding_by_row.get(page.record.id)
+        items.append(
+            _split_page_item(
+                page, finding, None if finding is None else decisions.get(finding.id), need_ids
+            )
+        )
+    return CountertopResultsOut(
+        package_id=package_id,
+        revision_id=revision.id,
+        # Stable: rows on one page keep their order; a split page sits among them by page number.
+        items=tuple(sorted(items, key=lambda item: item.page_number)),
+        pages_without_countertop=tuple(
+            PageWithoutCountertopOut(page_number=page.page_number, reason=page.reason)
+            for page in unchosen
+            if not page.split
+        ),
+    )
 
 
 __all__ = ["_countertop_results_for_revision", "countertop_results", "router"]

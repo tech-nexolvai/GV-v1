@@ -197,7 +197,12 @@ def record_finding(
             )
         ).scalar_one_or_none()
         flags = set(candidate.ambiguity_flags or []) if candidate is not None else set()
-        if candidate is None or "slot-reader" not in flags or "slot:0" not in flags:
+        # A vendor page whose countertop row the readers did not agree on (#1093) is scoped to its
+        # own "row not chosen" record. Nothing was read on it, so its result can carry no operand.
+        unchosen = "slot-reader-row-choice" in flags
+        if unchosen and (operands or architect_pairing is not None):
+            raise EvidenceMissing("a page whose countertop row was not chosen has nothing read")
+        if candidate is None or not (unchosen or ("slot-reader" in flags and "slot:0" in flags)):
             raise EvidenceMissing("the finding's row is not a selected vendor slot-reader row")
         latest_run_id = session.execute(
             select(ExtractionRun.id)
@@ -216,7 +221,7 @@ def record_finding(
             (flag for flag in flags if flag.startswith("row-rank:")),
             None,
         )
-        if row_rank is None:
+        if row_rank is None and not unchosen:
             raise EvidenceMissing("the finding's row has no stored row identity")
         for operand in operands.values():
             if operand.row_review_decision_id is not None:

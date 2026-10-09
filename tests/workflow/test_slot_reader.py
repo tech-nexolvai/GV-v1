@@ -1388,6 +1388,69 @@ def test_a_claude_zero_choice_persists_a_review_reason_and_numbered_picture(sess
     assert hashlib.sha256(store.objects[artifact.storage_key]).hexdigest() == artifact.sha256
 
 
+@pytest.mark.parametrize(
+    ("answers", "flags", "kind"),
+    [
+        (
+            {OPUS: {"row": 1, "why": "synthetic: the top line"}, SONNET: {"row": 0, "why": "-"}},
+            {"row-pick:opus-5-5:1", "row-pick:sonnet-5-5:0"},
+            "split",
+        ),
+        (
+            {OPUS: {"row": 0, "why": "synthetic: no countertop"}, SONNET: {"row": 0, "why": "-"}},
+            {"row-pick:opus-5-5:0", "row-pick:sonnet-5-5:0"},
+            "none",
+        ),
+        (
+            {OPUS: {"row": 1, "why": "synthetic: the top line"}, SONNET: {"no": "answer"}},
+            {"row-pick:opus-5-5:1", "row-pick:sonnet-5-5:none"},
+            "split",
+        ),
+    ],
+)
+def test_an_unselected_row_record_stores_each_readers_pick(
+    session: Any, answers: dict[str, dict[str, object]], flags: set[str], kind: str
+) -> None:
+    """Each reader's own pick rides on the record, so a split page is told from a "both said no
+    row" page by data, never by reason text (#1093)."""
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+    from workflow.slot_reader import persist_slot_readings
+    from workflow.slot_row_scope import unchosen_row_pages
+
+    revision, version, page_row, run = _scaffold(session)
+    page = replace(slot_page(named_sheet()), page_id=page_row.id, document_version_id=version.id)
+    readers = FakeReaders(lambda _model, _png: '2"', row=lambda model: answers[model])
+    form = replace(
+        runtime(readers).form,
+        reader_ids=(OPUS, SONNET),
+        calls_per_minute={OPUS: 6000, SONNET: 6000},
+        max_concurrent_calls=1,
+    )
+    configured = replace(runtime(readers), form=form, claude_row_reader=True)
+    (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    record = session.scalar(
+        select(ObservationCandidate).where(
+            ObservationCandidate.extraction_run_id == run.id,
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-row-choice"]),
+        )
+    )
+
+    assert record is not None
+    assert {flag for flag in record.ambiguity_flags if flag.startswith("row-pick:")} == flags
+    (unchosen,) = unchosen_row_pages(session, revision.id)
+    assert unchosen.record.id == record.id
+    assert unchosen.kind == kind
+
+
 def test_counter_break_row_persists_the_reason_but_no_form_proposals(session: Any) -> None:
     from sqlalchemy import select
 

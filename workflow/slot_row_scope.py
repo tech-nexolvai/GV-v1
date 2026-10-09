@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from fractions import Fraction
+from typing import Final, Literal
 from uuid import UUID
 
 from sqlalchemy import exists, select
@@ -52,6 +53,120 @@ class SlotRow:
         if self.row_number is not None:
             return f"Countertop row {self.page_number}.{self.row_number} on page {self.page_number}"
         return f"Countertop row on page {self.page_number}"
+
+
+#: The hold code the countertop results give a page whose row the readers did not agree on (#1093).
+ROW_CHOICE_SPLIT: Final = "row-choice-split"
+
+#: How the reader ends a reason it wrote itself for a page whose row it did not choose
+#: (`workflow/slot_reader.py:_agreed_row`), and its default when no reader answer was kept.
+_CODE_AUTHORED_ENDING: Final = "; the reviewer chooses"
+_CODE_AUTHORED_DEFAULT: Final = (
+    "No candidate row was selected; the reviewer must choose the countertop row."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class UnchosenRowPage:
+    """A vendor page the newest slot-reader run read no countertop row on (#1093).
+
+    `kind` is "split" when the readers did not name the same existing row (or one gave no answer):
+    nothing was read, and the page must reach the reviewer as a blocking item. It is "none" only
+    when every reader said the page has no countertop row; such a page is listed, not blocking.
+    `picks` are each reader's own pick (short model name, row number; 0 for "no row", `None` for no
+    answer), empty on a record written before #1093. `reason` is the plain sentence for the
+    reviewer; `stored_reason` is the record's own text.
+    """
+
+    record: ObservationCandidate
+    page_number: int
+    kind: Literal["split", "none"]
+    picks: tuple[tuple[str, int | None], ...]
+    reason: str
+    stored_reason: str | None
+
+    @property
+    def split(self) -> bool:
+        return self.kind == "split"
+
+    @property
+    def label(self) -> str:
+        return f"Countertop row on page {self.page_number}"
+
+
+def _row_picks(flags: frozenset[str]) -> tuple[tuple[str, int | None], ...] | None:
+    """The `row-pick:<model>:<n|none>` flags, sorted by model; `None` when a flag is malformed."""
+    picks: list[tuple[str, int | None]] = []
+    for flag in sorted(flag for flag in flags if flag.startswith("row-pick:")):
+        model, separator, pick = flag.removeprefix("row-pick:").rpartition(":")
+        if not separator or not model:
+            return None
+        if pick == "none":
+            picks.append((model, None))
+        elif pick.isdigit():
+            picks.append((model, int(pick)))
+        else:
+            return None
+    return tuple(picks)
+
+
+def _pick_words(pick: int | None) -> str:
+    if pick is None:
+        return "no answer"
+    return "no countertop line" if pick == 0 else f"line {pick}"
+
+
+def _classify(
+    flags: frozenset[str], stored_reason: str | None
+) -> tuple[Literal["split", "none"], tuple[tuple[str, int | None], ...]]:
+    """Split unless every reader said "no countertop row"; never the other way round on doubt."""
+    picks = _row_picks(flags)
+    if picks is None:
+        return "split", ()
+    if picks:
+        return ("none" if all(pick == 0 for _, pick in picks) else "split"), picks
+    # A record from before #1093 carries no picks. Its reason tells the two apart: the reader wrote
+    # its own reason, ending "; the reviewer chooses", for a disagreement or a missing answer; a
+    # "both said no row" record keeps the AI's own why. A record that names a row (`row-choice:N`,
+    # N > 0) read nothing on it, so it waits for the reviewer too.
+    choices = {flag.removeprefix("row-choice:") for flag in flags if flag.startswith("row-choice:")}
+    reason = (stored_reason or "").strip()
+    if (
+        choices != {"0"}
+        or not reason
+        or reason.endswith(_CODE_AUTHORED_ENDING)
+        or reason == _CODE_AUTHORED_DEFAULT
+    ):
+        return "split", ()
+    return "none", ()
+
+
+def _split_reason(picks: tuple[tuple[str, int | None], ...], stored_reason: str | None) -> str:
+    said = (
+        "; ".join(f"{model} picked {_pick_words(pick)}" for model, pick in picks)
+        if picks
+        else (stored_reason or "no reader answer was kept").removesuffix(_CODE_AUTHORED_ENDING)
+    )
+    return (
+        f"The two AIs did not agree on this page's countertop line ({said}), so nothing on it was "
+        "read or checked. The reviewer decides this page."
+    )
+
+
+def _unchosen_page(page_index: int, record: ObservationCandidate) -> UnchosenRowPage:
+    kind, picks = _classify(frozenset(record.ambiguity_flags or ()), record.review_reason)
+    return UnchosenRowPage(
+        record=record,
+        page_number=page_index + 1,
+        kind=kind,
+        picks=picks,
+        reason=(
+            _split_reason(picks, record.review_reason)
+            if kind == "split"
+            else (record.review_reason or "Both AIs found no countertop line on this page.")
+        ),
+        stored_reason=record.review_reason,
+    )
 
 
 def candidate_is_sealed(candidate: ObservationCandidate) -> bool:
@@ -106,9 +221,26 @@ def latest_row_decision(session: Session, row_candidate_id: UUID) -> SlotRowRevi
 
 def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
     """Return rows from only the newest slot-reader run; never combine pages or row ranks."""
+    return slot_rows_and_unchosen_pages(session, revision_id)[0]
+
+
+def unchosen_row_pages(session: Session, revision_id: UUID) -> tuple[UnchosenRowPage, ...]:
+    """Vendor pages of the newest slot-reader run whose countertop row was not chosen (#1093).
+
+    Each is the reader's `slot-reader-row-choice` record for that page, in page order. Only the
+    newest run counts, as for `slot_rows`; a record on a page that is not the vendor drawing is left
+    out, because no countertop is checked there.
+    """
+    return slot_rows_and_unchosen_pages(session, revision_id)[1]
+
+
+def slot_rows_and_unchosen_pages(
+    session: Session, revision_id: UUID
+) -> tuple[tuple[SlotRow, ...], tuple[UnchosenRowPage, ...]]:
+    """`slot_rows` and `unchosen_row_pages` from the same one read of the newest run's records."""
     run_id = latest_slot_reader_run(session, revision_id)
     if run_id is None:
-        return ()
+        return (), ()
     records = session.execute(
         select(Page.index, ObservationCandidate, Document.kind)
         .join(Page, Page.id == ObservationCandidate.page_id)
@@ -127,8 +259,13 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
     grouped: dict[tuple[int, str], list[ObservationCandidate]] = {}
     roles: dict[tuple[int, str], str] = {}
     walls: dict[tuple[UUID, str], ObservationCandidate] = {}
+    unchosen: list[UnchosenRowPage] = []
     for page_index, candidate, role in records:
         flags = set(candidate.ambiguity_flags or [])
+        if "slot-reader-row-choice" in flags:
+            if role == "shop":
+                unchosen.append(_unchosen_page(page_index, candidate))
+            continue
         rank = next(
             (flag.removeprefix("row-rank:") for flag in flags if flag.startswith("row-rank:")), None
         )
@@ -281,7 +418,7 @@ def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
     for row in output:
         number = 1 + sum(previous.page_number == row.page_number for previous in numbered)
         numbered.append(replace(row, row_number=number if counts[row.page_number] > 1 else None))
-    return tuple(numbered)
+    return tuple(numbered), tuple(unchosen)
 
 
 def candidate_value(candidate: ObservationCandidate) -> Fraction | None:

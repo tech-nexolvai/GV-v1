@@ -371,7 +371,7 @@ from workflow.slot_reader import (
     read_slot_pages,
 )
 from workflow.slot_row_evidence import slot_row_check
-from workflow.slot_row_scope import SlotRow, slot_rows
+from workflow.slot_row_scope import SlotRow, slot_rows_and_unchosen_pages
 from workflow.timing import TimingRecorder
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
@@ -6527,7 +6527,24 @@ class DatabaseStages:
 
         countertop_subjects = countertop_scopes(session, package_revision_id)
         has_slot_reader_rows = slot_reader_has_rows(session, package_revision_id)
-        slot_row_subjects = slot_rows(session, package_revision_id)
+        slot_row_subjects, unchosen_pages = slot_rows_and_unchosen_pages(
+            session, package_revision_id
+        )
+        # The reviewer-owned (manual) run is the source on its page; slot-reader scopes yield there.
+        manual_subjects = countertop_subjects or ()
+        manually_scoped_pages = {
+            subject.page_index for subject in manual_subjects
+        } | manual_run_pages(session, package_revision_id)
+        # A vendor page whose countertop row the readers did not agree on (#1093): nothing was read
+        # on it, so it becomes one blocking result of its own instead of vanishing from the review.
+        # A page where every reader said "no countertop row" is only listed (countertop results and
+        # the signed report), never a result.
+        split_row_pages = tuple(
+            page
+            for page in unchosen_pages
+            if page.split and page.page_number - 1 not in manually_scoped_pages
+        )
+        row_scoped = bool(slot_row_subjects) or bool(split_row_pages)
         partial_claude_row = (
             _latest_claude_row_is_partial(session, package_revision_id)
             if countertop_subjects is None
@@ -6591,7 +6608,7 @@ class DatabaseStages:
                     skipped += 1
                     continue
                 if abstention.rule_id == "CT-WIDTH-001" and (
-                    countertop_subjects is not None or slot_row_subjects
+                    countertop_subjects is not None or row_scoped
                 ):
                     # This rule must resolve its variant separately for each confirmed countertop.
                     continue
@@ -6689,7 +6706,7 @@ class DatabaseStages:
                     continue
                 if countertop_subjects is not None and rule_id == "CT-WIDTH-001":
                     continue
-                if rule_id == "CT-WIDTH-001" and countertop_subjects is None and slot_row_subjects:
+                if rule_id == "CT-WIDTH-001" and countertop_subjects is None and row_scoped:
                     continue
                 subjects: tuple[CountertopScope | None, ...] = (
                     countertop_subjects
@@ -6862,15 +6879,33 @@ class DatabaseStages:
         # deliberately untouched and takes precedence whenever a reviewer has made any run decision.
         # A slot row can use only its own complete values and its own drawing-clue wall layout, or a
         # wall/value decision explicitly saved against that row.
-        manual_subjects = countertop_subjects or ()
-        manually_scoped_pages = {
-            subject.page_index for subject in manual_subjects
-        } | manual_run_pages(session, package_revision_id)
-        if (
-            countertop_subjects is not None or slot_row_subjects
-        ) and ProductType.COUNTERTOP in in_scope:
+        # `manual_subjects` and `manually_scoped_pages` are read above, before the revision-wide pass.
+        if (countertop_subjects is not None or row_scoped) and ProductType.COUNTERTOP in in_scope:
             width_snapshot = store.latest("CT-WIDTH-001")
             if width_snapshot is not None:
+                for unchosen in split_row_pages:
+                    # One "needs you" result per split page (#1093). No operand and no arithmetic:
+                    # nothing was read. No architect check either, as there is no vendor row.
+                    record_finding(
+                        session,
+                        package_revision_id=package_revision_id,
+                        finding=Finding(
+                            rule_id="CT-WIDTH-001",
+                            outcome=Outcome.REVIEW_REQUIRED,
+                            severity=width_snapshot.rule.severity,
+                            reason=unchosen.reason,
+                            snapshot_id=width_snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
+                        ),
+                        operands={},
+                        parameter_set_ids=cited,
+                        defaults_set_id=defaults_set_id,
+                        defaults_canonical_json=defaults_canonical_json,
+                        missing=_declared_inputs(width_snapshot.rule),
+                        scope_row_candidate_id=unchosen.record.id,
+                        scope_label=unchosen.label,
+                    )
+                    written += 1
                 for row in slot_row_subjects:
                     if row.page_number - 1 in manually_scoped_pages:
                         # The reviewer-owned run remains the source on its page; a run on one page
