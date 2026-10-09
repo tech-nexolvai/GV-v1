@@ -26,12 +26,18 @@ export interface Crumb {
  */
 export function AppTopbar({
   title,
+  titleHeading = true,
   crumbs,
   titleRef,
   actionsRef,
 }: {
   /** The screen's name, for assistive technology and the window title. */
   title: string;
+  /**
+   * False when the screen shows its own `<h1>` (every page but an open review, #1125). On an open
+   * review this is the page's one `<h1>`, and the panels inside the review use `<h2>`.
+   */
+  titleHeading?: boolean;
   crumbs: Crumb[];
   titleRef: (element: HTMLDivElement | null) => void;
   actionsRef: (element: HTMLDivElement | null) => void;
@@ -44,7 +50,7 @@ export function AppTopbar({
       <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
         <SidebarTrigger aria-label="Toggle sidebar" />
         <Separator orientation="vertical" className="mr-1 hidden data-[orientation=vertical]:h-4 sm:block" />
-        <h1 className="sr-only">{title}</h1>
+        {titleHeading && <h1 className="sr-only">{title}</h1>}
         <Breadcrumb className="min-w-0">
           <BreadcrumbList className="flex-nowrap">
             {crumbs.map((crumb, index) => {
@@ -77,7 +83,8 @@ export function AppTopbar({
             })}
           </BreadcrumbList>
         </Breadcrumb>
-        <div ref={titleRef} className="hidden min-w-0 items-center gap-2 empty:hidden sm:flex" />
+        {/* The status never shrinks under the logo: the review's name gives way first (it truncates). */}
+        <div ref={titleRef} className="hidden shrink-0 items-center gap-2 empty:hidden sm:flex" />
       </div>
 
       {/* Under 640px there is no room for a centre column: the screen's action needs the space. */}

@@ -2,33 +2,37 @@
  * Start a review: who sent the drawings, what product they are for, the architect's set, and the
  * vendor's shop drawings.
  *
- * This is the first thing on the start screen, where a chat product puts its composer — starting a
- * review *is* the first message. It replaces a modal that opened with a made-up vendor already typed
- * in ("Apex Glass & Stone"), which is how a sample name ends up on a real package.
+ * The first thing on the start screen. It replaced a modal that opened with a made-up vendor already
+ * typed in ("Apex Glass & Stone"), which is how a sample name ends up on a real package. Since #1125
+ * it is built from the shadcn inputs, with two drop zones and a real "Start review" button that says
+ * what is still missing while it is disabled.
  *
  * The upload path is unchanged (`createPackage`): the browser hashes each file, the API hands back a
  * ticket, the bytes go straight to storage, and the API confirms them. While it runs, the progress
  * panel shows each drawing's real share of bytes sent and the step that is really running (#1064).
  */
 
-import { useRef, useState } from 'react';
-import { ArrowUp, FileText, Plus, X } from 'lucide-react';
-import { listProductTypes } from '../../api/client';
-import { createPackage } from '../../api/upload';
-import type { UploadProgress } from '../../api/upload';
-import { useAsync } from '../../api/useAsync';
+import { useId, useRef, useState } from 'react';
+import { ArrowRight, FileText, Upload, X } from 'lucide-react';
+import { listProductTypes } from '@/api/client';
+import { createPackage } from '@/api/upload';
+import type { UploadProgress } from '@/api/upload';
+import { useAsync } from '@/api/useAsync';
 import {
   defaultProductType,
   describeUploadFailure,
   looksLikeTheSameFile,
-} from '../../api/uploadState';
-import type { ProductType } from '../../api/uploadState';
-import { projectId } from '../../api/config';
+} from '@/api/uploadState';
+import type { ProductType } from '@/api/uploadState';
+import { projectId } from '@/api/config';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
+import { applyProgress, initialUploadView, type UploadView } from '@/lib/upload-progress';
 import { ProductTypeField } from './ProductTypeField';
 import type { ProductChoicesState } from './ProductTypeField';
 import { UploadProgressPanel } from './upload-progress';
-import { applyProgress, initialUploadView, type UploadView } from '../../lib/upload-progress';
-import './NewReviewForm.css';
 
 interface NewReviewFormProps {
   onCreated: (packageId: string) => void;
@@ -66,6 +70,8 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
   // hooks nested inside it on the next render.
   const architecturalInput = useRef<HTMLInputElement>(null);
   const shopInput = useRef<HTMLInputElement>(null);
+  const vendorId = useId();
+  const needId = useId();
 
   const productState: ProductChoicesState =
     products.status === 'ready'
@@ -135,7 +141,7 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
 
   if (running && view) {
     return (
-      <div className="new-review new-review--running">
+      <div data-tw className="rounded-xl border bg-card p-4 font-sans text-card-foreground shadow-xs sm:p-6">
         <UploadProgressPanel
           view={view}
           files={(Object.keys(SLOT_COPY) as Slot[])
@@ -148,125 +154,135 @@ export function NewReviewForm({ onCreated }: NewReviewFormProps) {
 
   return (
     <form
-      className="new-review"
+      data-tw
+      data-slot="new-review-form"
+      className="flex flex-col gap-5 rounded-xl border bg-card p-4 font-sans text-card-foreground shadow-xs sm:p-6"
       onSubmit={(event) => {
         event.preventDefault();
         void start();
       }}
     >
-      <label className="new-review__vendor">
-        <span className="new-review__label">Vendor</span>
-        <input
-          className="new-review__vendor-input"
+      <div className="flex flex-col gap-2">
+        <Label htmlFor={vendorId}>Vendor</Label>
+        <Input
+          id={vendorId}
           value={vendor}
           onChange={(event) => setVendor(event.target.value)}
-          placeholder="Who sent these drawings?"
+          placeholder="The company that sent the drawings"
           autoComplete="organization"
           required
         />
-      </label>
+      </div>
 
       <ProductTypeField state={productState} value={productType} onChange={setChosenProduct} />
 
-      <div className="new-review__slots">
-        {(Object.keys(SLOT_COPY) as Slot[]).map((slot) => {
-          const file = files[slot];
-          return (
-            <div
-              key={slot}
-              className="new-review__slot"
-              data-filled={file !== null}
-              data-drag={dragOver === slot}
-              onDragOver={(event) => {
-                event.preventDefault();
-                setDragOver(slot);
-              }}
-              onDragLeave={() => setDragOver(null)}
-              onDrop={(event) => {
-                event.preventDefault();
-                setDragOver(null);
-                choose(slot, event.dataTransfer.files?.[0]);
-              }}
-            >
-              <input
-                ref={slot === 'architectural' ? architecturalInput : shopInput}
-                type="file"
-                accept="application/pdf,.pdf"
-                hidden
-                onChange={(event) => {
-                  choose(slot, event.target.files?.[0]);
-                  event.target.value = '';
+      <fieldset className="flex min-w-0 flex-col gap-2">
+        <legend className="mb-2 text-sm font-medium">
+          Drawings <span className="font-normal text-muted-foreground">· one PDF in each box</span>
+        </legend>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(Object.keys(SLOT_COPY) as Slot[]).map((slot) => {
+            const file = files[slot];
+            return (
+              <div
+                key={slot}
+                data-drop-zone={slot}
+                data-filled={file !== null}
+                data-drag={dragOver === slot}
+                className={cn(
+                  'flex min-h-24 min-w-0 rounded-lg border border-dashed border-input transition-colors',
+                  file !== null && 'border-solid border-border bg-muted/50',
+                  dragOver === slot && 'border-solid border-foreground bg-accent',
+                )}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragOver(slot);
                 }}
-              />
-              {file === null ? (
-                <button
-                  type="button"
-                  className="new-review__slot-pick"
-                  onClick={() => (slot === 'architectural' ? architecturalInput : shopInput).current?.click()}
-                >
-                  <Plus size={16} aria-hidden="true" />
-                  <span className="new-review__slot-text">
-                    <span className="new-review__slot-title">{SLOT_COPY[slot].title}</span>
-                    <span className="new-review__slot-hint">{SLOT_COPY[slot].hint} · PDF</span>
-                  </span>
-                </button>
-              ) : (
-                <div className="new-review__file">
-                  <FileText size={16} aria-hidden="true" className="new-review__file-icon" />
-                  <span className="new-review__slot-text">
-                    <span className="new-review__slot-title">{SLOT_COPY[slot].title}</span>
-                    <span className="new-review__file-name" title={file.name}>
-                      {file.name} · {formatSize(file.size)}
-                    </span>
-                  </span>
+                onDragLeave={() => setDragOver(null)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setDragOver(null);
+                  choose(slot, event.dataTransfer.files?.[0]);
+                }}
+              >
+                <input
+                  ref={slot === 'architectural' ? architecturalInput : shopInput}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  hidden
+                  onChange={(event) => {
+                    choose(slot, event.target.files?.[0]);
+                    event.target.value = '';
+                  }}
+                />
+                {file === null ? (
                   <button
                     type="button"
-                    className="new-review__file-remove"
-                    onClick={() => setFiles((current) => ({ ...current, [slot]: null }))}
-                    aria-label={`Remove ${SLOT_COPY[slot].title}`}
+                    className="flex w-full flex-col items-center justify-center gap-1 rounded-lg p-4 text-center outline-none hover:bg-accent/60 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    onClick={() => (slot === 'architectural' ? architecturalInput : shopInput).current?.click()}
                   >
-                    <X size={14} />
+                    <Upload className="mb-1 size-5 text-muted-foreground" aria-hidden="true" />
+                    <span className="text-sm font-medium">{SLOT_COPY[slot].title}</span>
+                    <span className="text-xs text-muted-foreground">{SLOT_COPY[slot].hint}</span>
                   </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                ) : (
+                  <div className="flex w-full min-w-0 items-center gap-3 p-3">
+                    <FileText className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-sm font-medium">{SLOT_COPY[slot].title}</span>
+                      <span className="flex min-w-0 items-baseline gap-1 text-xs text-muted-foreground">
+                        <span className="truncate" title={file.name}>{file.name}</span>
+                        <span className="num shrink-0">· {formatSize(file.size)}</span>
+                      </span>
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="pointer-coarse:size-11"
+                      onClick={() => setFiles((current) => ({ ...current, [slot]: null }))}
+                      aria-label={`Remove ${SLOT_COPY[slot].title}`}
+                    >
+                      <X aria-hidden="true" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </fieldset>
 
-      <div className="new-review__foot">
-        <p className="new-review__need" aria-live="polite">
+      {slotError && (
+        <p className="text-sm text-destructive" role="alert">{slotError}</p>
+      )}
+
+      <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <p id={needId} className="text-sm text-muted-foreground" aria-live="polite">
           {ready && sameFile
             ? "You chose the same file twice. It will be read once, as one combined set, and you will confirm which drawings on it are the architect's and which are the vendor's."
             : ready
             ? 'Ready to upload. You will review the readings and any values still needed.'
             : `Add ${missing.join(', ').replace(/, ([^,]*)$/, ' and $1')}.`}
         </p>
-        <button
-          type="submit"
-          className="new-review__send"
-          disabled={!ready}
-          aria-label="Start review"
-          title="Start review"
-        >
-          <ArrowUp size={18} />
-        </button>
+        <Button type="submit" disabled={!ready} aria-describedby={needId} className="w-full shrink-0 sm:w-auto">
+          Start review <ArrowRight aria-hidden="true" />
+        </Button>
       </div>
 
-      {slotError && (
-        <p className="new-review__error" role="alert">{slotError}</p>
-      )}
       {error && (
-        <div className="new-review__error" role="alert">
-          <strong>The submission did not finish.</strong>{' '}
-          {savedPackageId
-            ? 'A document set was created and may contain an uploaded drawing. Open that set to inspect it; starting again here creates another set.'
-            : 'We could not confirm whether a document set was created. Check Documents before trying again.'}{' '}
-          <span className="new-review__error-detail">{error}</span>
+        <div className="flex flex-col items-start gap-2 rounded-lg border border-destructive/50 p-3 text-sm" role="alert">
+          <p>
+            <strong className="font-semibold">The submission did not finish.</strong>{' '}
+            {savedPackageId
+              ? 'A document set was created and may contain an uploaded drawing. Open that set to inspect it; starting again here creates another set.'
+              : 'We could not confirm whether a document set was created. Check Documents before trying again.'}
+          </p>
+          <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{error}</p>
           {savedPackageId && (
-            <button type="button" className="btn btn--ghost new-review__open-saved" onClick={() => onCreated(savedPackageId)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => onCreated(savedPackageId)}>
               Open saved document set
-            </button>
+            </Button>
           )}
         </div>
       )}

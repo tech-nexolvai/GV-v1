@@ -19,13 +19,12 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { getPackagesSummary, getUsage, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
-import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { PageFrame, PageLoadError, PageLoading } from '@/components/ui/PageFrame';
 import { DataTable, SortableHeader } from '@/components/data-table/data-table';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { resultTotal } from '@/lib/documents-table';
 import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
-import '../components/ui/PageFrame.css';
 
 // The chart library is fetched the first time Usage opens (#1072).
 const CostByDayChart = lazy(() => import('@/components/usage/usage-charts').then((m) => ({ default: m.CostByDayChart })));
@@ -107,8 +106,8 @@ export function UsagePage() {
   const usage = useAsync(loadUsage, [attempt]);
 
   return (
-    <PageFrame title="Usage" description="What this project's AI reading has cost, and what the checks recorded.">
-      {usage.status === 'loading' && <p className="page-frame__state" role="status">Counting…</p>}
+    <PageFrame title="Usage" description="What this project's AI reading has cost, and what the checks found.">
+      {usage.status === 'loading' && <PageLoading>Counting…</PageLoading>}
 
       {/* Failure and emptiness must not look alike. Zeroes on a screen that could not reach the
           server would read as "nothing has been spent", which is a claim nobody made. */}
@@ -125,7 +124,7 @@ export function UsagePage() {
         const recorded = resultTotal(outcomeTotals(outcomeDays));
         const allUnpriced = kpis.calls > 0 && kpis.unpricedCalls >= kpis.calls;
         return (
-          <div data-tw className="flex flex-col gap-4 font-sans">
+          <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-part="kpis">
               <Kpi label="Sets with AI calls" value={<span className="num">{kpis.setsWithCalls}</span>} sub="drawing sets (reading or chat)" />
               <Kpi

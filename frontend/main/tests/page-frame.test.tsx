@@ -12,7 +12,10 @@ const html = renderToStaticMarkup(
 );
 const label = html.match(/aria-labelledby="([^"]+)"/)?.[1];
 assert.ok(label, 'the page region must have an accessible heading');
-assert.ok(html.includes(`<h1 id="${label}">Rulebook</h1>`));
+// #1125: the page's title is its one <h1> (the top bar has none on this page), in the shadcn style.
+assert.match(html, new RegExp(`<h1 id="${label}"[^>]*>Rulebook</h1>`));
+assert.equal((html.match(/<h1[ >]/g) ?? []).length, 1, 'exactly one h1');
+assert.doesNotMatch(html, /page-frame__/, 'no legacy PageFrame classes are left');
 assert.ok(html.includes(snapshot), 'the complete API snapshot must remain available');
 assert.match(html, /<dd>0<\/dd>/, 'zero is a real value, not an empty-state trigger');
 assert.match(html, /<button type="button">Refresh<\/button>/);
@@ -22,7 +25,8 @@ const error = renderToStaticMarkup(
 );
 assert.match(error, /role="alert"/);
 assert.match(error, /Could not contact the server/);
-assert.match(error, /<button type="button"[^>]*>Try again<\/button>/);
+// #1125: the retry is the shadcn Button, its icon before the words.
+assert.match(error, /<button data-slot="button"[^>]*type="button"[^>]*>.*Try again<\/button>/);
 assert.doesNotMatch(error, /No findings|0 findings/);
 
 // A stale category after a refreshed list is a filter miss, not evidence of an empty rulebook.

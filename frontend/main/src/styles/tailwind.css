@@ -253,3 +253,14 @@
     font-family: var(--font-ui);
   }
 }
+
+/* A finger needs a 44 px target on the supporting pages (#1125, as PageFrame.css did before). In the
+   components layer, so a control that sizes its own touch target with a utility (InfoTip's 20 px
+   circle with an invisible 44 px ::after) keeps it. */
+@layer components {
+  @media (pointer: coarse) {
+    [data-slot='page-frame'] :is(button, input, select) {
+      min-height: 44px;
+    }
+  }
+}

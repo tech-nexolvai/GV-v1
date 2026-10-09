@@ -99,7 +99,15 @@ export function AppShell({
 
         {/* Not shadcn's SidebarInset, which is a <main>: the screen below already is the page's main. */}
         <div className="shell__content flex min-w-0 flex-1 flex-col">
-          <AppTopbar title={title} crumbs={crumbs} titleRef={setTitleSlot} actionsRef={setActionsSlot} />
+          {/* One <h1> per page (#1125): every page but an open review names itself with a visible one
+              (PageFrame); on an open review it is this top bar's, and the review's panels use <h2>. */}
+          <AppTopbar
+            title={title}
+            titleHeading={activePage === 'review' && activePackage !== null}
+            crumbs={crumbs}
+            titleRef={setTitleSlot}
+            actionsRef={setActionsSlot}
+          />
 
           <div className="shell__body">
             <main className="shell__main" id="main-content" tabIndex={-1}>

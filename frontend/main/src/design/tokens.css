@@ -72,7 +72,6 @@
   --radius-md:       10px;   /* buttons, sidebar items, menu items */
   --radius-lg:       14px;   /* cards, tables */
   --radius-xl:       20px;   /* the reviewer's message bubble */
-  --radius-composer: 28px;
   --radius-full:   9999px;
 
   /* ── Layout ────────────────────────────────────────────── */
@@ -80,7 +79,6 @@
   --sidebar-collapsed:     56px;
   --evidence-panel-width: 520px;
   --topbar-height:         56px;
-  --chat-max-width:       768px;
 
   /* ── Motion ────────────────────────────────────────────────
      No overshoot anywhere: a panel that bounces reads as a mistake. 120ms for press and hover,

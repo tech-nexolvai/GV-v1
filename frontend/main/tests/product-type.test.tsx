@@ -35,14 +35,16 @@ assert.match(ready, /<option value="countertop" selected="">Countertop<\/option>
 assert.match(ready, /<option value="cabinet">Cabinets<\/option>/);
 assert.equal((ready.match(/<option /g) ?? []).length, 2, 'only the API choices are offered');
 assert.match(ready, /Only the checks for this product are run\./);
-assert.doesNotMatch(ready, /disabled/);
+// #1125: the shadcn input classes name `disabled:` states, so the attribute itself is asserted.
+assert.doesNotMatch(ready, / disabled=""/);
+assert.match(ready, /<label[^>]*for="([^"]+)"[^>]*>What is this drawing set for\?<\/label>/, 'the label names the select');
 console.log('the dropdown renders the API choices with Countertop selected');
 
 const empty = renderToStaticMarkup(
   <ProductTypeField state={{ status: 'ready', choices: [] }} value={null} onChange={() => undefined} />,
 );
 assert.match(empty, /No checks are published yet/);
-assert.match(empty, /disabled/);
+assert.match(empty, / disabled=""/);
 console.log('with nothing published the dropdown says so and cannot be used');
 
 const loading = renderToStaticMarkup(

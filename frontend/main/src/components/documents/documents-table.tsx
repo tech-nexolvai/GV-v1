@@ -167,7 +167,8 @@ function columns(onOpen: (packageId: string) => void): ColumnDef<PackageSummary>
           aria-label={`Open review for ${row.original.vendor ?? UNTITLED}`}
           onClick={() => onOpen(row.original.package_id)}
         >
-          Open <ArrowRight aria-hidden="true" />
+          {/* The word only on very wide screens: at laptop widths the arrow alone keeps the column inside the table. */}
+          <span className="hidden 2xl:inline">Open</span> <ArrowRight aria-hidden="true" />
         </Button>
       ),
     },
@@ -199,7 +200,7 @@ export function DocumentsTable({
   return (
     <div data-tw data-slot="documents-table" className="flex flex-col gap-3 font-sans">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="relative w-full max-w-xs">
+        <div className="relative w-full sm:max-w-xs">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input
             type="search"
