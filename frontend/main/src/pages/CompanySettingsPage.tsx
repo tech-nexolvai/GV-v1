@@ -18,8 +18,9 @@ import {
 import { CompanySettingsList } from '../components/settings/CompanySettingsList';
 import { changedValues } from '../components/settings/companySettings';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { Button } from '@/components/ui/button';
+import { InfoTip } from '@/components/ui/info-tip';
 import '../components/ui/PageFrame.css';
-import './CompanySettingsPage.css';
 
 export function CompanySettingsPage() {
   const [current, setCurrent] = useState<CompanySettings | null>(null);
@@ -69,22 +70,31 @@ export function CompanySettingsPage() {
   }
 
   return (
-    <PageFrame title="Company settings" className="company-settings-page" description={<>
-          GV&apos;s house rules — the numbers that are the same on every job and written on no
+    <PageFrame title="Company settings" description={<>
+          GV&apos;s house rules: the numbers that are the same on every job and written on no
           drawing. Type a value with its unit, <code>24&quot;</code> or <code>610 mm</code>, and save.
         </>}>
       {error && current === null && <PageLoadError title="Company settings could not be loaded" message={error} onRetry={() => { setError(null); setAttempt((value) => value + 1); }} />}
+      <div data-tw className="flex flex-col gap-3 font-sans">
       {error && current !== null && (
-        <p className="company-settings-page__error" role="alert">
+        <p className="text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
       {current === null ? (
-        !error && <p className="page-frame__state" role="status">Loading company settings…</p>
+        !error && <p className="text-sm text-muted-foreground" role="status">Loading company settings…</p>
       ) : current.settings.length === 0 ? (
-        <p className="page-frame__state">No company settings are available. No standards are listed to edit.</p>
+        <p className="text-sm text-muted-foreground">No company settings are available. No standards are listed to edit.</p>
       ) : (
         <>
+          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            Set once here, these apply to every project.
+            <InfoTip label="About company settings">
+              <p>These are GV&apos;s standards only. A project can still use its own number for one job where the table says so.</p>
+              <p>Side panel, overhang, backsplash, cabinet depth and the cabinet width limits are entered per project, in each review&apos;s Measurements.</p>
+              <p>A check whose number is set nowhere says &ldquo;not found&rdquo; rather than guessing. Only an admin can save.</p>
+            </InfoTip>
+          </p>
           <CompanySettingsList
             settings={current.settings}
             drafts={drafts}
@@ -94,19 +104,15 @@ export function CompanySettingsPage() {
               setDrafts((prior) => ({ ...prior, [name]: value }));
             }}
           />
-          <div className="company-settings-page__actions">
-            <button
-              type="button"
-              className="btn btn--primary"
-              disabled={saving || changes.length === 0}
-              onClick={() => void save()}
-            >
-              {saving ? 'Saving…' : `Save ${changes.length || ''} change${changes.length === 1 ? '' : 's'}`}
-            </button>
-            {saved && <span role="status">Saved. Every project now starts from these numbers.</span>}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="button" disabled={saving || changes.length === 0} onClick={() => void save()}>
+              {saving ? 'Saving…' : changes.length === 0 ? 'No changes to save' : `Save ${changes.length} change${changes.length === 1 ? '' : 's'}`}
+            </Button>
+            {saved && <span className="text-sm" role="status">Saved. Every project now starts from these numbers.</span>}
           </div>
         </>
       )}
+      </div>
     </PageFrame>
   );
 }

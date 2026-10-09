@@ -124,6 +124,17 @@ export function getPackagesSummary(projectId: string, query?: { cursor?: string;
   return request<PackageSummaryPage>(`/projects/${projectId}/packages-summary${suffix}`);
 }
 
+/**
+ * AI model-call usage for a project (#1035): totals, then per day or per drawing set, each split by
+ * model. No prompt or response text. `cost_usd` is an exact decimal string.
+ */
+export type Usage = Get<'/api/v1/projects/{project_id}/usage'>;
+export type UsageGroup = Usage['groups'][number];
+
+export function getUsage(projectId: string, query: { groupBy: 'day' | 'package' }) {
+  return request<Usage>(`/projects/${projectId}/usage?group_by=${query.groupBy}`);
+}
+
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
 }

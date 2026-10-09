@@ -9,32 +9,32 @@
  * So it reads from `GET /api/v1/rules`, and shows only fields the API returns. Where the old list had
  * a formula, an applicability expression and a list of operands, this shows nothing — those are not
  * on the wire yet, and inventing them is how the previous version went wrong.
+ *
+ * Since #1072: a products × check types grid on top (a cell filters the table), the severity and
+ * the release note every rule shares said once, and the rules as one sortable, searchable table.
  */
 
 import { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
 import { listRules } from '../api/client';
-import type { Rule } from '../api/client';
 import { useAsync } from '../api/useAsync';
 import { PageFrame, PageLoadError } from '../components/ui/PageFrame';
+import { RuleGridCard, RulesTable } from '@/components/rulebook/rulebook-overview';
+import { Button } from '@/components/ui/button';
+import { productWord } from '@/lib/documents-table';
+import { checkTypeWord, matchesRuleFilter, sharedReleaseNote, type RuleFilter } from '@/lib/rulebook-overview';
 import { rulebookEmptyState } from './rulebookState';
 import '../components/ui/PageFrame.css';
-import './RulebookPage.css';
 
-/** Derived from what the API returns, rather than a fixed list that could name a type with no rules. */
-function categoriesOf(rules: readonly Rule[]): string[] {
-  return ['all', ...[...new Set(rules.map((rule) => rule.product_type))].sort()];
-}
+const DESCRIPTION = 'Published checks and the exact rule snapshots used by the engine.';
 
 export function RulebookPage() {
   const [attempt, setAttempt] = useState(0);
   const rules = useAsync(() => listRules(), [attempt]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [filter, setFilter] = useState<RuleFilter | null>(null);
 
   if (rules.status === 'loading') {
     return (
-      <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
+      <PageFrame title="Rulebook" description={DESCRIPTION}>
         <p className="page-frame__state" role="status">Loading the rulebook…</p>
       </PageFrame>
     );
@@ -45,162 +45,46 @@ export function RulebookPage() {
   // made.
   if (rules.status === 'error') {
     return (
-      <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
+      <PageFrame title="Rulebook" description={DESCRIPTION}>
         <PageLoadError title="The rulebook could not be loaded" message={`${rules.error.message} The published rules are unavailable; this does not mean there are no rules.`} onRetry={() => setAttempt((value) => value + 1)} />
       </PageFrame>
     );
   }
 
   const all = rules.data;
-  const categories = categoriesOf(all);
-  const filtered = all.filter((rule) => activeCategory === 'all' || rule.product_type === activeCategory);
-  const selected = filtered.find((rule) => rule.rule_id === selectedId) ?? filtered[0];
-  const empty = rulebookEmptyState(all.length);
+  if (all.length === 0) {
+    const empty = rulebookEmptyState(0);
+    return (
+      <PageFrame title="Rulebook" description={DESCRIPTION}>
+        <div data-tw className="flex flex-col gap-1 font-sans">
+          <h2 className="text-base font-semibold">{empty.title}</h2>
+          <p className="text-sm text-muted-foreground">{empty.message}</p>
+        </div>
+      </PageFrame>
+    );
+  }
 
+  const shown = all.filter((rule) => matchesRuleFilter(rule, filter));
   return (
-    <PageFrame title="Rulebook" className="rulebook-page" description="Published checks and the exact rule snapshots used by the engine.">
-      <div className="rulebook-workspace">
-      <nav className="rulebook-sidebar" aria-label="Published rules">
-        <div className="rulebook-sidebar__header">
-          <p className="rulebook-sidebar__subtitle">
-            {all.length === 0
-              ? 'Nothing published'
-              : `${all.length} rule${all.length === 1 ? '' : 's'} published`}
-          </p>
-
-          {categories.length > 1 && (
-            <div className="rulebook-sidebar__filter">
-              {categories.map((category) => (
-                <button
-                  key={category}
-                  className={`rulebook-sidebar__filter-btn ${activeCategory === category ? 'rulebook-sidebar__filter-btn--active' : ''}`}
-                  aria-pressed={activeCategory === category}
-                  onClick={() => setActiveCategory(category)}
-                >
-                  {category === 'all' ? 'All' : category.charAt(0).toUpperCase() + category.slice(1)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="rulebook-sidebar__list">
-          {filtered.map((rule) => (
-            <button
-              key={rule.rule_id}
-              className={`rulebook-rule-item ${selected?.rule_id === rule.rule_id ? 'rulebook-rule-item--active' : ''}`}
-              aria-current={selected?.rule_id === rule.rule_id ? 'true' : undefined}
-              onClick={() => setSelectedId(rule.rule_id)}
-            >
-              <div className="rulebook-rule-item__top">
-                <span className="rulebook-rule-item__id">{rule.rule_id}</span>
-                <span
-                  className={`rulebook-rule-item__status rulebook-rule-item__status--${rule.production_ready ? 'published' : 'draft'}`}
-                >
-                  {rule.production_ready ? 'production' : 'not production'}
-                </span>
-              </div>
-              <span className="rulebook-rule-item__name">{rule.name}</span>
-              <div className="rulebook-rule-item__bottom">
-                <span className="rulebook-rule-item__sev">{rule.severity}</span>
-                <ChevronRight size={11} className="rulebook-rule-item__arrow" />
-              </div>
-            </button>
-          ))}
-        </div>
-      </nav>
-
-      <div className="rulebook-detail">
-        {selected === undefined ? (
-          <div className="rulebook-detail__body">
-            <h2 className="rulebook-detail__name">{empty.title}</h2>
-            <div className="gv-bar" />
-            <p>{empty.message}</p>
-            {all.length > 0 && <button type="button" className="btn btn--ghost" onClick={() => setActiveCategory('all')}>Show all rules</button>}
-            <div className="rulebook-detail__notice">
-              <p>
-                Rules are authored in YAML, validated with Pydantic and JSON Schema, and stored as
-                immutable snapshots. Publishing needs human approval and a full gold-set regression.
+    <PageFrame title="Rulebook" description={DESCRIPTION}>
+      <div data-tw className="flex flex-col gap-4 font-sans">
+        <RuleGridCard rules={all} filter={filter} onFilter={setFilter} />
+        <section aria-labelledby="rules-title" className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="rules-title" className="text-base font-semibold">
+              <span className="num">{all.length}</span> {all.length === 1 ? 'rule' : 'rules'} published
+            </h2>
+            {filter && (
+              <p className="flex items-center gap-2 text-sm" role="status">
+                Showing {productWord(filter.product).toLowerCase()}
+                {filter.checkType && <> · {checkTypeWord(filter.checkType).toLowerCase()}</>}: <span className="num">{shown.length}</span>
+                <Button type="button" size="sm" variant="outline" onClick={() => setFilter(null)}>Show all rules</Button>
               </p>
-            </div>
+            )}
           </div>
-        ) : (
-          <>
-            <div className="rulebook-detail__header">
-              <div>
-                <div className="rulebook-detail__id-row">
-                  <span className="rulebook-detail__id">{selected.rule_id}</span>
-                  <span
-                    className={`badge ${selected.severity === 'CRITICAL' ? 'badge--fail' : selected.severity === 'FLAG' || selected.severity === 'MAJOR' ? 'badge--review' : 'badge--missing'}`}
-                  >
-                    {selected.severity}
-                  </span>
-                  <span className={`badge ${selected.production_ready ? 'badge--pass' : 'badge--review'}`}>
-                    {selected.production_ready ? 'production ready' : 'not production ready'}
-                  </span>
-                </div>
-                <h2 className="rulebook-detail__name">{selected.name}</h2>
-                <div className="gv-bar" />
-              </div>
-            </div>
-
-            <div className="rulebook-detail__body">
-              <RuleField label="Product type" value={selected.product_type} mono />
-              <RuleField label="Check type" value={selected.check_type} mono />
-              <RuleField label="Version" value={selected.version} mono />
-              {/* The content hash of the exact bytes that were published. It is what a finding cites,
-                  and comparing the two is how you tell which snapshot judged a drawing. */}
-              <RuleField label="Snapshot" value={selected.snapshot_id} mono />
-              <RuleField label="Published versions" value={String(selected.published_versions)} />
-              {/* Warned on, not hidden. An unconfirmed tolerance is a number nobody has agreed to, and
-                  it is the reason a rule can exist and still not be allowed near production. */}
-              <RuleField
-                label="Unconfirmed tolerances"
-                value={
-                  selected.unconfirmed_tolerances === 0
-                    ? 'none'
-                    : `${selected.unconfirmed_tolerances} — this rule cannot publish to production`
-                }
-                warning={selected.unconfirmed_tolerances > 0}
-              />
-              {selected.release_note.trim() !== '' && (
-                <RuleField label="Release note" value={selected.release_note} />
-              )}
-
-              <div className="rulebook-detail__notice">
-                <p>
-                  Rules are authored in YAML, validated with Pydantic and JSON Schema, and stored as
-                  immutable snapshots. Publishing needs human approval and a full gold-set regression.
-                </p>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
+          <RulesTable rules={shown} sharedNote={sharedReleaseNote(all)} emptyMessage={rulebookEmptyState(all.length).message} />
+        </section>
       </div>
     </PageFrame>
-  );
-}
-
-function RuleField({
-  label,
-  value,
-  mono,
-  warning,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  warning?: boolean;
-}) {
-  return (
-    <div className="rulebook-detail__field">
-      <span className="rulebook-detail__field-label">{label}</span>
-      <span
-        className={`rulebook-detail__field-value ${mono ? 'mono' : ''} ${warning ? 'rulebook-detail__field-value--warning' : ''}`}
-      >
-        {value}
-      </span>
-    </div>
   );
 }
