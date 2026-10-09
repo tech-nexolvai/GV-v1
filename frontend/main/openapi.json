@@ -2039,6 +2039,19 @@
       },
       "CountertopPieceOut": {
         "properties": {
+          "canonical_observation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a sealed reading only: its confirmed observation, when a stored crop of it exists (`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise.",
+            "title": "Canonical Observation Id"
+          },
           "index": {
             "title": "Index",
             "type": "integer"
@@ -2053,6 +2066,17 @@
               }
             ],
             "title": "Kind"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where this piece's slot was read on the drawing: the slot reader's box for it, in the same stored space and shape as `row_location`. Null when that box is missing or cannot be placed exactly; never borrowed from the row or a neighbour."
           },
           "source": {
             "enum": [
@@ -2192,6 +2216,30 @@
                 "type": "null"
               }
             ]
+          },
+          "printed_overall_canonical_observation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a sealed printed overall only: its confirmed observation, when a stored crop exists. Null otherwise.",
+            "title": "Printed Overall Canonical Observation Id"
+          },
+          "printed_overall_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the printed overall's slot was read; null when unknown (see pieces)."
           },
           "reviewer_decision": {
             "anyOf": [
@@ -2614,6 +2662,30 @@
         "title": "EndIn",
         "type": "object"
       },
+      "ErrorEnvelope": {
+        "description": "The only error body this API returns.",
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorEnvelope",
+        "type": "object"
+      },
       "EvidenceLocation": {
         "description": "The immutable drawing location behind one operand.",
         "properties": {
@@ -2629,6 +2701,18 @@
           "coordinate_space": {
             "title": "Coordinate Space",
             "type": "string"
+          },
+          "crop_shows_gv_mark": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the stored crop the evidence endpoint serves for this reading was found to show GV's markup (#952). Null: no crop, or not checked.",
+            "title": "Crop Shows Gv Mark"
           },
           "crop_uri": {
             "anyOf": [
@@ -4345,6 +4429,7 @@
         "type": "object"
       },
       "PackageReadingTimeOut": {
+        "description": "The spread of saved AI call times in one extraction run. Not the reading time (#1071).\n\nFirst to last `ModelInvocation.created_at` of the run. The calls of a reading are saved together\nwhen the reading finishes, so this is usually a few milliseconds whatever the reading took. Use\n`ReadingTimeOut` for how long reading a drawing set took.",
         "properties": {
           "duration_ms": {
             "title": "Duration Ms",
@@ -5389,6 +5474,89 @@
         "title": "ReadingPartsOut",
         "type": "object"
       },
+      "ReadingTimeOut": {
+        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI\nbudget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or\nat a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so\nthe time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "finished_at minus started_at in whole milliseconds; null while reading.",
+            "title": "Duration Ms"
+          },
+          "end_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The state the reading ended in (hand-over or stop); null while reading.",
+            "title": "End State"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the reading reached review or stopped; null while still reading.",
+            "title": "Finished At"
+          },
+          "outcome": {
+            "enum": [
+              "finished",
+              "failed",
+              "reading"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "started_at": {
+            "description": "When the revision first entered EXTRACTING.",
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "revision_number",
+          "started_at",
+          "finished_at",
+          "outcome",
+          "end_state",
+          "duration_ms"
+        ],
+        "title": "ReadingTimeOut",
+        "type": "object"
+      },
       "RecordAction": {
         "additionalProperties": false,
         "description": "One thing a reviewer did to one finding.\n\nNo `actor` and no `package_revision_id`. The actor is the authenticated caller, and the revision\nis read off the finding the server loaded \u2014 a caller cannot state which revision they were\nlooking at, which is what makes the trail worth keeping.",
@@ -5482,6 +5650,22 @@
           "rules_published": {
             "title": "Rules Published",
             "type": "integer"
+          },
+          "saved_measurements": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SavedQuantityOut"
+            },
+            "title": "Saved Measurements",
+            "type": "array"
+          },
+          "saved_parameters": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SavedParameterOut"
+            },
+            "title": "Saved Parameters",
+            "type": "array"
           },
           "still_reading": {
             "default": false,
@@ -6443,6 +6627,146 @@
         "title": "RunsOut",
         "type": "object"
       },
+      "SavedParameterOut": {
+        "description": "The setting value in force for one parameter, as saved, with where it came from (#1074).",
+        "properties": {
+          "citation": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation"
+          },
+          "layer": {
+            "enum": [
+              "project",
+              "run"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/SavedValueOut"
+          }
+        },
+        "required": [
+          "name",
+          "layer",
+          "value",
+          "source"
+        ],
+        "title": "SavedParameterOut",
+        "type": "object"
+      },
+      "SavedQuantityOut": {
+        "description": "What this review already holds for one quantity of the form, keyed like `QuantityOut.key`.\n\nA quantity feeds one or more rule inputs (`QuantityOut.consumers`) and the form saves it once per\ninput. `values` are those of the input saved most recently \u2014 one value, or a run in layout order\nfor a many-valued quantity.",
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "$ref": "#/components/schemas/SavedValueOut"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "values",
+          "set_by",
+          "set_at",
+          "complete"
+        ],
+        "title": "SavedQuantityOut",
+        "type": "object"
+      },
+      "SavedValueOut": {
+        "description": "One value a reviewer saved, exactly as stored, with who saved it and when (#1074).\n\n`numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same\nnumber written the way the form takes it (`25 1/2\"`), and reads back to exactly these two numbers\nwhen sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is\n`38 94/127\"`), because the characters first typed are not stored \u2014 only the number is.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "string"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "unit",
+          "text",
+          "set_by",
+          "set_at"
+        ],
+        "title": "SavedValueOut",
+        "type": "object"
+      },
       "SettingPointerOut": {
         "description": "Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).\n\nThe reviewer types the value they see without being shown the one the app found, and the server\nsaves it only if the two match (step 3.3 of #798). So nothing here may carry the number: no\nvalue, no text from the drawing, and no id of the runs, which `GET .../candidates` would turn\nback into a value. `tests/api/test_setting_citations.py` holds this class to that list.",
         "properties": {
@@ -6902,6 +7226,35 @@
         "title": "StoredList",
         "type": "object"
       },
+      "StoredRegionOut": {
+        "description": "The reading's region in stored page space (0..1 across and down), as exact decimal text.",
+        "properties": {
+          "bottom": {
+            "title": "Bottom",
+            "type": "string"
+          },
+          "left": {
+            "title": "Left",
+            "type": "string"
+          },
+          "right": {
+            "title": "Right",
+            "type": "string"
+          },
+          "top": {
+            "title": "Top",
+            "type": "string"
+          }
+        },
+        "required": [
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ],
+        "title": "StoredRegionOut",
+        "type": "object"
+      },
       "StoredValue": {
         "description": "One value as stored: exact, and in inches because inches decide (Q12).",
         "properties": {
@@ -7315,10 +7668,19 @@
             "type": "array"
           },
           "package_reading_times": {
+            "description": "The spread of saved AI call times per extraction run, not the reading time: the calls are saved together when a reading finishes, so this is usually about zero. Use reading_times.",
             "items": {
               "$ref": "#/components/schemas/PackageReadingTimeOut"
             },
             "title": "Package Reading Times",
+            "type": "array"
+          },
+          "reading_times": {
+            "description": "How long each package revision's reading took, from its recorded state events (first EXTRACTING to the hand-over to a person, or to the failure that ended it). Filtered by from/to on started_at.",
+            "items": {
+              "$ref": "#/components/schemas/ReadingTimeOut"
+            },
+            "title": "Reading Times",
             "type": "array"
           },
           "to": {
@@ -7342,7 +7704,8 @@
           "group_by",
           "totals",
           "groups",
-          "package_reading_times"
+          "package_reading_times",
+          "reading_times"
         ],
         "title": "UsageOut",
         "type": "object"
@@ -7423,6 +7786,126 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VendorOnlyRegionOut": {
+        "description": "What the second, vendor-only view of one evidence region is, or why there is none.",
+        "properties": {
+          "available": {
+            "description": "Whether the vendor-only picture of this exact region can be shown. False is a plain 'not available yet'; never show another page or region instead.",
+            "title": "Available",
+            "type": "boolean"
+          },
+          "context_margin_pt": {
+            "description": "Page context kept around the region, in points.",
+            "title": "Context Margin Pt",
+            "type": "string"
+          },
+          "crop_shows_gv_mark": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whether the original crop was found to show GV's markup. Null: no crop, or not checked (crops cut before #952 were checked for marks inside the vendor's drawing only).",
+            "title": "Crop Shows Gv Mark"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "label": {
+            "default": "vendor's drawing without GV markup",
+            "description": "Show this over the vendor-only picture.",
+            "title": "Label",
+            "type": "string"
+          },
+          "page_id": {
+            "format": "uuid",
+            "title": "Page Id",
+            "type": "string"
+          },
+          "page_number": {
+            "description": "1-based, as the screens number pages.",
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "picture_dpi": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor-only picture's dpi.",
+            "title": "Picture Dpi"
+          },
+          "pixel_box": {
+            "anyOf": [
+              {
+                "maxItems": 4,
+                "minItems": 4,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`(left, top, right, bottom)` cut from the vendor-only picture, when available.",
+            "title": "Pixel Box"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoredRegionOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null only when the reading's region could not be placed."
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it is not available, for the reviewer. Null when available.",
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "available",
+          "document_version_id",
+          "page_id",
+          "page_number",
+          "context_margin_pt"
+        ],
+        "title": "VendorOnlyRegionOut",
         "type": "object"
       },
       "VendorPagePictureOut": {
@@ -8650,6 +9133,133 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only": {
+      "get": {
+        "operationId": "candidate_vendor_only_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorOnlyRegionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor-only view of an unconfirmed reading's crop region, or why there is none",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only/picture": {
+      "get": {
+        "operationId": "candidate_vendor_only_picture_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The same region, cut from the vendor-only page picture."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor-only picture of an unconfirmed reading's crop region",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
       "get": {
         "operationId": "get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get",
@@ -9346,6 +9956,133 @@
         "summary": "View the stored mechanical crop behind one confirmed reading",
         "tags": [
           "findings"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only": {
+      "get": {
+        "operationId": "evidence_vendor_only_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "canonical_observation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canonical Observation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendorOnlyRegionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor-only view of a confirmed reading's evidence region, or why there is none",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only/picture": {
+      "get": {
+        "operationId": "evidence_vendor_only_picture_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "canonical_observation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canonical Observation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The same region, cut from the vendor-only page picture."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The vendor-only picture of a confirmed reading's evidence region",
+        "tags": [
+          "evidence"
         ]
       }
     },
@@ -10055,7 +10792,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/{page_number}/picture": {
       "get": {
-        "description": "The stored picture of page `page_number`, or 404 while the worker has not rendered it.",
+        "description": "The stored picture of page `page_number`, or 404 while the worker has not rendered it.\n\nThe two 404s differ by `error` code: `page_picture_not_ready` for a page of this package that\nhas no picture yet (ask for it with `POST .../pages/pictures`), `http_error` for no such page.",
         "operationId": "page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get",
         "parameters": [
           {
@@ -10116,6 +10853,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "`error` is `page_picture_not_ready` while the page has no picture yet; `http_error` when there is no such page in this package."
           },
           "422": {
             "content": {

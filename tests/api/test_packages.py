@@ -39,7 +39,7 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import create_app
-from app.models.document import DocumentKind, DocumentVersion
+from app.models.document import DocumentKind, DocumentVersion, PackageRevisionDocument
 from app.models.package import Package, PackageRevision, PackageState, Project
 from storage.local import LocalStore
 from storage.signing import CapabilityInvalid, sign_capability, verify_capability
@@ -485,6 +485,40 @@ def test_confirming_bytes_another_drawing_already_holds_is_refused(
     assert refused.status_code == 409, refused.text
     assert "already in this package" in refused.json()["message"]
     assert len(list(session.execute(select(DocumentVersion)).scalars())) == 1
+
+
+def test_a_corrected_shop_upload_with_the_architect_s_bytes_is_refused(
+    session: Session, store: LocalStore
+) -> None:
+    """#961, the correction case: re-uploading the shop drawing as a new version cannot make it the
+    architect's file. The shop drawing keeps the version it had, and the package stays two files."""
+    package_id = _new_package(session)
+    client = _client(session, store)
+    architect = b"%PDF-1.7 architect set\n"
+    _, arch = _upload_and_confirm(
+        client, store, package_id, architect, kind=DocumentKind.ARCHITECTURAL
+    )
+    shop_id, shop = _upload_and_confirm(client, store, package_id, b"%PDF-1.7 vendor set\n")
+    assert arch.status_code == shop.status_code == 201
+    digest = hashlib.sha256(architect).hexdigest()
+    ticket = client.post(
+        f"/api/v1/projects/{PROJECT}/documents/{shop_id}/uploads", json={"sha256": digest}
+    )
+    store.put(ticket.json()["storage_key"], io.BytesIO(architect), content_type="application/pdf")
+
+    corrected = client.post(
+        f"/api/v1/projects/{PROJECT}/documents/{shop_id}/confirm",
+        json={"sha256": digest, "page_count": 3},
+    )
+
+    assert corrected.status_code == 409, corrected.text
+    assert "already in this package" in corrected.json()["message"]
+    members = session.execute(
+        select(PackageRevisionDocument.document_id, DocumentVersion.sha256).join(
+            DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id
+        )
+    ).all()
+    assert {str(document_id): sha for document_id, sha in members}[shop_id] == shop.json()["sha256"]
 
 
 def test_extraction_refuses_a_revision_already_holding_one_file_twice(

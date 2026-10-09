@@ -30,6 +30,21 @@ class CountertopPieceOut(BaseModel):
     value: ExactValueOut | None
     source: Literal["sealed", "typed", "missing"]
     kind: str | None = None
+    location: RowLocation | None = Field(
+        default=None,
+        description=(
+            "Where this piece's slot was read on the drawing: the slot reader's box for it, in the "
+            "same stored space and shape as `row_location`. Null when that box is missing or "
+            "cannot be placed exactly; never borrowed from the row or a neighbour."
+        ),
+    )
+    canonical_observation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "For a sealed reading only: its confirmed observation, when a stored crop of it exists "
+            "(`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise."
+        ),
+    )
 
 
 class ReviewerDecisionOut(BaseModel):
@@ -141,6 +156,17 @@ class CountertopResultOut(BaseModel):
     reviewer_decision: ReviewerDecisionOut | None
     needs_decision: bool
     printed_overall: ExactValueOut | None
+    printed_overall_location: RowLocation | None = Field(
+        default=None,
+        description="Where the printed overall's slot was read; null when unknown (see pieces).",
+    )
+    printed_overall_canonical_observation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "For a sealed printed overall only: its confirmed observation, when a stored crop "
+            "exists. Null otherwise."
+        ),
+    )
     pieces: tuple[CountertopPieceOut, ...]
     field_cut_per_end: ExactValueOut | None
     field_cut_count: int | None
@@ -245,6 +271,13 @@ class UsageGroupOut(UsageTotalsOut):
 
 
 class PackageReadingTimeOut(BaseModel):
+    """The spread of saved AI call times in one extraction run. Not the reading time (#1071).
+
+    First to last `ModelInvocation.created_at` of the run. The calls of a reading are saved together
+    when the reading finishes, so this is usually a few milliseconds whatever the reading took. Use
+    `ReadingTimeOut` for how long reading a drawing set took.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     package_id: UUID
@@ -255,6 +288,35 @@ class PackageReadingTimeOut(BaseModel):
     duration_ms: int
 
 
+class ReadingTimeOut(BaseModel):
+    """How long one package revision's reading took, from its recorded state events (#1071).
+
+    It starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to
+    a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI
+    budget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or
+    at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so
+    the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
+    Anything after the hand-over (a reviewer re-running the checks) is not reading time.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    package_id: UUID
+    revision_id: UUID
+    revision_number: int
+    started_at: datetime = Field(description="When the revision first entered EXTRACTING.")
+    finished_at: datetime | None = Field(
+        description="When the reading reached review or stopped; null while still reading."
+    )
+    outcome: Literal["finished", "failed", "reading"]
+    end_state: str | None = Field(
+        description="The state the reading ended in (hand-over or stop); null while reading."
+    )
+    duration_ms: int | None = Field(
+        description="finished_at minus started_at in whole milliseconds; null while reading."
+    )
+
+
 class UsageOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -263,4 +325,17 @@ class UsageOut(BaseModel):
     group_by: Literal["day", "package"]
     totals: UsageTotalsOut
     groups: tuple[UsageGroupOut, ...]
-    package_reading_times: tuple[PackageReadingTimeOut, ...]
+    package_reading_times: tuple[PackageReadingTimeOut, ...] = Field(
+        description=(
+            "The spread of saved AI call times per extraction run, not the reading time: the calls "
+            "are saved together when a reading finishes, so this is usually about zero. Use "
+            "reading_times."
+        )
+    )
+    reading_times: tuple[ReadingTimeOut, ...] = Field(
+        description=(
+            "How long each package revision's reading took, from its recorded state events (first "
+            "EXTRACTING to the hand-over to a person, or to the failure that ended it). Filtered by "
+            "from/to on started_at."
+        )
+    )

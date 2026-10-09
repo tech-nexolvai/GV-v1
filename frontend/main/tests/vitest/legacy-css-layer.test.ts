@@ -29,10 +29,10 @@ describe('legacy stylesheets', () => {
   const files = cssFiles(SRC);
 
   it('finds the legacy stylesheets', () => {
-    // 25 since #1064 retired PackagesPage.css and SignedDownloads.css (#1045 retired
-    // DrawingResultPanel.css, #1039 ResultsPanel.css); the number only guards against the walk
-    // finding nothing.
-    expect(files.length).toBeGreaterThanOrEqual(25);
+    // 22 since #1072 retired CompanySettingsPage.css, RulebookPage.css and UsagePage.css (#1064
+    // retired PackagesPage.css and SignedDownloads.css, #1045 DrawingResultPanel.css, #1039
+    // ResultsPanel.css); the number only guards against the walk finding nothing.
+    expect(files.length).toBeGreaterThanOrEqual(22);
   });
 
   it.each(files.map((f) => [path.relative(SRC, f), f]))('%s is wrapped in @layer legacy', (_name, file) => {

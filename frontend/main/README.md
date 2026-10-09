@@ -184,6 +184,13 @@ How it works:
   `signed-exports`, then one card per signed file. Downloads appear only when ready. A failed export
   promises no retry, because asking again returns the same failed request (an admin retries it).
 
+**Company settings, Rulebook and Usage** (#1072):
+- **Company settings** (`components/settings/CompanySettingsList.tsx`): one table, with a meter of how many have a value and how many GV set. Each row shows where the value in use comes from (GV standard / rulebook default / not set, as a word), whether a project may use its own, the checks that use it, and a box for a new value. Saving sends the same `POST /company-settings`, typed values only.
+- **Rulebook** (`components/rulebook/`, counts in `lib/rulebook-overview.ts`): a products × check types grid (a cell filters the table), the severity and the release note every rule shares said once, and the rules as one sortable, searchable table.
+- **Usage** (`pages/UsagePage.tsx`, arithmetic in `lib/usage.ts`, charts in `components/usage/usage-charts.tsx`, loaded lazily): `GET /usage` by day and by drawing set, plus `packages-summary` for names and recorded results.
+  - **Reading time is shown as not measured.** The API's `package_reading_times` spans saved call times, which one reading writes together; a real duration is requested in #1071.
+  - **Calls with no price** are named beside the cost, which leaves them out.
+
 **Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
 an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.

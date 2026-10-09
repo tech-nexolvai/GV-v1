@@ -24,7 +24,14 @@ the run's configuration and on every question packet), with a fixed answer shape
 picture the API would resize. A span whose label is drawn sideways (a label run at least twice as
 tall as wide that is not a stacked fraction) is also shown its close-up turned upright.
 
-Source: issues #987, #992, #1051 · Verification: `tests/workflow/test_slot_reader.py`
+**Equal-share chains (#1086).** When the readers' chosen row has nothing printed on any piece and
+code finds exactly one other candidate for the same run (same ends within the row finder's end
+tolerance, same pasted drawing, an overall), that row is read too, in one more batch; its sealed
+readings stand for the countertop only when `extraction/slot_reader/equal_shares.py` says so
+exactly (one inner `X"(N EQ)` with N = the chosen row's pieces, every piece and the overall
+sealed). Otherwise nothing changes. Holds from both rows still hold.
+
+Source: issues #987, #992, #1051, #1086 · Verification: `tests/workflow/test_slot_reader.py`
 """
 
 from __future__ import annotations
@@ -66,6 +73,11 @@ from extraction.slot_reader.claude_output import (
     CLAUDE_EFFORTS,
     DEFAULT_CLAUDE_EFFORT,
     ClaudeEffort,
+)
+from extraction.slot_reader.equal_shares import (
+    NO_LABEL,
+    equal_share_chain,
+    equal_share_partner,
 )
 from extraction.slot_reader.kinds import KindProposal, PieceKind, WallEnd, propose_kind
 from extraction.slot_reader.labels import (
@@ -407,6 +419,10 @@ class PageSlotResult:
     architect_pairing: PairingOutcome | None = None
     """Which architect dimension measures which vendor piece (#1053); `None` when the architect
     reader did not read this page. Never changes a reading, a hold or a proposal above."""
+    read_through: CountertopRowCandidate | None = None
+    """The row the readers chose, when it had nothing printed on any piece and its widths are read
+    from the vendor's `X"(N EQ)` chain for the same run (#1086); `plan.row` is then that chain.
+    `None` otherwise."""
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -924,6 +940,10 @@ def read_slot_pages(
     question to both Claude readers in this same batch (same pacer, effort and spend guard), the two
     judgments weighed together. The pairing is attached to the result and changes nothing else.
 
+    A chosen row on which both readers found no dimension on any piece may be read through the
+    vendor's `X"(N EQ)` chain for the same run (#1086, `equal_shares.py`): that row is read in one
+    more batch and used only on an exact match; `PageSlotResult.read_through` keeps the chosen row.
+
     `wall_ends` says which ends of a page's row stand against a wall *for naming a piece's kind*;
     the sealed walls are not fed to it — the wall-end kind rule is not decided (#987) — so by
     default none does and no piece takes its kind from its position.
@@ -1003,53 +1023,21 @@ def read_slot_pages(
             claude_effort=runtime.claude_effort,
         )
 
-    row_answers = run_jobs(row_jobs) if row_jobs else {}
-    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None]] = []
-    jobs: list[CropJob] = []
-    crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
-    walls_asked: dict[int, WallQuestion] = {}
-    owner_candidate_ids: dict[int, dict[str, UUID]] = {}
-    wall_candidate_ids: dict[int, UUID] = {}
-    for page in pages:
-        if runtime.question_packets and page.transform is None:
-            raise ValueError("reader question packets require the published PageTransform")
-        if page.ink is not None and page.ink.dpi != page.rendered.dpi:
-            raise ValueError(
-                f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
-                f"at {page.rendered.dpi} dpi"
-            )
-        row_choice, row_number = _agreed_row(
-            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
-            if runtime.claude_row_reader and page.page_index in row_ids
-            else []
-        )
-        candidates = page_rows[page.page_index].candidates[:6]
-        selected_row = (
-            candidates[row_number - 1]
-            if row_number is not None and 0 < row_number <= len(candidates)
-            else None
-        )
-        source_plan = plan_slots(
-            page.rows.candidates.rows,
-            page.rows.ink,
-            settings=runtime.crop_settings,
-            row_settings=runtime.row_settings,
-            selected_row=selected_row,
-            row_choice_made=runtime.claude_row_reader and bool(candidates),
-        )
-        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
-        planned.append((page, plan, source_plan, row_choice, row_number))
+    def label_jobs(
+        page: SlotPage,
+        plan: SlotPlan,
+        source_plan: SlotPlan,
+        candidate_ids: Mapping[str, UUID],
+        *,
+        row_key: str = "",
+        held: bool = False,
+    ) -> list[CropJob]:
+        """Cut every label's close-up of `plan`'s row and ask its readers; `crops` keeps the boxes.
+
+        `row_key` tells a second row read on the same page (#1086) from the chosen one.
+        """
         owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
-        page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
-        owner_candidate_ids[page.page_index] = page_candidate_ids
-        # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
-        # never become a proposal, so it is not read at paid prices; the hold is applied below
-        # exactly as before. Claude path only.
-        held_before_reading = (
-            runtime.claude_row_reader
-            and plan.row is not None
-            and _counter_break_row_hold(page, plan, (), runtime) is not None
-        )
+        found: list[CropJob] = []
         # Spans whose label code found drawn sideways (#1051): the Claude span is the slot's band,
         # so the label runs come from the plan code made before the spans replaced them.
         sideways_owners = (
@@ -1069,12 +1057,12 @@ def read_slot_pages(
         )
         for owner in owners:
             for position, label in enumerate(owner.labels):
-                key = _key(page.page_index, owner.index, position)
+                key = _key(page.page_index, owner.index, position, row_key)
                 box_px = _pixels(page.rows, label.box, page.rendered)
                 crop_px = _pixels(page.rows, label.crop, page.rendered)
                 ink = None if page.ink is None else page.ink.at(crop_px)
                 crops[key] = (box_px, crop_px, ink)
-                if held_before_reading:
+                if held:
                     continue
                 if not runtime.claude_row_reader and (
                     _hard_guarded(label, ink) or not label.has_digit
@@ -1109,7 +1097,7 @@ def read_slot_pages(
                     packet = _question_packet(
                         page,
                         question_id=key,
-                        candidate_id=page_candidate_ids[_owner_candidate_key(owner.index)],
+                        candidate_id=candidate_ids[_owner_candidate_key(owner.index)],
                         prompt_id=runtime.prompt_id,
                         full_view_png=view_png,
                         close_up_png=png,
@@ -1117,7 +1105,7 @@ def read_slot_pages(
                         upright_png=upright_png,
                         effort=runtime.claude_effort if runtime.claude_row_reader else None,
                     )
-                    jobs.extend(
+                    found.extend(
                         CropJob(
                             key,
                             model,
@@ -1131,7 +1119,7 @@ def read_slot_pages(
                         for model in wanted
                     )
                 else:
-                    jobs.extend(
+                    found.extend(
                         CropJob(
                             key,
                             model,
@@ -1143,6 +1131,60 @@ def read_slot_pages(
                         )
                         for model in wanted
                     )
+        return found
+
+    row_answers = run_jobs(row_jobs) if row_jobs else {}
+    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, bool]] = (
+        []
+    )
+    jobs: list[CropJob] = []
+    crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
+    walls_asked: dict[int, WallQuestion] = {}
+    owner_candidate_ids: dict[int, dict[str, UUID]] = {}
+    wall_candidate_ids: dict[int, UUID] = {}
+    for page in pages:
+        if runtime.question_packets and page.transform is None:
+            raise ValueError("reader question packets require the published PageTransform")
+        if page.ink is not None and page.ink.dpi != page.rendered.dpi:
+            raise ValueError(
+                f"page {page.page_index}'s ink was read at {page.ink.dpi} dpi but its picture is "
+                f"at {page.rendered.dpi} dpi"
+            )
+        row_choice, row_number = _agreed_row(
+            [row_answers.get((_row_key(page.page_index), model)) for model in readers]
+            if runtime.claude_row_reader and page.page_index in row_ids
+            else []
+        )
+        candidates = page_rows[page.page_index].candidates[:6]
+        selected_row = (
+            candidates[row_number - 1]
+            if row_number is not None and 0 < row_number <= len(candidates)
+            else None
+        )
+        source_plan = plan_slots(
+            page.rows.candidates.rows,
+            page.rows.ink,
+            settings=runtime.crop_settings,
+            row_settings=runtime.row_settings,
+            selected_row=selected_row,
+            row_choice_made=runtime.claude_row_reader and bool(candidates),
+        )
+        plan = _claude_span_plan(page, source_plan) if runtime.claude_row_reader else source_plan
+        owners = [*plan.slots, *([plan.overall] if plan.overall is not None else [])]
+        page_candidate_ids = {_owner_candidate_key(owner.index): uuid4() for owner in owners}
+        owner_candidate_ids[page.page_index] = page_candidate_ids
+        # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
+        # never become a proposal, so it is not read at paid prices; the hold is applied below
+        # exactly as before. Claude path only.
+        held_before_reading = (
+            runtime.claude_row_reader
+            and plan.row is not None
+            and _counter_break_row_hold(page, plan, (), runtime) is not None
+        )
+        planned.append((page, plan, source_plan, row_choice, row_number, held_before_reading))
+        jobs.extend(
+            label_jobs(page, plan, source_plan, page_candidate_ids, held=held_before_reading)
+        )
         wall_pictures_for = (
             None if held_before_reading else _wall_job_pictures(page, plan, runtime.wall_settings)
         )
@@ -1222,8 +1264,70 @@ def read_slot_pages(
     label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
         key: answer for key, answer in answers.items() if isinstance(answer, ReaderAnswer)
     }
+    # #1086: a chosen row with nothing printed on any piece may be read through the vendor's
+    # `X"(N EQ)` chain for the same run. Code finds the one candidate that could be it (same ends,
+    # same pasted drawing, an overall); only then is that row read, in one more batch on the same
+    # pacer and spend guard, and only `equal_share_chain` decides whether it is used.
+    chains: dict[int, tuple[SlotPlan, SlotPlan, dict[str, UUID]]] = {}
+    chain_jobs: list[CropJob] = []
+    if runtime.claude_row_reader:
+        for page, plan, _source_plan, _row_choice, _row_number, held in planned:
+            if held or plan.row is None:
+                continue
+            chosen = [
+                _owner_result(
+                    page,
+                    plan,
+                    owner,
+                    len(plan.slots),
+                    crops=crops,
+                    answers=label_answers,
+                    runtime=runtime,
+                    wall_ends=wall_ends(page),
+                ).outcome
+                for owner in (*plan.slots, *((plan.overall,) if plan.overall else ()))
+            ]
+            if not all(outcome.reason_code == NO_LABEL for outcome in chosen):
+                continue
+            partner = equal_share_partner(
+                plan.row,
+                page_rows[page.page_index].candidates[:6],
+                page.rows.ink.drawing_boxes,
+                end_tolerance_pt=runtime.row_settings.overall_end_pt,
+                frame_slack_pt=runtime.wall_settings.frame_slack_pt,
+            )
+            if partner is None:
+                continue
+            chain_source = plan_slots(
+                page.rows.candidates.rows,
+                page.rows.ink,
+                settings=runtime.crop_settings,
+                row_settings=runtime.row_settings,
+                selected_row=partner,
+                row_choice_made=True,
+            )
+            chain_plan = _claude_span_plan(page, chain_source)
+            if _counter_break_row_hold(page, chain_plan, (), runtime) is not None:
+                continue
+            chain_ids = {
+                _owner_candidate_key(owner.index): uuid4()
+                for owner in (
+                    *chain_plan.slots,
+                    *((chain_plan.overall,) if chain_plan.overall else ()),
+                )
+            }
+            chains[page.page_index] = (chain_plan, chain_source, chain_ids)
+            chain_jobs.extend(
+                label_jobs(page, chain_plan, chain_source, chain_ids, row_key=_CHAIN_ROW_KEY)
+            )
+    if chain_jobs:
+        label_answers.update(
+            (key, answer)
+            for key, answer in run_jobs(chain_jobs).items()
+            if isinstance(answer, ReaderAnswer)
+        )
     results: list[PageSlotResult] = []
-    for page, plan, source_plan, row_choice, row_number in planned:
+    for page, plan, source_plan, row_choice, row_number, _held in planned:
 
         def owner_result(
             owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
@@ -1241,7 +1345,78 @@ def read_slot_pages(
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
         overall = None if plan.overall is None else owner_result(plan.overall, len(plan.slots))
-        hold = _counter_break_row_hold(page, plan, slots, runtime)
+        asked_plan = plan
+        owner_ids = owner_candidate_ids[page.page_index]
+        read_through: CountertopRowCandidate | None = None
+        chosen_hold: RowHold | None = None
+        chosen_texts: list[str] = []
+        chain = chains.get(page.page_index)
+        if chain is not None:
+            chain_plan, chain_source, chain_ids = chain
+            chain_slots = tuple(
+                _owner_result(
+                    page,
+                    chain_plan,
+                    owner,
+                    len(chain_plan.slots),
+                    crops=crops,
+                    answers=label_answers,
+                    runtime=runtime,
+                    wall_ends=wall_ends(page),
+                    row_key=_CHAIN_ROW_KEY,
+                )
+                for owner in chain_plan.slots
+            )
+            chain_overall = (
+                None
+                if chain_plan.overall is None
+                else _owner_result(
+                    page,
+                    chain_plan,
+                    chain_plan.overall,
+                    len(chain_plan.slots),
+                    crops=crops,
+                    answers=label_answers,
+                    runtime=runtime,
+                    wall_ends=wall_ends(page),
+                    row_key=_CHAIN_ROW_KEY,
+                )
+            )
+            chain_slots, chain_overall, _chain_vetoed = _veto_by_drawn_length(
+                chain_slots, chain_overall
+            )
+            if (
+                equal_share_chain(
+                    [item.outcome for item in slots],
+                    None if overall is None else overall.outcome,
+                    [(item.outcome, _agreed_text(item)) for item in chain_slots],
+                    (
+                        None
+                        if chain_overall is None
+                        else (chain_overall.outcome, _agreed_text(chain_overall))
+                    ),
+                )
+                is not None
+            ):
+                # The chosen row's own holds and words still count: holding is always safe.
+                read_through = plan.row
+                chosen_hold = _counter_break_row_hold(page, plan, slots, runtime)
+                chosen_texts = [
+                    *_row_texts([*slots, *((overall,) if overall is not None else ())]),
+                    *(
+                        label.text
+                        for owner in (
+                            *source_plan.slots,
+                            *((source_plan.overall,) if source_plan.overall else ()),
+                        )
+                        for label in owner.labels
+                        if label.text
+                    ),
+                ]
+                plan, source_plan = chain_plan, chain_source
+                slots, overall = chain_slots, chain_overall
+                owner_ids = chain_ids
+        hold = _counter_break_row_hold(page, plan, slots, runtime) or chosen_hold
         line_answers = tuple(
             answer
             for model in readers
@@ -1254,7 +1429,7 @@ def read_slot_pages(
             # Positive-only: this answer can hold a row, never clear an existing hold.
             hold = counter_break_hold(("REFRIGERATOR",))
         check_hold = (
-            _stone_end_hold(page, plan, line_answers)
+            _stone_end_hold(page, asked_plan, line_answers)
             if hold is None and runtime.claude_row_reader
             else None
         )
@@ -1272,6 +1447,7 @@ def read_slot_pages(
                 [
                     *_row_texts([*slots, *((overall,) if overall is not None else ())]),
                     *source_texts,
+                    *chosen_texts,
                 ]
             )
         slots, overall, vetoed = _veto_by_drawn_length(slots, overall)
@@ -1340,7 +1516,7 @@ def read_slot_pages(
                 check_hold=check_hold,
                 vetoed=vetoed,
                 walls=walls,
-                owner_candidate_ids=owner_candidate_ids[page.page_index],
+                owner_candidate_ids=owner_ids,
                 wall_candidate_id=wall_candidate_ids.get(page.page_index),
                 row_choice=row_choice,
                 row_choice_number=row_number,
@@ -1351,6 +1527,7 @@ def read_slot_pages(
                     if page.page_index in row_images
                     else None
                 ),
+                read_through=read_through,
             )
         )
     if architect is not None:
@@ -1761,12 +1938,13 @@ def _owner_result(
     answers: Mapping[tuple[str, str], ReaderAnswer | None],
     runtime: SlotReaderRuntime,
     wall_ends: frozenset[WallEnd],
+    row_key: str = "",
 ) -> OwnerResult:
     """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind."""
     height = page.rows.ink.height
     labels: list[LabelResult] = []
     for position, label in enumerate(owner.labels):
-        key = _key(page.page_index, owner.index, position)
+        key = _key(page.page_index, owner.index, position, row_key)
         box_px, crop_px, ink = crops[key]
         present = [
             answer
@@ -1811,8 +1989,19 @@ def _owner_result(
     )
 
 
-def _key(page_index: int, owner: int | None, position: int) -> str:
-    return f"p{page_index}:{'overall' if owner is None else f'slot{owner}'}:{position}"
+def _key(page_index: int, owner: int | None, position: int, row: str = "") -> str:
+    return f"p{page_index}:{row}{'overall' if owner is None else f'slot{owner}'}:{position}"
+
+
+#: The question-key prefix of the `X"(N EQ)` chain's labels, read beside the chosen row (#1086).
+_CHAIN_ROW_KEY: Final = "eq-chain:"
+
+
+def _agreed_text(owner: OwnerResult) -> str | None:
+    """The text both readers agreed on for the label carrying the owner's reading, if any."""
+    if owner.outcome.label_index is None:
+        return None
+    return owner.labels[owner.outcome.label_index].outcome.sealed_text
 
 
 def _box_flag(name: str, box: tuple[int, int, int, int]) -> str:
@@ -1945,6 +2134,8 @@ def persist_slot_readings(
                 flags.append(f"row-hold:{result.row_hold.code}")
             if result.check_hold is not None:
                 flags.append(f"check-hold:{result.check_hold.code}")
+            if result.read_through is not None:
+                flags.append(f"equal-shares-for-row-rank:{result.read_through.rank}")
             if owner.kind is not None:
                 flags.append(f"kind:{owner.kind.kind.value}")
                 flags.append(f"kind-evidence:{owner.kind.evidence}")

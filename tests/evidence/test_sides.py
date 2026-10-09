@@ -355,7 +355,8 @@ def test_a_one_drawing_page_in_a_two_pdf_package_takes_the_uploads_side_until_co
 def _sides_of_every_copy(
     session: Session, revision: PackageRevision, text: str, *, one_drawing: bool
 ) -> list[DocumentRole | SideRefusal]:
-    """`text`'s side on each copy of a file uploaded as both drawings (#963)."""
+    """`text`'s side on each copy of a file uploaded as both drawings (#963) that has pages: since
+    #961 the file is read once, so only the copy that was read has any."""
     pages = (
         session.execute(
             select(Page)
@@ -369,7 +370,7 @@ def _sides_of_every_copy(
         .scalars()
         .all()
     )
-    assert len(pages) == 2
+    assert len(pages) == 1, "one file is read once, whichever slots it was uploaded in (#961)"
     sides: list[DocumentRole | SideRefusal] = []
     for page in pages:
         if one_drawing:

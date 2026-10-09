@@ -20,6 +20,7 @@ number this API emits, so a client can render `51/2` as `25 1/2` without a float
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -374,6 +375,57 @@ class ProposedFieldOut(BaseModel):
     values: tuple[ProposedReadingOut, ...]
 
 
+class SavedValueOut(BaseModel):
+    """One value a reviewer saved, exactly as stored, with who saved it and when (#1074).
+
+    `numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same
+    number written the way the form takes it (`25 1/2"`), and reads back to exactly these two numbers
+    when sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is
+    `38 94/127"`), because the characters first typed are not stored — only the number is.
+    """
+
+    numerator: str
+    denominator: str
+    unit: str
+    #: `None` only for a unit the form does not write, which nothing stores today.
+    text: str | None
+    set_by: str
+    set_at: datetime
+
+
+class SavedQuantityOut(BaseModel):
+    """What this review already holds for one quantity of the form, keyed like `QuantityOut.key`.
+
+    A quantity feeds one or more rule inputs (`QuantityOut.consumers`) and the form saves it once per
+    input. `values` are those of the input saved most recently — one value, or a run in layout order
+    for a many-valued quantity.
+    """
+
+    key: str
+    values: tuple[SavedValueOut, ...]
+    #: Who saved the newest of `values`, and when.
+    set_by: str
+    set_at: datetime
+    #: True only when every rule input this quantity feeds holds exactly these values. False means at
+    #: least one check would read nothing, or a different number, so the field is not done yet.
+    complete: bool
+
+
+class SavedParameterOut(BaseModel):
+    """The setting value in force for one parameter, as saved, with where it came from (#1074)."""
+
+    name: str
+    #: `run` for a value saved for this review only, `project` for one saved for every review of the
+    #: project — the layer the form's `scope` filed it in, and the one the checks read it from.
+    layer: Literal["project", "run"]
+    value: SavedValueOut
+    #: Where the value came from (#827), e.g. `G.C / Client`.
+    source: str
+    reference: str | None = None
+    #: The passage the value was typed from and matched (#866), as the `proposal_id` that was sent.
+    citation: UUID | None = None
+
+
 class RequiredInputsOut(BaseModel):
     """Everything the published rulebook needs, grouped so a form can render it.
 
@@ -413,6 +465,13 @@ class RequiredInputsOut(BaseModel):
     #: The package revision's lifecycle state, as the pipeline last recorded it. The reason behind
     #: `still_reading`, so a screen can say *what* is happening rather than only that something is.
     revision_state: str = ""
+
+    #: What this review already holds for each quantity of the form, so the form refills after a
+    #: reload (#1074). Only quantities with something saved appear; only this package revision's.
+    saved_measurements: tuple[SavedQuantityOut, ...] = ()
+    #: The saved value in force for each setting of the form (#1074), from the layer its scope
+    #: files it in. Only settings with something saved appear.
+    saved_parameters: tuple[SavedParameterOut, ...] = ()
 
 
 class CheckRequest(BaseModel):

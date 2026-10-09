@@ -8,24 +8,28 @@ from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.evidence.sides import ReadingSides
 from app.models import (
+    CanonicalObservation,
     CheckRun,
+    EvidenceArtifact,
     EvidenceSupportingCandidate,
     Finding,
+    ObservationCandidate,
     Package,
     PackageRevision,
     RuleDefinition,
     RuleSnapshot,
     VerdictInput,
 )
+from app.models.evidence import EvidenceArtifactKind
 from app.review.approval import readiness_and_decisions
-from app.review.row_location import RowLocation, architect_locations, row_locations
+from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectComparedOut,
@@ -155,11 +159,182 @@ def _source_and_kind(
     return "missing", None
 
 
+#: Evidence statuses a sealed reading's confirmed observation may have.
+_ADMISSIBLE_EVIDENCE: Final = frozenset({"CORROBORATED", "HUMAN_CONFIRMED"})
+
+
+class _StoredCrops:
+    """Which sealed readings have a confirmed observation with a stored crop (#1049).
+
+    `by_candidate`: a sealed slot-reader candidate -> its one admissible confirmed observation on
+    the same page, when that observation has a stored crop. `recorded`: a recorded operand's
+    confirmed observation -> its (page, document version), when it has a stored crop. Display
+    only; nothing here is a value or reaches a verdict.
+    """
+
+    def __init__(
+        self,
+        by_candidate: dict[UUID, UUID] | None = None,
+        recorded: dict[UUID, tuple[UUID, UUID]] | None = None,
+    ) -> None:
+        self.by_candidate = by_candidate or {}
+        self.recorded = recorded or {}
+
+    def for_reading(
+        self, row: SlotRow, candidate: Any, recorded_input: VerdictInput | None
+    ) -> UUID | None:
+        """The crop's observation for one sealed reading, or `None`; never a neighbour's."""
+        if recorded_input is not None:
+            if recorded_input.evidence_status == "HUMAN_CONFIRMED":
+                return None
+            observation = recorded_input.canonical_observation_id
+            if observation is None:
+                return None
+            place = self.recorded.get(observation)
+            anchor = (row.anchor.page_id, row.anchor.document_version_id)
+            return observation if place == anchor else None
+        if candidate is None or not candidate_is_sealed(candidate):
+            return None
+        return self.by_candidate.get(candidate.id)
+
+
+def _supported_candidate(flags: Any) -> UUID | None:
+    """The candidate a per-reader child supports (`supports:<id>`), from exactly one record."""
+    if not isinstance(flags, list) or "slot-reader-support" not in flags:
+        return None
+    found = [flag.removeprefix("supports:") for flag in flags if str(flag).startswith("supports:")]
+    if len(found) != 1:
+        return None
+    try:
+        return UUID(found[0])
+    except ValueError:
+        return None
+
+
+def _stored_crops(
+    session: Session, rows: tuple[SlotRow, ...], recorded_ids: set[UUID]
+) -> _StoredCrops:
+    """One statement for every row: the confirmed observations behind the sealed readings and the
+    recorded operands, and whether a stored crop exists for each.
+
+    "Has a crop" is the crop endpoint's own rule (`app/api/finding_chain.py:evidence_crop`): a crop
+    owned by the observation, or by one of its supporting candidates. A slot candidate's
+    observation is found through its supporting links only — the candidate itself, or a per-reader
+    child of the same run that records `supports:<candidate>` — never by matching a value. More than
+    one admissible observation for a candidate is ambiguous and gives none.
+    """
+    sealed = {
+        candidate.id: candidate
+        for row in rows
+        for candidate in row.candidates
+        if candidate_is_sealed(candidate)
+    }
+    if not sealed and not recorded_ids:
+        return _StoredCrops()
+    support = aliased(EvidenceSupportingCandidate)
+    has_crop = (
+        select(EvidenceArtifact.id)
+        .where(
+            EvidenceArtifact.kind == EvidenceArtifactKind.CROP.value,
+            or_(
+                EvidenceArtifact.canonical_observation_id == CanonicalObservation.id,
+                EvidenceArtifact.candidate_id.in_(
+                    select(support.candidate_id).where(
+                        support.canonical_observation_id == CanonicalObservation.id
+                    )
+                    # Two levels down: without this the inner select takes its own copy of
+                    # the table, and "has a crop" becomes "any observation has a crop".
+                    .correlate(CanonicalObservation)
+                ),
+            ),
+        )
+        .correlate(CanonicalObservation)
+        .exists()
+    )
+    linked = and_(
+        ObservationCandidate.extraction_run_id.in_(
+            {candidate.extraction_run_id for candidate in sealed.values()}
+        ),
+        or_(
+            ObservationCandidate.id.in_(sealed),
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader-support"]),
+        ),
+    )
+    records = session.execute(
+        select(
+            CanonicalObservation.id,
+            CanonicalObservation.page_id,
+            CanonicalObservation.document_version_id,
+            CanonicalObservation.status,
+            has_crop.label("has_crop"),
+            ObservationCandidate.id,
+            ObservationCandidate.extraction_run_id,
+            ObservationCandidate.ambiguity_flags,
+        )
+        .select_from(CanonicalObservation)
+        .outerjoin(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .outerjoin(
+            ObservationCandidate,
+            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
+        )
+        .where(or_(CanonicalObservation.id.in_(recorded_ids), linked))
+    ).all()
+    cropped: dict[UUID, tuple[UUID, UUID]] = {}
+    links: dict[UUID, set[UUID]] = {}
+    for observation, page_id, version_id, state, crop, candidate_id, run_id, flags in records:
+        if crop:
+            cropped[observation] = (page_id, version_id)
+        if candidate_id is None:
+            continue
+        owner_id = candidate_id if candidate_id in sealed else _supported_candidate(flags)
+        owner = None if owner_id is None else sealed.get(owner_id)
+        if (
+            owner is None
+            or run_id != owner.extraction_run_id
+            or state not in _ADMISSIBLE_EVIDENCE
+            or (page_id, version_id) != (owner.page_id, owner.document_version_id)
+        ):
+            continue
+        links.setdefault(owner.id, set()).add(observation)
+    return _StoredCrops(
+        by_candidate={
+            owner_id: next(iter(observations))
+            for owner_id, observations in links.items()
+            if len(observations) == 1 and next(iter(observations)) in cropped
+        },
+        recorded={
+            observation: cropped[observation]
+            for observation in recorded_ids
+            if observation in cropped
+        },
+    )
+
+
 def _row_values(
     row: Any,
     finding: Finding | None,
     verdict_inputs: dict[str, VerdictInput],
-) -> tuple[Fraction | None, list[CountertopPieceOut], Fraction | None, int | None, Fraction | None]:
+    slot_locations: dict[UUID, RowLocation] | None = None,
+    crops: _StoredCrops | None = None,
+) -> tuple[
+    Fraction | None,
+    list[CountertopPieceOut],
+    Fraction | None,
+    int | None,
+    Fraction | None,
+    tuple[RowLocation | None, UUID | None],
+]:
+    """The row's values, and (last) where its printed overall was read and its crop's observation.
+
+    A slot's location and crop come from the one candidate that claims that slot; a slot two
+    candidates claim gets neither.
+    """
+    slot_locations = slot_locations or {}
+    crops = crops or _StoredCrops()
+    claims: dict[int | None, int] = {}
     candidates: dict[int | None, Any] = {}
     for candidate in row.candidates:
         slot = next(
@@ -173,6 +348,19 @@ def _row_values(
         position = None if slot == "overall" else int(slot) if slot and slot.isdigit() else -1
         if position != -1:
             candidates[position] = candidate
+            claims[position] = claims.get(position, 0) + 1
+
+    def located(position: int | None) -> RowLocation | None:
+        candidate = candidates.get(position)
+        if candidate is None or claims.get(position) != 1:
+            return None
+        return slot_locations.get(candidate.id)
+
+    def cropped(position: int | None, recorded_input: VerdictInput | None) -> UUID | None:
+        if claims.get(position, 0) > 1:
+            return None
+        return crops.for_reading(row, candidates.get(position), recorded_input)
+
     saved = {} if row.decision is None else row.decision.measurements
     trace = {} if finding is None else finding.trace
     overall_input = verdict_inputs.get("countertop_width")
@@ -181,6 +369,11 @@ def _row_values(
         if overall_input is not None
         else _trace_value(trace, "countertop_width") if finding is not None else None
     )
+    overall_crop = (
+        cropped(None, overall_input)
+        if overall_input is not None
+        else None if overall is not None else cropped(None, None)
+    )
     if overall is None:
         candidate = candidates.get(None)
         overall = (
@@ -188,6 +381,8 @@ def _row_values(
             if candidate is not None and candidate_is_sealed(candidate)
             else None
         )
+        if overall is None:
+            overall_crop = None
     if overall is None and isinstance(saved.get("countertop_width"), dict):
         item = saved["countertop_width"]
         try:
@@ -215,11 +410,20 @@ def _row_values(
         if recorded_input is not None:
             source = "typed" if recorded_input.evidence_status == "HUMAN_CONFIRMED" else "sealed"
         pieces.append(
-            CountertopPieceOut(index=index, value=_exact(recorded), source=source, kind=kind)
+            CountertopPieceOut(
+                index=index,
+                value=_exact(recorded),
+                source=source,
+                kind=kind,
+                location=located(index),
+                canonical_observation_id=(
+                    cropped(index, recorded_input) if source == "sealed" else None
+                ),
+            )
         )
     expected = _intermediate(trace, "expected_width") if finding is not None else None
     field_per_end, field_count = _scale_inputs(trace) if finding is not None else (None, None)
-    return overall, pieces, field_per_end, field_count, expected
+    return overall, pieces, field_per_end, field_count, expected, (located(None), overall_crop)
 
 
 def _wall(row: Any) -> WallLayoutOut:
@@ -495,7 +699,18 @@ def _countertop_results_for_revision(
         session, [finding.check_run_id for finding in architect_by_row.values()]
     )
     row_ids = tuple(row.anchor.id for row in rows)
-    locations = row_locations(session, row_ids)
+    locations, slot_locations = row_and_slot_locations(session, row_ids)
+    crops = _stored_crops(
+        session,
+        rows,
+        {
+            item.canonical_observation_id
+            for finding in finding_by_row.values()
+            for name, item in verdict_inputs_by_finding.get(finding.check_run_id, {}).items()
+            if item.canonical_observation_id is not None
+            and (name == "countertop_width" or name.startswith("piece_widths["))
+        },
+    )
     # The decision standing on each result: the reviewer's own latest, or the one it carried over an
     # unchanged re-run (#1073). Read once, with sign-off readiness, so the two cannot disagree.
     readiness, records = readiness_and_decisions(session, revision.id)
@@ -504,10 +719,12 @@ def _countertop_results_for_revision(
     items: list[CountertopResultOut] = []
     for row in rows:
         finding = finding_by_row.get(row.anchor.id)
-        overall, pieces, field_per_end, field_count, expected = _row_values(
+        overall, pieces, field_per_end, field_count, expected, overall_read = _row_values(
             row,
             finding,
             {} if finding is None else verdict_inputs_by_finding.get(finding.check_run_id, {}),
+            slot_locations,
+            crops,
         )
         decision = None if finding is None else decisions.get(finding.id)
         wall_flags = set(
@@ -593,6 +810,8 @@ def _countertop_results_for_revision(
                 ),
                 needs_decision=finding is None or finding.id in need_ids,
                 printed_overall=_exact(overall),
+                printed_overall_location=overall_read[0],
+                printed_overall_canonical_observation_id=overall_read[1],
                 pieces=tuple(pieces),
                 field_cut_per_end=_exact(field_per_end),
                 field_cut_count=field_count,

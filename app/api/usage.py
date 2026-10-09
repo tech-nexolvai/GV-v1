@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
@@ -20,12 +20,15 @@ from app.models import (
     ModelInvocation,
     Package,
     PackageRevision,
+    PackageState,
+    PackageStateEvent,
     TaskRun,
     WorkflowRun,
 )
 from app.schemas.visual_ui import (
     ModelUsageOut,
     PackageReadingTimeOut,
+    ReadingTimeOut,
     UsageGroupOut,
     UsageOut,
     UsageTotalsOut,
@@ -43,6 +46,120 @@ class _InvocationUsage:
     output_tokens: int
     cost_micros: int | None
     outcome: str
+
+
+#: Where a reading hands the revision to a person: ready for review, or waiting for a reviewer to
+#: confirm or type values (also where an AI budget stop lands). What happens after is not reading.
+_READING_HANDOVERS: frozenset[str] = frozenset(
+    {PackageState.AWAITING_REVIEW.value, PackageState.NEEDS_INPUT.value}
+)
+
+#: Stops nothing resumes from: the reading failed here, whatever happens to the revision later.
+_READING_FINAL_STOPS: frozenset[str] = frozenset(
+    {
+        PackageState.FAILED_PERMANENT.value,
+        PackageState.CANCELLED.value,
+        PackageState.SUPERSEDED.value,
+    }
+)
+
+
+def _reading_times(
+    session: Session, project_id: UUID, from_: datetime | None, to: datetime | None
+) -> tuple[ReadingTimeOut, ...]:
+    """Each revision's reading, from its state events, in one query (#1071).
+
+    Only events from each revision's first `EXTRACTING` onwards are fetched; the walk in Python
+    stops at the hand-over or the failure that ended the reading. `ReadingTimeOut` says what the times mean.
+    """
+    first_extract_query = (
+        select(
+            PackageStateEvent.package_revision_id.label("revision_id"),
+            func.min(PackageStateEvent.sequence).label("sequence"),
+        )
+        .join(PackageRevision, PackageRevision.id == PackageStateEvent.package_revision_id)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(
+            Package.project_id == project_id,
+            PackageStateEvent.to_state == PackageState.EXTRACTING.value,
+        )
+        .group_by(PackageStateEvent.package_revision_id)
+    )
+    # The window selects readings by when they started, the first EXTRACTING event.
+    if from_ is not None:
+        first_extract_query = first_extract_query.having(
+            func.min(PackageStateEvent.created_at) >= from_
+        )
+    if to is not None:
+        first_extract_query = first_extract_query.having(
+            func.min(PackageStateEvent.created_at) < to
+        )
+    first_extract = first_extract_query.subquery()
+    rows = session.execute(
+        select(
+            Package.id.label("package_id"),
+            PackageRevision.id.label("revision_id"),
+            PackageRevision.revision_number,
+            PackageStateEvent.to_state,
+            PackageStateEvent.created_at,
+        )
+        .select_from(PackageStateEvent)
+        .join(
+            first_extract,
+            and_(
+                first_extract.c.revision_id == PackageStateEvent.package_revision_id,
+                PackageStateEvent.sequence >= first_extract.c.sequence,
+            ),
+        )
+        .join(PackageRevision, PackageRevision.id == PackageStateEvent.package_revision_id)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .order_by(PackageRevision.id, PackageStateEvent.sequence)
+    ).all()
+
+    readings: list[ReadingTimeOut] = []
+    index = 0
+    while index < len(rows):
+        start = rows[index]
+        finished_at: datetime | None = None
+        end_state: str | None = None
+        outcome: Literal["finished", "failed", "reading"] = "reading"
+        done = False
+        while index < len(rows) and rows[index].revision_id == start.revision_id:
+            row = rows[index]
+            index += 1
+            if done:
+                continue
+            if row.to_state in _READING_HANDOVERS:
+                finished_at, end_state, outcome = row.created_at, row.to_state, "finished"
+                done = True
+            elif row.to_state in _READING_FINAL_STOPS:
+                # A retryable failure followed by a final stop failed at the first one.
+                if outcome != "failed":
+                    finished_at, end_state, outcome = row.created_at, row.to_state, "failed"
+                done = True
+            elif row.to_state == PackageState.FAILED_RETRYABLE.value:
+                finished_at, end_state, outcome = row.created_at, row.to_state, "failed"
+            else:
+                # Still in (or resumed into) the pipeline.
+                finished_at, end_state, outcome = None, None, "reading"
+        started_at: datetime = start.created_at
+        readings.append(
+            ReadingTimeOut(
+                package_id=start.package_id,
+                revision_id=start.revision_id,
+                revision_number=start.revision_number,
+                started_at=started_at,
+                finished_at=finished_at,
+                outcome=outcome,
+                end_state=end_state,
+                duration_ms=(
+                    None
+                    if finished_at is None
+                    else (finished_at - started_at) // timedelta(milliseconds=1)
+                ),
+            )
+        )
+    return tuple(sorted(readings, key=lambda item: (item.started_at, str(item.revision_id))))
 
 
 def _usd(micros: int) -> str:
@@ -194,6 +311,7 @@ def project_usage(
             "totals": totals(all_calls),
             "groups": tuple(groups),
             "package_reading_times": tuple(durations),
+            "reading_times": _reading_times(session, project_id, from_, to),
         }
     )
 

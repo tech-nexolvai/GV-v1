@@ -66,6 +66,7 @@ __all__ = [
     "ReadingSides",
     "SideRefusal",
     "SideRefusalReason",
+    "page_transform_at",
     "reading_transform",
 ]
 
@@ -109,11 +110,23 @@ def reading_transform(page: Page, run: ExtractionRun) -> PageTransform | None:
     silently wrong for the rest. Being silently wrong here does not lose evidence; it places evidence
     on a region of the drawing nobody wrote, which a reviewer would have no way to notice.
     """
-    if page.media_box is None or page.crop_box is None or run.dpi is None:
+    if run.dpi is None:
+        return None
+    return page_transform_at(page, run.dpi)
+
+
+def page_transform_at(page: Page, dpi: int) -> PageTransform | None:
+    """The page's published transform at `dpi`, from its recorded boxes and rotation; or `None`
+    where the manifest recorded none, never a reconstruction from the page's size.
+
+    `reading_transform` at a reading's dpi, and the vendor-only page picture's frame at the dpi it
+    was rendered at (#952): one construction, so a stored region lands on the same paper in both.
+    """
+    if page.media_box is None or page.crop_box is None:
         return None
     try:
         return PageTransform(
-            dpi=run.dpi,
+            dpi=dpi,
             rotation=page.rotation,
             media_box=tuple(Decimal(value) for value in page.media_box),  # type: ignore[arg-type]
             crop_box=tuple(Decimal(value) for value in page.crop_box),  # type: ignore[arg-type]

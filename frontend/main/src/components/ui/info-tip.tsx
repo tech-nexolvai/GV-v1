@@ -15,7 +15,9 @@ export function InfoTip({ label, children }: { label: string; children: ReactNod
           type="button"
           data-tw
           aria-label={label}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border align-middle font-sans text-xs text-muted-foreground hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          // A 20 px circle that still gives a finger a 44 px target (the invisible ::after), instead of
+          // the page's touch rule stretching the button itself into a tall pill (#1072).
+          className="relative inline-flex size-5 min-h-5 shrink-0 items-center justify-center rounded-full border align-middle font-sans text-xs text-muted-foreground after:absolute after:-inset-3 after:content-[''] hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
         >
           ?
         </button>

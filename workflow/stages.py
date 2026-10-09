@@ -39,7 +39,7 @@ import os
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -109,8 +109,13 @@ from evidence.candidate import STACKED_FRACTION_FLAG
 from evidence.candidate import ObservationCandidate as DomainCandidate
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from evidence.coordinates import ImagePoint, PageTransform, PdfPoint, StoredPoint
-from evidence.corroborate import corroborate, is_consistent_dual_label
+from evidence.corroborate import (
+    corroborate,
+    is_consistent_dual_label,
+    one_dual_label_across_agreements,
+)
 from evidence.crop import (
+    EVIDENCE_CONTEXT_MARGIN_PT,
     BoxCropSpec,
     CropSpec,
     CropStatus,
@@ -149,6 +154,7 @@ from extraction.agent.tools import (
 from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     LINE_DIMENSION_INTENT,
+    MarkupNote,
     OutlinedTextRegion,
     PageLayers,
     StackedFraction,
@@ -784,6 +790,16 @@ def _stored_measurement(row: ObservationCandidate) -> Measurement | None:
     )
 
 
+def _agreeing(rows: Sequence[ObservationCandidate]) -> tuple[ObservationCandidate, ...]:
+    """The readings that hold an agreement: the second-reader lane, not marked conflicting (#928)."""
+    return tuple(
+        row
+        for row in rows
+        if row.corroboration_lane == CorroborationLane.SECOND_READER.value
+        and row.corroboration_status != EvidenceStatus.CONFLICTING.value
+    )
+
+
 def _domain_candidate_from_row(
     row: ObservationCandidate, run: ExtractionRun, page_index: int
 ) -> DomainCandidate:
@@ -818,7 +834,8 @@ MAXIMUM_RENDER_PIXELS = 40_000_000
 #: the caller, which is the right call: it is a judgement about drawings, and this value is the
 #: smallest one that shows a dimension line either side of its text. **Expect to tune it against the
 #: real GV drawings when #274 lands**; it is a starting point chosen deliberately, not a measured one.
-CROP_CONTEXT_MARGIN_PT = Decimal(9)
+#: Defined beside the crop cutter, so the vendor-only view of a crop's region (#952) keeps the same.
+CROP_CONTEXT_MARGIN_PT = EVIDENCE_CONTEXT_MARGIN_PT
 
 #: The bounded crop and context sent to vision readers. It deliberately reuses the evidence crop
 #: margin so the model sees a region, not a full page, and no model chooses its own context.
@@ -1949,6 +1966,10 @@ class DatabaseStages:
         verified = 0
         unreadable: list[str] = []
         miscounted: list[str] = []
+        # **One parse per distinct file (#961).** Every stored copy is still fetched and its digest
+        # checked below — each copy is its own stored object, and a wrong one still halts the
+        # package — but two copies of the same bytes have the same pages, so they are counted once.
+        parsed: dict[str, int | UnreadablePdf] = {}
         for version_id, key, sha256, page_count in records:
             data = _fetch(self._store, key)
             if hashlib.sha256(data).hexdigest() != sha256:
@@ -1969,13 +1990,17 @@ class DatabaseStages:
                     f"document version {version_id} does not match the digest recorded when it was "
                     "uploaded, so this package is not the one that was submitted"
                 )
-            try:
-                pages = read_pages(data)
-            except UnreadablePdf as error:
-                unreadable.append(f"{version_id}: {error}")
+            if sha256 not in parsed:
+                try:
+                    parsed[sha256] = len(read_pages(data))
+                except UnreadablePdf as error:
+                    parsed[sha256] = error
+            found = parsed[sha256]
+            if isinstance(found, UnreadablePdf):
+                unreadable.append(f"{version_id}: {found}")
                 continue
-            if len(pages) != page_count:
-                miscounted.append(f"{version_id}: {len(pages)} pages, {page_count} recorded")
+            if found != page_count:
+                miscounted.append(f"{version_id}: {found} pages, {page_count} recorded")
                 continue
             verified += 1
 
@@ -2041,7 +2066,16 @@ class DatabaseStages:
 
         results: list[PageResult] = []
         verified_data: dict[UUID, bytes] = {}
+        # **Each distinct file is read once (#961).** A revision can hold the same bytes twice
+        # without passing the upload doors that refuse it (#963): a revision built by `supersede`,
+        # one assembled before #964 and retried, or one a script wrote. Read as two documents, every
+        # page, candidate and model call was made twice, and each reading had a twin on the other
+        # copy. The other copy keeps its document, version, artifact and membership rows; its pages
+        # are the read copy's, and `ingest` has already checked its own stored bytes.
+        read_as = _copies_read_once(session, package_revision_id)
         for version, key, sha256, _ in documents:
+            if version in read_as:
+                continue
             # No `try` around the fetch. An artifact this stage cannot read must fail the stage, not
             # be skipped — see `_fetch`.
             data = _fetch(self._store, key)
@@ -3670,6 +3704,13 @@ class DatabaseStages:
         `CONFLICTING`, every row of the region is marked so. Any other judgement changes nothing,
         so this can take an agreement away and can never make one.
 
+        **Nor two agreements on one dual label's inches with different millimetres (#928).** The
+        first pass's pair agrees on `914 [36]`, the agent's pair on `915 [36]`: each pair agreed, so
+        `corroborate` over the region finds no conflict in the inches, and the region would hold two
+        agreements on 36" — sealable — though one group misread the millimetres. Where the region's
+        agreeing readings do not state one dual label (`one_dual_label_across_agreements`), it is a
+        conflict for a reviewer, marked as above.
+
         Only regions holding an agent row written by this delivery are judged. A redelivered stage
         reuses its agent rows rather than writing them, and leaves what the first delivery decided.
         """
@@ -3701,7 +3742,16 @@ class DatabaseStages:
                     for row in valued
                 )
             )
-            if result.status is not EvidenceStatus.CONFLICTING or result.lane is None:
+            status: EvidenceStatus
+            lane: CorroborationLane
+            if result.status is EvidenceStatus.CONFLICTING and result.lane is not None:
+                status, lane = result.status, result.lane
+            elif not one_dual_label_across_agreements(
+                tuple((_stored_measurement(row), row.raw_text) for row in _agreeing(valued))
+            ):
+                # **Two groups, one dual label's inches, different millimetres (#928).**
+                status, lane = EvidenceStatus.CONFLICTING, CorroborationLane.SECOND_READER
+            else:
                 continue
             # **Only readings not yet saved (#790).** A reading is append-only once it is in the
             # database, and the page's panel step saves earlier routes' readings before the vision
@@ -3712,8 +3762,8 @@ class DatabaseStages:
             for row in rows:
                 if not inspect(row).pending:
                     continue
-                row.corroboration_status = result.status.value
-                row.corroboration_lane = result.lane.value
+                row.corroboration_status = status.value
+                row.corroboration_lane = lane.value
 
     def _run_bounded_agent_for_ambiguous_regions(
         self,
@@ -6019,10 +6069,13 @@ class DatabaseStages:
                     abstained.append(f"page {page.index}: {result.reason}")
                     continue
                 artifact = result.artifact
-                mark_state = (
-                    None
-                    if markup is None
-                    else crop_shows_a_gv_mark(crop_pixel_box(rendered, spec), markup)
+                # **Both layers are in this picture, so both are asked about (#952).** GV's marks
+                # baked into the vendor's drawing (`crop_shows_a_gv_mark`), and GV's own annotation
+                # layer, which this person-facing render paints on and the vision crops leave out.
+                mark_state = crop_mark_state(
+                    crop_pixel_box(rendered, spec),
+                    markup,
+                    None if layers is None else (*layers.markup, *layers.other_layer_notes),
                 )
                 session.add(
                     EvidenceArtifact(
@@ -7338,6 +7391,43 @@ def _document_records_for(
     ]
 
 
+def _copies_read_once(session: Session, package_revision_id: UUID) -> dict[UUID, UUID]:
+    """Each version in this revision whose exact bytes another version here holds, mapped to the one
+    copy that is read in its place (#961).
+
+    Identity is the confirmed `DocumentVersion.sha256` alone; a filename or a slot label never makes
+    two files one, or one file two. A version not in the result is read as itself.
+
+    **Which copy is read is fixed, never the first row that comes back:** the shop slot's copy when
+    there is one — the same as uploading a combined set once, as shop (#963), so the form reader and
+    the vendor's rows see exactly what they would see then — otherwise the earliest version, then the
+    lowest id. That choice says where the pages are recorded and nothing else: it gives no drawing a
+    role or a side, and while one file sits in both slots the slot still decides neither
+    (`_one_file_as_both_roles`, `ReadingSides`).
+    """
+    copies_by_bytes: dict[str, list[tuple[bool, datetime, str, UUID]]] = {}
+    for version_id, sha256, kind, created_at in session.execute(
+        select(
+            PackageRevisionDocument.document_version_id,
+            DocumentVersion.sha256,
+            Document.kind,
+            DocumentVersion.created_at,
+        )
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ):
+        copies_by_bytes.setdefault(str(sha256), []).append(
+            (kind != DocumentKind.SHOP.value, created_at, str(version_id), version_id)
+        )
+    read_as: dict[UUID, UUID] = {}
+    for copies in copies_by_bytes.values():
+        (*_, read), *others = sorted(copies)
+        for *_, version_id in others:
+            read_as[version_id] = read
+    return read_as
+
+
 def configured_architect_reader(settings: Settings) -> ArchitectSettings | None:
     """The architect reader's settings when `GV_ARCHITECT_READER_ENABLED` is on, else `None` (#1052).
 
@@ -7776,6 +7866,56 @@ def _boxes_overlap(first: Sequence[int], second: Sequence[int]) -> bool:
         and first[1] <= second[3]
         and second[1] <= first[3]
     )
+
+
+#: Annotation subtypes no page render paints: the closed bubble of a note (PDF 32000-1 §12.5.6.14).
+_UNPAINTED_SUBTYPES: Final = frozenset({"Popup"})
+
+
+def crop_shows_the_reviewer_layer(
+    crop_box: tuple[int, int, int, int], notes: Iterable[MarkupNote]
+) -> bool:
+    """Whether any of GV's own annotations lies in the crop, wholly or in part (#952).
+
+    `notes` are the page's annotations that are not the vendor's drawing or the vendor's own text
+    (`PageLayers.markup` and `PageLayers.other_layer_notes`), as the page's layers read them, at the
+    dpi the crop was cut at. Each counts by its visible rectangle, edges included, as every other GV
+    mark does. A rectangle can be larger than the ink inside it, so this can only ever say "shown"
+    a little more often than a pixel would, never less: the safe side for a warning.
+
+    Only for a picture rendered with both layers (`vendor_only=False`), the evidence a person
+    inspects. A reader's crop never shows this layer (#742), so the gate does not ask this.
+    """
+    for note in notes:
+        if note.subtype in _UNPAINTED_SUBTYPES or not note.image_extent:
+            continue
+        xs = [point.x for point in note.image_extent]
+        ys = [point.y for point in note.image_extent]
+        if _boxes_overlap((min(xs), min(ys), max(xs), max(ys)), crop_box):
+            return True
+    return False
+
+
+def crop_mark_state(
+    crop_box: tuple[int, int, int, int],
+    markup: ColouredMarkup | None,
+    reviewer_layer: Sequence[MarkupNote] | None,
+) -> bool | None:
+    """What a both-layer evidence crop shows of GV's markup: `True`, `False`, or `None` for "not
+    checked" (#952).
+
+    `True` as soon as either check finds a mark. `False` only when both checks ran and found none.
+    Otherwise `None`: a check that could not run never lets a picture be called clean.
+    """
+    in_drawing = None if markup is None else crop_shows_a_gv_mark(crop_box, markup)
+    on_layer = (
+        None if reviewer_layer is None else crop_shows_the_reviewer_layer(crop_box, reviewer_layer)
+    )
+    if in_drawing or on_layer:
+        return True
+    if in_drawing is None or on_layer is None:
+        return None
+    return False
 
 
 def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:

@@ -26,6 +26,11 @@ conflict whoever the readers are — the vendor rule makes agreement harder and 
 
 A stacked fraction is still never agreed, by any number of readers; that check stays first (#726).
 
+**Across passes, one dual label (#928).** `corroborate` judges one group of readers. Where a region
+holds agreements from more than one pass, `one_dual_label_across_agreements` says whether every
+agreed reading states the same millimetres and the same inches; where not, the region is a conflict
+for a reviewer (`workflow/stages.py`, `app/evidence/automatic_typing.py`).
+
 Source: ``docs/DESIGN.md`` section 3.14, plan section F2 and issue #120.
 Verification: ``tests/evidence/test_corroborate.py``.
 """
@@ -187,7 +192,7 @@ def _authored_unit_system(candidate: ObservationCandidate) -> str:
         return "unknown"
     # **A dual label is one in either text** (#924): agreement on its inches alone confirms
     # nothing, so a label is not taken for a plain inch reading because its value's token is one.
-    if any("[" in text and "]" in text for text in _texts(candidate)):
+    if _states_a_dual_label(_texts(candidate)):
         return "dual"
     raw_text = candidate.parsed_value.raw_text or candidate.raw_text
     if _MM_TOKEN_RE.search(raw_text):
@@ -258,6 +263,45 @@ def is_consistent_dual_label(value: Measurement, text: str) -> bool:
     texts = tuple(dict.fromkeys(item for item in (value.raw_text, text) if item))
     dual = _dual_of(value, texts)
     return dual is not None and _consistent(dual)
+
+
+def _states_a_dual_label(texts: Sequence[str]) -> bool:
+    return any("[" in text and "]" in text for text in texts)
+
+
+def one_dual_label_across_agreements(readings: Sequence[tuple[Measurement | None, str]]) -> bool:
+    """Whether a region's agreed readings, from however many passes, state one dual label (#928).
+
+    Each reading is its stored value and the text it was read from. `corroborate` agrees a dual label
+    only on both its halves, but it judges one group of readers at a time: a region the first pass
+    agreed as `914 [36]` and the reading agent's pair agreed as `915 [36]` holds two agreements on
+    the same inches. **The inches decide (Q12), and millimetres that differ between the groups show
+    that one group misread**, as #924 refuses within one group. So, across every agreement:
+
+    - **No dual label anywhere:** true — there are no millimetres to compare, and the region is
+      left as it was.
+    - **Any dual label:** true only where every reading states one, with the same millimetres and the
+      same inches. A reading with no millimetres beside it agrees on the inches alone, and one whose
+      halves cannot be read agrees with nothing — as `corroborate` judges one group.
+
+    Only ever towards a reviewer: a caller holds a region back on `False` and never seals on `True`.
+    """
+    labels: set[tuple[Fraction, Fraction]] = set()
+    plain = False
+    for value, text in readings:
+        texts = tuple(
+            dict.fromkeys(
+                item for item in (None if value is None else value.raw_text, text) if item
+            )
+        )
+        if not _states_a_dual_label(texts):
+            plain = True
+            continue
+        dual = _dual_of(value, texts)
+        if dual is None or dual.alternate is None:
+            return False
+        labels.add((dual.primary.exact, dual.alternate.exact))
+    return not labels or (len(labels) == 1 and not plain)
 
 
 def _same_dual_reading(candidates: tuple[ObservationCandidate, ...]) -> bool:

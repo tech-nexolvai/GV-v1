@@ -367,6 +367,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only view of an unconfirmed reading's crop region, or why there is none */
+        get: operations["candidate_vendor_only_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/vendor-only/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only picture of an unconfirmed reading's crop region */
+        get: operations["candidate_vendor_only_picture_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_picture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/changed-values": {
         parameters: {
             query?: never;
@@ -620,6 +654,40 @@ export interface paths {
          *     would be worse than displaying nothing.
          */
         get: operations["evidence_crop_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__crop_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only view of a confirmed reading's evidence region, or why there is none */
+        get: operations["evidence_vendor_only_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/vendor-only/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vendor-only picture of a confirmed reading's evidence region */
+        get: operations["evidence_vendor_only_picture_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_picture_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -907,6 +975,9 @@ export interface paths {
         /**
          * View a drawing page (vendor layer only)
          * @description The stored picture of page `page_number`, or 404 while the worker has not rendered it.
+         *
+         *     The two 404s differ by `error` code: `page_picture_not_ready` for a page of this package that
+         *     has no picture yet (ask for it with `POST .../pages/pictures`), `http_error` for no such page.
          */
         get: operations["page_picture_api_v1_projects__project_id__packages__package_id__pages__page_number__picture_get"];
         put?: never;
@@ -2671,10 +2742,17 @@ export interface components {
         };
         /** CountertopPieceOut */
         CountertopPieceOut: {
+            /**
+             * Canonical Observation Id
+             * @description For a sealed reading only: its confirmed observation, when a stored crop of it exists (`GET .../evidence/{canonical_observation_id}/crop`). Null otherwise.
+             */
+            canonical_observation_id?: string | null;
             /** Index */
             index: number;
             /** Kind */
             kind?: string | null;
+            /** @description Where this piece's slot was read on the drawing: the slot reader's box for it, in the same stored space and shape as `row_location`. Null when that box is missing or cannot be placed exactly; never borrowed from the row or a neighbour. */
+            location?: components["schemas"]["RowLocation"] | null;
             /**
              * Source
              * @enum {string}
@@ -2705,6 +2783,13 @@ export interface components {
             /** Pieces */
             pieces: components["schemas"]["CountertopPieceOut"][];
             printed_overall: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Printed Overall Canonical Observation Id
+             * @description For a sealed printed overall only: its confirmed observation, when a stored crop exists. Null otherwise.
+             */
+            printed_overall_canonical_observation_id?: string | null;
+            /** @description Where the printed overall's slot was read; null when unknown (see pieces). */
+            printed_overall_location?: components["schemas"]["RowLocation"] | null;
             reviewer_decision: components["schemas"]["ReviewerDecisionOut"] | null;
             /**
              * Row Id
@@ -2908,6 +2993,18 @@ export interface components {
             y: string;
         };
         /**
+         * ErrorEnvelope
+         * @description The only error body this API returns.
+         */
+        ErrorEnvelope: {
+            /** Error */
+            error: string;
+            /** Message */
+            message: string;
+            /** Request Id */
+            request_id: string;
+        };
+        /**
          * EvidenceLocation
          * @description The immutable drawing location behind one operand.
          */
@@ -2921,6 +3018,11 @@ export interface components {
             canonical_observation_id: string;
             /** Coordinate Space */
             coordinate_space: string;
+            /**
+             * Crop Shows Gv Mark
+             * @description Whether the stored crop the evidence endpoint serves for this reading was found to show GV's markup (#952). Null: no crop, or not checked.
+             */
+            crop_shows_gv_mark?: boolean | null;
             /** Crop Uri */
             crop_uri: string | null;
             /** Document Role */
@@ -3740,7 +3842,14 @@ export interface components {
             /** Ordering */
             ordering: string;
         };
-        /** PackageReadingTimeOut */
+        /**
+         * PackageReadingTimeOut
+         * @description The spread of saved AI call times in one extraction run. Not the reading time (#1071).
+         *
+         *     First to last `ModelInvocation.created_at` of the run. The calls of a reading are saved together
+         *     when the reading finishes, so this is usually a few milliseconds whatever the reading took. Use
+         *     `ReadingTimeOut` for how long reading a drawing set took.
+         */
         PackageReadingTimeOut: {
             /** Duration Ms */
             duration_ms: number;
@@ -4249,6 +4358,57 @@ export interface components {
             why_not: string | null;
         };
         /**
+         * ReadingTimeOut
+         * @description How long one package revision's reading took, from its recorded state events (#1071).
+         *
+         *     It starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to
+         *     a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI
+         *     budget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or
+         *     at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so
+         *     the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
+         *     Anything after the hand-over (a reviewer re-running the checks) is not reading time.
+         */
+        ReadingTimeOut: {
+            /**
+             * Duration Ms
+             * @description finished_at minus started_at in whole milliseconds; null while reading.
+             */
+            duration_ms: number | null;
+            /**
+             * End State
+             * @description The state the reading ended in (hand-over or stop); null while reading.
+             */
+            end_state: string | null;
+            /**
+             * Finished At
+             * @description When the reading reached review or stopped; null while still reading.
+             */
+            finished_at: string | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "finished" | "failed" | "reading";
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Revision Number */
+            revision_number: number;
+            /**
+             * Started At
+             * Format: date-time
+             * @description When the revision first entered EXTRACTING.
+             */
+            started_at: string;
+        };
+        /**
          * RecordAction
          * @description One thing a reviewer did to one finding.
          *
@@ -4306,6 +4466,16 @@ export interface components {
             revision_state: string;
             /** Rules Published */
             rules_published: number;
+            /**
+             * Saved Measurements
+             * @default []
+             */
+            saved_measurements: components["schemas"]["SavedQuantityOut"][];
+            /**
+             * Saved Parameters
+             * @default []
+             */
+            saved_parameters: components["schemas"]["SavedParameterOut"][];
             /**
              * Still Reading
              * @default false
@@ -4783,6 +4953,75 @@ export interface components {
             why_not: string | null;
         };
         /**
+         * SavedParameterOut
+         * @description The setting value in force for one parameter, as saved, with where it came from (#1074).
+         */
+        SavedParameterOut: {
+            /** Citation */
+            citation?: string | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "project" | "run";
+            /** Name */
+            name: string;
+            /** Reference */
+            reference?: string | null;
+            /** Source */
+            source: string;
+            value: components["schemas"]["SavedValueOut"];
+        };
+        /**
+         * SavedQuantityOut
+         * @description What this review already holds for one quantity of the form, keyed like `QuantityOut.key`.
+         *
+         *     A quantity feeds one or more rule inputs (`QuantityOut.consumers`) and the form saves it once per
+         *     input. `values` are those of the input saved most recently — one value, or a run in layout order
+         *     for a many-valued quantity.
+         */
+        SavedQuantityOut: {
+            /** Complete */
+            complete: boolean;
+            /** Key */
+            key: string;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /** Values */
+            values: components["schemas"]["SavedValueOut"][];
+        };
+        /**
+         * SavedValueOut
+         * @description One value a reviewer saved, exactly as stored, with who saved it and when (#1074).
+         *
+         *     `numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same
+         *     number written the way the form takes it (`25 1/2"`), and reads back to exactly these two numbers
+         *     when sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is
+         *     `38 94/127"`), because the characters first typed are not stored — only the number is.
+         */
+        SavedValueOut: {
+            /** Denominator */
+            denominator: string;
+            /** Numerator */
+            numerator: string;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /** Text */
+            text: string | null;
+            /** Unit */
+            unit: string;
+        };
+        /**
          * SettingPointerOut
          * @description Where the architect's drawing states a setting: a page and a crop, **never the number** (#866).
          *
@@ -4948,6 +5187,20 @@ export interface components {
             name: string;
             /** Values */
             values: components["schemas"]["StoredValue"][];
+        };
+        /**
+         * StoredRegionOut
+         * @description The reading's region in stored page space (0..1 across and down), as exact decimal text.
+         */
+        StoredRegionOut: {
+            /** Bottom */
+            bottom: string;
+            /** Left */
+            left: string;
+            /** Right */
+            right: string;
+            /** Top */
+            top: string;
         };
         /**
          * StoredValue
@@ -5140,8 +5393,16 @@ export interface components {
             group_by: "day" | "package";
             /** Groups */
             groups: components["schemas"]["UsageGroupOut"][];
-            /** Package Reading Times */
+            /**
+             * Package Reading Times
+             * @description The spread of saved AI call times per extraction run, not the reading time: the calls are saved together when a reading finishes, so this is usually about zero. Use reading_times.
+             */
             package_reading_times: components["schemas"]["PackageReadingTimeOut"][];
+            /**
+             * Reading Times
+             * @description How long each package revision's reading took, from its recorded state events (first EXTRACTING to the hand-over to a person, or to the failure that ended it). Filtered by from/to on started_at.
+             */
+            reading_times: components["schemas"]["ReadingTimeOut"][];
             /** To */
             to: string | null;
             totals: components["schemas"]["UsageTotalsOut"];
@@ -5173,6 +5434,70 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * VendorOnlyRegionOut
+         * @description What the second, vendor-only view of one evidence region is, or why there is none.
+         */
+        VendorOnlyRegionOut: {
+            /**
+             * Available
+             * @description Whether the vendor-only picture of this exact region can be shown. False is a plain 'not available yet'; never show another page or region instead.
+             */
+            available: boolean;
+            /**
+             * Context Margin Pt
+             * @description Page context kept around the region, in points.
+             */
+            context_margin_pt: string;
+            /**
+             * Crop Shows Gv Mark
+             * @description Whether the original crop was found to show GV's markup. Null: no crop, or not checked (crops cut before #952 were checked for marks inside the vendor's drawing only).
+             */
+            crop_shows_gv_mark?: boolean | null;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /**
+             * Label
+             * @description Show this over the vendor-only picture.
+             * @default vendor's drawing without GV markup
+             */
+            label: string;
+            /**
+             * Page Id
+             * Format: uuid
+             */
+            page_id: string;
+            /**
+             * Page Number
+             * @description 1-based, as the screens number pages.
+             */
+            page_number: number;
+            /**
+             * Picture Dpi
+             * @description The vendor-only picture's dpi.
+             */
+            picture_dpi?: number | null;
+            /**
+             * Pixel Box
+             * @description `(left, top, right, bottom)` cut from the vendor-only picture, when available.
+             */
+            pixel_box?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
+            /** @description Null only when the reading's region could not be placed. */
+            region?: components["schemas"]["StoredRegionOut"] | null;
+            /**
+             * Unavailable Reason
+             * @description Why it is not available, for the reviewer. Null when available.
+             */
+            unavailable_reason?: string | null;
         };
         /** VendorPagePictureOut */
         VendorPagePictureOut: {
@@ -5806,6 +6131,72 @@ export interface operations {
             };
         };
     };
+    candidate_vendor_only_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOnlyRegionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    candidate_vendor_only_picture_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__vendor_only_picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The same region, cut from the vendor-only page picture. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_changed_values_api_v1_projects__project_id__packages__package_id__changed_values_get: {
         parameters: {
             query?: never;
@@ -6164,6 +6555,72 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description The stored mechanical evidence crop. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_vendor_only_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                canonical_observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorOnlyRegionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evidence_vendor_only_picture_api_v1_projects__project_id__packages__package_id__evidence__canonical_observation_id__vendor_only_picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                canonical_observation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The same region, cut from the vendor-only page picture. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6549,6 +7006,15 @@ export interface operations {
                 };
                 content: {
                     "image/png": string;
+                };
+            };
+            /** @description `error` is `page_picture_not_ready` while the page has no picture yet; `http_error` when there is no such page in this package. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             /** @description Validation Error */
