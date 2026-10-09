@@ -112,10 +112,11 @@ CROP_SCHEMA: Final = _object(
     }
 )
 #: The grounded span reading (`_GroundedCropAnswer`), in the prompt's own order. `text` is a plain
-#: string on purpose: see the module note.
+#: string on purpose: see the module note. `belongs` is a closed word list since
+#: `claude-slot-span-v4` (#1110): "unsure" is its own answer, never folded into "no".
 SPAN_SCHEMA: Final = _object(
     {
-        "belongs": _BOOLEAN,
+        "belongs": {"type": "string", "enum": ["yes", "no", "unsure"]},
         "text": _STRING,
         "stacked": _BOOLEAN,
         "combined": _BOOLEAN,

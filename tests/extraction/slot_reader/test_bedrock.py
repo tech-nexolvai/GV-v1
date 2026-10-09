@@ -41,7 +41,7 @@ from extraction.slot_reader.claude_output import (
     SPAN_SCHEMA,
     WALL_SCHEMA,
 )
-from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.seal import Belongs, ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
@@ -224,7 +224,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
     def response(_request: dict[str, Any]) -> Mapping[str, Any]:
         nonlocal calls
         calls += 1
-        payload = good('2"') if calls == 1 else good('2"') | {"belongs": True}
+        payload = good('2"') if calls == 1 else good('2"') | {"belongs": "yes"}
         return reply(payload)
 
     model = OPUS
@@ -239,7 +239,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
 
     assert calls == 2
     assert answers[("slot", model)] is not None
-    assert answers[("slot", model)].belongs is True
+    assert answers[("slot", model)].belongs is Belongs.YES
 
 
 def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() -> None:
@@ -646,7 +646,7 @@ CLAUDE_PACE = {OPUS: 6000, SONNET: 6000}
 
 
 def span(text: str = '2"', **changes: object) -> dict[str, object]:
-    return good(text) | {"belongs": True} | changes
+    return good(text) | {"belongs": "yes"} | changes
 
 
 def claude_requests() -> dict[str, tuple[dict[str, Any], dict[str, object]]]:
@@ -805,7 +805,7 @@ def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() ->
 
     assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
     assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
 
 
 def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
@@ -828,7 +828,69 @@ def test_the_claude_label_question_defines_every_answer_field() -> None:
     assert "A single dimension is not combined, even with a stacked fraction" in CLAUDE_SPAN_PROMPT
     assert "inches in brackets" in CLAUDE_SPAN_PROMPT and "is not combined" in CLAUDE_SPAN_PROMPT
     assert CLAUDE_SPAN_PROMPT_IDS == {
+        "claude-slot-span-v4",
         "claude-slot-span-v3",
         "claude-slot-span-v2",
         "claude-slot-span-v1",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# #1110: "unsure" is its own answer, and the span's box has a colour the reviewer never uses
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_claude_label_question_asks_yes_no_or_unsure_and_names_the_magenta_box() -> None:
+    """v3 told a reader to answer false when merely unsure, and two such answers counted as "no
+    label". It also called the span's mark a red box while telling the reader to ignore red
+    markup. v4 defines `belongs` as yes / no / unsure and names the box's real colour."""
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+    assert '- "belongs": "yes" if you are sure' in CLAUDE_SPAN_PROMPT
+    assert '"no" only if you are sure the marked span has no printed dimension label' in (
+        CLAUDE_SPAN_PROMPT
+    )
+    assert '"unsure" if you cannot tell' in CLAUDE_SPAN_PROMPT
+    assert "Being unsure is never a no" in CLAUDE_SPAN_PROMPT
+    assert '"belongs": "yes|no|unsure"' in CLAUDE_SPAN_PROMPT
+    assert "or you are unsure, set belongs to false" not in CLAUDE_SPAN_PROMPT
+    assert "magenta" in CLAUDE_SPAN_PROMPT and "magenta-boxed span" in CLAUDE_SPAN_PROMPT
+    assert "red box" not in CLAUDE_SPAN_PROMPT and "red-boxed" not in CLAUDE_SPAN_PROMPT
+    assert "red, blue or yellow reviewer markup" in CLAUDE_SPAN_PROMPT
+    assert SPAN_SCHEMA["properties"]["belongs"] == {  # type: ignore[index]
+        "type": "string",
+        "enum": ["yes", "no", "unsure"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [("yes", Belongs.YES), ("no", Belongs.NO), ("unsure", Belongs.UNSURE)],
+)
+def test_a_claude_span_answer_keeps_each_of_its_three_words(word: str, expected: Belongs) -> None:
+    clients = FakeClients(lambda _request: reply(span('2"' if word == "yes" else "", belongs=word)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    answer = answers[("slot", OPUS)]
+    assert isinstance(answer, ReaderAnswer) and answer.belongs is expected
+    assert answer.usable is (word == "yes")
+
+
+def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> None:
+    """The live v4 question takes only its three words; the old boolean is for stored answers."""
+    clients = FakeClients(lambda _request: reply(span(belongs=False)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    assert answers[("slot", OPUS)] is None
+    assert len(clients.requests) == 2, "asked once more, then abstained"

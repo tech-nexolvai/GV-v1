@@ -240,3 +240,70 @@ def test_a_chain_of_two_pieces_or_a_chosen_row_of_one_changes_nothing() -> None:
         equal_share_chain((NOTHING,), None, (GOOD_CHAIN[0], one, GOOD_CHAIN[2]), GOOD_OVERALL)
         is None
     )
+
+
+# --- #1110: the read-through starts only from an explicit "no label" -------------------------------
+
+
+def _piece_from_answers(belongs: str, *, no_dimension: bool) -> OwnerOutcome:
+    """One blank piece of the chosen row, from the two Claude readers' answers, through the same
+    `seal_label` and `owner_outcome` the slot reader uses."""
+    from extraction.ink import InkAt, InkClass
+    from extraction.slot_reader.runs import Lane, PlannedLabel
+    from extraction.slot_reader.seal import ReaderAnswer, owner_outcome, parse_belongs, seal_label
+
+    box = Box(Decimal(10), Decimal(10), Decimal(20), Decimal(15))
+    label = PlannedLabel(
+        box=box,
+        crop=box,
+        lane=Lane.GLYPHS,
+        text=None,
+        text_stacked=False,
+        has_digit=True,
+        touches_edge=False,
+        ambiguous_slot=False,
+        crowded=False,
+        ticks_in_crop=True,
+        path_boxes=(),
+    )
+    answers = tuple(
+        ReaderAnswer(
+            model_id=model,
+            text="",
+            readable=False,
+            no_dimension=no_dimension,
+            stacked=False,
+            combined=False,
+            belongs=parse_belongs(belongs),
+        )
+        for model in ("anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5")
+    )
+    outcome = seal_label(
+        label,
+        answers=answers,
+        ink=InkAt(InkClass.VENDOR, ""),
+        stacked_by_bar=False,
+        allow_stacked=False,
+        row_ambiguity=None,
+        allow_claude_pair=True,
+    )
+    return owner_outcome([outcome])
+
+
+def test_pieces_both_readers_were_unsure_about_never_start_the_read_through() -> None:
+    unsure = _piece_from_answers("unsure", no_dimension=False)
+    assert unsure.reason_code == "unsure"
+
+    assert equal_share_chain((unsure,) * 8, None, GOOD_CHAIN, GOOD_OVERALL) is None
+    assert equal_share_chain((unsure, *EIGHT_BLANK[1:]), None, GOOD_CHAIN, GOOD_OVERALL) is None
+
+
+def test_pieces_both_readers_explicitly_called_blank_still_read_through() -> None:
+    by_flag = _piece_from_answers("no", no_dimension=True)
+    by_no = _piece_from_answers("no", no_dimension=False)
+    assert by_flag.reason_code == NO_LABEL and by_no.reason_code == NO_LABEL
+
+    assert equal_share_chain((by_flag,) * 8, None, GOOD_CHAIN, GOOD_OVERALL) == EqualShareChain(
+        1, 8
+    )
+    assert equal_share_chain((by_no,) * 8, None, GOOD_CHAIN, GOOD_OVERALL) == EqualShareChain(1, 8)

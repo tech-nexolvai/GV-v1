@@ -20,6 +20,7 @@ REVIEWER_REASONS = {
     "not-asked": "No reader read this label. Check its value on the drawing.",
     "stacked": "Check the stacked fraction on the drawing.",
     "no-label": "No dimension label was found for this span. Check the drawing.",
+    "unsure": "A reader was not sure this label belongs to the marked span; check it on the drawing.",
     "many-labels": "More than one label could belong to this span. Check which one applies.",
 }
 

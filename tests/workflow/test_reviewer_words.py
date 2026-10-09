@@ -50,3 +50,16 @@ def test_markup_never_quotes_interleaved_characters() -> None:
         reviewer_reason(["reviewer-markup"], "covered by reviewer markup; reviewer wrote Ab-0xZ")
         == "Covered by reviewer markup. Check the vendor's own number."
     )
+
+
+def test_a_reader_unsure_about_a_label_is_told_in_plain_words() -> None:
+    """#1110: an unsure reader holds the label for the reviewer; it is never "no label"."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(
+        ["lane:glyphs", "unsure"], "a reader was not sure this label belongs to the marked span"
+    )
+    assert words == (
+        "A reader was not sure this label belongs to the marked span; check it on the drawing."
+    )
+    assert "no dimension label" not in words.lower()
