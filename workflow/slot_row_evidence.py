@@ -33,7 +33,7 @@ from app.models.evidence import (
     EvidenceSupportingCandidate,
     ObservationCandidate,
 )
-from app.models.runs import ExtractionRun, ModelInvocation
+from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation
 from evidence.canonical import (
     Authority,
     CorroborationLane,
@@ -695,7 +695,12 @@ def _materialize_stored_reader_answers(
         ):
             continue
         expected_hash = packet.get("packet_sha256")
-        unsigned_packet = {key: value for key, value in packet.items() if key != "packet_sha256"}
+        # A reused answer's packet (#1112) also names the call it reused; the hash is the question's.
+        unsigned_packet = {
+            key: value
+            for key, value in packet.items()
+            if key not in ("packet_sha256", REUSED_FROM_KEY)
+        }
         actual_hash = hashlib.sha256(
             json.dumps(unsigned_packet, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()

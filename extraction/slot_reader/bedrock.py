@@ -30,7 +30,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -106,6 +106,7 @@ __all__ = [
     "build_row_request",
     "build_wall_request",
     "crop_prompt_id",
+    "job_prompt_id",
     "parse_stored_reader_answer",
     "read_arch_pair",
     "read_counter_break",
@@ -113,6 +114,7 @@ __all__ = [
     "read_crops_parallel",
     "read_row_choice",
     "read_walls",
+    "replay_stored_answer",
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
@@ -1403,7 +1405,8 @@ class CropJob:
         )
 
 
-def _job_prompt_id(job: CropJob, product: ProductType | None) -> str:
+def job_prompt_id(job: CropJob, product: ProductType | None) -> str:
+    """The prompt id the job's question is asked, and its answer recorded, under."""
     if job.arch_pair_question:
         return ARCH_PAIR_PROMPT_ID
     if job.row_question:
@@ -1415,6 +1418,167 @@ def _job_prompt_id(job: CropJob, product: ProductType | None) -> str:
     ):
         return WALL_PROMPT_ID
     return CLAUDE_SPAN_PROMPT_ID if job.grounded_claude else crop_prompt_id(product)
+
+
+def _ask(
+    job: CropJob,
+    client: ConverseClient,
+    *,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+    product: ProductType | None,
+    claude_effort: ClaudeEffort,
+) -> ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer:
+    """Ask `client` the job's one question through the reader that question belongs to.
+
+    The one place a job becomes a request and a reply becomes an answer: a live call and a stored
+    answer reused on a re-run (#1112, `replay_stored_answer`) are read by exactly this code.
+    """
+    if job.arch_pair_question:
+        pieces, spans = job.vendor_pieces, job.architect_spans
+        if (
+            isinstance(pieces, bool)
+            or isinstance(spans, bool)
+            or not isinstance(pieces, int)
+            or not isinstance(spans, int)
+        ):
+            raise ValueError("an architect-pairing question must state its numbering")
+        return read_arch_pair(
+            client,
+            model_id=job.model_id,
+            picture_png=job.png,
+            page_index=job.page_index,
+            vendor_pieces=pieces,
+            architect_spans=spans,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
+    if job.row_question:
+        count = job.candidate_count
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError("a row question must record its candidate count")
+        return read_row_choice(
+            client,
+            model_id=job.model_id,
+            page_png=job.png,
+            page_index=job.page_index,
+            candidate_count=count,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
+    if job.counter_break_question:
+        if job.view_png is None:
+            raise ValueError("a counter-break question must include its full vendor view")
+        return read_counter_break(
+            client,
+            model_id=job.model_id,
+            row_png=job.png,
+            view_png=job.view_png,
+            page_index=job.page_index,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
+    if job.wall_question or (
+        job.view_png is not None and job.question_packet is None and not job.grounded_claude
+    ):
+        if job.view_png is None:
+            raise ValueError("a wall question packet must include its full vendor view")
+        return read_walls(
+            client,
+            model_id=job.model_id,
+            row_png=job.png,
+            view_png=job.view_png,
+            page_index=job.page_index,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
+    return read_crop(
+        client,
+        model_id=job.model_id,
+        crop_png=job.png,
+        page_index=job.page_index,
+        max_tokens=max_tokens,
+        record_attempt=record_attempt,
+        product=product,
+        full_view_png=job.view_png,
+        question_packet=job.question_packet,
+        grounded_claude=job.grounded_claude,
+        upright_png=job.upright_png,
+        claude_effort=claude_effort,
+    )
+
+
+class _StoredReplyUsedUp(RuntimeError):
+    """A stored reply is given once; a re-ask means it was not an answer, so it is not reused."""
+
+
+class _StoredReply:
+    """Answers one question with a stored reply instead of calling a model (#1112)."""
+
+    def __init__(self, raw: str) -> None:
+        self._raw = raw
+        self._given = False
+
+    def converse(self, **_request: Any) -> Mapping[str, Any]:
+        if self._given:
+            raise _StoredReplyUsedUp("a stored reply is replayed once; a re-ask goes to the reader")
+        self._given = True
+        return {
+            "output": {"message": {"role": "assistant", "content": [{"text": self._raw}]}},
+            # Only a reply that ended its turn was ever recorded as an answer.
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 0, "outputTokens": 0},
+        }
+
+
+def replay_stored_answer(
+    job: CropJob,
+    raw: str,
+    *,
+    reused_from: str,
+    max_tokens: int,
+    product: ProductType | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> (
+    tuple[
+        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer,
+        AttemptUsage,
+    ]
+    | None
+):
+    """The answer a stored reply gives to this job's question, with no call (#1112).
+
+    `raw` is the exact text a reader returned when it was asked this same question before and the
+    answer was accepted; `reused_from` is that recorded call's id. The reply goes through exactly
+    the code a live reply goes through (`_ask`), so a reused answer reads, checks and abstains as
+    the live one did. Anything short of one complete, accepted answer at the first try — malformed,
+    out of range, not a JSON object — returns `None`, and the question is asked again as usual.
+
+    The attempt returned records no tokens, no time and `reused_from`: no call was made.
+    """
+    attempts: list[AttemptUsage] = []
+    try:
+        answer = _ask(
+            job,
+            _StoredReply(raw),
+            max_tokens=max_tokens,
+            record_attempt=attempts.append,
+            product=product,
+            claude_effort=claude_effort,
+        )
+    except (ValueError, _StoredReplyUsedUp):
+        return None
+    if len(attempts) != 1 or attempts[0].malformed or attempts[0].failure_kind is not None:
+        return None
+    return answer, replace(attempts[0], latency_ms=0, reused_from=reused_from)
 
 
 def read_crops_parallel(
@@ -1484,8 +1648,8 @@ def read_crops_parallel(
                 record_attempt(
                     AttemptUsage(
                         job.model_id,
-                        _job_prompt_id(job, product),
-                        _job_prompt_id(job, product),
+                        job_prompt_id(job, product),
+                        job_prompt_id(job, product),
                         None,
                         None,
                         0,
@@ -1507,98 +1671,14 @@ def read_crops_parallel(
                     )
 
                     client = SpendLimitedClient(client, spend_guard)
-                answer: (
-                    ReaderAnswer
-                    | WallAnswer
-                    | RowChoiceAnswer
-                    | CounterBreakAnswer
-                    | ArchPairAnswer
+                answer = _ask(
+                    job,
+                    client,
+                    max_tokens=max_tokens,
+                    record_attempt=record_attempt,
+                    product=product,
+                    claude_effort=claude_effort,
                 )
-                if job.arch_pair_question:
-                    pieces, spans = job.vendor_pieces, job.architect_spans
-                    if (
-                        isinstance(pieces, bool)
-                        or isinstance(spans, bool)
-                        or not isinstance(pieces, int)
-                        or not isinstance(spans, int)
-                    ):
-                        raise ValueError("an architect-pairing question must state its numbering")
-                    answer = read_arch_pair(
-                        client,
-                        model_id=job.model_id,
-                        picture_png=job.png,
-                        page_index=job.page_index,
-                        vendor_pieces=pieces,
-                        architect_spans=spans,
-                        max_tokens=max_tokens,
-                        record_attempt=record_attempt,
-                        question_packet=job.question_packet,
-                        claude_effort=claude_effort,
-                    )
-                elif job.row_question:
-                    count = job.candidate_count
-                    if isinstance(count, bool) or not isinstance(count, int):
-                        raise ValueError("a row question must record its candidate count")
-                    answer = read_row_choice(
-                        client,
-                        model_id=job.model_id,
-                        page_png=job.png,
-                        page_index=job.page_index,
-                        candidate_count=count,
-                        max_tokens=max_tokens,
-                        record_attempt=record_attempt,
-                        question_packet=job.question_packet,
-                        claude_effort=claude_effort,
-                    )
-                elif job.counter_break_question:
-                    if job.view_png is None:
-                        raise ValueError(
-                            "a counter-break question must include its full vendor view"
-                        )
-                    answer = read_counter_break(
-                        client,
-                        model_id=job.model_id,
-                        row_png=job.png,
-                        view_png=job.view_png,
-                        page_index=job.page_index,
-                        max_tokens=max_tokens,
-                        record_attempt=record_attempt,
-                        question_packet=job.question_packet,
-                        claude_effort=claude_effort,
-                    )
-                elif job.wall_question or (
-                    job.view_png is not None
-                    and job.question_packet is None
-                    and not job.grounded_claude
-                ):
-                    if job.view_png is None:
-                        raise ValueError("a wall question packet must include its full vendor view")
-                    answer = read_walls(
-                        client,
-                        model_id=job.model_id,
-                        row_png=job.png,
-                        view_png=job.view_png,
-                        page_index=job.page_index,
-                        max_tokens=max_tokens,
-                        record_attempt=record_attempt,
-                        question_packet=job.question_packet,
-                        claude_effort=claude_effort,
-                    )
-                else:
-                    answer = read_crop(
-                        client,
-                        model_id=job.model_id,
-                        crop_png=job.png,
-                        page_index=job.page_index,
-                        max_tokens=max_tokens,
-                        record_attempt=record_attempt,
-                        product=product,
-                        full_view_png=job.view_png,
-                        question_packet=job.question_packet,
-                        grounded_claude=job.grounded_claude,
-                        upright_png=job.upright_png,
-                        claude_effort=claude_effort,
-                    )
                 return (job.key, job.model_id), answer
             except (MalformedFormAnswer, PictureWouldBeResized):
                 return (job.key, job.model_id), None

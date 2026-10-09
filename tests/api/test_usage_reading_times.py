@@ -415,3 +415,54 @@ def test_the_schema_says_what_package_reading_times_really_measures() -> None:
 
     assert "not the reading time" in old
     assert "state events" in new
+
+
+def test_a_reused_stored_answer_is_not_a_call(session: Session) -> None:
+    """#1112: a re-run that reuses a stored answer records it with no tokens and no cost, and
+    marks it `reused_from`; usage counts only the calls that were made."""
+    project_id = _project(session)
+    revision_id = _revision(
+        session,
+        _package(session, project_id),
+        [*UPLOADED, ("EXTRACTING", _minutes(0)), ("AWAITING_REVIEW", _minutes(3))],
+    )
+    asked = ModelInvocation(
+        package_revision_id=revision_id,
+        extraction_run_id=None,
+        model_id="synthetic-model",
+        prompt_id="synthetic-prompt",
+        template_id="synthetic-template",
+        input_tokens=10,
+        output_tokens=5,
+        cost_micros=7,
+        latency_ms=1,
+        outcome="ok",
+        reader_question_packet={"packet_sha256": "a" * 64},
+        created_at=T0,
+    )
+    session.add(asked)
+    session.flush()
+    session.add(
+        ModelInvocation(
+            package_revision_id=revision_id,
+            extraction_run_id=None,
+            model_id="synthetic-model",
+            prompt_id="synthetic-prompt",
+            template_id="synthetic-template",
+            input_tokens=0,
+            output_tokens=0,
+            cost_micros=0,
+            latency_ms=0,
+            outcome="ok",
+            reader_question_packet={"packet_sha256": "a" * 64, "reused_from": str(asked.id)},
+            created_at=T0 + _minutes(1),
+        )
+    )
+    session.flush()
+
+    totals = _usage(session, project_id)["totals"]
+
+    assert isinstance(totals, dict)
+    assert totals["calls"] == 1
+    assert (totals["input_tokens"], totals["output_tokens"]) == (10, 5)
+    assert totals["cost_usd"] == "0.000007"

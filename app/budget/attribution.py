@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.models.evidence import EvidenceSupportingCandidate
 from app.models.rules import RuleDefinition, RuleSnapshot
-from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
+from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun, made_a_call
 from app.models.verdicts import CheckRun, Finding, FindingEvidence
 
 PLANNING_ESTIMATE_INR_MONTHLY = (6_000, 9_000)
@@ -155,6 +155,8 @@ def usage_by_package(
         .join(TaskRun, ExtractionRun.task_run_id == TaskRun.id)
         .join(WorkflowRun, TaskRun.workflow_run_id == WorkflowRun.id)
         .where(ModelInvocation.created_at >= since, ModelInvocation.created_at <= as_of)
+        # A reused stored answer (#1112) is not a call: it is neither counted nor costed.
+        .where(made_a_call())
         .order_by(WorkflowRun.package_revision_id, ModelInvocation.id)
     )
     grouped: dict[UUID, list[tuple[UUID, int, int, int, int | None]]] = {}

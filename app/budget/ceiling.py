@@ -23,7 +23,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
+from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun, made_a_call
 
 
 class CeilingLayer(StrEnum):
@@ -131,6 +131,8 @@ def recorded_usage(session: Session, package_revision_id: UUID) -> Usage:
         .join(TaskRun, ExtractionRun.task_run_id == TaskRun.id)
         .join(WorkflowRun, TaskRun.workflow_run_id == WorkflowRun.id)
         .where(WorkflowRun.package_revision_id == package_revision_id)
+        # A reused stored answer (#1112) made no call and used no tokens.
+        .where(made_a_call())
     )
     calls, tokens = session.execute(statement).one()
     return Usage(model_calls=int(calls), tokens=int(tokens))

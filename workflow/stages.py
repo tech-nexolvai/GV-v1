@@ -91,7 +91,7 @@ from app.models.package import Package, PackageRevision, package_product
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
-from app.models.runs import ExtractionRun, ModelInvocation, TaskRun
+from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
 from app.review.carry_over import carry_decisions_over, live_finding_ids
@@ -360,6 +360,7 @@ from workflow.reader_pictures import (
     printed_runs,
     reader_picture,
 )
+from workflow.reader_reuse import StoredReaderAnswers
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
@@ -2386,10 +2387,23 @@ class DatabaseStages:
         for attempt in attempts:
             input_tokens = attempt.input_tokens or 0
             output_tokens = attempt.output_tokens or 0
-            cost = call_cost_micros(runtime.rates, attempt.model_id, input_tokens, output_tokens)
             if self._meter is None:
                 raise RuntimeError("form reader cannot run before the drawing-set spend meter")
-            self._meter.add(cost)
+            packet = None if attempt.question_packet is None else dict(attempt.question_packet)
+            cost: int | None
+            if attempt.reused_from is not None:
+                # A reused stored answer (#1112): no call, no tokens, nothing spent or metered. The
+                # packet names the call that was made; its own hash stays the question's.
+                if packet is None:
+                    raise ValueError("a reused answer must carry its question packet")
+                packet[REUSED_FROM_KEY] = attempt.reused_from
+                input_tokens = output_tokens = 0
+                cost = 0
+            else:
+                cost = call_cost_micros(
+                    runtime.rates, attempt.model_id, input_tokens, output_tokens
+                )
+                self._meter.add(cost)
             record_model_invocation(
                 session,
                 InvocationRecord(
@@ -2411,9 +2425,7 @@ class DatabaseStages:
                     private_raw_response=attempt.raw_response_text,
                     reader_page_index=attempt.page_index,
                     reader_attempt_number=attempt.attempt_number,
-                    reader_question_packet=(
-                        None if attempt.question_packet is None else dict(attempt.question_packet)
-                    ),
+                    reader_question_packet=packet,
                 ),
                 flush=False,
             )
@@ -2503,6 +2515,9 @@ class DatabaseStages:
             record_attempt=recorder.record,
             store=self._store,
             architect=architect,
+            # #1112: a question identical to one already answered for this document version takes
+            # the stored answer; `GV_READER_REUSE_ANSWERS=false` asks everything again.
+            stored_answers=StoredReaderAnswers(session) if runtime.reuse_answers else None,
         )
         run = open_extraction_run(
             session,
