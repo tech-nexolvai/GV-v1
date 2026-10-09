@@ -39,7 +39,7 @@ import os
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -148,6 +148,7 @@ from extraction.agent.tools import (
 from extraction.agent.trigger import AmbiguityReason, RegionContext, evaluate_trigger
 from extraction.annotations import (
     LINE_DIMENSION_INTENT,
+    MarkupNote,
     OutlinedTextRegion,
     PageLayers,
     StackedFraction,
@@ -6018,10 +6019,13 @@ class DatabaseStages:
                     abstained.append(f"page {page.index}: {result.reason}")
                     continue
                 artifact = result.artifact
-                mark_state = (
-                    None
-                    if markup is None
-                    else crop_shows_a_gv_mark(crop_pixel_box(rendered, spec), markup)
+                # **Both layers are in this picture, so both are asked about (#952).** GV's marks
+                # baked into the vendor's drawing (`crop_shows_a_gv_mark`), and GV's own annotation
+                # layer, which this person-facing render paints on and the vision crops leave out.
+                mark_state = crop_mark_state(
+                    crop_pixel_box(rendered, spec),
+                    markup,
+                    None if layers is None else (*layers.markup, *layers.other_layer_notes),
                 )
                 session.add(
                     EvidenceArtifact(
@@ -7760,6 +7764,56 @@ def _boxes_overlap(first: Sequence[int], second: Sequence[int]) -> bool:
         and first[1] <= second[3]
         and second[1] <= first[3]
     )
+
+
+#: Annotation subtypes no page render paints: the closed bubble of a note (PDF 32000-1 §12.5.6.14).
+_UNPAINTED_SUBTYPES: Final = frozenset({"Popup"})
+
+
+def crop_shows_the_reviewer_layer(
+    crop_box: tuple[int, int, int, int], notes: Iterable[MarkupNote]
+) -> bool:
+    """Whether any of GV's own annotations lies in the crop, wholly or in part (#952).
+
+    `notes` are the page's annotations that are not the vendor's drawing or the vendor's own text
+    (`PageLayers.markup` and `PageLayers.other_layer_notes`), as the page's layers read them, at the
+    dpi the crop was cut at. Each counts by its visible rectangle, edges included, as every other GV
+    mark does. A rectangle can be larger than the ink inside it, so this can only ever say "shown"
+    a little more often than a pixel would, never less: the safe side for a warning.
+
+    Only for a picture rendered with both layers (`vendor_only=False`), the evidence a person
+    inspects. A reader's crop never shows this layer (#742), so the gate does not ask this.
+    """
+    for note in notes:
+        if note.subtype in _UNPAINTED_SUBTYPES or not note.image_extent:
+            continue
+        xs = [point.x for point in note.image_extent]
+        ys = [point.y for point in note.image_extent]
+        if _boxes_overlap((min(xs), min(ys), max(xs), max(ys)), crop_box):
+            return True
+    return False
+
+
+def crop_mark_state(
+    crop_box: tuple[int, int, int, int],
+    markup: ColouredMarkup | None,
+    reviewer_layer: Sequence[MarkupNote] | None,
+) -> bool | None:
+    """What a both-layer evidence crop shows of GV's markup: `True`, `False`, or `None` for "not
+    checked" (#952).
+
+    `True` as soon as either check finds a mark. `False` only when both checks ran and found none.
+    Otherwise `None`: a check that could not run never lets a picture be called clean.
+    """
+    in_drawing = None if markup is None else crop_shows_a_gv_mark(crop_box, markup)
+    on_layer = (
+        None if reviewer_layer is None else crop_shows_the_reviewer_layer(crop_box, reviewer_layer)
+    )
+    if in_drawing or on_layer:
+        return True
+    if in_drawing is None or on_layer is None:
+        return None
+    return False
 
 
 def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:
