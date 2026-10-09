@@ -134,7 +134,7 @@ def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Meas
     if not isinstance(text, str):
         raise UnitNormalisationError("dimension must be text")
 
-    token = _written(text.strip())
+    token = plain_marks(text.strip())
     if not token:
         raise UnitNormalisationError("dimension is empty")
 
@@ -177,7 +177,7 @@ def normalise_to_inches(text: str, *, unmarked_unit: Unit | None = None) -> Meas
     )
 
 
-def _written(token: str) -> str:
+def plain_marks(token: str) -> str:
     """The token with the marks a drawing font writes rewritten into the ones the parser knows.
 
     A vulgar fraction (`½`) becomes its own digits — taken from Unicode's decomposition of it, never
