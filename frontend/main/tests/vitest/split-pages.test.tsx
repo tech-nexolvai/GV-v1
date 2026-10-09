@@ -65,7 +65,7 @@ describe('a split page, as data', () => {
     expect(isSplitPage(row('held', 2, { hold: { code: 'stone-short-of-ends', reason: 'Synthetic.' } }))).toBe(false);
     expect(bucketOf(SPLIT)).toBe('needs-you');
     expect(matchesFilter(SPLIT, 'held')).toBe(true);
-    expect(buildQueue([SPLIT, PASSED], FINDINGS, new Set(['f-split'])).map((item) => [item.kind, item.rowId])).toEqual([['countertop', 'split']]);
+    expect(buildQueue([SPLIT, PASSED], FINDINGS, new Set(['f-split'])).map((item) => [item.kind, item.kind === 'check' ? null : item.rowId])).toEqual([['countertop', 'split']]);
     // The page, but no box: the server's own page picture (the shop drawing's), with nothing drawn on it.
     expect(targetFromRow(SPLIT)).toMatchObject({ page: 3, documentVersionId: null, outline: null, findingId: 'f-split' });
   });
