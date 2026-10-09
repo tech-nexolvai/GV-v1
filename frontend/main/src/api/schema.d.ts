@@ -1979,6 +1979,8 @@ export interface components {
             architect: components["schemas"]["ExactValueOut"] | null;
             /** Architect Display */
             architect_display: string | null;
+            /** @description Where the compared architect dimension is on the drawing: its line from tick to tick with its printed label, in the same stored space as `row_location`. Null when the position the architect reader stored cannot be used exactly. */
+            architect_location?: components["schemas"]["RowLocation"] | null;
             /** @description The vendor's value minus the architect's, exactly. */
             delta: components["schemas"]["ExactValueOut"] | null;
             /** Delta Display */
@@ -2147,6 +2149,8 @@ export interface components {
             held_reason: string | null;
             /** Inches */
             inches: string | null;
+            /** @description Where this dimension is on the drawing: its line from tick to tick with its printed label, in the same stored space as `row_location` (#1066). Null when the position the architect reader stored cannot be used exactly. */
+            location?: components["schemas"]["RowLocation"] | null;
             /** On Outline */
             on_outline: boolean | null;
             /** Printed */
