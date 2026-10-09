@@ -13,11 +13,13 @@ makes and records that pairing for every vendor row the slot reader chose and re
    held architect span still gives the alignment its geometry but is never a compared pair.
 2. **Both Claude readers, on every page with an architect span code has not refused** (stored,
    unheld, not a centre line), whatever code decided: one numbered picture (vendor pieces in red,
-   V1..Vn; those architect spans in blue, A1..Am), the fixed question `arch-pair-v2`, the same
+   V1..Vn; those architect spans in blue, A1..Am), the fixed question `arch-pair-v3`, the same
    readers, effort, spend guard and batch as the slot reader. Each AI says what EVERY A measures
    (countertop, cabinet run, one cabinet, filler, blocking, a centre line, a clearance...) and which
-   A measures the same physical thing as the vendor's overall and each piece. Only two
-   **identical** answers count (same pairing, same measure for every A they pair), and code then
+   A measures the same physical thing as the vendor's overall and each piece, `none`, or `unsure`
+   (#1109). `unsure` from either AI is a refusal: the reviewer pairs. Only two **identical**
+   pairings count, with measures for every A they pair that code treats alike (two words code
+   handles the same way, such as one cabinet and a filler, are not a disagreement), and code then
    checks every pair: what it measures must be the same kind of thing (`MEASURES_FOR_OVERALL`,
    `MEASURES_FOR_PIECES`), the span must be unheld and on the drawn outline, a vendor split must be
    contiguous, and the two drawn lengths through their scales must agree within a quarter.
@@ -25,7 +27,9 @@ makes and records that pairing for every vendor row the slot reader chose and re
 3. **Weighed together** (`combine`): code's pairs and the AIs' accepted pairs identical →
    `code+ais`, the only automatic pairing. Code alone (`code`) or the AIs alone (`both-ais`) is one
    judgment: the rule must not let a PASS or a FAIL rest on it without a reviewer's confirmation
-   (decision log 2026-10-09). Neither → `none`, with the reasons in plain words.
+   (decision log 2026-10-09). Neither → `none`, with the reasons in plain words. When the AIs find
+   nothing to pair but code could not decide (`ambiguous`, `no_fit`), code's status is kept, so the
+   check asks the reviewer whenever the architect prints a usable dimension (#1109).
 4. **The reviewer** pairs with one click (`app/api/slot_rows.py`), a new record superseding the
    latest (`reviewer`).
 
@@ -150,14 +154,17 @@ MEASURED_PAIRING_SETTINGS: Final = PairingSettings(
 #: cabinet is well inside it).
 AI_DRAWN_LENGTH_BAND: Final = Fraction(1, 4)
 
-#: What an architect dimension must measure, as both AIs agree (`arch-pair-v2`), to be paired with
-#: the vendor's whole run: the countertop or a run of cabinets.
+#: What an architect dimension must measure, as both AIs agree (`arch-pair-v2`/`-v3`), to be paired
+#: with the vendor's whole run: the countertop or a run of cabinets.
 MEASURES_FOR_OVERALL: Final = frozenset({"countertop", "cabinet_run"})
 #: ... and to be paired with vendor pieces: one cabinet or a filler/end panel (several vendor
 #: pieces may split one), or a run of cabinets only when the pieces are the whole run. A dimension to
 #: a centre line, to blocking or backing, or between a wall and an object's edge never pairs.
 MEASURES_FOR_PIECES: Final = frozenset({"single_cabinet", "filler_or_end_panel"})
 _OVERALL_MEASURES: Final = MEASURES_FOR_OVERALL
+#: Code's own statuses that mean it could not decide (#1088), which two AI "nothing" answers never
+#: overwrite (#1109).
+_CODE_UNDECIDED: Final = frozenset({PairingStatus.AMBIGUOUS.value, PairingStatus.NO_FIT.value})
 _PIECE_MEASURES: Final = MEASURES_FOR_PIECES
 #: Each measure in plain words, for the reasons a reviewer reads.
 _MEASURE_WORDS: Final = {
@@ -870,6 +877,7 @@ def _answer_json(answer: ArchPairAnswer | None, model: str) -> dict[str, object]
         "overall": answer.overall,
         "pieces": list(answer.pieces),
         "measures": list(answer.measures),
+        "unsure": list(answer.unsure),
         "why": answer.why,
     }
 
@@ -903,8 +911,12 @@ def _judge(
 ) -> _AiJudgment:
     """Both readers' answers to one pairing question, checked by code (the AIs' judgment alone).
 
-    Only identical answers count: the same overall, the same pieces, and the same measure for every
-    architect dimension they pair. Then every pair is witnessed. What it measures must be the same
+    `unsure` from either reader, for a pairing or for what a dimension they pair measures, is a
+    refusal (`ais-refused`): the reviewer pairs (#1109). Only identical pairings count: the same
+    overall and the same pieces, with measures for every architect dimension they pair that code
+    treats alike (`_code_result`: two words that lead to the same pairs, such as one cabinet and a
+    filler for a piece, are not a disagreement; the words are kept in the reasons). Then every pair
+    is witnessed. What it measures must be the same
     kind of thing (`_OVERALL_MEASURES` for the vendor's overall; `_PIECE_MEASURES` for pieces, or a
     run of cabinets only when the pieces are the whole run). Its architect span must be comparable
     (unheld, on the outline); several vendor pieces given one A-number must be next to each other;
@@ -953,6 +965,16 @@ def _judge(
     def disagree(reason: str) -> _AiJudgment:
         return _AiJudgment("ais-disagree", (), (reason,), (), measures, complete, ai, given)
 
+    def refuse(reason: str) -> _AiJudgment:
+        return _AiJudgment("ais-refused", (), (reason,), (), measures, complete, ai, given)
+
+    unsure = sorted({item for answer in usable for item in answer.unsure}, key=_unsure_order)
+    if unsure:
+        return refuse(
+            "A reader is unsure which architect dimension, if any, measures "
+            + _listed([_unsure_words(item) for item in unsure])
+            + "; the reviewer pairs."
+        )
     if any((answer.overall, answer.pieces) != (first.overall, first.pieces) for answer in usable):
         return disagree("The two readers paired the architect's dimensions differently.")
     groups: dict[int, list[int]] = {}
@@ -960,7 +982,35 @@ def _judge(
         if a_number:
             groups.setdefault(a_number, []).append(position)
     named = sorted({*groups, *([first.overall] if first.overall else [])})
-    unsettled = [a_number for a_number in named if a_number not in agreed]
+    every = list(range(len(vendor.pieces)))
+
+    def said(a_number: int) -> list[str]:
+        """What the readers say A measures, each word once, in reader order."""
+        return list(dict.fromkeys(answer.measures[a_number - 1] for answer in usable))
+
+    not_sure_what = [a_number for a_number in named if "unsure" in said(a_number)]
+    if not_sure_what:
+        return refuse(
+            "A reader is unsure what "
+            + ", ".join(f"A{a_number}" for a_number in not_sure_what)
+            + " measures, though both readers paired it; the reviewer pairs."
+        )
+    unsettled = [
+        a_number
+        for a_number in named
+        if len(
+            {
+                _code_result(
+                    measure,
+                    overall=first.overall == a_number,
+                    positions=groups.get(a_number, []),
+                    every=every,
+                )
+                for measure in said(a_number)
+            }
+        )
+        > 1
+    ]
     if unsettled:
         return disagree(
             "The two readers paired the same dimensions but disagree about what "
@@ -972,6 +1022,13 @@ def _judge(
     vendor_pt = vendor_scale(vendor.pieces)
     dropped: list[dict[str, object]] = []
     reasons: list[str] = ["Both readers gave the same pairing; code checked it."]
+    for a_number in named:
+        if a_number not in agreed:
+            reasons.append(
+                f"The readers use different words for what A{a_number} measures ("
+                + "; ".join(_measure_words(measure) for measure in said(a_number))
+                + "), which code treats the same way, so this is not a disagreement."
+            )
 
     def drop(a_number: int, why: str) -> None:
         dropped.append({"architect": f"A{a_number}", "reason": why})
@@ -995,14 +1052,14 @@ def _judge(
             return False
         return True
 
-    def other_thing(span: ArchitectSpanInput, measure: str) -> str:
+    def other_thing(span: ArchitectSpanInput, a_number: int) -> str:
         return (
             f"the architect's {span.text or 'unlabelled dimension'} measures "
-            f"{_measure_words(measure)}, not the same thing"
+            + " or ".join(_measure_words(measure) for measure in said(a_number))
+            + ", not the same thing"
         )
 
     pairs: list[DecidedPair] = []
-    every = list(range(len(vendor.pieces)))
     whole = (
         Fraction(vendor.overall_x[1]) - Fraction(vendor.overall_x[0])
         if vendor.overall_x is not None
@@ -1010,7 +1067,8 @@ def _judge(
     )
     for a_number in named:
         rank, span = question.architect_rows[a_number - 1], question.architect[a_number - 1]
-        measure = agreed[a_number]
+        # Every reader's word for it leads to the same pairs (`_code_result`): the first decides.
+        measure = first.measures[a_number - 1]
         if not span.comparable or span.candidate_id is None:
             drop(a_number, span.not_comparable_reason())
             continue
@@ -1024,7 +1082,7 @@ def _judge(
         architect_in = drawn_in(span, rank)
         if first.overall == a_number:
             if measure not in _OVERALL_MEASURES:
-                drop(a_number, other_thing(span, measure))
+                drop(a_number, other_thing(span, a_number))
                 continue
             if not plausible(a_number, architect_in, whole):
                 continue
@@ -1034,7 +1092,7 @@ def _judge(
                 measure in _PIECE_MEASURES or (measure == "cabinet_run" and positions == every)
             ):
                 if first.overall != a_number:
-                    drop(a_number, other_thing(span, measure))
+                    drop(a_number, other_thing(span, a_number))
                 continue
             long = sum(
                 (
@@ -1065,6 +1123,33 @@ def _judge(
     )
 
 
+def _code_result(
+    measure: str, *, overall: bool, positions: Sequence[int], every: Sequence[int]
+) -> tuple[bool, bool]:
+    """What `_judge` does, by measure alone, with an architect dimension both readers paired:
+    whether it may pair with the vendor's whole run, and whether with the pieces given for it. Two words
+    with the same result (one cabinet and a filler for a piece; the countertop and a run of
+    cabinets for the whole run alone; any two words that never pair) are the same answer to code."""
+    if overall and measure not in _OVERALL_MEASURES:
+        return False, False
+    pieces = bool(positions) and (
+        measure in _PIECE_MEASURES or (measure == "cabinet_run" and list(positions) == list(every))
+    )
+    return overall, pieces
+
+
+def _unsure_order(item: str) -> tuple[int, int]:
+    return (0, 0) if item == "overall" else (1, int(item.removeprefix("V")))
+
+
+def _unsure_words(item: str) -> str:
+    return "the vendor's whole run" if item == "overall" else f"vendor piece {item}"
+
+
+def _listed(items: Sequence[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 def _pair_set(pairs: Sequence[DecidedPair]) -> frozenset[tuple[str, UUID, tuple[int, ...]]]:
     return frozenset(
         (pair.kind, pair.architect_candidate_id, tuple(sorted(pair.vendor_slot_indices)))
@@ -1085,7 +1170,11 @@ def combine(
       with code's pairs (one judgment: a reviewer confirms the pairing).
     * Only the AIs paired: `both-ais` (one judgment: a reviewer confirms the pairing).
     * Neither: `none`, with the reasons; when both AIs agree what every numbered architect
-      dimension measures, the reason says so in plain words.
+      dimension measures, the reason says so in plain words. The status is the AIs' disagreement or
+      refusal; else, when the AIs found nothing to pair but code could not decide (`ambiguous`,
+      `no_fit`), code's status, so the check asks the reviewer whenever the architect prints a
+      usable dimension (#1109: a reader that could not tell used to answer 0, and two such answers
+      overwrote code's undecided status); else nothing comparable.
     """
     code_pairs = code.pairs if code.status == PairingStatus.PAIRED.value else ()
     reasons = list(code.reasons)
@@ -1122,7 +1211,7 @@ def combine(
             elif judged.status == "ais-disagree":
                 why = "the two AIs disagreed with each other"
             else:
-                why = "an AI gave no usable answer"
+                why = "an AI gave no usable answer or was unsure"
             reasons.append(
                 f"Only code paired these dimensions ({why}); a reviewer confirms the pairing "
                 "before any result on it counts."
@@ -1135,10 +1224,17 @@ def combine(
         )
     else:
         source, pairs = "none", ()
+        code_undecided = code.status in _CODE_UNDECIDED
         if judged is None:
             status = code.status
         elif judged.status in {"ais-disagree", "ais-refused"}:
             status = judged.status
+        elif code_undecided:
+            status = code.status
+            reasons.append(
+                "Both AIs found nothing on the architect's drawing to pair, but code could not "
+                "decide how the rows line up, so that is not settled."
+            )
         else:
             status = PairingStatus.NOTHING_COMPARABLE.value
         if judged is not None and judged.complete and judged.measures:
@@ -1148,7 +1244,11 @@ def combine(
                     f"{span.text or 'an unlabelled dimension'} {_measure_words(measure)}"
                     for span, measure in judged.measures
                 )
-                + ". None of them is paired with the vendor's row, so nothing is compared."
+                + (
+                    ". None of them is paired with the vendor's row."
+                    if status != PairingStatus.NOTHING_COMPARABLE.value
+                    else ". None of them is paired with the vendor's row, so nothing is compared."
+                )
             )
         if status != PairingStatus.NOTHING_COMPARABLE.value or judged is None:
             reasons.append("Nothing is paired; the reviewer can pair them.")

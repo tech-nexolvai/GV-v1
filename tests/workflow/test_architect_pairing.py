@@ -304,20 +304,30 @@ def _resolve(
     *,
     vendor_row: VendorRowInput | None = None,
     code_paired: bool = False,
+    code_status: str = "no_fit",
+    unsure: tuple[tuple[str, ...], tuple[str, ...]] = ((), ()),
 ) -> Any:
     """Both AIs' answers combined with code. `None` is a reader that gave no answer.
-    `code_paired=False` stands code's judgment down (it found no clear alignment), so only the AIs'
-    pairing can be made."""
+    `code_paired=False` stands code's judgment down with `code_status` (by default it found no
+    clear alignment), so only the AIs' pairing can be made. `unsure` is what each reader answered
+    `unsure` (v3): `overall` and/or `V<k>`."""
     second = first if second == "same" else second
     given = [
-        (model, None if pick is None else answer(model, pick, len(row.spans)))
-        for model, pick in ((OPUS, first), (SONNET, second))
+        (
+            model,
+            (
+                None
+                if pick is None
+                else replace(answer(model, pick, len(row.spans)), unsure=not_sure)
+            ),
+        )
+        for (model, pick), not_sure in zip(((OPUS, first), (SONNET, second)), unsure, strict=True)
     ]
     page = page_input(row)
     current = vendor() if vendor_row is None else vendor_row
     code, _ = pair_by_code(current, page, MEASURED_PAIRING_SETTINGS)
     if not code_paired:
-        code = replace(code, status="no_fit", pairs=())
+        code = replace(code, status=code_status, pairs=())
     return resolve_answers(question(row), given, current, page, code)
 
 
@@ -337,7 +347,7 @@ def test_identical_answers_alone_pair_and_are_recorded_as_both_ais() -> None:
     assert (outcome.source, outcome.status) == ("both-ais", "paired")
     assert _slots(outcome) == [(0,), (1,), (2,)]
     ai = outcome.details["ai"]
-    assert ai["prompt_id"] == ARCH_PAIR_PROMPT_ID == "arch-pair-v2"
+    assert ai["prompt_id"] == ARCH_PAIR_PROMPT_ID == "arch-pair-v3"
     assert ai["picture_sha256"] and ai["packet_sha256"] == "f" * 64
     assert [answer["pieces"] for answer in ai["answers"]] == [[1, 2, 3], [1, 2, 3]]
     assert [answer["measures"] for answer in ai["answers"]] == [["single_cabinet"] * 3] * 2
@@ -403,11 +413,115 @@ def test_different_answers_go_to_the_reviewer_with_both_kept() -> None:
 
 def test_same_pairing_but_a_different_measure_for_a_paired_dimension_is_a_disagreement() -> None:
     first = (0, (1, 2, 3), ("single_cabinet", "single_cabinet", "single_cabinet"))
-    second = (0, (1, 2, 3), ("single_cabinet", "filler_or_end_panel", "single_cabinet"))
+    second = (0, (1, 2, 3), ("single_cabinet", "blocking_or_backing", "single_cabinet"))
 
     outcome = _resolve(arch_row(1, WIDTHS), first, second)
 
     assert (outcome.source, outcome.status, outcome.pairs) == ("none", "ais-disagree", ())
+    assert any("disagree about what A2 measures" in reason for reason in outcome.reasons)
+
+
+# --- #1109: two words code treats the same are one answer; "unsure" is the reviewer's ------------
+
+
+def test_one_cabinet_and_a_filler_for_a_piece_is_not_a_disagreement() -> None:
+    """Two words that lead to the same pairs are the same answer to code; the words are kept."""
+    first = (0, (1, 2, 3), ("single_cabinet", "single_cabinet", "single_cabinet"))
+    second = (0, (1, 2, 3), ("single_cabinet", "filler_or_end_panel", "single_cabinet"))
+
+    outcome = _resolve(arch_row(1, WIDTHS), first, second)
+
+    assert (outcome.source, outcome.status) == ("both-ais", "paired")
+    assert _slots(outcome) == [(0,), (1,), (2,)]
+    assert any(
+        "different words for what A2 measures (one cabinet; a filler or end panel)" in reason
+        for reason in outcome.reasons
+    ), outcome.reasons
+    row_ids = [str(span.candidate_id) for span in outcome.question.architect]
+    assert row_ids[1] not in outcome.details["architect_measures"], "only words both AIs gave"
+
+
+def test_the_countertop_and_a_run_for_the_whole_run_is_not_a_disagreement() -> None:
+    row = arch_row(1, (72,))
+
+    outcome = _resolve(row, (1, (0, 0, 0), ("countertop",)), (1, (0, 0, 0), ("cabinet_run",)))
+
+    assert (outcome.source, outcome.status) == ("both-ais", "paired")
+    assert outcome.pairs == (DecidedPair("overall", row.spans[0].candidate_id, ()),)  # type: ignore[arg-type]
+
+
+def test_two_words_that_never_pair_are_not_a_disagreement_and_say_both() -> None:
+    row = arch_row(1, (72,))
+
+    outcome = _resolve(
+        row, (1, (0, 0, 0), ("wall_to_wall",)), (1, (0, 0, 0), ("clearance_or_gap",))
+    )
+
+    assert (outcome.source, outcome.pairs) == ("none", ())
+    assert outcome.status != "ais-disagree"
+    assert "measures wall to wall or a clearance or gap, not the same thing" in _dropped(outcome)
+
+
+def test_the_countertop_and_a_run_for_the_whole_run_and_every_piece_is_a_disagreement() -> None:
+    # A run of cabinets also pairs with every piece; the countertop does not: different results.
+    row = arch_row(1, (72,))
+
+    outcome = _resolve(row, (1, (1, 1, 1), ("countertop",)), (1, (1, 1, 1), ("cabinet_run",)))
+
+    assert (outcome.source, outcome.status) == ("none", "ais-disagree")
+
+
+@pytest.mark.parametrize("who", [0, 1])
+@pytest.mark.parametrize("item", ["overall", "V2"])
+def test_unsure_from_either_reader_is_the_reviewers(who: int, item: str) -> None:
+    unsure: list[tuple[str, ...]] = [(), ()]
+    unsure[who] = (item,)
+
+    outcome = _resolve(arch_row(1, WIDTHS), (0, (1, 0, 3)), unsure=(unsure[0], unsure[1]))
+
+    assert (outcome.source, outcome.status, outcome.pairs) == ("none", "ais-refused", ())
+    words = "the vendor's whole run" if item == "overall" else "vendor piece V2"
+    said = f"unsure which architect dimension, if any, measures {words}"
+    assert any(said in reason for reason in outcome.reasons), outcome.reasons
+    assert outcome.details["ai"]["answers"][who]["unsure"] == [item]
+
+
+def test_unsure_never_reads_as_nothing_comparable_when_code_found_nothing() -> None:
+    outcome = _resolve(
+        arch_row(1, WIDTHS),
+        (0, (0, 0, 0)),
+        code_status="nothing_comparable",
+        unsure=(("V1", "V2", "V3"), ()),
+    )
+
+    assert (outcome.source, outcome.status) == ("none", "ais-refused")
+
+
+def test_unsure_does_not_undo_code_s_own_pairing() -> None:
+    outcome = _resolve(arch_row(1, WIDTHS), (0, (0, 0, 0)), code_paired=True, unsure=(("V1",), ()))
+
+    assert (outcome.source, outcome.status, len(outcome.pairs)) == ("code", "paired", 3)
+    assert any("was unsure" in reason for reason in outcome.reasons)
+
+
+def test_unsure_what_a_paired_dimension_measures_is_the_reviewers() -> None:
+    first = (0, (1, 2, 3), ("single_cabinet", "unsure", "single_cabinet"))
+
+    outcome = _resolve(arch_row(1, WIDTHS), first)
+
+    assert (outcome.source, outcome.status, outcome.pairs) == ("none", "ais-refused", ())
+    assert any("unsure what A2 measures" in reason for reason in outcome.reasons)
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_both_ais_finding_nothing_keeps_code_s_undecided_status(code_status: str) -> None:
+    """Two "nothing" answers never overwrite code's own undecided status (#1109), so the check
+    asks the reviewer when the architect prints a usable dimension."""
+    outcome = _resolve(arch_row(1, WIDTHS), (0, (0, 0, 0)), code_status=code_status)
+
+    assert (outcome.source, outcome.status, outcome.pairs) == ("none", code_status, ())
+    assert any("code could not decide" in reason for reason in outcome.reasons)
+    assert any("the reviewer can pair them" in reason for reason in outcome.reasons)
 
 
 def test_a_different_measure_for_an_unpaired_dimension_is_not_a_disagreement() -> None:
@@ -464,7 +578,6 @@ def test_the_overall_never_pairs_with_blocking_even_when_both_ais_say_so() -> No
         ("wall_to_wall", "wall to wall"),
         ("single_cabinet", "one cabinet"),
         ("filler_or_end_panel", "a filler or end panel"),
-        ("unsure", "something neither AI is sure of"),
     ],
 )
 def test_the_overall_pairs_only_with_a_countertop_or_a_run(measure: str, words: str) -> None:
@@ -521,7 +634,11 @@ def test_a_run_pairs_with_pieces_only_when_they_are_the_whole_run() -> None:
 def test_nothing_comparable_says_in_plain_words_what_the_architect_measures() -> None:
     row = arch_row(1, (30, 24))
 
-    outcome = _resolve(row, (0, (0, 0, 0), ("blocking_or_backing", "fixture_or_appliance_centre")))
+    outcome = _resolve(
+        row,
+        (0, (0, 0, 0), ("blocking_or_backing", "fixture_or_appliance_centre")),
+        code_status="nothing_comparable",
+    )
 
     assert (outcome.source, outcome.status, outcome.pairs) == ("none", "nothing_comparable", ())
     assert any(
@@ -592,8 +709,8 @@ def test_one_architect_dimension_cannot_be_the_whole_run_and_only_one_piece() ->
     assert outcome.pairs == ()
 
 
-def test_all_zero_answers_mean_nothing_comparable() -> None:
-    outcome = _resolve(arch_row(1, WIDTHS), (0, (0, 0, 0)))
+def test_all_zero_answers_mean_nothing_comparable_when_code_found_nothing_either() -> None:
+    outcome = _resolve(arch_row(1, WIDTHS), (0, (0, 0, 0)), code_status="nothing_comparable")
 
     assert (outcome.source, outcome.status, outcome.pairs) == ("none", "nothing_comparable", ())
 
@@ -739,7 +856,7 @@ def test_when_code_cannot_decide_both_readers_get_one_numbered_picture() -> None
     assert len({job.png for job in asked}) == 1, "the same picture for both"
     assert all((job.vendor_pieces, job.architect_spans) == (3, 1) for job in asked)
     assert asked[0].question_packet is not None
-    assert asked[0].question_packet["prompt_id"] == ARCH_PAIR_PROMPT_ID == "arch-pair-v2"
+    assert asked[0].question_packet["prompt_id"] == ARCH_PAIR_PROMPT_ID == "arch-pair-v3"
     assert paired.architect_pairing is not None
     assert paired.architect_pairing.source == "both-ais"
     assert [pair.vendor_slot_indices for pair in paired.architect_pairing.pairs] == [(0,)]
@@ -877,8 +994,8 @@ def test_pairing_inside_the_batch_changes_nothing_the_slot_reader_read() -> None
         page_id,
         {
             "architect": [{"a": k, "measures": "single_cabinet"} for k in (1, 2, 3)],
-            "overall": 0,
-            "pieces": [1, 2, 3],
+            "overall": "none",
+            "pieces": ["A1", "A2", "A3"],
             "why": "each architect bay is the vendor's cabinet below it",
         },
     )
@@ -908,8 +1025,8 @@ def test_the_ai_question_rides_the_same_batch_and_changes_no_reading() -> None:
         page_id,
         {
             "architect": [{"a": 1, "measures": "countertop"}],
-            "overall": 1,
-            "pieces": [0, 0, 0],
+            "overall": "A1",
+            "pieces": ["none", "none", "none"],
             "why": "A1 spans the whole run",
         },
     )

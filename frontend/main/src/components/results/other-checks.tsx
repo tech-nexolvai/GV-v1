@@ -17,6 +17,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { bulkEligible, decisionWords } from '@/lib/countertop-results';
+import { CarriedOver } from './carried-over';
 
 export interface BulkResult {
   saved: number;
@@ -106,7 +107,10 @@ export function OtherChecks({
                   )}
                   <span className="num hidden text-xs text-muted-foreground sm:inline">{finding.check_id}</span>
                   {finding.reviewer_action && !blocking.has(finding.id) ? (
-                    <span className="text-xs text-muted-foreground">{decisionWords(finding.reviewer_action, finding.outcome)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {decisionWords(finding.reviewer_action, finding.outcome)}
+                      {finding.reviewer_carried_over && <> · <CarriedOver /></>}
+                    </span>
                   ) : blocking.has(finding.id) ? (
                     <Button size="sm" variant="ghost" onClick={() => onDecide(finding)}>Decide</Button>
                   ) : null}

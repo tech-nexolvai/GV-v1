@@ -92,8 +92,10 @@ class FakeReaders:
             "contains_tall_appliance": False,
             "why": "no tall unit is drawn in the marked span",
         },
+        flags: Callable[[str, bytes], Mapping[str, object]] = lambda _model, _png: {},
     ) -> None:
         self.read = read
+        self.flags = flags
         self.walls = walls
         self.row = row
         self.counter_break = counter_break
@@ -181,8 +183,8 @@ class FakeReaders:
             "combined": False,
             "readable": True,
             "no_dimension": not text,
-            "belongs": bool(text),
-        }
+            "belongs": "yes" if text else "no",
+        } | dict(self.flags(model, png))
         return {
             "output": {"message": {"content": [{"text": json.dumps(payload)}]}},
             "usage": {"inputTokens": 10, "outputTokens": 5},
@@ -459,7 +461,7 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
 
     owner_count = len(result.plan.slots) + (result.plan.overall is not None)
-    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v3"]
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v4"]
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
@@ -957,7 +959,7 @@ def test_claude_line_question_holds_a_line_drawn_tall_appliance() -> None:
     assert result.mapping.proposals == ()
     assert {model for model, _row, _view in readers.counter_break_requests} == {OPUS, SONNET}
     assert len(readers.counter_break_requests) == 2
-    assert sum(attempt.prompt_id == "claude-counter-break-v2" for attempt in attempts) == 2
+    assert sum(attempt.prompt_id == "claude-counter-break-v3" for attempt in attempts) == 2
 
 
 def test_claude_line_question_two_no_answers_leave_the_row_unchanged() -> None:
@@ -988,6 +990,33 @@ def test_counter_break_word_in_a_slot_label_holds_the_whole_row() -> None:
 
     assert result.row_hold is not None and result.row_hold.code == "counter-break"
     assert result.mapping.proposals == ()
+
+
+@pytest.mark.parametrize(
+    "drawing", [sheets.text_labels(PIECES, OVERALL), sheets.glyph_labels()], ids=["text", "glyph"]
+)
+def test_labels_on_a_page_held_before_reading_carry_the_hold_not_one_reader(
+    drawing: bytes,
+) -> None:
+    """#1114: a vendor counter-break word holds the row before any label is read; its labels say
+    the row waits, never "only one reader", and they stay held."""
+    page = slot_page(sheets.sheet(drawing + sheets.text(230, sheets.CHAIN_Y - 40, "OVEN")))
+    readers = FakeReaders(lambda _model, _png: '99"')
+
+    result = read(page, readers, claude_row_reader=True)
+
+    assert readers.requests == [], "a held page's labels cost no call"
+    assert result.row_hold is not None and result.row_hold.code == "counter-break"
+    assert result.mapping.proposals == ()
+    owners = [*result.slots, *((result.overall,) if result.overall is not None else ())]
+    labelled = [owner for owner in owners if owner.labels]
+    assert labelled
+    for owner in labelled:
+        assert owner.outcome.state is LabelState.REVIEW and owner.outcome.value is None
+        assert owner.outcome.reason_code == "not-asked"
+        assert owner.outcome.reason == (
+            f"the readers were not asked; this row waits: {result.row_hold.reason}"
+        )
 
 
 def test_reader_only_counter_break_word_does_not_count_as_vendor_ink() -> None:
@@ -1727,7 +1756,7 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     ).one()
     assert proposal.discriminator_name == "wall_config"
     assert proposal.proposed_value == "back_left_right"
-    assert proposal.prompt_id == "slot-walls-v1"
+    assert proposal.prompt_id == "slot-walls-v2"
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
@@ -1928,16 +1957,23 @@ def test_the_full_view_mark_stays_visible_after_the_picture_is_shrunk() -> None:
     pixels = view.load()
     assert pixels is not None
 
+    def magenta(x: int, y: int) -> bool:
+        r, g, b = pixels[x, y][:3]
+        return r >= 200 and g <= 60 and b >= 160
+
     def red(x: int, y: int) -> bool:
         r, g, b = pixels[x, y][:3]
         return r >= 200 and g <= 60 and b <= 60
 
-    marked = [(x, y) for y in range(view.height) for x in range(view.width) if red(x, y)]
-    assert marked, "the span is boxed in red"
+    marked = [(x, y) for y in range(view.height) for x in range(view.width) if magenta(x, y)]
+    assert marked, "the span is boxed in magenta, the colour the question names (#1110)"
+    assert not any(
+        red(x, y) for y in range(view.height) for x in range(view.width)
+    ), "never in the reviewer's red, which the readers are told to ignore"
     left = min(x for x, _ in marked)
     middle = (min(y for _, y in marked) + max(y for _, y in marked)) // 2
     thickness = 0
-    while left + thickness < view.width and red(left + thickness, middle):
+    while left + thickness < view.width and magenta(left + thickness, middle):
         thickness += 1
     shrink = max(page.rendered.width_px, page.rendered.height_px) / max(view.size)
     assert thickness >= round(4 * page.rendered.dpi / 110 / shrink) - 1
@@ -2100,6 +2136,118 @@ def test_a_stone_ending_at_the_walls_is_not_held() -> None:
     assert result.mapping.proposals
 
 
+def _to_walls(_model: str) -> Mapping[str, object]:
+    return {"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "walls both ends"}
+
+
+def test_an_open_end_holds_nothing_and_changes_nothing_a_wall_end_would_not() -> None:
+    """#1111: `open_end` (an end with no wall at all) behaves like `to_walls` for the hold: no
+    new hold, and the walls, mapping and proposals are exactly what `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "open_end" if model == SONNET else "to_walls",
+            "why": "open floor beyond the right end",
+        }
+    )
+
+    assert result.row_hold is None and result.check_hold is None
+    assert result.no_stone_readers == ()
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome, "no new automation path"
+
+
+def test_a_reader_saying_no_stone_is_recorded_but_holds_and_clears_nothing() -> None:
+    """#1111: `no_stone` was ignored; it is now kept on the row (`no_stone_readers`) and adds no
+    hold and no automation: walls, mapping and proposals stay exactly as `to_walls` gives."""
+    baseline = _claude_line_read(_to_walls)
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == SONNET else "to_walls",
+            "why": "no countertop line over the cabinets",
+        }
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    assert result.row_hold is None and result.check_hold is None
+    assert result.mapping == baseline.mapping
+    assert result.walls is not None and baseline.walls is not None
+    assert result.walls.outcome == baseline.walls.outcome
+    assert baseline.no_stone_readers == ()
+
+
+def test_a_no_stone_answer_is_never_a_reason_to_lift_a_hold() -> None:
+    """A reader's `no_stone` next to the other's `short_of_ends` keeps the hold."""
+    result = _claude_line_read(
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "no_stone" if model == OPUS else "short_of_ends",
+            "why": "synthetic",
+        }
+    )
+
+    assert result.check_hold is not None and result.check_hold.code == "stone-short-of-ends"
+    assert result.no_stone_readers == (OPUS,)
+
+
+def test_the_wall_and_counter_break_marks_are_magenta_never_a_reviewer_red() -> None:
+    """#1111: the prompts name our marks magenta and call red or yellow reviewer markup; the
+    pictures for these two questions carry magenta marks and no red."""
+    from evidence.crop import decode_rgb_png
+    from extraction.slot_reader.bedrock import COUNTER_BREAK_PROMPT
+    from extraction.slot_reader.walls import WALL_PROMPT
+
+    page = slot_page(sheets.sheet(sheets.text_labels()))
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup[png], counter_break=_to_walls)
+    base = runtime(readers, claude_row_reader=True)
+    read_slot_pages([page], runtime=base, record_attempt=lambda _attempt: None)
+
+    pictures = [
+        png
+        for _model, *pngs in (*readers.wall_requests, *readers.counter_break_requests)
+        for png in pngs
+    ]
+    assert readers.wall_requests and readers.counter_break_requests and pictures
+    magenta, red, crimson = (230, 0, 200), (255, 0, 0), (220, 20, 60)
+    for png in pictures:
+        _width, _height, rgb = decode_rgb_png(png)
+        colours = {tuple(rgb[i : i + 3]) for i in range(0, len(rgb), 3)}
+        assert magenta in colours
+        assert red not in colours and crimson not in colours
+    for prompt in (WALL_PROMPT, COUNTER_BREAK_PROMPT):
+        assert "magenta" in prompt and "Red or yellow marks are a reviewer's markup" in prompt
+
+
+def test_a_no_stone_answer_is_stored_as_a_flag_on_the_rows_readings(session: Any) -> None:
+    def readers(page: SlotPage) -> FakeReaders:
+        lookup = claude_crops_to_texts(page, TEXTS)
+        return FakeReaders(
+            lambda _model, png: lookup[png],
+            counter_break=lambda model: {
+                "contains_tall_appliance": False,
+                "stone_ends": "no_stone" if model == SONNET else "to_walls",
+                "why": "synthetic",
+            },
+        )
+
+    _revision, run, result, _count = _read_persisted(
+        session, sheets.sheet(sheets.text_labels()), readers, claude_row_reader=True
+    )
+
+    assert result.no_stone_readers == (SONNET,)
+    stored = _by_slot(session, run)
+    readings = [row for key, row in stored.items() if key != "walls"]
+    assert readings
+    for row in readings:
+        assert f"no-stone:{SONNET}" in row.ambiguity_flags
+        assert f"no-stone:{OPUS}" not in row.ambiguity_flags
+        assert not any(flag.startswith("check-hold:") for flag in row.ambiguity_flags)
+
+
 def _fake_rows(
     row_x: tuple[int, int], wall_x: tuple[int, int], words: tuple[str, ...]
 ) -> tuple[Any, Any]:
@@ -2212,7 +2360,7 @@ def test_a_sideways_label_adds_its_upright_close_up_as_a_third_picture() -> None
     upright_spans = {texts for _model, texts in readers.span_texts if CLAUDE_UPRIGHT_NOTE in texts}
     assert len(upright_spans) == 1
     assert all(
-        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
+        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
         for attempt in attempts
         if attempt.prompt_id.startswith("claude-slot-span")
     )
@@ -2502,6 +2650,7 @@ def _equal_share_read(
     shift: Decimal = Decimal(0),
     y: Decimal | None = None,
     blank_text: str = "",
+    blank_flags: Callable[[str], Mapping[str, object]] = lambda _model: {},
 ) -> tuple[PageSlotResult, FakeReaders, Any, Any]:
     """Both readers choose the blank row (box 1); the chain with its overall is box 2."""
     from workflow.slot_reader import _claude_span_plan
@@ -2536,7 +2685,10 @@ def _equal_share_read(
         ): texts.get(owner.index, "")
         for owner in (*chain_plan.slots, *((chain_plan.overall,) if chain_plan.overall else ()))
     }
-    readers = FakeReaders(lambda _model, png: chain_crops.get(png, blank_text))
+    readers = FakeReaders(
+        lambda _model, png: chain_crops.get(png, blank_text),
+        flags=lambda model, png: {} if png in chain_crops else blank_flags(model),
+    )
     (result,) = read_slot_pages(
         [page],
         runtime=runtime(readers, claude_row_reader=True),
@@ -2609,6 +2761,48 @@ def test_a_chain_without_equal_shares_changes_nothing() -> None:
 
     assert result.read_through is None
     assert result.plan.row is blank
+
+
+#: #1110: what a reader unsure whether a blank piece's label belongs to its span answers.
+UNSURE_SPAN = {"belongs": "unsure", "no_dimension": False, "readable": False}
+
+
+def test_blank_pieces_both_readers_were_unsure_about_are_never_read_through_the_chain() -> None:
+    """Unsure is never evidence of absence: the chosen row goes to the reviewer as read."""
+    result, readers, blank, _chain = _equal_share_read(blank_flags=lambda _model: UNSURE_SPAN)
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert all(slot.outcome.state is LabelState.REVIEW for slot in result.slots)
+    assert all(slot.outcome.reason_code == "unsure" for slot in result.slots)
+    assert not result.mapping.proposals
+    assert len(readers.requests) == 2 * 2, "the chain is not even read"
+
+
+def test_one_unsure_reader_on_blank_pieces_keeps_them_for_the_reviewer() -> None:
+    result, readers, blank, _chain = _equal_share_read(
+        blank_flags=lambda model: UNSURE_SPAN if model == OPUS else {}
+    )
+
+    assert result.read_through is None
+    assert result.plan.row is blank
+    assert all(slot.outcome.reason_code == "unsure" for slot in result.slots)
+    assert len(readers.requests) == 2 * 2
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{"belongs": "no", "no_dimension": True}, {"belongs": "no", "no_dimension": False}],
+    ids=["no-dimension", "no-with-empty-text"],
+)
+def test_blank_pieces_both_readers_explicitly_called_blank_still_read_through(
+    flags: Mapping[str, object],
+) -> None:
+    """Both readers' explicit answers, `no_dimension` or "no" with no text, still start it."""
+    result, _readers, blank, chain = _equal_share_read(blank_flags=lambda _model: flags)
+
+    assert result.read_through is blank
+    assert result.plan.row is chain
 
 
 def test_a_chain_read_through_persists_its_rows_rank_and_the_chosen_rows(session: Any) -> None:

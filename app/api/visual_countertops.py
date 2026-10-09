@@ -45,7 +45,7 @@ from app.schemas.visual_ui import (
 )
 from units.imperial import format_inches
 from verdict.outcomes import Outcome
-from vocabulary.check_holds import CHECK_HOLD_REASONS
+from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
 from workflow.architect_pairing_contract import EffectivePairing
@@ -875,8 +875,10 @@ def _countertop_results_for_revision(
             )
             hold = HoldOut(
                 code=code,
-                reason=reviewer_reason(flags, row.held_reason)
-                or CHECK_HOLD_REASONS.get(code, code),
+                reason=with_no_stone_note(
+                    reviewer_reason(flags, row.held_reason) or CHECK_HOLD_REASONS.get(code, code),
+                    flags,
+                ),
             )
         # PASS findings may not persist a delta column. When checked, derive the signed difference
         # only from the immutable recorded operand and recorded expected-width trace above.

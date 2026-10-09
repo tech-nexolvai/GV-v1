@@ -125,7 +125,7 @@ from extraction.slot_reader.walls import (
     seal_walls,
     wall_pictures,
 )
-from vocabulary.check_holds import STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
+from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
 from workflow.form_reader import FormReaderRuntime
@@ -455,6 +455,10 @@ class PageSlotResult:
     """The row the readers chose, when it had nothing printed on any piece and its widths are read
     from the vendor's `X"(N EQ)` chain for the same run (#1086); `plan.row` is then that chain.
     `None` otherwise."""
+    no_stone_readers: tuple[str, ...] = ()
+    """The counter-break readers that said no stone top is drawn over the row (`no_stone`, #1111).
+    Recorded on the row as `no-stone:<model>` and named in its reason text; it holds nothing and
+    clears nothing."""
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -510,7 +514,9 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
         thickness=max(2, round(4 * scale)),
         max_side=1800,
         outline=outline,
-        mark_color=bytes((255, 0, 0)),
+        # Magenta, named in the question (`claude-slot-span-v4`, #1110): the reviewer marks in
+        # red, blue and yellow, and the readers are told to ignore that markup.
+        mark_color=_MAGENTA,
     )
 
 
@@ -523,7 +529,7 @@ def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
     The close-up reaches past the span's ends as the prototype's did (at least 50 px at 300 dpi,
     or 15% of the span, a side): a narrow piece's label is wider than the piece, and a close-up
     cut at its ticks showed the readers only "1/2" of a printed 1 1/2 (proof run 2026-10-08).
-    Which span is meant stays the full view's red box, never the close-up's edges.
+    Which span is meant stays the full view's magenta box, never the close-up's edges.
     """
     if plan.row is None:
         return plan
@@ -1166,9 +1172,9 @@ def read_slot_pages(
         return found
 
     row_answers = run_jobs(row_jobs) if row_jobs else {}
-    planned: list[tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, bool]] = (
-        []
-    )
+    planned: list[
+        tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, RowHold | None]
+    ] = []
     jobs: list[CropJob] = []
     crops: dict[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]] = {}
     walls_asked: dict[int, WallQuestion] = {}
@@ -1210,18 +1216,27 @@ def read_slot_pages(
         owner_candidate_ids[page.page_index] = page_candidate_ids
         # A row the vendor's own words already hold (a tall appliance or range bay in its span) can
         # never become a proposal, so it is not read at paid prices; the hold is applied below
-        # exactly as before. Claude path only.
+        # exactly as before, and its labels say the row waits, not "only one reader" (#1114).
+        # Claude path only.
         held_before_reading = (
-            runtime.claude_row_reader
-            and plan.row is not None
-            and _counter_break_row_hold(page, plan, (), runtime) is not None
+            _counter_break_row_hold(page, plan, (), runtime)
+            if runtime.claude_row_reader and plan.row is not None
+            else None
         )
         planned.append((page, plan, source_plan, row_choice, row_number, held_before_reading))
         jobs.extend(
-            label_jobs(page, plan, source_plan, page_candidate_ids, held=held_before_reading)
+            label_jobs(
+                page,
+                plan,
+                source_plan,
+                page_candidate_ids,
+                held=held_before_reading is not None,
+            )
         )
         wall_pictures_for = (
-            None if held_before_reading else _wall_job_pictures(page, plan, runtime.wall_settings)
+            None
+            if held_before_reading is not None
+            else _wall_job_pictures(page, plan, runtime.wall_settings)
         )
         if wall_pictures_for is not None:
             code_clues = _code_wall_clues(page, plan, wall_pictures_for)
@@ -1307,7 +1322,7 @@ def read_slot_pages(
     chain_jobs: list[CropJob] = []
     if runtime.claude_row_reader:
         for page, plan, _source_plan, _row_choice, _row_number, held in planned:
-            if held or plan.row is None:
+            if held is not None or plan.row is None:
                 continue
             chosen = [
                 _owner_result(
@@ -1362,10 +1377,14 @@ def read_slot_pages(
             if isinstance(answer, ReaderAnswer)
         )
     results: list[PageSlotResult] = []
-    for page, plan, source_plan, row_choice, row_number, _held in planned:
+    for page, plan, source_plan, row_choice, row_number, held in planned:
 
         def owner_result(
-            owner: PlannedOwner, count: int, page: SlotPage = page, plan: SlotPlan = plan
+            owner: PlannedOwner,
+            count: int,
+            page: SlotPage = page,
+            plan: SlotPlan = plan,
+            held: RowHold | None = held,
         ) -> OwnerResult:
             return _owner_result(
                 page,
@@ -1376,6 +1395,7 @@ def read_slot_pages(
                 answers=label_answers,
                 runtime=runtime,
                 wall_ends=wall_ends(page),
+                held_before_reading=None if held is None else held.reason,
             )
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
@@ -1564,6 +1584,9 @@ def read_slot_pages(
                     else None
                 ),
                 read_through=read_through,
+                no_stone_readers=tuple(
+                    answer.model_id for answer in line_answers if answer.stone_ends == "no_stone"
+                ),
             )
         )
     if architect is not None:
@@ -1602,7 +1625,9 @@ def _stone_end_hold(
 
     Code first: a line the vendor labels "wall to wall" that sits inside both ends of the row
     means the stone runs past the wall faces. Then either reader saying the stone stops short of
-    an end, or runs into the walls.
+    an end, or runs into the walls. `to_walls`, `open_end` (an end with no wall at all, #1111),
+    `no_stone` and `unsure` hold nothing here: an open end's field cut is the wall layout's
+    question, and `no_stone` is only recorded on the row (`no_stone_readers`).
     """
     row = plan.row
     if row is None:
@@ -2010,8 +2035,12 @@ def _owner_result(
     runtime: SlotReaderRuntime,
     wall_ends: frozenset[WallEnd],
     row_key: str = "",
+    held_before_reading: str | None = None,
 ) -> OwnerResult:
-    """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind."""
+    """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind.
+
+    `held_before_reading` is the page's hold reason when its labels were never sent (#1114).
+    """
     height = page.rows.ink.height
     labels: list[LabelResult] = []
     for position, label in enumerate(owner.labels):
@@ -2031,6 +2060,7 @@ def _owner_result(
             allow_stacked=runtime.allow_stacked,
             row_ambiguity=plan.ambiguity,
             allow_claude_pair=runtime.claude_row_reader,
+            held_before_reading=held_before_reading,
         )
         labels.append(LabelResult(label, sealed, box_px, crop_px))
     outcome = owner_outcome([item.outcome for item in labels])
@@ -2207,6 +2237,7 @@ def persist_slot_readings(
                 flags.append(f"check-hold:{result.check_hold.code}")
             if result.read_through is not None:
                 flags.append(f"equal-shares-for-row-rank:{result.read_through.rank}")
+            flags.extend(f"{NO_STONE_FLAG}{model}" for model in result.no_stone_readers)
             if owner.kind is not None:
                 flags.append(f"kind:{owner.kind.kind.value}")
                 flags.append(f"kind-evidence:{owner.kind.evidence}")

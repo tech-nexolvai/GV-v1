@@ -836,6 +836,65 @@ def test_a_row_whose_stone_does_not_end_at_the_walls_is_never_checked(
     assert by_row[anchors[1]].outcome == "PASS", by_row[anchors[1]].reason
 
 
+_NO_STONE = "no-stone:anthropic.claude-sonnet-5-5"
+
+
+def test_a_reader_saying_no_stone_adds_no_hold_and_the_row_still_checks(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1111: a counter-break reader's `no_stone` is a recorded note, never a hold: the row has no
+    reason text of its own, stays open for a wall choice, and checks exactly as before."""
+    project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        wall_source="vendor-drawing-clues",
+        slot_flags=lambda page, _row, _slot: [_NO_STONE] if page == 0 else [],
+    )
+    candidates = session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all()
+    for candidate in candidates:
+        _reader_support(session, candidate)
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+
+    rows = {
+        row.page_number: row
+        for row in list_slot_rows(principal, session, project_id, package_id).rows
+    }
+    assert rows[1].held_reason is None and rows[2].held_reason is None
+    assert rows[1].wall_confirmation_allowed == rows[2].wall_confirmation_allowed
+    findings = _run_current_checks(session, package_id, tmp_path)
+    by_row = {finding.scope_row_candidate_id: finding for finding in findings}
+    assert by_row[anchors[0]].outcome == by_row[anchors[1]].outcome == "PASS"
+
+
+def test_a_reader_saying_no_stone_is_named_in_a_held_rows_reason(session: Session) -> None:
+    project_id, package_id, _anchors = _package_rows(
+        session,
+        held_page=0,
+        check_hold_page=1,
+        slot_flags=lambda _page, _row, _slot: [_NO_STONE],
+    )
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+
+    rows = {
+        row.page_number: row
+        for row in list_slot_rows(principal, session, project_id, package_id).rows
+    }
+    note = "A reader also said no stone top is drawn over this row."
+    for row in rows.values():
+        assert row.held_reason is not None and row.held_reason.endswith(note)
+        assert row.held_reason.count(note) == 1
+    assert (rows[2].held_reason or "").startswith("the stone stops at fillers")
+
+
 @pytest.mark.parametrize("overall, expected", [(41, "PASS"), (42, "FAIL")])
 def test_between_panels_requires_its_own_explicit_wall_choice(
     session: Session, tmp_path: Path, overall: int, expected: str

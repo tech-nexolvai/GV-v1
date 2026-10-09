@@ -1292,13 +1292,12 @@ def test_code_undecided_as_combine_records_it_is_not_compared_with_nothing_usabl
     assert anchors[0] not in findings.get(ARCH_RULE, {})
 
 
-@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit", "nothing_comparable"])
 def test_both_ais_finding_nothing_comparable_stays_not_compared(
-    session: Session, tmp_path: Path, code_status: str
+    session: Session, tmp_path: Path
 ) -> None:
-    """Two judgments that nothing is paired (the AIs agree there is nothing; code found no pairs)
-    stay "not compared": no finding, no click."""
-    pairing = _combined(code_status, "nothing_comparable")
+    """Two judgments that nothing is comparable (the AIs agree there is nothing; code found
+    nothing comparable either) stay "not compared": no finding, no click."""
+    pairing = _combined("nothing_comparable", "nothing_comparable")
     assert pairing.status == "nothing_comparable"
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
@@ -1307,6 +1306,83 @@ def test_both_ais_finding_nothing_comparable_stays_not_compared(
     findings = _run(session, package_id, tmp_path, {anchors[0]: pairing})
 
     assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+# ---------------------------------------------------------------------------
+# #1109: two "nothing" answers keep code's undecided status; "unsure" is the reviewer's. Built from
+# the real `_judge` and `combine()` (`resolve_answers`), read back as the check reads a record.
+# ---------------------------------------------------------------------------
+
+
+def _resolved(
+    code_status: str,
+    pieces: tuple[int, ...] = (0, 0, 0),
+    unsure: tuple[str, ...] = (),
+) -> EffectivePairing:
+    """The pairing recorded when code found no pairs (`code_status`) and both readers answered
+    `pieces` (A-numbers, 0 for none), the first also answering `unsure` for these pairings."""
+    from tests.workflow.test_architect_pairing import WIDTHS, _resolve, arch_row
+
+    outcome = _resolve(
+        arch_row(1, WIDTHS), (0, pieces), code_status=code_status, unsure=(unsure, ())
+    )
+    return EffectivePairing(
+        record_id=uuid4(),
+        source=outcome.source,
+        status=outcome.status,
+        pairs=outcome.pairs,
+        reasons=outcome.reasons,
+    )
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_both_ais_answering_nothing_with_code_undecided_asks_the_reviewer(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    """A reader that could not tell used to answer 0, and two 0 answers overwrote code's undecided
+    status with "nothing comparable": the row was not compared though the architect prints a
+    usable dimension. Code's status is kept, so the reviewer pairs."""
+    pairing = _resolved(code_status)
+    assert (pairing.source, pairing.status, pairing.pairs) == ("none", code_status, ())
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
+    assert _inputs(session, finding) == {}
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_both_ais_answering_nothing_with_code_undecided_and_nothing_usable_is_not_compared(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "1' - 5\"", outline="no")
+
+    findings = _run(session, package_id, tmp_path, {anchors[0]: _resolved(code_status)})
+
+    assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit", "nothing_comparable"])
+def test_an_unsure_reader_sends_the_row_to_the_reviewer(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    """`unsure` is never "nothing comparable", whatever code found: the reviewer pairs."""
+    pairing = _resolved(code_status, unsure=("V2",))
+    assert (pairing.source, pairing.status) == ("none", "ais-refused")
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
 
 
 def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(

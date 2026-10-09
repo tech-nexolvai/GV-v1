@@ -141,6 +141,8 @@ export interface Finding {
   reviewed_by?: string | null;
   reviewer_note?: string | null;
   reviewed_at?: string | null;
+  /** The decision was made on the previous run's result and carried over an unchanged re-run (#1073). */
+  reviewer_carried_over?: boolean;
   /** When the check run recorded this result. A row input saved after it means the result is out of date. */
   created_at?: string;
 }
