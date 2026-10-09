@@ -35,7 +35,7 @@ from eval.form_first_safety import (
 )
 from extraction.form_reader.bedrock import _extract_json_object
 from extraction.slot_reader.bedrock import (
-    CLAUDE_SPAN_PROMPT_ID,
+    CLAUDE_SPAN_PROMPT_IDS,
     COUNTER_BREAK_PROMPT_IDS,
     CROP_PROMPT_ID,
     ROW_PROMPT_IDS,
@@ -108,7 +108,7 @@ def audit_saved_attempts(
     compared as a multiset, not assigned to a guessed crop. This is an audit of the persisted
     answers, not a claim that the current schema proves the identity of each image sent.
     """
-    label_prompts = {CROP_PROMPT_ID, CLAUDE_SPAN_PROMPT_ID}
+    label_prompts = {CROP_PROMPT_ID, *CLAUDE_SPAN_PROMPT_IDS}
     relevant = tuple(
         row
         for row in attempts
@@ -315,7 +315,7 @@ def product_case_for_page(
                 ModelInvocation.prompt_id.in_(
                     (
                         CROP_PROMPT_ID,
-                        CLAUDE_SPAN_PROMPT_ID,
+                        *CLAUDE_SPAN_PROMPT_IDS,
                         WALL_PROMPT_ID,
                         *ROW_PROMPT_IDS,
                         *COUNTER_BREAK_PROMPT_IDS,

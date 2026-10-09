@@ -2,6 +2,17 @@
 
 The slot reader consumes a Converse-shaped client. This adapter keeps that boundary stable while
 sending images directly to the Messages API; it never logs request bodies, credentials, or answers.
+
+Since #1051 every request carries its answer schema and effort (`output_config`, from the slot
+reader's `anthropicOutputConfig`), every picture is marked `oversized_image: "error"` and is first
+checked here against the documented limits, and a reply is passed on only when it finished its turn
+on the model that was asked: a refusal, a token-limit stop or another model's answer comes back
+with no text, which the reader treats as malformed and abstains on.
+
+**No server-side fallback, ever.** The API can re-run a refused request on another model when the
+request opts in (`fallbacks`, beta header `server-side-fallback-2026-07-01`). This adapter never
+sends either: a reading must stay attributable to the model that made it, because the two-reader
+rule seals a value only when two *named* models print the identical text.
 """
 
 from __future__ import annotations
@@ -16,6 +27,14 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from extraction.slot_reader.claude_output import (
+    CLAUDE_EFFORTS,
+    OUTPUT_CONFIG_KEY,
+    png_size,
+    require_picture_fits,
+    visual_tokens,
+)
+
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -24,6 +43,9 @@ MODEL_PREFIX = "anthropic."
 # an extra provider round-trip per reading; the batch lock reserves this estimate and the full
 # output allowance before any generation call begins.
 ESTIMATED_INPUT_TOKENS_PER_CALL = 2048
+#: Room for the API's own scaffolding around a structured-output request (its schema instructions
+#: and message framing), added to the upper bound below.
+_REQUEST_OVERHEAD_TOKENS = 1024
 
 
 class AnthropicRequestError(RuntimeError):
@@ -133,12 +155,51 @@ class SpendLimitedClient:
             or not isinstance(output_limit, int)
         ):
             raise TypeError("Claude request is missing its model id or output-token bound")
-        reservation = self._guard.reserve(model_id, ESTIMATED_INPUT_TOKENS_PER_CALL, output_limit)
+        reservation = self._guard.reserve(model_id, _reserved_input_tokens(kwargs), output_limit)
         response = self._client.converse(**kwargs)
         if not isinstance(response, Mapping):
             raise TypeError("Claude client returned a malformed response")
         self._guard.settle(reservation, response)
         return response
+
+
+def input_token_upper_bound(request: Mapping[str, Any]) -> int:
+    """An upper bound on a request's input tokens, from what it carries.
+
+    Each picture costs exactly its documented tile count (a picture whose size cannot be read is
+    counted at the largest any picture may cost); each text and the answer schema at most one token
+    per UTF-8 byte; plus a fixed allowance for the API's own framing.
+    """
+    total = _REQUEST_OVERHEAD_TOKENS
+    for message in request.get("messages") or ():
+        content = message.get("content") if isinstance(message, Mapping) else None
+        for item in content or ():
+            if not isinstance(item, Mapping):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                total += len(text.encode("utf-8"))
+            image = item.get("image")
+            source = image.get("source") if isinstance(image, Mapping) else None
+            raw = source.get("bytes") if isinstance(source, Mapping) else None
+            if isinstance(raw, bytes):
+                try:
+                    total += visual_tokens(*png_size(raw))
+                except ValueError:
+                    total += 4784
+    for block in request.get("system") or ():
+        if isinstance(block, Mapping) and isinstance(block.get("text"), str):
+            total += len(block["text"].encode("utf-8"))
+    config = request.get(OUTPUT_CONFIG_KEY)
+    if config is not None:
+        total += len(json.dumps(config, separators=(",", ":")).encode("utf-8"))
+    return total
+
+
+def _reserved_input_tokens(request: Mapping[str, Any]) -> int:
+    """The input estimate a reservation is made with: the guard doubles it, so the reserve is
+    never below the request's upper bound and never below the fixed estimate used before #1051."""
+    return max(ESTIMATED_INPUT_TOKENS_PER_CALL, -(-input_token_upper_bound(request) // 2))
 
 
 def _text_blocks(value: object) -> str:
@@ -157,7 +218,7 @@ def _text_blocks(value: object) -> str:
     return "\n".join(blocks)
 
 
-def _message_content(value: object) -> list[dict[str, object]]:
+def _message_content(value: object, model_id: str) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise TypeError("Anthropic user message content must be a list")
     content: list[dict[str, object]] = []
@@ -178,8 +239,11 @@ def _message_content(value: object) -> list[dict[str, object]]:
         if not isinstance(source, Mapping) or not isinstance(image_format, str):
             raise TypeError("Anthropic image block is incomplete")
         raw = source.get("bytes")
-        if not isinstance(raw, bytes) or image_format not in {"png", "jpeg", "webp", "gif"}:
-            raise ValueError("Anthropic image must have supported bytes and a stated format")
+        if not isinstance(raw, bytes) or image_format != "png":
+            raise ValueError("Anthropic image must be PNG bytes, whose size can be checked")
+        # Refused here, before any call, if the API would resize it (#1051): the pictures were
+        # measured at the size they are drawn, and a silently shrunk one is not that picture.
+        require_picture_fits((raw,), model_id)
         content.append(
             {
                 "type": "image",
@@ -188,9 +252,34 @@ def _message_content(value: object) -> list[dict[str, object]]:
                     "media_type": f"image/{'jpeg' if image_format == 'jpg' else image_format}",
                     "data": base64.b64encode(raw).decode("ascii"),
                 },
+                # And if the local check and the API ever disagree, the API refuses rather than
+                # resizes (vision-coordinates, "Turn resizing into an error").
+                "transformations": {"oversized_image": "error"},
             }
         )
     return content
+
+
+def _output_config(value: object) -> dict[str, object]:
+    """The request's answer schema and effort, required on every Claude call (#1051)."""
+    if value is None:
+        raise ValueError("Claude slot-reader request must state its answer schema and effort")
+    if not isinstance(value, Mapping):
+        raise TypeError("Claude slot-reader answer schema and effort must be an object")
+    answer_format = value.get("format")
+    effort = value.get("effort")
+    if (
+        not isinstance(answer_format, Mapping)
+        or answer_format.get("type") != "json_schema"
+        or not isinstance(answer_format.get("schema"), Mapping)
+    ):
+        raise ValueError("Claude slot-reader request must carry a JSON-schema answer format")
+    if effort not in CLAUDE_EFFORTS:
+        raise ValueError("Claude slot-reader request must state a supported effort level")
+    return {
+        "format": {"type": "json_schema", "schema": dict(answer_format["schema"])},
+        "effort": effort,
+    }
 
 
 def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
@@ -213,7 +302,10 @@ def anthropic_messages_request(**kwargs: Any) -> dict[str, object]:
     request: dict[str, object] = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": _message_content(message.get("content"))}],
+        "messages": [
+            {"role": "user", "content": _message_content(message.get("content"), model_id)}
+        ],
+        "output_config": _output_config(kwargs.get(OUTPUT_CONFIG_KEY)),
     }
     # The Messages API makes `system` optional. The slot-reader prompts are self-contained and
     # its existing Bedrock-shaped request builders intentionally omit this field.
@@ -240,8 +332,27 @@ class AnthropicMessagesClient:
         usage = payload.get("usage")
         if not isinstance(content, list) or not isinstance(usage, Mapping):
             raise AnthropicRequestError(502, "ProviderResponseMalformed")
+        stop_reason = payload.get("stop_reason")
+        if not _answered_by(payload.get("model"), str(body["model"])):
+            # Not the model that was asked: never passed on as that model's reading.
+            stop_reason = "model_mismatch"
+        # Only a finished turn's text blocks are an answer. Thinking blocks are the model's own and
+        # never parsed; a refusal or a token-limit stop may carry partial text, which the API says
+        # to discard (refusals-and-fallback), so the reader sees no text and abstains.
+        texts = (
+            [
+                {"type": "text", "text": item["text"]}
+                for item in content
+                if isinstance(item, Mapping)
+                and item.get("type") == "text"
+                and isinstance(item.get("text"), str)
+            ]
+            if stop_reason == "end_turn"
+            else []
+        )
         return {
-            "output": {"message": {"content": content}},
+            "stopReason": stop_reason,
+            "output": {"message": {"content": texts}},
             "usage": {
                 "inputTokens": usage.get("input_tokens"),
                 "outputTokens": usage.get("output_tokens"),
@@ -293,6 +404,13 @@ class AnthropicMessagesClient:
         if not isinstance(payload, Mapping):
             raise AnthropicRequestError(502, "ProviderResponseMalformed")
         return payload
+
+
+def _answered_by(reported: object, requested: str) -> bool:
+    """Whether the reply names the model asked (or a dated snapshot of it)."""
+    return isinstance(reported, str) and (
+        reported == requested or reported.startswith(f"{requested}-")
+    )
 
 
 class ThreadLocalAnthropicClients:

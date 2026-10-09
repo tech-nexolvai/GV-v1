@@ -38,7 +38,7 @@ from evidence.coordinates import ImagePoint, StoredPoint
 from evidence.corroborate import independence_key
 from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
-from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID, parse_stored_reader_answer
+from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS, parse_stored_reader_answer
 from extraction.slot_reader.labels import expand_label, plain_dimension
 from extraction.slot_reader.seal import _CLAUDE_PAIR, normalise_text
 from rules.semantic_types import DocumentRole, SemanticType
@@ -573,7 +573,7 @@ def _materialize_stored_reader_answers(
     invocations = session.scalars(
         select(ModelInvocation).where(
             ModelInvocation.extraction_run_id == candidate.extraction_run_id,
-            ModelInvocation.prompt_id == CLAUDE_SPAN_PROMPT_ID,
+            ModelInvocation.prompt_id.in_(CLAUDE_SPAN_PROMPT_IDS),
             ModelInvocation.outcome == "ok",
             ModelInvocation.private_raw_response.is_not(None),
         )
