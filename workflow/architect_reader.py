@@ -42,6 +42,7 @@ from app.models.evidence import ObservationCandidate
 from extraction.architect.reader import ArchitectPage, ArchitectView
 from extraction.architect.views import Role
 from units.measurement import Unit
+from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
 from workflow.view_roles import (
     CODE_CONFIRMER,
     CODE_CONTENT_CONFIRMER,
@@ -57,8 +58,8 @@ __all__ = [
     "persist_architect_pages",
 ]
 
-#: The route the architect's values are recorded under. Text read by code: never a model.
-ARCHITECT_EXTRACTOR: Final = "architect-text"
+#: The route the architect's values are recorded under (`ARCHITECT_EXTRACTOR`) lives in
+#: `workflow/architect_pairing_records.py`, which the API may import; re-exported here.
 ARCHITECT_EXTRACTOR_VERSION: Final = "architect-text-v1"
 
 _ROLES: Final = {Role.ARCH: ViewRole.ARCH, Role.SHOP: ViewRole.SHOP}

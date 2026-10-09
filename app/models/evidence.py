@@ -588,6 +588,109 @@ class SlotRowReviewDecision(Base, TimestampedUUID, Immutable):
     )
 
 
+ARCHITECT_PAIRING_SOURCES = ("code+ais", "code", "both-ais", "reviewer", "none")
+"""Who decided an architect pairing (#1053): code by drawn position and both Claude readers alike
+(`code+ais`, the only automatic pairing), code alone, both Claude readers alone (each one judgment,
+confirmed by a reviewer), a reviewer, or nobody."""
+
+ARCHITECT_PAIRING_STATUSES = (
+    "paired",
+    "ambiguous",
+    "no_fit",
+    "no_scale",
+    "nothing_comparable",
+    "ais-disagree",
+    "ais-refused",
+    "reviewer",
+)
+
+
+class ArchitectPairingRecord(Base, TimestampedUUID, Immutable):
+    """Which architect dimension measures the same thing as which vendor piece, for one row (#1053).
+
+    One automatic record per vendor countertop row per extraction run, anchored, like
+    `SlotRowReviewDecision`, to the row's first piece candidate (`slot:0`). A reviewer's pairing is
+    a new record superseding the latest one; nothing is ever edited. `pairs` holds only the pairs
+    that may be compared (architect span unheld, on the drawn outline): each
+    `{kind, architect_candidate_id, vendor_slot_indices}`. `details` keeps how it was decided: the
+    alignment's offset, tolerance and support, the spans left out and why, and for the AI step the
+    picture's hash, the prompt id and both readers' raw answers with their invocation ids.
+    """
+
+    __tablename__ = "architect_pairing_records"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"))
+    row_anchor_candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    extraction_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), default=None
+    )
+    source: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32))
+    pairs: Mapped[list[dict[str, object]]] = mapped_column(JSONB)
+    details: Mapped[dict[str, object]] = mapped_column(JSONB)
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    decided_by: Mapped[str | None] = mapped_column(String(200), default=None)
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('code+ais', 'code', 'both-ais', 'reviewer', 'none')",
+            name="architect_pairing_source",
+        ),
+        CheckConstraint(
+            "status IN ('paired', 'ambiguous', 'no_fit', 'no_scale', 'nothing_comparable', "
+            "'ais-disagree', 'ais-refused', 'reviewer')",
+            name="architect_pairing_status",
+        ),
+        CheckConstraint("jsonb_typeof(pairs) = 'array'", name="architect_pairing_pairs_array"),
+        CheckConstraint(
+            "jsonb_typeof(details) = 'object'", name="architect_pairing_details_object"
+        ),
+        CheckConstraint(
+            "(source = 'reviewer') = (decided_by IS NOT NULL)",
+            name="architect_pairing_reviewer_named",
+        ),
+        CheckConstraint(
+            "(source = 'reviewer') = (status = 'reviewer')",
+            name="architect_pairing_reviewer_status",
+        ),
+        CheckConstraint(
+            "(source = 'reviewer') = (extraction_run_id IS NULL)",
+            name="architect_pairing_automatic_run",
+        ),
+        CheckConstraint(
+            "decided_by IS NULL OR decided_by !~ '^[[:space:]]*$'",
+            name="architect_pairing_actor_not_blank",
+        ),
+        UniqueConstraint("id", "row_anchor_candidate_id", name="uq_architect_pairing_id_row"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "row_anchor_candidate_id"],
+            [
+                "architect_pairing_records.id",
+                "architect_pairing_records.row_anchor_candidate_id",
+            ],
+            name="fk_architect_pairing_supersedes_same_row",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_architect_pairing_root",
+            "row_anchor_candidate_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
+        Index(
+            "uq_architect_pairing_superseded_once",
+            "supersedes_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NOT NULL"),
+        ),
+    )
+
+
 class LayoutProposal(Base, TimestampedUUID, Immutable):
     """Which closed layout answer a model proposed, with the crop it inspected.
 

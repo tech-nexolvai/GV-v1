@@ -34,6 +34,8 @@ from typing import Any, Final, Literal, get_args
 from extraction.form_reader.bedrock import MalformedFormAnswer, _response_text
 
 __all__ = [
+    "ARCH_MEASURES",
+    "ARCH_PAIR_SCHEMA",
     "CLAUDE_EFFORTS",
     "COUNTER_BREAK_SCHEMA",
     "CROP_SCHEMA",
@@ -143,6 +145,45 @@ WALL_SCHEMA: Final = _object(
 )
 
 
+#: What one architect dimension measures, in the words of the architect-pairing question
+#: (`arch-pair-v2`, #1053). Code, not the model, decides which of these may pair with what.
+ARCH_MEASURES: Final[tuple[str, ...]] = (
+    "countertop",
+    "cabinet_run",
+    "single_cabinet",
+    "filler_or_end_panel",
+    "wall_to_wall",
+    "clearance_or_gap",
+    "blocking_or_backing",
+    "fixture_or_appliance_centre",
+    "appliance_opening",
+    "height_or_other",
+    "unsure",
+)
+
+#: The architect-pairing question (#1053, v2): first what EVERY numbered architect dimension
+#: measures (`architect`, one entry per A-number), then for the vendor's overall and each vendor
+#: piece the A-number of the architect dimension that measures the same physical thing, or 0.
+#: Structure only; the ranges (every A once, 0..A, one entry per vendor piece) are checked by the
+#: reader: the schema subset has no bounds.
+ARCH_PAIR_SCHEMA: Final = _object(
+    {
+        "architect": {
+            "type": "array",
+            "items": _object(
+                {
+                    "a": {"type": "integer"},
+                    "measures": {"type": "string", "enum": list(ARCH_MEASURES)},
+                }
+            ),
+        },
+        "overall": {"type": "integer"},
+        "pieces": {"type": "array", "items": {"type": "integer"}},
+        "why": _STRING,
+    }
+)
+
+
 def output_config(schema: Mapping[str, object], effort: str) -> dict[str, object]:
     """The `output_config` a Claude request carries: the answer's schema and the stated effort."""
     if effort not in CLAUDE_EFFORTS:
@@ -168,6 +209,8 @@ def _conforms(value: object, schema: Mapping[str, Any]) -> bool:
         return isinstance(value, bool)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "array":
+        return isinstance(value, list) and all(_conforms(item, schema["items"]) for item in value)
     return False
 
 

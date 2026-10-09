@@ -3,13 +3,18 @@
 These endpoints expose only the newest slot-reader rows. A saved wall choice or typed value is
 anchored to that row candidate, never to the revision, and changing it appends a correction rather
 than editing the previous decision.
+
+The architect pairing (#1053) is anchored the same way: `GET .../architect-pairing` shows the row's
+current pairing and every architect dimension on its page; `POST` records a reviewer's pairing (or
+"nothing on the architect's drawing is comparable") as a new record superseding the latest. A
+centre-line or held architect dimension is refused, whoever asks.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from fractions import Fraction
-from typing import Annotated
+from typing import Annotated, Final, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -29,6 +34,14 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from vocabulary.check_holds import STONE_SHORT_OF_ENDS
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
+from workflow.architect_pairing_records import (
+    DecidedPair,
+    ReviewerPairingRefused,
+    architect_spans_for_row,
+    latest_architect_pairing,
+    latest_record,
+    record_reviewer_pairing,
+)
 from workflow.countertop_runs import published_wall_layouts
 from workflow.slot_row_scope import (
     SlotRow,
@@ -341,3 +354,235 @@ def review_slot_row(
             detail="This row was just updated. Reload it before confirming again.",
         ) from error
     return _row_out(session, _current_row(session, revision.id, row_id), layouts)
+
+
+# --- the architect pairing (#1053) ----------------------------------------------------------------
+
+
+class ArchitectPairIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["piece", "overall"]
+    architect_candidate_id: UUID
+    vendor_slot_indices: list[int] = Field(default_factory=list, max_length=64)
+    """The row's piece positions (0 = the first piece), next to each other; empty for the overall."""
+
+
+class ArchitectPairingIn(BaseModel):
+    """A reviewer's pairing for one row. `pairs: []` states that nothing on the architect's drawing
+    is comparable with this row."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pairs: list[ArchitectPairIn] = Field(max_length=64)
+    note: str | None = Field(default=None, max_length=500)
+
+
+#: Independent automatic judgments behind each pairing source (#1053): code by drawn position, and
+#: both AIs by what each dimension measures.
+_JUDGMENTS: Final = {"code+ais": 2, "code": 1, "both-ais": 1}
+
+
+class ArchitectPairOut(BaseModel):
+    kind: str
+    architect_candidate_id: UUID
+    vendor_slot_indices: list[int]
+
+
+class ArchitectPairingRecordOut(BaseModel):
+    record_id: UUID
+    source: str
+    status: str
+    pairs: list[ArchitectPairOut]
+    reasons: list[str]
+    note: str | None
+    decided_by: str | None
+    decided_at: datetime
+    supersedes_id: UUID | None
+
+
+class ArchitectPairingEffectiveOut(BaseModel):
+    """The pairing that counts, re-checked against the architect's dimensions as they stand."""
+
+    record_id: UUID
+    source: str
+    status: str
+    pairs: list[ArchitectPairOut]
+    reasons: list[str]
+    judgments: int
+    """How many independent automatic judgments the pairing rests on: 2 for `code+ais` (code's
+    drawn position and both AIs agree), 1 for `code` or `both-ais`, 0 for a reviewer's pairing or
+    none."""
+    needs_confirmation: bool
+    """One judgment only (`code` or `both-ais`) with pairs: any result resting on it, PASS or FAIL,
+    waits for a reviewer's confirmation of the pairing. `code+ais` and `reviewer` stand."""
+
+
+class ArchitectSpanOut(BaseModel):
+    candidate_id: UUID
+    printed: str
+    inches: str | None
+    on_outline: bool | None
+    held_reason: str | None
+    row: int | None
+    slot: int | None
+    can_pair: bool
+    refusal: str | None
+
+
+class ArchitectPairingOut(BaseModel):
+    row_id: UUID
+    piece_count: int
+    current: ArchitectPairingRecordOut | None
+    effective: ArchitectPairingEffectiveOut | None
+    spans: list[ArchitectSpanOut]
+
+
+def _pairs_out(pairs: object) -> list[ArchitectPairOut]:
+    found: list[ArchitectPairOut] = []
+    for raw in pairs if isinstance(pairs, list) else []:
+        if isinstance(raw, dict):
+            found.append(
+                ArchitectPairOut(
+                    kind=str(raw.get("kind")),
+                    architect_candidate_id=UUID(str(raw.get("architect_candidate_id"))),
+                    vendor_slot_indices=[int(i) for i in raw.get("vendor_slot_indices") or []],
+                )
+            )
+    return found
+
+
+def _architect_pairing_out(session: Session, row: SlotRow) -> ArchitectPairingOut:
+    current = latest_record(session, row.anchor.id)
+    effective = latest_architect_pairing(session, row.anchor.id)
+    spans = architect_spans_for_row(session, row.anchor, current)
+    reasons = [] if current is None else current.details.get("reasons")
+    note = None if current is None else current.details.get("note")
+    return ArchitectPairingOut(
+        row_id=row.anchor.id,
+        piece_count=row.piece_count,
+        current=(
+            None
+            if current is None
+            else ArchitectPairingRecordOut(
+                record_id=current.id,
+                source=current.source,
+                status=current.status,
+                pairs=_pairs_out(current.pairs),
+                reasons=[str(reason) for reason in reasons] if isinstance(reasons, list) else [],
+                note=note if isinstance(note, str) else None,
+                decided_by=current.decided_by,
+                decided_at=current.created_at,
+                supersedes_id=current.supersedes_id,
+            )
+        ),
+        effective=(
+            None
+            if effective is None
+            else ArchitectPairingEffectiveOut(
+                record_id=effective.record_id,
+                source=effective.source,
+                status=effective.status,
+                pairs=[
+                    ArchitectPairOut(
+                        kind=pair.kind,
+                        architect_candidate_id=pair.architect_candidate_id,
+                        vendor_slot_indices=list(pair.vendor_slot_indices),
+                    )
+                    for pair in effective.pairs
+                ],
+                reasons=list(effective.reasons),
+                judgments=_JUDGMENTS.get(effective.source, 0),
+                needs_confirmation=effective.source in {"code", "both-ais"}
+                and bool(effective.pairs),
+            )
+        ),
+        spans=[
+            ArchitectSpanOut(
+                candidate_id=span.candidate.id,
+                printed=span.candidate.raw_text,
+                inches=None if span.inches is None else f"{format_inches(span.inches)} in",
+                on_outline=span.on_outline,
+                held_reason=span.held_reason,
+                row=span.row,
+                slot=span.slot,
+                can_pair=span.comparable,
+                refusal=None if span.comparable else span.refusal(),
+            )
+            for span in spans
+        ],
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-pairing",
+    response_model=ArchitectPairingOut,
+    summary="Show which architect dimension pairs with which vendor piece on one countertop row",
+)
+def get_architect_pairing(
+    _access: Annotated[Principal, Depends(require_project_access)],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    row_id: UUID,
+) -> ArchitectPairingOut:
+    revision = _revision(session, project_id, package_id)
+    return _architect_pairing_out(session, _current_row(session, revision.id, row_id))
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-pairing",
+    response_model=ArchitectPairingOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Pair the architect's dimensions with one countertop row (or say none is comparable)",
+)
+def pair_architect_dimensions(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    row_id: UUID,
+    body: ArchitectPairingIn,
+) -> ArchitectPairingOut:
+    revision = _revision(session, project_id, package_id)
+    row = _current_row(session, revision.id, row_id)
+    try:
+        record = record_reviewer_pairing(
+            session,
+            anchor=row.anchor,
+            package_revision_id=revision.id,
+            piece_count=row.piece_count,
+            pairs=[
+                DecidedPair(
+                    kind=pair.kind,
+                    architect_candidate_id=pair.architect_candidate_id,
+                    vendor_slot_indices=tuple(pair.vendor_slot_indices),
+                )
+                for pair in body.pairs
+            ],
+            note=body.note,
+            actor=principal.id,
+        )
+    except ReviewerPairingRefused as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+        ) from error
+    try:
+        # Flushed first: two reviewers superseding the same record collide on its unique index here.
+        session.flush()
+        emit(
+            session,
+            category=AuditCategory.REVIEW_ACTION,
+            actor=principal.id,
+            target_id=record.id,
+            target_type="architect_pairing_record",
+        )
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This row's pairing was just updated. Reload it before pairing again.",
+        ) from error
+    return _architect_pairing_out(session, _current_row(session, revision.id, row_id))
