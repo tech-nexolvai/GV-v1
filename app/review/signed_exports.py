@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.package import Package, PackageRevision
@@ -20,7 +21,13 @@ from app.models.review import (
     ReviewSession,
 )
 from app.models.rules import RuleDefinition, RuleSnapshot
-from app.models.signed_exports import ApprovalExportAction, ApprovalExportSnapshot
+from app.models.signed_exports import (
+    ApprovalExportAction,
+    ApprovalExportBundle,
+    ApprovalExportFailure,
+    ApprovalExportRetry,
+    ApprovalExportSnapshot,
+)
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.carry_over import decision_records
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
@@ -28,6 +35,8 @@ from workflow.changed_values import ChangedValues, changed_values_for_revision
 from workflow.outbox import enqueue
 
 WORKFLOW = "generate_signed_exports"
+
+PublicationStatus = Literal["preparing", "ready", "failed"]
 
 
 class SignedExportRefused(ValueError):
@@ -204,17 +213,58 @@ def load_snapshot(db: Session, snapshot: ApprovalExportSnapshot) -> ExportSnapsh
     return payload
 
 
-def request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSnapshot:
+def publication_status(db: Session, snapshot: ApprovalExportSnapshot) -> PublicationStatus:
+    """Where publication of one frozen snapshot stands, from stored rows only.
+
+    `ready` once the complete bundle exists. Otherwise each request — the first, made with the
+    snapshot, plus one per reviewer retry — ends in either the bundle or exactly one recorded
+    failure, so `failed` means every request so far has failed, and `preparing` means one has not
+    finished yet. Counting rather than comparing timestamps keeps the answer independent of the
+    clocks of the API and the worker.
+    """
+    if (
+        db.scalar(
+            select(ApprovalExportBundle.id).where(ApprovalExportBundle.snapshot_id == snapshot.id)
+        )
+        is not None
+    ):
+        return "ready"
+    failures = db.scalar(
+        select(func.count(ApprovalExportFailure.id)).where(
+            ApprovalExportFailure.snapshot_id == snapshot.id
+        )
+    )
+    retries = db.scalar(
+        select(func.count(ApprovalExportRetry.id)).where(
+            ApprovalExportRetry.snapshot_id == snapshot.id
+        )
+    )
+    return "failed" if (failures or 0) >= 1 + (retries or 0) else "preparing"
+
+
+def request_signed_exports(
+    db: Session, approval_id: UUID, *, requested_by: str | None = None
+) -> ApprovalExportSnapshot:
+    """Freeze and queue publication, or queue it again for the same snapshot after a failure.
+
+    A retry happens only when `requested_by` names the person asking and every earlier request has
+    a recorded failure. It writes a retry row and queues the same workflow with the same payload:
+    the same approval and the same frozen facts, nothing re-signed. A press while a request is
+    still preparing, or once the files are ready, queues nothing.
+    """
     try:
-        return _request_signed_exports(db, approval_id)
+        return _request_signed_exports(db, approval_id, requested_by=requested_by)
     except ValidationError as exc:
         raise SignedExportRefused(
             "historical review record is malformed or its action order is ambiguous"
         ) from exc
 
 
-def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSnapshot:
+def _request_signed_exports(
+    db: Session, approval_id: UUID, *, requested_by: str | None
+) -> ApprovalExportSnapshot:
     """Called at approval, or explicitly for an old approval. Commits nothing."""
+    # The approval row lock serialises requests, so two presses at once cannot both see "failed".
     approval = db.scalar(select(Approval).where(Approval.id == approval_id).with_for_update())
     if approval is None:
         raise SignedExportRefused("approval not found")
@@ -223,6 +273,17 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
     )
     if existing is not None:
         load_snapshot(db, existing)
+        if requested_by is not None and publication_status(db, existing) == "failed":
+            if not requested_by.strip():
+                raise SignedExportRefused("a retry must name who asked for it")
+            db.add(
+                ApprovalExportRetry(
+                    snapshot_id=existing.id,
+                    package_revision_id=existing.package_revision_id,
+                    requested_by=requested_by,
+                )
+            )
+            _queue(db, existing)
         return existing
     rows = finding_rows(db, approval)
     if not rows:
@@ -316,10 +377,18 @@ def _request_signed_exports(db: Session, approval_id: UUID) -> ApprovalExportSna
         )
         for action_id in dict.fromkeys(action.id for action in [*actions, *carried.values()])
     )
+    _queue(db, snapshot)
+    return snapshot
+
+
+def _queue(db: Session, snapshot: ApprovalExportSnapshot) -> None:
+    """One publication request for the frozen snapshot, in the caller's transaction."""
     enqueue(
         db,
         workflow=WORKFLOW,
-        payload={"approval_id": str(approval.id), "package_revision_id": str(revision.id)},
+        payload={
+            "approval_id": str(snapshot.approval_id),
+            "package_revision_id": str(snapshot.package_revision_id),
+        },
     )
     db.flush()
-    return snapshot

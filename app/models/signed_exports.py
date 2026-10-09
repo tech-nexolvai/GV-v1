@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import (
     CheckConstraint,
     ForeignKeyConstraint,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -100,4 +101,28 @@ class ApprovalExportFailure(Base, TimestampedUUID, Immutable):
             ondelete="RESTRICT",
         ),
         CheckConstraint("error_type <> ''", name="export_failure_error_type"),
+    )
+
+
+class ApprovalExportRetry(Base, TimestampedUUID, Immutable):
+    """A reviewer asked to publish the same frozen record again after a recorded failure (#1065).
+
+    Nothing is re-signed: the row points at the existing snapshot, which pins the approval and its
+    facts. Each publication request (the first, at sign-off, plus one per retry) ends in one bundle
+    or one failure, so "every request so far has failed" is what makes a retry allowed, and a second
+    press while a retry is still being prepared finds a request that has not failed yet.
+    """
+
+    __tablename__ = "approval_export_retries"
+    snapshot_id: Mapped[UUID]
+    package_revision_id: Mapped[UUID]
+    requested_by: Mapped[str] = mapped_column(String(200))
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "package_revision_id"],
+            ["approval_export_snapshots.id", "approval_export_snapshots.package_revision_id"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("requested_by <> ''", name="export_retry_requested_by"),
+        Index("ix_approval_export_retries_snapshot_id", "snapshot_id"),
     )

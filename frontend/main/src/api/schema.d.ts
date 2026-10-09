@@ -1333,7 +1333,11 @@ export interface paths {
         put?: never;
         /**
          * Request Exports
-         * @description Explicitly prepare the signed files for an existing approval, without signing again.
+         * @description Prepare the signed files for an existing approval, without signing again.
+         *
+         *     After a recorded failure this queues publication again for the same approval and the same
+         *     frozen snapshot; nothing is re-signed. While a request is still preparing, or once the files are
+         *     ready, it queues nothing and answers with the current status.
          */
         post: operations["request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post"];
         delete?: never;
@@ -3653,6 +3657,24 @@ export interface components {
             unpriced_calls: number;
         };
         /**
+         * NeedsDecisionByOutcomeOut
+         * @description The findings still needing a reviewer, counted by their recorded outcome (#1065).
+         *
+         *     Taken from the same sign-off readiness answer as `needs_decision`, so the four always add up to
+         *     it. `other` counts findings that block only because a reviewer's correction awaits a check
+         *     re-run while their recorded outcome is none of the three; they are never relabelled.
+         */
+        NeedsDecisionByOutcomeOut: {
+            /** Fail */
+            fail: number;
+            /** Not Found */
+            not_found: number;
+            /** Other */
+            other: number;
+            /** Review */
+            review: number;
+        };
+        /**
          * OpaqueTraceOut
          * @description A trace this API does not recognise, handed over intact.
          *
@@ -3868,6 +3890,7 @@ export interface components {
             created_at: string;
             /** Needs Decision */
             needs_decision: number;
+            needs_decision_by_outcome: components["schemas"]["NeedsDecisionByOutcomeOut"];
             outcomes: components["schemas"]["OutcomeCountsOut"];
             /**
              * Package Id
@@ -3903,6 +3926,16 @@ export interface components {
             limit: number;
             /** Next Cursor */
             next_cursor: string | null;
+            /**
+             * Q
+             * @description The search this page answers, after trimming; null for none.
+             */
+            q: string | null;
+            /**
+             * Sort
+             * @enum {string}
+             */
+            sort: "updated" | "vendor" | "needs_decision";
         };
         /** PagePicturesQueuedOut */
         PagePicturesQueuedOut: {
@@ -5020,6 +5053,24 @@ export interface components {
          * @enum {string}
          */
         Severity: "FLAG" | "CRITICAL" | "MAJOR" | "MINOR" | "ADVISORY";
+        /**
+         * SignedExportFileOut
+         * @description One signed file of a ready bundle, described from what was recorded when it was written.
+         */
+        SignedExportFileOut: {
+            /**
+             * Bytes
+             * @description The stored file's size in bytes, recorded when the bundle was written. Null for bundles written before sizes were recorded; never measured on read.
+             */
+            bytes: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "findings_pdf" | "workbook" | "redline";
+            /** Media Type */
+            media_type: string;
+        };
         /** SignedExportRequestOut */
         SignedExportRequestOut: {
             /**
@@ -5027,6 +5078,11 @@ export interface components {
              * Format: uuid
              */
             approval_id: string;
+            /**
+             * Files
+             * @description Only when `status` is `ready`: the findings PDF, the workbook and the redline, in that order. Null otherwise.
+             */
+            files?: components["schemas"]["SignedExportFileOut"][] | null;
             /**
              * Status
              * @enum {string}
@@ -5874,6 +5930,10 @@ export interface operations {
             query?: {
                 cursor?: string | null;
                 limit?: number;
+                /** @description Case-insensitive text to find in the vendor name or the product label. Surrounding spaces are ignored; empty means no search. */
+                q?: string | null;
+                /** @description `updated`: newest change first. `vendor`: A to Z ignoring case, unnamed last. `needs_decision`: most findings still needing a reviewer first, then newest. Ties end in the package id. A cursor only continues the sort and search it was issued for. */
+                sort?: "updated" | "vendor" | "needs_decision";
             };
             header?: never;
             path: {

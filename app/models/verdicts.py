@@ -413,8 +413,17 @@ class OutputArtifact(Base, TimestampedUUID, Immutable):
     different question than "how many are in this workbook?"
     """
 
+    size: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    """The stored file's length in bytes, recorded when the file is written (#1065).
+
+    Stored for the same reason as `findings`: it is a fact about the file, and a status read that
+    answered it by opening every file would be slow and could disagree with the bytes a download
+    actually serves. `None` on files written before this column existed; nothing backfills it.
+    """
+
     __table_args__ = (
         CheckConstraint(f"kind IN ({OUTPUT_ARTIFACT_KIND_VALUES})", name="output_artifact_kind"),
+        CheckConstraint("size IS NULL OR size >= 0", name="output_artifact_size"),
         CheckConstraint("storage_key <> ''", name="output_artifact_storage_key"),
         CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="output_artifact_sha256"),
         CheckConstraint("media_type <> ''", name="output_artifact_media_type"),

@@ -24,6 +24,7 @@ function summary(id: string, extra: Partial<PackageSummary> = {}): PackageSummar
     updated_at: '2026-10-01T10:00:00Z',
     outcomes: { ...zero },
     needs_decision: 0,
+    needs_decision_by_outcome: { fail: 0, review: 0, not_found: 0, other: 0 },
     approved: false,
     signed_exports_ready: false,
     ...extra,

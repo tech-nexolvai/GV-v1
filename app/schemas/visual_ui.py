@@ -199,6 +199,22 @@ class OutcomeCountsOut(BaseModel):
     no_rule: int
 
 
+class NeedsDecisionByOutcomeOut(BaseModel):
+    """The findings still needing a reviewer, counted by their recorded outcome (#1065).
+
+    Taken from the same sign-off readiness answer as `needs_decision`, so the four always add up to
+    it. `other` counts findings that block only because a reviewer's correction awaits a check
+    re-run while their recorded outcome is none of the three; they are never relabelled.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    fail: int
+    review: int
+    not_found: int
+    other: int
+
+
 class PackageSummaryItemOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -212,6 +228,7 @@ class PackageSummaryItemOut(BaseModel):
     updated_at: datetime
     outcomes: OutcomeCountsOut
     needs_decision: int
+    needs_decision_by_outcome: NeedsDecisionByOutcomeOut
     approved: bool
     signed_exports_ready: bool
 
@@ -222,6 +239,10 @@ class PackageSummaryPageOut(BaseModel):
     items: tuple[PackageSummaryItemOut, ...]
     next_cursor: str | None
     limit: int
+    sort: Literal["updated", "vendor", "needs_decision"]
+    q: str | None = Field(
+        description="The search this page answers, after trimming; null for none."
+    )
 
 
 class UsageTotalsOut(BaseModel):

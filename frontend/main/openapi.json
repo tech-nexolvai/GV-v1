@@ -4108,6 +4108,35 @@
         "title": "ModelUsageOut",
         "type": "object"
       },
+      "NeedsDecisionByOutcomeOut": {
+        "description": "The findings still needing a reviewer, counted by their recorded outcome (#1065).\n\nTaken from the same sign-off readiness answer as `needs_decision`, so the four always add up to\nit. `other` counts findings that block only because a reviewer's correction awaits a check\nre-run while their recorded outcome is none of the three; they are never relabelled.",
+        "properties": {
+          "fail": {
+            "title": "Fail",
+            "type": "integer"
+          },
+          "not_found": {
+            "title": "Not Found",
+            "type": "integer"
+          },
+          "other": {
+            "title": "Other",
+            "type": "integer"
+          },
+          "review": {
+            "title": "Review",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fail",
+          "review",
+          "not_found",
+          "other"
+        ],
+        "title": "NeedsDecisionByOutcomeOut",
+        "type": "object"
+      },
       "OpaqueTraceOut": {
         "description": "A trace this API does not recognise, handed over intact.\n\n**Not an error and not a silent empty object.** A recompute is compared against what the engine\nrecorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A\nreader gets the content and is told plainly that it was not understood.",
         "properties": {
@@ -4458,6 +4487,9 @@
             "title": "Needs Decision",
             "type": "integer"
           },
+          "needs_decision_by_outcome": {
+            "$ref": "#/components/schemas/NeedsDecisionByOutcomeOut"
+          },
           "outcomes": {
             "$ref": "#/components/schemas/OutcomeCountsOut"
           },
@@ -4522,6 +4554,7 @@
           "updated_at",
           "outcomes",
           "needs_decision",
+          "needs_decision_by_outcome",
           "approved",
           "signed_exports_ready"
         ],
@@ -4551,12 +4584,35 @@
               }
             ],
             "title": "Next Cursor"
+          },
+          "q": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The search this page answers, after trimming; null for none.",
+            "title": "Q"
+          },
+          "sort": {
+            "enum": [
+              "updated",
+              "vendor",
+              "needs_decision"
+            ],
+            "title": "Sort",
+            "type": "string"
           }
         },
         "required": [
           "items",
           "next_cursor",
-          "limit"
+          "limit",
+          "sort",
+          "q"
         ],
         "title": "PackageSummaryPageOut",
         "type": "object"
@@ -6753,12 +6809,64 @@
         "title": "Severity",
         "type": "string"
       },
+      "SignedExportFileOut": {
+        "description": "One signed file of a ready bundle, described from what was recorded when it was written.",
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stored file's size in bytes, recorded when the bundle was written. Null for bundles written before sizes were recorded; never measured on read.",
+            "title": "Bytes"
+          },
+          "kind": {
+            "enum": [
+              "findings_pdf",
+              "workbook",
+              "redline"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "bytes",
+          "media_type"
+        ],
+        "title": "SignedExportFileOut",
+        "type": "object"
+      },
       "SignedExportRequestOut": {
         "properties": {
           "approval_id": {
             "format": "uuid",
             "title": "Approval Id",
             "type": "string"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SignedExportFileOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when `status` is `ready`: the findings PDF, the workbook and the redline, in that order. Null otherwise.",
+            "title": "Files"
           },
           "status": {
             "enum": [
@@ -8648,6 +8756,42 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Case-insensitive text to find in the vendor name or the product label. Surrounding spaces are ignored; empty means no search.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive text to find in the vendor name or the product label. Surrounding spaces are ignored; empty means no search.",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "`updated`: newest change first. `vendor`: A to Z ignoring case, unnamed last. `needs_decision`: most findings still needing a reviewer first, then newest. Ties end in the package id. A cursor only continues the sort and search it was issued for.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "updated",
+              "description": "`updated`: newest change first. `vendor`: A to Z ignoring case, unnamed last. `needs_decision`: most findings still needing a reviewer first, then newest. Ties end in the package id. A cursor only continues the sort and search it was issued for.",
+              "enum": [
+                "updated",
+                "vendor",
+                "needs_decision"
+              ],
+              "title": "Sort",
+              "type": "string"
             }
           }
         ],
@@ -11700,7 +11844,7 @@
         ]
       },
       "post": {
-        "description": "Explicitly prepare the signed files for an existing approval, without signing again.",
+        "description": "Prepare the signed files for an existing approval, without signing again.\n\nAfter a recorded failure this queues publication again for the same approval and the same\nfrozen snapshot; nothing is re-signed. While a request is still preparing, or once the files are\nready, it queues nothing and answers with the current status.",
         "operationId": "request_exports_api_v1_projects__project_id__packages__package_id__signed_exports_post",
         "parameters": [
           {
