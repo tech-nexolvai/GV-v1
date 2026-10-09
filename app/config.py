@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # Grounded full-view plus close-up reader route (#1001 onward). It is separate from the
     # existing one-crop route and defaults off until every proof gate is met.
     claude_reader_enabled: bool = False
+    # Who the two Claude readers are called through (#1094): OpenRouter (the admin's choice,
+    # 2026-10-09: same models, keep-no-data account) or Anthropic's own API. Each needs its key.
+    claude_reader_provider: Literal["openrouter", "anthropic"] = "openrouter"
+    openrouter_api_key: SecretStr | None = Field(
+        default=None, validation_alias="OPENROUTER_API_KEY", repr=False
+    )
     anthropic_api_key: SecretStr | None = Field(
         default=None, validation_alias="ANTHROPIC_API_KEY", repr=False
     )
@@ -206,10 +212,17 @@ class Settings(BaseSettings):
                 "GV_CLAUDE_READER_ENABLED requires GV_SLOT_READER_ENABLED and its form-reader "
                 "runtime; the Claude route must not run as an ungrounded whole-page fallback"
             )
-        if self.claude_reader_enabled and (
-            self.anthropic_api_key is None or not self.anthropic_api_key.get_secret_value().strip()
-        ):
-            raise ValueError("GV_CLAUDE_READER_ENABLED requires ANTHROPIC_API_KEY")
+        if self.claude_reader_enabled:
+            key, name = (
+                (self.openrouter_api_key, "OPENROUTER_API_KEY")
+                if self.claude_reader_provider == "openrouter"
+                else (self.anthropic_api_key, "ANTHROPIC_API_KEY")
+            )
+            if key is None or not key.get_secret_value().strip():
+                raise ValueError(
+                    f"GV_CLAUDE_READER_ENABLED with GV_CLAUDE_READER_PROVIDER="
+                    f"{self.claude_reader_provider} requires {name}"
+                )
         if self.claude_reader_enabled and self.claude_reader_budget_usd > Decimal("5.00"):
             raise ValueError(
                 "GV_CLAUDE_READER_BUDGET_USD must not exceed the approved $5 per-set ceiling"

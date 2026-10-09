@@ -15,7 +15,7 @@ model's request rate never doubles. Every attempt's raw text is kept on its usag
 worker stores privately (#985).
 
 **The two Claude readers (#1051)** are asked the same questions with a fixed answer shape and a
-stated effort (`claude_output.py`), carried under a key only the Anthropic adapter reads, so a
+stated effort (`claude_output.py`), carried under a key only the Claude adapters read, so a
 Bedrock reader's request is exactly as before. A Claude reply is checked strictly against its
 shape; a refusal, a token-limit stop or a shape miss is malformed, re-asked once, then abstains. A
 picture the API would resize is refused before the call, and that question abstains with the

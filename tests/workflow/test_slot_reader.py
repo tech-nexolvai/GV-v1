@@ -722,17 +722,23 @@ def test_the_slot_reader_is_off_unless_switched_on(monkeypatch: pytest.MonkeyPat
     assert settings.slot_reader_stacked_agreement is False
     assert configured_slot_reader(settings, None) is None
     monkeypatch.setenv("ANTHROPIC_API_KEY", "private-test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "private-router-key")
     with_key = Settings(database_url="postgresql+psycopg://x@localhost/x")
     assert "private-test-key" not in repr(with_key)
+    assert "private-router-key" not in repr(with_key)
 
 
-def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() -> None:
+def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(ValueError, match="GV_FORM_READER_ENABLED"):
         Settings(database_url="postgresql+psycopg://x@localhost/x", slot_reader_enabled=True)
     with pytest.raises(ValueError, match="GV_SLOT_READER_ENABLED"):
         Settings(database_url="postgresql+psycopg://x@localhost/x", claude_reader_enabled=True)
-    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         Settings(
+            _env_file=None,  # a developer's own .env may hold the key
             database_url="postgresql+psycopg://x@localhost/x",
             slot_reader_enabled=True,
             claude_reader_enabled=True,
@@ -756,7 +762,7 @@ def test_switching_it_on_needs_the_form_reader_and_the_fraction_bar_lengths() ->
         (On,),
         {
             "claude_reader_enabled": True,
-            "anthropic_api_key": SecretStr("private-test-key"),
+            "openrouter_api_key": SecretStr("private-test-key"),
             "claude_reader_model_rpm": {
                 "anthropic.claude-opus-5-5": 60,
                 "anthropic.claude-sonnet-5-5": 60,
@@ -2335,7 +2341,7 @@ def test_the_configured_effort_reaches_the_runtime_and_the_run_identity() -> Non
         slot_reader_enabled = True
         slot_reader_stacked_agreement = False
         claude_reader_enabled = True
-        anthropic_api_key = SecretStr("private-test-key")
+        openrouter_api_key = SecretStr("private-test-key")
         claude_reader_model_rpm: ClassVar[dict[str, int]] = {OPUS: 60, SONNET: 60}
         claude_reader_timeout_seconds = 180
         claude_reader_effort = "medium"
@@ -2350,6 +2356,85 @@ def test_the_configured_effort_reaches_the_runtime_and_the_run_identity() -> Non
     ClaudeOn.claude_reader_effort = "adaptive"
     with pytest.raises(ValueError, match="GV_CLAUDE_READER_EFFORT"):
         configured_slot_reader(ClaudeOn(), form, environ=FRACTION_ENV)
+
+
+def test_the_claude_readers_go_through_openrouter_unless_the_admin_says_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1094: the same two models, called through OpenRouter by default; Anthropic's own API is
+    one setting away. Each route needs its own key, and starts without the other's."""
+    from extraction.slot_reader.anthropic import ThreadLocalAnthropicClients
+    from extraction.slot_reader.openrouter import ThreadLocalOpenRouterClients
+
+    for name in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "GV_CLAUDE_READER_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+    url = "postgresql+psycopg://x@localhost/x"
+    assert Settings(_env_file=None, database_url=url).claude_reader_provider == "openrouter"
+    # `_env_file=None`: a developer's own .env may hold a key.
+    on: dict[str, Any] = {
+        "_env_file": None,
+        "database_url": url,
+        "slot_reader_enabled": True,
+        "claude_reader_enabled": True,
+    }
+    with pytest.raises(ValueError, match="PROVIDER=openrouter requires OPENROUTER_API_KEY"):
+        Settings(**on, anthropic_api_key=SecretStr("private-test-key"))
+    with pytest.raises(ValueError, match="PROVIDER=anthropic requires ANTHROPIC_API_KEY"):
+        Settings(
+            **on,
+            claude_reader_provider="anthropic",
+            openrouter_api_key=SecretStr("private-test-key"),
+        )
+    with pytest.raises(ValueError, match="claude_reader_provider"):
+        Settings(_env_file=None, database_url=url, claude_reader_provider="bedrock")
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        Settings(**on, openrouter_api_key=SecretStr("   "))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "private-router-key")
+    from_env = Settings(_env_file=None, database_url=url)
+    assert from_env.openrouter_api_key is not None
+    assert from_env.openrouter_api_key.get_secret_value() == "private-router-key"
+
+    form = runtime(FakeReaders(lambda _m, _p: "")).form
+
+    class ClaudeOn:
+        slot_reader_enabled = True
+        slot_reader_stacked_agreement = False
+        claude_reader_enabled = True
+        openrouter_api_key = SecretStr("private-test-key")
+        claude_reader_model_rpm: ClassVar[dict[str, int]] = {OPUS: 60, SONNET: 60}
+        claude_reader_timeout_seconds = 90
+
+    through_router = configured_slot_reader(ClaudeOn(), form, environ=FRACTION_ENV)
+    assert through_router is not None
+    assert isinstance(through_router.form.clients, ThreadLocalOpenRouterClients)
+    assert through_router.form.reader_ids == (OPUS, SONNET)
+    assert "private-test-key" not in repr(through_router.form.clients)
+
+    class Direct(ClaudeOn):
+        claude_reader_provider = "anthropic"
+
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        configured_slot_reader(Direct(), form, environ=FRACTION_ENV)
+    Direct.anthropic_api_key = SecretStr("private-test-key")  # type: ignore[attr-defined]
+    direct = configured_slot_reader(Direct(), form, environ=FRACTION_ENV)
+    assert direct is not None
+    assert isinstance(direct.form.clients, ThreadLocalAnthropicClients)
+    assert direct.form.reader_ids == through_router.form.reader_ids
+    # A reading says where it was made; the direct route's identity is exactly as before.
+    assert ",route=openrouter:google-vertex/global" in through_router.config_detail
+    assert "oversized-image-error" not in through_router.config_detail
+    assert direct.claude_route is None
+    assert "route=" not in direct.config_detail
+    assert "oversized-image-error" in direct.config_detail
+    assert replace(through_router, claude_route=None).config_detail == direct.config_detail
+    assert through_router.config_hash != direct.config_hash
+    assert len(f"dpi=300;{through_router.config_hash}") <= 200
+
+    class Elsewhere(ClaudeOn):
+        claude_reader_provider = "bedrock"
+
+    with pytest.raises(ValueError, match="GV_CLAUDE_READER_PROVIDER"):
+        configured_slot_reader(Elsewhere(), form, environ=FRACTION_ENV)
 
 
 def test_box_numbers_are_drawn_in_a_real_typeface_so_three_never_reads_as_eight() -> None:
