@@ -559,7 +559,8 @@ class SlotRowReviewDecision(Base, TimestampedUUID, Immutable):
 
     __table_args__ = (
         CheckConstraint(
-            "wall_config IS NULL OR wall_config IN ('back_left_right', 'back_only', 'island')",
+            "wall_config IS NULL OR wall_config IN "
+            "('back_left_right', 'back_and_left', 'back_and_right', 'back_only', 'island')",
             name="slot_row_review_wall_config",
         ),
         CheckConstraint(

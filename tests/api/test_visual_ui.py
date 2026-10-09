@@ -149,8 +149,49 @@ def test_between_panels_pass_requires_row_confirmation_and_has_no_end_cut(
     )
     assert finding.outcome == "PASS"
     assert item["wall_layout"]["source"] == "between panels"
+    # #1138: said as "no field cut", never "back wall only": nothing was said about the walls.
+    assert item["wall_layout"]["label"] == "no field cut: the stone stops at panels"
     assert item["field_cut_count"] == 0
     assert item["expected_total"]["display"] == '20"'
+
+
+def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1138: the countertop results name the layout in words and need one inch, not two."""
+    project_id, package_id, anchors = _package_rows(
+        session, unsealed_all=True, wall_source="readers", sealed_layout="back_and_left"
+    )
+    principal = Principal(
+        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_and_left"),
+    )
+    _save_widths(session, project_id, package_id, anchors[0], 21)
+    findings = _run_current_checks(session, package_id, tmp_path)
+    finding = next(row for row in findings if row.scope_row_candidate_id == anchors[0])
+    item = next(
+        row
+        for row in _client(session, project_id)
+        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results")
+        .json()["items"]
+        if row["row_id"] == str(anchors[0])
+    )
+    assert finding.outcome == "PASS", finding.reason
+    assert item["wall_layout"] == {
+        "config": "back_and_left",
+        "label": "back wall and left end",
+        "source": "reviewer",
+    }
+    assert item["field_cut_count"] == 1
+    assert item["expected_total"]["display"] == '21"'
 
 
 def test_project_boundary_hides_a_package_from_another_project(session: Session) -> None:

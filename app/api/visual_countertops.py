@@ -49,6 +49,7 @@ from verdict.outcomes import Outcome
 from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
+from vocabulary.wall_layouts import is_between_panels, wall_layout_words
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
@@ -494,19 +495,17 @@ def _wall(row: Any) -> WallLayoutOut:
             source = "drawing clues"
         elif source_flag == "readers" and sealed is not None:
             source = "both readers"
-    if any(
-        flag == "check-hold:stone-short-of-ends"
-        for candidate in row.candidates
-        for flag in candidate.ambiguity_flags or ()
-    ):
+    between_panels = any(
+        is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
+    )
+    if between_panels:
         source = "between panels"
-    labels = {
-        "back_left_right": "back wall and both ends",
-        "back_only": "back wall only; no field cut at the ends",
-        "island": "island; no wall ends",
-    }
     return WallLayoutOut(
-        config=config, label=None if config is None else labels.get(config, config), source=source
+        config=config,
+        label=(
+            None if config is None else wall_layout_words(config, between_panels=between_panels)
+        ),
+        source=source,
     )
 
 

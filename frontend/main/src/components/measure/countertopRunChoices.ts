@@ -17,6 +17,8 @@ type Kind = components['schemas']['PartKind'];
 
 export function wallLayoutLabel(value: string): string {
   if (value === 'back_left_right') return 'Walls at both ends';
+  if (value === 'back_and_left') return 'Back wall and left end';
+  if (value === 'back_and_right') return 'Back wall and right end';
   if (value === 'back_only') return 'Back wall only';
   if (value === 'island') return 'Island';
   return value;

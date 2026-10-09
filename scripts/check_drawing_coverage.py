@@ -43,7 +43,7 @@ class Requirement:
     title: str
     why: str
     #: Declared values that satisfy it. A requirement satisfied by any one value uses a single
-    #: entry; `wall_config` needs all three, which `minimum` expresses.
+    #: entry; `wall_config` needs all five, which `minimum` expresses.
     values: tuple[str, ...] = ()
     minimum: int = 1
 
@@ -56,13 +56,13 @@ class Requirement:
 REQUIREMENTS: tuple[Requirement, ...] = (
     Requirement(
         key="wall_config",
-        title="All three wall layouts",
+        title="All five wall layouts",
         why=(
             "tolerance varies by layout (RULE_ENGINE_SPEC §3a), so a missing layout leaves that "
             "applicability variant permanently untested"
         ),
-        values=("back_only", "back_left_right", "island"),
-        minimum=3,
+        values=("back_only", "back_and_left", "back_and_right", "back_left_right", "island"),
+        minimum=5,
     ),
     Requirement(
         key="page_origin",

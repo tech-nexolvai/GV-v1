@@ -12,6 +12,8 @@ import pytest
 
 from extraction.geometry.rows import InkLine, PageInk
 from extraction.slot_reader.walls import (
+    BACK_AND_LEFT,
+    BACK_AND_RIGHT,
     BACK_LEFT_RIGHT,
     BACK_ONLY,
     E3_WALL_SETTINGS,
@@ -73,8 +75,9 @@ def test_no_end_walls_on_an_agreed_plan_with_a_back_wall_seal_back_only() -> Non
 @pytest.mark.parametrize(
     "answers",
     [
-        both(YES, NO),
+        both(YES, UNSURE),
         both(UNSURE, YES),
+        both(NO, UNSURE),
         (answer(KIMI, YES, YES), answer(QWEN, YES, NO)),
         (answer(KIMI, YES, YES), answer(QWEN, UNSURE, YES)),
     ],
@@ -84,6 +87,39 @@ def test_anything_but_agreement_on_a_known_layout_goes_to_the_person(
 ) -> None:
     outcome = seal_walls(answers, hatch=NO_HATCH, row_ambiguity=None)
     assert outcome.config is None and outcome.reason
+
+
+def test_a_wall_at_one_end_and_an_agreed_open_end_seal_that_end() -> None:
+    """#1138: one wall end is one field cut, so the row is checkable; the side names the layout."""
+    for left, right, layout in ((YES, NO, BACK_AND_LEFT), (NO, YES, BACK_AND_RIGHT)):
+        outcome = seal_walls(both(left, right), hatch=NO_HATCH, row_ambiguity=None)
+        assert outcome.config == layout and outcome.code is None
+        assert (outcome.left, outcome.right) == (left, right)
+        # Sealed by the readers alone: a proposal the row's reviewer must still confirm.
+        assert outcome.source == "readers"
+
+
+def test_one_end_needs_the_open_end_agreed_and_never_from_absence() -> None:
+    """A code clue may make one end a wall; only both readers' "no" makes the other end open."""
+    clue_and_no = seal_walls(
+        both(UNSURE, NO), hatch=NO_HATCH, row_ambiguity=None, code_clues=CodeWallClues(left=True)
+    )
+    assert clue_and_no.config == BACK_AND_LEFT
+    assert clue_and_no.source == "drawing-and-readers"
+    clue_only = seal_walls(
+        both(UNSURE, UNSURE),
+        hatch=NO_HATCH,
+        row_ambiguity=None,
+        code_clues=CodeWallClues(left=True),
+    )
+    assert clue_only.config is None
+    assert code_wall_outcome(CodeWallClues(left=True), row_ambiguity=None) is None
+    split = (answer(KIMI, YES, NO), answer(QWEN, YES, UNSURE))
+    assert seal_walls(split, hatch=NO_HATCH, row_ambiguity=None).config is None
+    hatched = seal_walls(both(YES, NO), hatch=HatchSeen(False, True), row_ambiguity=None)
+    assert hatched.config is None and hatched.code == "hatch-contradiction"
+    ambiguous = seal_walls(both(YES, NO), hatch=NO_HATCH, row_ambiguity="another row fits")
+    assert ambiguous.config is None
 
 
 def test_one_reader_alone_never_seals() -> None:

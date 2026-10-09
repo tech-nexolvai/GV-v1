@@ -13,7 +13,7 @@ import { ArchitectLine } from '@/components/results/architect-line';
 import { projectId } from '../../api/config';
 import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, slotRowCount, unsavedRowCount, type SlotReaderReviewPayload } from './slotReaderReview.js';
 import type { SectionState, StepCount } from '../../lib/measure-steps';
-import { wallWords } from '@/lib/needs-you-queue';
+import { BETWEEN_PANELS_WORDS, wallWords } from '@/lib/needs-you-queue';
 import { WallLayoutPicture } from '@/components/results/wall-glyph';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
@@ -224,7 +224,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                   {row.wall_layout_choices.map((choice) => (
                     <ToggleGroupItem key={choice} value={choice} className="gap-1.5 px-2.5">
                       <WallLayoutPicture config={choice} />
-                      {row.wall_source === 'between-panels' && choice === 'back_only' ? 'No field cut at the ends (back only)' : wallWords(choice)}
+                      {row.wall_source === 'between-panels' && choice === 'back_only' ? BETWEEN_PANELS_WORDS : wallWords(choice)}
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
@@ -249,7 +249,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
             {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers' || row.wall_source === 'between-panels') &&
               row.wall_proposal && row.wall_config === null && !selectedWall && (
                 <div className="flex flex-col items-start gap-2">
-                  <Hint>{row.wall_source === 'between-panels' ? "The stone sits between side panels, so the panels take the field cut. Proposed: no field cut at the ends (back only)." : `Reader proposal: ${row.wall_proposal.replaceAll('_', ' ')}. Not confirmed for this row.`}</Hint>
+                  <Hint>{row.wall_source === 'between-panels' ? "The stone sits between side panels, so the panels take the field cut. Proposed: no field cut, the stone stops at panels." : `Reader proposal: ${wallWords(row.wall_proposal).toLowerCase()}. Not confirmed for this row.`}</Hint>
                   <Button
                     type="button"
                     size="sm"

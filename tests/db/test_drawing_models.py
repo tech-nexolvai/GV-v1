@@ -927,6 +927,8 @@ RUN_AWARE: frozenset[str] = frozenset(
         # Names 0064 only as the revision it follows; the migration adds
         # check-run defaults columns and cannot read countertop structure.
         "alembic/versions/0065_check_run_defaults_citation.py",
+        # Widens the wall-layout CHECK on `countertop_run_decisions` (#1138); reads no run.
+        "alembic/versions/0080_one_end_wall_layout.py",
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/countertop_runs.py",

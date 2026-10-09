@@ -394,6 +394,8 @@ class WallConfig(str, Enum):
 
     BACK_LEFT_RIGHT = "back_left_right"
     BACK_LEFT = "back_left"
+    BACK_AND_LEFT = "back_and_left"
+    BACK_AND_RIGHT = "back_and_right"
     BACK_ONLY = "back_only"
     ISLAND = "island"
 
