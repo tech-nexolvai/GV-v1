@@ -221,3 +221,90 @@ def test_conversion_round_trips_through_the_measurement_helper() -> None:
     as_mm = Measurement(Fraction(984), Unit.MM, "984")
 
     assert as_mm.to(Unit.INCH).exact == normalise_to_inches("984 mm").exact
+
+
+# ---------------------------------------------------------------------------
+# Feet and inches as an architect's drawing writes them (#1052)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        # No separator between the feet and the inches.
+        ("3'1\"", Fraction(37)),
+        # Spaces round the dash, as the architect's CAD sets it.
+        ("3' - 1\"", Fraction(37)),
+        ("1' - 2\"", Fraction(14)),
+        # Typographic primes and curly quotes.
+        ("3′-1″", Fraction(37)),
+        ("3’-1”", Fraction(37)),
+        # Every dash a drawing font uses for the hyphen.
+        ("3'‐1\"", Fraction(37)),
+        ("3'–1\"", Fraction(37)),
+        ("3'—1\"", Fraction(37)),
+        ('3’ − 6"', Fraction(42)),
+        # Fractions: spaced, hyphenated, and the one-character vulgar fractions.
+        ("3'-1 1/2\"", Fraction(75, 2)),
+        ("3'-1-1/2\"", Fraction(75, 2)),
+        ("3'-1½\"", Fraction(75, 2)),
+        ("3'-1 ¼\"", Fraction(149, 4)),
+        ("2'-0¾\"", Fraction(99, 4)),
+        ("1'-3⅛\"", Fraction(121, 8)),
+        ("1'-3⅜\"", Fraction(123, 8)),
+        ("1'-3⅝\"", Fraction(125, 8)),
+        ("1'-3⅞\"", Fraction(127, 8)),
+        ("0'-½\"", Fraction(1, 2)),
+        ("1'-0 1/64\"", Fraction(769, 64)),
+        # Zero feet, and inches alone.
+        ("0'-6\"", Fraction(6)),
+        ('37"', Fraction(37)),
+        ("37″", Fraction(37)),
+    ],
+)
+def test_architect_feet_and_inches_forms_convert_exactly(token: str, expected: Fraction) -> None:
+    """Every form seen on the client's architect drawings, or researched for them, is exact."""
+    measurement = normalise_to_inches(token)
+
+    assert measurement.exact == expected
+    assert measurement.unit is Unit.INCH
+    assert measurement.raw_text == token
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        # A denominator a tape measure does not have.
+        "3'-1 1/3\"",
+        "3'-1 1/5\"",
+        "3'-1 1/128\"",
+        "3'-1 3/10\"",
+        # The inch part of a feet-and-inches dimension is under a foot and a proper fraction.
+        "3'-14\"",
+        "3'-61/2\"",
+        "3'-1 3/2\"",
+        "3'-1/0\"",
+        # Qualifiers are never stripped silently: they decide whether a value may be used.
+        "3'-6\" VIF",
+        "±3'-6\"",
+        "3'-6\" +/-",
+        "3'-6\" EQ",
+        "3'-6\" TYP",
+        "3'-6\" CLR",
+        "3'-6\" MIN",
+        "3'-6\" MAX",
+        "3'-6\" HOLD",
+        "3'-6\" AFF",
+        "3'-6\" NOM",
+        # Malformed.
+        "3'-\"",
+        "3'6'",
+        "3'-6\"-",
+        "3' - - 6\"",
+        "'-6\"",
+    ],
+)
+def test_malformed_or_qualified_feet_and_inches_are_refused(token: str) -> None:
+    """Refused, never read as something near: a wrong number is worse than none."""
+    with pytest.raises(UnitNormalisationError):
+        normalise_to_inches(token)
