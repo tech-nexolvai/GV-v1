@@ -44,6 +44,7 @@ __all__ = [
     "DecidedPair",
     "EligibleSpan",
     "ReviewerPairingRefused",
+    "ReviewerPairingStale",
     "architect_spans_for_row",
     "architect_views",
     "latest_architect_pairing",
@@ -235,6 +236,10 @@ class ReviewerPairingRefused(ValueError):
     """A reviewer's pairing that may not be recorded, with the reason in plain words."""
 
 
+class ReviewerPairingStale(ValueError):
+    """The row's pairing changed after the reviewer looked at it (#1088): reload, then pair again."""
+
+
 def record_reviewer_pairing(
     session: Session,
     *,
@@ -244,6 +249,7 @@ def record_reviewer_pairing(
     pairs: Sequence[DecidedPair],
     note: str | None,
     actor: str,
+    expected_record_id: UUID | None = None,
 ) -> ArchitectPairingRecord:
     """Append a reviewer's pairing for one row, superseding the latest record (not committed).
 
@@ -251,8 +257,16 @@ def record_reviewer_pairing(
     Refused (`ReviewerPairingRefused`): a span not stored on this row's page in its pairing's run, a
     held span, a centre-line or unknown-outline span, a vendor split that is not contiguous or not on
     this row, a span or a vendor piece used twice, more than one overall, or a row with no pairing.
+
+    `expected_record_id` is the record the reviewer was looking at (#1088). When given and the row's
+    latest record is another one, nothing is recorded (`ReviewerPairingStale`): without it, a
+    reviewer confirming what they saw would silently supersede a colleague's newer decision.
     """
     current = _chain_tip(session, anchor.id)
+    if expected_record_id is not None and (current is None or current.id != expected_record_id):
+        raise ReviewerPairingStale(
+            "This row's pairing changed after you opened it. Reload it before pairing again."
+        )
     spans = {span.candidate.id: span for span in architect_spans_for_row(session, anchor, current)}
     if current is None or not spans and pairs:
         raise ReviewerPairingRefused(

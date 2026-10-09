@@ -741,4 +741,6 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     items = response.json()["items"]
     assert len(items) == 20
     assert all(item["reviewer_decision"]["carried_over"] for item in items)
-    assert counter[0] <= 12
+    # 13: one statement more than before #1088, the same for any number of rows: sign-off
+    # readiness asks once whether a reviewer paired architect dimensions after the checks ran.
+    assert counter[0] <= 13

@@ -346,3 +346,48 @@ def test_pairing_needs_the_confirm_evidence_action() -> None:
 
     assert actions("POST") == {Action.CONFIRM_EVIDENCE}
     assert actions("GET") == set(), "reading needs project access only"
+
+
+def test_a_pairing_based_on_a_record_that_has_moved_on_is_refused_and_nothing_is_saved(
+    session: Session,
+) -> None:
+    """#1088: reviewer A confirms what they saw; reviewer B has since said "nothing comparable".
+    A's save names the record A saw, so it is refused (409) instead of silently superseding B's."""
+    row = Row(session)
+    seen = get_architect_pairing(
+        row.principal, session, row.project_id, row.package_id, row.anchor.id
+    )
+    assert seen.current is not None
+    newer = row.post(session, ArchitectPairingIn(pairs=[], note="only outlet spacing"))
+    assert newer.current is not None
+
+    with pytest.raises(HTTPException) as refused:
+        row.post(
+            session,
+            ArchitectPairingIn(
+                pairs=[_pair(row.cabinet, 0)], expected_record_id=seen.current.record_id
+            ),
+        )
+
+    assert refused.value.status_code == 409
+    shown = get_architect_pairing(
+        row.principal, session, row.project_id, row.package_id, row.anchor.id
+    )
+    assert shown.current is not None and shown.current.record_id == newer.current.record_id
+
+
+def test_a_pairing_based_on_the_latest_record_is_saved(session: Session) -> None:
+    row = Row(session)
+    seen = get_architect_pairing(
+        row.principal, session, row.project_id, row.package_id, row.anchor.id
+    )
+    assert seen.current is not None
+
+    saved = row.post(
+        session,
+        ArchitectPairingIn(
+            pairs=[_pair(row.cabinet, 0)], expected_record_id=seen.current.record_id
+        ),
+    )
+
+    assert saved.current is not None and saved.current.supersedes_id == seen.current.record_id

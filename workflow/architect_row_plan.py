@@ -330,18 +330,11 @@ def plan_architect_row(
     source_note = pairing_source_note(pairing)
     pairing_notes = tuple(f"Pairing: {reason}" for reason in pairing.reasons if reason.strip())
     status = pairing.status
-    if pairing.source == "none" or status in _NOTHING_COMPARABLE:
-        fallback = {
-            "no_scale": "The drawings' scales could not be measured, so nothing was paired.",
-            "nothing_comparable": "The architect prints nothing comparable for this row.",
-        }.get(status, "No architect dimension is paired with this row.")
-        return ArchitectRowPlan(
-            Disposition.NOT_COMPARED,
-            _not_compared_reason(pairing, _joined(pairing.reasons, fallback)),
-            (),
-            (source_note, *pairing_notes),
-            pairing,
-        )
+    # **Unsettled before "nothing paired" (#1088).** `combine()` records an AI disagreement or
+    # refusal, and code that could not decide, with `source="none"`: nobody paired the row.
+    # The AIs are asked only when the architect prints a usable dimension on this page
+    # (`_ask_the_ais`), so their disagreement means something may be comparable, and the reviewer
+    # pairs it (Decision log 2026-10-09). Checked first, or it would read as "not compared".
     if status in _AIS_UNSETTLED:
         return ArchitectRowPlan(
             Disposition.UNRESOLVED,
@@ -368,6 +361,18 @@ def plan_architect_row(
         return ArchitectRowPlan(
             Disposition.UNRESOLVED,
             PAIR_BY_REVIEWER,
+            (),
+            (source_note, *pairing_notes),
+            pairing,
+        )
+    if pairing.source == "none" or status in _NOTHING_COMPARABLE:
+        fallback = {
+            "no_scale": "The drawings' scales could not be measured, so nothing was paired.",
+            "nothing_comparable": "The architect prints nothing comparable for this row.",
+        }.get(status, "No architect dimension is paired with this row.")
+        return ArchitectRowPlan(
+            Disposition.NOT_COMPARED,
+            _not_compared_reason(pairing, _joined(pairing.reasons, fallback)),
             (),
             (source_note, *pairing_notes),
             pairing,

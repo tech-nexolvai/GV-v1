@@ -21,12 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.auth.roles import Action, Principal
 from app.db.base import utc_now
 from app.lifecycle.states import transition
+from app.models.evidence import ArchitectPairingRecord
 from app.models.package import PackageRevision, PackageState, PackageStateEvent
 from app.models.review import Approval, ApprovedFinding, ReviewSession
 from app.models.verdicts import CheckRun, Finding
@@ -182,6 +183,45 @@ def _unaddressed_from_records(
     return tuple(sorted((required | corrected) - addressed, key=str))
 
 
+#: Why sign-off waits when a reviewer paired architect dimensions after the last check run (#1088).
+PAIRING_NEEDS_RERUN = (
+    "A reviewer paired the architect's dimensions after the last check run. Run the checks so the "
+    "pairing is compared before signing off."
+)
+
+
+def _revisions_with_unchecked_pairings(db: Session, revision_ids: Collection[UUID]) -> set[UUID]:
+    """Revisions holding a reviewer's architect pairing newer than their live check runs (#1088).
+
+    The same rule as a corrected value: a pairing a reviewer saved after the checks ran has not been
+    compared yet, so it must not be signed off past. Only a reviewer's record counts (an automatic
+    one is written at reading time, before any check), and only the live runs: a re-run supersedes
+    the old ones and clears this. One statement for any number of revisions.
+    """
+    if not revision_ids:
+        return set()
+    checked = (
+        select(
+            CheckRun.package_revision_id.label("revision_id"),
+            func.max(CheckRun.created_at).label("checked_at"),
+        )
+        .where(CheckRun.package_revision_id.in_(revision_ids), CheckRun.superseded_at.is_(None))
+        .group_by(CheckRun.package_revision_id)
+        .subquery()
+    )
+    return set(
+        db.scalars(
+            select(ArchitectPairingRecord.package_revision_id)
+            .join(checked, checked.c.revision_id == ArchitectPairingRecord.package_revision_id)
+            .where(
+                ArchitectPairingRecord.decided_by.is_not(None),
+                ArchitectPairingRecord.created_at > checked.c.checked_at,
+            )
+            .distinct()
+        ).all()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ApprovalReadiness:
     revision_id: UUID
@@ -213,6 +253,8 @@ def readiness_and_decisions(
         reason = "There are no findings to sign off. Run the checks first."
     elif blocked:
         reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+    elif revision_id in _revisions_with_unchecked_pairings(db, [revision_id]):
+        reason = PAIRING_NEEDS_RERUN
     elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         reason = "The package is not awaiting review."
     return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason), records
@@ -245,6 +287,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
         ).all()
     }
     when = utc_now()
+    unchecked = _revisions_with_unchecked_pairings(db, revision_ids)
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
         blocked = _unaddressed_from_records(tuple(findings), records, when=when)
@@ -254,6 +297,8 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
             reason = "There are no findings to sign off. Run the checks first."
         elif blocked:
             reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+        elif revision_id in unchecked:
+            reason = PAIRING_NEEDS_RERUN
         elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
             reason = "The package is not awaiting review."
         result[revision_id] = ApprovalReadiness(
@@ -280,6 +325,10 @@ def approve_package(
         raise UnaddressedReviewRequired(
             f"FAIL, REVIEW REQUIRED and NOT FOUND findings must each be explicitly addressed before approval: {listed}"
         )
+    if review.package_revision_id in _revisions_with_unchecked_pairings(
+        db, [review.package_revision_id]
+    ):
+        raise UnaddressedReviewRequired(PAIRING_NEEDS_RERUN)
 
     approval = Approval(package_revision_id=review.package_revision_id, approved_by=principal.id)
     event = transition(

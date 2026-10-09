@@ -2131,6 +2131,8 @@ export interface components {
          *     is comparable with this row.
          */
         ArchitectPairingIn: {
+            /** Expected Record Id */
+            expected_record_id?: string | null;
             /** Note */
             note?: string | null;
             /** Pairs */

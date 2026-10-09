@@ -1214,3 +1214,159 @@ def test_a_one_judgment_result_blocks_sign_off_until_a_person_acts_with_a_note(
         note="Checked on the sheet: these are the same overall.",
     )
     assert finding.id not in approval_readiness(session, revision.id).blocking_finding_ids
+
+
+# ---------------------------------------------------------------------------
+# #1088: an unsettled pairing is the reviewer's, built from what `combine()` really records
+# ---------------------------------------------------------------------------
+
+
+def _combined(code_status: str, ai_status: str | None) -> EffectivePairing:
+    """The pairing `combine()` records when code found no pairs and the AIs judged `ai_status`
+    (`None`: the AIs were not asked). Read back as the check reads a stored record."""
+    from workflow.architect_pairing import PairingOutcome, _AiJudgment, combine
+
+    code = PairingOutcome("none", code_status, (), ("synthetic code reason",), {})
+    judged = (
+        None
+        if ai_status is None
+        else _AiJudgment(ai_status, (), ("synthetic AI reason",), (), (), False, {}, ())
+    )
+    outcome = combine(code, judged)
+    return EffectivePairing(
+        record_id=uuid4(),
+        source=outcome.source,
+        status=outcome.status,
+        pairs=(),
+        reasons=outcome.reasons,
+    )
+
+
+@pytest.mark.parametrize("ai_status", ["ais-disagree", "ais-refused"])
+@pytest.mark.parametrize("code_status", ["nothing_comparable", "no_fit", "ambiguous", "no_scale"])
+def test_an_ai_disagreement_combine_records_reaches_the_reviewer(
+    session: Session, tmp_path: Path, code_status: str, ai_status: str
+) -> None:
+    """The AIs are asked only when the architect prints a usable dimension, so their disagreement
+    or refusal means something may be comparable: one REVIEW_REQUIRED finding, never "not
+    compared" (#1088). `combine()` records it with source "none", which used to be read first."""
+    pairing = _combined(code_status, ai_status)
+    assert (pairing.source, pairing.status) == ("none", ai_status)
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
+    assert _inputs(session, finding) == {}
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_code_undecided_as_combine_records_it_asks_the_reviewer_when_something_is_comparable(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    pairing = _combined(code_status, None)
+    assert (pairing.source, pairing.status) == ("none", code_status)
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    finding = _run(session, package_id, tmp_path, {anchors[0]: pairing})[ARCH_RULE][anchors[0]]
+
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert finding.reason == PAIR_BY_REVIEWER
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit"])
+def test_code_undecided_as_combine_records_it_is_not_compared_with_nothing_usable(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "1' - 5\"", outline="no")
+
+    findings = _run(session, package_id, tmp_path, {anchors[0]: _combined(code_status, None)})
+
+    assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+@pytest.mark.parametrize("code_status", ["ambiguous", "no_fit", "nothing_comparable"])
+def test_both_ais_finding_nothing_comparable_stays_not_compared(
+    session: Session, tmp_path: Path, code_status: str
+) -> None:
+    """Two judgments that nothing is paired (the AIs agree there is nothing; code found no pairs)
+    stay "not compared": no finding, no click."""
+    pairing = _combined(code_status, "nothing_comparable")
+    assert pairing.status == "nothing_comparable"
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+
+    findings = _run(session, package_id, tmp_path, {anchors[0]: pairing})
+
+    assert anchors[0] not in findings.get(ARCH_RULE, {})
+
+
+def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
+    session: Session, tmp_path: Path
+) -> None:
+    """Like a corrected value (#1088): a reviewer's pairing saved after the last check run has not
+    been compared, so sign-off waits for a re-run, and the re-run clears it."""
+    from app.auth.roles import Principal, Role
+    from app.models.evidence import ArchitectPairingRecord
+    from app.review.approval import (
+        PAIRING_NEEDS_RERUN,
+        UnaddressedReviewRequired,
+        _revisions_with_unchecked_pairings,
+        approve_package,
+    )
+    from app.review.session import ReviewActionKind, open_session, record_action
+
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    _architect_value(session, run, anchors[0], "3' - 7\"")
+    _run(session, package_id, tmp_path, {anchors[0]: _combined("nothing_comparable", None)})
+    revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
+    sitting = open_session(session, package_revision_id=revision.id, reviewer="synthetic reviewer")
+    for finding_id in approval_readiness(session, revision.id).blocking_finding_ids:
+        record_action(
+            session,
+            review_session_id=sitting.id,
+            finding_id=finding_id,
+            action=ReviewActionKind.DISMISS,
+            actor="synthetic reviewer",
+            note="synthetic: not checkable here",
+        )
+    before = approval_readiness(session, revision.id)
+    assert before.blocking_findings == 0 and before.reason != PAIRING_NEEDS_RERUN
+
+    anchor = session.get(ObservationCandidate, anchors[0])
+    assert anchor is not None
+    session.add(
+        ArchitectPairingRecord(
+            package_revision_id=revision.id,
+            page_id=anchor.page_id,
+            row_anchor_candidate_id=anchor.id,
+            extraction_run_id=None,
+            source="reviewer",
+            status="reviewer",
+            pairs=[],
+            details={"reasons": ["synthetic reviewer pairing"]},
+            decided_by="synthetic reviewer",
+        )
+    )
+    session.flush()
+
+    after = approval_readiness(session, revision.id)
+    assert not after.can_approve and after.reason == PAIRING_NEEDS_RERUN
+    assert _revisions_with_unchecked_pairings(session, [revision.id]) == {revision.id}
+    principal = Principal(id="synthetic approver", roles=frozenset(Role), projects=frozenset())
+    with pytest.raises(UnaddressedReviewRequired, match="after the last check run"):
+        approve_package(session, principal=principal, review_session_id=sitting.id)
+
+    _run(session, package_id, tmp_path, {anchors[0]: _combined("nothing_comparable", None)})
+
+    assert _revisions_with_unchecked_pairings(session, [revision.id]) == set()
+    assert approval_readiness(session, revision.id).reason != PAIRING_NEEDS_RERUN
