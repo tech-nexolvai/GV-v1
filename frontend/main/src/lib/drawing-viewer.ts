@@ -86,6 +86,19 @@ export function toScreen(view: View, page: Size, point: Point): Point {
 
 export type Tone = 'pass' | 'fail' | 'review' | 'missing';
 
+/**
+ * Something else drawn in grey beside a target (#1085): the architect's dimension it was compared
+ * with, or a span offered for pairing. Only a stored location is drawn; `outline` null means "not
+ * outlined", and the viewer says so instead of guessing a box.
+ */
+export interface Mark {
+  key: string;
+  label: string;
+  page: number | null;
+  documentVersionId: string | null;
+  outline: Point[] | null;
+}
+
 /** One thing the viewer can point at: a countertop row, or a finding with a location. */
 export interface ViewerTarget {
   key: string;
@@ -100,6 +113,23 @@ export interface ViewerTarget {
   /** Still waiting for the reviewer, whatever was recorded (shown beside the result, never instead of it). */
   needsYou: boolean;
   row: CountertopResult | null;
+  /** Grey marks beside the outline: the architect's compared dimensions (#1085). */
+  marks: Mark[];
+}
+
+/** The architect's compared dimensions of a row, as grey marks (#1085). Exact API text in labels. */
+export function architectMarks(row: Pick<CountertopResult, 'row_id' | 'architect'>): Mark[] {
+  return (row.architect?.compared ?? []).map((pair, index) => {
+    const location = pair.architect_location ?? null;
+    const what = pair.kind === 'overall' ? 'the overall' : `piece ${pair.vendor_piece ?? '?'}`;
+    return {
+      key: `architect:${row.row_id}:${index}`,
+      label: `Architect's drawing says ${pair.architect_display ?? '—'} (${what})`,
+      page: location?.page_number ?? null,
+      documentVersionId: location?.document_version_id ?? null,
+      outline: outlineOf(location?.polygon),
+    };
+  });
 }
 
 const OUTCOME_LOOK: Record<Outcome, Tone> = {
@@ -123,6 +153,17 @@ function rowLook(row: Pick<CountertopResult, 'outcome' | 'needs_decision'>): Pic
   return { tone: OUTCOME_LOOK[row.outcome], glyph: row.outcome, word: OUTCOME_LABELS[row.outcome] };
 }
 
+/** A span offered for pairing, as a grey mark (#1085). Only a stored location is drawn. */
+export function spanMark(span: { candidate_id: string; printed: string; location?: RowLocation | null }): Mark {
+  return {
+    key: `span:${span.candidate_id}`,
+    label: `Architect's ${span.printed}`,
+    page: span.location?.page_number ?? null,
+    documentVersionId: span.location?.document_version_id ?? null,
+    outline: outlineOf(span.location?.polygon),
+  };
+}
+
 export function targetFromRow(row: CountertopResult): ViewerTarget {
   return {
     key: row.row_id,
@@ -134,7 +175,23 @@ export function targetFromRow(row: CountertopResult): ViewerTarget {
     ...rowLook(row),
     needsYou: bucketOf(row) === 'needs-you',
     row,
+    marks: architectMarks(row),
   };
+}
+
+/**
+ * A countertop seen as its architect check (#1085), for the queue's "Matches the architect?" item:
+ * the row's outline and marks, but the look of the architect result, never the width's. A pairing
+ * that waits for the reviewer looks like "Needs your decision".
+ */
+export function targetFromArchitect(row: CountertopResult): ViewerTarget {
+  const base = targetFromRow(row);
+  const architect = row.architect ?? null;
+  const waiting = architect?.needs_decision && architect.outcome === 'REVIEW_REQUIRED';
+  const look = !architect?.outcome || waiting
+    ? { tone: 'review' as Tone, glyph: 'REVIEW_REQUIRED' as Outcome, word: OUTCOME_LABELS.REVIEW_REQUIRED }
+    : rowLook({ outcome: architect.outcome, needs_decision: architect.needs_decision });
+  return { ...base, key: `architect:${row.row_id}`, findingId: architect?.finding_id ?? null, ...look, needsYou: Boolean(architect?.needs_decision) };
 }
 
 /** A finding: its row outline, or else the location of its shop (then architect) reading. */
@@ -154,6 +211,7 @@ export function targetFromFinding(finding: Pick<Finding, 'id' | 'name' | 'scope_
     word: OUTCOME_LABELS[finding.outcome],
     needsYou: false,
     row: null,
+    marks: [],
   };
 }
 

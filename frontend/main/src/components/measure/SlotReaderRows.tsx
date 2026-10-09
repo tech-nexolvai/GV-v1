@@ -9,6 +9,7 @@ import {
   type SlotReaderRow,
 } from '../../api/client';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
+import { ArchitectLine } from '@/components/results/architect-line';
 import { projectId } from '../../api/config';
 import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, slotRowCount, unsavedRowCount, type SlotReaderReviewPayload } from './slotReaderReview.js';
 import type { StepCount } from '../../lib/measure-steps';
@@ -129,6 +130,8 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
               <span>{row.piece_count} pieces</span>
             </header>
             {pictures.has(row.row_id) && <CountertopStrip row={pictures.get(row.row_id)!} size="full" showHoldReason={false} className="slot-reader-rows__picture" />}
+            {/* Whether it matches the architect (#1085): the same line as in Results. */}
+            {pictures.has(row.row_id) && <ArchitectLine result={pictures.get(row.row_id)!.architect} />}
             {/* Held: the whole reason, as before, and where it is decided (#1061: the queue too). */}
             {row.held_reason && <p className="slot-reader-rows__hold" role="status">Needs review: {row.held_reason}</p>}
             {row.held_reason && (onOpenQueue || onReviewRow) && (

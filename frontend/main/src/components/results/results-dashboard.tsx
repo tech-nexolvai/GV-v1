@@ -13,6 +13,8 @@ import {
   sortRows,
   type Filter,
 } from '@/lib/countertop-results';
+import { architectFindingIds } from '@/lib/architect';
+import { architectItemKey } from '@/lib/needs-you-queue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -72,8 +74,8 @@ export function ResultsDashboard({
   onBulkDismiss: (ids: string[], note: string) => Promise<BulkResult>;
   onShowDrawing: (row: CountertopResult) => void;
   onOpenCard: (row: CountertopResult) => void;
-  /** Opens the "Needs you" queue (#1050) from the "Needs you" card. */
-  onOpenQueue?: () => void;
+  /** Opens the "Needs you" queue (#1050) from the "Needs you" card, or at one item (its key). */
+  onOpenQueue?: (startAt?: string) => void;
 }) {
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
@@ -101,7 +103,9 @@ export function ResultsDashboard({
     (row) => matchesFilter(row, filter) && (!query || String(row.page_number) === query || row.label.toLowerCase().includes(query)),
   );
   const byId = new Map(findings.map((f) => [f.id, f]));
-  const countertopIds = new Set(rows.map((r) => r.finding_id).filter(Boolean));
+  // A countertop's own results: its width, and whether it matches the architect (#1085). Both are
+  // shown on its row, so neither is listed again under "Other checks".
+  const countertopIds = new Set([...rows.map((r) => r.finding_id).filter(Boolean), ...architectFindingIds(rows)]);
   const others = findings.filter((f) => !countertopIds.has(f.id));
   const blocking = blockingIds ?? new Set<string>();
 
@@ -122,6 +126,12 @@ export function ResultsDashboard({
       const finding = row.finding_id ? byId.get(row.finding_id) : undefined;
       if (finding) setDeciding({ finding, title: row.label });
     },
+    architectFinding: (row) => (row.architect?.finding_id ? byId.get(row.architect.finding_id) : undefined),
+    onDecideArchitect: (row) => {
+      const finding = row.architect?.finding_id ? byId.get(row.architect.finding_id) : undefined;
+      if (finding) setDeciding({ finding, title: `${row.label}: matches the architect?` });
+    },
+    onPairArchitect: onOpenQueue ? (row) => onOpenQueue(architectItemKey(row.row_id)) : undefined,
   };
 
   return (
@@ -134,7 +144,7 @@ export function ResultsDashboard({
       ) : (
         <>
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
-            <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} onOpenQueue={onOpenQueue} />
+            <KpiCards kpis={counts} active={filter} onSelect={(next) => onFilterChange(next)} onOpenQueue={onOpenQueue ? () => onOpenQueue() : undefined} />
             <div className="rounded-xl border bg-card px-4 py-3">
               <Suspense fallback={<Skeleton className="h-32 w-64" />}>
                 <OutcomeChart counts={bucketCounts(rows)} failNeedsYou={failsNeedingYou(rows)} />

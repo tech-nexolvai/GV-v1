@@ -7,6 +7,7 @@ import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawi
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
 import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
+import { architectFindingIds } from '@/lib/architect';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -292,7 +293,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
   }
 
-  function openQueue() {
+  // Where the queue opens: at one item (the Results table's "Confirm the pairing…", #1085), or at the
+  // first open one.
+  const [queueStart, setQueueStart] = useState<string | null>(null);
+  function openQueue(startAt?: string) {
+    setQueueStart(startAt ?? null);
     setQueueOpening(queueOpening + 1);
     setQueueOpen(true);
   }
@@ -755,10 +760,13 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // them, the other (package-level) results, and the total the server approves (the live run's).
   const countertopsReady = countertops.status === 'ready';
   const countertopFindingIds = new Set(countertopsReady ? countertops.rows.flatMap((row) => (row.finding_id ? [row.finding_id] : [])) : []);
+  // The architect comparison (#1085) is a countertop's own, said on its own line, not under "Other checks".
+  const architectIds = countertopsReady ? architectFindingIds(countertops.rows) : new Set<string>();
   const signOffScope: SignOffScope = {
     countertops: countertopsReady ? signOffSummary(countertops.rows) : null,
     countertopsFailed: countertops.status === 'error',
-    otherChecks: countertopsReady ? findings.filter((finding) => !countertopFindingIds.has(finding.id)).length : null,
+    architect: countertopsReady ? findings.filter((finding) => architectIds.has(finding.id)).length : null,
+    otherChecks: countertopsReady ? findings.filter((finding) => !countertopFindingIds.has(finding.id) && !architectIds.has(finding.id)).length : null,
     total: findings.length,
   };
   const signer = session?.reviewer ?? (remote.status === 'ready' ? remote.data.me : null);
@@ -937,7 +945,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               scope={signOffScope}
               busy={isSigningOff}
               onSignOff={openSignOff}
-              onReview={openQueue}
+              onReview={() => openQueue()}
             />
           )}
           {isApproved && (
@@ -1036,7 +1044,12 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
               if (findings.length > 0) setValuesChangedSinceRun(true);
               setCountertopsVersion((n) => n + 1);
             }}
+            onPairingSaved={() => {
+              // So does an architect pairing (#1085): only a new check run uses it.
+              if (findings.length > 0) setValuesChangedSinceRun(true);
+            }}
             onOpenCard={(row) => openRow(row.row_id)}
+            startAt={queueStart}
           />
         </Suspense>
       )}
@@ -1051,7 +1064,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             targetRow={activeTab === 'measure' ? targetRow : null}
             onTargetReached={() => setTargetRow(null)}
             onReviewRow={(rowId) => { setResultsFilter('all'); setActiveTab('results'); setTimeout(() => { const row = document.querySelector<HTMLElement>(`[data-slot="countertop-table"] tr[data-row-id="${rowId}"]`); row?.scrollIntoView({ block: 'center' }); row?.focus(); }, 80); }}
-            onOpenQueue={openQueue}
+            onOpenQueue={() => openQueue()}
           />
         </div>
       )}

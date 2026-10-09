@@ -11,6 +11,7 @@ import {
   FoundationsSection,
   LoadingSection,
   OutcomesSection,
+  ArchitectSection,
   OverlaysSection,
   SidebarSection,
   SummarySection,
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: 'outcomes', title: 'Outcomes' },
   { id: 'summary', title: 'Summary' },
   { id: 'table', title: 'Table' },
+  { id: 'architect', title: 'Matches the architect' },
   { id: 'controls', title: 'Controls' },
   { id: 'disclosure', title: 'Navigation and disclosure' },
   { id: 'overlays', title: 'Overlays' },
@@ -100,6 +102,7 @@ export function UiKitPage() {
             <OutcomesSection />
             <SummarySection />
             <DataSection />
+            <ArchitectSection />
             <ControlsSection />
             <DisclosureSection />
             <OverlaysSection />

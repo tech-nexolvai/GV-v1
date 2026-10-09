@@ -191,6 +191,18 @@ How it works:
   - **Reading time is shown as not measured.** The API's `package_reading_times` spans saved call times, which one reading writes together; a real duration is requested in #1071.
   - **Calls with no price** are named beside the cost, which leaves them out.
 
+**Matches the architect** (the vendor-vs-architect check, CT-ARCH-WIDTH-001; `lib/architect.ts`, `components/results/architect-line.tsx`, `components/queue/architect-pairing.tsx`, #1085):
+- **Results, the phone list and the countertop card** show an "Architect" line under the vendor's:
+  - **compared:** what the architect's drawing says, the difference and the result, in the API's exact text;
+  - **not compared:** grey "Not compared: <reason>", with no chip and no action. It is not a finding;
+  - **one judgment:** amber "Confirm the pairing: only code matched these" (or "only the AIs").
+- **Counting:** a countertop needs you when either check does; it is FAIL when either recorded a FAIL, and PASS only when every recorded result passed. The architect finding is not listed under Other checks.
+- **The queue's "Matches the architect?" item:**
+  - **One judgment:** Confirm the pairing / Pair it differently / Nothing comparable, through `GET/POST .../slot-rows/{row_id}/architect-pairing`. The item then waits for a check run; a 409 offers a reload.
+  - **No pairing yet:** Pair it / Nothing comparable.
+  - **A PASS or FAIL** uses the decision form.
+- **Show on drawing** outlines the architect's compared dimension in grey (`compared[].architect_location`), and the picker outlines each offered span (`spans[].location`). A missing location is said in words.
+
 **Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
 an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.

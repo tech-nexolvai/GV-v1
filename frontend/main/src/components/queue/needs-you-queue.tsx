@@ -1,11 +1,12 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { CheckCircle2, ChevronLeft, ChevronRight, History, X } from 'lucide-react';
 
-import { listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
+import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
 import { decisionWords, formatDelta } from '@/lib/countertop-results';
-import { targetFromFinding, targetFromRow } from '@/lib/drawing-viewer';
+import { targetFromArchitect, targetFromFinding, targetFromRow, type Mark } from '@/lib/drawing-viewer';
+import { architectState, pairedByWords } from '@/lib/architect';
 import {
   buildQueue,
   itemStatus,
@@ -23,10 +24,12 @@ import {
 import type { NextAction, NextActionKind } from '@/lib/review-stage';
 import { cn } from '@/lib/utils';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
+import { ArchitectLine, ArchitectPairs, ArchitectStatus } from '@/components/results/architect-line';
+import { ArchitectPairingPanel } from './architect-pairing';
 import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
 import { WallGlyph, WallLayoutPicture } from '@/components/results/wall-glyph';
-import { DrawingViewer } from '@/components/drawing/drawing-viewer';
+import { DrawingViewer, MarkNotes } from '@/components/drawing/drawing-viewer';
 import { TonePill } from '@/components/drawing/page-canvas';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
@@ -55,7 +58,11 @@ export interface QueueProps {
   onAct: (kind: NextActionKind) => void;
   /** A wall answer was saved: the checks must run again before it shows in a result. */
   onWallSaved: () => void;
+  /** An architect pairing was saved (#1085): likewise, only a new check run uses it. */
+  onPairingSaved?: () => void;
   onOpenCard: (row: CountertopResult) => void;
+  /** Open at this item (its key), when it is in the list; otherwise at the first open one. */
+  startAt?: string | null;
 }
 
 /**
@@ -84,12 +91,18 @@ export function NeedsYouQueue(props: QueueProps) {
 
 const IN_FIELD = 'input, textarea, select, [contenteditable="true"]';
 
-function firstOpen(items: readonly QueueItem[], live: LiveData): number {
+function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string | null): number {
+  const asked = startAt ? items.findIndex((item) => item.key === startAt) : -1;
+  if (asked >= 0) return asked;
   return Math.max(0, items.findIndex((item) => itemStatus(item, live) === 'open'));
 }
 
-function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onOpenCard }: QueueProps) {
+function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onOpenCard, startAt }: QueueProps) {
   const [wallsSaved, setWallsSaved] = useState<ReadonlySet<string>>(new Set());
+  // Architect pairings saved in this sitting (#1085); the server's own record times are added below.
+  const [pairingsSaved, setPairingsSaved] = useState<ReadonlySet<string>>(new Set());
+  // The spans the pairing panel offers, drawn beside the item's own marks.
+  const [pairMarks, setPairMarks] = useState<{ rowId: string; marks: Mark[]; active: string | null } | null>(null);
   const [slotVersion, setSlotVersion] = useState(0);
   const slots = useAsync(() => listSlotReaderRows(projectId, packageId), [projectId, packageId, slotVersion]);
   const base: LiveData = {
@@ -103,13 +116,45 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   // The list is taken once the readiness answer is in: without it the package-level checks would
   // be missing, and the queue could say "all done" while the server still blocks sign-off.
   const [items, setItems] = useState<QueueItem[] | null>(() => (blocking !== null && rowsReady ? buildQueue(rows, findings, blocking) : null));
-  const [index, setIndex] = useState(() => (items ? firstOpen(items, base) : 0));
+  const [index, setIndex] = useState(() => (items ? firstOpen(items, base, startAt) : 0));
   if (items === null && blocking !== null && rowsReady) {
     const built = buildQueue(rows, findings, blocking);
     setItems(built);
-    setIndex(firstOpen(built, base));
+    setIndex(firstOpen(built, base, startAt));
   }
   const list = items ?? [];
+
+  // A reviewer's pairing recorded after a row's architect result (by the server's own times) waits
+  // for a check run, across sittings, like a wall answer (#1085).
+  const architectRowIds = list.filter((entry) => entry.kind === 'architect').map((entry) => entry.rowId).sort();
+  const pairings = useAsync(
+    async () => {
+      const recorded = new Map<string, string>();
+      await Promise.all(
+        architectRowIds.map((rowId) =>
+          getArchitectPairing(projectId, packageId, rowId).then(
+            (answer) => {
+              if (answer.current?.source === 'reviewer') recorded.set(rowId, answer.current.decided_at);
+            },
+            () => undefined,
+          ),
+        ),
+      );
+      return recorded;
+    },
+    [projectId, packageId, architectRowIds.join(','), pairingsSaved.size],
+  );
+  // The last known answer stays in force while it reloads, so a saved pairing never flickers back to
+  // "open" (the same rule as corrections below).
+  const [knownPairings, setKnownPairings] = useState<ReadonlyMap<string, string> | null>(null);
+  if (pairings.status === 'ready' && pairings.data !== knownPairings) setKnownPairings(pairings.data);
+  const pairedAfterResult = new Set<string>(pairingsSaved);
+  const recordedPairings = (pairings.status === 'ready' ? pairings.data : knownPairings) ?? new Map<string, string>();
+  for (const [rowId, decidedAt] of recordedPairings) {
+    const architectFinding = base.rows.get(rowId)?.architect?.finding_id;
+    const createdAt = architectFinding ? base.findings.get(architectFinding)?.created_at : undefined;
+    if (createdAt && new Date(decidedAt).getTime() > new Date(createdAt).getTime()) pairedAfterResult.add(rowId);
+  }
 
   // A finding with a correction anywhere in its history stays blocking until a new run, whatever
   // came after. Only findings that already have a recorded action can have one, so only they are asked.
@@ -134,7 +179,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   // The last known answer stays in force while it reloads, so a correction is never briefly forgotten.
   const [knownCorrected, setKnownCorrected] = useState<ReadonlySet<string> | undefined>(undefined);
   if (corrections.status === 'ready' && corrections.data !== knownCorrected) setKnownCorrected(corrections.data);
-  const live: LiveData = { ...base, corrected: corrections.status === 'ready' ? corrections.data : knownCorrected };
+  const live: LiveData = { ...base, corrected: corrections.status === 'ready' ? corrections.data : knownCorrected, pairingsSaved: pairedAfterResult };
 
   // Only "Go back through the items" keeps the list on screen once everything is handled.
   const [browsing, setBrowsing] = useState(false);
@@ -146,9 +191,15 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const item: QueueItem | undefined = list[index];
   const status: ItemStatus = item ? itemStatus(item, live) : 'decided';
   const row = item?.kind === 'countertop' ? live.rows.get(item.rowId) ?? null : null;
+  // "Matches the architect?" (#1085): the row it belongs to, and whether its pairing needs the reviewer.
+  const architectRow = item?.kind === 'architect' ? live.rows.get(item.rowId) ?? null : null;
+  const architect = architectRow?.architect ?? null;
+  const architectAsk = architect ? architectState(architect) : null;
+  const pairingAsked = item?.kind === 'architect' && status === 'open' && (architectAsk === 'confirm' || architectAsk === 'unpaired');
   const findingId = item ? findingIdOf(item, live) : null;
   const finding = findingId ? live.findings.get(findingId) ?? null : null;
-  const deciding = finding !== null && (status === 'open' || changing);
+  // A pairing question is answered by the pairing, never by the decision form.
+  const deciding = finding !== null && (status === 'open' || changing) && !pairingAsked;
   const draft = useDecisionDraft(deciding ? finding : null);
   // A draft belongs to one result. If the result under this item is replaced (a check run finished
   // while the queue was open), the half-written choice and note are dropped, never re-aimed.
@@ -248,7 +299,11 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   }, []);
 
   const ruleName = (id: string) => (rules.status === 'ready' ? rules.data.find((r) => r.rule_id === id)?.name : undefined) ?? id;
-  const target = row ? targetFromRow(row) : finding ? targetFromFinding(finding) : null;
+  // An architect item looks like its architect result on the drawing, never like the width's.
+  const target = row ? targetFromRow(row) : architectRow ? targetFromArchitect(architectRow) : finding ? targetFromFinding(finding) : null;
+  // The offered spans are drawn only while the pairing question is on screen.
+  const pairing = pairingAsked && pairMarks && architectRow && pairMarks.rowId === architectRow.row_id ? pairMarks : null;
+  const extraMarks = pairing?.marks ?? [];
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -336,11 +391,13 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
               <section aria-label="This item" className="flex flex-col gap-4 p-4 lg:overflow-y-auto lg:border-r">
                 <div className="flex flex-col gap-1.5">
                   {/* A package-level check is named by its rule; its scope ("Package revision") goes below. */}
-                  <h2 className="text-lg font-semibold leading-tight">{item.kind === 'check' && finding ? ruleName(finding.check_id) : item.label}</h2>
+                  <h2 className="text-lg font-semibold leading-tight">
+                    {item.kind === 'check' && finding ? ruleName(finding.check_id) : item.kind === 'architect' ? `${item.label}: matches the architect?` : item.label}
+                  </h2>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {target && <TonePill target={target} />}
+                    {item.kind === 'architect' ? architect && <ArchitectStatus result={architect} /> : target && <TonePill target={target} />}
                     {/* As in the results table: "Needs you" beside a result that does not already say so. */}
-                    {status === 'open' && target?.glyph !== 'REVIEW_REQUIRED' && (
+                    {status === 'open' && item.kind !== 'architect' && target?.glyph !== 'REVIEW_REQUIRED' && (
                       <span className="inline-flex items-center gap-1 font-medium text-outcome-review-fg">
                         <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} /> Needs you
                       </span>
@@ -352,6 +409,33 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
 
                 {row && <CountertopStrip row={row} size="full" />}
                 {row && <Facts row={row} />}
+                {row && <ArchitectLine result={row.architect} />}
+                {item.kind === 'architect' && architect && (
+                  <div className="flex flex-col gap-2" data-slot="queue-architect">
+                    <ArchitectPairs result={architect} />
+                    {pairedByWords(architect) && <p className="text-xs text-muted-foreground">{pairedByWords(architect)}</p>}
+                    {architect.reason && <p className="text-sm text-muted-foreground">{architect.reason}</p>}
+                    {target && target.marks.length > 0 && <MarkNotes marks={target.marks} at={target} />}
+                  </div>
+                )}
+                {item.kind === 'architect' && !architectRow && (
+                  <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">This countertop is not in the current results.</p>
+                )}
+                {pairingAsked && architectRow && (
+                  <ArchitectPairingPanel
+                    key={architectRow.row_id}
+                    projectId={projectId}
+                    packageId={packageId}
+                    row={architectRow}
+                    canConfirm={architectAsk === 'confirm'}
+                    onSaved={() => {
+                      setPairingsSaved((current) => new Set(current).add(architectRow.row_id));
+                      setBrowsing(false);
+                      onPairingSaved?.();
+                    }}
+                    onMarks={(marks, active) => setPairMarks({ rowId: architectRow.row_id, marks, active })}
+                  />
+                )}
                 {item.kind === 'check' && finding?.reason && <p className="line-clamp-3 text-sm text-muted-foreground" title={finding.reason}>{finding.reason}</p>}
                 {!(target && target.page !== null) && <p className="text-xs text-muted-foreground lg:hidden">No drawing location for this item.</p>}
 
@@ -374,9 +458,11 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   <DecidedSummary
                     status={status}
                     wallSaved={row !== null && wallsSaved.has(row.row_id)}
+                    pairingSaved={item.kind === 'architect' && live.pairingsSaved?.has(item.rowId) === true}
                     corrected={finding !== null && (live.corrected?.has(finding.id) ?? false)}
                     row={row}
                     finding={finding}
+                    outcome={item.kind === 'architect' ? architect?.outcome ?? finding?.outcome ?? null : undefined}
                     projectId={projectId}
                     packageId={packageId}
                     onChange={finding && status === 'decided' ? () => setChanging(true) : undefined}
@@ -396,7 +482,17 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
               {/* On a phone an item with no location gets a line, not an empty panel. */}
               <section aria-label="Drawing" className={cn('flex h-[55dvh] min-h-72 flex-col border-t lg:h-auto lg:min-h-0 lg:border-t-0', !(target && target.page !== null) && 'max-lg:hidden')}>
                 {target && target.page !== null ? (
-                  <DrawingViewer key={item.key} embedded target={target} rows={rows} projectId={projectId} packageId={packageId} onTargetChange={() => undefined} />
+                  <DrawingViewer
+                    key={item.key}
+                    embedded
+                    target={target}
+                    rows={rows}
+                    projectId={projectId}
+                    packageId={packageId}
+                    onTargetChange={() => undefined}
+                    extraMarks={extraMarks}
+                    activeMark={pairing?.active ?? null}
+                  />
                 ) : (
                   <p className="m-auto p-6 text-sm text-muted-foreground">No drawing location for this item.</p>
                 )}
@@ -538,9 +634,11 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
 function DecidedSummary({
   status,
   wallSaved,
+  pairingSaved = false,
   corrected,
   row,
   finding,
+  outcome: givenOutcome,
   projectId,
   packageId,
   onChange,
@@ -548,6 +646,10 @@ function DecidedSummary({
   status: ItemStatus;
   /** A wall answer saved in this sitting. */
   wallSaved: boolean;
+  /** An architect pairing recorded after the result (#1085). */
+  pairingSaved?: boolean;
+  /** The result to word the decision against, when it is not the row's own (the architect's). */
+  outcome?: CountertopResult['outcome'];
   /** A correction somewhere in this finding's history (only a new run clears it). */
   corrected: boolean;
   row: CountertopResult | null;
@@ -557,7 +659,7 @@ function DecidedSummary({
   onChange?: () => void;
 }) {
   const decision = row?.reviewer_decision ?? (finding?.reviewer_action ? { action: finding.reviewer_action, actor: finding.reviewed_by ?? '', note: finding.reviewer_note ?? null } : null);
-  const outcome = row?.outcome ?? finding?.outcome ?? null;
+  const outcome = givenOutcome !== undefined ? givenOutcome : row?.outcome ?? finding?.outcome ?? null;
   return (
     <section data-slot="queue-decided" className="flex flex-col gap-2 rounded-lg border p-3 text-sm">
       {status === 'waiting-for-run' ? (
@@ -565,7 +667,9 @@ function DecidedSummary({
           <CheckCircle2 className="size-4" aria-hidden="true" />
           {decision?.action === 'correct' || corrected
             ? 'Corrected. A correction is settled only by running the checks again; nothing recorded after it clears it.'
-            : wallSaved
+            : pairingSaved
+              ? 'Pairing saved. It counts once the checks run again.'
+              : wallSaved
               ? 'Wall answer saved. Run the checks to see the result.'
               : 'Its walls or widths were saved after this result. Run the checks to see the new result.'}
         </p>
