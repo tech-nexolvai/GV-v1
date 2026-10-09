@@ -145,6 +145,13 @@ export function listFindings(
   return request<FindingPage>(`/projects/${projectId}/packages/${packageId}/findings${suffix}`);
 }
 
+/** One finding's decision history, newest first (#1047). Append-only: a changed mind is a new row. */
+export function listFindingActions(projectId: string, packageId: string, findingId: string) {
+  return request<components['schemas']['ReviewActionPage']>(
+    `/projects/${projectId}/packages/${packageId}/findings/${findingId}/actions`,
+  );
+}
+
 /** The arithmetic behind one verdict — every operand, its evidence status, and the comparison. */
 export function getFindingChain(projectId: string, packageId: string, findingId: string) {
   return request<FindingChain>(

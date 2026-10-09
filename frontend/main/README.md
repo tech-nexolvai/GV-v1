@@ -126,6 +126,22 @@ and its code loads the first time it is opened.
 It only reads. A picture that is not rendered yet is shown as "not ready"; the viewer never asks the
 worker to render anything.
 
+**The "Needs you" queue** (`components/queue/`, rules in `lib/needs-you-queue.ts`, #1050) walks through
+everything still blocking sign-off, one item at a time: countertops by page, then the package-level
+checks. It opens from the header's "Review N items" and the "Needs you" card.
+- **What blocks** is the server's answer (`countertop-results.needs_decision` and readiness); the queue
+  only walks through it.
+- **The decision** is the same form as the Results "Decide" dialog (`results/decision-form.tsx` +
+  `use-decision-draft.ts`), through the page's own handlers.
+- **Wall answers** use the countertop card's endpoint: never pre-selected, sent only on a click.
+- **"Waiting for a check run"** comes from the server: a row's walls or widths saved after its result
+  (`slot-rows.decided_at` against `findings.created_at`), or a correction anywhere in a finding's
+  history. A wall answer saved in the same sitting counts at once, before the rows reload.
+- **It never claims "all done"** while the readiness API still blocks on results it does not hold
+  (for example new results from a run made while it was open): it offers to load them instead.
+- **Keys:** J / K, 1 / 2 / 3, N, Enter. **"Change decision"** records a new action; the history
+  popover reads `GET .../findings/{id}/actions`.
+
 **Legacy islands.** A legacy component shown inside new UI (the chat in a shadcn Sheet) is wrapped in
 an element with `data-legacy`. Tailwind's scoped reset stops there, and the
 legacy element rules apply again inside it.

@@ -178,6 +178,22 @@ describe('results dashboard', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('Cancel forgets the draft: reopening Decide starts empty (#1050 review)', async () => {
+    const user = userEvent.setup();
+    setup();
+    await user.click(within(tableRows()[1]).getByRole('button', { name: 'Decide' }));
+    let dialog = await screen.findByRole('dialog', { name: /Decide: Countertop row on page 9/ });
+    await user.click(within(dialog).getByRole('radio', { name: 'Checked: OK' }));
+    await user.type(within(dialog).getByLabelText(/What did you check/), 'TEST half written');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(within(tableRows()[1]).getByRole('button', { name: 'Decide' }));
+    dialog = await screen.findByRole('dialog', { name: /Decide: Countertop row on page 9/ });
+    expect(within(dialog).getAllByRole('radio').every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
+    expect(within(dialog).queryByLabelText(/What did you check/)).toBeNull();
+    expect((within(dialog).getByRole('button', { name: 'Record decision' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('Decide on a failure: a correction needs its value; an exception needs a reason and a future date', async () => {
     const user = userEvent.setup();
     const { handlers, props, rerender } = setup();

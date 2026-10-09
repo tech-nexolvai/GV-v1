@@ -56,6 +56,8 @@ import './ReviewPage.css';
 
 // The drawing viewer (#1045) is fetched the first time a reviewer opens a drawing.
 const DrawingViewerSheet = lazy(() => import('@/components/drawing/drawing-viewer').then((m) => ({ default: m.DrawingViewerSheet })));
+// The "Needs you" queue (#1050), fetched the first time it is opened.
+const NeedsYouQueue = lazy(() => import('@/components/queue/needs-you-queue').then((m) => ({ default: m.NeedsYouQueue })));
 
 /** States in which the server is reading or checking on its own; the stepper follows them (#1034). */
 const PROCESSING_STATES = new Set([
@@ -114,6 +116,9 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // "Show on drawing" (#1045): what the drawing viewer points at; `opening` restarts it fitted each time.
   const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
   const [openings, setOpenings] = useState(0);
+  // The "Needs you" queue (#1050): `queueOpening` restarts it with a fresh item list each time.
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [queueOpening, setQueueOpening] = useState(0);
   // The countertop results (#1035), loaded beside the findings; earlier rows stay on screen while a
   // refresh is in flight, so the table never flashes back to a skeleton.
   const [countertops, setCountertops] = useState<CountertopsState>({ status: 'loading' });
@@ -275,6 +280,11 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
 
   function openRow(rowId: string) {
     setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
+  }
+
+  function openQueue() {
+    setQueueOpening(queueOpening + 1);
+    setQueueOpen(true);
   }
 
   function openViewer(target: ViewerTarget) {
@@ -739,9 +749,8 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         button?.focus();
       }, 50);
     } else if (kind === 'review') {
-      setResultsFilter('needs-you');
       setActiveTab('results');
-      window.setTimeout(() => document.querySelector<HTMLElement>('[data-slot="countertop-table"] tr[data-row-id]')?.focus(), 80);
+      openQueue();
     } else if (kind === 'sign-off') {
       void handleSignOff();
     } else if (kind === 'prepare-report') {
@@ -874,6 +883,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             handlers={{ onAction: handleAction, onCorrect: handleCorrect, onExcept: handleExcept }}
             onBulkDismiss={handleBulkDismiss}
             onShowDrawing={showRowOnDrawing}
+            onOpenQueue={openQueue}
             onOpenCard={(row) => openRow(row.row_id)}
           />
         </div>
@@ -922,6 +932,30 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             packageId={packageId}
             onTargetChange={(target) => setViewer((current) => (current ? { ...current, target } : current))}
             onClose={() => setViewer(null)}
+          />
+        </Suspense>
+      )}
+      {queueOpening > 0 && (
+        <Suspense fallback={null}>
+          <NeedsYouQueue
+            open={queueOpen}
+            opening={queueOpening}
+            onOpenChange={setQueueOpen}
+            rows={countertops.status === 'ready' ? countertops.rows : []}
+            rowsReady={countertops.status === 'ready'}
+            findings={findings}
+            blocking={readiness ? new Set(readiness.blocking_finding_ids) : null}
+            projectId={projectId()}
+            packageId={packageId}
+            handlers={{ onAction: handleAction, onCorrect: handleCorrect, onExcept: handleExcept }}
+            next={stage.next}
+            onAct={act}
+            onWallSaved={() => {
+              // A wall answer changes a check input: the header asks for a run, and the rows reload.
+              if (findings.length > 0) setValuesChangedSinceRun(true);
+              setCountertopsVersion((n) => n + 1);
+            }}
+            onOpenCard={(row) => openRow(row.row_id)}
           />
         </Suspense>
       )}

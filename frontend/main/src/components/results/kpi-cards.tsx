@@ -16,7 +16,11 @@ interface Card {
  * The review in five numbers (#1039): a number, one word and an icon each, nothing to read. Each
  * card is a button that filters the table below to the rows it counts.
  */
-export function KpiCards({ kpis, active, onSelect }: { kpis: Kpis; active: Filter; onSelect: (filter: Filter) => void }) {
+/**
+ * Five numbers; each filters the table, except "Needs you", which opens the queue to work through
+ * them one at a time (#1050) when there is anything to do and a queue to open.
+ */
+export function KpiCards({ kpis, active, onSelect, onOpenQueue }: { kpis: Kpis; active: Filter; onSelect: (filter: Filter) => void; onOpenQueue?: () => void }) {
   const cards: Card[] = [
     { filter: 'all', value: kpis.countertops, word: 'Countertops', icon: <LayoutList className="size-4" aria-hidden="true" /> },
     { filter: 'automatic', value: kpis.automatic, word: 'Automatic', icon: <ListChecks className="size-4" aria-hidden="true" /> },
@@ -27,13 +31,16 @@ export function KpiCards({ kpis, active, onSelect }: { kpis: Kpis; active: Filte
   return (
     <div data-slot="kpi-cards" className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 lg:gap-3">
       {cards.map((card) => {
-        const pressed = active === card.filter;
+        const opensQueue = card.filter === 'needs-you' && onOpenQueue !== undefined && card.value > 0;
+        const pressed = !opensQueue && active === card.filter;
         return (
           <button
             key={card.filter}
             type="button"
-            aria-pressed={pressed}
-            onClick={() => onSelect(card.filter)}
+            aria-pressed={opensQueue ? undefined : pressed}
+            aria-label={opensQueue ? `Needs you ${card.value}: review them one at a time` : undefined}
+            data-opens-queue={opensQueue || undefined}
+            onClick={() => (opensQueue ? onOpenQueue() : onSelect(card.filter))}
             className={cn(
               'flex flex-col items-start gap-1 rounded-xl border bg-card px-3.5 py-3 text-left outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring',
               pressed && 'border-foreground/60 ring-1 ring-foreground/20',

@@ -89,12 +89,19 @@ export function DrawingViewer({
   projectId,
   packageId,
   onTargetChange,
+  embedded = false,
 }: {
   target: ViewerTarget;
   rows: readonly CountertopResult[];
   projectId: string;
   packageId: string;
   onTargetChange: (target: ViewerTarget) => void;
+  /**
+   * Inside another screen (the "Needs you" queue, #1050): only the toolbar and the drawing. That
+   * screen owns the title, the facts and moving between items, so there is no header, page strip,
+   * evidence panel or arrow-key paging, and other countertops are not offered.
+   */
+  embedded?: boolean;
 }) {
   const cache = useBlobCache();
   const pictureKey = target.page !== null ? pageKey(projectId, packageId, target.page, target.documentVersionId ?? '') : null;
@@ -186,8 +193,7 @@ export function DrawingViewer({
       '0': fit,
       f: findOutline,
       F: findOutline,
-      ArrowLeft: () => step(-1),
-      ArrowRight: () => step(1),
+      ...(embedded ? {} : { ArrowLeft: () => step(-1), ArrowRight: () => step(1) }),
     };
     const action = actions[event.key];
     if (!action) return;
@@ -205,6 +211,7 @@ export function DrawingViewer({
   return (
     <TooltipProvider delayDuration={250}>
       <div data-tw data-slot="drawing-viewer" className="flex h-full min-h-0 flex-col font-sans text-foreground">
+        {!embedded && (
         <header className="flex items-start gap-3 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <SheetTitle className="truncate text-base font-semibold">{target.label}</SheetTitle>
@@ -231,10 +238,11 @@ export function DrawingViewer({
             </Button>
           </SheetClose>
         </header>
+        )}
 
         {/* Phone and tablet: one scrolling column, the drawing first at a fixed height. Desktop: drawing | evidence. */}
-        <div className="min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-[minmax(0,1fr)_21rem] lg:overflow-hidden">
-          <div className="flex h-[62dvh] min-h-72 flex-col lg:h-full lg:min-h-0">
+        <div className={embedded ? 'flex min-h-0 flex-1 flex-col' : 'min-h-0 flex-1 overflow-y-auto lg:grid lg:grid-cols-[minmax(0,1fr)_21rem] lg:overflow-hidden'}>
+          <div className={embedded ? 'flex min-h-0 flex-1 flex-col' : 'flex h-[62dvh] min-h-72 flex-col lg:h-full lg:min-h-0'}>
             <div role="toolbar" aria-label="Drawing controls" className="flex shrink-0 items-center gap-1 border-b px-2 py-1">
               <Button size="icon-sm" variant="ghost" aria-label="Zoom out" onClick={() => zoomBy(0.8)} disabled={!view}>
                 <ZoomOut />
@@ -259,7 +267,7 @@ export function DrawingViewer({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-72">
-                  Drag to move. Wheel or pinch to zoom. Keys: + and − zoom, 0 fits, F finds the outline, ← and → change page. This is the vendor&apos;s drawing layer; markup already baked into it can still show. The outline only marks where this result was read.
+                  Drag to move. Wheel or pinch to zoom. Keys: + and − zoom, 0 fits, F finds the outline{embedded ? '' : ', ← and → change page'}. This is the vendor&apos;s drawing layer; markup already baked into it can still show. The outline only marks where this result was read.
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -267,7 +275,7 @@ export function DrawingViewer({
               picture={picture}
               onRetry={retryPicture}
               target={target}
-              others={others}
+              others={embedded ? [] : others}
               readings={onThisPage}
               activeReading={activeReading}
               natural={natural}
@@ -278,9 +286,10 @@ export function DrawingViewer({
               onBox={setBox}
               onSelect={select}
             />
-            <PageStrip pages={pages} current={currentPage} cache={cache} projectId={projectId} packageId={packageId} onPick={pickPage} />
+            {!embedded && <PageStrip pages={pages} current={currentPage} cache={cache} projectId={projectId} packageId={packageId} onPick={pickPage} />}
           </div>
 
+          {!embedded && (
           <aside aria-label="Evidence" data-slot="drawing-evidence" className="flex flex-col gap-5 border-t p-4 lg:min-h-0 lg:overflow-y-auto lg:border-t-0 lg:border-l">
             {target.row && (
               <section aria-label="Countertop picture">
@@ -330,6 +339,7 @@ export function DrawingViewer({
               </section>
             )}
           </aside>
+          )}
         </div>
       </div>
     </TooltipProvider>

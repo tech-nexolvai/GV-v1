@@ -48,8 +48,13 @@ assert.match(card, /Reviewer decision/);
 const table = readFileSync('src/components/results/countertop-table.tsx','utf8');
 assert.match(table, /Show on drawing/);
 assert.match(table, /Open countertop card/);
-const dialog = readFileSync('src/components/results/decide-dialog.tsx','utf8');
-assert.match(dialog, /actionNeedsNote\(finding.outcome, simple\)/, 'the Decide dialog uses the same note rule');
+// The Decide dialog and the "Needs you" queue share one decision form (#1050); it uses the same note
+// rule, and both screens use that form rather than their own.
+const draftSource = readFileSync('src/components/results/use-decision-draft.ts','utf8');
+assert.match(draftSource, /actionNeedsNote\(outcome, simple\)/, 'the shared decision form uses the same note rule');
+for (const screen of ['src/components/results/decide-dialog.tsx', 'src/components/queue/needs-you-queue.tsx']) {
+  assert.match(readFileSync(screen,'utf8'), /useDecisionDraft\(/, `${screen} uses the shared decision form`);
+}
 const words = readFileSync('src/lib/countertop-results.ts','utf8');
 assert.match(words, /'needs-you': 'Needs you'/);
 assert.match(words, /'not-checkable': 'Not checkable'/);

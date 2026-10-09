@@ -141,6 +141,8 @@ export interface Finding {
   reviewed_by?: string | null;
   reviewer_note?: string | null;
   reviewed_at?: string | null;
+  /** When the check run recorded this result. A row input saved after it means the result is out of date. */
+  created_at?: string;
 }
 
 /** One turn in the review thread. */
