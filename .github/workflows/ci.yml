@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # `ready_for_review` so a draft that is marked ready gets its run; every job below skips drafts.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # Weekly, for the one check that needs the network: has CodeRabbit's published config schema moved
   # under us? The offline check keeps passing against the vendored copy, so without this the copy can go
   # stale indefinitely and an upstream constraint change would surface as a collapsed warning in a PR
@@ -12,10 +14,18 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
-# A newer push to the same branch cancels the older run. The reason recorded here used to be a
-# private-repo minutes quota; that was simply wrong — `gh repo view` reports `visibility=PUBLIC`, and
-# public repositories do not bill Actions minutes. Kept anyway, because two runs of the same suite on a
-# superseded commit tell nobody anything, and the second one to finish overwrites the first's answer.
+# A newer push to the same branch cancels the older run: two runs of the same suite on a superseded
+# commit tell nobody anything, and the second one to finish overwrites the first's answer.
+#
+# **Minutes are billed.** The repository is private (`gh repo view` reports `visibility=PRIVATE`,
+# 2026-10-09; an earlier comment here said public, which is no longer true), so every job's runtime counts
+# against the plan's quota, rounded up to the whole minute per job. That is why every job has a timeout,
+# draft pull requests do not run, and Python packages install with uv from a cache.
+#
+# **No path filters, deliberately.** A documentation-only change can fail this workflow and must: the
+# client-facts and vendor-neutrality guards scan every tracked file (that is what keeps client values out
+# of GitHub), and the risk register, issue-gate and ADR tests read docs/, README.md and CONTRIBUTING.md.
+# Skipping "docs-only" pushes would skip exactly those guards.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,37 +37,45 @@ jobs:
   quality_checks:
     name: Python quality
     # Not on the weekly schedule. That cron exists for the one network check below, so the schedule
-    # buys the drift check and not a second full run of everything. (This used to justify itself with a
-    # private-repo minutes quota, which does not exist — the repository is public. The narrower reason
-    # holds on its own: a weekly rerun of an unchanged tree answers no question.)
-    if: github.event_name != 'schedule'
+    # buys the drift check and not a second full run of everything: a weekly rerun of an unchanged tree
+    # answers no question. Not on draft pull requests either; marking one ready runs everything.
+    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # Pinned to a commit SHA, and the checkout credential is dropped. zizmor flags both: a floating tag
       # can be moved under us by anyone who controls the upstream repository, and a persisted credential
       # can leave the runner inside an artifact. Nothing in this workflow writes to git — the only git
       # command is `git ls-files`, which needs no auth — and the one step that talks to the API gets its
       # token from `GH_TOKEN` in the environment, not from the checkout. Verified before changing this.
+      # `fetch-depth: 1` is the action's default; written down so nobody turns on full history by accident.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       # Python 3.12 is the declared target in AGENTS.md section 4. Test the floor
       # we promise, not whatever is newest.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-          cache: pip
+
+      # uv installs the same floors as pip (`uv pip install`, no lock file, highest versions, as pip
+      # resolves them) in seconds instead of most of a minute, from a cache keyed on pyproject.toml.
+      # Local development already uses uv. The weekly job below keeps plain pip on purpose: it asks what
+      # a clean machine resolves today.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       # `reports` joins the list with D2.1 (#225): tests/reports/ imports reportlab and pypdf at
       # module level, so without it the redline tests do not skip, they fail to collect.
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          # `ocr` is here so the RapidOCR adapter is actually exercised. The engine is injectable
-          # and every wiring test uses a stub, so without the extra the adapter itself would run in
-          # no test anywhere — and a skipped test reads as coverage.
-          pip install -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
+        # `ocr` is here so the RapidOCR adapter is actually exercised. The engine is injectable and
+        # every wiring test uses a stub, so without the extra the adapter itself would run in no test
+        # anywhere — and a skipped test reads as coverage.
+        run: uv pip install --system -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
 
       - name: Ruff
         run: ruff check .
@@ -76,9 +94,13 @@ jobs:
 
   test_shards:
     name: tests (shard ${{ matrix.group }}/4)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # About 5 minutes each today; 15 stops a hung test long before it drains the quota.
+    timeout-minutes: 15
+    # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about a minute
+    # of fixed cost (database container, checkout, install). Three shards of ~6 minutes bill more than
+    # four of ~5, and two would double the wait for a result.
     strategy:
       fail-fast: false
       matrix:
@@ -105,16 +127,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-          cache: pip
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
+        run: uv pip install --system -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
 
       # Check the partition before executing any shard. Collection does not execute tests;
       # group 1 proves the four lists are nonempty, disjoint, and exactly cover collection.
@@ -134,7 +159,10 @@ jobs:
     name: lint, types, tests
     needs: [quality_checks, test_shards]
     runs-on: ubuntu-latest
-    if: always() && github.event_name != 'schedule'
+    timeout-minutes: 2
+    if: >-
+      always() && github.event_name != 'schedule'
+      && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     steps:
       - name: Require every quality and test shard job to pass
         env:
@@ -154,7 +182,7 @@ jobs:
   # compiling — is only real if regenerating is verified to produce no diff.
   frontend:
     name: frontend (install, types, build)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -165,6 +193,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
         with:
@@ -201,11 +230,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
       - name: Install the API for schema export
         working-directory: .
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[ai,dev,rules,platform,reports]"
+        run: uv pip install --system -e ".[ai,dev,rules,platform,reports]"
 
       - name: Generated API types are current
         run: npm run api:check
@@ -222,7 +254,7 @@ jobs:
   # ---------------------------------------------------------------------------
   guards:
     name: safety guards
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # **No token in this job, deliberately.** It runs tests/test_verdict_isolation.py, and
@@ -236,6 +268,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       # Cheap and useful today: proprietary client material must never be
       # committed. Full version lands with #38.
@@ -258,16 +291,18 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-          cache: pip
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       # Same extras as the quality job, deliberately. A minimal install was cheaper but meant a
       # guard could fail to *collect* on a missing optional dependency while passing locally —
       # that happened twice (#157 on PyYAML, and a root conftest on SQLAlchemy). A guard that does
       # not run is worse than a slow one.
       - name: Install test tooling
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[ai,dev,extraction,rules,platform]"
+        run: uv pip install --system -e ".[ai,dev,extraction,rules,platform]"
 
       - name: Verdict isolation
         run: |
@@ -280,7 +315,7 @@ jobs:
       # Semgrep OSS runs entirely on the runner — no account, no login, and no code
       # leaves. That matters because the client's rule logic is commercially sensitive.
       - name: Install semgrep
-        run: pip install semgrep
+        run: uv pip install --system semgrep
 
       - name: Prove database float-column guard
         run: pytest tests/app/test_float_column_guard.py -q
@@ -318,7 +353,7 @@ jobs:
   # ---------------------------------------------------------------------------
   board:
     name: board status drift
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -329,16 +364,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-          cache: pip
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[ai,dev,rules,platform]"
+        run: uv pip install --system -e ".[ai,dev,rules,platform]"
 
       - name: Board status drift (label vs contract)
         env:
@@ -367,6 +405,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 1
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -374,6 +413,7 @@ jobs:
 
       # The full extra set, because the licence check below is only as good as what is installed —
       # `.[dev]` alone would declare the tree AGPL-clean while never seeing the AI or platform packages.
+      # Plain pip and no cache, on purpose: this job asks what a clean machine resolves *today*.
       - name: Install
         run: |
           python -m pip install --upgrade pip
