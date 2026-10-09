@@ -116,6 +116,30 @@ COUNTERTOP_COLUMNS: Final = (
     "decision_time",
     "reviewer_note",
     "hold_reason",
+    # The vendor-vs-architect check (CT-ARCH-WIDTH-001, #1054). After every earlier column, so none
+    # of them moves; the per-piece columns still come last.
+    "architect_outcome",
+    "architect_comparison",
+    "architect_not_compared_reason",
+    "architect_pairing_source",
+    "architect_overall_vendor_in",
+    "architect_overall_architect_in",
+    "architect_overall_difference_in",
+)
+
+#: The columns above that hold a number, by name: an exact value with a finite decimal form only.
+_COUNTERTOP_NUMERIC: Final = frozenset(
+    {
+        "page",
+        "printed_overall_in",
+        "expected_total_in",
+        "difference_in",
+        "field_cut_per_end_in",
+        "field_cut_count",
+        "architect_overall_vendor_in",
+        "architect_overall_architect_in",
+        "architect_overall_difference_in",
+    }
 )
 
 _BLACK: Final = "000000"
@@ -441,8 +465,46 @@ def _numeric_inches(value: ExactValueOut | None) -> Decimal | None:
         return Decimal(numerator) / Decimal(denominator)
 
 
+def _pair_name(kind: str, vendor_piece: int | None) -> str:
+    return "overall" if kind == "overall" or vendor_piece is None else f"piece {vendor_piece}"
+
+
+def architect_line(result: CountertopResultOut) -> str:
+    """One plain line: does this countertop match the architect's drawing (#1054)?
+
+    Repeats the recorded result; it never compares anything itself. `Matches the architect: FAIL
+    (overall: vendor 39 1/2", architect 42")`, or `... not compared: <reason>` when the check wrote
+    nothing for this row.
+    """
+    block = result.architect
+    if block.outcome is None:
+        reason = block.not_compared_reason or "no architect dimension is paired with this row."
+        return f"Matches the architect: not compared: {reason}"
+    pairs = "; ".join(
+        f"{_pair_name(pair.kind, pair.vendor_piece)}: vendor {pair.vendor_display or '?'}, "
+        f"architect {pair.architect_display or '?'}"
+        for pair in block.compared
+    )
+    line = f"Matches the architect: {block.outcome.value}"
+    if pairs:
+        line += f" ({pairs})"
+    if block.outcome not in (Outcome.PASS, Outcome.FAIL) and block.reason:
+        line += f": {block.reason}"
+    return line
+
+
+def _architect_comparison(result: CountertopResultOut) -> str:
+    return "; ".join(
+        f"{_pair_name(pair.kind, pair.vendor_piece)}: vendor {pair.vendor_display or '?'}, "
+        f"architect {pair.architect_display or '?'}, difference {pair.delta_display or '?'}"
+        f" ({pair.outcome.value if pair.outcome is not None else 'not decided'})"
+        for pair in result.architect.compared
+    )
+
+
 def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tuple[object, ...]:
     decision = result.reviewer_decision
+    overall = next((pair for pair in result.architect.compared if pair.kind == "overall"), None)
     pieces = (
         "; ".join(
             f"{piece.index + 1}: {piece.value.display if piece.value else '?'}"
@@ -472,6 +534,13 @@ def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tupl
         "" if decision is None else decision.time.isoformat(),
         "" if decision is None or decision.note is None else decision.note,
         "" if result.hold is None else result.hold.reason,
+        ("NOT COMPARED" if result.architect.outcome is None else result.architect.outcome.value),
+        _architect_comparison(result),
+        result.architect.not_compared_reason or "",
+        result.architect.pairing_source or "",
+        _numeric_inches(None if overall is None else overall.vendor),
+        _numeric_inches(None if overall is None else overall.architect),
+        _numeric_inches(None if overall is None else overall.delta),
         *(
             _numeric_inches(result.pieces[index].value) if index < len(result.pieces) else None
             for index in range(maximum_pieces)
@@ -491,12 +560,11 @@ def _write_countertops_sheet(workbook: Workbook, results: Sequence[CountertopRes
         cell.number_format = TEXT_FORMAT
         sheet.column_dimensions[get_column_letter(index)].width = 25
     numeric_columns = {
-        1,
-        5,
-        8,
-        10,
-        12,
-        13,
+        *(
+            index
+            for index, name in enumerate(COUNTERTOP_COLUMNS, start=1)
+            if name in _COUNTERTOP_NUMERIC
+        ),
         *(range(len(COUNTERTOP_COLUMNS) + 1, len(headings) + 1)),
     }
     for row_index, result in enumerate(
