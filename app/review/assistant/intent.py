@@ -67,12 +67,12 @@ _NOUN_AFTER: Final = re.compile(
     r"^\s*(?:status|readiness|rate|rates|reasons?|summary|log|history|process|button|criteria|"
     r"rules?|meaning|means|mean|date|time|count|list|state|steps?|options?|up|of|for|"
     r"what|which|any|whether|if|how|why|fail|pass|by|blockers?|requirements?|checklist|"
-    r"needed|required|items?)\b"
+    r"needed|required|items?|or)\b"
 )
 _WEAK: Final = re.compile(
     r"^(?:pass|fail|set|change|confirm|clear|resolve|decide|record|flag|except|release|"
     r"close out|close|tick|check off|ok|okay|finali[sz]e|complete|update|treat|consider|put|"
-    r"push|let|bump|ignore|skip|note|log|save|give|call|move|count)\b"
+    r"push|let|bump|ignore|skip|note|log|save|give|call|move|count|flip)\b"
 )
 #: What a weak verb must act on to be a command.
 _TARGET: Final = re.compile(
@@ -90,6 +90,35 @@ _MARK_DONE: Final = re.compile(
     r"correct|green)\b"
 )
 #: A weak verb whose object is followed by "up" ("clear this up", "mark up") asks to explain.
+#: A question about what a word means or what an action does is never a request.
+_ABOUT_A_TERM: Final = re.compile(
+    r"\bwhat (?:does|do|would) .*\b(?:mean|do)\b|\bwhat(?:'s| is) the difference\b|"
+    r"\bwhat happens (?:when|if)\b|\bmeaning of\b"
+)
+#: Weaker verbs that act only when an outcome or a decision is named with them.
+_NEEDS_OUTCOME: Final = frozenset(
+    {
+        "treat",
+        "consider",
+        "count",
+        "call",
+        "put",
+        "give",
+        "move",
+        "let",
+        "push",
+        "bump",
+        "note",
+        "log",
+        "save",
+        "update",
+    }
+)
+_OUTCOME_WORD: Final = re.compile(
+    r"\b(?:pass(?:ed|es)?|fail(?:ed|s)?|approved|accepted|done|ok|okay|green|red|fine|resolved|"
+    r"through|correct|right|dismissed|complete|completed|closed|cleared|island|back wall|"
+    r"both ends|exception)\b"
+)
 #: Whole messages that only make sense as a go-ahead to act.
 _BARE_COMMANDS: Final = frozenset(
     {
@@ -116,6 +145,15 @@ _OTHER_REQUESTS: Final = re.compile(
     r"|\bwould you (?:approve|accept|pass|mark|sign off)\b.*\bfor me\b"
     r"|\b(?:freigeben|genehmigen|aprobar|approuver|approvare)\b"
     r"|^mark (?:it|this|that|page \d+|sheet \d+|p\d+)$"
+    r"|\b(?:can|may|could) (?:go|get) through\b|\bwave\b.*\bthrough\b|\bgood to go\b|"
+    r"\bfine by me\b|\bmy (?:ok|okay|approval|blessing|go ahead)\b|\bde ma part\b|\bgoed\b|"
+    r"\bkeur\w*\b|\bmark (?:the |an? |it as an? )?exception\b|^pass on (?:page|sheet|p)\b|"
+    r"\bcan be (?:dismissed|approved|accepted|passed|signed off|closed|resolved|cleared)\b|"
+    r"\bdo the sign off\b|\bget (?:this|it|the \w+) signed off\b|"
+    r"\b(?:finish|wrap up|complete|finali[sz]e|close) (?:the|this) review\b|"
+    r"\bsend (?:it |this |them |the \w+ |page \d+ )?(?:back|to the vendor)\b|"
+    r"\brequest changes\b|\bflip\b.*\bto (?:pass|fail|green|red)\b|\bun ?hold\b|"
+    r"\b(?:choose|pick|use|select) (?:the )?(?:\w+ )?(?:line|row)\b"
 )
 _PHRASAL_UP: Final = re.compile(r"^\s*(?:\w+\s+)?up\b")
 #: "Confirm page 4 needs correction" asks to verify; "confirm the walls are …" answers a question.
@@ -151,6 +189,14 @@ _JUDGING: Final = re.compile(
     r"|\bis (?:page \d+|sheet \d+|it|this|that) (?:ok|okay|good|fine|acceptable|safe) to "
     r"(?:approve|accept|pass|sign off)\b"
     r"|\bwhat (?:should|do|can|must) (?:i|we) (?:approve|accept|pass|sign off|decide|look at)\b"
+    r"|^is (?:page|sheet|p) ?\d+ (?:ok|okay|fine|good|right|correct|wrong|acceptable|approved|"
+    r"accepted|done|signed off|passed|failing|failed|alright)\b"
+    r"|\bdo you think\b|\bwould (?:the vendor|the architect|you|they|anyone|a reviewer) "
+    r"(?:pass|fail|approve|accept|reject)\b"
+    r"|^is (?:the )?sign off (?:blocked|possible|allowed|ready|done)\b"
+    r"|^(?:has|have|was|were|is) (?:page \d+|sheet \d+|it|this|the package|the review) "
+    r"(?:been )?(?:signed off|approved|accepted|confirmed|dismissed|passed)\b"
+    r"|\bshould i (?:worry|be worried)\b"
 )
 _QUESTION_START: Final = re.compile(
     r"^(?:why|what|which|where|when|who|whose|how|is|are|was|were|did|does|do|has|have|had|"
@@ -183,7 +229,7 @@ def _strip_openers(clause: str) -> str:
     return clause
 
 
-def _clause_is_request(clause: str) -> bool:
+def _clause_is_request(clause: str, message: str = "") -> bool:
     clause = _strip_openers(clause)
     if not clause or _QUESTION_START.match(clause):
         return False
@@ -198,8 +244,13 @@ def _clause_is_request(clause: str) -> bool:
         return weak.group(0) in _BARE_WEAK
     if _PHRASAL_UP.match(rest):
         return False
-    if weak.group(0) == "confirm" and _STATEMENT.search(rest) and not _WALL_WORDS.search(rest):
-        return False
+    if weak.group(0) == "confirm":
+        if _WALL_WORDS.search(rest):
+            return re.search(r"\b(?:is|are|as|to)\b", rest) is not None
+        if _STATEMENT.search(rest):
+            return False
+    if weak.group(0) in _NEEDS_OUTCOME:
+        return _TARGET.match(rest) is not None and _OUTCOME_WORD.search(message or rest) is not None
     return _TARGET.match(rest) is not None
 
 
@@ -211,6 +262,8 @@ def is_judging_question(question: str) -> bool:
 def is_decision_request(question: str) -> bool:
     """Whether `question` asks the assistant to decide, mark, approve, sign off or dismiss."""
     text = _normalise(question)
+    if _ABOUT_A_TERM.search(text):
+        return False
     if text.strip(" .!,") in _BARE_COMMANDS or _OTHER_REQUESTS.search(text):
         return True
     if is_judging_question(question):
@@ -223,7 +276,7 @@ def is_decision_request(question: str) -> bool:
         or _WANT_DONE.search(text)
     ):
         return True
-    return any(_clause_is_request(clause) for clause in _clauses(text))
+    return any(_clause_is_request(clause, text) for clause in _clauses(text))
 
 
 def page_mentioned(question: str) -> int | None:
