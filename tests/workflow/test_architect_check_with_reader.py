@@ -191,6 +191,9 @@ def test_the_architects_own_text_matches_an_equal_vendor_overall(
     outcome, reason = _check(session, store, revision, anchor, _pairing(_overall(cabinet)))
 
     assert outcome == "PASS", reason
+    # The database checks the architect's drawn-length witness at COMMIT, not at flush: a test that
+    # never commits cannot see it refuse the reader's own output (the paid proof run failed here).
+    session.commit()
 
 
 def test_the_architects_own_text_flags_a_vendor_overall_an_inch_off(
@@ -203,6 +206,7 @@ def test_the_architects_own_text_flags_a_vendor_overall_an_inch_off(
     outcome, _reason = _check(session, store, revision, anchor, _pairing(_overall(cabinet)))
 
     assert outcome == "FAIL"
+    session.commit()
 
 
 @pytest.mark.parametrize(("label", "why"), [("1' - 5\"", "casework"), ("2' - 7\"", "held")])

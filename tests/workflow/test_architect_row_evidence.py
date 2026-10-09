@@ -346,6 +346,74 @@ def test_equal_widths_paired_by_code_pass_beside_the_width_check(
     assert set(findings[ARCH_RULE]) == {anchors[0]}
 
 
+def _committed_architect_lanes(engine: Engine) -> dict[UUID, set[str]]:
+    """Every saved observation's lanes by side, read back by a fresh session after COMMIT."""
+    with session_factory(engine)() as fresh:
+        sides = {
+            observation_id: side
+            for observation_id, side in fresh.execute(
+                select(CanonicalObservation.id, CanonicalObservation.document_role)
+            ).all()
+        }
+        lanes: dict[UUID, set[str]] = {}
+        for observation_id, lane in fresh.execute(
+            select(
+                EvidenceCorroborationLane.canonical_observation_id, EvidenceCorroborationLane.lane
+            )
+        ).all():
+            lanes.setdefault(observation_id, set()).add(lane)
+        assert all(
+            sides[observation_id] == "ARCH"
+            for observation_id, named in lanes.items()
+            if "DRAWN_LENGTH" in named
+        )
+        return {
+            observation_id: lanes.get(observation_id, set())
+            for observation_id, side in sides.items()
+            if side == "ARCH"
+        }
+
+
+def test_the_architect_check_commits_and_a_rerun_commits_again(
+    session: Session, postgres_engine: Engine, tmp_path: Path
+) -> None:
+    """The whole architect path survives COMMIT, not only flush (the paid proof run failed here).
+
+    The provenance check in the database is deferred to commit, so a test that never commits
+    cannot see it refuse the architect's drawn-length witness. Both rows are compared (one PASS on
+    its overall, one FAIL on its pieces), committed and read back from a fresh session; then the
+    checks run again — reusing the saved architect records — and commit a second time.
+    """
+    package_id, anchors = _sealed_rows(session)
+    run = _architect_drawing(session, anchors[0])
+    overall = _architect_value(session, run, anchors[0], "3' - 7\"")
+    second_run = _architect_drawing(session, anchors[1])
+    first_piece = _architect_value(session, second_run, anchors[1], "1' - 9\"", slot=0)
+    second_piece = _architect_value(
+        session, second_run, anchors[1], "1' - 11\"", slot=1, box=(420, 200, 520, 230)
+    )
+    pairings = {
+        anchors[0]: _pairing(_overall(overall)),
+        anchors[1]: _pairing(_piece(first_piece, 0), _piece(second_piece, 1)),
+    }
+
+    first = _run(session, package_id, tmp_path, pairings)[ARCH_RULE]
+    assert first[anchors[0]].outcome == "PASS", first[anchors[0]].reason
+    assert first[anchors[1]].outcome == "FAIL", first[anchors[1]].reason
+    session.commit()
+
+    committed = _committed_architect_lanes(postgres_engine)
+    assert len(committed) == 3
+    assert all(named == {"DRAWN_LENGTH"} for named in committed.values())
+
+    again = _run(session, package_id, tmp_path, pairings)[ARCH_RULE]
+    assert again[anchors[0]].outcome == "PASS"
+    assert again[anchors[1]].outcome == "FAIL"
+    session.commit()
+
+    assert _committed_architect_lanes(postgres_engine) == committed
+
+
 def test_a_sixteenth_apart_fails(session: Session, tmp_path: Path) -> None:
     package_id, anchors = _sealed_rows(session)
     run = _architect_drawing(session, anchors[0])
