@@ -14,7 +14,15 @@ yes/no question about the row's walls instead (`walls.WALL_PROMPT`), under the s
 model's request rate never doubles. Every attempt's raw text is kept on its usage record, which the
 worker stores privately (#985).
 
-Source: issues #987, #992 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
+**The two Claude readers (#1051)** are asked the same questions with a fixed answer shape and a
+stated effort (`claude_output.py`), carried under a key only the Anthropic adapter reads, so a
+Bedrock reader's request is exactly as before. A Claude reply is checked strictly against its
+shape; a refusal, a token-limit stop or a shape miss is malformed, re-asked once, then abstains. A
+picture the API would resize is refused before the call, and that question abstains with the
+reason recorded. A span whose label is drawn sideways also gets an upright copy of its close-up as
+a third picture, and the prompt says which picture that is.
+
+Source: issues #987, #992, #1051 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
 """
 
 from __future__ import annotations
@@ -42,6 +50,21 @@ from extraction.form_reader.bedrock import (
 from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
 from extraction.product_context import product_context_line, with_product
+from extraction.slot_reader.claude_output import (
+    COUNTER_BREAK_SCHEMA,
+    CROP_SCHEMA,
+    DEFAULT_CLAUDE_EFFORT,
+    OUTPUT_CONFIG_KEY,
+    ROW_CHOICE_SCHEMA,
+    SPAN_SCHEMA,
+    WALL_SCHEMA,
+    ClaudeEffort,
+    PictureWouldBeResized,
+    claude_answer,
+    is_claude_model,
+    output_config,
+    require_picture_fits,
+)
 from extraction.slot_reader.seal import ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
 from vocabulary.semantic_types import ProductType
@@ -52,6 +75,8 @@ if TYPE_CHECKING:
 __all__ = [
     "CLAUDE_SPAN_PROMPT",
     "CLAUDE_SPAN_PROMPT_ID",
+    "CLAUDE_SPAN_PROMPT_IDS",
+    "CLAUDE_UPRIGHT_NOTE",
     "COUNTER_BREAK_PROMPT",
     "COUNTER_BREAK_PROMPT_ID",
     "COUNTER_BREAK_PROMPT_IDS",
@@ -80,7 +105,11 @@ CROP_PROMPT_ID: Final = "slot-crop-v1"
 ROW_PROMPT_ID: Final = "slot-row-choice-v2"
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
 ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v1"})
-CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v1"
+CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v2"
+"""v2 (#1051): a fixed answer shape and stated effort, and an upright third picture for a span
+whose label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`). The two-picture wording is unchanged."""
+#: Earlier wordings, still recognised when a stored run is replayed.
+CLAUDE_SPAN_PROMPT_IDS: Final = frozenset({CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v1"})
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v2"
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
 COUNTER_BREAK_PROMPT_IDS: Final = frozenset({COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v1"})
@@ -155,6 +184,15 @@ CLAUDE_SPAN_PROMPT: Final = (
 )
 
 
+#: Told to a reader shown a third picture (#1051). On both client sets every label drawn sideways
+#: reads from bottom to top, so the copy is turned a quarter clockwise to stand upright.
+CLAUDE_UPRIGHT_NOTE: Final = (
+    "Picture 3 is Picture 2 turned a quarter turn clockwise, so that a label printed sideways "
+    "stands upright. It shows the same span and the same label; use it to read characters that "
+    "are sideways in Picture 2. Copy the label as printed, whichever picture you read it in."
+)
+
+
 def crop_prompt_id(product: ProductType | None = None) -> str:
     """The id a crop request is recorded under: `CROP_PROMPT_ID`, plus the product when the request
     carried the product line (#994)."""
@@ -205,6 +243,24 @@ def _base_model_id(model_id: str) -> str:
     return model_id.removeprefix("us.").removeprefix("global.")
 
 
+def _with_claude_output(
+    request: dict[str, Any], schema: Mapping[str, object], effort: ClaudeEffort
+) -> dict[str, Any]:
+    """A Claude request also states its answer schema and effort; any other reader's is unchanged."""
+    if is_claude_model(request["modelId"]):
+        request[OUTPUT_CONFIG_KEY] = output_config(schema, effort)
+    return request
+
+
+def _parsed_answer(
+    model_id: str, response: Mapping[str, Any], raw: str, schema: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """A Claude reply is checked strictly against its schema; any other reader's as before."""
+    if is_claude_model(model_id):
+        return claude_answer(response, schema)
+    return _extract_json_object(raw)
+
+
 def build_crop_request(
     *,
     model_id: str,
@@ -213,18 +269,26 @@ def build_crop_request(
     product: ProductType | None = None,
     full_view_png: bytes | None = None,
     grounded_claude: bool = False,
+    upright_png: bytes | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> dict[str, Any]:
     """One slot question: whole marked vendor view, close-up, then the question.
 
     With a product (#994) the drawing set's product is one plain line of its own between the
     picture and the question. Without one the request is exactly as before.
+
+    `upright_png` (grounded Claude only, #1051) is the close-up turned upright for a label drawn
+    sideways: a third picture after the close-up, introduced by `CLAUDE_UPRIGHT_NOTE`.
     """
     if not model_id.strip():
         raise ValueError("a crop reader model id must be stated")
-    if not crop_png.startswith(b"\x89PNG\r\n\x1a\n") or (
-        full_view_png is not None and not full_view_png.startswith(b"\x89PNG\r\n\x1a\n")
+    if not crop_png.startswith(b"\x89PNG\r\n\x1a\n") or any(
+        picture is not None and not picture.startswith(b"\x89PNG\r\n\x1a\n")
+        for picture in (full_view_png, upright_png)
     ):
         raise ValueError("a slot reader is shown PNG pictures")
+    if upright_png is not None and not (grounded_claude and full_view_png is not None):
+        raise ValueError("an upright third picture belongs only to a grounded Claude span question")
     if isinstance(max_tokens, bool) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive integer")
     request: dict[str, Any] = {
@@ -239,6 +303,14 @@ def build_crop_request(
                         else [{"image": {"format": "png", "source": {"bytes": full_view_png}}}]
                     ),
                     {"image": {"format": "png", "source": {"bytes": crop_png}}},
+                    *(
+                        []
+                        if upright_png is None
+                        else [
+                            {"image": {"format": "png", "source": {"bytes": upright_png}}},
+                            {"text": CLAUDE_UPRIGHT_NOTE},
+                        ]
+                    ),
                     *([] if product is None else [{"text": product_context_line(product)}]),
                     {"text": CLAUDE_SPAN_PROMPT if grounded_claude else CROP_PROMPT},
                 ],
@@ -250,10 +322,18 @@ def build_crop_request(
         request["outputConfig"] = {"effort": KIMI_EFFORT}
     else:
         request["inferenceConfig"]["temperature"] = 0
-    return request
+    return _with_claude_output(
+        request, SPAN_SCHEMA if grounded_claude else CROP_SCHEMA, claude_effort
+    )
 
 
-def build_row_request(*, model_id: str, page_png: bytes, max_tokens: int) -> dict[str, Any]:
+def build_row_request(
+    *,
+    model_id: str,
+    page_png: bytes,
+    max_tokens: int,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> dict[str, Any]:
     """Ask Opus to choose only among the code-ranked, numbered vendor-page candidates."""
     if not model_id.strip():
         raise ValueError("a row reader model id must be stated")
@@ -278,7 +358,7 @@ def build_row_request(*, model_id: str, page_png: bytes, max_tokens: int) -> dic
         request["outputConfig"] = {"effort": KIMI_EFFORT}
     else:
         request["inferenceConfig"]["temperature"] = 0
-    return request
+    return _with_claude_output(request, ROW_CHOICE_SCHEMA, claude_effort)
 
 
 class _CounterBreakReply(BaseModel):
@@ -290,7 +370,12 @@ class _CounterBreakReply(BaseModel):
 
 
 def build_counter_break_request(
-    *, model_id: str, row_png: bytes, view_png: bytes, max_tokens: int
+    *,
+    model_id: str,
+    row_png: bytes,
+    view_png: bytes,
+    max_tokens: int,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> dict[str, Any]:
     """Ask whether the selected row span contains a drawn tall-appliance bay; never read a value."""
     if not model_id.strip():
@@ -317,7 +402,7 @@ def build_counter_break_request(
         request["outputConfig"] = {"effort": KIMI_EFFORT}
     else:
         request["inferenceConfig"]["temperature"] = 0
-    return request
+    return _with_claude_output(request, COUNTER_BREAK_SCHEMA, claude_effort)
 
 
 def read_counter_break(
@@ -330,11 +415,16 @@ def read_counter_break(
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
     question_packet: Mapping[str, object] | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> CounterBreakAnswer:
     """Ask once, re-asking only malformed JSON; a yes can only withhold the row."""
     for attempt in range(2):
         request = build_counter_break_request(
-            model_id=model_id, row_png=row_png, view_png=view_png, max_tokens=max_tokens
+            model_id=model_id,
+            row_png=row_png,
+            view_png=view_png,
+            max_tokens=max_tokens,
+            claude_effort=claude_effort,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -365,7 +455,9 @@ def read_counter_break(
         raw: str | None = None
         try:
             raw = _response_text(response)
-            parsed = _CounterBreakReply.model_validate(_extract_json_object(raw))
+            parsed = _CounterBreakReply.model_validate(
+                _parsed_answer(model_id, response, raw, COUNTER_BREAK_SCHEMA)
+            )
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -421,12 +513,18 @@ def read_row_choice(
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
     question_packet: Mapping[str, object] | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> RowChoiceAnswer:
     """Ask once, re-asking only malformed JSON; an out-of-range row is a reviewer decision."""
     if not 1 <= candidate_count <= 6:
         raise ValueError("row choice requires one to six code-ranked candidates")
     for attempt in range(2):
-        request = build_row_request(model_id=model_id, page_png=page_png, max_tokens=max_tokens)
+        request = build_row_request(
+            model_id=model_id,
+            page_png=page_png,
+            max_tokens=max_tokens,
+            claude_effort=claude_effort,
+        )
         if attempt:
             request["messages"][0]["content"].append(
                 {"text": "Your previous reply was malformed. Return the one JSON object only."}
@@ -456,7 +554,9 @@ def read_row_choice(
         raw: str | None = None
         try:
             raw = _response_text(response)
-            parsed = _RowChoiceReply.model_validate(_extract_json_object(raw))
+            parsed = _RowChoiceReply.model_validate(
+                _parsed_answer(model_id, response, raw, ROW_CHOICE_SCHEMA)
+            )
             if not 0 <= parsed.row <= candidate_count:
                 raise MalformedFormAnswer("row choice is outside the numbered candidates")
         except (MalformedFormAnswer, ValidationError) as error:
@@ -511,9 +611,12 @@ def read_crop(
     full_view_png: bytes | None = None,
     question_packet: Mapping[str, object] | None = None,
     grounded_claude: bool = False,
+    upright_png: bytes | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> ReaderAnswer:
     """Ask one reader about one crop; re-ask once on a malformed answer, then raise."""
     prompt_id = CLAUDE_SPAN_PROMPT_ID if grounded_claude else crop_prompt_id(product)
+    schema = SPAN_SCHEMA if grounded_claude else CROP_SCHEMA
     for attempt in range(2):
         request = build_crop_request(
             model_id=model_id,
@@ -522,6 +625,8 @@ def read_crop(
             product=product,
             full_view_png=full_view_png,
             grounded_claude=grounded_claude,
+            upright_png=upright_png,
+            claude_effort=claude_effort,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -553,11 +658,13 @@ def read_crop(
         try:
             raw = _response_text(response)
             if grounded_claude:
-                parsed_grounded = _GroundedCropAnswer.model_validate(_extract_json_object(raw))
+                parsed_grounded = _GroundedCropAnswer.model_validate(
+                    _parsed_answer(model_id, response, raw, schema)
+                )
                 parsed: _CropAnswer = parsed_grounded
                 belongs = parsed_grounded.belongs
             else:
-                parsed = _CropAnswer.model_validate(_extract_json_object(raw))
+                parsed = _CropAnswer.model_validate(_parsed_answer(model_id, response, raw, schema))
                 belongs = True
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
@@ -645,7 +752,12 @@ _PNG_SIGNATURE: Final = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
 
 
 def build_wall_request(
-    *, model_id: str, row_png: bytes, view_png: bytes, max_tokens: int
+    *,
+    model_id: str,
+    row_png: bytes,
+    view_png: bytes,
+    max_tokens: int,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> dict[str, Any]:
     """One wall question: the row picture, the whole view, then the question (E3's order)."""
     if not model_id.strip():
@@ -672,7 +784,7 @@ def build_wall_request(
         request["outputConfig"] = {"effort": KIMI_EFFORT}
     else:
         request["inferenceConfig"]["temperature"] = 0
-    return request
+    return _with_claude_output(request, WALL_SCHEMA, claude_effort)
 
 
 def read_walls(
@@ -685,6 +797,7 @@ def read_walls(
     max_tokens: int,
     record_attempt: Callable[[AttemptUsage], None],
     question_packet: Mapping[str, object] | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> WallAnswer:
     """Ask one reader about one row's walls; re-ask once on a malformed answer, then raise.
 
@@ -692,7 +805,11 @@ def read_walls(
     """
     for attempt in range(2):
         request = build_wall_request(
-            model_id=model_id, row_png=row_png, view_png=view_png, max_tokens=max_tokens
+            model_id=model_id,
+            row_png=row_png,
+            view_png=view_png,
+            max_tokens=max_tokens,
+            claude_effort=claude_effort,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -723,7 +840,10 @@ def read_walls(
         raw: str | None = None
         try:
             raw = _response_text(response)
-            answer = _wall_answer(model_id, _WallReply.model_validate(_extract_json_object(raw)))
+            answer = _wall_answer(
+                model_id,
+                _WallReply.model_validate(_parsed_answer(model_id, response, raw, WALL_SCHEMA)),
+            )
         except (MalformedFormAnswer, ValidationError) as error:
             record_attempt(
                 AttemptUsage(
@@ -783,6 +903,29 @@ class CropJob:
     candidate_count: int | None = None
     grounded_claude: bool = False
     question_packet: Mapping[str, object] | None = None
+    upright_png: bytes | None = None
+    """A grounded Claude span whose label is drawn sideways: its close-up turned upright (#1051)."""
+
+    @property
+    def pictures(self) -> tuple[bytes, ...]:
+        """Every picture this job's request shows, in no particular order."""
+        return tuple(
+            picture
+            for picture in (self.png, self.view_png, self.upright_png)
+            if picture is not None
+        )
+
+
+def _job_prompt_id(job: CropJob, product: ProductType | None) -> str:
+    if job.row_question:
+        return ROW_PROMPT_ID
+    if job.counter_break_question:
+        return COUNTER_BREAK_PROMPT_ID
+    if job.wall_question or (
+        job.view_png is not None and job.question_packet is None and not job.grounded_claude
+    ):
+        return WALL_PROMPT_ID
+    return CLAUDE_SPAN_PROMPT_ID if job.grounded_claude else crop_prompt_id(product)
 
 
 def read_crops_parallel(
@@ -800,8 +943,12 @@ def read_crops_parallel(
     spend_cap_usd: Decimal | None = None,
     spend_guard: BatchSpendGuard | None = None,
     pacer: ModelPacer | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> dict[tuple[str, str], ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
+
+    A Claude job whose picture the API would resize is not sent: it abstains, and its attempt is
+    recorded with that failure and no tokens (#1051).
 
     Label crops and wall questions share one pool, one pacer and one concurrency cap, so asking
     both never doubles a model's request rate.
@@ -838,6 +985,25 @@ def read_crops_parallel(
         tuple[str, str],
         ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | None,
     ]:
+        if is_claude_model(job.model_id):
+            try:
+                require_picture_fits(job.pictures, job.model_id)
+            except PictureWouldBeResized:
+                record_attempt(
+                    AttemptUsage(
+                        job.model_id,
+                        _job_prompt_id(job, product),
+                        _job_prompt_id(job, product),
+                        None,
+                        None,
+                        0,
+                        False,
+                        "PictureWouldBeResized",
+                        job.page_index,
+                        question_packet=job.question_packet,
+                    )
+                )
+                return (job.key, job.model_id), None
         for throttle_attempt in range(max_throttle_retries + 1):
             shared_pacer.wait(job.model_id)
             try:
@@ -863,6 +1029,7 @@ def read_crops_parallel(
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
                         question_packet=job.question_packet,
+                        claude_effort=claude_effort,
                     )
                 elif job.counter_break_question:
                     if job.view_png is None:
@@ -878,6 +1045,7 @@ def read_crops_parallel(
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
                         question_packet=job.question_packet,
+                        claude_effort=claude_effort,
                     )
                 elif job.wall_question or (
                     job.view_png is not None
@@ -895,6 +1063,7 @@ def read_crops_parallel(
                         max_tokens=max_tokens,
                         record_attempt=record_attempt,
                         question_packet=job.question_packet,
+                        claude_effort=claude_effort,
                     )
                 else:
                     answer = read_crop(
@@ -908,9 +1077,11 @@ def read_crops_parallel(
                         full_view_png=job.view_png,
                         question_packet=job.question_packet,
                         grounded_claude=job.grounded_claude,
+                        upright_png=job.upright_png,
+                        claude_effort=claude_effort,
                     )
                 return (job.key, job.model_id), answer
-            except MalformedFormAnswer:
+            except (MalformedFormAnswer, PictureWouldBeResized):
                 return (job.key, job.model_id), None
             except Exception as error:
                 from extraction.slot_reader.anthropic import SpendCapExceeded

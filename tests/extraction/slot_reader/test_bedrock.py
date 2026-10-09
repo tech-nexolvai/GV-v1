@@ -17,6 +17,9 @@ from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ModelPacer
 from extraction.slot_reader.anthropic import BatchSpendGuard
 from extraction.slot_reader.bedrock import (
+    CLAUDE_SPAN_PROMPT,
+    CLAUDE_SPAN_PROMPT_ID,
+    CLAUDE_UPRIGHT_NOTE,
     COUNTER_BREAK_PROMPT,
     COUNTER_BREAK_PROMPT_ID,
     CROP_PROMPT,
@@ -31,6 +34,13 @@ from extraction.slot_reader.bedrock import (
     read_crops_parallel,
     read_row_choice,
 )
+from extraction.slot_reader.claude_output import (
+    COUNTER_BREAK_SCHEMA,
+    CROP_SCHEMA,
+    ROW_CHOICE_SCHEMA,
+    SPAN_SCHEMA,
+    WALL_SCHEMA,
+)
 from extraction.slot_reader.seal import ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
@@ -43,6 +53,7 @@ PNG = encode_png(2, 2, bytes(12))
 def reply(payload: object) -> dict[str, Any]:
     text = payload if isinstance(payload, str) else json.dumps(payload)
     return {
+        "stopReason": "end_turn",
         "output": {"message": {"content": [{"text": text}]}},
         "usage": {"inputTokens": 10, "outputTokens": 5},
     }
@@ -143,6 +154,7 @@ def test_claude_spend_guard_is_shared_across_separate_row_and_value_batches() ->
     model = OPUS
     clients = FakeClients(
         lambda _request: {
+            "stopReason": "end_turn",
             "output": {"message": {"content": [{"text": json.dumps(good('2"'))}]}},
             "usage": {"inputTokens": 10, "outputTokens": 3000},
         }
@@ -314,7 +326,11 @@ def test_counter_break_question_is_a_hold_only_two_picture_question() -> None:
         [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
         clients=FakeClients(
             lambda _request: reply(
-                {"contains_tall_appliance": True, "why": "a tall outlined bay is present"}
+                {
+                    "contains_tall_appliance": True,
+                    "stone_ends": "unsure",
+                    "why": "a tall outlined bay is present",
+                }
             )
         ),
         rates=AnthropicRates(),
@@ -530,3 +546,179 @@ def test_counter_break_answer_carries_where_the_stone_ends() -> None:
     answer = answers[("p0:counter-break", model)]
     assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "into_walls"
     assert '"stone_ends"' in COUNTER_BREAK_PROMPT
+
+
+# ---------------------------------------------------------------------------------------------
+# The Claude readers' fixed answer shape, effort and picture limits (#1051)
+# ---------------------------------------------------------------------------------------------
+
+SONNET = "anthropic.claude-sonnet-5-5"
+CLAUDE_PACE = {OPUS: 6000, SONNET: 6000}
+
+
+def span(text: str = '2"', **changes: object) -> dict[str, object]:
+    return good(text) | {"belongs": True} | changes
+
+
+def claude_requests() -> dict[str, tuple[dict[str, Any], dict[str, object]]]:
+    return {
+        "span": (
+            build_crop_request(
+                model_id=OPUS,
+                crop_png=PNG,
+                full_view_png=VIEW,
+                max_tokens=3000,
+                grounded_claude=True,
+            ),
+            SPAN_SCHEMA,
+        ),
+        "crop": (build_crop_request(model_id=OPUS, crop_png=PNG, max_tokens=3000), CROP_SCHEMA),
+        "row": (build_row_request(model_id=OPUS, page_png=PNG, max_tokens=3000), ROW_CHOICE_SCHEMA),
+        "counter_break": (
+            build_counter_break_request(model_id=OPUS, row_png=PNG, view_png=VIEW, max_tokens=3000),
+            COUNTER_BREAK_SCHEMA,
+        ),
+        "walls": (
+            build_wall_request(model_id=OPUS, row_png=PNG, view_png=VIEW, max_tokens=3000),
+            WALL_SCHEMA,
+        ),
+    }
+
+
+@pytest.mark.parametrize("question", ["span", "crop", "row", "counter_break", "walls"])
+def test_every_claude_question_carries_its_answer_shape_and_a_high_effort(question: str) -> None:
+    request, schema = claude_requests()[question]
+
+    assert request["anthropicOutputConfig"] == {
+        "format": {"type": "json_schema", "schema": schema},
+        "effort": "high",
+    }
+
+
+def test_bedrock_readers_requests_are_unchanged() -> None:
+    for model in (QWEN, KIMI):
+        for request in (
+            build_crop_request(model_id=model, crop_png=PNG, max_tokens=400),
+            build_row_request(model_id=model, page_png=PNG, max_tokens=400),
+            build_wall_request(model_id=model, row_png=PNG, view_png=VIEW, max_tokens=400),
+            build_counter_break_request(model_id=model, row_png=PNG, view_png=VIEW, max_tokens=400),
+        ):
+            assert "anthropicOutputConfig" not in request
+            assert set(request) <= {"modelId", "messages", "inferenceConfig", "outputConfig"}
+
+
+def test_the_stated_effort_reaches_every_claude_call() -> None:
+    clients = FakeClients(lambda _request: reply(span()))
+    run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        claude_effort="max",
+    )
+
+    assert [request["anthropicOutputConfig"]["effort"] for request in clients.requests] == ["max"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # A refusal: the adapter passes on no text.
+        {"stopReason": "refusal", "output": {"message": {"content": []}}, "usage": {}},
+        # Cut off at the token limit, partial text and all.
+        {
+            "stopReason": "max_tokens",
+            "output": {"message": {"content": [{"text": '{"belongs": true, "text": "1'}]}},
+        },
+        # Finished, but a key short of its shape.
+        reply(good('2"')),
+        # Finished, with a key the shape does not have.
+        reply(span() | {"why": "extra"}),
+        # Finished, but fenced: a Claude answer must be exactly the JSON object.
+        reply("```json\n" + json.dumps(span()) + "\n```"),
+    ],
+)
+def test_a_refused_cut_off_or_misshapen_claude_answer_abstains(response: dict[str, Any]) -> None:
+    attempts: list[AttemptUsage] = []
+    clients = FakeClients(lambda _request: response)
+
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        record_attempt=attempts.append,
+    )
+
+    assert answers == {("slot", OPUS): None}
+    assert len(clients.requests) == 2, "asked once more, then abstains"
+    assert [attempt.malformed for attempt in attempts] == [True, True]
+
+
+def test_an_oversized_claude_picture_is_refused_before_sending_and_records_why() -> None:
+    attempts: list[AttemptUsage] = []
+    clients = FakeClients(lambda _request: reply(span()))
+    wide = encode_png(2600, 2, bytes(2600 * 2 * 3))
+
+    answers = run(
+        clients,
+        [
+            CropJob("wide", OPUS, 4, wide, VIEW, grounded_claude=True),
+            CropJob("fine", OPUS, 4, PNG, VIEW, grounded_claude=True),
+        ],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        record_attempt=attempts.append,
+    )
+
+    assert answers[("wide", OPUS)] is None
+    assert isinstance(answers[("fine", OPUS)], ReaderAnswer)
+    assert len(clients.requests) == 1
+    refused = [attempt for attempt in attempts if attempt.failure_kind == "PictureWouldBeResized"]
+    assert len(refused) == 1
+    assert refused[0].prompt_id == CLAUDE_SPAN_PROMPT_ID
+    assert refused[0].page_index == 4
+    assert refused[0].input_tokens is None and refused[0].output_tokens is None
+
+
+def test_an_oversized_picture_never_blocks_a_bedrock_reader() -> None:
+    wide = encode_png(2600, 2, bytes(2600 * 2 * 3))
+    answers = run(FakeClients(lambda _request: reply(good('2"'))), [CropJob("k", QWEN, 0, wide)])
+    assert isinstance(answers[("k", QWEN)], ReaderAnswer)
+
+
+def test_a_sideways_span_is_shown_its_upright_copy_third_and_told_which_it_is() -> None:
+    upright = encode_png(2, 3, bytes(18))
+    clients = FakeClients(lambda _request: reply(span()))
+
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, VIEW, grounded_claude=True, upright_png=upright)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+    )
+
+    assert isinstance(answers[("slot", OPUS)], ReaderAnswer)
+    content = clients.requests[0]["messages"][0]["content"]
+    assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [
+        VIEW,
+        PNG,
+        upright,
+    ]
+    texts = [part["text"] for part in content if "text" in part]
+    assert texts == [CLAUDE_UPRIGHT_NOTE, CLAUDE_SPAN_PROMPT]
+    assert "Picture 3 is Picture 2 turned a quarter turn clockwise" in CLAUDE_UPRIGHT_NOTE
+
+
+def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() -> None:
+    request, _ = claude_requests()["span"]
+    content = request["messages"][0]["content"]
+
+    assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
+    assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v2"
+
+
+def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
+    with pytest.raises(ValueError, match="upright"):
+        build_crop_request(model_id=QWEN, crop_png=PNG, max_tokens=400, upright_png=PNG)

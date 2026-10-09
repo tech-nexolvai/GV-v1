@@ -12,8 +12,10 @@ from urllib.error import HTTPError
 
 import pytest
 
+from evidence.crop import encode_png
 from extraction.form_reader.runner import _is_throttle
 from extraction.slot_reader.anthropic import (
+    ESTIMATED_INPUT_TOKENS_PER_CALL,
     AnthropicMessagesClient,
     AnthropicRequestError,
     BatchSpendGuard,
@@ -21,9 +23,18 @@ from extraction.slot_reader.anthropic import (
     SpendLimitedClient,
     ThreadLocalAnthropicClients,
     anthropic_messages_request,
+    input_token_upper_bound,
+)
+from extraction.slot_reader.claude_output import (
+    SPAN_SCHEMA,
+    PictureWouldBeResized,
+    output_config,
+    visual_tokens,
 )
 
 MODEL = "anthropic.claude-opus-5-5"
+FULL = encode_png(4, 2, bytes(24))
+CROP = encode_png(2, 2, bytes(12))
 REQUEST: dict[str, object] = {
     "modelId": MODEL,
     "system": [{"text": "Read only the marked span."}],
@@ -31,14 +42,62 @@ REQUEST: dict[str, object] = {
         {
             "role": "user",
             "content": [
-                {"image": {"format": "png", "source": {"bytes": b"full"}}},
-                {"image": {"format": "png", "source": {"bytes": b"crop"}}},
+                {"image": {"format": "png", "source": {"bytes": FULL}}},
+                {"image": {"format": "png", "source": {"bytes": CROP}}},
                 {"text": "Copy the printed label."},
             ],
         }
     ],
     "inferenceConfig": {"maxTokens": 3000},
+    "anthropicOutputConfig": output_config(SPAN_SCHEMA, "high"),
 }
+SPAN_TEXT = json.dumps(
+    {
+        "belongs": True,
+        "text": '13 1/8"',
+        "stacked": False,
+        "combined": False,
+        "readable": True,
+        "no_dimension": False,
+    }
+)
+
+
+class Response:
+    def __init__(self, payload: object) -> None:
+        self.payload = json.dumps(payload).encode()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+def provider_reply(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "model": "claude-opus-5-5",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": SPAN_TEXT}],
+        "usage": {"input_tokens": 45, "output_tokens": 12},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def converse_with(payload: object) -> tuple[dict[str, object], list[object]]:
+    sent: list[object] = []
+
+    def fake_urlopen(request: object, *, timeout: float) -> Response:
+        sent.append(request)
+        return Response(payload)
+
+    with patch("extraction.slot_reader.anthropic.urlopen", side_effect=fake_urlopen):
+        result = AnthropicMessagesClient("private-test-key").converse(**REQUEST)
+    return dict(result), sent
 
 
 def test_messages_request_keeps_both_images_and_maps_the_exact_token_bound() -> None:
@@ -51,8 +110,8 @@ def test_messages_request_keeps_both_images_and_maps_the_exact_token_bound() -> 
     content = messages[0]["content"]
     assert isinstance(content, list)
     assert [item["type"] for item in content] == ["image", "image", "text"]
-    assert content[0]["source"]["data"] == base64.b64encode(b"full").decode("ascii")
-    assert content[1]["source"]["data"] == base64.b64encode(b"crop").decode("ascii")
+    assert content[0]["source"]["data"] == base64.b64encode(FULL).decode("ascii")
+    assert content[1]["source"]["data"] == base64.b64encode(CROP).decode("ascii")
 
 
 def test_messages_request_allows_self_contained_reader_prompts_without_system_field() -> None:
@@ -72,6 +131,8 @@ def test_request_refuses_a_non_anthropic_model() -> None:
 def test_response_is_adapted_to_the_existing_reader_shape_without_losing_usage() -> None:
     response_bytes = json.dumps(
         {
+            "model": "claude-opus-5-5",
+            "stop_reason": "end_turn",
             "content": [{"type": "text", "text": '{"label":"13 1/8\\""}'}],
             "usage": {"input_tokens": 45, "output_tokens": 12},
         }
@@ -249,3 +310,157 @@ def test_concurrent_claude_calls_reserve_atomically_before_generation() -> None:
 
     assert client.generated == 1
     assert sum(isinstance(result, SpendCapExceeded) for result in results) == 1
+
+
+# --- #1051: fixed answer shape, stated effort, exact picture sizing, refusals --------------------
+
+
+def test_every_request_states_its_answer_schema_and_effort() -> None:
+    body = anthropic_messages_request(**REQUEST)
+
+    assert body["output_config"] == {
+        "format": {"type": "json_schema", "schema": SPAN_SCHEMA},
+        "effort": "high",
+    }
+    assert "anthropicOutputConfig" not in body
+
+
+def test_a_request_without_its_answer_schema_and_effort_is_refused() -> None:
+    bare = {key: value for key, value in REQUEST.items() if key != "anthropicOutputConfig"}
+    with pytest.raises(ValueError, match="answer schema and effort"):
+        anthropic_messages_request(**bare)
+    with pytest.raises(ValueError, match="effort"):
+        anthropic_messages_request(
+            **{
+                **REQUEST,
+                "anthropicOutputConfig": {
+                    "format": output_config(SPAN_SCHEMA, "high")["format"],
+                    "effort": "adaptive",
+                },
+            }
+        )
+
+
+def test_every_picture_asks_for_an_error_rather_than_a_resize() -> None:
+    body = anthropic_messages_request(**REQUEST)
+    images = [block for block in body["messages"][0]["content"] if block["type"] == "image"]
+
+    assert len(images) == 2
+    assert all(block["transformations"] == {"oversized_image": "error"} for block in images)
+
+
+def test_an_oversized_picture_is_refused_before_anything_is_sent() -> None:
+    wide = encode_png(2600, 2, bytes(2600 * 2 * 3))
+    request = {
+        **REQUEST,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": wide}}},
+                    {"text": "Copy the printed label."},
+                ],
+            }
+        ],
+    }
+    with (
+        patch("extraction.slot_reader.anthropic.urlopen") as urlopen,
+        pytest.raises(PictureWouldBeResized, match="2600x2"),
+    ):
+        AnthropicMessagesClient("private-test-key").converse(**request)
+    urlopen.assert_not_called()
+
+
+def test_no_server_side_fallback_is_ever_requested() -> None:
+    result, sent = converse_with(provider_reply())
+
+    body = json.loads(sent[0].data)
+    assert "fallbacks" not in body
+    assert sent[0].get_header("Anthropic-beta") is None
+    assert result["stopReason"] == "end_turn"
+
+
+def test_only_a_finished_turns_text_blocks_are_passed_on() -> None:
+    result, _ = converse_with(
+        provider_reply(
+            content=[
+                {"type": "thinking", "thinking": "private reasoning", "signature": "x"},
+                {"type": "text", "text": SPAN_TEXT},
+            ]
+        )
+    )
+
+    assert result["output"]["message"]["content"] == [{"type": "text", "text": SPAN_TEXT}]
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens", "pause_turn"])
+def test_a_refused_or_cut_off_reply_passes_on_no_text(stop: str) -> None:
+    result, _ = converse_with(
+        provider_reply(stop_reason=stop, content=[{"type": "text", "text": SPAN_TEXT[:20]}])
+    )
+
+    assert result["stopReason"] == stop
+    assert result["output"]["message"]["content"] == []
+    assert result["usage"] == {"inputTokens": 45, "outputTokens": 12}
+
+
+def test_a_reply_from_another_model_is_never_passed_on_as_the_asked_models() -> None:
+    result, _ = converse_with(provider_reply(model="claude-other-1"))
+
+    assert result["stopReason"] == "model_mismatch"
+    assert result["output"]["message"]["content"] == []
+
+
+def test_a_dated_snapshot_of_the_asked_model_is_the_same_model() -> None:
+    result, _ = converse_with(provider_reply(model="claude-opus-5-5-20260901"))
+
+    assert result["stopReason"] == "end_turn"
+    assert result["output"]["message"]["content"] != []
+
+
+def test_the_input_upper_bound_counts_each_picture_by_its_tiles() -> None:
+    view = encode_png(1650, 1275, bytes(1650 * 1275 * 3))
+    bound = input_token_upper_bound(
+        {
+            "messages": [
+                {
+                    "content": [
+                        {"image": {"source": {"bytes": view}}},
+                        {"image": {"source": {"bytes": view}}},
+                        {"image": {"source": {"bytes": view}}},
+                        {"text": "abc"},
+                    ]
+                }
+            ],
+            "anthropicOutputConfig": output_config(SPAN_SCHEMA, "high"),
+        }
+    )
+
+    assert bound > 3 * visual_tokens(1650, 1275) > 2 * ESTIMATED_INPUT_TOKENS_PER_CALL
+
+
+def test_a_large_request_reserves_at_least_its_upper_bound() -> None:
+    view = encode_png(1650, 1275, bytes(1650 * 1275 * 3))
+    request = {
+        **REQUEST,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": view}}},
+                    {"image": {"format": "png", "source": {"bytes": view}}},
+                    {"text": "Copy the printed label."},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": 1},
+    }
+    bound = input_token_upper_bound(request)
+    rate = Decimal("0.004") / 1000
+    # Just below the bound's price: the old fixed estimate (2 x 2048 tokens) would have fitted.
+    guard = BatchSpendGuard(Decimal(bound) * rate, FakeRates())
+    client = FakeCountedClient(input_tokens=10, output_tokens=1)
+
+    with pytest.raises(SpendCapExceeded):
+        SpendLimitedClient(client, guard).converse(**request)
+    assert client.generated == 0
