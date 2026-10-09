@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session, aliased
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from vocabulary.check_holds import CHECK_HOLD_REASONS, STONE_SHORT_OF_ENDS
+from vocabulary.check_holds import (
+    CHECK_HOLD_REASONS,
+    STONE_SHORT_OF_ENDS,
+    with_no_stone_note,
+)
 from vocabulary.reviewer_reasons import reviewer_reason
 
 
@@ -492,6 +496,11 @@ def slot_rows_and_unchosen_pages(
             held = held or next(
                 (CHECK_HOLD_REASONS.get(code, code) for code in sorted(check_holds)), None
             )
+        # A reader's "no stone drawn here" is named in a reason the row already has; never a hold.
+        held = with_no_stone_note(
+            held,
+            (flag for candidate in candidates for flag in candidate.ambiguity_flags or ()),
+        )
         is_vendor = roles[(page_index, rank)] == "shop"
         also = (
             tuple(

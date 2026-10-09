@@ -2137,6 +2137,18 @@
               }
             ]
           },
+          "drawn_length_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"Drawn length not checked (no scale): ...\" naming the row's sealed readings whose drawn length could not be checked, because the row had too few other pieces to give a scale; they rest on the two readers' identical text alone (#1107). Null when every reading was checked.",
+            "title": "Drawn Length Note"
+          },
           "expected_total": {
             "anyOf": [
               {

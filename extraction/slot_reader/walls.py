@@ -41,6 +41,7 @@ __all__ = [
     "E3_WALL_SETTINGS",
     "WALL_PROMPT",
     "WALL_PROMPT_ID",
+    "WALL_PROMPT_IDS",
     "CodeWallClues",
     "HatchSeen",
     "Side",
@@ -54,24 +55,65 @@ __all__ = [
     "wall_pictures",
 ]
 
-WALL_PROMPT_ID: Final = "slot-walls-v1"
+WALL_PROMPT_ID: Final = "slot-walls-v2"
+"""v2 (#1111): every answer field is defined, each with one example of a yes and one of a no, all
+invented. v1 never said what `view` means (yet two readers saying `plan` can seal `back_only`), how
+to judge a back wall in an elevation, or that a wall-to-wall dimension shows a wall only at an end
+it meets: a run can be shorter than wall to wall. It also names the colour of our marks (magenta,
+which no reviewer markup uses) and says that the vendor's own words at an end may decide that wall
+(`_code_wall_clues` and `_read_wall_clues` in `workflow/slot_reader.py`; `seal_walls` is unchanged).
+v1 (#992): E3's question (2026-10-07, `research/E3/ask.py`)."""
+#: Earlier wordings, still recognised when a stored run is replayed. Their answers have one shape.
+WALL_PROMPT_IDS: Final = frozenset({WALL_PROMPT_ID, "slot-walls-v1"})
 BACK_LEFT_RIGHT: Final = "back_left_right"
 BACK_ONLY: Final = "back_only"
 
-#: E3's wall question (2026-10-07, `research/E3/ask.py`), generic: no client value or drawing.
+#: The wall question, generic: no client value or drawing; every example is invented.
 WALL_PROMPT: Final = (
-    "These pictures come from a cabinet maker's shop drawing for a stone countertop job.\n"
-    "Picture 1 shows one countertop width row (the magenta line; the two magenta verticals mark "
-    "its left and right ends) with the drawing around it.\n"
-    "Picture 2 shows the whole vendor view that row belongs to (the row is the magenta line).\n\n"
-    "For this run, is there a wall:\n"
-    "- at the LEFT end of the run?\n"
-    "- at the RIGHT end of the run?\n"
-    "- BEHIND the run (a back wall)?\n"
+    "These pictures come from a cabinet maker's shop drawing for a stone countertop job. Our marks "
+    "are drawn in magenta (a bright pink-purple), a colour no reviewer markup uses. Red or yellow "
+    "marks are a reviewer's markup, not the vendor's drawing: ignore them.\n"
+    "Picture 1 shows one countertop width row, the RUN: the magenta horizontal line, with two "
+    "magenta vertical lines marking its LEFT and RIGHT ends. Picture 1 also shows the drawing "
+    "beyond each end, about half the run's width again: that is the neighbourhood of the run, "
+    "not the run.\n"
+    "Picture 2 shows the whole vendor view the run belongs to (the run is the magenta line).\n\n"
     "Count only evidence you can see: a hatched wall section, a wall line, the word WALL, a "
-    "wall-to-wall dimension, or a plan view showing the walls.\n"
-    'Answer "yes", "no" (you can see the end is open: nothing beside it) or "unsure" (the '
-    "drawing does not show it).\n"
+    "wall-to-wall dimension, or a plan view showing the walls. A wall-to-wall dimension is "
+    "evidence for an end ONLY when its end tick or arrow meets that end of the run (the magenta "
+    "vertical): a run can be shorter than wall to wall, and a wall-to-wall dimension that ends "
+    "beyond the run's end says nothing about that end.\n"
+    'Answer each side "yes", "no" (you can see the end is open: nothing stands beside it) or '
+    '"unsure" (the drawing does not show it). The fields:\n'
+    '- "left": is there a wall at the LEFT end of the run, at the left magenta vertical? '
+    "Example yes: "
+    "a band of hatching touches the left vertical. Example no: beyond the left vertical the floor "
+    "line runs on with nothing standing on it.\n"
+    '- "right": the same question at the RIGHT end, at the right magenta vertical. Example yes: '
+    "a wall line stands at the right vertical with the word WALL beside it. Example no: the run "
+    "ends at a finished end panel and open floor is drawn beyond it.\n"
+    '- "behind": is there a wall BEHIND the run, along its whole length (a back wall)? In a plan '
+    "(top) view it is the wall line or hatched band along the back edge of the countertop. In an "
+    "elevation (front view) you look straight at the back wall, so it seldom shows as a line: "
+    'answer "yes" there only when something drawn says so, such as the word WALL on the surface '
+    'behind the cabinets or wall cabinets hung on that surface; answer "no" only when the drawing '
+    'shows open space behind the run, such as an island; otherwise "unsure". Example yes: a plan '
+    "view with a hatched wall band along the countertop's back edge. Example no: a plan view of "
+    "an island with open floor on every side.\n"
+    '- "view": what kind of drawing Picture 2 is, where the run is drawn. "elevation": a front '
+    'view, looking at the cabinet fronts (doors, drawers, heights). "plan": a top view, looking '
+    "down on the countertop's outline and depth, with the walls cut through as lines or hatched "
+    'bands. "other": anything else, such as a section, a detail, or a view you cannot name. '
+    "Example plan: a top view of an outlined counter with a sink cut-out and hatched walls "
+    'around it. Example not plan ("elevation"): a view of door and drawer fronts standing on a '
+    "floor line.\n"
+    '- "left_evidence", "right_evidence", "behind_evidence": a few words (at most twelve) saying '
+    'what you saw that decided that answer, or for unsure what is missing. Example: "hatched '
+    'wall band touches the left end". Not an example: "yes" or "there is a wall", which repeat '
+    "the answer without saying what you saw.\n"
+    "Code also reads the vendor's own words at the run's end pieces: a filler, a field cut or the "
+    "word WALL at an end counts as a wall there, and when both ends have such words code decides "
+    "the walls whatever the answers say. Still answer only from what you see in the pictures.\n"
     "Return ONLY this JSON:\n"
     '{"left": "yes|no|unsure", "right": "yes|no|unsure", "behind": "yes|no|unsure",\n'
     ' "left_evidence": "at most 12 words", "right_evidence": "at most 12 words", '

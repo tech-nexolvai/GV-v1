@@ -279,11 +279,8 @@ def test_the_ais_saying_what_each_dimension_measures_is_read_back_when_nothing_p
 
     effective = latest_architect_pairing(session, stored.anchor.id)
     assert effective is not None
-    assert (effective.source, effective.status, effective.pairs) == (
-        "none",
-        "nothing_comparable",
-        (),
-    )
+    # Code found no fit for a single span, and two "nothing" answers keep that (#1109).
+    assert (effective.source, effective.status, effective.pairs) == ("none", "no_fit", ())
     assert effective.architect_measures == ((stored.candidates[0].id, "blocking_or_backing"),)
     assert any("blocking or backing" in reason for reason in effective.reasons)
 

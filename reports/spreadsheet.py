@@ -137,6 +137,9 @@ COUNTERTOP_COLUMNS: Final = (
     "architect_overall_vendor_in",
     "architect_overall_architect_in",
     "architect_overall_difference_in",
+    # Readings whose drawn length could not be checked (no scale, #1107). Last, so no earlier
+    # column moves; the per-piece columns still come after it.
+    "drawn_length",
 )
 
 #: The columns above that hold a number, by name: an exact value with a finite decimal form only.
@@ -577,6 +580,7 @@ def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tupl
         _numeric_inches(None if overall is None else overall.vendor),
         _numeric_inches(None if overall is None else overall.architect),
         _numeric_inches(None if overall is None else overall.delta),
+        result.drawn_length_note or "",
         *(
             _numeric_inches(result.pieces[index].value) if index < len(result.pieces) else None
             for index in range(maximum_pieces)

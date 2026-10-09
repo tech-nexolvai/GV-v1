@@ -18,6 +18,7 @@ import { WallGlyph } from './wall-glyph';
 import { CountertopStrip } from './CountertopStrip';
 import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from './architect-line';
 import { SplitPageNote } from './split-page-note';
+import { CarriedOver } from './carried-over';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -269,6 +270,7 @@ function DecidedBy({ row }: { row: CountertopResult }) {
           <span tabIndex={0} className="inline-flex items-center gap-1.5 rounded-md text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span aria-hidden="true" className="num flex size-6 items-center justify-center rounded-full bg-secondary text-[10px] font-medium">{initials(decision.actor)}</span>
             <span>{decisionWords(decision.action, row.outcome)}</span>
+            {decision.carried_over && <CarriedOver />}
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-72">
@@ -453,7 +455,7 @@ function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowAct
         {needsYou ? (
           <span className="text-muted-foreground">Pending</span>
         ) : finding?.reviewer_action ? (
-          <span>{decisionWords(finding.reviewer_action, result.outcome ?? null)}{finding.reviewed_by ? <span className="text-muted-foreground"> · {finding.reviewed_by}</span> : null}</span>
+          <span>{decisionWords(finding.reviewer_action, result.outcome ?? null)}{finding.reviewed_by ? <span className="text-muted-foreground"> · {finding.reviewed_by}</span> : null}{finding.reviewer_carried_over && <> <CarriedOver /></>}</span>
         ) : result.outcome === 'PASS' || result.outcome === 'FAIL' ? (
           <span className="text-muted-foreground">Automatic</span>
         ) : (

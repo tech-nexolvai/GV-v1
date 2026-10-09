@@ -18,7 +18,12 @@ check, never the readers'), a label at the drawing's edge (E2 guard 3), a stacke
 a crowded crop, an uncertain slot or row, a reader that abstained or was unsure: each sends the
 reading to the person with a plain reason. None of them can make a reading count.
 
-Source: issues #987, #992 · Verification: `tests/extraction/slot_reader/test_seal.py`
+**Unsure is never evidence of absence** (#1110). "No dimension here" counts only when both readers
+say so explicitly: `no_dimension`, or "no, this span has no label" with an empty text. A reader
+that is unsure whether the label belongs to the span sends it to the person (`unsure`); it never
+becomes "no label", which is what can start the equal-shares read-through (`equal_shares.py`).
+
+Source: issues #987, #992, #1110 · Verification: `tests/extraction/slot_reader/test_seal.py`
 """
 
 from __future__ import annotations
@@ -39,19 +44,26 @@ from units.measurement import Measurement
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
+    "STACKED_BY_CODE",
     "TEXT_LAYER",
+    "Belongs",
     "LabelOutcome",
     "LabelState",
     "OwnerOutcome",
     "ReaderAnswer",
     "normalise_text",
     "owner_outcome",
+    "parse_belongs",
     "plain_dimension",
     "seal_label",
 ]
 
 #: The file's own text, as a source. Its "maker" is the drawing, which no model shares.
 TEXT_LAYER: Final = "pdf-text-layer"
+#: The flag on a label *code* found to be a stacked fraction — the file's own text, or the
+#: fraction-bar detector — beside `stacked`, which any source may set (#1107). Only this one takes a
+#: piece out of its row's drawn-length scale: a reader's answer may add a hold, never remove a check.
+STACKED_BY_CODE: Final = "stacked-by-code"
 
 _QUOTES: Final = {
     "“": '"',
@@ -75,6 +87,31 @@ def normalise_text(text: str) -> str:
     return " ".join(text.split())
 
 
+class Belongs(StrEnum):
+    """A Claude reader's answer to "does this label belong to the marked span?" (#1110)."""
+
+    YES = "yes"
+    NO = "no"
+    """Sure: the marked span has no printed label of its own here."""
+    UNSURE = "unsure"
+    """Not sure. Never evidence that the span has no label."""
+
+
+def parse_belongs(value: object) -> Belongs:
+    """A stored or live `belongs` answer: `"yes"`, `"no"` or `"unsure"` (`claude-slot-span-v4`),
+    or the boolean of v1 to v3, read as it always was (true is yes, false is no)."""
+    if value is True:
+        return Belongs.YES
+    if value is False:
+        return Belongs.NO
+    if isinstance(value, str):
+        try:
+            return Belongs(value)
+        except ValueError:
+            pass
+    raise ValueError(f"belongs must be yes, no or unsure: {value!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class ReaderAnswer:
     """What one reader said about one crop. Only `text` can become a value; the flags only hold
@@ -86,11 +123,29 @@ class ReaderAnswer:
     no_dimension: bool
     stacked: bool
     combined: bool
-    belongs: bool = True
+    belongs: Belongs = Belongs.YES
+    """A reader not asked the ownership question (every non-Claude crop reader) counts as yes."""
+
+    def __post_init__(self) -> None:
+        # A v1 to v3 caller may still pass the old boolean; it means what it always meant.
+        object.__setattr__(self, "belongs", parse_belongs(self.belongs))
 
     @property
     def usable(self) -> bool:
-        return self.belongs and self.readable and not self.no_dimension and bool(self.text.strip())
+        return (
+            self.belongs is Belongs.YES
+            and self.readable
+            and not self.no_dimension
+            and bool(self.text.strip())
+        )
+
+    @property
+    def says_no_dimension(self) -> bool:
+        """An explicit "nothing to read here": `no_dimension`, or a sure "no" with no text.
+        Never an unsure answer."""
+        if self.belongs is Belongs.UNSURE:
+            return False
+        return self.no_dimension or (self.belongs is Belongs.NO and not self.text.strip())
 
 
 class LabelState(StrEnum):
@@ -152,6 +207,7 @@ def seal_label(
     allow_stacked: bool,
     row_ambiguity: str | None,
     allow_claude_pair: bool = False,
+    held_before_reading: str | None = None,
 ) -> LabelOutcome:
     """Seal one label's reading, or say why the person decides.
 
@@ -160,6 +216,10 @@ def seal_label(
     reader that abstained is simply absent. Two answers from readers of one maker are refused —
     same-maker agreement never seals (Measurements 2026-10-06: Kimi × 2 agreed on wrong values).
     `ink` is `None` when the page's ink could not be read, which holds a reading back.
+
+    `held_before_reading` is the page's own hold reason when the whole row was held before any
+    reader was asked (#1114). It changes only the words of a label no reader answered — `not-asked`
+    with that reason, never "only one reader" — and never what is held or sealed.
     """
     sources: list[tuple[str, str, bool]] = []  # (source, text, usable)
     claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
@@ -202,9 +262,12 @@ def seal_label(
         soft.append(("row-ambiguous", f"not sure which row is the countertop: {row_ambiguity}"))
     if label.ambiguous_slot:
         soft.append(("slot-ambiguous", "the label sits between two pieces"))
-    stacked = label.text_stacked or stacked_by_bar or any(answer.stacked for answer in answers)
+    stacked_by_code = label.text_stacked or stacked_by_bar
+    stacked = stacked_by_code or any(answer.stacked for answer in answers)
     if stacked:
         flags.append("stacked")
+        if stacked_by_code:
+            flags.append(STACKED_BY_CODE)
         if not allow_stacked:
             soft.append(("stacked", "stacked fraction"))
     if any(answer.combined for answer in answers):
@@ -214,8 +277,9 @@ def seal_label(
     # The file's own text saying "a word or a tag" is a fact whatever ink it sits on; two readers
     # saying "no dimension" counts only when both were asked.
     a_word = label.lane is Lane.TEXT and _is_a_word(label)
+    unsure = any(answer.belongs is Belongs.UNSURE for answer in answers)
     no_dimension = a_word or (
-        len(answers) == 2 and all(answer.no_dimension or not answer.belongs for answer in answers)
+        len(answers) == 2 and not unsure and all(answer.says_no_dimension for answer in answers)
     )
     agreed: str | None = None
     if len(sources) >= 2 and all(usable for _, _, usable in sources) and len(set(texts)) == 1:
@@ -243,6 +307,8 @@ def seal_label(
 
     if hard is not None and not a_word:
         return review(*hard, keep_suggestion=False)
+    if unsure and not a_word:
+        return review("unsure", "a reader was not sure this label belongs to the marked span")
     if no_dimension:
         return LabelOutcome(
             state=LabelState.NOT_A_DIMENSION,
@@ -263,6 +329,13 @@ def seal_label(
         and plain_dimension(normalise_text(label.text or ""), allow_explicit_mm=claude_pair) is None
     ):
         return review("not-plain", "the label has words or a sum; review the value")
+    if not answers and held_before_reading is not None:
+        return review(
+            "not-asked", f"the readers were not asked; this row waits: {held_before_reading}"
+        )
+    if not sources:
+        # A drawn label no reader answered: never asked, or every reader abstained (#1114).
+        return review("not-asked", "no reader read this label")
     if len(sources) < 2:
         return review("one-reader-missing", "only one reader")
     if not all(usable for _, _, usable in sources):

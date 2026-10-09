@@ -41,7 +41,7 @@ from extraction.slot_reader.claude_output import (
     SPAN_SCHEMA,
     WALL_SCHEMA,
 )
-from extraction.slot_reader.seal import ReaderAnswer
+from extraction.slot_reader.seal import Belongs, ReaderAnswer
 from extraction.slot_reader.walls import WALL_PROMPT, Side, WallAnswer
 
 QWEN = "qwen.qwen3-vl-235b-a22b"
@@ -224,7 +224,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
     def response(_request: dict[str, Any]) -> Mapping[str, Any]:
         nonlocal calls
         calls += 1
-        payload = good('2"') if calls == 1 else good('2"') | {"belongs": True}
+        payload = good('2"') if calls == 1 else good('2"') | {"belongs": "yes"}
         return reply(payload)
 
     model = OPUS
@@ -239,7 +239,7 @@ def test_claude_span_answer_requires_ownership_and_reasks_only_when_malformed() 
 
     assert calls == 2
     assert answers[("slot", model)] is not None
-    assert answers[("slot", model)].belongs is True
+    assert answers[("slot", model)].belongs is Belongs.YES
 
 
 def test_row_request_shows_one_numbered_vendor_view_and_the_approved_prompt() -> None:
@@ -601,7 +601,7 @@ def test_label_crops_and_wall_questions_share_one_batch_and_each_gets_its_own_an
         Side.UNSURE,
         "plan",
     )
-    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v1"}
+    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v2"}
     assert all(attempt.raw_response_text for attempt in attempts), "raw answers are kept (#985)"
 
 
@@ -644,6 +644,95 @@ def test_counter_break_answer_carries_where_the_stone_ends() -> None:
     assert '"stone_ends"' in COUNTER_BREAK_PROMPT
 
 
+def _definition(prompt: str, field: str) -> str:
+    """The prompt's definition of one answer field or value: its own line, `- "field": ...`."""
+    lines = [
+        line
+        for line in prompt.splitlines()
+        if re.match(rf'\s*-? ?(?:"[a-z_]+", )*"{field}"(?:, "[a-z_]+")*:', line)
+    ]
+    assert len(lines) == 1, f"{field} is defined once, on its own line: {lines}"
+    return lines[0]
+
+
+def test_the_counter_break_question_defines_every_field_and_value_with_examples() -> None:
+    """#1111: every field the reader answers, and every `stone_ends` value but `unsure`, has a
+    definition with an invented example; the yes/no fields show one of each."""
+    assert COUNTER_BREAK_PROMPT_ID == "claude-counter-break-v3"
+    for field in COUNTER_BREAK_SCHEMA["properties"]:  # type: ignore[attr-defined]
+        assert _definition(COUNTER_BREAK_PROMPT, field)
+    appliance = _definition(COUNTER_BREAK_PROMPT, "contains_tall_appliance")
+    assert "Example true:" in appliance and "Example false:" in appliance
+    why = _definition(COUNTER_BREAK_PROMPT, "why")
+    assert "Example:" in why and "Not an example:" in why
+    values = COUNTER_BREAK_SCHEMA["properties"]["stone_ends"]["enum"]  # type: ignore[index]
+    assert "open_end" in values
+    for value in values:
+        definition = _definition(COUNTER_BREAK_PROMPT, value)
+        assert value == "unsure" or "Example" in definition, value
+    assert "Example not to_walls:" in COUNTER_BREAK_PROMPT
+    assert re.search(r"[0-9]+ ?(\"|in|mm)", COUNTER_BREAK_PROMPT) is None, "no client value"
+
+
+def test_the_counter_break_question_says_which_span_and_which_colour_is_ours() -> None:
+    """The marked span is between the two magenta verticals of Picture 2, which shows the drawing
+    beyond each end; our marks are magenta, never the reviewer's red or yellow."""
+    text = COUNTER_BREAK_PROMPT
+    assert "Picture 2" in text and "between those two magenta verticals" in text
+    assert "beyond each end" in text and "neighbour" in text
+    assert "magenta" in text and "no reviewer markup uses" in text
+    assert "red" not in text.replace("Red or yellow", "").lower().split()
+
+
+def test_an_open_end_answer_parses_for_every_reader() -> None:
+    view = encode_png(4, 2, bytes(24))
+    for model in (OPUS, KIMI):
+        answers = read_crops_parallel(
+            [CropJob("p0:counter-break", model, 0, PNG, view, counter_break_question=True)],
+            clients=FakeClients(
+                lambda _request: reply(
+                    {
+                        "contains_tall_appliance": False,
+                        "stone_ends": "open_end",
+                        "why": "open floor beyond the right end",
+                    }
+                )
+            ),
+            rates=AnthropicRates() if model == OPUS else Rates(),
+            calls_per_minute={model: 6000},
+            max_concurrent_calls=1,
+            max_tokens=100,
+            max_throttle_retries=0,
+            retry_backoff_seconds=0.001,
+            record_attempt=lambda _attempt: None,
+        )
+        answer = answers[("p0:counter-break", model)]
+        assert isinstance(answer, CounterBreakAnswer) and answer.stone_ends == "open_end", model
+
+
+@pytest.mark.parametrize(
+    ("stored", "stone_ends"),
+    [
+        ({"contains_tall_appliance": True, "why": "fridge"}, "unsure"),  # v1: no stone_ends
+        ({"contains_tall_appliance": False, "stone_ends": "to_walls", "why": "w"}, "to_walls"),
+        ({"contains_tall_appliance": False, "stone_ends": "no_stone", "why": "w"}, "no_stone"),
+    ],
+)
+def test_stored_v1_and_v2_counter_break_answers_still_parse(
+    stored: dict[str, object], stone_ends: str
+) -> None:
+    from extraction.slot_reader.bedrock import (
+        COUNTER_BREAK_PROMPT_IDS,
+        _CounterBreakReply,
+        parse_stored_reader_answer,
+    )
+
+    assert {"claude-counter-break-v1", "claude-counter-break-v2"} <= COUNTER_BREAK_PROMPT_IDS
+    assert COUNTER_BREAK_PROMPT_ID in COUNTER_BREAK_PROMPT_IDS
+    parsed = _CounterBreakReply.model_validate(parse_stored_reader_answer(json.dumps(stored)))
+    assert parsed.stone_ends == stone_ends
+
+
 # ---------------------------------------------------------------------------------------------
 # The Claude readers' fixed answer shape, effort and picture limits (#1051)
 # ---------------------------------------------------------------------------------------------
@@ -653,7 +742,7 @@ CLAUDE_PACE = {OPUS: 6000, SONNET: 6000}
 
 
 def span(text: str = '2"', **changes: object) -> dict[str, object]:
-    return good(text) | {"belongs": True} | changes
+    return good(text) | {"belongs": "yes"} | changes
 
 
 def claude_requests() -> dict[str, tuple[dict[str, Any], dict[str, object]]]:
@@ -812,7 +901,7 @@ def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() ->
 
     assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
     assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v3"
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
 
 
 def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
@@ -835,7 +924,69 @@ def test_the_claude_label_question_defines_every_answer_field() -> None:
     assert "A single dimension is not combined, even with a stacked fraction" in CLAUDE_SPAN_PROMPT
     assert "inches in brackets" in CLAUDE_SPAN_PROMPT and "is not combined" in CLAUDE_SPAN_PROMPT
     assert CLAUDE_SPAN_PROMPT_IDS == {
+        "claude-slot-span-v4",
         "claude-slot-span-v3",
         "claude-slot-span-v2",
         "claude-slot-span-v1",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# #1110: "unsure" is its own answer, and the span's box has a colour the reviewer never uses
+# ---------------------------------------------------------------------------------------------
+
+
+def test_the_claude_label_question_asks_yes_no_or_unsure_and_names_the_magenta_box() -> None:
+    """v3 told a reader to answer false when merely unsure, and two such answers counted as "no
+    label". It also called the span's mark a red box while telling the reader to ignore red
+    markup. v4 defines `belongs` as yes / no / unsure and names the box's real colour."""
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+    assert '- "belongs": "yes" if you are sure' in CLAUDE_SPAN_PROMPT
+    assert '"no" only if you are sure the marked span has no printed dimension label' in (
+        CLAUDE_SPAN_PROMPT
+    )
+    assert '"unsure" if you cannot tell' in CLAUDE_SPAN_PROMPT
+    assert "Being unsure is never a no" in CLAUDE_SPAN_PROMPT
+    assert '"belongs": "yes|no|unsure"' in CLAUDE_SPAN_PROMPT
+    assert "or you are unsure, set belongs to false" not in CLAUDE_SPAN_PROMPT
+    assert "magenta" in CLAUDE_SPAN_PROMPT and "magenta-boxed span" in CLAUDE_SPAN_PROMPT
+    assert "red box" not in CLAUDE_SPAN_PROMPT and "red-boxed" not in CLAUDE_SPAN_PROMPT
+    assert "red, blue or yellow reviewer markup" in CLAUDE_SPAN_PROMPT
+    assert SPAN_SCHEMA["properties"]["belongs"] == {  # type: ignore[index]
+        "type": "string",
+        "enum": ["yes", "no", "unsure"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [("yes", Belongs.YES), ("no", Belongs.NO), ("unsure", Belongs.UNSURE)],
+)
+def test_a_claude_span_answer_keeps_each_of_its_three_words(word: str, expected: Belongs) -> None:
+    clients = FakeClients(lambda _request: reply(span('2"' if word == "yes" else "", belongs=word)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    answer = answers[("slot", OPUS)]
+    assert isinstance(answer, ReaderAnswer) and answer.belongs is expected
+    assert answer.usable is (word == "yes")
+
+
+def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> None:
+    """The live v4 question takes only its three words; the old boolean is for stored answers."""
+    clients = FakeClients(lambda _request: reply(span(belongs=False)))
+    answers = run(
+        clients,
+        [CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True)],
+        rates=AnthropicRates(),
+        calls_per_minute=CLAUDE_PACE,
+        max_tokens=2000,
+    )
+
+    assert answers[("slot", OPUS)] is None
+    assert len(clients.requests) == 2, "asked once more, then abstained"

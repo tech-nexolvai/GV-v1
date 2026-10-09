@@ -72,6 +72,9 @@ class ArchitectRowOperands:
     architect_texts: dict[str, str] = field(default_factory=dict)
     """The architect's printed text for each compared pair, by its operand name
     (`architect_overall`, `architect_piece[i]`): what the reviewer finds on the sheet."""
+    vendor_unwitnessed: tuple[int | None, ...] = ()
+    """The compared vendor readings whose drawn length could not be checked (no scale), by slot
+    (`None` for the overall): a PASS resting on one waits for the reviewer (#1107)."""
 
 
 def architect_row_operands(
@@ -149,7 +152,14 @@ def architect_row_operands(
             str(decision.id) if human_vendor and decision is not None else None
         ),
     )
-    return ArchitectRowOperands(True, None, operands, architect_texts)
+    compared_slots = {pair.vendor_slot for pair in plan.pairs}
+    return ArchitectRowOperands(
+        True,
+        None,
+        operands,
+        architect_texts,
+        tuple(position for position in vendor.unwitnessed if position in compared_slots),
+    )
 
 
 def _architect_operand(

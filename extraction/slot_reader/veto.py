@@ -21,6 +21,12 @@ back, and a row with one held piece offers nothing anyway.
 **It never sets or changes a value**, never seals anything, and never picks between readings. Its
 only output is which sealed readings to hold back.
 
+**Which pieces scale (#1107).** A piece is left out of its neighbours' scale only when *code*
+confirms it is a stacked fraction (the file's text, or the fraction-bar detector): a reader's
+`stacked` answer alone never removes a piece, as a single reader's answer may add a hold but never
+weaken a check. Where no scale can be derived for a reading, `drawn_length_witnessed` leaves it out,
+so the stage records that its drawn length was not checked (`vocabulary/drawn_length.py`).
+
 Source: issue #992 · Verification: `tests/extraction/slot_reader/test_veto.py`
 """
 
@@ -37,6 +43,7 @@ __all__ = [
     "MINIMUM_SCALE_PIECES",
     "DrawnReading",
     "drawn_length_vetoes",
+    "drawn_length_witnessed",
 ]
 
 #: The admin's band (2026-10-07): a reading more than a tenth away from drawn × scale is rejected.
@@ -57,13 +64,43 @@ class DrawnReading:
     drawn: Fraction
     """Its drawn length on the page, in points, exactly."""
     stacked: bool
-    """A stacked fraction: checked like any reading, but never part of a scale."""
+    """A stacked fraction *code* confirmed (#1107): checked like any reading, but never part of a
+    scale. A reader's `stacked` answer alone is not this."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, Fraction) or not isinstance(self.drawn, Fraction):
             raise TypeError("a drawn reading is exact: Fraction value and drawn length")
         if self.drawn <= 0:
             raise ValueError("a drawn length is positive")
+
+
+def _scale(reading: DrawnReading, pieces: Sequence[DrawnReading]) -> Fraction | None:
+    """The row's scale for `reading`, from the *other* sealed, non-stacked pieces; `None` if none."""
+    sources = [piece for piece in pieces if piece is not reading and not piece.stacked]
+    if len(sources) < MINIMUM_SCALE_PIECES:
+        return None
+    return sum((piece.value for piece in sources), Fraction(0)) / sum(
+        (piece.drawn for piece in sources), Fraction(0)
+    )
+
+
+def _checked(
+    pieces: Sequence[DrawnReading], overall: DrawnReading | None
+) -> list[tuple[DrawnReading, Fraction]]:
+    """Each reading the drawing can check, with the length the drawing expects of it."""
+    if overall is not None and overall.index is not None:
+        raise ValueError("the overall has no slot index")
+    if any(piece.index is None for piece in pieces):
+        raise ValueError("a piece has a slot index")
+    expected: list[tuple[DrawnReading, Fraction]] = []
+    for reading in (*pieces, *((overall,) if overall is not None else ())):
+        scale = _scale(reading, pieces)
+        if scale is None:
+            continue
+        length = reading.drawn * scale
+        if length > 0:
+            expected.append((reading, length))
+    return expected
 
 
 def drawn_length_vetoes(
@@ -74,21 +111,19 @@ def drawn_length_vetoes(
     `pieces` holds only the row's *sealed* pieces; an unsealed one is not a reading to check or to
     scale by. An empty result changes nothing.
     """
-    if overall is not None and overall.index is not None:
-        raise ValueError("the overall has no slot index")
-    if any(piece.index is None for piece in pieces):
-        raise ValueError("a piece has a slot index")
-    vetoes: dict[int | None, str] = {}
-    for reading in (*pieces, *((overall,) if overall is not None else ())):
-        sources = [piece for piece in pieces if piece is not reading and not piece.stacked]
-        if len(sources) < MINIMUM_SCALE_PIECES:
-            continue
-        scale = sum((piece.value for piece in sources), Fraction(0)) / sum(
-            (piece.drawn for piece in sources), Fraction(0)
-        )
-        expected = reading.drawn * scale
-        if expected <= 0:
-            continue
-        if abs(reading.value - expected) > DRAWN_LENGTH_BAND * expected:
-            vetoes[reading.index] = DRAWN_LENGTH_REASON
-    return vetoes
+    return {
+        reading.index: DRAWN_LENGTH_REASON
+        for reading, expected in _checked(pieces, overall)
+        if abs(reading.value - expected) > DRAWN_LENGTH_BAND * expected
+    }
+
+
+def drawn_length_witnessed(
+    pieces: Sequence[DrawnReading], overall: DrawnReading | None
+) -> frozenset[int | None]:
+    """The sealed readings the drawing could check at all, by slot (`None` for the overall) (#1107).
+
+    A reading missing here had no scale: its drawn length was not checked, which the stage records.
+    A vetoed reading is here — it was checked.
+    """
+    return frozenset(reading.index for reading, _expected in _checked(pieces, overall))

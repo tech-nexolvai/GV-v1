@@ -46,7 +46,8 @@ from app.schemas.visual_ui import (
 )
 from units.imperial import format_inches
 from verdict.outcomes import Outcome
-from vocabulary.check_holds import CHECK_HOLD_REASONS
+from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
+from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
@@ -436,6 +437,33 @@ def _row_values(
     return overall, pieces, field_per_end, field_count, expected, (located(None), overall_crop)
 
 
+def _drawn_length_note(row: Any, verdict_inputs: dict[str, VerdictInput]) -> str | None:
+    """ "Drawn length not checked (no scale)" for the row's sealed readings the check missed (#1107).
+
+    Only readings: where the recorded check used a value the reviewer typed for that position, the
+    reading's missing witness no longer matters and is not named.
+    """
+    positions: set[int | None] = set()
+    for candidate in row.candidates:
+        flags = candidate.ambiguity_flags or ()
+        if NO_DRAWN_LENGTH_WITNESS not in flags or not candidate_is_sealed(candidate):
+            continue
+        slot = next((flag.removeprefix("slot:") for flag in flags if flag.startswith("slot:")), "")
+        if slot == "overall":
+            position: int | None = None
+            name = "countertop_width"
+        elif slot.isdigit():
+            position = int(slot)
+            name = f"piece_widths[{position}]"
+        else:
+            continue
+        recorded = verdict_inputs.get(name)
+        if recorded is not None and recorded.evidence_status == "HUMAN_CONFIRMED":
+            continue
+        positions.add(position)
+    return not_checked_note(positions)
+
+
 def _wall(row: Any) -> WallLayoutOut:
     decision = row.decision
     candidate = row.wall_candidate
@@ -797,6 +825,10 @@ def _countertop_results_for_revision(
             crops,
         )
         decision = None if finding is None else decisions.get(finding.id)
+        drawn_length_note = _drawn_length_note(
+            row,
+            {} if finding is None else verdict_inputs_by_finding.get(finding.check_run_id, {}),
+        )
         wall_flags = set(
             () if row.wall_candidate is None else row.wall_candidate.ambiguity_flags or ()
         )
@@ -848,8 +880,10 @@ def _countertop_results_for_revision(
             )
             hold = HoldOut(
                 code=code,
-                reason=reviewer_reason(flags, row.held_reason)
-                or CHECK_HOLD_REASONS.get(code, code),
+                reason=with_no_stone_note(
+                    reviewer_reason(flags, row.held_reason) or CHECK_HOLD_REASONS.get(code, code),
+                    flags,
+                ),
             )
         # PASS findings may not persist a delta column. When checked, derive the signed difference
         # only from the immutable recorded operand and recorded expected-width trace above.
@@ -890,6 +924,7 @@ def _countertop_results_for_revision(
                     code_clue_used=any(flag.startswith("wall-clue:") for flag in wall_flags),
                 ),
                 hold=hold,
+                drawn_length_note=drawn_length_note,
                 architect=_architect_block(
                     session,
                     row,

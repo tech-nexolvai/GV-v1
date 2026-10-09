@@ -275,3 +275,119 @@ def test_wall_settings_refuse_a_float() -> None:
         replace(E3_WALL_SETTINGS, hatch_span_pt=40.0)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         replace(E3_WALL_SETTINGS, hatch_parallel_count=Decimal(12))  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------------------------
+# The wall question, v2 (#1111): every field defined, old answers unchanged
+# ---------------------------------------------------------------------------------------------
+
+
+def _wall_definition(field: str) -> str:
+    """The prompt's definition of one answer field: the line that starts `- "field"`."""
+    lines = [line for line in WALL_PROMPT.splitlines() if line.startswith("- ") and field in line]
+    assert len(lines) == 1, f"{field} is defined once, on its own line: {lines}"
+    return lines[0]
+
+
+def test_the_wall_question_defines_every_field_with_a_yes_and_a_no_example() -> None:
+    from extraction.slot_reader.claude_output import WALL_SCHEMA
+
+    assert WALL_PROMPT_ID == "slot-walls-v2"
+    for field in WALL_SCHEMA["properties"]:  # type: ignore[attr-defined]
+        assert f'"{field}"' in _wall_definition(f'"{field}"'), field
+    for side in ("left", "right", "behind"):
+        definition = _wall_definition(f'- "{side}"')
+        assert "Example yes:" in definition and "Example no:" in definition, side
+    view = _wall_definition('- "view"')
+    assert "Picture 2" in view
+    for kind in ('"elevation"', '"plan"', '"other"'):
+        assert kind in view
+    assert "Example plan:" in view and "Example not plan" in view
+    evidence = _wall_definition('"left_evidence"')
+    assert '"right_evidence"' in evidence and '"behind_evidence"' in evidence
+    assert "a few words" in evidence and "Example:" in evidence and "Not an example:" in evidence
+
+
+def test_the_wall_question_says_how_to_judge_a_back_wall_in_an_elevation() -> None:
+    behind = _wall_definition('- "behind"')
+    assert "In an elevation" in behind and "In a plan" in behind
+
+
+def test_a_wall_to_wall_dimension_counts_only_where_its_ends_meet_the_runs_ends() -> None:
+    assert "wall-to-wall dimension is evidence for an end ONLY when" in WALL_PROMPT
+    assert "a run can be shorter than wall to wall" in WALL_PROMPT
+
+
+def test_the_wall_question_says_the_vendors_words_may_decide_a_wall() -> None:
+    """`seal_walls` lets both ends' vendor-word clues decide before any reader's no (unchanged);
+    the question now says so instead of leaving the reader to think its answer always counts."""
+    assert "code decides the walls whatever the answers say" in WALL_PROMPT
+    outcome = seal_walls(
+        both(NO, NO), hatch=NO_HATCH, row_ambiguity=None, code_clues=CodeWallClues(True, True)
+    )
+    assert outcome.config == BACK_LEFT_RIGHT and outcome.source == "vendor-drawing-clues"
+
+
+def test_the_wall_marks_are_named_magenta_and_reviewer_colours_are_not_ours() -> None:
+    assert "magenta" in WALL_PROMPT and "no reviewer markup uses" in WALL_PROMPT
+    assert "Red or yellow marks are a reviewer's markup" in WALL_PROMPT
+
+
+def test_both_wall_ids_are_recognised_where_stored_runs_are_replayed() -> None:
+    from extraction.slot_reader.walls import WALL_PROMPT_IDS
+
+    assert WALL_PROMPT_IDS == {"slot-walls-v2", "slot-walls-v1"}
+    assert WALL_PROMPT_IDS <= READER_AGREEMENT_PROMPT_IDS
+
+
+#: Stored wall answers (the shape is the same for v1 and v2), the two readers' pair, and the
+#: outcome `seal_walls` gave them before #1111. Invented.
+_STORED_WALLS = [
+    (
+        ("yes", "yes", "unsure", "elevation"),
+        ("yes", "yes", "no", "elevation"),
+        BACK_LEFT_RIGHT,
+        None,
+    ),
+    (("no", "no", "yes", "plan"), ("no", "no", "yes", "plan"), BACK_ONLY, None),
+    (("no", "no", "yes", "elevation"), ("no", "no", "yes", "plan"), None, "back-wall-unknown"),
+    (("yes", "no", "yes", "plan"), ("yes", "yes", "yes", "plan"), None, "walls-not-agreed"),
+    (
+        ("yes", "unsure", "unsure", "other"),
+        ("yes", "yes", "unsure", "other"),
+        None,
+        "walls-not-agreed",
+    ),
+]
+
+
+@pytest.mark.parametrize(("first", "second", "config", "code"), _STORED_WALLS)
+def test_stored_wall_answers_parse_and_seal_exactly_as_before(
+    first: tuple[str, str, str, str],
+    second: tuple[str, str, str, str],
+    config: str | None,
+    code: str | None,
+) -> None:
+    import json
+
+    from extraction.slot_reader.bedrock import _wall_answer, _WallReply, parse_stored_reader_answer
+
+    def stored(model: str, sides: tuple[str, str, str, str]) -> WallAnswer:
+        left, right, behind, view = sides
+        raw = json.dumps(
+            {
+                "left": left,
+                "right": right,
+                "behind": behind,
+                "left_evidence": "synthetic",
+                "right_evidence": "synthetic",
+                "behind_evidence": "synthetic",
+                "view": view,
+            }
+        )
+        return _wall_answer(model, _WallReply.model_validate(parse_stored_reader_answer(raw)))
+
+    outcome = seal_walls(
+        (stored(KIMI, first), stored(QWEN, second)), hatch=NO_HATCH, row_ambiguity=None
+    )
+    assert (outcome.config, outcome.code) == (config, code)
