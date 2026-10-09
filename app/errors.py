@@ -80,18 +80,40 @@ def _envelope(request: Request, code: str, message: str, http_status: int) -> JS
     )
 
 
+def _too_long(exc: Exception) -> str:
+    """Name each text field that was too long, and its limit, never the text (#1137).
+
+    A reviewer's note over its limit is the one refusal a person can fix without the API reference,
+    and only if told which field and how long it may be. Built from the error's type, the field's
+    name and the declared limit, so nothing the caller submitted is repeated.
+    """
+    if not isinstance(exc, RequestValidationError):
+        return ""
+    sentences = []
+    for error in exc.errors():
+        if error.get("type") != "string_too_long":
+            continue
+        location = error.get("loc") or ()
+        name = location[-1] if location else None
+        field = name if isinstance(name, str) and name.isidentifier() else "A text field"
+        limit = (error.get("ctx") or {}).get("max_length")
+        sentences.append(f" {field} is longer than the {limit} characters allowed.")
+    return "".join(sentences)
+
+
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
     """FastAPI's own shape, replaced.
 
     The detail is deliberately not echoed back. Pydantic's error list contains the submitted values,
     and a rejected request may carry a dimension read off a client's drawing — `AGENTS.md` §6 keeps
-    drawing content out of anything that gets logged or forwarded.
+    drawing content out of anything that gets logged or forwarded. A field that was too long is
+    named with its limit (`_too_long`), which repeats nothing submitted.
     """
     return _envelope(
         request,
         "invalid_request",
         "The request body or parameters did not validate. Check the API reference for the "
-        "expected shape; the submitted values are deliberately not echoed back.",
+        "expected shape; the submitted values are deliberately not echoed back." + _too_long(exc),
         status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 

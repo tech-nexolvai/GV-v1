@@ -553,3 +553,61 @@ def test_nothing_in_the_loop_types_a_candidate_on_its_own(
     )
 
     assert guesses == [None], f"something assigned a semantic type: {guesses}"
+
+
+def test_a_project_member_who_may_not_confirm_evidence_cannot_confirm_a_reading(
+    session: Session, store: LocalStore, client: Any
+) -> None:
+    """**Confirming a reading is a role, not just membership** (#1137).
+
+    A rules administrator belongs to the project and may read it, but may not confirm evidence. The
+    request is refused like every other refusal (404, nothing said) and writes nothing: no canonical
+    observation, no link to the reading, no audit event. A reviewer then confirms the same reading,
+    so the refusal was the role and not the data.
+    """
+    from app.auth import Principal, Role, authenticate
+    from app.models import AuditEvent, CanonicalObservation, EvidenceSupportingCandidate
+
+    package_id, revision, run_id = _uploaded(session, store)
+    run_all(
+        _factory(session),
+        package_revision_id=revision.id,
+        workflow_run_id=run_id,
+        stages=DatabaseStages(store, missing_space=MISSING_SPACE),
+    )
+    session.expire_all()
+    listed = client.get(
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}/candidates?page_number=1"
+    )
+    assert listed.status_code == 200, listed.text
+    depth = next(row for row in listed.json()["candidates"] if row["raw_text"] == "648 [25 1/2]")
+    confirm = (
+        f"/api/v1/projects/{PROJECT}/packages/{package_id}"
+        f"/candidates/{depth['candidate_id']}/confirm"
+    )
+
+    def written() -> tuple[int, ...]:
+        return tuple(
+            len(session.execute(select(model.id)).all())
+            for model in (CanonicalObservation, EvidenceSupportingCandidate, AuditEvent)
+        )
+
+    before = written()
+    rules_admin = Principal(
+        id="rules@example.com", roles=frozenset({Role.RULE_ADMIN}), projects=frozenset({PROJECT})
+    )
+    client.app.dependency_overrides[authenticate] = lambda: rules_admin
+    refused = client.post(confirm, json={"semantic_type": DEPTH_TYPE})
+
+    assert refused.status_code == 404, refused.text
+    assert refused.json()["message"] == "Not found"
+    session.expire_all()
+    assert written() == before
+
+    reviewer = Principal(
+        id="ana@example.com", roles=frozenset({Role.REVIEWER}), projects=frozenset({PROJECT})
+    )
+    client.app.dependency_overrides[authenticate] = lambda: reviewer
+    accepted = client.post(confirm, json={"semantic_type": DEPTH_TYPE})
+
+    assert accepted.status_code == 201, accepted.text

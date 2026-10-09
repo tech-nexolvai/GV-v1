@@ -234,6 +234,71 @@ def test_the_revision_is_read_off_the_finding_not_the_request(session: Session) 
     assert body["package_revision_id"] == str(revision.id)
 
 
+def test_a_note_as_long_as_its_column_is_kept_and_a_longer_one_is_a_clear_422(
+    session: Session,
+) -> None:
+    """**The API's limit is the column's** (#1137). The form allowed 2,000 characters into a
+    1,000-character column, so a note of 1,001-2,000 passed validation and crashed in the
+    database. Now the longest note that fits is stored whole, and one more character is refused
+    by validation, naming the limit, with nothing written."""
+    revision = _revision(session, PROJECT_A)
+    finding = _finding(session, revision)
+    client = _client(session, PROJECT_A)
+    opened = _open(client, PROJECT_A, revision)
+    url = f"{API_PREFIX}/projects/{PROJECT_A}/review-sessions/{opened['id']}/actions"
+
+    longest = "n" * 1000
+    kept = client.post(
+        url, json={"finding_id": str(finding.id), "action": "dismiss", "note": longest}
+    )
+    assert kept.status_code == 201, kept.text
+    assert kept.json()["note"] == longest
+
+    refused = client.post(
+        url, json={"finding_id": str(finding.id), "action": "dismiss", "note": longest + "n"}
+    )
+    assert refused.status_code == 422, refused.text
+    assert "note is longer than the 1000 characters allowed" in refused.json()["message"]
+    assert longest not in refused.text
+    assert (
+        len(
+            session.scalars(select(ReviewAction).where(ReviewAction.finding_id == finding.id)).all()
+        )
+        == 1
+    )
+
+
+def test_every_review_note_and_reason_limit_is_its_column_length() -> None:
+    """The structural guard behind the test above: each free-text field a reviewer types is
+    accepted only up to what its column holds, so validation, not the database, says no."""
+    from app.models.review import ReviewException
+    from app.schemas.review import GrantException, RecordAction
+
+    def limit(model: type, field: str) -> object:
+        return next(
+            getattr(rule, "max_length", None)
+            for rule in model.model_fields[field].metadata
+            if getattr(rule, "max_length", None) is not None
+        )
+
+    assert limit(RecordAction, "note") == ReviewAction.__table__.c.note.type.length
+    assert limit(GrantException, "reason") == ReviewException.__table__.c.reason.type.length
+
+
+def test_an_exception_reason_longer_than_its_column_is_a_clear_422(session: Session) -> None:
+    project_id = uuid4()
+    revision = _revision(session, project_id)
+    finding = _finding(session, revision)
+    session.commit()
+    client = _client(session, project_id)
+    opened = _open(client, project_id, revision)
+
+    response = _grant(client, project_id, opened["id"], finding, reason="r" * 1001)
+
+    assert response.status_code == 422, response.text
+    assert "reason is longer than the 1000 characters allowed" in response.json()["message"]
+
+
 # ---------------------------------------------------------------------------
 # Refusals
 # ---------------------------------------------------------------------------

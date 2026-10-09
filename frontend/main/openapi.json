@@ -5636,7 +5636,7 @@
           "note": {
             "anyOf": [
               {
-                "maxLength": 2000,
+                "maxLength": 1000,
                 "type": "string"
               },
               {
@@ -9074,7 +9074,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/candidates/{candidate_id}/confirm": {
       "post": {
-        "description": "Turn one reading into evidence a rule may be run against.\n\nThe value is not in the request, and that is the point of the whole story: the reviewer is\nconfirming the number the extractor read, not supplying one. A body carrying a value would be the\nold form path wearing a new name.\n\nRuns in the request rather than a background task because it is one row's worth of work and a\nreviewer is waiting on the answer \u2014 and because the audit event naming them has to commit with it.",
+        "description": "Turn one reading into evidence a rule may be run against.\n\nThe value is not in the request, and that is the point of the whole story: the reviewer is\nconfirming the number the extractor read, not supplying one. A body carrying a value would be the\nold form path wearing a new name.\n\nRuns in the request rather than a background task because it is one row's worth of work and a\nreviewer is waiting on the answer \u2014 and because the audit event naming them has to commit with it.\n\n**Confirming evidence is a role, not just project membership** (#1137), as on every other\nendpoint that turns a reading into something a check uses: a rules administrator may see the\nproject and still may not confirm. Refused before anything is read or written.",
         "operationId": "confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post",
         "parameters": [
           {

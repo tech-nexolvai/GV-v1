@@ -335,6 +335,10 @@ export interface paths {
          *
          *     Runs in the request rather than a background task because it is one row's worth of work and a
          *     reviewer is waiting on the answer — and because the audit event naming them has to commit with it.
+         *
+         *     **Confirming evidence is a role, not just project membership** (#1137), as on every other
+         *     endpoint that turns a reading into something a check uses: a rules administrator may see the
+         *     project and still may not confirm. Refused before anything is read or written.
          */
         post: operations["confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post"];
         delete?: never;

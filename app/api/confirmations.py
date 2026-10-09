@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
-from app.auth import Principal, authenticate, require_project_access
+from app.auth import Action, Principal, authenticate, require_action, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
 from app.evidence.sides import ReadingSides, SideRefusal
 from app.models.document import (
@@ -413,6 +413,7 @@ def list_semantic_types(
 )
 def confirm_candidate(
     principal: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
     session: Annotated[Session, Depends(get_session)],
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
@@ -428,6 +429,10 @@ def confirm_candidate(
 
     Runs in the request rather than a background task because it is one row's worth of work and a
     reviewer is waiting on the answer — and because the audit event naming them has to commit with it.
+
+    **Confirming evidence is a role, not just project membership** (#1137), as on every other
+    endpoint that turns a reading into something a check uses: a rules administrator may see the
+    project and still may not confirm. Refused before anything is read or written.
     """
     revision = _revision(session, project_id, package_id)
 

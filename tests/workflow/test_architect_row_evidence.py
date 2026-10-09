@@ -1393,9 +1393,9 @@ def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
     from app.auth.roles import Principal, Role
     from app.models.evidence import ArchitectPairingRecord
     from app.review.approval import (
-        PAIRING_NEEDS_RERUN,
+        INPUTS_CHANGED_NEEDS_RERUN,
         UnaddressedReviewRequired,
-        _revisions_with_unchecked_pairings,
+        _revisions_with_unchecked_inputs,
         approve_package,
     )
     from app.review.session import ReviewActionKind, open_session, record_action
@@ -1416,7 +1416,7 @@ def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
             note="synthetic: not checkable here",
         )
     before = approval_readiness(session, revision.id)
-    assert before.blocking_findings == 0 and before.reason != PAIRING_NEEDS_RERUN
+    assert before.blocking_findings == 0 and before.reason != INPUTS_CHANGED_NEEDS_RERUN
 
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
@@ -1436,16 +1436,16 @@ def test_a_pairing_saved_after_the_checks_blocks_sign_off_until_they_run_again(
     session.flush()
 
     after = approval_readiness(session, revision.id)
-    assert not after.can_approve and after.reason == PAIRING_NEEDS_RERUN
-    assert _revisions_with_unchecked_pairings(session, [revision.id]) == {revision.id}
+    assert not after.can_approve and after.reason == INPUTS_CHANGED_NEEDS_RERUN
+    assert _revisions_with_unchecked_inputs(session, [revision.id]) == {revision.id}
     principal = Principal(id="synthetic approver", roles=frozenset(Role), projects=frozenset())
     with pytest.raises(UnaddressedReviewRequired, match="after the last check run"):
         approve_package(session, principal=principal, review_session_id=sitting.id)
 
     _run(session, package_id, tmp_path, {anchors[0]: _combined("nothing_comparable", None)})
 
-    assert _revisions_with_unchecked_pairings(session, [revision.id]) == set()
-    assert approval_readiness(session, revision.id).reason != PAIRING_NEEDS_RERUN
+    assert _revisions_with_unchecked_inputs(session, [revision.id]) == set()
+    assert approval_readiness(session, revision.id).reason != INPUTS_CHANGED_NEEDS_RERUN
 
 
 # ---------------------------------------------------------------------------

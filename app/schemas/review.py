@@ -79,8 +79,11 @@ class RecordAction(BaseModel):
     finding_id: UUID
     action: Literal[ReviewActionKind.CONFIRM, ReviewActionKind.DISMISS]
     """Corrections and exceptions must use their own endpoints and record their terms."""
-    note: str | None = Field(default=None, max_length=2000)
-    """Why. Optional for a confirmation, and the thing a later reader most wants for anything else."""
+    note: str | None = Field(default=None, max_length=1000)
+    """Why. Optional for a confirmation, and the thing a later reader most wants for anything else.
+
+    At most 1,000 characters, which is what `review_actions.note` holds (#1137). The limit was 2,000,
+    so a longer note passed validation and then failed in the database."""
 
 
 class ReviewActionOut(BaseModel):
