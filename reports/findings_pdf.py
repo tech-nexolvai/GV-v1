@@ -525,8 +525,10 @@ class _Document:
         if not results and not empty_pages:
             return
 
+        # The section before this one closed its own page, so the first countertop page is the fresh
+        # page already open; only a continued page closes the one before it (#1097).
         def new_page(continued: bool = False) -> None:
-            if self.page_number:
+            if continued:
                 self._footer()
                 self.canvas.showPage()
             self.page_number += 1
@@ -635,6 +637,9 @@ class _Document:
             self.y = card_bottom - 12
         if empty_pages:
             self._pages_without_countertop(lambda: new_page(continued=True))
+        # Close the last countertop page like the sections before, so FINDINGS starts its own page.
+        self._footer()
+        self.canvas.showPage()
 
     def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
         """The pages both AIs found no countertop line on, each with the AI's reason (#1093)."""
