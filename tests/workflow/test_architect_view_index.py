@@ -1,7 +1,7 @@
 """The architect's own file indexed view by view, and the matcher wired into the reading (#1166).
 
 Verification for `workflow/architect_view_index.record_architect_view_index` as the extraction stage
-calls it, and for `DatabaseStages._read_slots` building the matcher (`MatchingArchitectPairing`)
+calls it, and for `DatabaseStages._read_slots` building the matcher (`ArchitectPairing(matcher=...)`)
 only when the architect's file was indexed. Combined sheets keep today's path: no index row, no
 matcher, no match question, no match record. Invented sheets only; no client value.
 """
@@ -43,7 +43,6 @@ from tests.extraction.architect.combined_sheet import combined_sheet
 from tests.workflow.test_architect_file_reader import _add_architectural, _page
 from tests.workflow.test_architect_matching import result as matched_result
 from tests.workflow.test_architect_pairing import _slot_page
-from workflow.architect_matching import MatchingArchitectPairing
 from workflow.architect_pairing import ArchitectPairing
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -204,6 +203,12 @@ def _read(
     session.add(anchor)
     session.flush()
     slot = _slot_stages_like(stages, store)
+    if not vendor_page and shop_page.id in slot._architect_pages:
+        # Without the page handed over, the row stands for a vendor sheet with no architect drawing
+        # of its own: one rule for the pairing step and the matcher (#1167).
+        slot._architect_pages[shop_page.id] = replace(
+            slot._architect_pages[shop_page.id], rows=(), confirmed_views=frozenset()
+        )
     seen: dict[str, Any] = {}
     asked: list[CropJob] = []
 
@@ -257,7 +262,7 @@ def test_beside_an_indexed_architect_file_every_row_gets_one_match_record(
 
     handed, _asked, run = _read(session, store, monkeypatch, stages, revision, vendor_page=False)
 
-    assert isinstance(handed, MatchingArchitectPairing) and handed.matcher is not None
+    assert isinstance(handed, ArchitectPairing) and handed.matcher is not None
     assert len(handed.matcher.views) == 1
     assert ARCH_MATCH_PROMPT_ID not in run.config_hash, "a digest, but a different one"
     (record,) = session.scalars(select(ArchitectViewMatchRecord)).all()
@@ -291,7 +296,7 @@ def test_a_row_on_a_page_with_its_own_architect_drawing_is_never_matched(
 
     handed, asked, _run = _read(session, store, monkeypatch, stages, revision, vendor_page=True)
 
-    assert isinstance(handed, MatchingArchitectPairing)
+    assert isinstance(handed, ArchitectPairing)
     assert _match_rows(session) == 0
     assert not any(job.arch_match_question for job in asked)
 

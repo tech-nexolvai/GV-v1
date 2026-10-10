@@ -1651,16 +1651,13 @@ class ArchitectPairing:
         questions: dict[int, PairQuestion] = {}
         jobs: list[CropJob] = []
         to_match: list[PageSlotResult] = []
-        attached: dict[int, RowMatch] = {}
         for result in results:
             own = self.pages.get(result.page_id)
             vendor = vendor_row_input(result)
             if vendor is None:
                 continue
-            if result.architect_match is not None and (own is None or not own.has_architect_view):
-                # Matched already by the caller (#1166's `MatchingArchitectPairing`): never twice.
-                attached[result.page_index] = result.architect_match
-                continue
+            # One rule for "this page has its own architect view" (`has_architect_view`), the
+            # one the stage also gives the matcher: such a row pairs on its page, never matched.
             if self.matcher is not None and (own is None or not own.has_architect_view):
                 to_match.append(result)
                 continue
@@ -1691,7 +1688,7 @@ class ArchitectPairing:
                 )
                 for model in readers
             )
-        matches: dict[int, RowMatch] = dict(attached)
+        matches: dict[int, RowMatch] = {}
         if self.matcher is not None and to_match:
             matches.update(
                 self.matcher.match(

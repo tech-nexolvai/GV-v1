@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -39,6 +39,7 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+import workflow.architect_row_plan as row_plan
 from alembic import command
 from app.api.architect_matches import pick_architect_view
 from app.auth.roles import Principal, Role
@@ -99,7 +100,12 @@ from workflow.architect_pairing import (
     record_reviewer_pairing,
     vendor_row_input,
 )
-from workflow.architect_pairing_records import DecidedPair, latest_architect_pairing
+from workflow.architect_pairing_records import (
+    DecidedPair,
+    architect_spans_for_row,
+    latest_architect_pairing,
+    latest_record,
+)
 from workflow.architect_row_evidence import architect_candidate_refusal
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
@@ -109,7 +115,6 @@ from workflow.architect_row_plan import (
     SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
     Disposition,
     architect_file_indexed,
-    matched_words,
     plan_architect_row,
 )
 from workflow.slot_reader import PageSlotResult, SlotPage
@@ -611,6 +616,12 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
 
     _pick(session, package, anchor, second)
 
+    picked = _latest_match_record(session, anchor)
+    assert picked is not None
+    # Until the checks run again, the screen says the row waits for that run (#1167 review).
+    assert row_plan.architect_matches_waiting_for_run(
+        session, package.revision.id, {picked.id}
+    ) == {picked.id}
     appended = session.scalars(select(ArchitectPairingRecord)).one()
     assert (appended.source, appended.status) == ("code", "paired")
     assert appended.details["architect_view_id"] == str(second.view_id)
@@ -620,6 +631,10 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
     assert pairing.pairs and {p.architect_candidate_id for p in pairing.pairs} <= second_view
 
     found = _check(session, store, package.revision)
+    assert (
+        row_plan.architect_matches_waiting_for_run(session, package.revision.id, {picked.id})
+        == set()
+    )
     (compared,) = found["row"]
     # One judgment (code's) on the pairing: compared, and the reviewer confirms the pairing.
     assert compared.outcome == "REVIEW_REQUIRED"
@@ -630,7 +645,9 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
     # The reviewer confirms the pairing: a span of the other twin is refused; then a PASS.
     anchor_row = session.get_one(ObservationCandidate, anchor)
     other = min(_candidates_in_view(session, package.architect_page, 1))
-    with pytest.raises(ReviewerPairingRefused):
+    with pytest.raises(
+        ReviewerPairingRefused, match="not in the architect's view matched with this row"
+    ):
         record_reviewer_pairing(
             session,
             anchor=anchor_row,
@@ -731,9 +748,15 @@ def test_a_pairing_for_a_view_that_is_no_longer_the_match_never_counts(
     assert latest_architect_pairing(session, anchor) is None, "view 1's pairing no longer counts"
     found = _check(session, store, package.revision)
     (waiting,) = found["row"]
-    assert waiting.outcome == "REVIEW_REQUIRED"
-    assert (waiting.reason or "").startswith(f"{matched_words(second)}: ")
+    # The run used this match and nothing is paired under it: compared by hand, never a re-run
+    # that would loop (#1167 review).
+    assert (waiting.outcome, waiting.reason) == (
+        "REVIEW_REQUIRED",
+        row_plan.no_dimensions_line_up_reason(second),
+    )
     anchor_row = session.get_one(ObservationCandidate, anchor)
+    current = latest_record(session, anchor)
+    assert architect_spans_for_row(session, anchor_row, current) == [], "nothing offered"
     with pytest.raises(ReviewerPairingRefused, match="has changed"):
         record_reviewer_pairing(
             session,
@@ -754,6 +777,75 @@ def test_a_pairing_for_a_view_that_is_no_longer_the_match_never_counts(
     assert architect_candidate_refusal(session, rows[0], candidate) == (
         "it is on a different sheet from the vendor's row."
     ), "without a match the refusal is word for word as before"
+
+
+def test_a_reviewers_pairing_made_under_an_earlier_match_never_comes_back(
+    session: Session, store: LocalStore
+) -> None:
+    """#1167 review: auto view 1 → the reviewer pairs on it → "none of these" → view 1 again. The
+    earlier pairing names view 1 too, but it was made under another match: it stays dead, and the
+    new match brings code's own pairing (one judgment, the reviewer confirms it again)."""
+    package = _two_file_package(session, store, views=2)
+    first = package.views[1]
+    anchor, paired, _asked = _pair(
+        session, package, FakeMatcher(package, "auto_matched", 1), drawn=EQUAL[0], printed=EQUAL[1]
+    )
+    assert paired.architect_pairing is not None
+    anchor_row = session.get_one(ObservationCandidate, anchor)
+    automatic = latest_architect_pairing(session, anchor)
+    assert automatic is not None and automatic.source == "code+ais"
+    earlier = record_reviewer_pairing(
+        session,
+        anchor=anchor_row,
+        package_revision_id=package.revision.id,
+        piece_count=3,
+        pairs=[
+            DecidedPair(pair.kind, pair.architect_candidate_id, pair.vendor_slot_indices)
+            for pair in automatic.pairs
+        ],
+        note=None,
+        actor="reviewer@example.com",
+    )
+    session.commit()
+    effective = latest_architect_pairing(session, anchor)
+    assert effective is not None and effective.record_id == earlier.id
+
+    _pick(session, package, anchor, None)
+    assert latest_architect_pairing(session, anchor) is None
+    assert architect_spans_for_row(session, anchor_row, latest_record(session, anchor)) == []
+    _pick(session, package, anchor, first)
+
+    again = latest_architect_pairing(session, anchor)
+    assert again is not None
+    assert again.record_id != earlier.id and again.source == "code", "not the earlier pairing"
+    assert latest_record(session, anchor, sources=("reviewer",)) is not None
+
+
+def test_the_pairing_step_and_the_matcher_ask_one_rule_for_a_pages_own_architect_view(
+    session: Session, store: LocalStore
+) -> None:
+    """#1167 review: the matcher's "this page has its own architect view" is the pairing step's
+    `ArchitectPageInput.has_architect_view`, computed once by the architect reader, never a second
+    look at the database."""
+    from tests.workflow.test_architect_view_index import _extract, _slot_stages_like
+
+    stages, revision, _version = _extract(session, store, architect=architect_sheet())
+    slot = _slot_stages_like(stages, store)
+    shop_page = next(
+        page_id for page_id, reading in slot._architect_pages.items() if reading.has_architect_view
+    )
+    page = _slot_page(session.get_one(Page, shop_page))
+    for own in (True, False):
+        if not own:
+            slot._architect_pages[shop_page] = replace(
+                slot._architect_pages[shop_page], rows=(), confirmed_views=frozenset()
+            )
+        matcher = slot._architect_matcher(
+            session, package_revision_id=revision.id, pages=[page], data=None
+        )
+        assert matcher is not None
+        assert matcher.vendor_pages[shop_page].has_architect_view is own
+        assert slot._architect_pages[shop_page].has_architect_view is own
 
 
 def test_the_verdict_guard_refuses_an_architect_value_from_another_view(

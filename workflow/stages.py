@@ -290,7 +290,6 @@ from workflow.architect_match_records import persist_architect_matches, remember
 from workflow.architect_matching import (
     MEASURED_MATCH_SETTINGS,
     ArchitectMatcher,
-    MatchingArchitectPairing,
     VendorPageFacts,
 )
 from workflow.architect_pairing import (
@@ -2542,7 +2541,7 @@ class DatabaseStages:
         config hash and every proposal's prompt id record it.
 
         On a revision whose architect file was indexed (#1166) each chosen row is first matched with
-        one of its views (`MatchingArchitectPairing`), and the matches are stored beside the
+        one of its views (`ArchitectPairing(matcher=...)`), and the matches are stored beside the
         pairings; `data` is the shop file, for the references its pages print. A combined sheet
         builds no matcher and reads exactly as before.
         """
@@ -2575,7 +2574,7 @@ class DatabaseStages:
                     settings=MEASURED_PAIRING_SETTINGS, pages=dict(self._architect_pages)
                 )
                 if matcher is None
-                else MatchingArchitectPairing(
+                else ArchitectPairing(
                     settings=MEASURED_PAIRING_SETTINGS,
                     pages=dict(self._architect_pages),
                     matcher=matcher,
@@ -2689,7 +2688,9 @@ class DatabaseStages:
                 content_hash=row.content_hash,
                 references=references,
                 view_boxes=() if reading is None else reading.view_boxes,
-                has_architect_view=bool(architect_views(session, page.page_id)),
+                # One rule with the pairing step (#1167): the page's own architect view, as the
+                # architect reader found it this run (`ArchitectPageInput.has_architect_view`).
+                has_architect_view=reading is not None and reading.has_architect_view,
             )
         return ArchitectMatcher(
             settings=MEASURED_MATCH_SETTINGS,

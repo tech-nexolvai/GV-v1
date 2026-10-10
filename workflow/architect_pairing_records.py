@@ -11,7 +11,8 @@ Imports: SQLAlchemy, `app.models`, the pairing contract, `units` and the standar
   (the reviewer's latest, else the latest automatic record), every pair re-checked against the
   architect candidate as it stands now. The batched form answers many rows in a fixed number of
   statements;
-* `architect_spans_for_row` / `record_reviewer_pairing`: what the reviewer is offered and the
+* `architect_spans_for_row` / `record_reviewer_pairing`: what the reviewer is offered (nothing for
+  a record made under a match that no longer stands, #1167) and the
   append-only record of the reviewer's choice;
 * `record_code_pairing_for_view` (#1167): after a reviewer chose which view of the architect's own
   file shows the row (#1166), code's pairing against that view, as the matcher computed it, becomes
@@ -19,7 +20,8 @@ Imports: SQLAlchemy, `app.models`, the pairing contract, `units` and the standar
 
 **Which records count (#1167).** A record made against a view of the architect's own file names it
 (`details.architect_view_id`) and counts only while that view is the row's effective match
-(`auto_matched`, `reviewer_confirmed` or `carried_over`); its pairs must lie in that view (its page,
+(`auto_matched`, `reviewer_confirmed` or `carried_over`) AND was made under that very match
+record (`details.match_record_id`); its pairs must lie in that view (its page,
 its file version and `arch-view:<n>`). A record that names no view is a combined sheet's: its pairs
 must lie on the row's own page, exactly as before, and no match is ever looked up for it.
 
@@ -133,9 +135,19 @@ def _matched_view_id(match: EffectiveMatch | None) -> UUID | None:
 
 
 def _counts(record: ArchitectPairingRecord, match: EffectiveMatch | None) -> bool:
-    """A record counts when it names no view (a combined sheet's) or names the row's match now."""
+    """A record counts when it names no view (a combined sheet's), or when it was made under the
+    row's match as it stands now: the same view AND the same match record (`match_record_id`).
+
+    The view alone is not enough: after a reviewer moves the match away and back to the same view,
+    a pairing made under the earlier match must not come back to life; the new match brings its
+    own pairing (`record_code_pairing_for_view`). A view record with no match record counts never.
+    """
     view = record_view(record)
-    return view is None or view == _matched_view_id(match)
+    if view is None:
+        return True
+    if match is None or view != _matched_view_id(match):
+        return False
+    return str((record.details or {}).get("match_record_id")) == str(match.record_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,10 +335,24 @@ def _eligible(candidate: ObservationCandidate, views: Collection[int]) -> Eligib
 
 
 def architect_spans_for_row(
-    session: Session, anchor: ObservationCandidate, record: ArchitectPairingRecord | None
+    session: Session,
+    anchor: ObservationCandidate,
+    record: ArchitectPairingRecord | None,
+    *,
+    match_lookup: MatchLookup | None = None,
 ) -> list[EligibleSpan]:
     """Every architect span the architect reader stored on the row's page, in the run the row's
-    automatic pairing used. Empty when the row has no automatic pairing (the reader was off)."""
+    automatic pairing used. Empty when the row has no automatic pairing (the reader was off).
+
+    For a record made against a view of the architect's own file (#1167): only that view's spans,
+    and none at all when the record no longer counts (the row's match moved since; `match_lookup`,
+    by default #1166's stored match)."""
+    if (
+        record is not None
+        and record_view(record) is not None
+        and not _counts(record, (match_lookup or _stored_match)(session, anchor.id))
+    ):
+        return []
     automatic = record
     while automatic is not None and automatic.source == "reviewer":
         if automatic.supersedes_id is None:
@@ -415,18 +441,26 @@ def record_reviewer_pairing(
             "This row's pairing changed after you opened it. Reload it before pairing again."
         )
     view_details: dict[str, object] = {}
+    match: EffectiveMatch | None = None
     if current is not None and record_view(current) is not None:
         match = (match_lookup or _stored_match)(session, anchor.id)
-        if not _counts(current, match):
+        if match is None or not _counts(current, match):
             raise ReviewerPairingRefused(
-                "The architect view matched with this row has changed since it was paired. Run "
-                "the checks again, then pair it."
+                "The architect view matched with this row has changed since this pairing was "
+                "made, so it cannot be paired from it."
             )
         view_details = {key: current.details[key] for key in _VIEW_KEYS if key in current.details}
-    spans = {span.candidate.id: span for span in architect_spans_for_row(session, anchor, current)}
+        view_details["match_record_id"] = str(match.record_id)
+    found = architect_spans_for_row(
+        session, anchor, current, match_lookup=lambda _session, _anchor: match
+    )
+    spans = {span.candidate.id: span for span in found}
     if current is None or not spans and pairs:
         raise ReviewerPairingRefused(
-            "This row has no architect reading to pair with; the architect reader did not read it."
+            "This row has no dimension of the architect's view matched with it to pair with."
+            if view_details
+            else "This row has no architect reading to pair with; the architect reader did not "
+            "read it."
         )
     used_spans: set[UUID] = set()
     used_pieces: set[int] = set()
@@ -435,7 +469,9 @@ def record_reviewer_pairing(
         span = spans.get(pair.architect_candidate_id)
         if span is None:
             raise ReviewerPairingRefused(
-                "That architect dimension is not on this row's page of this drawing set."
+                "That architect dimension is not in the architect's view matched with this row."
+                if view_details
+                else "That architect dimension is not on this row's page of this drawing set."
             )
         if not span.comparable:
             raise ReviewerPairingRefused(

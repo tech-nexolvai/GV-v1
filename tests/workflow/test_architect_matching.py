@@ -40,11 +40,14 @@ from workflow.architect_matching import (
     MATCH_PICTURE_MAX_SIDE,
     MEASURED_MATCH_SETTINGS,
     ArchitectMatcher,
-    MatchingArchitectPairing,
     VendorPageFacts,
     match_picture,
 )
-from workflow.architect_pairing import MEASURED_PAIRING_SETTINGS, ArchitectPageInput
+from workflow.architect_pairing import (
+    MEASURED_PAIRING_SETTINGS,
+    ArchitectPageInput,
+    ArchitectPairing,
+)
 from workflow.architect_view_index import ArchitectViewCrop, IndexedView
 from workflow.slot_reader import PageSlotResult
 
@@ -492,7 +495,7 @@ def test_without_every_scale_the_panels_are_fitted_and_the_packet_says_so() -> N
 def test_the_architect_step_matches_first_then_pairs_as_before() -> None:
     row = result()
     page = ArchitectPageInput(page_id=row.page_id, architect_run_id=None, rows=(), view_boxes=())
-    step = MatchingArchitectPairing(
+    step = ArchitectPairing(
         settings=MEASURED_PAIRING_SETTINGS,
         pages={row.page_id: page},
         matcher=matcher([SAME, FAR], page_id=row.page_id),
