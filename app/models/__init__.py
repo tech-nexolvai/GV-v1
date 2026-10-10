@@ -114,6 +114,7 @@ from app.models.signed_exports import (
     ApprovalExportRetry,
     ApprovalExportSnapshot,
 )
+from app.models.usage import AiSpendHistory
 from app.models.verdicts import (
     CheckRun,
     Finding,
@@ -126,6 +127,7 @@ from app.models.verdicts import (
 __all__ = [
     "AgentNodeInvocationClaim",
     "AgentNodeInvocationState",
+    "AiSpendHistory",
     "Alias",
     "Approval",
     "ApprovalExportAction",
