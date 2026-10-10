@@ -1,7 +1,7 @@
 """Record why the architect reader read nothing on a page, or what it left out (#1163).
 
-Revision ID: 0082_architect_page_notes
-Revises: 0081_evidence_mark_rechecks
+Revision ID: 0083_architect_page_notes
+Revises: 0082_ai_spend_history
 
 The architect reader, on the architect's own file, says why a page gave no view, which stamp held
 no drawing, what ink it left out of every view, which view it refused (a stored view of the same
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0082_architect_page_notes"
-down_revision: str | None = "0081_evidence_mark_rechecks"
+revision: str = "0083_architect_page_notes"
+down_revision: str | None = "0082_ai_spend_history"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
