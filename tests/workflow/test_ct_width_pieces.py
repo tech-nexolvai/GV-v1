@@ -106,7 +106,7 @@ def test_a_project_field_cut_replaces_the_company_standard(session: Session) -> 
 
 
 def test_publishing_a_bumped_rule_adds_the_version_beside_the_old_one(session: Session) -> None:
-    """A database holding 1.0.1 gets 1.1.0 as a further snapshot; 1.0.1 stays as it was."""
+    """A database holding 1.0.1 gets the current version as a further snapshot; 1.0.1 stays."""
     current = Rule.model_validate(
         yaml.safe_load((RULEBOOK / "ct_width_001.yaml").read_text(encoding="utf-8"))
     )
@@ -133,7 +133,7 @@ def test_publishing_a_bumped_rule_adds_the_version_beside_the_old_one(session: S
     store = snapshot_store(session)
     assert sorted(snapshot.version for snapshot in store.versions_of("CT-WIDTH-001")) == [
         "1.0.1",
-        "1.1.0",
+        current.version,
     ]
     latest = store.latest("CT-WIDTH-001")
     assert latest is not None and latest.version == current.version

@@ -60,8 +60,14 @@ export function WallLayoutPicture({ config, className }: { config: string; class
   return walls === null ? null : <WallLines walls={walls} className={className} />;
 }
 
-/** Words for the three published layouts, used only when the API sends no label of its own. */
-const LAYOUT_WORDS: Record<string, string> = { back_left_right: 'back wall and both ends', back_only: 'back wall only', island: 'island, no walls' };
+/** Words for the published layouts, used only when the API sends no label of its own. */
+const LAYOUT_WORDS: Record<string, string> = {
+  back_left_right: 'back wall and both ends',
+  back_and_left: 'back wall and left end',
+  back_and_right: 'back wall and right end',
+  back_only: 'back wall only',
+  island: 'island, no walls',
+};
 
 function labelOf(layout: CountertopResult['wall_layout']): string {
   return `Walls: ${layout.label ?? LAYOUT_WORDS[layout.config ?? ''] ?? 'set'} — ${WALL_SOURCE_TITLE[layout.source]}`;

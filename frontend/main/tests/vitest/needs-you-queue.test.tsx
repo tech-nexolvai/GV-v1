@@ -245,11 +245,11 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(document.querySelector('[data-slot="queue-run-first"]')?.textContent).toMatch(/1 answer waits for a check run\. That run replaces these results/);
   });
 
-  it('the between-panels item is one click for "back only"', async () => {
+  it('the between-panels item is one click for "no field cut", never called "back wall only" (#1138)', async () => {
     const user = userEvent.setup();
     setup();
     key('j');
-    await user.click(await screen.findByRole('button', { name: 'Back only: stone between panels' }, { timeout: 5000 }));
+    await user.click(await screen.findByRole('button', { name: 'No field cut: the stone stops at panels' }, { timeout: 5000 }));
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')).toMatchObject({ url: expect.stringContaining('/slot-rows/panels/review'), body: '{"wall_config":"back_only"}' }));
   });
 
@@ -323,12 +323,27 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
+  it('a wall at one end only is a choice the reviewer can make and send (#1138)', async () => {
+    const user = userEvent.setup();
+    slotRows = [slot('walls', { wall_layout_choices: ['back_left_right', 'back_and_left', 'back_and_right', 'back_only', 'island'], wall_source: 'readers', wall_proposal: 'back_and_right' }), BASE_SLOTS[1]];
+    setup();
+    const walls = await screen.findByRole('radiogroup', { name: 'Wall layout' }, { timeout: 5000 });
+    expect(within(walls).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Back wall and both ends', 'Back wall and left end', 'Back wall and right end', 'Back wall only', 'Island; no wall ends']);
+    // The readers' proposal is words only: nothing is pre-selected or sent without the click.
+    expect(screen.getByText('The readers propose: back wall and right end. Not confirmed.')).toBeTruthy();
+    expect(within(walls).getAllByRole('radio').every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
+    await user.click(within(walls).getByRole('radio', { name: 'Back wall and right end' }));
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Use this wall layout' }));
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST')).toMatchObject({ url: expect.stringContaining('/slot-rows/walls/review'), body: '{"wall_config":"back_and_right"}' }));
+  });
+
   it('the between-panels item also offers the other layouts', async () => {
     setup();
     key('j');
     const choices = await screen.findByRole('radiogroup', { name: 'Wall layout' }, { timeout: 5000 });
     expect(within(choices).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Back wall and both ends', 'Back wall only', 'Island; no wall ends']);
-    expect(screen.getByRole('button', { name: 'Back only: stone between panels' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'No field cut: the stone stops at panels' })).toBeTruthy();
   });
 
   it('a half-written decision is dropped when the result under it is replaced (review fix)', async () => {

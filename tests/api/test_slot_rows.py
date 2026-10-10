@@ -74,6 +74,8 @@ def _package_rows(
     rows_per_page: int = 1,
     slot_flags: Callable[[int, int, str], list[str]] | None = None,
     row_pages: tuple[int, ...] = (0, 1),
+    sealed_layout: str = "back_left_right",
+    field_cuts: int = 2,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
     """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot.
 
@@ -148,8 +150,12 @@ def _package_rows(
                 (str(position), "SHOP:countertop_piece_width", 20 + page_index + position)
                 for position in range(piece_count)
             ]
-            # The published company standard adds one inch at each of the two wall ends.
-            overall = sum(value for _, _, value in slots) + 2 if widths_add_up else 40 + page_index
+            # The published company standard adds one inch at each wall end (two by default).
+            overall = (
+                sum(value for _, _, value in slots) + field_cuts
+                if widths_add_up
+                else 40 + page_index
+            )
             if page_index == 0 and row_offset == 0 and overall_override is not None:
                 overall = overall_override
             slots.append(("overall", "SHOP:countertop_overall_width", overall))
@@ -216,13 +222,13 @@ def _package_rows(
                 document_version_id=version.id,
                 page_id=pages[page_index].id,
                 extraction_run_id=extraction.id,
-                raw_text="walls: back_left_right",
+                raw_text=f"walls: {sealed_layout}",
                 polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
                 coordinate_space="image",
                 ambiguity_flags=[
                     "wall-reader",
                     f"row-rank:{rank}",
-                    "walls-sealed:back_left_right",
+                    f"walls-sealed:{sealed_layout}",
                     f"wall-source:{wall_source}",
                     *(["row-hold:synthetic held row"] if page_index == held_page else []),
                 ],
@@ -919,6 +925,9 @@ def test_between_panels_requires_its_own_explicit_wall_choice(
     rows = list_slot_rows(principal, session, project_id, package_id).rows
     assert rows[0].wall_proposal == "back_only"
     assert rows[0].wall_source == "between-panels"
+    # #1138: `back_only` here means "no field cut", never "back wall only".
+    assert "no field cut: the stone stops at panels" in (rows[0].wall_reason or "")
+    assert "back only" not in (rows[0].wall_reason or "").lower()
     assert rows[0].wall_confirmation_allowed
     assert rows[0].held_reason is not None
     assert rows[0].wall_config is None
@@ -942,6 +951,10 @@ def test_between_panels_requires_its_own_explicit_wall_choice(
     by_row = {finding.scope_row_candidate_id: finding for finding in second}
     assert by_row[anchors[0]].outcome == expected, by_row[anchors[0]].reason
     assert by_row[anchors[1]].outcome == "REVIEW_REQUIRED"
+    # #1138: the finding records the choice as "no field cut", never "back wall only".
+    notes = " | ".join(by_row[anchors[0]].notes or ())
+    assert "no field cut: the stone stops at panels" in notes
+    assert "back wall only" not in notes
 
     # A correction is row-local; withdrawing the wall choice reinstates the hold.
     changed = review_slot_row(
@@ -1021,6 +1034,81 @@ def test_between_panels_hold_accepts_only_an_explicit_wall_decision(
         review_slot_row(principal, principal, session, project_id, package_id, anchors[0], body)
     assert refused.value.status_code == 409
     assert session.query(SlotRowReviewDecision).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# #1138: a countertop with a wall at one end only
+# ---------------------------------------------------------------------------
+
+
+def test_a_row_with_one_wall_end_takes_one_field_cut_once_its_reviewer_confirms_it(
+    session: Session, tmp_path: Path
+) -> None:
+    """Readers alone sealed "back wall and right end": the row waits for its reviewer's click, then
+    needs its pieces plus one field cut, not two. The choice is stored as made."""
+    project_id, package_id, anchors = _package_rows(
+        session,
+        piece_count=2,
+        widths_add_up=True,
+        field_cuts=1,
+        sealed_layout="back_and_right",
+        wall_source="readers",
+    )
+    for candidate in session.scalars(
+        select(ObservationCandidate).where(
+            ObservationCandidate.ambiguity_flags.contains(["slot-reader"])
+        )
+    ).all():
+        _reader_support(session, candidate)
+    principal = Principal(
+        id="synthetic reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    rows = list_slot_rows(principal, session, project_id, package_id).rows
+    assert rows[0].wall_proposal == "back_and_right"
+    assert rows[0].wall_source == "readers"
+    assert rows[0].wall_config is None
+    assert {"back_and_left", "back_and_right"} <= set(rows[0].wall_layout_choices)
+
+    first = _run_current_checks(session, package_id, tmp_path)
+    assert all(finding.outcome == "REVIEW_REQUIRED" for finding in first)
+    assert all("wall layout" in (finding.reason or "").lower() for finding in first)
+
+    saved = review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_and_right"),
+    )
+    assert saved.wall_config == "back_and_right"
+    session.expire_all()
+    assert session.query(SlotRowReviewDecision).one().wall_config == "back_and_right"
+
+    second = _run_current_checks(session, package_id, tmp_path)
+    by_row = {finding.scope_row_candidate_id: finding for finding in second}
+    assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
+    assert by_row[anchors[0]].variant == "back_and_right"
+    assert "Wall layout: back wall and right end (back_and_right), confirmed by the reviewer" in (
+        " | ".join(by_row[anchors[0]].notes or ())
+    )
+    # The other row's reader-only proposal was not confirmed: it still waits.
+    assert by_row[anchors[1]].outcome == "REVIEW_REQUIRED"
+
+    # Walls at both ends would need one more inch than the vendor drew.
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_left_right"),
+    )
+    third = _run_current_checks(session, package_id, tmp_path)
+    by_row = {finding.scope_row_candidate_id: finding for finding in third}
+    assert by_row[anchors[0]].outcome == "FAIL"
 
 
 # ---------------------------------------------------------------------------

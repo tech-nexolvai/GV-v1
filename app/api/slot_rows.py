@@ -31,9 +31,9 @@ from app.models import ObservationCandidate, SlotRowReviewDecision
 from app.review.row_location import RowLocation, architect_locations, row_location
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
-from vocabulary.check_holds import STONE_SHORT_OF_ENDS
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
+from vocabulary.wall_layouts import BETWEEN_PANELS_WORDS, is_between_panels
 from workflow.architect_pairing_records import (
     DecidedPair,
     ReviewerPairingRefused,
@@ -189,14 +189,14 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
         reason = reason or "The readers did not agree on this row's wall layout."
 
     if row.wall_confirmation_allowed and any(
-        f"check-hold:{STONE_SHORT_OF_ENDS[0]}" in (candidate.ambiguity_flags or ())
-        for candidate in row.candidates
+        is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
     ):
+        # `back_only` is how the rule says "no field cut"; for this row it says nothing about walls.
         wall_proposal_value = "back_only"
         source = "between-panels"
         reason = (
             "The stone sits between side panels, so the panels take the field cut — "
-            "confirm 'no field cut at the ends' (back only)."
+            f"confirm '{BETWEEN_PANELS_WORDS}'."
         )
 
     return SlotRowOut(

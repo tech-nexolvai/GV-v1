@@ -60,6 +60,7 @@ from vocabulary.drawn_length import (
     engine_result_note,
     not_checked_note,
 )
+from vocabulary.wall_layouts import is_between_panels, wall_layout_words
 from workflow.slot_row_scope import (
     SlotRow,
     SlotRowQualification,
@@ -444,12 +445,22 @@ def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:
         held=held,
         reviewer_confirmed=confirmed,
     )
+    words = (
+        None
+        if value is None
+        else wall_layout_words(
+            value,
+            between_panels=any(
+                is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
+            ),
+        )
+    )
     provenance = (
-        f"Wall layout {value} confirmed by the reviewer for this row ({row.decision.confirmed_by} "
-        f"on {row.decision.created_at.isoformat()})."
+        f"Wall layout: {words} ({value}), confirmed by the reviewer for this row "
+        f"({row.decision.confirmed_by} on {row.decision.created_at.isoformat()})."
         if value is not None and row.decision is not None and confirmed is not None
         else (
-            f"Wall layout {value} established from vendor drawing clues for this row."
+            f"Wall layout: {words} ({value}), established from vendor drawing clues for this row."
             if value is not None
             else reason
         )

@@ -8,9 +8,17 @@ when both readers, of different makers, say the same "yes" or the same "no".
 
 **The layout from the two ends** (admin's rule):
 - both ends "yes" → `back_left_right`;
+- left "yes" and right agreed "no" → `back_and_left`; the reverse → `back_and_right` (#1138: the
+  field cut is 1 inch per wall end, so one wall end is one field cut; the side is kept so the
+  picture puts the cut at the wall). An open end is never inferred from absence: only the two
+  readers' agreed "no" says an end is open;
 - both ends "no" → `back_only` **only** when both readers call the view a plan and both see the
   back wall — an elevation does not show what is behind the run, so the back wall is not inferred;
-- anything else — one end only, a reader unsure or missing, readers that differ — → the person.
+- anything else — an end unsure, a reader missing, readers that differ — → the person.
+
+A layout the readers sealed is still only a proposal: the row's reviewer confirms it before a check
+uses it (`workflow/slot_row_scope.effective_row_wall`). Only code's own clues at both ends settle a
+row without a click, and code never sees an open end, so a one-end layout always needs the click.
 
 **Code may object, never approve.** E3's hatch check looks for a wall's hatching beside each row
 end: many parallel strokes, or a cross-hatch, beside the end and along the drawing's height. Where
@@ -36,6 +44,8 @@ from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.geometry.rows import Box, CountertopRowCandidate, PageInk
 
 __all__ = [
+    "BACK_AND_LEFT",
+    "BACK_AND_RIGHT",
     "BACK_LEFT_RIGHT",
     "BACK_ONLY",
     "E3_WALL_SETTINGS",
@@ -66,6 +76,8 @@ v1 (#992): E3's question (2026-10-07, `research/E3/ask.py`)."""
 #: Earlier wordings, still recognised when a stored run is replayed. Their answers have one shape.
 WALL_PROMPT_IDS: Final = frozenset({WALL_PROMPT_ID, "slot-walls-v1"})
 BACK_LEFT_RIGHT: Final = "back_left_right"
+BACK_AND_LEFT: Final = "back_and_left"
+BACK_AND_RIGHT: Final = "back_and_right"
 BACK_ONLY: Final = "back_only"
 
 #: The wall question, generic: no client value or drawing; every example is invented.
@@ -268,6 +280,12 @@ def seal_walls(
         return WallOutcome(
             BACK_LEFT_RIGHT, None, None, resolved_left, resolved_right, behind, source
         )
+    if resolved_left is Side.YES and right is Side.NO:
+        return WallOutcome(BACK_AND_LEFT, None, None, resolved_left, resolved_right, behind, source)
+    if left is Side.NO and resolved_right is Side.YES:
+        return WallOutcome(
+            BACK_AND_RIGHT, None, None, resolved_left, resolved_right, behind, source
+        )
     if left is Side.NO and right is Side.NO:
         if behind is Side.YES and all(answer.view == "plan" for answer in answers):
             return WallOutcome(BACK_ONLY, None, None, left, right, behind, "readers")
@@ -275,7 +293,7 @@ def seal_walls(
             "back-wall-unknown",
             "no wall at either end, and the drawing does not show whether there is a back wall",
         )
-    return held("walls-not-agreed", "the readers do not agree on a wall at both ends")
+    return held("walls-not-agreed", "the readers do not agree on the wall at each end")
 
 
 @dataclass(frozen=True, slots=True)

@@ -44,6 +44,8 @@ def _complete() -> list[Package]:
             },
         ),
         Package("job-c", {"wall_config": "island", "page_origin": "vector"}),
+        Package("job-d", {"wall_config": "back_and_left", "page_origin": "vector"}),
+        Package("job-e", {"wall_config": "back_and_right", "page_origin": "vector"}),
     ]
 
 
@@ -65,7 +67,7 @@ def test_an_empty_set_is_a_gap_not_a_pass() -> None:
 
 
 def test_a_missing_wall_layout_is_caught() -> None:
-    """Two of three layouts is not coverage. The third variant's tolerance would never be tested."""
+    """Four of five layouts is not coverage. The missing variant's tolerance would never be tested."""
     packages = _complete()
     packages[2].declarations["wall_config"] = "back_only"  # island now absent
     text, code = report(packages)
