@@ -162,7 +162,11 @@ def _record(
         package_revision_id=(
             supersedes.package_revision_id
             if supersedes is not None
-            else session.scalars(select(PackageRevision.id)).one()
+            else session.scalars(
+                select(PackageRevisionDocument.package_revision_id).where(
+                    PackageRevisionDocument.document_version_id == candidate.document_version_id
+                )
+            ).one()
         ),
         vendor_page_id=candidate.page_id,
         row_anchor_candidate_id=anchor,
@@ -285,6 +289,34 @@ def test_a_pairing_is_offered_only_where_the_check_asks_for_one(
     assert block.can_pair is True
 
 
+def test_no_pairing_is_offered_while_a_pick_waits_for_a_run(
+    session: Session, tmp_path: Path
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    first, second = _architect_file(session, package_id)
+    automatic = _record(session, anchors[0], "auto_matched", view=first)
+    unsettled = EffectivePairing(
+        record_id=uuid4(), source="none", status="ais-disagree", pairs=(), reasons=("Synthetic.",)
+    )
+    _run(session, package_id, tmp_path, {anchors[0]: unsettled})
+    session.commit()
+    _record(
+        session,
+        anchors[0],
+        "reviewer_confirmed",
+        view=second,
+        source="reviewer",
+        supersedes=automatic,
+        when=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    block = _blocks(_results(session, package_id))[anchors[0]]
+
+    assert block.reason is not None and PAIR_BY_REVIEWER in block.reason
+    assert block.match is not None and block.match.waits_for_run is True
+    assert block.can_pair is False
+
+
 def test_a_pick_after_the_run_waits_for_the_next_run(session: Session, tmp_path: Path) -> None:
     package_id, anchors = _sealed_rows(session)
     first, _second = _architect_file(session, package_id)
@@ -348,38 +380,59 @@ def test_a_combined_sheet_keeps_every_new_field_null(session: Session, tmp_path:
         assert blocks[anchor].compared_with_text is None
 
 
-def test_the_statement_count_does_not_grow_with_the_rows(session: Session) -> None:
+def _count(session: Session, package_id: UUID) -> int:
+    statements = 0
+
+    def counted(*_args: object) -> None:
+        nonlocal statements
+        statements += 1
+
+    revision = _revision(session, package_id)
+    event.listen(session.bind, "before_cursor_execute", counted)
+    try:
+        _countertop_results_for_revision(session, package_id, revision)
+    finally:
+        event.remove(session.bind, "before_cursor_execute", counted)
+    return statements
+
+
+def _separate_package(session: Session, rows_per_page: int, matched: str) -> tuple[UUID, int]:
+    """A package with an indexed architect file whose rows are all matched, none, or every other."""
     from tests.api.test_slot_rows import _package_rows
 
-    def count(package_id: UUID) -> int:
-        statements = 0
-
-        def counted(*_args: object) -> None:
-            nonlocal statements
-            statements += 1
-
-        revision = _revision(session, package_id)
-        event.listen(session.bind, "before_cursor_execute", counted)
-        try:
-            _countertop_results_for_revision(session, package_id, revision)
-        finally:
-            event.remove(session.bind, "before_cursor_execute", counted)
-        return statements
-
-    _project, package_id, _anchors = _package_rows(session, rows_per_page=10)
-    combined = count(package_id)
+    _project, package_id, _anchors = _package_rows(session, rows_per_page=rows_per_page)
+    combined = _count(session, package_id)
     views = _architect_file(session, package_id)
     anchors = [row.anchor.id for row in slot_rows(session, _revision(session, package_id).id)]
-    assert len(anchors) == 20
+    assert len(anchors) == 2 * rows_per_page
     for index, anchor in enumerate(anchors):
-        _record(session, anchor, "auto_matched", view=views[index % 2])
+        if matched == "all" or (matched == "half" and index % 2 == 0):
+            _record(session, anchor, "auto_matched", view=views[index % 2])
     session.flush()
-    separate = count(package_id)
-    # The combined sheet's own bound (`tests/api/test_visual_ui.py`, 12), then the separate file's
-    # fixed reads: the index check, the effective matches (two), the matches waiting for a run,
-    # the records, the views and the package's project.
-    assert combined <= 12
-    assert separate - combined <= 7
+    return package_id, combined
+
+
+@pytest.mark.parametrize("matched", ["all", "none", "half"])
+def test_the_statement_count_does_not_grow_with_the_rows(
+    session: Session, matched: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.api.test_slot_rows as slot_rows_tests
+
+    small, small_combined = _separate_package(session, 5, matched)
+    # The second package shares the rulebook the first one published.
+    monkeypatch.setattr(slot_rows_tests, "_publish_rulebook", lambda _session: None)
+    large, large_combined = _separate_package(session, 10, matched)
+
+    small_count, large_count = _count(session, small), _count(session, large)
+
+    # The combined sheet's own bound (`tests/api/test_visual_ui.py`, 12) holds.
+    assert small_combined <= 12 and large_combined <= 12
+    # Flat in the number of rows, matched or not: 10 rows and 20 rows read the same.
+    assert small_count - small_combined == large_count - large_combined
+    # The separate file's fixed reads: the index check, the effective matches (two), the matches
+    # waiting for a run, the records, the views, the package's project, and the pages with their
+    # own architect drawing (for rows with no match).
+    assert large_count - large_combined <= 8
 
 
 def _matched_view(session: Session, view_id: UUID) -> MatchedView:
@@ -493,3 +546,19 @@ def test_odd_stored_ai_answers_are_read_safely() -> None:
     out = match_out(_found("auto_matched", _WHEN), UUID(int=7))
     assert [(p.model_label, p.answer, p.why) for p in out.ai_picks] == [("x", "no_answer", "3")]
     assert out.matched_view == _REF
+
+
+class _Stored:
+    def __init__(self, questions: object, code_pick: UUID | None) -> None:
+        self.details = {} if questions is None else {"questions": questions}
+        self.code_pick_view_id = code_pick
+
+
+def test_the_picker_order_comes_from_what_the_matcher_did() -> None:
+    from app.api.architect_matches import candidate_order
+
+    asked = ["synthetic-packet-sha"]
+    assert candidate_order(_Stored(asked, UUID(int=1))) == "code"  # type: ignore[arg-type]
+    assert candidate_order(_Stored(asked, None)) == "ais_then_code"  # type: ignore[arg-type]
+    assert candidate_order(_Stored([], None)) == "code_ais_not_asked"  # type: ignore[arg-type]
+    assert candidate_order(_Stored(None, UUID(int=1))) == "code_ais_not_asked"  # type: ignore[arg-type]

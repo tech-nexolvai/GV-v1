@@ -2500,6 +2500,11 @@ export interface components {
             candidates: components["schemas"]["ArchitectViewCandidateOut"][];
             current: components["schemas"]["ArchitectMatchCurrentOut"] | null;
             /**
+             * Order
+             * @description How the candidates are ordered, from what the matcher did (#1168): `code` (code had a pick; the AIs were asked about its top views), `ais_then_code` (code had no pick; views both AIs called the same come first, then code's order), `code_ais_not_asked` (the AIs were not asked; code's order). Null when the row has no record.
+             */
+            order?: ("code" | "ais_then_code" | "code_ais_not_asked") | null;
+            /**
              * Row Id
              * Format: uuid
              */

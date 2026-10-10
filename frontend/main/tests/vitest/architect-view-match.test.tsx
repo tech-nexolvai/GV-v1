@@ -151,7 +151,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('every match state, in plain words', () => {
   it('maps each state to what the screen asks of the reviewer', () => {
-    expect(architectState(STATES.not_matched_yet)).toBe('by-hand');
+    expect(architectState(STATES.not_matched_yet)).toBe('run-again');
     expect(architectState(STATES.needs_reviewer)).toBe('choose-view');
     expect(architectState(STATES.auto_matched)).toBe('compared');
     expect(architectState(STATES.reviewer_confirmed)).toBe('compared');
@@ -171,7 +171,7 @@ describe('every match state, in plain words', () => {
   });
 
   const LINES: [string, ArchitectResult, string[], string[]][] = [
-    ['not_matched_yet', STATES.not_matched_yet, ['Not matched with an architect view yet: run the checks again, or compare by hand'], ['Pair']],
+    ['not_matched_yet', STATES.not_matched_yet, ['Run the checks again: not matched with an architect view yet'], ['Pair', 'Compare']],
     ['needs_reviewer', STATES.needs_reviewer, ["Choose which of the architect's views shows this countertop"], []],
     ['auto_matched', STATES.auto_matched, ['96"', '0"', 'Looks right', comparedWith(view(1)), 'View matched by code and both AIs'], []],
     ['reviewer_confirmed', STATES.reviewer_confirmed, ['93"', '+3"', 'Needs correction', comparedWith(view(2)), 'View chosen by a reviewer'], []],
@@ -298,11 +298,15 @@ describe('Results with a separate architect file', () => {
       row('v', 4, { architect: PAIR_IN_VIEW }),
     ];
     setup(rows, [finding('arch-nd', 'REVIEW_REQUIRED'), finding('arch-nc', 'REVIEW_REQUIRED'), finding('arch-nmy', 'REVIEW_REQUIRED'), finding('arch-pv', 'REVIEW_REQUIRED')], ['arch-nd', 'arch-nc', 'arch-nmy', 'arch-pv']);
-    for (const id of ['d', 'c', 'y']) {
+    for (const id of ['d', 'c']) {
       const sub = document.querySelector(`tr[data-architect-row="${id}"]`) as HTMLElement;
       expect(within(sub).queryByRole('button', { name: /Pair it/ })).toBeNull();
       expect(within(sub).getByRole('button', { name: 'Decide' })).toBeTruthy();
     }
+    // Never matched with a view: only a new run answers it, so no button at all.
+    const y = document.querySelector('tr[data-architect-row="y"]') as HTMLElement;
+    expect(y.textContent).toContain('Run the checks again');
+    expect(within(y).queryByRole('button')).toBeNull();
     const v = document.querySelector('tr[data-architect-row="v"]') as HTMLElement;
     expect(within(v).getByRole('button', { name: 'Pair it…' })).toBeTruthy();
   });
@@ -358,6 +362,7 @@ const CANDIDATES: ArchitectViewMatch = {
     },
   ],
   can_choose_none: true,
+  order: 'code',
 };
 
 describe('the view picker', { timeout: 15_000 }, () => {
@@ -404,7 +409,7 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(first.querySelector('img')!.getAttribute('src')).toBe('/api/v1/projects/p/packages/k/architect-views/view-1/picture');
     expect(first.textContent).toContain('Sheet Z-9 · view 1 · SAMPLE ELEVATION 1');
     expect(first.textContent).toContain('Fits: run length within 1/4", 3 bays on both.');
-    expect(first.textContent).toContain('Called the same by Reader A');
+    expect(first.textContent).toContain('Reader A said this view shows the same countertop');
     const second = group.querySelector('[data-candidate="view-2"]') as HTMLElement;
     expect(second.textContent).toContain('Remembered from an earlier revision');
     expect(second.textContent).toContain("Code's pick");
@@ -416,7 +421,7 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(third.textContent).toContain('No picture stored');
     expect(first.querySelector('[data-part="code-facts"]')!.textContent).toContain('Run off by 0.3 in');
     // The order is said as it is (code had a pick in this fixture), and why the reviewer is asked.
-    expect(document.querySelector('[data-part="order"]')!.textContent).toContain('In code’s order, by what is drawn');
+    expect(document.querySelector('[data-part="order"]')!.textContent).toBe("Nothing is chosen for you. In code’s order, by what is drawn; the AIs were asked about code’s top views. The vendor's sheet refers to 4/Z9.");
     expect(document.querySelector('[data-part="reasons"]')!.textContent).toBe('Synthetic: two views fit, and the AIs did not agree.');
     // Before a choice, the side-by-side asks for one.
     expect(document.querySelector('[data-slot="view-architect-pane"]')!.textContent).toContain('Choose a view below');
@@ -512,10 +517,17 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(posts).toHaveLength(1);
   });
 
-  it('when code had no pick, says the AIs\' answers set the order', async () => {
+  it.each([
+    ['ais_then_code', 'Views both AIs said show the same countertop come first, then code’s order by what is drawn.'],
+    ['code_ais_not_asked', 'In code’s order, by what is drawn; the AIs were not asked.'],
+  ] as const)('says the order the server reports: %s', async (order, words) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/architect-view-match')) return json({ ...CANDIDATES, order });
+      return json({ error: 'not_found', message: 'the page picture is not ready yet', request_id: 'r' }, 404);
+    }));
     render(<ArchitectViewPicker projectId="p" packageId="k" row={row('n', 4, { architect: STATES.needs_reviewer })} onSaved={vi.fn()} />);
-    expect((await screen.findByText(/Views the AIs called the same come first/)).textContent).toContain('then code’s order by what is drawn');
-    expect(screen.queryByText("Code's pick")).toBeNull();
+    await screen.findByRole('radiogroup', { name: "The architect's views" });
+    expect(document.querySelector('[data-part="order"]')!.textContent).toBe(`Nothing is chosen for you. ${words} The vendor's sheet refers to 4/Z9.`);
   });
 
   it('keeps a note to 500 characters', async () => {
@@ -574,6 +586,24 @@ describe('the queue: "Choose which of the architect\'s views"', { timeout: 15_00
     expect(posts).toEqual([{ view_id: 'view-1', none_of_these: false, note: null, expected_record_id: 'record-shown-1' }]);
     expect(await screen.findByText('View chosen. It counts once the checks run again.')).toBeTruthy();
     expect(document.querySelector('[data-slot="queue-item"]')?.getAttribute('data-status')).toBe('waiting-for-run');
+  });
+
+  it('a countertop never matched with a view asks for a run, not a decision', async () => {
+    const rows = [row('w', 2, { outcome: 'FAIL', needs_decision: true }), row('y', 4, { architect: STATES.not_matched_yet })];
+    const findings = [finding('width-w', 'FAIL'), finding('width-y', 'PASS'), finding('arch-nmy', 'REVIEW_REQUIRED', { scope_row_candidate_id: 'y' })];
+    render(
+      <NeedsYouQueue
+        open opening={1} onOpenChange={vi.fn()} rows={rows} rowsReady findings={findings} blocking={new Set(['width-w', 'arch-nmy'])}
+        projectId="p" packageId="k"
+        handlers={{ onAction: vi.fn(async () => ({ saved: true as const })), onCorrect: vi.fn(async () => ({ saved: true as const })), onExcept: vi.fn(async () => ({ saved: true as const })) }}
+        next={{ kind: 'run-checks', label: 'Run checks', disabled: false, reason: null }}
+        onAct={vi.fn()} onWallSaved={vi.fn()} onOpenCard={vi.fn()}
+        startAt={architectItemKey('y')}
+      />,
+    );
+    expect((await screen.findByText(/has not been matched with a view of the architect/)).textContent).toContain('Run the checks again.');
+    expect(document.querySelector('[data-slot="queue-decision"]')).toBeNull();
+    expect(document.querySelector('[data-slot="architect-view-picker"]')).toBeNull();
   });
 
   it('a pick the server says waits for a run is not asked again', () => {

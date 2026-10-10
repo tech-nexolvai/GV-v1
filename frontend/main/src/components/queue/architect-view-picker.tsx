@@ -120,11 +120,15 @@ export function ArchitectViewPicker({
         <h3 id={`${noteId}-title`} className="text-sm font-medium">Choose which of the architect&apos;s views shows this countertop</h3>
         <p className="text-xs text-muted-foreground" data-part="order">
           Nothing is chosen for you.{' '}
-          {/* The order is the server's (#1166): code's ranking when code had a pick, else the views
-              both AIs called the same first. Said as it is, never as a recommendation. */}
-          {match?.code_pick_view_id
-            ? 'In code’s order, by what is drawn; what the AIs said is on each view.'
-            : 'Views the AIs called the same come first, then code’s order by what is drawn.'}
+          {/* The order is the server's (`order`, from what the matcher did). Said as it is, never as
+              a recommendation. */}
+          {data.order === 'code'
+            ? 'In code’s order, by what is drawn; the AIs were asked about code’s top views.'
+            : data.order === 'ais_then_code'
+              ? 'Views both AIs said show the same countertop come first, then code’s order by what is drawn.'
+              : data.order === 'code_ais_not_asked'
+                ? 'In code’s order, by what is drawn; the AIs were not asked.'
+                : null}
           {data.vendor.references.length > 0 && <> The vendor&apos;s sheet refers to <span className="num">{data.vendor.references.join(', ')}</span>.</>}
         </p>
         {/* Why the reviewer is asked, in the record's own words. */}
@@ -297,7 +301,7 @@ function CandidateCard({
         {hasTags && (
           <span id={ids.tags} className="flex flex-wrap gap-1.5 text-xs" data-part="tags">
             {codePick && <Tag>Code&apos;s pick</Tag>}
-            {candidate.ai_picked_by.length > 0 && <Tag>Called the same by {candidate.ai_picked_by.join(' and ')}</Tag>}
+            {candidate.ai_picked_by.length > 0 && <Tag>{candidate.ai_picked_by.join(' and ')} said this view shows the same countertop</Tag>}
             {candidate.remembered && <Tag><History className="size-3" aria-hidden="true" /> Remembered from an earlier revision</Tag>}
             {!candidate.shown_to_ais && <Tag muted>Not shown to the AIs</Tag>}
           </span>

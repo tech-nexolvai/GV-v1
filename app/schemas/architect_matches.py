@@ -7,6 +7,7 @@ points at it (the picker here; the countertop results in Phase 5). Plain values 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -104,6 +105,15 @@ class ArchitectViewMatchOut(BaseModel):
     current: ArchitectMatchCurrentOut | None
     candidates: list[ArchitectViewCandidateOut]
     can_choose_none: bool = True
+    order: Literal["code", "ais_then_code", "code_ais_not_asked"] | None = Field(
+        default=None,
+        description=(
+            "How the candidates are ordered, from what the matcher did (#1168): `code` (code had a "
+            "pick; the AIs were asked about its top views), `ais_then_code` (code had no pick; "
+            "views both AIs called the same come first, then code's order), `code_ais_not_asked` "
+            "(the AIs were not asked; code's order). Null when the row has no record."
+        ),
+    )
 
 
 class ArchitectViewPickIn(BaseModel):

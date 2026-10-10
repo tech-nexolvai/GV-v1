@@ -22,8 +22,10 @@ export type ArchitectState =
   | 'choose-view'
   /** Separate architect file: the reviewer chose a view after this result; only a new check run uses it. */
   | 'view-picked'
-  /** Separate architect file: the matched view runs into its neighbour, so the reviewer compares by hand. */
-  | 'by-hand';
+  /** Separate architect file: nothing to pair, so the reviewer compares by hand (the usual decision). */
+  | 'by-hand'
+  /** Separate architect file: the row was never matched with a view (an older run); only a new run helps. */
+  | 'run-again';
 
 export function architectOf(row: Pick<CountertopResult, 'architect'>): ArchitectResult | null {
   return row.architect ?? null;
@@ -38,6 +40,7 @@ export function architectState(result: ArchitectResult | null): ArchitectState {
   const match = result.match ?? null;
   if (match?.waits_for_run) return 'view-picked';
   if (match?.status === 'needs_reviewer' && result.needs_decision) return 'choose-view';
+  if (match?.status === 'not_matched_yet' && result.finding_id && result.needs_decision) return 'run-again';
   // A row matched (or to be matched) with the architect's own file that waits for the reviewer with
   // no pairing to confirm: a pairing is offered only where the check asks for one (`can_pair`);
   // anything else (no dimensions line up, no views, not clearly apart, not matched yet) is compared

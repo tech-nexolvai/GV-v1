@@ -58,6 +58,10 @@ from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.wall_layouts import is_between_panels, wall_layout_words
 from workflow.architect_match_records import effective_architect_matches
 from workflow.architect_pairing_contract import EffectivePairing
+
+# The batch form of `architect_views` (#1167), private to its module: the countertop results ask
+# it once per revision instead of once per row.
+from workflow.architect_pairing_records import _architect_views_by_page
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
     PAIR_BY_REVIEWER,
@@ -622,7 +626,10 @@ def _architect_block(
                 and row_match is not None
                 and row_match.record_id in matches.waiting
             ),
-            own_architect_view=None,
+            # Read once per revision for the rows with no match (#1168): no query per row.
+            own_architect_view=(
+                None if matches is None else row.anchor.page_id in matches.own_view_pages
+            ),
         )
         return ArchitectResultOut(
             not_compared_reason=(
@@ -698,6 +705,8 @@ def _architect_block(
             None
             if matches is None
             else finding.id in blocking and PAIR_BY_REVIEWER in (finding.reason or "")
+            # A view chosen after the run: the pairing waits for that run, never offered now.
+            and (row_match is None or row_match.record_id not in matches.waiting)
         ),
         compared_with=view,
         compared_with_text=view_text,
@@ -852,7 +861,19 @@ def _countertop_results_for_revision(
     waiting = architect_matches_waiting_for_run(
         session, revision.id, {match.record_id for match in matches.values() if match is not None}
     )
-    view_matches = separate_file_views(session, package_id, matches, waiting) if indexed else None
+    # Which vendor pages hold their own architect drawing, for the rows with no match (one
+    # statement, only when such a row exists): `plan_architect_row` would ask once per row.
+    unmatched_pages = {row.anchor.page_id for row in rows if matches.get(row.anchor.id) is None}
+    own_view_pages = (
+        frozenset(_architect_views_by_page(session, unmatched_pages))
+        if indexed and unmatched_pages
+        else frozenset()
+    )
+    view_matches = (
+        separate_file_views(session, package_id, matches, waiting, own_view_pages=own_view_pages)
+        if indexed
+        else None
+    )
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
         for input_row in session.scalars(

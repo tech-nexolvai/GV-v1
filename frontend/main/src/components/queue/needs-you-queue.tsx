@@ -225,10 +225,12 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const pairingAsked = item?.kind === 'architect' && status === 'open' && (architectAsk === 'confirm' || architectAsk === 'unpaired');
   // "Which of the architect's views?" (#1168): answered by the view picker, never by the decision form.
   const viewAsked = item?.kind === 'architect' && status === 'open' && architectAsk === 'choose-view';
+  // Never matched with a view (#1168): only a new check run answers it, not a decision.
+  const runAgain = item?.kind === 'architect' && status === 'open' && architectAsk === 'run-again';
   const findingId = item ? findingIdOf(item, live) : null;
   const finding = findingId ? live.findings.get(findingId) ?? null : null;
   // A pairing question is answered by the pairing, never by the decision form.
-  const deciding = finding !== null && (status === 'open' || changing) && !pairingAsked && !viewAsked;
+  const deciding = finding !== null && (status === 'open' || changing) && !pairingAsked && !viewAsked && !runAgain;
   const draft = useDecisionDraft(deciding ? finding : null);
   // A draft belongs to one result. If the result under this item is replaced (a check run finished
   // while the queue was open), the half-written choice and note are dropped, never re-aimed.
@@ -485,6 +487,11 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                     }}
                     onMarks={(marks, active) => setPairMarks({ rowId: architectRow.row_id, marks, active })}
                   />
+                )}
+                {runAgain && (
+                  <p data-slot="queue-run-again" className="rounded-lg border border-dashed p-3 text-sm">
+                    This countertop has not been matched with a view of the architect&apos;s drawings yet. Run the checks again.
+                  </p>
                 )}
                 {viewAsked && architectRow && (
                   <ArchitectViewPicker

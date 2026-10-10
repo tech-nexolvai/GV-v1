@@ -22,9 +22,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.architect_matches import _view_out, _views
 from app.models import Package
 from app.models.evidence import ArchitectViewMatchRecord
+from app.review.architect_views_out import view_out, views_by_id
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.visual_ui import ArchitectAiPickOut, ArchitectMatchOut
@@ -54,6 +54,8 @@ class SeparateFileMatches:
     """The effective records themselves, by record id (code's verdict, the AIs' picks, the time)."""
     views: Mapping[UUID, ArchitectViewRefOut]
     """Every view a record names (matched, code's pick), by view id."""
+    own_view_pages: frozenset[UUID] = frozenset()
+    """Vendor pages holding their own architect drawing, asked for the rows with no match."""
 
 
 def separate_file_views(
@@ -61,9 +63,11 @@ def separate_file_views(
     package_id: UUID,
     matches: Mapping[UUID, EffectiveMatch | None],
     waiting: frozenset[UUID],
+    *,
+    own_view_pages: frozenset[UUID] = frozenset(),
 ) -> SeparateFileMatches:
     """The effective records and the views they name, in at most three statements whatever the
-    number of rows: the records, the views (#1166's `_views`), and the package's project (for the
+    number of rows: the records, the views (`views_by_id`), and the package's project (for the
     picture links), the last two only when a view is named."""
     record_ids = {match.record_id for match in matches.values() if match is not None}
     records = (
@@ -80,18 +84,24 @@ def separate_file_views(
     )
     view_ids = {match.matched.view_id for match in matches.values() if match and match.matched}
     view_ids |= {r.code_pick_view_id for r in records.values() if r.code_pick_view_id is not None}
-    found = _views(session, view_ids)
+    found = views_by_id(session, view_ids)
     views: dict[UUID, ArchitectViewRefOut] = {}
     if found:
         project_id = session.scalar(select(Package.project_id).where(Package.id == package_id))
         assert project_id is not None
         views = {
-            view_id: _view_out(
+            view_id: view_out(
                 entry, page_number, document_id, project_id=project_id, package_id=package_id
             )
             for view_id, (entry, page_number, document_id) in found.items()
         }
-    return SeparateFileMatches(matches=matches, waiting=waiting, records=records, views=views)
+    return SeparateFileMatches(
+        matches=matches,
+        waiting=waiting,
+        records=records,
+        views=views,
+        own_view_pages=own_view_pages,
+    )
 
 
 def _ai_picks(record: ArchitectViewMatchRecord | None) -> tuple[ArchitectAiPickOut, ...]:

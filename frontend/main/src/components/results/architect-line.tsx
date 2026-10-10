@@ -36,9 +36,15 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
         <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} />
         {state === 'choose-view'
           ? "Choose which of the architect's views shows this countertop"
-          : result.match?.status === 'not_matched_yet'
-            ? 'Not matched with an architect view yet: run the checks again, or compare by hand'
-            : 'Compare this countertop by hand'}
+          : 'Compare this countertop by hand'}
+      </span>
+    );
+  }
+  if (state === 'run-again') {
+    // Not a decision to make: the run that matches the row with a view has not happened yet.
+    return (
+      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium">
+        <RefreshCw className="size-3.5" aria-hidden="true" /> Run the checks again: not matched with an architect view yet
       </span>
     );
   }
