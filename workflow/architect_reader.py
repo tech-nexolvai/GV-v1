@@ -43,10 +43,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import DrawingView, Page, ViewRole
-from app.models.evidence import ObservationCandidate
+from app.models.evidence import ArchitectPageNote, ObservationCandidate
 from extraction.architect.reader import ArchitectPage, ArchitectView
 from extraction.architect.views import Role
 from units.measurement import Unit
+from workflow.architect_page_notes import (
+    PAGE_UNREADABLE,
+    VIEW_REFUSED,
+    record_architect_page_note,
+)
 from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
 from workflow.view_roles import (
     CODE_CONFIRMER,
@@ -62,6 +67,7 @@ from workflow.view_roles import (
 __all__ = [
     "ARCHITECT_EXTRACTOR",
     "ARCHITECT_EXTRACTOR_VERSION",
+    "REFUSED_TAG_SUFFIX",
     "SAME_REGION",
     "ArchitectCounts",
     "persist_architect_pages",
@@ -73,6 +79,10 @@ __all__ = [
 ARCHITECT_EXTRACTOR_VERSION: Final = "architect-text-v1"
 
 _ROLES: Final = {Role.ARCH: ViewRole.ARCH, Role.SHOP: ViewRole.SHOP}
+
+#: Marks the tag of a refused view's values (`arch-view-tag:view-<n>~refused`): no drawing view is
+#: ever named so, so they can never be eligible as the architect's.
+REFUSED_TAG_SUFFIX: Final = "~refused"
 _REASON_LIMIT: Final = 300
 _FLAG_REASON_LIMIT: Final = 160
 
@@ -184,8 +194,10 @@ def persist_architect_pages(
     On the architect's own file (`architect_document`, #1163) nothing found is dropped silently:
     every view is recorded with its suggestion and reason even when it gets no role, its spans are
     stored **held** (no value) with the reason, and every page note (`ArchitectPage.notes`: why no
-    view was found, what was left out) is listed in the counts. On the vendor's file only the
-    architect's drawings are stored, as before.
+    view was found, what was left out) is stored as an `ArchitectPageNote` (and listed in the
+    counts). A view refused by the region check (`SAME_REGION`) is noted (`view_refused`) and its
+    values stored held under `arch-view-tag:<tag>~refused`, a tag no view has, so they are never
+    used. On the vendor's file only the architect's drawings are stored, as before.
     """
     counts = ArchitectCounts()
     already = session.execute(
@@ -196,15 +208,36 @@ def persist_architect_pages(
         )
         .limit(1)
     ).scalar_one_or_none()
-    if already is not None:
+    noted = session.execute(
+        select(ArchitectPageNote.id)
+        .where(
+            ArchitectPageNote.extraction_run_id == extraction_run_id,
+            ArchitectPageNote.document_version_id == document_version_id,
+            ArchitectPageNote.kind != PAGE_UNREADABLE,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if already is not None or noted is not None:
         # A redelivered stage has already written this document's reading under this run.
         return counts
     for page, reading in pages:
         counts.pages += 1
         if architect_document:
             for note in reading.notes:
-                counts.page_notes.append({"page_index": page.index, "note": note})
+                kind = str(getattr(note, "kind", "ink_outside_views"))
+                counts.page_notes.append(
+                    {"page_index": page.index, "kind": kind, "note": str(note)}
+                )
+                record_architect_page_note(
+                    session,
+                    extraction_run_id=extraction_run_id,
+                    document_version_id=document_version_id,
+                    page_id=page.id,
+                    kind=kind,
+                    text=str(note),
+                )
         stored_views: set[str] = set()
+        refused_tags: set[str] = set()
         architect_tags: set[str] = set()
         for view in reading.views:
             agreed = view.judgment.agreed
@@ -212,17 +245,23 @@ def persist_architect_pages(
                 continue
             row = _view(session, page, view)
             if row is None:
-                counts.refused_views.append(
-                    {
-                        "page_index": page.index,
-                        "view": _tag(view),
-                        "reason": (
-                            "a view of this number was stored before somewhere else on the page: "
-                            "the views were renumbered, so its role and values are not reused or "
-                            "stored; a person checks the page"
-                        ),
-                    }
+                reason = (
+                    f"view {_tag(view)}: a view of this number was stored before somewhere else on "
+                    "the page, so the views were renumbered; its role is not reused, its values are "
+                    "stored held and never used, and a person checks the page"
                 )
+                counts.refused_views.append(
+                    {"page_index": page.index, "view": _tag(view), "reason": reason}
+                )
+                record_architect_page_note(
+                    session,
+                    extraction_run_id=extraction_run_id,
+                    document_version_id=document_version_id,
+                    page_id=page.id,
+                    kind=VIEW_REFUSED,
+                    text=reason,
+                )
+                refused_tags.add(_tag(view))
                 continue
             stored_views.add(_tag(view))
             if agreed is None:
@@ -253,13 +292,23 @@ def persist_architect_pages(
                 architect_tags.add(_tag(view))
         for architect_row in reading.rows:
             tag = view_tag(architect_row.view_source, architect_row.view_annotation_index)
-            if tag not in architect_tags and not (architect_document and tag in stored_views):
+            refused = tag in refused_tags
+            if (
+                tag not in architect_tags
+                and not refused
+                and not (architect_document and tag in stored_views)
+            ):
                 continue
             for span in architect_row.spans:
                 if span.text is None:
                     continue
                 held_reason = span.held_reason
-                if tag not in architect_tags and held_reason is None:
+                if refused:
+                    held_reason = (
+                        "its view was refused: a stored view of the same number sits elsewhere on "
+                        "the page (the views were renumbered)"
+                    )
+                elif tag not in architect_tags and held_reason is None:
                     held_reason = "this drawing is not the architect's by code"
                 flags = [
                     "architect-reader",
@@ -273,7 +322,10 @@ def persist_architect_pages(
                     + {True: "yes", False: "no", None: "unknown"}[span.on_outline],
                     *(f"arch-qualifier:{qualifier.value}" for qualifier in sorted(span.qualifiers)),
                 ]
-                if architect_row.view_source == "content":
+                if refused:
+                    # A tag no stored view ever has, so these values can never be eligible.
+                    flags.append(f"arch-view-tag:{tag}{REFUSED_TAG_SUFFIX}")
+                elif architect_row.view_source == "content":
                     flags.append(f"arch-view-tag:{tag}")
                 if held_reason is not None:
                     flags.append(f"arch-held:{held_reason[:_FLAG_REASON_LIMIT]}")

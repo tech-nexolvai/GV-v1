@@ -17,8 +17,8 @@ view shows the same countertop as each vendor view. Two append-only tables:
 Never edited: the same append-only trigger as every other evidence table. Grants are derived from
 `ROLE_GRANTS` (append-only: `SELECT`, `INSERT`).
 
-Revision ID: 0082_architect_view_matches
-Revises: 0081_evidence_mark_rechecks
+Revision ID: 0083_architect_view_matches
+Revises: 0082_architect_page_notes
 """
 
 from collections.abc import Sequence
@@ -29,8 +29,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0082_architect_view_matches"
-down_revision: str | None = "0081_evidence_mark_rechecks"
+revision: str = "0083_architect_view_matches"
+down_revision: str | None = "0082_architect_page_notes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -83,7 +83,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["page_id"], ["pages.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["drawing_view_id"], ["drawing_views.id"], ondelete="RESTRICT"),
         sa.UniqueConstraint(
-            "extraction_run_id", "page_id", "view_number", name="uq_architect_view_index_view"
+            "extraction_run_id", "page_id", "view_tag", name="uq_architect_view_index_view"
         ),
         sa.CheckConstraint(
             "view_tag ~ '^(view|panel)-[0-9]+$'", name="architect_view_index_tag_shape"

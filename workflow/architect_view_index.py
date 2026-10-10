@@ -47,7 +47,7 @@ from extraction.rasterise import PageTooLarge, render_region
 from extraction.reader import UnreadablePdf, pixel_placement
 from workflow.architect_match_contract import MatchedView
 from workflow.architect_match_records import ARCHITECT_FILE_NAME, view_carry_key
-from workflow.architect_pairing_records import _architect_views_by_page
+from workflow.architect_pairing_records import _architect_view_tags_by_page
 from workflow.view_roles import content_view_tag, panel_tag
 
 if TYPE_CHECKING:
@@ -122,7 +122,11 @@ def _drawn_rows(
 ) -> tuple[DrawnRow, ...]:
     rows: list[DrawnRow] = []
     for row in reading.rows:
-        if row.view_annotation_index != view.annotation_index or not row.spans:
+        if (
+            row.view_annotation_index != view.annotation_index
+            or row.view_source != view.source
+            or not row.spans
+        ):
             continue
         try:
             rows.append(
@@ -224,8 +228,8 @@ def record_architect_view_index(
     Returns every view's picture (and the view itself) by index row id.
     """
     version = session.get_one(DocumentVersion, version_id)
-    existing: Mapping[tuple[UUID, int], ArchitectViewIndexEntry] = {
-        (entry.page_id, entry.view_number): entry
+    existing: Mapping[tuple[UUID, str], ArchitectViewIndexEntry] = {
+        (entry.page_id, entry.view_tag): entry
         for entry in session.scalars(
             select(ArchitectViewIndexEntry).where(
                 ArchitectViewIndexEntry.extraction_run_id == run_id,
@@ -240,7 +244,7 @@ def record_architect_view_index(
     except Exception:  # noqa: BLE001
         document = None
     read = [page for page, reading in pages if reading.views]
-    roles = _architect_views_by_page(session, [page.id for page in read])
+    roles = _architect_view_tags_by_page(session, [page.id for page in read])
     tags: dict[UUID, dict[str, UUID]] = {}
     if read:
         for view_id, page_id, tag in session.execute(
@@ -265,7 +269,7 @@ def record_architect_view_index(
                 tag = _tag(view)
                 scale = view_scale(view)
                 rows = _drawn_rows(reading, view, scale)
-                entry = existing.get((page.id, view.annotation_index))
+                entry = existing.get((page.id, tag))
                 png, digest, key = _picture(
                     data,
                     page,
@@ -296,7 +300,7 @@ def record_architect_view_index(
                         },
                         label_box=None,
                         separated=view.separated,
-                        role_confirmed=view.annotation_index in confirmed,
+                        role_confirmed=tag in confirmed,
                         row_count=len(rows),
                         reason=_reason(view, labels, len(rows)),
                         picture_sha256=digest,

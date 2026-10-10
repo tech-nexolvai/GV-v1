@@ -371,3 +371,15 @@ def test_the_ais_are_asked_through_the_reading_and_their_answers_kept(
     assert candidate["view_id"] == str(entry.id)
     assert sorted(candidate["ai_picked_by"]) == sorted(readers)
     assert "both AIs: yes" in candidate["evidence"]
+
+
+def test_a_pasted_drawing_and_a_page_view_of_one_number_are_two_index_rows(
+    session: Session, store: LocalStore
+) -> None:
+    """`panel-<n>` and `view-<n>` share a number on one page: each view is its own row, by tag."""
+    _extract(session, store, architect=architect_sheet(pasted_with_heading=True))
+
+    entries = _index(session)
+    tags = sorted(entry.view_tag for entry in entries)
+    assert len(tags) == len(set(tags)) >= 2
+    assert {tag.split("-")[0] for tag in tags} == {"panel", "view"}
