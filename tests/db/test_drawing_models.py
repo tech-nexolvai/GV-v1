@@ -936,6 +936,9 @@ RUN_AWARE: frozenset[str] = frozenset(
         # The row-scoped reviewer endpoint loads only the newest slot-reader extraction run.
         "app/api/slot_rows.py",
         "app/main.py",
+        # Sign-off reads only when a run decision was recorded, never its run, to tell whether the
+        # checks have seen it yet (#1137).
+        "app/review/approval.py",
     }
 )
 
@@ -1125,6 +1128,9 @@ LINK_AWARE: frozenset[str] = frozenset(
         "app/evidence/reading_parts.py",
         "app/api/reading_parts.py",
         "app/main.py",
+        # Sign-off reads only when a link was recorded, never what it links, to tell whether the
+        # checks have seen it yet (#1137).
+        "app/review/approval.py",
     }
 )
 
