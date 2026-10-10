@@ -137,7 +137,9 @@ def test_no_stylesheet_hard_codes_a_role_chip_colour_again() -> None:
     role_rules = [
         rule
         for sheet in sorted(Path("frontend/main/src").rglob("*.css"))
-        for rule in re.findall(r"\.[\w-]*__role[\w-]*\s*\{[^}]*\}", sheet.read_text(encoding="utf-8"))
+        for rule in re.findall(
+            r"\.[\w-]*__role[\w-]*\s*\{[^}]*\}", sheet.read_text(encoding="utf-8")
+        )
     ]
 
     assert role_rules, "the role rules have moved; this guard is now checking nothing"
