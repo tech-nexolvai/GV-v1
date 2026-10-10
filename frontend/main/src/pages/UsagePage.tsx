@@ -12,17 +12,21 @@
  * come from `GET /usage` (#1035), by day and by drawing set; names and recorded results come from
  * `packages-summary`. **Reading time is not shown as a number:** the API's reading times span the
  * saved call times, and the calls of one reading are saved together (a real duration is #1071).
+ *
+ * **Spend so far** (#1165) sits on top: all AI spending for the project, earlier runs included, from
+ * `GET /usage/history`. It loads on its own, so a failure there never hides this project's view.
  */
 
 import { lazy, Suspense, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { getPackagesSummary, getUsage, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
+import { getPackagesSummary, getUsage, getUsageHistory, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { PageFrame, PageLoadError, PageLoading } from '@/components/ui/PageFrame';
 import { DataTable, SortableHeader } from '@/components/data-table/data-table';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Skeleton } from '@/components/ui/skeleton';
+import { SpendSoFar } from '@/components/usage/spend-so-far';
 import { resultTotal } from '@/lib/documents-table';
 import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
 
@@ -101,12 +105,37 @@ const SET_COLUMNS: ColumnDef<SetUsage>[] = [
   },
 ];
 
+function loadHistory() {
+  return getUsageHistory(projectId());
+}
+
+function SpendSoFarSection() {
+  const [attempt, setAttempt] = useState(0);
+  const history = useAsync(loadHistory, [attempt]);
+  if (history.status === 'loading') {
+    return (
+      <div role="status">
+        <Skeleton className="h-40 w-full rounded-xl" />
+        <span className="sr-only">Counting all spending so far…</span>
+      </div>
+    );
+  }
+  if (history.status === 'error') {
+    return (
+      <PageLoadError title="Spend so far could not be loaded" message={`${history.error.message} The all-time figures are unavailable; this is not a report of zero spending.`} onRetry={() => setAttempt((value) => value + 1)} />
+    );
+  }
+  return <SpendSoFar history={history.data} />;
+}
+
 export function UsagePage() {
   const [attempt, setAttempt] = useState(0);
   const usage = useAsync(loadUsage, [attempt]);
 
   return (
-    <PageFrame title="Usage" description="What this project's AI reading has cost, and what the checks found.">
+    <PageFrame title="Usage" description="What AI has cost so far, this project's reviews in detail, and what the checks found.">
+      <div className="mb-6"><SpendSoFarSection /></div>
+      <h2 className="mb-3 text-base font-semibold">This project&apos;s reviews</h2>
       {usage.status === 'loading' && <PageLoading>Counting…</PageLoading>}
 
       {/* Failure and emptiness must not look alike. Zeroes on a screen that could not reach the

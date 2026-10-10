@@ -134,6 +134,15 @@ export function getUsage(projectId: string, query: { groupBy: 'day' | 'package' 
   return request<Usage>(`/projects/${projectId}/usage?group_by=${query.groupBy}`);
 }
 
+/** All AI spending so far (#1165): this project's calls plus earlier runs, by model and run. */
+export type UsageHistory = Get<'/api/v1/projects/{project_id}/usage/history'>;
+export type ModelSpend = UsageHistory['by_model'][number];
+export type EarlierRun = UsageHistory['earlier_runs'][number];
+export type SpendTotals = UsageHistory['totals'];
+export function getUsageHistory(projectId: string) {
+  return request<UsageHistory>(`/projects/${projectId}/usage/history`);
+}
+
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
 }
