@@ -723,7 +723,8 @@ class CountertopRunDecision(Base, TimestampedUUID, Immutable):
         CheckConstraint("confirmed_by !~ '^[[:space:]]*$'", name="run_decision_actor_not_blank"),
         CheckConstraint(
             "wall_config IS NULL OR (decision = 'confirmed' AND "
-            "wall_config IN ('back_left_right', 'back_only', 'island'))",
+            "wall_config IN "
+            "('back_left_right', 'back_and_left', 'back_and_right', 'back_only', 'island'))",
             name="countertop_run_wall_config",
         ),
         UniqueConstraint("run_id", name="uq_countertop_run_decisions_run_id"),

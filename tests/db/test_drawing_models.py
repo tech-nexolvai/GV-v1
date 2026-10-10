@@ -927,6 +927,8 @@ RUN_AWARE: frozenset[str] = frozenset(
         # Names 0064 only as the revision it follows; the migration adds
         # check-run defaults columns and cannot read countertop structure.
         "alembic/versions/0065_check_run_defaults_citation.py",
+        # Widens the wall-layout CHECK on `countertop_run_decisions` (#1138); reads no run.
+        "alembic/versions/0080_one_end_wall_layout.py",
         "app/models/__init__.py",
         "app/models/drawing.py",
         "workflow/countertop_runs.py",
@@ -936,6 +938,9 @@ RUN_AWARE: frozenset[str] = frozenset(
         # The row-scoped reviewer endpoint loads only the newest slot-reader extraction run.
         "app/api/slot_rows.py",
         "app/main.py",
+        # Sign-off reads only when a run decision was recorded, never its run, to tell whether the
+        # checks have seen it yet (#1137).
+        "app/review/approval.py",
     }
 )
 
@@ -1125,6 +1130,9 @@ LINK_AWARE: frozenset[str] = frozenset(
         "app/evidence/reading_parts.py",
         "app/api/reading_parts.py",
         "app/main.py",
+        # Sign-off reads only when a link was recorded, never what it links, to tell whether the
+        # checks have seen it yet (#1137).
+        "app/review/approval.py",
     }
 )
 

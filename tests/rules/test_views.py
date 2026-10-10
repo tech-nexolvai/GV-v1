@@ -3,7 +3,8 @@
 Source: `docs/decisions/CALL_2026_08_25_INPUTS.md` N2 — plan carries cut-out position and offsets and
 the wall-to-wall dimension, elevation carries cabinet widths and fillers, section carries overhang;
 the full mapping is owed by the client and until it lands a check must not be assumed readable from a
-view it does not appear in.
+view it does not appear in. The countertop width check is the exception (#1139): V1 reads the
+countertop row off the vendor's front elevation, so that is where its evidence comes from.
 Verification for: `rules/views.py`.
 
 The tests that matter are the refusals: an unrouted check and an unclassified page both answer "no".
@@ -54,11 +55,10 @@ def _authored_rule_ids() -> frozenset[str]:
         "CT-SINK-CUTOUT-DEPTH-001",
         "CT-SINK-OFFSET-FRONT-001",
         "CT-BACK-OFFSET-MIN-001",
-        "CT-WIDTH-001",
     ],
 )
-def test_cutouts_offsets_and_wall_to_wall_read_from_the_plan(rule_id: str) -> None:
-    """Raj's first grouping: cut-out position, front and back offsets, wall-to-wall."""
+def test_cutouts_and_offsets_read_from_the_plan(rule_id: str) -> None:
+    """Raj's first grouping: cut-out position, front and back offsets."""
     assert views_for(rule_id) == frozenset({PageType.PLAN})
     assert may_read_from(rule_id, PageType.PLAN)
 
@@ -70,10 +70,20 @@ def test_cabinet_widths_and_fillers_read_from_the_elevation(rule_id: str) -> Non
     assert may_read_from(rule_id, PageType.ELEVATION)
 
 
-def test_a_plan_check_refuses_an_elevation_page() -> None:
-    """§3.2's own example, as a test: a countertop width found on a cabinet elevation is a plausible
-    number attached to the wrong drawing, and no arithmetic downstream catches it."""
-    assert not may_read_from("CT-WIDTH-001", PageType.ELEVATION)
+def test_the_countertop_width_check_reads_from_the_elevation_v1_reads() -> None:
+    """**The map matches what V1 does (#1139).** V1 reads the countertop row — the overall and the
+    pieces under it — off the vendor's front elevation. Routed to plan only, as it was, the map would
+    refuse every width check V1 makes the day something consumed it."""
+    assert views_for("CT-WIDTH-001") == frozenset({PageType.ELEVATION})
+    assert may_read_from("CT-WIDTH-001", PageType.ELEVATION)
+
+
+def test_a_check_refuses_a_view_it_is_not_routed_to() -> None:
+    """§3.2's point, as a test: a number off the wrong drawing is plausible, and no arithmetic
+    downstream catches it. The plan checks refuse an elevation, and the width check refuses every
+    view but the elevation."""
+    assert not may_read_from("CT-SINK-CUTOUT-WIDTH-001", PageType.ELEVATION)
+    assert not may_read_from("CT-WIDTH-001", PageType.PLAN)
     assert not may_read_from("CT-WIDTH-001", PageType.SECTION)
     assert not may_read_from("CT-WIDTH-001", PageType.SCHEDULE)
 
@@ -130,7 +140,7 @@ def test_require_views_names_the_missing_client_answer() -> None:
     with pytest.raises(UnroutedCheckError, match="CALL_2026_08_25_INPUTS N2"):
         require_views("CT-DEPTH-001")
 
-    assert require_views("CT-WIDTH-001") == frozenset({PageType.PLAN})
+    assert require_views("CT-WIDTH-001") == frozenset({PageType.ELEVATION})
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +195,17 @@ def test_the_routing_table_cannot_be_added_to_at_runtime() -> None:
     assert not may_read_from("CT-DEPTH-001", PageType.SECTION)
 
 
+def test_the_module_still_says_nothing_consumes_it() -> None:
+    """Fixing the map does not wire it (#1139). Until something reads it, the docstring must keep
+    saying so, or a reader would assume extraction already refuses wrong-view evidence."""
+    import rules.views
+
+    assert rules.views.__doc__ is not None
+    assert "Nothing consumes this yet" in rules.views.__doc__
+
+
 def test_the_frozen_sets_inside_cannot_be_added_to_either() -> None:
     """Immutability one level down. A mutable set as a value would let somebody widen an existing
-    route — `CT-WIDTH-001` gaining ELEVATION — which is the same failure through a smaller door."""
+    route — `CT-WIDTH-001` gaining PLAN — which is the same failure through a smaller door."""
     for allowed in CHECK_VIEWS.values():
         assert isinstance(allowed, frozenset)

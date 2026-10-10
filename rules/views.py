@@ -15,7 +15,14 @@ answers `False`. That is the deliberately awkward direction: a permissive defaul
 future check read any page, silently, and nothing downstream could tell that routing had never been
 decided for it. Refusing turns the missing list into an abstention a reviewer sees.
 
-**Nothing consumes this yet.** There is no pipeline joining a rule to the page its operands came from
+**The countertop width check reads from the elevation (#1139).** Raj's grouping put the
+wall-to-wall dimension in plan, and this map first routed `CT-WIDTH-001` there. V1 does not read it
+there: it reads the countertop row, the overall and the pieces under it, off the vendor's front
+elevation. A plan-only route would have refused every width check V1 makes the day something read
+this map, so the route follows what V1 reads. The other routes stay as Raj grouped them.
+
+**Nothing consumes this yet.** Still true after #1139, which fixed the map and wired nothing. There
+is no pipeline joining a rule to the page its operands came from
 — `Rule` carries no view field and extraction does not route by check. This is the declaration that
 pipeline will read, built now because the mapping is a rules fact and belongs beside the rules, not
 because a caller is waiting. Wiring it is a separate piece of work, and until then no check's
@@ -51,6 +58,10 @@ class UnroutedCheckError(LookupError):
 #:
 #: * **Plan** — cut-out position, front and back offsets, the wall-to-wall dimension.
 #: * **Elevation** — cabinet widths, fillers, tags.
+#:
+#: `CT-WIDTH-001` sits under elevation, not plan: V1 reads the countertop row off the vendor's front
+#: elevation (#1139). `CT-SINK-CABINET-WIDTH-001` and `CT-ARCH-WIDTH-001` stay unrouted: V1 reads
+#: neither from a drawing view yet, and routing them would be a guess.
 #: * **Section** — overhang, which is not visible in plan or elevation at all.
 #:
 #: `CT-DEPTH-001` is **deliberately absent**. Countertop depth is not in any of the three groupings
@@ -67,8 +78,9 @@ _ROUTES: dict[str, frozenset[PageType]] = {
     "CT-SINK-CUTOUT-DEPTH-001": frozenset({PageType.PLAN}),
     "CT-SINK-OFFSET-FRONT-001": frozenset({PageType.PLAN}),
     "CT-BACK-OFFSET-MIN-001": frozenset({PageType.PLAN}),
-    "CT-WIDTH-001": frozenset({PageType.PLAN}),
-    # Elevation — the run seen face-on, where cabinet widths and fillers are called out.
+    # Elevation — the run seen face-on, where cabinet widths and fillers are called out, and where
+    # V1 reads the countertop row (#1139).
+    "CT-WIDTH-001": frozenset({PageType.ELEVATION}),
     "CAB-FILLER-001": frozenset({PageType.ELEVATION}),
     "CAB-ARCH-VS-SHOP-001": frozenset({PageType.ELEVATION}),
 }

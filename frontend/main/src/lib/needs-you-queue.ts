@@ -195,9 +195,17 @@ export function nextOpen(items: readonly QueueItem[], live: LiveData, from: numb
 /** The backend's own words for the published wall layouts (`app/api/visual_countertops.py`). */
 const WALL_WORDS: Record<string, string> = {
   back_left_right: 'Back wall and both ends',
+  back_and_left: 'Back wall and left end',
+  back_and_right: 'Back wall and right end',
   back_only: 'Back wall only',
   island: 'Island; no wall ends',
 };
+
+/**
+ * `back_only` on a row whose stone stops at panels (#1138): the rule's way of saying "no field cut".
+ * Nothing is said about walls, so it is never called "back wall only" there.
+ */
+export const BETWEEN_PANELS_WORDS = 'No field cut: the stone stops at panels';
 
 export function wallWords(config: string): string {
   return WALL_WORDS[config] ?? config.replaceAll('_', ' ');

@@ -62,9 +62,15 @@ class WallLayoutChoice:
 
 
 def wall_layout_name(value: str) -> str:
-    """Plain label for a published layout; never used to select a rule variant."""
+    """Plain label for a published layout; never used to select a rule variant.
+
+    A hand-confirmed run is never a between-panels row: that is only a slot-reader row's check hold
+    (`vocabulary/wall_layouts.py`), whose words say "no field cut", not "back wall only".
+    """
     return {
         "back_left_right": "walls at both ends",
+        "back_and_left": "back wall and left end",
+        "back_and_right": "back wall and right end",
         "back_only": "back wall only",
         "island": "island",
     }.get(value, value)

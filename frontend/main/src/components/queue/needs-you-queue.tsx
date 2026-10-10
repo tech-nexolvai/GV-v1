@@ -16,6 +16,7 @@ import {
   unaccountedBlocking,
   wallQuestion,
   wallWords,
+  BETWEEN_PANELS_WORDS,
   type ItemStatus,
   type LiveData,
   type QueueItem,
@@ -616,7 +617,7 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
           {/* The server's own reason says it; a sentence of ours only when it does not. */}
           {!question.reason && <p className="text-sm text-muted-foreground">The stone sits between side panels, so the panels take the field cut.</p>}
           <Button size="sm" className="self-start" disabled={saving} onClick={() => void save('back_only')}>
-            Back only: stone between panels
+            {BETWEEN_PANELS_WORDS}
           </Button>
           <p className="text-xs text-muted-foreground">Or choose another layout:</p>
         </>

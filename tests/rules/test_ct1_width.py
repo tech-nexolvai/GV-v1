@@ -17,7 +17,7 @@ import yaml
 
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, ResolvedParameter
 from rules.publication import is_production_ready, tolerances_of
-from rules.schema import Cardinality, Quantity, Rule
+from rules.schema import Applicability, Cardinality, Quantity, Rule
 from rules.semantic_types import SemanticType
 from rules.snapshot import publish
 from units.measurement import Measurement, Unit
@@ -347,13 +347,13 @@ def _row(finding: Finding) -> dict[str, object]:
     return dict(cast(tuple[tuple[str, object], ...], row["operation_intermediates"]))
 
 
-def test_version_1_1_0_reads_the_row_as_pieces_by_the_agreed_names() -> None:
+def test_version_1_2_0_reads_the_row_as_pieces_by_the_agreed_names() -> None:
     """The coordination contract with the reader work, held exactly: one rename here and the
-    reader fills a field no rule reads."""
+    reader fills a field no rule reads. (1.1.0 added the pieces; 1.2.0 the one-end layout.)"""
     rule = _load_rule()
     pieces = rule.inputs["piece_widths"]
 
-    assert rule.version == "1.1.0"
+    assert rule.version == "1.2.0"
     assert pieces.source.value == "SHOP"
     assert pieces.semantic_type is SemanticType.COUNTERTOP_PIECE_WIDTH
     assert pieces.semantic_type.value == "countertop_piece_width"
@@ -399,6 +399,45 @@ def test_pieces_with_no_side_walls_take_no_field_cut(wall_config: str) -> None:
     assert finding.outcome is Outcome.PASS
     cut = _trace_derivation(finding, "field_cut_total")
     assert cut["result"] == Measurement(Fraction(0), Unit.INCH, None)
+
+
+# ---------------------------------------------------------------------------
+# 1.2.0: a wall at one end only is one field cut (#1138; Raj: 1 inch per wall end)
+# ---------------------------------------------------------------------------
+
+
+def test_every_published_layout_takes_one_field_cut_per_wall_end() -> None:
+    rule = _load_rule()
+    assert isinstance(rule.applicability, Applicability)
+    counts = {
+        variant.when: variant.extras["field_cut_count"] for variant in rule.applicability.variants
+    }
+    assert counts == {
+        "back_left_right": 2,
+        "back_and_left": 1,
+        "back_and_right": 1,
+        "back_only": 0,
+        "island": 0,
+    }
+
+
+@pytest.mark.parametrize("wall_config", ["back_and_left", "back_and_right"])
+def test_a_row_with_a_wall_at_one_end_needs_exactly_one_field_cut(wall_config: str) -> None:
+    """Input: the synthetic row (40 3/8) with a wall at one end. Output: needs 41 3/8, not 42 3/8."""
+    one_cut = SYNTHETIC_ROW + 1
+    finding = _run(_pieces_only(one_cut), wall_config)
+
+    assert finding.outcome is Outcome.PASS
+    assert finding.variant == wall_config
+    cut = _trace_derivation(finding, "field_cut_total")
+    assert cut["inputs"] == (("value", _inch(1)), ("multiplier", 1))
+    assert cut["result"] == Measurement(Fraction(1), Unit.INCH, None)
+    assert _trace_derivation(finding, "expected_width")["result"] == Measurement(
+        one_cut, Unit.INCH, None
+    )
+    # Two cuts' worth is now a failure under this layout, and so is none.
+    assert _run(_pieces_only(SYNTHETIC_EXPECTED), wall_config).outcome is Outcome.FAIL
+    assert _run(_pieces_only(SYNTHETIC_ROW), wall_config).outcome is Outcome.FAIL
 
 
 def test_without_pieces_the_cabinets_and_fillers_are_used_as_before() -> None:

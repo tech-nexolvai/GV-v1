@@ -12,7 +12,7 @@ import json
 import logging
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,7 +24,15 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_session
 from app.auth import Principal, require_project_access
 from app.config import Settings
-from app.models import CheckRun, Finding, Package, PackageRevision, RuleDefinition, RuleSnapshot
+from app.models import (
+    CheckRun,
+    Finding,
+    ModelInvocation,
+    Package,
+    PackageRevision,
+    RuleDefinition,
+    RuleSnapshot,
+)
 from app.review.chat import ChatReply, answer_question, narrate_selection, select_for_question
 from app.review.chat_bedrock import configured_reviewer_chat
 from app.review.chat_models import (
@@ -41,6 +49,41 @@ router = APIRouter(tags=["reviewer chat"])
 _log = logging.getLogger(__name__)
 NOT_FOUND_DETAIL = "Not found"
 MAX_QUESTION_LENGTH = 1000
+
+
+class _CommittingRecorder(BedrockConverseInvocationRecorder):
+    """Records the chat's model call and commits it at once, so the Usage page counts it (#1134).
+
+    `get_session` never commits and nothing else in these routes writes, so a recorded row was
+    discarded when the request's session closed: the call was paid for and never counted. Committing
+    here rather than at the end of the route keeps a failed call too, and a stream that breaks after
+    the call was made. The review assistant's `SessionLedger` does the same.
+    """
+
+    def record(
+        self,
+        *,
+        model_id: str,
+        prompt_id: str,
+        template_id: str,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> ModelInvocation:
+        try:
+            row = super().record(
+                model_id=model_id,
+                prompt_id=prompt_id,
+                template_id=template_id,
+                started_ns=started_ns,
+                response=response,
+                error=error,
+            )
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+        return row
 
 
 class ReviewerChatRequest(BaseModel):
@@ -339,7 +382,7 @@ def reviewer_chat(
         live.findings,
         configured_reviewer_chat(
             settings,
-            recorder=BedrockConverseInvocationRecorder(session, live.revision_id),
+            recorder=_CommittingRecorder(session, live.revision_id),
             model_id=chosen_model,
         ),
         checks_have_run=live.checks_have_run,
@@ -456,7 +499,7 @@ def reviewer_chat_stream(
         if selection.final is not None
         else configured_reviewer_chat(
             context.settings,
-            recorder=BedrockConverseInvocationRecorder(context.session, live.revision_id),
+            recorder=_CommittingRecorder(context.session, live.revision_id),
             model_id=context.chosen_model,
         )
     )

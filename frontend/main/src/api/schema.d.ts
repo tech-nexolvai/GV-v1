@@ -288,6 +288,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/assistant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the review assistant answers here, and starter questions for this review
+         * @description Starters come from the records and work with the assistant off.
+         *
+         *     `enabled` is read from the same runtime the stream uses, so it is true exactly when a
+         *     question can reach the model.
+         */
+        get: operations["review_assistant_info_api_v1_projects__project_id__packages__package_id__assistant_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/assistant/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask the review assistant about this review, streamed
+         * @description `stage` events as each real step starts (records, model, guard), then `answer`, or `error`.
+         *
+         *     Runs in a worker thread; the request's session stays open until the stream ends, and the one
+         *     write (the model call's usage row) is committed as soon as it is made.
+         */
+        post: operations["review_assistant_stream_api_v1_projects__project_id__packages__package_id__assistant_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/candidates": {
         parameters: {
             query?: never;
@@ -335,6 +381,10 @@ export interface paths {
          *
          *     Runs in the request rather than a background task because it is one row's worth of work and a
          *     reviewer is waiting on the answer — and because the audit event naming them has to commit with it.
+         *
+         *     **Confirming evidence is a role, not just project membership** (#1137), as on every other
+         *     endpoint that turns a reading into something a check uses: a rules administrator may see the
+         *     project and still may not confirm. Refused before anything is read or written.
          */
         post: operations["confirm_candidate_api_v1_projects__project_id__packages__package_id__candidates__candidate_id__confirm_post"];
         delete?: never;
@@ -2303,6 +2353,37 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** AssistantInfoOut */
+        AssistantInfoOut: {
+            /** Enabled */
+            enabled: boolean;
+            /**
+             * Keeps No Data
+             * @default true
+             */
+            keeps_no_data: boolean;
+            /**
+             * Model Label
+             * @default Claude Sonnet 5.5
+             */
+            model_label: string;
+            /** Starters */
+            starters: string[];
+        };
+        /**
+         * AssistantRequest
+         * @description A reviewer question. It carries no value, outcome or decision the server would accept.
+         */
+        AssistantRequest: {
+            focus?: components["schemas"]["Focus"] | null;
+            /**
+             * History
+             * @default []
+             */
+            history: components["schemas"]["HistoryTurn"][];
+            /** Question */
+            question: string;
+        };
         /**
          * AwaitingToleranceOut
          * @description One rule that cannot be released, and how much of it is still a guess.
@@ -3442,6 +3523,16 @@ export interface components {
             ordering: string;
         };
         /**
+         * Focus
+         * @description What the reviewer is looking at: a page, a record (countertop row id or finding id), both.
+         */
+        Focus: {
+            /** Page Number */
+            page_number?: number | null;
+            /** Record Id */
+            record_id?: string | null;
+        };
+        /**
          * GrantException
          * @description Accept one specific deviation, until one specific moment.
          *
@@ -3485,6 +3576,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HistoryTurn */
+        HistoryTurn: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Text */
+            text: string;
         };
         /** HoldOut */
         HoldOut: {
@@ -6053,6 +6154,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApprovalReadinessOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_assistant_info_api_v1_projects__project_id__packages__package_id__assistant_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistantInfoOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_assistant_stream_api_v1_projects__project_id__packages__package_id__assistant_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssistantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
                 };
             };
             /** @description Validation Error */

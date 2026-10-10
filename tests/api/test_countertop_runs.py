@@ -271,6 +271,21 @@ def test_a_new_run_refuses_an_unpublished_wall_layout(sheet: Sheet) -> None:
     _nothing_written(sheet.session)
 
 
+def test_a_run_with_a_wall_at_one_end_is_offered_and_stored(sheet: Sheet) -> None:
+    """#1138: "back wall and left/right end" are published choices and the database keeps one."""
+    assert {"back_and_left", "back_and_right"} <= set(sheet.runs()["wall_layout_choices"])
+    response = sheet.client().post(
+        f"{sheet.base}/countertop-runs/{sheet.top}/confirm",
+        json={"part_ids": [sheet.left, sheet.right], "wall_config": "back_and_left"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["decision"]["wall_config"] == "back_and_left"
+    sheet.session.expire_all()
+    stored = sheet.session.scalars(select(CountertopRunDecision)).one()
+    assert stored.wall_config == "back_and_left"
+
+
 def test_only_a_confirmation_writes_a_run_in_the_drawings_order(sheet: Sheet) -> None:
     """**Done when, 1.** Picked right first, written left to right; one decision, audited, naming
     the person; every row the stated tolerance and the suggester."""

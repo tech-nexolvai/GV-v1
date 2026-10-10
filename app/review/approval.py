@@ -21,23 +21,45 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Subquery, func, select, union_all
 from sqlalchemy.orm import Session
 
 from app.auth.roles import Action, Principal
 from app.db.base import utc_now
 from app.lifecycle.states import transition
-from app.models.evidence import ArchitectPairingRecord
-from app.models.package import PackageRevision, PackageState, PackageStateEvent
-from app.models.review import Approval, ApprovedFinding, ReviewSession
+from app.models.document import PackageRevisionDocument, Page
+from app.models.drawing import (
+    CountertopRunDecision,
+    DrawingItem,
+    DrawingView,
+    PartConfirmation,
+    PartProposal,
+    ReadingPart,
+    ViewRoleConfirmation,
+)
+from app.models.evidence import (
+    ArchitectPairingRecord,
+    CanonicalObservation,
+    ItemClassification,
+    LayoutConfirmation,
+    ObservationCandidate,
+    SlotRowReviewDecision,
+)
+from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent
+from app.models.parameters import ParameterSet
+from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.verdicts import CheckRun, Finding
 from app.review.carry_over import DecisionRecords, decision_holds, decision_records
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
+from evidence.canonical import EvidenceStatus
+from rules.parameters import ParameterLayer
+from workflow.view_roles import CODE_CONFIRMER, CODE_CONTENT_CONFIRMER
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
 
 __all__ = [
+    "INPUTS_CHANGED_NEEDS_RERUN",
     "ApprovalDecision",
     "ApprovalNotAuthorised",
     "ApprovalRefused",
@@ -183,20 +205,109 @@ def _unaddressed_from_records(
     return tuple(sorted((required | corrected) - addressed, key=str))
 
 
-#: Why sign-off waits when a reviewer paired architect dimensions after the last check run (#1088).
-PAIRING_NEEDS_RERUN = (
-    "A reviewer paired the architect's dimensions after the last check run. Run the checks so the "
-    "pairing is compared before signing off."
+#: Why sign-off waits when a reviewer changed something the checks read after they last ran (#1137).
+INPUTS_CHANGED_NEEDS_RERUN = (
+    "You changed inputs after the last check run. Run the checks before signing off."
 )
 
 
-def _revisions_with_unchecked_pairings(db: Session, revision_ids: Collection[UUID]) -> set[UUID]:
-    """Revisions holding a reviewer's architect pairing newer than their live check runs (#1088).
+#: Who records a drawing's role when code, not a person, decided it (`workflow/view_roles.py`).
+_CODE_CONFIRMERS = (CODE_CONFIRMER, CODE_CONTENT_CONFIRMER)
 
-    The same rule as a corrected value: a pairing a reviewer saved after the checks ran has not been
-    compared yet, so it must not be signed off past. Only a reviewer's record counts (an automatic
-    one is written at reading time, before any check), and only the live runs: a re-run supersedes
-    the old ones and clears this. One statement for any number of revisions.
+
+def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
+    """Every reviewer input the check stage reads, as `(revision, recorded at)`, for these revisions.
+
+    One branch per input, each the record a person (never code) wrote, joined to the revisions whose
+    checks read it the way `workflow/stages.py:run_checks` does:
+
+    - typed measurements and run settings: this revision's RUN parameter sets
+      (`workflow/measurements.py`);
+    - project settings: PROJECT sets of this revision's own project (`load_parameter_sets`). GLOBAL
+      is the company layer, not a reviewer's input to one review, and is not counted;
+    - classifications and confirmed layout answers, keyed by the revision;
+    - architect pairings a reviewer decided (#1088);
+    - slot-row wall choices and typed widths, on a reading of this revision's documents;
+    - countertop-run decisions, part decisions and reading-to-part links (`workflow/
+      part_operands.py`), and a person's drawing-role confirmation (code's is not reviewer input);
+    - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
+      action produced. An evidence confirm/correct writes one too, but it is a decision on its
+      finding, already governed by `decision_holds` and the correction rule, so it is not counted
+      again here.
+
+    Each branch is filtered to `revision_ids`, so the union is one bounded statement.
+    """
+    ids = tuple(revision_ids)
+    on_page = (
+        select(Page.id.label("page_id"), PackageRevisionDocument.package_revision_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(PackageRevisionDocument.package_revision_id.in_(ids))
+        .subquery()
+    )
+    on_view = (
+        select(DrawingView.id.label("view_id"), on_page.c.package_revision_id)
+        .join(on_page, on_page.c.page_id == DrawingView.page_id)
+        .subquery()
+    )
+    produced_by_action = select(ReviewAction.resulting_observation_id).where(
+        ReviewAction.resulting_observation_id.is_not(None)
+    )
+    branches = (
+        select(ParameterSet.package_revision_id, ParameterSet.created_at).where(
+            ParameterSet.layer == ParameterLayer.RUN.value,
+            ParameterSet.package_revision_id.in_(ids),
+        ),
+        select(PackageRevision.id, ParameterSet.created_at)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .join(ParameterSet, ParameterSet.project_id == Package.project_id)
+        .where(ParameterSet.layer == ParameterLayer.PROJECT.value, PackageRevision.id.in_(ids)),
+        select(ItemClassification.package_revision_id, ItemClassification.created_at).where(
+            ItemClassification.package_revision_id.in_(ids)
+        ),
+        select(LayoutConfirmation.package_revision_id, LayoutConfirmation.created_at).where(
+            LayoutConfirmation.package_revision_id.in_(ids)
+        ),
+        select(ArchitectPairingRecord.package_revision_id, ArchitectPairingRecord.created_at).where(
+            ArchitectPairingRecord.package_revision_id.in_(ids),
+            ArchitectPairingRecord.decided_by.is_not(None),
+        ),
+        select(on_page.c.package_revision_id, SlotRowReviewDecision.created_at)
+        .join(
+            ObservationCandidate, ObservationCandidate.id == SlotRowReviewDecision.row_candidate_id
+        )
+        .join(on_page, on_page.c.page_id == ObservationCandidate.page_id),
+        select(on_view.c.package_revision_id, CountertopRunDecision.created_at)
+        .join(DrawingItem, DrawingItem.id == CountertopRunDecision.countertop_item_id)
+        .join(on_view, on_view.c.view_id == DrawingItem.drawing_view_id),
+        select(on_view.c.package_revision_id, PartConfirmation.created_at)
+        .join(PartProposal, PartProposal.id == PartConfirmation.part_proposal_id)
+        .join(on_view, on_view.c.view_id == PartProposal.drawing_view_id),
+        select(on_page.c.package_revision_id, ReadingPart.created_at)
+        .join(CanonicalObservation, CanonicalObservation.id == ReadingPart.canonical_observation_id)
+        .join(on_page, on_page.c.page_id == CanonicalObservation.page_id),
+        select(on_view.c.package_revision_id, ViewRoleConfirmation.created_at)
+        .join(on_view, on_view.c.view_id == ViewRoleConfirmation.drawing_view_id)
+        .where(ViewRoleConfirmation.confirmed_by.not_in(_CODE_CONFIRMERS)),
+        select(on_page.c.package_revision_id, CanonicalObservation.created_at)
+        .join(on_page, on_page.c.page_id == CanonicalObservation.page_id)
+        .where(
+            CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value,
+            CanonicalObservation.id.not_in(produced_by_action),
+        ),
+    )
+    return union_all(*branches).subquery()
+
+
+def _revisions_with_unchecked_inputs(db: Session, revision_ids: Collection[UUID]) -> set[UUID]:
+    """Revisions holding a reviewer input newer than their latest live check run (#1088, #1137).
+
+    The same rule as a corrected value: something a reviewer recorded after the checks ran has not
+    been checked yet, so it must not be signed off past. Only the live runs count: a re-run
+    supersedes the old ones and clears this. A revision never checked is not listed here; it has no
+    findings, which readiness already refuses. One statement for any number of revisions.
     """
     if not revision_ids:
         return set()
@@ -209,14 +320,13 @@ def _revisions_with_unchecked_pairings(db: Session, revision_ids: Collection[UUI
         .group_by(CheckRun.package_revision_id)
         .subquery()
     )
+    recorded = _inputs_recorded(revision_ids)
+    revision_column, recorded_at = recorded.c[0], recorded.c[1]
     return set(
         db.scalars(
-            select(ArchitectPairingRecord.package_revision_id)
-            .join(checked, checked.c.revision_id == ArchitectPairingRecord.package_revision_id)
-            .where(
-                ArchitectPairingRecord.decided_by.is_not(None),
-                ArchitectPairingRecord.created_at > checked.c.checked_at,
-            )
+            select(revision_column)
+            .join(checked, checked.c.revision_id == revision_column)
+            .where(recorded_at > checked.c.checked_at)
             .distinct()
         ).all()
     )
@@ -253,8 +363,8 @@ def readiness_and_decisions(
         reason = "There are no findings to sign off. Run the checks first."
     elif blocked:
         reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
-    elif revision_id in _revisions_with_unchecked_pairings(db, [revision_id]):
-        reason = PAIRING_NEEDS_RERUN
+    elif revision_id in _revisions_with_unchecked_inputs(db, [revision_id]):
+        reason = INPUTS_CHANGED_NEEDS_RERUN
     elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
         reason = "The package is not awaiting review."
     return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason), records
@@ -287,7 +397,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
         ).all()
     }
     when = utc_now()
-    unchecked = _revisions_with_unchecked_pairings(db, revision_ids)
+    unchecked = _revisions_with_unchecked_inputs(db, revision_ids)
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
         blocked = _unaddressed_from_records(tuple(findings), records, when=when)
@@ -298,7 +408,7 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
         elif blocked:
             reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
         elif revision_id in unchecked:
-            reason = PAIRING_NEEDS_RERUN
+            reason = INPUTS_CHANGED_NEEDS_RERUN
         elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
             reason = "The package is not awaiting review."
         result[revision_id] = ApprovalReadiness(
@@ -325,10 +435,10 @@ def approve_package(
         raise UnaddressedReviewRequired(
             f"FAIL, REVIEW REQUIRED and NOT FOUND findings must each be explicitly addressed before approval: {listed}"
         )
-    if review.package_revision_id in _revisions_with_unchecked_pairings(
+    if review.package_revision_id in _revisions_with_unchecked_inputs(
         db, [review.package_revision_id]
     ):
-        raise UnaddressedReviewRequired(PAIRING_NEEDS_RERUN)
+        raise UnaddressedReviewRequired(INPUTS_CHANGED_NEEDS_RERUN)
 
     approval = Approval(package_revision_id=review.package_revision_id, approved_by=principal.id)
     event = transition(
