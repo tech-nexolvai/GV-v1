@@ -143,6 +143,13 @@ export function getUsageHistory(projectId: string) {
   return request<UsageHistory>(`/projects/${projectId}/usage/history`);
 }
 
+/** What the AI provider reports this deployment's key has used (all projects); empty when off. */
+export type UsageProviderChecks = Get<'/api/v1/projects/{project_id}/usage/provider-check'>;
+export type UsageProviderCheck = UsageProviderChecks['checks'][number];
+export function getUsageProviderCheck(projectId: string) {
+  return request<UsageProviderChecks>(`/projects/${projectId}/usage/provider-check`);
+}
+
 export function getPackage(projectId: string, packageId: string) {
   return request<PackageDetail>(`/projects/${projectId}/packages/${packageId}`);
 }

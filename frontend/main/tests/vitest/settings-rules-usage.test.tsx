@@ -277,23 +277,24 @@ describe('usage arithmetic', () => {
   });
 });
 
-const spend = (calls: number, cost: string, unpriced = 0) => ({ calls, input_tokens: calls * 1000, output_tokens: calls * 100, cost_usd: cost, unpriced_calls: unpriced });
+const spend = (calls: number, cost: string, unpriced = 0, pricedLater = 0, pricedLaterCost = '0.000000') => ({ calls, input_tokens: calls * 1000, output_tokens: calls * 100, cost_usd: cost, unpriced_calls: unpriced, priced_later_calls: pricedLater, priced_later_cost_usd: pricedLaterCost });
 const HISTORY: UsageHistory = {
-  totals: spend(160, '38.717358', 3),
+  totals: spend(160, '38.717358', 3, 92, '0.412300'),
   this_project: spend(150, '1.717358', 2),
-  earlier: spend(10, '37.000000', 1),
+  earlier: spend(10, '37.000000', 1, 92, '0.412300'),
   by_model: [
     { ...spend(80, '30.000000'), model: 'anthropic.claude-opus-5-5', route: 'unknown' },
     { ...spend(6, '0.500000', 1), model: 'qwen.qwen3-vl-235b-a22b', route: 'bedrock' },
     { ...spend(2, '0.100000'), model: 'anthropic.claude-sonnet-5-5', route: 'openrouter' },
+    { ...spend(1, '0.050000'), model: 'anthropic.claude-sonnet-5-5', route: 'unknown' },
     { ...spend(1, '0.000000', 1), model: 'synthetic.unknown-model-v9', route: 'unknown' },
     { ...spend(5, '0.000000', 4), model: 'amazon.nova-pro-v1:0', route: 'bedrock' },
   ],
   earlier_runs: [
     { ...spend(7, '36.500000'), day: '2026-10-08', purpose: 'reading', source_label: 'Earlier runs on this machine', models: ['anthropic.claude-opus-5-5', 'anthropic.claude-sonnet-5-5'] },
     { ...spend(3, '0.500000', 1), day: '2026-10-06', purpose: 'bake-off', source_label: 'Earlier runs on this machine', models: ['qwen.qwen3-vl-235b-a22b'] },
+    { ...spend(1, '0.010000'), day: '2026-10-06', purpose: 'findings', source_label: 'Earlier runs on this machine', models: ['us.amazon.nova-pro-v1:0'] },
   ],
-  provider_checks: [],
 };
 
 describe('spend so far words', () => {
@@ -309,6 +310,7 @@ describe('spend so far words', () => {
     expect(routeWord('unknown')).toBe('Not recorded');
     expect(routeWord('bedrock')).toBe('Amazon Bedrock');
     expect(purposeWord('bake-off')).toBe('Model comparison');
+    expect(purposeWord('findings')).toBe('Findings wording');
     expect(compactCount(1_234_567)).toBe('1.2M');
     expect(compactCount(12_345)).toBe('12.3k');
     expect(shortDayLabel('2026-10-08', new Date('2026-12-31T00:00:00Z'))).toBe(dayLabel('2026-10-08'));
@@ -322,6 +324,7 @@ describe('Usage page', () => {
     routes['GET /projects/p/usage?group_by=package'] = () => json(BY_SET);
     routes['GET /projects/p/packages-summary?limit=200'] = () => json(SUMMARY);
     routes['GET /projects/p/usage/history'] = () => json(HISTORY);
+    routes['GET /projects/p/usage/provider-check'] = () => json({ checks: [] });
   }
 
   it('puts all spending so far on top: one total, by model, and earlier runs (#1165)', async () => {
@@ -333,13 +336,17 @@ describe('Usage page', () => {
     expect(within(total).getByText('$38.72').className).toContain('num');
     expect(within(section).getByText((_, el) => el?.getAttribute('data-part') === 'spend-split').textContent).toBe("This project's reviews at least $1.72·Earlier runs at least $37.00");
     expect(within(section).getByText((_, el) => el?.getAttribute('data-part') === 'unpriced').textContent).toBe('3 calls have no price, so the real cost is higher.');
+    expect(within(section).getByText((_, el) => el?.getAttribute('data-part') === 'priced-later').textContent).toBe('92 calls from before costs were recorded are priced from published rates ($0.41 of the total).');
+    expect(within(section).queryByText((_, el) => el?.getAttribute('data-part') === 'provider-check')).toBeNull();
 
     const byModel = within(section).getByRole('table', { name: 'AI spend by model' });
     const modelRows = within(byModel).getAllByRole('row').slice(1).map((row) => [...row.children].map((cell) => cell.textContent));
     expect(modelRows).toEqual([
       ['Claude Opus 5.5anthropic.claude-opus-5-5', 'Not recorded', '80', '80.0k / 8,000', '$30.00', '0'],
       ['Qwen3 VL 235Bqwen.qwen3-vl-235b-a22b', 'Amazon Bedrock', '6', '6,000 / 600', 'at least $0.50', '1'],
-      ['Claude Sonnet 5.5anthropic.claude-sonnet-5-5', 'OpenRouter', '2', '2,000 / 200', '$0.10', '0'],
+      // The same model through two routes: the route is said under the name for narrow screens.
+      ['Claude Sonnet 5.5anthropic.claude-sonnet-5-5OpenRouter', 'OpenRouter', '2', '2,000 / 200', '$0.10', '0'],
+      ['Claude Sonnet 5.5anthropic.claude-sonnet-5-5Not recorded', 'Not recorded', '1', '1,000 / 100', '$0.05', '0'],
       // Partly unpriced with the priced calls free (a failed call costs nothing): never "at least $0.00".
       ['Amazon Nova Proamazon.nova-pro-v1:0', 'Amazon Bedrock', '5', '5,000 / 500', 'Not priced', '4'],
       // A model nobody priced is "Not priced", never $0.00, and sorts last.
@@ -351,22 +358,42 @@ describe('Usage page', () => {
     expect(runRows).toEqual([
       [shortDayLabel('2026-10-08'), 'Reading drawings', 'Claude Opus 5.5 · Claude Sonnet 5.5', '7', '$36.50'],
       [shortDayLabel('2026-10-06'), 'Model comparison', 'Qwen3 VL 235B', '3', 'at least $0.50'],
+      [shortDayLabel('2026-10-06'), 'Findings wording', 'Amazon Nova Pro', '1', '$0.01'],
     ]);
+    expect(within(byModel).getAllByText((_, el) => el?.getAttribute('data-part') === 'route-under-model').map((el) => el.textContent)).toEqual(['OpenRouter', 'Not recorded']);
     expect(section.textContent).not.toContain('$0.00');
     // This project's own view is still there, below.
     expect(await screen.findByRole('table', { name: 'AI usage by drawing set' })).toBeTruthy();
   });
 
-  it('shows what OpenRouter itself reports beside the recorded total, or that it could not be read', async () => {
+  it("shows OpenRouter's key usage on its own request, labelled as all projects, or that it could not be read", async () => {
     serve();
-    routes['GET /projects/p/usage/history'] = () => json({ ...HISTORY, provider_checks: [{ provider: 'openrouter', status: 'ok', scope: 'account', used_usd: '41.250000', checked_at: '2026-10-10T10:00:00Z' }] });
+    routes['GET /projects/p/usage/provider-check'] = () => json({ checks: [{ provider: 'openrouter', status: 'ok', used_usd: '41.250000', checked_at: '2026-10-10T10:00:00Z' }] });
     const { unmount } = render(<UsagePage />);
-    expect((await screen.findByText((_, el) => el?.getAttribute('data-part') === 'provider-check')).textContent).toBe('OpenRouter reports $41.25 used on the account');
+    expect((await screen.findByText((_, el) => el?.getAttribute('data-part') === 'provider-check')).textContent).toBe('OpenRouter key usage (all projects): $41.25');
     unmount();
 
-    routes['GET /projects/p/usage/history'] = () => json({ ...HISTORY, provider_checks: [{ provider: 'openrouter', status: 'unavailable', scope: null, used_usd: null, checked_at: '2026-10-10T10:00:00Z' }] });
+    routes['GET /projects/p/usage/provider-check'] = () => json({ checks: [{ provider: 'openrouter', status: 'unavailable', used_usd: null, checked_at: '2026-10-10T10:00:00Z' }] });
+    const second = render(<UsagePage />);
+    expect(await screen.findByText('OpenRouter key usage (all projects) could not be read just now.')).toBeTruthy();
+    second.unmount();
+
+    // A failing provider request never hides or delays the recorded totals.
+    routes['GET /projects/p/usage/provider-check'] = () => json({ error: 'http_error', message: 'synthetic outage', request_id: 'r' }, 502);
     render(<UsagePage />);
-    expect(await screen.findByText("OpenRouter's own total could not be read just now.")).toBeTruthy();
+    const section = await screen.findByRole('region', { name: /Spend so far/ });
+    expect(within(section).getByText('$38.72')).toBeTruthy();
+    await waitFor(() => expect(requests.some((r) => r.url === '/projects/p/usage/provider-check')).toBe(true));
+    expect(within(section).queryByText((_, el) => el?.getAttribute('data-part') === 'provider-check')).toBeNull();
+  });
+
+  it('a headline whose priced part is $0 with unpriced calls says "Not priced", never "at least $0.00"', async () => {
+    serve();
+    routes['GET /projects/p/usage/history'] = () => json({ ...HISTORY, totals: spend(5, '0.000000', 4), this_project: spend(5, '0.000000', 4), earlier: spend(0, '0.000000'), by_model: [], earlier_runs: [] });
+    render(<UsagePage />);
+    const section = await screen.findByRole('region', { name: /Spend so far/ });
+    const total = within(section).getByText((_, el) => el?.getAttribute('data-part') === 'all-time-total');
+    expect(total.textContent).toBe('Not priced5 AI calls in all');
   });
 
   it('with no earlier runs says so, and the total is this project\'s', async () => {
@@ -420,8 +447,8 @@ describe('Usage page', () => {
     // No invisible keyboard stops inside the hidden charts.
     expect(document.querySelectorAll('[data-slot="chart"] [tabindex="0"]')).toHaveLength(0);
 
-    // Four reads, no per-review requests (the old page asked each review's findings).
-    expect(requests.map((r) => r.url).sort()).toEqual(['/projects/p/packages-summary?limit=200', '/projects/p/usage/history', '/projects/p/usage?group_by=day', '/projects/p/usage?group_by=package']);
+    // Five reads, no per-review requests (the old page asked each review's findings).
+    expect(requests.map((r) => r.url).sort()).toEqual(['/projects/p/packages-summary?limit=200', '/projects/p/usage/history', '/projects/p/usage/provider-check', '/projects/p/usage?group_by=day', '/projects/p/usage?group_by=package']);
   });
 
   it('never shows a cost nobody priced as $0.00, and sorts it last', async () => {

@@ -209,6 +209,7 @@ const PURPOSE_WORDS: Record<EarlierRun['purpose'], string> = {
   'row-choice': 'Choosing countertop rows',
   chat: 'Reviewer chat',
   assistant: 'Review assistant',
+  findings: 'Findings wording',
   'bake-off': 'Model comparison',
   other: 'Other',
 };

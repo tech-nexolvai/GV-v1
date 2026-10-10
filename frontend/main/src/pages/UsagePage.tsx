@@ -19,14 +19,14 @@
 
 import { lazy, Suspense, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { getPackagesSummary, getUsage, getUsageHistory, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
+import { getPackagesSummary, getUsage, getUsageHistory, getUsageProviderCheck, PACKAGES_SUMMARY_PAGE_SIZE } from '../api/client';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { PageFrame, PageLoadError, PageLoading } from '@/components/ui/PageFrame';
 import { DataTable, SortableHeader } from '@/components/data-table/data-table';
 import { InfoTip } from '@/components/ui/info-tip';
 import { Skeleton } from '@/components/ui/skeleton';
-import { SpendSoFar } from '@/components/usage/spend-so-far';
+import { ProviderLine, SpendSoFar } from '@/components/usage/spend-so-far';
 import { resultTotal } from '@/lib/documents-table';
 import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
 
@@ -109,6 +109,18 @@ function loadHistory() {
   return getUsageHistory(projectId());
 }
 
+function loadProviderCheck() {
+  return getUsageProviderCheck(projectId());
+}
+
+/** The provider's own figure, loaded on its own: it never delays or blocks the recorded totals, and
+ * while it loads, is off, or fails to load, nothing is shown. */
+function ProviderCheckLine() {
+  const checks = useAsync(loadProviderCheck, []);
+  if (checks.status !== 'ready') return null;
+  return <>{checks.data.checks.map((check) => <ProviderLine key={check.provider} check={check} />)}</>;
+}
+
 function SpendSoFarSection() {
   const [attempt, setAttempt] = useState(0);
   const history = useAsync(loadHistory, [attempt]);
@@ -125,7 +137,7 @@ function SpendSoFarSection() {
       <PageLoadError title="Spend so far could not be loaded" message={`${history.error.message} The all-time figures are unavailable; this is not a report of zero spending.`} onRetry={() => setAttempt((value) => value + 1)} />
     );
   }
-  return <SpendSoFar history={history.data} />;
+  return <SpendSoFar history={history.data} providerCheck={<ProviderCheckLine />} />;
 }
 
 export function UsagePage() {
