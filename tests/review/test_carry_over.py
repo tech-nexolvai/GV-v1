@@ -743,4 +743,6 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     assert all(item["reviewer_decision"]["carried_over"] for item in items)
     # 13: one statement more than before #1088, the same for any number of rows: sign-off
     # readiness asks once whether a reviewer paired architect dimensions after the checks ran.
-    assert counter[0] <= 13
+    # 14 since #1161: the revision is asked once whether its architect drawings are a separate
+    # file, for a row the architect check wrote nothing for; still the same for any number of rows.
+    assert counter[0] <= 14

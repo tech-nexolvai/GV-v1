@@ -9,7 +9,9 @@ value, what the check does with the row:
   This never creates a PASS (decision flagged for Anant in #1054: it saves a reviewer click on every
   page where the architect prints nothing comparable). Where no row of a revision is compared, one
   revision-wide NO_APPLICABLE_RULE line says so (`NOTHING_PAIRED_ON_REVISION`): seen to have run,
-  never a pass, blocking nothing;
+  never a pass, blocking nothing. When the architect's drawings came as their own file (#1161),
+  which this version does not compare, each such row says so instead and the revision gets one
+  REVIEW_REQUIRED line (`SEPARATE_ARCHITECT_FILE_NOT_COMPARED`) that the reviewer decides;
 * **unresolved** — the two AIs disagreed or refused, or code could not decide while the architect
   does print a usable dimension on drawn casework: a REVIEW_REQUIRED finding, "pair it (one click)";
 * **compare** — the one-to-one pairs, overall with overall and one architect span with one vendor
@@ -36,7 +38,7 @@ Source: issue #1054 · Verification: `tests/workflow/test_architect_row_evidence
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Final, Literal
 from uuid import UUID
@@ -60,6 +62,8 @@ __all__ = [
     "AUTOMATIC_SOURCES",
     "NOTHING_PAIRED_ON_REVISION",
     "PAIR_BY_REVIEWER",
+    "SEPARATE_ARCHITECT_FILE_NOT_COMPARED",
+    "SEPARATE_ARCHITECT_FILE_ROW",
     "ArchitectRowPlan",
     "ComparedPair",
     "Disposition",
@@ -133,6 +137,19 @@ NOTHING_PAIRED_ON_REVISION: Final = (
     "each row's results say why it was not compared."
 )
 PAIR_BY_REVIEWER: Final = "Pair the architect's dimension with the vendor's (one click)."
+#: A row not compared in a revision whose architect drawings came as their own file (#1161): this
+#: version reads the architect only where it is pasted on the vendor's sheets, so it says so.
+SEPARATE_ARCHITECT_FILE_ROW: Final = (
+    "The architect's drawings were uploaded as a separate file, which this version does not "
+    "compare yet. Compare this countertop with the architect's drawings by hand."
+)
+#: The one package-level REVIEW_REQUIRED line in that case (#1161), in place of
+#: `NOTHING_PAIRED_ON_REVISION`: the comparison never ran, so the reviewer decides once.
+SEPARATE_ARCHITECT_FILE_NOT_COMPARED: Final = (
+    "The architect's drawings were uploaded as a separate file. This version does not compare "
+    "them with the vendor's drawings yet. Compare the countertop widths by hand, then mark this "
+    "checked."
+)
 
 
 def effective_architect_pairing(session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
@@ -303,13 +320,32 @@ def plan_architect_row(
     pairing: EffectivePairing | None,
     *,
     sides: ReadingSides | None = None,
+    separate_architect_file: bool = False,
 ) -> ArchitectRowPlan:
     """Decide whether this row has anything to compare with the architect, and which pairs.
 
     Never a pass or a fail. "Nothing comparable" is never turned into a PASS: it is no finding, with
     the reason shown beside the row (a decision flagged for Anant in #1054). `sides` lets a caller
     asking about many rows share one `ReadingSides` and its per-document answers.
+
+    `separate_architect_file` (`app.evidence.sides.has_separate_architect_file` for the row's
+    revision, #1161): a row that ends "not compared" says the architect's own file was not compared
+    (`SEPARATE_ARCHITECT_FILE_ROW`) instead of a reason about the vendor's sheet. A row that is
+    compared or waits for a pairing is unchanged.
     """
+    plan = _plan_architect_row(session, row, pairing, sides=sides)
+    if separate_architect_file and plan.disposition is Disposition.NOT_COMPARED:
+        return replace(plan, reason=SEPARATE_ARCHITECT_FILE_ROW)
+    return plan
+
+
+def _plan_architect_row(
+    session: Session,
+    row: SlotRow,
+    pairing: EffectivePairing | None,
+    *,
+    sides: ReadingSides | None,
+) -> ArchitectRowPlan:
     if pairing is None:
         return ArchitectRowPlan(
             Disposition.NOT_COMPARED,
