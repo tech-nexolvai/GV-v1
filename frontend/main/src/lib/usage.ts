@@ -1,4 +1,4 @@
-import type { PackageSummary, Usage, UsageGroup } from '@/api/client';
+import type { EarlierRun, ModelSpend, PackageSummary, Usage, UsageGroup } from '@/api/client';
 import type { SummaryOutcomes } from '@/lib/documents-table';
 
 /**
@@ -38,6 +38,11 @@ export function dayLabel(day: string): string {
 /** "8 Oct 2026", for tables and tooltips. */
 export function fullDayLabel(day: string): string {
   return utcDay(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** "8 Oct" for a day in this UTC year, "8 Oct 2025" otherwise: short enough for a phone row. */
+export function shortDayLabel(day: string, now: Date = new Date()): string {
+  return utcDay(day).getUTCFullYear() === now.getUTCFullYear() ? dayLabel(day) : fullDayLabel(day);
 }
 
 export interface UsageKpis {
@@ -167,4 +172,55 @@ export function outcomeTotals(days: readonly OutcomeDay[]): SummaryOutcomes {
     (sum, day) => ({ pass: sum.pass + day.pass, fail: sum.fail + day.fail, review: sum.review + day.review, not_found: sum.not_found + day.not_found, no_rule: sum.no_rule + day.no_rule }),
     { pass: 0, fail: 0, review: 0, not_found: 0, no_rule: 0 },
   );
+}
+
+/** Model ids in words (#1165); null for a model with no known name (the id is shown instead). */
+const MODEL_NAMES: readonly [RegExp, string][] = [
+  [/claude-opus-5-5/, 'Claude Opus 5.5'],
+  [/claude-sonnet-5-5/, 'Claude Sonnet 5.5'],
+  [/claude-haiku-4-5/, 'Claude Haiku 4.5'],
+  [/nova-2-lite/, 'Amazon Nova 2 Lite'],
+  [/nova-pro/, 'Amazon Nova Pro'],
+  [/nova-lite/, 'Amazon Nova Lite'],
+  [/qwen3-vl-235b/, 'Qwen3 VL 235B'],
+  [/kimi-k3/, 'Kimi K3'],
+  [/mistral-large-3/, 'Mistral Large 3'],
+  [/ministral-3-3b/, 'Ministral 3 3B'],
+];
+
+export function modelName(model: string): string | null {
+  return MODEL_NAMES.find(([pattern]) => pattern.test(model))?.[1] ?? null;
+}
+
+const ROUTE_WORDS: Record<ModelSpend['route'], string> = {
+  bedrock: 'Amazon Bedrock',
+  openrouter: 'OpenRouter',
+  anthropic: 'Anthropic API',
+  unknown: 'Not recorded',
+};
+
+/** Which provider the calls went through, in words; "Not recorded" when the records do not say. */
+export function routeWord(route: ModelSpend['route']): string {
+  return ROUTE_WORDS[route];
+}
+
+const PURPOSE_WORDS: Record<EarlierRun['purpose'], string> = {
+  reading: 'Reading drawings',
+  'row-choice': 'Choosing countertop rows',
+  chat: 'Reviewer chat',
+  assistant: 'Review assistant',
+  findings: 'Findings wording',
+  'bake-off': 'Model comparison',
+  other: 'Other',
+};
+
+export function purposeWord(purpose: EarlierRun['purpose']): string {
+  return PURPOSE_WORDS[purpose];
+}
+
+/** "12,345" tokens in and out, as one short figure: "1.2M" above a million, "12.3k" above 10k. */
+export function compactCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`;
+  return value.toLocaleString();
 }
