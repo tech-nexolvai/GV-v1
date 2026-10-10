@@ -131,6 +131,16 @@ def test_the_order_is_failures_by_largest_difference_then_held_then_waiting() ->
     review = snapshot(
         syn.Inputs(
             countertops=base.model_copy(update={"items": (small, held, passed, big)}),
+            findings=(
+                *syn.findings(),
+                syn.composer(
+                    big.finding_id,  # type: ignore[arg-type]
+                    "CT-WIDTH-001",
+                    "Countertop width",
+                    "FAIL",
+                    "The printed overall does not match.",
+                ),
+            ),
             readiness=syn.Readiness(
                 blocking_findings=4,
                 blocking_finding_ids=(

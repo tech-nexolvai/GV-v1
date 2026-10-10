@@ -57,6 +57,7 @@ from app.review.assistant.records import ReviewSnapshot, prompt_records
 from app.review.assistant.records_only import (
     NO_ANSWER_IN_RECORDS,
     answer_for_question,
+    asks_about_deciding,
     fallback_answer,
     glossary_answer,
     is_ranking_question,
@@ -274,12 +275,15 @@ def stream_answer(
 
     if is_ranking_question(question):
         # "Which look most worrying?": code's order from the records, never a model's judgement.
+        # A ranking question about deciding (or one that also asks to judge) says whose decision
+        # it is, so the item named first is never a recommendation to approve it.
         _log.info("review assistant answered a ranking question from the records", extra=log)
+        deciding = is_judging_question(question) or asks_about_deciding(question)
         yield _stage("guard")
         yield (
             "answer",
             _publish_safely(
-                _checked_or_plain(needs_you_answer(snapshot), snapshot),
+                _checked_or_plain(needs_you_answer(snapshot, about_deciding=deciding), snapshot),
                 snapshot,
                 mode="records_only",
                 question=question,

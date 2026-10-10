@@ -40,11 +40,13 @@ __all__ = [
     "Rendered",
     "Slot",
     "UnknownPlaceholder",
+    "dropped_sentence",
     "group_for",
     "outcome_phrase",
     "placeholder_guide",
     "record_fields",
     "render",
+    "says_it_needs_you",
     "slots",
     "split_sentences",
     "value_of",
@@ -525,12 +527,24 @@ CONNECTOR: Final = re.compile(
 )
 
 
-def _only_queue_fill(part: str, outcome_keys: set[str]) -> bool:
-    """A sentence whose only fact is "it needs your decision in the review queue" for a record
-    whose outcome the answer already states: it would say the outcome twice."""
+def says_it_needs_you(snapshot: ReviewSnapshot, key: str) -> bool:
+    """Whether the record's outcome fill itself says it needs the reviewer ("needs your
+    decision": held and undecided). Then the queue fill would only repeat it."""
+    record = snapshot.record(key)
+    return record is not None and record.outcome == "REVIEW_REQUIRED" and record.decision is None
+
+
+def dropped_sentence(part: str, template: str, snapshot: ReviewSnapshot) -> bool:
+    """A sentence whose only fact is the queue fill ("it needs your decision in the review
+    queue") of a record whose stated outcome already says so. Code leaves it out; the guard does
+    not let a connector sentence lean on it."""
     in_part = [slot for slot in slots(part) if slot.is_record]
+    outcome_keys = {slot.key for slot in slots(template) if slot.field == "outcome"}
     return bool(in_part) and all(
-        slot.field == "needs_you" and slot.key in outcome_keys for slot in in_part
+        slot.field == "needs_you"
+        and slot.key in outcome_keys
+        and says_it_needs_you(snapshot, slot.key)
+        for slot in in_part
     )
 
 
@@ -565,14 +579,13 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
         if group is not None and group not in groups:
             groups.append(group)
 
-    outcome_keys = {slot.key for slot in found if slot.field == "outcome"}
     pieces: list[str] = []
     header_keys: set[str] = set()
     for part in re.split(r"((?<=[.?!])\s+(?=[A-Z{])|\n+)", template):
         if not part or SENTENCE_BREAK.fullmatch(part):
             pieces.append(part)
             continue
-        if _only_queue_fill(part, outcome_keys):
+        if dropped_sentence(part, template, snapshot):
             continue
         if not part.startswith("- "):
             header_keys = (
@@ -604,5 +617,6 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
     text = "".join(pieces)
     # A dropped sentence leaves its separator behind: tidy the spaces it leaves, keep paragraphs.
     text = re.sub(r"[ \t]+(\n|$)", r"\1", text)
+    text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
     text = re.sub(r"(\n[ \t]*){3,}", "\n\n", text).strip()
     return Rendered(text=text, citations=tuple(citations), groups=tuple(groups))
