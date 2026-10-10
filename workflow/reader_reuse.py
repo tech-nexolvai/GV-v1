@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 from app.models.runs import REUSED_FROM_KEY, ModelInvocation, ModelInvocationOutcome
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.slot_reader.bedrock import (
+    ArchMatchAnswer,
     ArchPairAnswer,
     CounterBreakAnswer,
     CropJob,
@@ -69,11 +70,18 @@ __all__ = [
 ]
 
 type ReaderReply = (
-    ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer
+    ReaderAnswer
+    | WallAnswer
+    | RowChoiceAnswer
+    | CounterBreakAnswer
+    | ArchPairAnswer
+    | ArchMatchAnswer
 )
 
 #: Packet lists of ids minted fresh for every run; only how many there are is part of the question.
-_RUN_IDS: Final = frozenset({"candidate_ids", "architect_candidate_ids"})
+#: `architect_view_ids` are the architect view index rows a match question shows (#1166): written
+#: anew by every architect reader run, while the pictures' hashes say what was shown.
+_RUN_IDS: Final = frozenset({"candidate_ids", "architect_candidate_ids", "architect_view_ids"})
 
 
 def _signed(packet: Mapping[str, object]) -> bool:

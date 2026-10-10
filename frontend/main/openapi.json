@@ -330,6 +330,73 @@
         "title": "ApprovalReadinessOut",
         "type": "object"
       },
+      "ArchitectCandidateCodeOut": {
+        "properties": {
+          "bays_architect": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bays Architect"
+          },
+          "bays_vendor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bays Vendor"
+          },
+          "fits": {
+            "title": "Fits",
+            "type": "boolean"
+          },
+          "pair_support": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pair Support"
+          },
+          "reference_match": {
+            "title": "Reference Match",
+            "type": "boolean"
+          },
+          "run_length_error_display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far the view's run is from the vendor's, in inches to a tenth (display only; code decides with exact values).",
+            "title": "Run Length Error Display"
+          }
+        },
+        "required": [
+          "fits",
+          "reference_match",
+          "run_length_error_display",
+          "bays_vendor",
+          "bays_architect",
+          "pair_support"
+        ],
+        "title": "ArchitectCandidateCodeOut",
+        "type": "object"
+      },
       "ArchitectComparedOut": {
         "description": "One width both drawings print for the same thing, as the architect check compared it.",
         "properties": {
@@ -451,6 +518,132 @@
           "outcome"
         ],
         "title": "ArchitectComparedOut",
+        "type": "object"
+      },
+      "ArchitectMatchCurrentOut": {
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "required": [
+          "record_id",
+          "status",
+          "source",
+          "decided_by",
+          "decided_at",
+          "supersedes_id",
+          "note",
+          "reasons"
+        ],
+        "title": "ArchitectMatchCurrentOut",
+        "type": "object"
+      },
+      "ArchitectMatchVendorOut": {
+        "properties": {
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "references": {
+            "description": "Architect view references printed on the vendor's sheet, normalised.",
+            "items": {
+              "type": "string"
+            },
+            "title": "References",
+            "type": "array"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "page_number",
+          "document_version_id",
+          "title",
+          "references",
+          "region"
+        ],
+        "title": "ArchitectMatchVendorOut",
         "type": "object"
       },
       "ArchitectPairIn": {
@@ -943,6 +1136,287 @@
           "refusal"
         ],
         "title": "ArchitectSpanOut",
+        "type": "object"
+      },
+      "ArchitectViewCandidateOut": {
+        "properties": {
+          "ai_picked_by": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ai Picked By",
+            "type": "array"
+          },
+          "can_pick": {
+            "title": "Can Pick",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ArchitectCandidateCodeOut"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refusal"
+          },
+          "remembered": {
+            "description": "A reviewer chose this view for the same item on an earlier revision. Evidence only: it is never pre-selected.",
+            "title": "Remembered",
+            "type": "boolean"
+          },
+          "score_summary": {
+            "title": "Score Summary",
+            "type": "string"
+          },
+          "shown_to_ais": {
+            "title": "Shown To Ais",
+            "type": "boolean"
+          },
+          "view": {
+            "$ref": "#/components/schemas/ArchitectViewRefOut"
+          }
+        },
+        "required": [
+          "rank",
+          "view",
+          "shown_to_ais",
+          "code",
+          "score_summary",
+          "evidence",
+          "ai_picked_by",
+          "remembered",
+          "can_pick",
+          "refusal"
+        ],
+        "title": "ArchitectViewCandidateOut",
+        "type": "object"
+      },
+      "ArchitectViewMatchOut": {
+        "properties": {
+          "can_choose_none": {
+            "default": true,
+            "title": "Can Choose None",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectViewCandidateOut"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectMatchCurrentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row_id": {
+            "format": "uuid",
+            "title": "Row Id",
+            "type": "string"
+          },
+          "vendor": {
+            "$ref": "#/components/schemas/ArchitectMatchVendorOut"
+          }
+        },
+        "required": [
+          "row_id",
+          "vendor",
+          "current",
+          "candidates"
+        ],
+        "title": "ArchitectViewMatchOut",
+        "type": "object"
+      },
+      "ArchitectViewPickIn": {
+        "additionalProperties": false,
+        "description": "A reviewer's pick: exactly one of a view and \"none of these\".",
+        "properties": {
+          "expected_record_id": {
+            "description": "The `current.record_id` the reviewer was shown. When the row's match has moved on since, nothing is recorded and the answer is 409.",
+            "format": "uuid",
+            "title": "Expected Record Id",
+            "type": "string"
+          },
+          "none_of_these": {
+            "default": false,
+            "title": "None Of These",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "view_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View Id"
+          }
+        },
+        "required": [
+          "expected_record_id"
+        ],
+        "title": "ArchitectViewPickIn",
+        "type": "object"
+      },
+      "ArchitectViewRefOut": {
+        "description": "One view of the architect's own file.",
+        "properties": {
+          "bubble": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bubble"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "label": {
+            "description": "How a person names it: page, view, title and sheet.",
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "description": "1-based, as a person counts pages.",
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "picture_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stored picture of the view; null when none was rendered.",
+            "title": "Picture Url"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The view's extent on its page, in stored space; null when not stored."
+          },
+          "scale_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Note"
+          },
+          "separated": {
+            "description": "False when the view is not clearly apart from its neighbour: its dimensions were not read.",
+            "title": "Separated",
+            "type": "boolean"
+          },
+          "sheet_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet Number"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "document_id",
+          "document_version_id",
+          "file_name",
+          "page_number",
+          "sheet_number",
+          "bubble",
+          "title",
+          "scale_note",
+          "label",
+          "region",
+          "picture_url",
+          "separated"
+        ],
+        "title": "ArchitectViewRefOut",
         "type": "object"
       },
       "AssemblyInput": {
@@ -9133,6 +9607,71 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/architect-views/{view_id}/picture": {
+      "get": {
+        "description": "The picture of a view of this package's architect file, only while its bytes still match the\ndigest recorded for them; 404 for a view of another package or one with no picture.",
+        "operationId": "architect_view_picture_api_v1_projects__project_id__packages__package_id__architect_views__view_id__picture_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "View Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View the stored picture of one of the architect's views",
+        "tags": [
+          "architect view matches"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/assistant": {
       "get": {
         "description": "Starters come from the records and work with the assistant off.\n\n`enabled` is read from the same runtime the stream uses, so it is true exactly when a\nquestion can reach the model.",
@@ -12416,6 +12955,140 @@
         "summary": "Pair the architect's dimensions with one countertop row (or say none is comparable)",
         "tags": [
           "slot-reader rows"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-view-match": {
+      "get": {
+        "operationId": "get_architect_view_match_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "row_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Row Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchitectViewMatchOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Show which of the architect's views this countertop row is matched with, and the candidates",
+        "tags": [
+          "architect view matches"
+        ]
+      },
+      "post": {
+        "operationId": "pick_architect_view_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "row_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Row Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchitectViewPickIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchitectViewMatchOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Choose which of the architect's views shows this countertop (or none of them)",
+        "tags": [
+          "architect view matches"
         ]
       }
     },

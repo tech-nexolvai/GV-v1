@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
@@ -107,16 +108,21 @@ def _architect_sheet(*rows: ArchitectRowInput) -> ArchitectPageInput:
 
 @dataclass(frozen=True)
 class Picture:
-    png: bytes
-    box_px: tuple[int, int, int, int]
-    dpi: int
+    """The view index's picture of one view (#1166's `ArchitectViewCrop`, the parts read here)."""
+
+    png: bytes | None
+    box_px: tuple[int, int, int, int] | None
+    px_per_inch: Fraction | None
+    """The architect's 3/2 pt per inch at 72 dpi; `None` when the view's scale is unknown."""
 
 
-def _picture(width: int = 500, height: int = 200) -> Picture:
+def _picture(
+    width: int = 500, height: int = 200, *, px_per_inch: Fraction | None = Fraction(3, 2)
+) -> Picture:
     return Picture(
         encode_png(width, height, bytes([255]) * (width * height * 3)),
         (350, 0, 350 + width, height),
-        72,
+        px_per_inch,
     )
 
 
@@ -317,6 +323,53 @@ def test_without_the_views_picture_code_pairs_alone_and_no_ai_is_asked() -> None
     assert paired.architect_pairing.source == "code", "one judgment: the reviewer confirms it"
 
 
+def test_a_view_picture_that_could_not_be_rendered_leaves_code_alone_too() -> None:
+    sheet = _architect_sheet(_in_view(arch_row(1, WIDTHS), 1))
+    chosen = _view(1, sheet.page_id)
+
+    paired, asked = _run(
+        {sheet.page_id: sheet},
+        FakeMatcher("auto_matched", chosen),
+        crops={chosen.view_id: Picture(None, None, None)},
+    )
+
+    assert asked == []
+    assert paired.architect_pairing is not None and paired.architect_pairing.source == "code"
+
+
+def test_a_match_the_caller_already_attached_is_used_and_never_asked_again() -> None:
+    """#1166's `MatchingArchitectPairing` matches every row first, then pairs: no second match."""
+    sheet = _architect_sheet(_in_view(arch_row(1, WIDTHS), 1))
+    chosen = _view(1, sheet.page_id)
+    first = FakeMatcher("auto_matched", chosen)
+    row = replace(_result(_sealed_owners()), page_id=uuid4())
+    attached = replace(row, architect_match=first.match([row], [])[0])
+    again = FakeMatcher("needs_reviewer", None)
+
+    (paired,) = ArchitectPairing(
+        MEASURED_PAIRING_SETTINGS,
+        {sheet.page_id: sheet},
+        matcher=again,
+        crops={chosen.view_id: _picture()},
+    ).pair(
+        [attached],
+        [_slot_page(row.page_id)],
+        ask=lambda jobs: {
+            (job.key, job.model_id): answer(job.model_id, (0, (1, 2, 3)), job.architect_spans or 0)
+            for job in jobs
+        },
+        readers=(OPUS, SONNET),
+        ask_the_ais=True,
+        store=None,
+        effort="high",
+    )
+
+    assert again.seen == []
+    assert paired.architect_match is attached.architect_match
+    assert paired.architect_pairing is not None
+    assert paired.architect_pairing.source == "code+ais"
+
+
 def test_a_matched_view_the_architect_reader_did_not_read_is_not_paired() -> None:
     paired, asked = _run({}, FakeMatcher("auto_matched", _view(1, uuid4())))
 
@@ -363,7 +416,7 @@ def test_without_both_scales_the_panels_are_the_same_height_and_the_question_say
     assert vendor is not None
 
     picture = pair_picture_two_panel(
-        _slot_page(uuid4()).rendered, vendor, sheet, _picture(300, 900)
+        _slot_page(uuid4()).rendered, vendor, sheet, _picture(300, 900, px_per_inch=None)
     )
 
     width, height, _rgb = _pixels(picture.png)
@@ -375,7 +428,9 @@ def test_a_huge_view_picture_is_shrunk_to_at_most_1800_pixels_a_side() -> None:
     sheet = _architect_sheet(_in_view(arch_row(1, WIDTHS), 1))
     vendor = vendor_row_input(_result(_sealed_owners()))
     assert vendor is not None
-    big = Picture(encode_png(3000, 2500, bytes([255]) * (3000 * 2500 * 3)), (0, 0, 3000, 2500), 72)
+    big = Picture(
+        encode_png(3000, 2500, bytes([255]) * (3000 * 2500 * 3)), (0, 0, 3000, 2500), Fraction(3, 2)
+    )
 
     picture = pair_picture_two_panel(_slot_page(uuid4()).rendered, vendor, sheet, big)
 

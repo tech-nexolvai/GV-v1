@@ -920,22 +920,26 @@ def pair_question(
 
 
 class ArchitectViewPicture(Protocol):
-    """The picture of one view of the architect's own file, as the view index rendered it (#1166):
-    what the right panel of the two-panel question shows."""
+    """The picture of one view of the architect's own file, as the view index rendered it (#1166,
+    `workflow.architect_view_index.ArchitectViewCrop`): what the right panel of the two-panel
+    question shows."""
 
     @property
-    def png(self) -> bytes:
-        """An RGB PNG of the view's extent (`evidence.crop.encode_png`)."""
+    def png(self) -> bytes | None:
+        """An RGB PNG of the view's extent; `None` when it could not be rendered (then no AI is
+        shown the view and code's pairing stands alone)."""
         ...
 
     @property
-    def box_px(self) -> tuple[int, int, int, int]:
-        """Where the picture sits on its page, in the page's pixels at `dpi`: the pixels the
-        architect reader's span boxes (`ArchitectSpanInput.box_px`) are in."""
+    def box_px(self) -> tuple[int, int, int, int] | None:
+        """Where the picture sits on its page, in the page's pixels at the reading's dpi: the pixels
+        the architect reader's span boxes (`ArchitectSpanInput.box_px`) are in."""
         ...
 
     @property
-    def dpi(self) -> int: ...
+    def px_per_inch(self) -> Fraction | None:
+        """Picture pixels per real inch, when the view's scale is known."""
+        ...
 
 
 class ArchitectViewMatcher(Protocol):
@@ -982,18 +986,6 @@ def _resized(rgb: bytes, width: int, height: int, factor: Fraction) -> tuple[byt
     return np.ascontiguousarray(out).tobytes(), new_width, new_height
 
 
-def _architect_pt_per_inch(
-    spans: Sequence[tuple[int, ArchitectSpanInput]], page: ArchitectPageInput
-) -> Fraction | None:
-    """The one scale every marked architect span is drawn at; `None` when unknown or mixed."""
-    rows = {row.rank: row for row in page.rows}
-    scales = {rows[rank].pt_per_inch for rank, _span in spans if rank in rows}
-    if len(scales) != 1:
-        return None
-    (scale,) = scales
-    return scale
-
-
 def pair_picture_two_panel(
     vendor_page: RenderedPage,
     vendor: VendorRowInput,
@@ -1005,11 +997,13 @@ def pair_picture_two_panel(
     blue as A1..Am; a 24 px white gap between; at most 1800 px a side.
 
     When both drawings' scales are known (the vendor's from its sealed pieces, the architect view's
-    from its rows) both panels are drawn at the same pixels per real inch; otherwise at the same
-    height, and `common_scale` says so (the question tells the AIs). The marks are drawn after the
-    scaling, so they stay the same size whatever the drawings' scales. They only say *which*
-    dimension is meant; no value comes from them.
+    from the view index) both panels are drawn at the same pixels per real inch; otherwise at the
+    same height, and `common_scale` says so (the question tells the AIs). The marks are drawn after
+    the scaling, so they stay the same size whatever the drawings' scales. They only say *which*
+    dimension is meant; no value comes from them. `ValueError` when the view has no picture.
     """
+    if crop.png is None or crop.box_px is None:
+        raise ValueError("the architect view has no picture to show")
     spans = _askable_spans(architect)
     boxes = [piece.box_px for piece in vendor.pieces]
     frame = _union(*boxes)
@@ -1025,15 +1019,16 @@ def pair_picture_two_panel(
     from evidence.crop import decode_rgb_png
 
     crop_width, crop_height, crop_rgb = decode_rgb_png(crop.png)
+    crop_box = crop.box_px
 
     vendor_pt = vendor_scale(vendor.pieces)
-    architect_pt = _architect_pt_per_inch(spans, architect)
-    common = vendor_pt is not None and architect_pt is not None and architect_pt > 0
+    architect_px = crop.px_per_inch
+    common = vendor_pt is not None and architect_px is not None and architect_px > 0
     if common:
-        assert vendor_pt is not None and architect_pt is not None
+        assert vendor_pt is not None and architect_px is not None
         vendor_factor = Fraction(1)
         # The architect panel brought to the vendor panel's pixels per real inch.
-        architect_factor = (vendor_pt * vendor_page.dpi) / (architect_pt * crop.dpi)
+        architect_factor = (vendor_pt * vendor_page.dpi / 72) / architect_px
     else:
         height = max(vendor_height, crop_height)
         vendor_factor = Fraction(height, vendor_height)
@@ -1097,7 +1092,7 @@ def pair_picture_two_panel(
     for number, (_rank, span) in enumerate(spans, start=1):
         box = placed(
             span.box_px,
-            (crop.box_px[0], crop.box_px[1]),
+            (crop_box[0], crop_box[1]),
             architect_factor,
             offset,
             (right_width, right_height),
@@ -1166,7 +1161,7 @@ def pair_question_two_panel(
         "architect_page_index": matched.page_number - 1,
         "architect_view_number": matched.view_number,
         "architect_view_tag": matched.view_tag,
-        "architect_view_picture_sha256": hashlib.sha256(crop.png).hexdigest(),
+        "architect_view_picture_sha256": hashlib.sha256(crop.png or b"").hexdigest(),
         "common_scale": picture.common_scale,
         "page_transform": _transform_packet(page.transform),
         "images": {"two_panel_pairing_view": {"sha256": digest, "storage_key": storage_key}},
@@ -1656,10 +1651,15 @@ class ArchitectPairing:
         questions: dict[int, PairQuestion] = {}
         jobs: list[CropJob] = []
         to_match: list[PageSlotResult] = []
+        attached: dict[int, RowMatch] = {}
         for result in results:
             own = self.pages.get(result.page_id)
             vendor = vendor_row_input(result)
             if vendor is None:
+                continue
+            if result.architect_match is not None and (own is None or not own.has_architect_view):
+                # Matched already by the caller (#1166's `MatchingArchitectPairing`): never twice.
+                attached[result.page_index] = result.architect_match
                 continue
             if self.matcher is not None and (own is None or not own.has_architect_view):
                 to_match.append(result)
@@ -1691,18 +1691,21 @@ class ArchitectPairing:
                 )
                 for model in readers
             )
-        matches: Mapping[int, RowMatch] = {}
+        matches: dict[int, RowMatch] = dict(attached)
         if self.matcher is not None and to_match:
-            matches = self.matcher.match(
-                to_match,
-                pages,
-                ask=ask,
-                readers=readers,
-                ask_the_ais=ask_the_ais,
-                store=store,
-                effort=effort,
+            matches.update(
+                self.matcher.match(
+                    to_match,
+                    pages,
+                    ask=ask,
+                    readers=readers,
+                    ask_the_ais=ask_the_ais,
+                    store=store,
+                    effort=effort,
+                )
             )
-        for result in to_match:
+        by_page = {result.page_index: result for result in results}
+        for result in (by_page[index] for index in matches if index in by_page):
             match = matches.get(result.page_index)
             vendor = vendor_row_input(result)
             if match is None or vendor is None or match.chosen is None:
@@ -1720,7 +1723,12 @@ class ArchitectPairing:
             code, _raw = pair_by_code(vendor, architect, self.settings)
             code = _against_view(code, matched)
             crop = self.crops.get(matched.view_id)
-            if crop is None or not (ask_the_ais and _ask_the_ais(vendor, architect)):
+            if (
+                crop is None
+                or crop.png is None
+                or crop.box_px is None
+                or not (ask_the_ais and _ask_the_ais(vendor, architect))
+            ):
                 decided[result.page_index] = combine(code, None)
                 continue
             question = pair_question_two_panel(

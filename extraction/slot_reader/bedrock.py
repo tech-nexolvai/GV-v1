@@ -51,6 +51,9 @@ from extraction.form_reader.pricing import RateLookup, require_priced_readers
 from extraction.form_reader.runner import ClientProvider, ModelPacer, _is_throttle
 from extraction.product_context import product_context_line, with_product
 from extraction.slot_reader.claude_output import (
+    ARCH_MATCH_NONE,
+    ARCH_MATCH_SAME,
+    ARCH_MATCH_UNSURE,
     ARCH_MEASURES,
     ARCH_PAIR_NONE,
     ARCH_PAIR_UNSURE,
@@ -64,6 +67,7 @@ from extraction.slot_reader.claude_output import (
     ClaudeEffort,
     PictureWouldBeResized,
     RowKind,
+    arch_match_schema,
     arch_pair_schema,
     claude_answer,
     is_claude_model,
@@ -78,6 +82,8 @@ if TYPE_CHECKING:
     from extraction.slot_reader.anthropic import BatchSpendGuard
 
 __all__ = [
+    "ARCH_MATCH_PROMPT_ID",
+    "ARCH_MATCH_PROMPT_IDS",
     "ARCH_PAIR_2PANEL_PROMPT_ID",
     "ARCH_PAIR_PROMPT_ID",
     "ARCH_PAIR_PROMPT_IDS",
@@ -95,13 +101,17 @@ __all__ = [
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
+    "ArchMatchAnswer",
     "ArchPairAnswer",
     "CounterBreakAnswer",
     "CropJob",
     "RowChoiceAnswer",
+    "arch_match_answer",
+    "arch_match_prompt",
     "arch_pair_answer",
     "arch_pair_prompt",
     "arch_pair_two_panel_prompt",
+    "build_arch_match_request",
     "build_arch_pair_request",
     "build_counter_break_request",
     "build_crop_request",
@@ -110,6 +120,7 @@ __all__ = [
     "crop_prompt_id",
     "job_prompt_id",
     "parse_stored_reader_answer",
+    "read_arch_match",
     "read_arch_pair",
     "read_counter_break",
     "read_crop",
@@ -174,6 +185,13 @@ A combined sheet is still asked `arch-pair-v3`, word for word."""
 ARCH_PAIR_PROMPT_IDS: Final = frozenset(
     {ARCH_PAIR_PROMPT_ID, ARCH_PAIR_2PANEL_PROMPT_ID, "arch-pair-v2", "arch-pair-v1"}
 )
+ARCH_MATCH_PROMPT_ID: Final = "arch-view-match-v1"
+"""Which view of the architect's own file draws the same countertop as the vendor's row (#1166),
+asked of both Claude readers when the architect's drawings are a separate PDF. One picture: the
+vendor's view on the left with the row outlined in red (`V`), up to three of the architect's views on
+the right, numbered in blue. Judged only by what is drawn; printed numbers are never read."""
+#: Every wording of the architect-view match question, recognised in stored records and invocations.
+ARCH_MATCH_PROMPT_IDS: Final = frozenset({ARCH_MATCH_PROMPT_ID})
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
 COUNTER_BREAK_PROMPT_IDS: Final = frozenset(
     {COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v2", "claude-counter-break-v1"}
@@ -900,6 +918,266 @@ def read_arch_pair(
     raise AssertionError("unreachable")
 
 
+def arch_match_prompt(*, candidates: int, common_scale: bool) -> str:
+    """The architect-view match question (`arch-view-match-v1`, #1166) for one picture with the
+    vendor's view on the left and `candidates` numbered architect views on the right.
+
+    It asks only what is drawn: the bays, openings, sink, appliances, the run's ends and its
+    proportions. It never asks for, or lets the model use, a printed number or any printed text:
+    matching by value would be circular, and the comparison is exact arithmetic done afterwards by
+    code. `common_scale` says whether every panel is drawn at the same size per real inch, so the
+    model may compare lengths by eye. Every example is invented and holds no number.
+    """
+    if isinstance(candidates, bool) or candidates < 1:
+        raise ValueError("an architect-view match question needs at least one architect view")
+    numbers = ", ".join(str(k) for k in range(1, candidates + 1))
+    scale = (
+        "All the panels are drawn at the same size per real inch, so equal real lengths look "
+        "equally long. "
+        if common_scale
+        else "The panels are NOT drawn at the same size per real inch (each is fitted to the "
+        "picture), so compare shapes and proportions, never lengths across panels. "
+    )
+    return (
+        "The picture has two parts. On the left, marked V in a red tag, is a vendor's cabinet shop "
+        "drawing; the vendor's countertop row is outlined in red. On the right are "
+        f"{candidates} of the architect's elevation drawings, each numbered in a blue tag: "
+        f"{numbers}. "
+        + scale
+        + "Task: which numbered architect drawing shows the SAME countertop and the same run of "
+        "cabinets under it as the vendor's outlined row? Judge ONLY by what is drawn: the number "
+        "of cabinets and bays, door and drawer openings, a sink, appliances and their openings, "
+        "what each end of the run stands against (a wall, an end panel, open), tall units beside "
+        "it, and its overall proportions. Do not read, compare or add up any printed number, and "
+        "do not match by any printed words or titles: drawings of different rooms often carry "
+        "the same title, and the numbers are compared later by code. "
+        "Two drawings may look alike (twins): say yes for a drawing only when what is drawn "
+        "matches, and answer unsure when two could both be it.\n"
+        "Answer fields:\n"
+        f'- "candidates": one entry for EVERY numbered drawing, {numbers}: '
+        '{"n": <its number>, "same": "yes" | "no" | "unsure"}. "yes": it draws the same '
+        'countertop and run. "no": it clearly draws something else. "unsure": you cannot tell.\n'
+        '- "pick": the number (as text, such as "1") of the one drawing that is the same; '
+        '"none" when you are sure none of them is; "unsure" when you cannot tell, or when more '
+        'than one could be. A number may be picked only if its "same" is "yes", and at most one '
+        'drawing may be "yes".\n'
+        '- "why": one short sentence about what is drawn.\n'
+        "Invented examples, not from this picture: "
+        '{"candidates": [{"n": 1, "same": "no"}, {"n": 2, "same": "yes"}], "pick": "2", "why": '
+        '"Drawing 2 has the same sink base between two drawer stacks and a tall pantry at the '
+        'right end."} '
+        '{"candidates": [{"n": 1, "same": "no"}], "pick": "none", "why": "Drawing 1 is a '
+        "vanity with no appliance opening; the vendor's run has a dishwasher.\"} "
+        '{"candidates": [{"n": 1, "same": "unsure"}, {"n": 2, "same": "unsure"}], "pick": '
+        '"unsure", "why": "Drawings 1 and 2 show the same arrangement; either could be it."}\n'
+        "Reply with ONLY one JSON object of that shape."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchMatchAnswer:
+    """One reader's answer to the architect-view match question (#1166)."""
+
+    model_id: str
+    pick: int | None
+    """The architect drawing's number in the picture (1-based), 0 for "none", `None` for
+    "unsure"."""
+    same: tuple[str, ...]
+    """`yes`, `no` or `unsure` for each numbered drawing, 1 first."""
+    why: str
+
+
+class _ArchMatchCandidate(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    n: StrictInt
+    same: StrictStr
+
+
+class _ArchMatchReply(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    candidates: list[_ArchMatchCandidate]
+    pick: StrictStr
+    why: StrictStr
+
+
+def arch_match_answer(
+    reply: Mapping[str, Any], *, model_id: str, candidates: int
+) -> ArchMatchAnswer:
+    """One reader's architect-view match answer from its JSON object (#1166).
+
+    Raises `MalformedFormAnswer` or `ValidationError` for anything else: not exactly one answer
+    for every drawing shown, a word not offered, a pick outside the drawings shown, a picked
+    drawing whose own answer is not "yes", two drawings answered "yes", or "none" beside a "yes".
+    """
+    parsed = _ArchMatchReply.model_validate(reply)
+    numbers = sorted(entry.n for entry in parsed.candidates)
+    if numbers != list(range(1, candidates + 1)):
+        raise MalformedFormAnswer("the answer does not say once for every drawing shown")
+    if any(entry.same not in ARCH_MATCH_SAME for entry in parsed.candidates):
+        raise MalformedFormAnswer("the answer gives a word that is not offered")
+    same = {entry.n: entry.same for entry in parsed.candidates}
+    yes = [n for n, word in same.items() if word == "yes"]
+    if len(yes) > 1:
+        raise MalformedFormAnswer("the answer says yes to more than one drawing")
+    pick: int | None
+    if parsed.pick == ARCH_MATCH_UNSURE:
+        pick = None
+    elif parsed.pick == ARCH_MATCH_NONE:
+        if yes:
+            raise MalformedFormAnswer("the answer picks none but says yes to a drawing")
+        pick = 0
+    elif parsed.pick.isdigit() and not parsed.pick.startswith("0"):
+        pick = int(parsed.pick)
+        if not 1 <= pick <= candidates:
+            raise MalformedFormAnswer("the answer picks a drawing that is not shown")
+        if same[pick] != "yes":
+            raise MalformedFormAnswer("the answer picks a drawing it did not say yes to")
+    else:
+        raise MalformedFormAnswer(f"the answer gives a pick that is not offered: {parsed.pick!r}")
+    return ArchMatchAnswer(
+        model_id=model_id,
+        pick=pick,
+        same=tuple(same[n] for n in range(1, candidates + 1)),
+        why=parsed.why[:300],
+    )
+
+
+def build_arch_match_request(
+    *,
+    model_id: str,
+    picture_png: bytes,
+    candidates: int,
+    common_scale: bool,
+    max_tokens: int,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> dict[str, Any]:
+    """One two-part picture and the architect-view match question (#1166)."""
+    if not model_id.strip():
+        raise ValueError("an architect-view match reader model id must be stated")
+    if not picture_png.startswith(_PNG_SIGNATURE):
+        raise ValueError("an architect-view match question requires a rendered PNG picture")
+    if isinstance(max_tokens, bool) or max_tokens < 1:
+        raise ValueError("max_tokens must be a positive integer")
+    request: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"image": {"format": "png", "source": {"bytes": picture_png}}},
+                    {"text": arch_match_prompt(candidates=candidates, common_scale=common_scale)},
+                ],
+            }
+        ],
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if _base_model_id(model_id) == KIMI_K3_MODEL:
+        request["outputConfig"] = {"effort": KIMI_EFFORT}
+    else:
+        request["inferenceConfig"]["temperature"] = 0
+    return _with_claude_output(request, arch_match_schema(candidates), claude_effort)
+
+
+def read_arch_match(
+    client: ConverseClient,
+    *,
+    model_id: str,
+    picture_png: bytes,
+    page_index: int,
+    candidates: int,
+    common_scale: bool,
+    max_tokens: int,
+    record_attempt: Callable[[AttemptUsage], None],
+    question_packet: Mapping[str, object] | None = None,
+    claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+) -> ArchMatchAnswer:
+    """Ask once, re-asking only a malformed answer (`arch_match_answer`). Malformed twice raises
+    `MalformedFormAnswer`: the job abstains, and the row goes to the reviewer."""
+    for attempt in range(2):
+        request = build_arch_match_request(
+            model_id=model_id,
+            picture_png=picture_png,
+            candidates=candidates,
+            common_scale=common_scale,
+            max_tokens=max_tokens,
+            claude_effort=claude_effort,
+        )
+        if attempt:
+            request["messages"][0]["content"].append(
+                {"text": "Your previous reply was malformed. Return the one JSON object only."}
+            )
+        started = monotonic()
+        try:
+            response = client.converse(**request)
+        except Exception as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ARCH_MATCH_PROMPT_ID,
+                    ARCH_MATCH_PROMPT_ID,
+                    None,
+                    None,
+                    int((monotonic() - started) * 1000),
+                    False,
+                    type(error).__name__,
+                    page_index,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            raise
+        input_tokens, output_tokens = _response_usage(response)
+        elapsed = int((monotonic() - started) * 1000)
+        raw: str | None = None
+        try:
+            raw = _response_text(response)
+            answer = arch_match_answer(
+                _parsed_answer(model_id, response, raw, arch_match_schema(candidates)),
+                model_id=model_id,
+                candidates=candidates,
+            )
+        except (MalformedFormAnswer, ValidationError) as error:
+            record_attempt(
+                AttemptUsage(
+                    model_id,
+                    ARCH_MATCH_PROMPT_ID,
+                    ARCH_MATCH_PROMPT_ID,
+                    input_tokens,
+                    output_tokens,
+                    elapsed,
+                    True,
+                    page_index=page_index,
+                    raw_response_text=raw,
+                    attempt_number=attempt + 1,
+                    question_packet=question_packet,
+                )
+            )
+            if attempt:
+                raise MalformedFormAnswer(
+                    "architect-view match answer remained malformed after one re-ask"
+                ) from error
+            continue
+        record_attempt(
+            AttemptUsage(
+                model_id,
+                ARCH_MATCH_PROMPT_ID,
+                ARCH_MATCH_PROMPT_ID,
+                input_tokens,
+                output_tokens,
+                elapsed,
+                False,
+                page_index=page_index,
+                raw_response_text=raw,
+                attempt_number=attempt + 1,
+                question_packet=question_packet,
+            )
+        )
+        return answer
+    raise AssertionError("unreachable")
+
+
 class _CounterBreakReply(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -1466,6 +1744,12 @@ class CropJob:
     the architect view matched with it), asked `arch-pair-2panel-v1`; `arch_pair_common_scale` says
     whether the two panels share a scale."""
     arch_pair_common_scale: bool = False
+    arch_match_question: bool = False
+    """The architect-view match question (#1166): `png` is the one two-part picture, and
+    `architect_candidates` says how many numbered architect views it shows."""
+    architect_candidates: int | None = None
+    arch_match_common_scale: bool = False
+    """Whether every panel of the match picture is drawn at the same size per real inch."""
 
     @property
     def pictures(self) -> tuple[bytes, ...]:
@@ -1479,6 +1763,8 @@ class CropJob:
 
 def job_prompt_id(job: CropJob, product: ProductType | None) -> str:
     """The prompt id the job's question is asked, and its answer recorded, under."""
+    if job.arch_match_question:
+        return ARCH_MATCH_PROMPT_ID
     if job.arch_pair_question:
         return ARCH_PAIR_2PANEL_PROMPT_ID if job.arch_pair_two_panel else ARCH_PAIR_PROMPT_ID
     if job.row_question:
@@ -1500,12 +1786,35 @@ def _ask(
     record_attempt: Callable[[AttemptUsage], None],
     product: ProductType | None,
     claude_effort: ClaudeEffort,
-) -> ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer:
+) -> (
+    ReaderAnswer
+    | WallAnswer
+    | RowChoiceAnswer
+    | CounterBreakAnswer
+    | ArchPairAnswer
+    | ArchMatchAnswer
+):
     """Ask `client` the job's one question through the reader that question belongs to.
 
     The one place a job becomes a request and a reply becomes an answer: a live call and a stored
     answer reused on a re-run (#1112, `replay_stored_answer`) are read by exactly this code.
     """
+    if job.arch_match_question:
+        shown = job.architect_candidates
+        if isinstance(shown, bool) or not isinstance(shown, int):
+            raise ValueError("an architect-view match question must state how many views it shows")
+        return read_arch_match(
+            client,
+            model_id=job.model_id,
+            picture_png=job.png,
+            page_index=job.page_index,
+            candidates=shown,
+            common_scale=job.arch_match_common_scale,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
     if job.arch_pair_question:
         pieces, spans = job.vendor_pieces, job.architect_spans
         if (
@@ -1622,7 +1931,12 @@ def replay_stored_answer(
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> (
     tuple[
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer,
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer,
         AttemptUsage,
     ]
     | None
@@ -1672,7 +1986,13 @@ def read_crops_parallel(
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
 ) -> dict[
     tuple[str, str],
-    ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
+    ReaderAnswer
+    | WallAnswer
+    | RowChoiceAnswer
+    | CounterBreakAnswer
+    | ArchPairAnswer
+    | ArchMatchAnswer
+    | None,
 ]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
 
@@ -1712,7 +2032,13 @@ def read_crops_parallel(
         job: CropJob,
     ) -> tuple[
         tuple[str, str],
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None,
     ]:
         if is_claude_model(job.model_id):
             try:
@@ -1767,7 +2093,13 @@ def read_crops_parallel(
 
     answers: dict[
         tuple[str, str],
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None,
     ] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
         futures = [executor.submit(invoke, job) for job in jobs]

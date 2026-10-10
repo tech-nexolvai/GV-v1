@@ -11,8 +11,13 @@ of its own and nothing else:
    Exactly one view named → `reference`.
 2. **Geometry** (`match_by_code`): the vendor row's run (its overall, else its chain end to end) in
    real inches through the vendor's scale, against each architect row's run through its view's own
-   scale; each view's best row counts. A view **fits** when the two runs agree within
-   `run_length_tolerance_in`. Exactly one view fits and every other is more than
+   scale; each view's best row counts. A view **fits** only on two geometric agreements: the two
+   runs agree within `run_length_tolerance_in`, AND the row's shape agrees — at least three of its
+   ticks (both ends and an inner one) and every one of them lands on a vendor tick within the
+   pairing's tick tolerance, with the left ends or the right ends together. One length alone is
+   one number another drawing matches by chance: on a split keyed set (#1166, local proof) a
+   single-span row of the wrong view matched a vendor run to the inch. Exactly one view fits and
+   every other is more than
    `run_length_tolerance_in + clear_margin_in` off → `geometry_clear`; two or more fit (twins), or
    one fits with another too close behind → `geometry_tie`; none fits → `geometry_none`; the
    vendor's scale unknown or no architect row anywhere → `no_geometry`. The number of bays (spans on
@@ -151,8 +156,11 @@ class CandidateScore:
     """`pairing.pair_rows` against all the view's rows; `None` when not run (no vendor row)."""
     pair_support: int | None
     fits: bool
+    """The run is within tolerance AND the row's shape agrees (`_same_shape`)."""
     evidence: tuple[str, ...]
     """Plain words for the reviewer."""
+    ticks_aligned: int | None = None
+    """How many of the best row's ticks land on the vendor's (`_ticks_on_vendor`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +260,41 @@ class _Scored:
     pair_support: int | None
     fits: bool
     evidence: tuple[str, ...]
+    ticks_aligned: int | None
+
+
+def _ticks_in(row: DrawnRow) -> list[Fraction]:
+    """The row's chain ticks (and its overall's ends) in real inches from its own left end."""
+    assert row.pt_per_inch is not None
+    xs = {Fraction(span.x0_pt) for span in row.spans} | {Fraction(span.x1_pt) for span in row.spans}
+    if row.overall is not None:
+        xs |= {Fraction(row.overall.x0_pt), Fraction(row.overall.x1_pt)}
+    origin = min(xs)
+    return sorted((x - origin) / row.pt_per_inch for x in xs)
+
+
+def _ticks_on_vendor(vendor: DrawnRow, row: DrawnRow, tolerance: Fraction) -> tuple[int, int]:
+    """How many of the architect row's ticks land on a vendor tick, `(landed, ticks)`, with the two
+    rows' left ends together or their right ends together, whichever lands more. A vendor that
+    splits an architect bay in two only adds vendor ticks; the architect's own must all land."""
+    if vendor.pt_per_inch is None or row.pt_per_inch is None or not row.spans:
+        return 0, 0
+    mine, theirs = _ticks_in(row), _ticks_in(vendor)
+    best = 0
+    for offset in (Fraction(0), theirs[-1] - mine[-1]):
+        landed = sum(
+            1 for tick in mine if any(abs(tick + offset - other) <= tolerance for other in theirs)
+        )
+        best = max(best, landed)
+    return best, len(mine)
+
+
+def _same_shape(shape: tuple[int, int]) -> bool:
+    """A second geometric judgment beside the run's length: at least three ticks — both ends and
+    an inner one — and every one of them on a vendor tick. One length alone is one number, which
+    another drawing matches by chance."""
+    landed, ticks = shape
+    return ticks >= 3 and landed == ticks
 
 
 def _score(
@@ -267,19 +310,26 @@ def _score(
         evidence.append("the vendor's sheet prints a reference to this view")
     best: DrawnRow | None = None
     error: Fraction | None = None
-    for row in sorted(view.rows, key=lambda row: row.key):
+    aligned: tuple[int, int] | None = None
+    fitting: list[tuple[Fraction, str, DrawnRow, tuple[int, int]]] = []
+    measured: list[tuple[Fraction, str, DrawnRow, tuple[int, int]]] = []
+    for row in view.rows:
         run = _run_in(row)
-        if run is None or vendor_run is None:
+        if run is None or vendor_run is None or vendor.row is None:
             continue
         difference = abs(vendor_run - run)
-        if error is None or difference < error:
-            best, error = row, difference
-    if error is not None:
-        assert best is not None
+        shape = _ticks_on_vendor(vendor.row, row, settings.pairing.tick_tolerance_in)
+        measured.append((difference, row.key, row, shape))
+        if difference <= settings.run_length_tolerance_in and _same_shape(shape):
+            fitting.append((difference, row.key, row, shape))
+    chosen = min(fitting or measured, key=lambda item: (item[0], item[1]), default=None)
+    if chosen is not None:
+        error, _key, best, aligned = chosen
         evidence.append(
             f"its run is {_inches(error)} in off the vendor's (row {best.key}, "
             f"{len(best.spans)} bays against the vendor's "
-            f"{0 if vendor.row is None else len(vendor.row.spans)})"
+            f"{0 if vendor.row is None else len(vendor.row.spans)}; "
+            f"{aligned[0]} of its {aligned[1]} ticks line up with the vendor's)"
         )
     elif not view.rows:
         evidence.append("no dimension row was read in this view")
@@ -298,7 +348,7 @@ def _score(
             pair_status, pair_support = paired.status.value, paired.support
             if paired.status is PairingStatus.PAIRED:
                 evidence.append(f"position pairing lines {paired.support} ticks up")
-    fits = error is not None and error <= settings.run_length_tolerance_in
+    fits = bool(fitting)
     return _Scored(
         position=position,
         view=view,
@@ -310,6 +360,7 @@ def _score(
         pair_support=pair_support,
         fits=fits,
         evidence=tuple(evidence),
+        ticks_aligned=None if aligned is None else aligned[0],
     )
 
 
@@ -355,6 +406,7 @@ def match_by_code(
             pair_support=item.pair_support,
             fits=item.fits,
             evidence=item.evidence,
+            ticks_aligned=item.ticks_aligned,
         )
         for rank, item in enumerate(ordered, start=1)
     )

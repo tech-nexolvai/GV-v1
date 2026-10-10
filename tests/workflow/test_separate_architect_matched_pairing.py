@@ -3,10 +3,12 @@
 A two-file package: the vendor's shop sheet (no architect drawing on it) and the architect's own
 PDF (`tests/extraction/architect/architect_sheet.py`: a bubble, a title, a scale note and a cabinet
 outline whose two widths, `3' - 4"` and `2' - 2"`, are printed as real text on ticks that sit on the
-outline). The real architect reader reads the architect file (Phase 1); the vendor's countertop row
-is stored as the slot reader stores it; the row's match with a view of the architect file is a fake
-matcher returning #1166's contract values; both AIs are a fake `ask` keyed `(key, model)`. Then the
-real pairing step (`ArchitectPairing`), the real records and the real check stage decide.
+outline). The real stages read both files: the architect reader and #1166's view index (each view's
+row, picture and pixel box). The vendor's countertop row is stored as the slot reader stores it.
+The row's match is a fake matcher returning #1166's contract `RowMatch` values (with code's pairing
+for every candidate view, as #1166 computes it); both AIs are a fake `ask` keyed `(key, model)`.
+Everything else is real: the pairing step (`ArchitectPairing`), #1166's match records, the reviewer's
+pick through #1166's POST handler, the pairing records and the check stage.
 
 Proved here:
 
@@ -38,11 +40,13 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from alembic import command
+from app.api.architect_matches import pick_architect_view
+from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.models import (
-    DrawingView,
     MeasurementProposal,
     ObservationCandidate,
+    Package,
     PackageRevision,
     Page,
 )
@@ -52,7 +56,8 @@ from app.models.evidence import (
     ArchitectViewMatchRecord,
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from evidence.crop import RenderedPage, encode_png
+from app.schemas.architect_matches import ArchitectViewPickIn
+from evidence.crop import RenderedPage
 from extraction.ink import InkClass
 from extraction.slot_reader.bedrock import (
     ARCH_PAIR_2PANEL_PROMPT_ID,
@@ -73,20 +78,24 @@ from tests.workflow.test_stages import _publish_rulebook
 from units.measurement import Measurement, Unit
 from verdict.outcomes import Outcome
 from workflow.architect_match_contract import (
-    EffectiveMatch,
     MatchedView,
     RowMatch,
     compared_with_text,
     restrict_to_view,
 )
+from workflow.architect_match_records import (
+    effective_architect_match,
+    matched_views,
+    persist_architect_matches,
+)
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
     ArchitectPageInput,
     ArchitectPairing,
+    ArchitectViewPicture,
     ReviewerPairingRefused,
     pair_by_code,
     persist_architect_pairings,
-    record_code_pairing_for_view,
     record_reviewer_pairing,
     vendor_row_input,
 )
@@ -100,6 +109,7 @@ from workflow.architect_row_plan import (
     SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
     Disposition,
     architect_file_indexed,
+    matched_words,
     plan_architect_row,
 )
 from workflow.slot_reader import PageSlotResult, SlotPage
@@ -110,12 +120,16 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 
 OPUS = "anthropic.claude-opus-5-5"
 SONNET = "anthropic.claude-sonnet-5-5"
-FILE_NAME = "synthetic-architect.pdf"
 #: The vendor's drawing: 2 page points per real inch, the row starting at x = 100.
 VENDOR_PT = 2
 VENDOR_START = 100
 #: Inside the vendor's sheet, in its 150 dpi image (only stored with each reading).
 VENDOR_BOX = [[300, 1000], [400, 1000], [400, 1030], [300, 1030]]
+
+EQUAL = ((40, 26, 30), (40, 26, 30))
+"""Drawn and printed: the vendor's first two pieces are the architect's two cabinets."""
+ONE_OFF = ((40, 26, 30), (40, 27, 30))
+"""The vendor prints 27 on the piece drawn (and drawn by the architect) as 26."""
 
 
 @pytest.fixture
@@ -140,17 +154,18 @@ def store() -> Iterator[LocalStore]:
 
 
 @dataclass
-class Package:
-    """A two-file package read by the real architect reader, with its views indexed."""
+class TwoFiles:
+    """A two-file package read by the real stages: the architect file read and its views indexed."""
 
     revision: PackageRevision
     vendor_page: Page
     architect_page: Page
     pages: Mapping[UUID, ArchitectPageInput]
+    crops: Mapping[UUID, ArchitectViewPicture]
     views: dict[int, MatchedView] = field(default_factory=dict)
 
 
-def _two_file_package(session: Session, store: LocalStore, *, views: int = 1) -> Package:
+def _two_file_package(session: Session, store: LocalStore, *, views: int = 1) -> TwoFiles:
     revision = _upload(session, store, architect_sheet(vendor=True))
     architect = _add_architectural(session, store, revision, architect_sheet(views=views))
     stages = _stages(store)
@@ -163,76 +178,21 @@ def _two_file_package(session: Session, store: LocalStore, *, views: int = 1) ->
     architect_page = session.scalars(
         select(Page).where(Page.document_version_id == architect.id)
     ).one()
-    package = Package(revision, vendor_page, architect_page, dict(stages._architect_pages))
-    package.views = _index(session, package)
-    session.commit()
-    return package
-
-
-def _index(session: Session, package: Package) -> dict[int, MatchedView]:
-    """The architect file's view index (#1166), as its stage would write it: one row per view of
-    the reader's run; an existing row (once #1166's stage writes them) is used as it is."""
-    page = package.architect_page
-    run_id = session.scalars(
-        select(ObservationCandidate.extraction_run_id).where(
-            ObservationCandidate.page_id == page.id
-        )
-    ).first()
-    assert run_id is not None, "the architect reader stored the architect's values"
-    found: dict[int, MatchedView] = {}
-    sheet = package.pages[page.id]
-    for drawing in session.scalars(
-        select(DrawingView).where(DrawingView.page_id == page.id).order_by(DrawingView.tag)
-    ):
-        number = int(drawing.tag.removeprefix("view-"))
-        entry = session.scalars(
-            select(ArchitectViewIndexEntry).where(
-                ArchitectViewIndexEntry.page_id == page.id,
-                ArchitectViewIndexEntry.view_number == number,
-            )
-        ).first()
-        if entry is None:
-            box = sheet.view_extents[number]
-            entry = ArchitectViewIndexEntry(
-                extraction_run_id=run_id,
-                document_version_id=page.document_version_id,
-                page_id=page.id,
-                view_number=number,
-                view_tag=drawing.tag,
-                drawing_view_id=drawing.id,
-                sheet_number="X-101",
-                bubble=None,
-                title="SYNTHETIC ELEVATION",
-                scale_note='1/4" = 1\'-0"',
-                points_per_inch="1.5",
-                extent={
-                    "x0": str(box.x0),
-                    "top": str(box.top),
-                    "x1": str(box.x1),
-                    "bottom": str(box.bottom),
-                },
-                separated=True,
-                role_confirmed=True,
-                row_count=sum(row.view_annotation_index == number for row in sheet.rows),
-                reason="test index",
-            )
-            session.add(entry)
-            session.flush()
-        found[number] = MatchedView(
-            view_id=entry.id,
-            document_version_id=page.document_version_id,
-            page_id=page.id,
-            page_number=page.index + 1,
-            view_number=number,
-            view_tag=entry.view_tag,
-            title=entry.title,
-            bubble=entry.bubble,
-            sheet_number=entry.sheet_number,
-            scale_note=entry.scale_note,
-            file_name=FILE_NAME,
-            separated=entry.separated,
-        )
-    return found
+    entries = session.scalars(
+        select(ArchitectViewIndexEntry).where(ArchitectViewIndexEntry.page_id == architect_page.id)
+    ).all()
+    assert len(entries) == views, "#1166 indexed every view of the architect's file"
+    indexed = matched_views(session, {entry.id for entry in entries})
+    crops = dict(stages._architect_view_crops)
+    assert all(crops[entry.id].png is not None for entry in entries), "each view has a picture"
+    return TwoFiles(
+        revision,
+        vendor_page,
+        architect_page,
+        dict(stages._architect_pages),
+        crops,
+        {view.view_number: view for view in indexed.values()},
+    )
 
 
 # --- the vendor's row, as the slot reader stores and pairs it ---------------------------------------
@@ -393,43 +353,17 @@ def _slot_page(page: Page) -> SlotPage:
     )
 
 
-@dataclass(frozen=True)
-class ViewPicture:
-    """The view index's picture of one view (#1166): a plain stand-in, framed on the view."""
-
-    png: bytes
-    box_px: tuple[int, int, int, int]
-    dpi: int
-
-
-def _pictures(package: Package) -> dict[UUID, ViewPicture]:
-    found: dict[UUID, ViewPicture] = {}
-    for number, view in package.views.items():
-        box = package.pages[package.architect_page.id].view_extents[number]
-        pixels = (
-            int(box.x0 * Decimal(150) / 72),
-            int(box.top * Decimal(150) / 72),
-            int(box.x1 * Decimal(150) / 72),
-            int(box.bottom * Decimal(150) / 72),
-        )
-        width, height = pixels[2] - pixels[0], pixels[3] - pixels[1]
-        assert width > 0 and height > 0
-        found[view.view_id] = ViewPicture(
-            encode_png(width, height, bytes([255]) * (width * height * 3)), pixels, 150
-        )
-    return found
-
-
 # --- the fakes: #1166's matcher and both AIs ---------------------------------------------------------
 
 
 @dataclass
 class FakeMatcher:
-    """Returns one contract `RowMatch` per row it is given, and remembers which rows it saw."""
+    """Returns one contract `RowMatch` per row it is given, every view of the file a candidate with
+    code's pairing against it (as #1166 stores it), and remembers which rows it saw."""
 
+    package: TwoFiles
     status: str
-    chosen: MatchedView | None
-    candidates: tuple[Mapping[str, object], ...] = ()
+    chosen: int | None
     seen: list[UUID] = field(default_factory=list)
 
     def match(
@@ -440,15 +374,46 @@ class FakeMatcher:
             result.page_index: RowMatch(
                 status=self.status,  # type: ignore[arg-type]
                 source="carried" if self.status == "carried_over" else "automatic",
-                chosen=self.chosen,
-                code=SimpleNamespace(verdict="geometry_clear", pick=None, ranked=(), reasons=()),
+                chosen=None if self.chosen is None else self.package.views[self.chosen],
+                code=SimpleNamespace(
+                    verdict="geometry_tie" if self.chosen is None else "geometry_clear",
+                    pick=None,
+                    ranked=(),
+                    reasons=(),
+                ),
                 ai_picks=(),
-                candidate_json=self.candidates,
+                candidate_json=tuple(self._candidates(result)),
                 reasons=("A synthetic match.",),
                 question_packet=None,
             )
             for result in results
         }
+
+    def _candidates(self, result: PageSlotResult) -> list[dict[str, object]]:
+        vendor = vendor_row_input(result)
+        assert vendor is not None
+        sheet = self.package.pages[self.package.architect_page.id]
+        found: list[dict[str, object]] = []
+        for rank, (number, view) in enumerate(sorted(self.package.views.items()), start=1):
+            outcome, _raw = pair_by_code(
+                vendor,
+                restrict_to_view(sheet, number, sheet.view_extents[number]),
+                MEASURED_PAIRING_SETTINGS,
+            )
+            found.append(
+                {
+                    "view_id": str(view.view_id),
+                    "rank": rank,
+                    "code_pairing": {
+                        "status": outcome.status,
+                        "source": "code",
+                        "pairs": [pair.as_json() for pair in outcome.pairs],
+                        "details": dict(outcome.details),
+                    },
+                    "remembered": False,
+                }
+            )
+        return found
 
 
 def _truthful_ais(session: Session) -> tuple[Any, list[CropJob]]:
@@ -460,8 +425,8 @@ def _truthful_ais(session: Session) -> tuple[Any, list[CropJob]]:
         asked.extend(jobs)
         answers: dict[tuple[str, str], object] = {}
         for job in jobs:
-            packet = job.question_packet or {}
-            ids = [UUID(str(value)) for value in packet.get("architect_candidate_ids", [])]  # type: ignore[attr-defined]
+            packet: Any = job.question_packet or {}
+            ids = [UUID(str(value)) for value in packet.get("architect_candidate_ids", [])]
             texts = [
                 session.get_one(ObservationCandidate, value).raw_text.replace("’", "'")
                 for value in ids
@@ -482,22 +447,19 @@ def _truthful_ais(session: Session) -> tuple[Any, list[CropJob]]:
 
 def _pair(
     session: Session,
-    package: Package,
-    matcher: FakeMatcher | None,
+    package: TwoFiles,
+    matcher: FakeMatcher,
     *,
     drawn: Sequence[int],
     printed: Sequence[int],
 ) -> tuple[UUID, PageSlotResult, list[CropJob]]:
-    """Store the vendor row, run the real pairing step beside the fake matcher, and persist what
-    #1166's stage and this stage persist."""
+    """Store the vendor row, run the real pairing step beside the fake matcher, and persist the
+    match and the pairing as the stage does (matches first)."""
     anchor = _vendor_row(session, package.revision, package.vendor_page, printed)
     result = _slot_result(package.vendor_page, anchor, drawn, printed)
     ask, asked = _truthful_ais(session)
     (paired,) = ArchitectPairing(
-        MEASURED_PAIRING_SETTINGS,
-        package.pages,
-        matcher=matcher,
-        crops=_pictures(package),
+        MEASURED_PAIRING_SETTINGS, package.pages, matcher=matcher, crops=package.crops
     ).pair(
         [result],
         [_slot_page(package.vendor_page)],
@@ -508,69 +470,40 @@ def _pair(
         effort="high",
     )
     run_id = session.get_one(ObservationCandidate, anchor).extraction_run_id
-    if paired.architect_match is not None:
-        _store_match(session, package, anchor, run_id, paired.architect_match)
+    persist_architect_matches(
+        session, package_revision_id=package.revision.id, extraction_run_id=run_id, results=[paired]
+    )
     persist_architect_pairings(
-        session,
-        package_revision_id=package.revision.id,
-        extraction_run_id=run_id,
-        results=[paired],
+        session, package_revision_id=package.revision.id, extraction_run_id=run_id, results=[paired]
     )
     session.commit()
     return anchor, paired, asked
 
 
-# --- #1166's records, as its stage and API write them (written here until they exist) ------------
-
-
-def _store_match(
-    session: Session, package: Package, anchor: UUID, run_id: UUID, match: RowMatch
-) -> ArchitectViewMatchRecord:
-    record = ArchitectViewMatchRecord(
-        package_revision_id=package.revision.id,
-        vendor_page_id=package.vendor_page.id,
-        row_anchor_candidate_id=anchor,
-        extraction_run_id=run_id,
-        source=match.source,
-        status=match.status,
-        matched_view_id=None if match.chosen is None else match.chosen.view_id,
-        ai_picks=[dict(pick) for pick in match.ai_picks],
-        candidates=[dict(candidate) for candidate in match.candidate_json],
-        vendor_references=[],
-        reasons=list(match.reasons),
-        details={},
-        carried_from_id=None,
+def _pick(session: Session, package: TwoFiles, anchor: UUID, view: MatchedView | None) -> None:
+    """The reviewer's one click, through #1166's POST handler (which records code's pairing for the
+    picked view, #1167)."""
+    record = _latest_match_record(session, anchor)
+    assert record is not None
+    package_row = session.get_one(Package, package.revision.package_id)
+    principal = Principal(
+        id="reviewer (synthetic test)",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({package_row.project_id}),
     )
-    session.add(record)
-    session.flush()
-    return record
-
-
-def _reviewer_pick(
-    session: Session, anchor: UUID, view: MatchedView | None
-) -> ArchitectViewMatchRecord:
-    """A reviewer's pick (or "none of these"), superseding the row's latest match record."""
-    current = _latest_match_record(session, anchor)
-    assert current is not None
-    record = ArchitectViewMatchRecord(
-        package_revision_id=current.package_revision_id,
-        vendor_page_id=current.vendor_page_id,
-        row_anchor_candidate_id=anchor,
-        extraction_run_id=None,
-        source="reviewer",
-        status="none_matches" if view is None else "reviewer_confirmed",
-        matched_view_id=None if view is None else view.view_id,
-        ai_picks=current.ai_picks,
-        candidates=current.candidates,
-        vendor_references=[],
-        reasons=["A reviewer chose."],
-        details={},
-        supersedes_id=current.id,
-        decided_by="reviewer@example.com",
+    pick_architect_view(
+        principal,
+        principal,
+        session,
+        package_row.project_id,
+        package_row.id,
+        anchor,
+        ArchitectViewPickIn(
+            view_id=None if view is None else view.view_id,
+            none_of_these=view is None,
+            expected_record_id=record.id,
+        ),
     )
-    session.add(record)
-    session.flush()
-    return record
 
 
 def _latest_match_record(session: Session, anchor: UUID) -> ArchitectViewMatchRecord | None:
@@ -582,60 +515,12 @@ def _latest_match_record(session: Session, anchor: UUID) -> ArchitectViewMatchRe
     ).first()
 
 
-def _views_by_id(session: Session) -> dict[UUID, MatchedView]:
-    found: dict[UUID, MatchedView] = {}
-    for entry in session.scalars(select(ArchitectViewIndexEntry)):
-        page = session.get_one(Page, entry.page_id)
-        found[entry.id] = MatchedView(
-            view_id=entry.id,
-            document_version_id=entry.document_version_id,
-            page_id=entry.page_id,
-            page_number=page.index + 1,
-            view_number=entry.view_number,
-            view_tag=entry.view_tag,
-            title=entry.title,
-            bubble=entry.bubble,
-            sheet_number=entry.sheet_number,
-            scale_note=entry.scale_note,
-            file_name=FILE_NAME,
-            separated=entry.separated,
-        )
-    return found
-
-
-def stored_match(session: Session, anchor: UUID) -> EffectiveMatch | None:
-    """The row's effective match, read from the stored records (#1166's read path, restated)."""
-    record = _latest_match_record(session, anchor)
-    if record is None:
-        return None
-    view = None if record.matched_view_id is None else _views_by_id(session)[record.matched_view_id]
-    return EffectiveMatch(
-        record_id=record.id,
-        status=record.status,  # type: ignore[arg-type]
-        source=record.source,  # type: ignore[arg-type]
-        matched=view,
-        needs_reviewer=record.status == "needs_reviewer",
-        reasons=tuple(record.reasons),
-        decided_by=record.decided_by,
-    )
-
-
-def stored_matches(session: Session, anchors: Any) -> dict[UUID, EffectiveMatch | None]:
-    return {anchor: stored_match(session, anchor) for anchor in anchors}
-
-
-def _pairing(session: Session, anchor: UUID) -> Any:
-    return latest_architect_pairing(session, anchor, matches=stored_matches)
-
-
-def _check(session: Session, store: LocalStore, package: Package) -> dict[str, Any]:
+def _check(session: Session, store: LocalStore, revision: PackageRevision) -> dict[str, Any]:
     """Run the real check stage; the architect check's findings, by row and for the package."""
     from app.models.rules import RuleDefinition, RuleSnapshot
     from app.models.verdicts import CheckRun, Finding
 
-    DatabaseStages(store, architect_pairing=_pairing, architect_match=stored_match).run_checks(
-        session, package.revision.id
-    )
+    DatabaseStages(store).run_checks(session, revision.id)
     session.commit()
     findings = session.scalars(
         select(Finding)
@@ -643,7 +528,7 @@ def _check(session: Session, store: LocalStore, package: Package) -> dict[str, A
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
         .where(
-            Finding.package_revision_id == package.revision.id,
+            Finding.package_revision_id == revision.id,
             CheckRun.superseded_at.is_(None),
             RuleDefinition.rule_id == ARCHITECT_CHECK_RULE_ID,
         )
@@ -664,32 +549,6 @@ def _candidates_in_view(session: Session, page: Page, number: int) -> set[UUID]:
     }
 
 
-def _code_pairing_json(
-    package: Package, number: int, drawn: Sequence[int], printed: Sequence[int], anchor: UUID
-) -> dict[str, object]:
-    """What #1166 stores per candidate view: code's pairing against that view alone."""
-    vendor = vendor_row_input(_slot_result(package.vendor_page, anchor, drawn, printed))
-    assert vendor is not None
-    sheet = package.pages[package.architect_page.id]
-    outcome, _raw = pair_by_code(
-        vendor,
-        restrict_to_view(sheet, number, sheet.view_extents[number]),
-        MEASURED_PAIRING_SETTINGS,
-    )
-    return {
-        "status": outcome.status,
-        "source": "code",
-        "pairs": [pair.as_json() for pair in outcome.pairs],
-        "details": dict(outcome.details),
-    }
-
-
-EQUAL = ((40, 26, 30), (40, 26, 30))
-"""Drawn and printed: the vendor's first two pieces are the architect's two cabinets."""
-ONE_OFF = ((40, 26, 30), (40, 27, 30))
-"""The vendor prints 27 on the piece drawn (and drawn by the architect) as 26."""
-
-
 # --- (a) automatic match → pairing → exact PASS and FAIL ---------------------------------------
 
 
@@ -699,27 +558,29 @@ def test_an_automatic_match_is_paired_by_code_and_both_ais_and_decided_exactly(
 ) -> None:
     package = _two_file_package(session, store)
     view = package.views[1]
-    matcher = FakeMatcher("auto_matched", view)
+    matcher = FakeMatcher(package, "auto_matched", 1)
 
     anchor, paired, asked = _pair(session, package, matcher, drawn=widths[0], printed=widths[1])
 
     assert matcher.seen == [package.vendor_page.id], "the vendor page has no architect view"
     assert paired.architect_match is not None and paired.architect_match.chosen == view
     assert [job_prompt_id(job, None) for job in asked] == [ARCH_PAIR_2PANEL_PROMPT_ID] * 2
+    assert all(job.png.startswith(b"\x89PNG") for job in asked), "the two-panel picture"
     pairing = paired.architect_pairing
     assert pairing is not None and (pairing.source, pairing.status) == ("code+ais", "paired")
     assert pairing.details["architect_view_id"] == str(view.view_id)
     record = session.scalars(select(ArchitectPairingRecord)).one()
-    assert record.details["match_record_id"] == str(_latest_match_record(session, anchor).id)  # type: ignore[union-attr]
+    match = _latest_match_record(session, anchor)
+    assert match is not None and record.details["match_record_id"] == str(match.id)
     in_view = _candidates_in_view(session, package.architect_page, 1)
     assert {pair.architect_candidate_id for pair in pairing.pairs} <= in_view
 
-    found = _check(session, store, package)
+    found = _check(session, store, package.revision)
 
     (finding,) = found["row"]
     assert finding.outcome == expected, finding.reason
     assert finding.notes[0] == compared_with_text(view)
-    assert FILE_NAME in finding.notes[0] and "view 1" in finding.notes[0]
+    assert "page 1, view 1" in finding.notes[0]
     assert found["package"] == [], "a row was compared: no package line"
     assert architect_file_indexed(session, package.revision.id)
 
@@ -731,68 +592,34 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
     session: Session, store: LocalStore
 ) -> None:
     package = _two_file_package(session, store, views=2)
-    first, second = package.views[1], package.views[2]
-    candidates = tuple(
-        {
-            "view_id": str(view.view_id),
-            "rank": rank,
-            "code_pairing": None,
-            "remembered": False,
-        }
-        for rank, view in enumerate((first, second), start=1)
-    )
-    matcher = FakeMatcher("needs_reviewer", None, candidates)
+    second = package.views[2]
 
-    anchor, paired, asked = _pair(session, package, matcher, drawn=EQUAL[0], printed=EQUAL[1])
+    anchor, paired, asked = _pair(
+        session,
+        package,
+        FakeMatcher(package, "needs_reviewer", None),
+        drawn=EQUAL[0],
+        printed=EQUAL[1],
+    )
 
     assert paired.architect_pairing is None, "nothing is paired before the reviewer picks"
     assert asked == []
     assert session.scalars(select(ArchitectPairingRecord)).all() == []
-    found = _check(session, store, package)
+    found = _check(session, store, package.revision)
     (waiting,) = found["row"]
     assert (waiting.outcome, waiting.reason) == ("REVIEW_REQUIRED", CHOOSE_ARCHITECT_VIEW)
 
-    # #1166 stores code's pairing for every candidate view; the reviewer picks the second twin.
-    automatic = _latest_match_record(session, anchor)
-    assert automatic is not None
-    with_pairings: list[dict[str, object]] = [
-        {**candidate, "code_pairing": _code_pairing_json(package, number, *EQUAL, anchor)}
-        for number, candidate in zip((1, 2), candidates, strict=True)
-    ]
-    automatic_with_pairings = ArchitectViewMatchRecord(
-        package_revision_id=automatic.package_revision_id,
-        vendor_page_id=automatic.vendor_page_id,
-        row_anchor_candidate_id=anchor,
-        extraction_run_id=None,
-        source="reviewer",
-        status="reviewer_confirmed",
-        matched_view_id=second.view_id,
-        ai_picks=[],
-        candidates=with_pairings,
-        vendor_references=[],
-        reasons=["A reviewer chose."],
-        details={},
-        supersedes_id=automatic.id,
-        decided_by="reviewer@example.com",
-    )
-    session.add(automatic_with_pairings)
-    session.flush()
-    anchor_row = session.get_one(ObservationCandidate, anchor)
-    appended = record_code_pairing_for_view(
-        session,
-        anchor=anchor_row,
-        package_revision_id=package.revision.id,
-        match_record=automatic_with_pairings,
-    )
-    session.commit()
+    _pick(session, package, anchor, second)
 
-    assert appended is not None and (appended.source, appended.status) == ("code", "paired")
-    pairing = _pairing(session, anchor)
+    appended = session.scalars(select(ArchitectPairingRecord)).one()
+    assert (appended.source, appended.status) == ("code", "paired")
+    assert appended.details["architect_view_id"] == str(second.view_id)
+    pairing = latest_architect_pairing(session, anchor)
     assert pairing is not None and pairing.source == "code"
     second_view = _candidates_in_view(session, package.architect_page, 2)
     assert pairing.pairs and {p.architect_candidate_id for p in pairing.pairs} <= second_view
 
-    found = _check(session, store, package)
+    found = _check(session, store, package.revision)
     (compared,) = found["row"]
     # One judgment (code's) on the pairing: compared, and the reviewer confirms the pairing.
     assert compared.outcome == "REVIEW_REQUIRED"
@@ -801,17 +628,17 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
     assert compared.notes[1] == compared_with_text(second), compared.notes
 
     # The reviewer confirms the pairing: a span of the other twin is refused; then a PASS.
-    other = sorted(_candidates_in_view(session, package.architect_page, 1))
+    anchor_row = session.get_one(ObservationCandidate, anchor)
+    other = min(_candidates_in_view(session, package.architect_page, 1))
     with pytest.raises(ReviewerPairingRefused):
         record_reviewer_pairing(
             session,
             anchor=anchor_row,
             package_revision_id=package.revision.id,
             piece_count=3,
-            pairs=[DecidedPair("piece", other[0], (0,))],
+            pairs=[DecidedPair("piece", other, (0,))],
             note=None,
             actor="reviewer@example.com",
-            match_lookup=stored_match,
         )
     record_reviewer_pairing(
         session,
@@ -824,11 +651,10 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
         ],
         note=None,
         actor="reviewer@example.com",
-        match_lookup=stored_match,
     )
     session.commit()
 
-    found = _check(session, store, package)
+    found = _check(session, store, package.revision)
     (decided,) = found["row"]
     assert decided.outcome == "PASS", decided.reason
     assert decided.notes[0] == compared_with_text(second)
@@ -840,23 +666,27 @@ def test_twin_views_wait_for_the_reviewers_pick_then_are_compared_with_that_view
 def test_none_of_these_is_not_compared_and_says_so(session: Session, store: LocalStore) -> None:
     package = _two_file_package(session, store, views=2)
     anchor, _paired, _asked = _pair(
-        session, package, FakeMatcher("needs_reviewer", None), drawn=EQUAL[0], printed=EQUAL[1]
+        session,
+        package,
+        FakeMatcher(package, "needs_reviewer", None),
+        drawn=EQUAL[0],
+        printed=EQUAL[1],
     )
-    _reviewer_pick(session, anchor, None)
-    session.commit()
+    _pick(session, package, anchor, None)
 
-    found = _check(session, store, package)
+    found = _check(session, store, package.revision)
 
     assert found["row"] == [], "nothing compared: no finding for the row"
+    assert session.scalars(select(ArchitectPairingRecord)).all() == []
     (line,) = found["package"]
     assert (line.outcome, line.reason) == ("NO_APPLICABLE_RULE", NOTHING_PAIRED_ON_REVISION)
     (row,) = slot_rows_and_unchosen_pages(session, package.revision.id)[0]
     plan = plan_architect_row(
         session,
         row,
-        _pairing(session, anchor),
+        latest_architect_pairing(session, anchor),
         separate_architect_file=True,
-        match=stored_match(session, anchor),
+        match=effective_architect_match(session, anchor),
         architect_file_indexed=True,
     )
     assert (plan.disposition, plan.reason) == (Disposition.NOT_COMPARED, NO_ARCHITECT_VIEW_MATCHES)
@@ -869,22 +699,40 @@ def test_a_pairing_for_a_view_that_is_no_longer_the_match_never_counts(
     session: Session, store: LocalStore
 ) -> None:
     package = _two_file_package(session, store, views=2)
-    first, second = package.views[1], package.views[2]
+    second = package.views[2]
     anchor, paired, _asked = _pair(
-        session, package, FakeMatcher("auto_matched", first), drawn=EQUAL[0], printed=EQUAL[1]
+        session, package, FakeMatcher(package, "auto_matched", 1), drawn=EQUAL[0], printed=EQUAL[1]
     )
     assert paired.architect_pairing is not None
-    assert _pairing(session, anchor) is not None
-
-    # The reviewer moves the match to the other twin; no pairing exists for it yet.
-    _reviewer_pick(session, anchor, second)
+    assert latest_architect_pairing(session, anchor) is not None
+    # A record that no longer counts, then the reviewer moves the match to the other twin: the
+    # stored code pairing for it is withheld here, as when a view had nothing code could pair.
+    automatic = _latest_match_record(session, anchor)
+    assert automatic is not None
+    moved = ArchitectViewMatchRecord(
+        package_revision_id=automatic.package_revision_id,
+        vendor_page_id=automatic.vendor_page_id,
+        row_anchor_candidate_id=anchor,
+        extraction_run_id=None,
+        source="reviewer",
+        status="reviewer_confirmed",
+        matched_view_id=second.view_id,
+        ai_picks=[],
+        candidates=[],
+        vendor_references=[],
+        reasons=["The reviewer chose this architect view."],
+        details={},
+        supersedes_id=automatic.id,
+        decided_by="reviewer@example.com",
+    )
+    session.add(moved)
     session.commit()
 
-    assert _pairing(session, anchor) is None, "the first view's pairing no longer counts"
-    found = _check(session, store, package)
+    assert latest_architect_pairing(session, anchor) is None, "view 1's pairing no longer counts"
+    found = _check(session, store, package.revision)
     (waiting,) = found["row"]
     assert waiting.outcome == "REVIEW_REQUIRED"
-    assert (waiting.reason or "").startswith(f"Matched with {FILE_NAME}, page 1, view 2: ")
+    assert (waiting.reason or "").startswith(f"{matched_words(second)}: ")
     anchor_row = session.get_one(ObservationCandidate, anchor)
     with pytest.raises(ReviewerPairingRefused, match="has changed"):
         record_reviewer_pairing(
@@ -895,7 +743,6 @@ def test_a_pairing_for_a_view_that_is_no_longer_the_match_never_counts(
             pairs=[],
             note=None,
             actor="reviewer@example.com",
-            match_lookup=stored_match,
         )
     rows, _unchosen = slot_rows_and_unchosen_pages(session, package.revision.id)
     candidate = session.get_one(
@@ -923,16 +770,16 @@ def test_the_verdict_guard_refuses_an_architect_value_from_another_view(
     package = _two_file_package(session, store, views=2)
     first, second = package.views[1], package.views[2]
     anchor, _paired, _asked = _pair(
-        session, package, FakeMatcher("auto_matched", first), drawn=EQUAL[0], printed=EQUAL[1]
+        session, package, FakeMatcher(package, "auto_matched", 1), drawn=EQUAL[0], printed=EQUAL[1]
     )
     rows, _unchosen = slot_rows_and_unchosen_pages(session, package.revision.id)
-    pairing = _pairing(session, anchor)
+    pairing = latest_architect_pairing(session, anchor)
     plan = plan_architect_row(
         session,
         rows[0],
         pairing,
         separate_architect_file=True,
-        match=stored_match(session, anchor),
+        match=effective_architect_match(session, anchor),
         architect_file_indexed=True,
     )
     assert plan.matched == first
@@ -987,10 +834,12 @@ def test_a_combined_sheet_never_reaches_the_matcher_and_is_asked_v3(
     page = session.scalars(select(Page)).one()
     pages = dict(stages._architect_pages)
     assert pages[page.id].has_architect_view
+    assert stages._architect_view_crops == {}, "a combined sheet has no view index"
     anchor = _vendor_row(session, revision, page, EQUAL[1])
     result = _slot_result(page, anchor, *EQUAL)
+    package = TwoFiles(revision, page, page, pages, {})
     outcomes = []
-    for matcher in (None, FakeMatcher("auto_matched", None)):
+    for matcher in (None, FakeMatcher(package, "auto_matched", None)):
         ask, asked = _truthful_ais(session)
         (paired,) = ArchitectPairing(MEASURED_PAIRING_SETTINGS, pages, matcher=matcher).pair(
             [result],
@@ -1002,9 +851,9 @@ def test_a_combined_sheet_never_reaches_the_matcher_and_is_asked_v3(
             effort="high",
         )
         assert paired.architect_match is None
-        assert {job_prompt_id(job, None) for job in asked} <= {ARCH_PAIR_PROMPT_ID}
+        assert {job_prompt_id(job, None) for job in asked} == {ARCH_PAIR_PROMPT_ID}
         assert not any(job.arch_pair_two_panel for job in asked)
-        outcomes.append((paired.architect_pairing, [job.question_packet for job in asked]))
+        outcomes.append((paired, [job.question_packet for job in asked]))
         if matcher is not None:
             assert matcher.seen == [], "a page with its own architect view is never matched"
     assert outcomes[0] == outcomes[1], "the matcher changes nothing on a combined sheet"
@@ -1026,16 +875,31 @@ def test_a_separate_file_that_produced_no_index_keeps_the_package_line(
     session.commit()
     asked: list[UUID] = []
 
-    def no_match(_session: Session, row: UUID) -> EffectiveMatch | None:
+    def no_match(_session: Session, row: UUID) -> Any:
         asked.append(row)
         return None
 
-    DatabaseStages(
-        store, architect_pairing=lambda _s, _a: None, architect_match=no_match
-    ).run_checks(session, revision.id)
-    found = _check(session, store, Package(revision, shop_page, shop_page, {}))
+    DatabaseStages(store, architect_match=no_match).run_checks(session, revision.id)
+    session.commit()
+    found = _check(session, store, revision)
 
     assert asked == [], "no index: no match is ever looked up"
     assert not architect_file_indexed(session, revision.id)
     (line,) = found["package"]
     assert (line.outcome, line.reason) == ("REVIEW_REQUIRED", SEPARATE_ARCHITECT_FILE_NOT_COMPARED)
+
+
+def test_the_slot_stage_hands_the_pairing_each_views_picture_and_where_it_sits(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_read_slots` gives the pairing step #1166's view pictures, each with its pixel box, so the
+    two-panel question can mark the architect's spans on it (#1167)."""
+    from tests.workflow.test_architect_view_index import _extract, _read
+
+    stages, revision, _version = _extract(session, store, architect=architect_sheet())
+
+    handed, _asked, _run = _read(session, store, monkeypatch, stages, revision, vendor_page=False)
+
+    assert handed.matcher is not None
+    assert handed.crops and set(handed.crops) == set(stages._architect_view_crops)
+    assert all(crop.png is not None and crop.box_px is not None for crop in handed.crops.values())
