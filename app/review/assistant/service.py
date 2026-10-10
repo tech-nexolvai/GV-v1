@@ -57,9 +57,12 @@ from app.review.assistant.records import ReviewSnapshot, prompt_records
 from app.review.assistant.records_only import (
     NO_ANSWER_IN_RECORDS,
     answer_for_question,
+    asks_about_deciding,
     fallback_answer,
     glossary_answer,
+    is_ranking_question,
     judging_answer,
+    needs_you_answer,
 )
 from app.runs.invocations import BedrockConverseInvocationRecorder
 
@@ -196,7 +199,8 @@ def _checked_or_plain(draft: Draft, snapshot: ReviewSnapshot) -> Draft:
     try:
         check(draft, snapshot, by_model=False)
     except Exception as rejected:  # noqa: BLE001 - a bug here must still give an answer
-        _log.warning("review assistant records-only answer failed the guard: %s", rejected)
+        reason = str(rejected) if isinstance(rejected, GuardRejected) else type(rejected).__name__
+        _log.warning("review assistant records-only answer failed the guard: %s", reason)
         return Draft(text=NO_ANSWER_IN_RECORDS)
     return draft
 
@@ -262,6 +266,24 @@ def stream_answer(
             "answer",
             _publish_safely(
                 _checked_or_plain(glossary, snapshot),
+                snapshot,
+                mode="records_only",
+                question=question,
+            ),
+        )
+        return
+
+    if is_ranking_question(question):
+        # "Which look most worrying?": code's order from the records, never a model's judgement.
+        # A ranking question about deciding (or one that also asks to judge) says whose decision
+        # it is, so the item named first is never a recommendation to approve it.
+        _log.info("review assistant answered a ranking question from the records", extra=log)
+        deciding = is_judging_question(question) or asks_about_deciding(question)
+        yield _stage("guard")
+        yield (
+            "answer",
+            _publish_safely(
+                _checked_or_plain(needs_you_answer(snapshot, about_deciding=deciding), snapshot),
                 snapshot,
                 mode="records_only",
                 question=question,
@@ -340,10 +362,10 @@ def stream_answer(
 
     if error is not None:
         if isinstance(error, ModelRefused):
-            _log.info("review assistant call refused unserved: %s", error.status, extra=log)
+            _log.warning("review assistant call refused unserved: %s", error.status, extra=log)
             yield "error", _ACCOUNT if error.status == 402 else _BUSY
         else:
-            _log.info("review assistant call failed: %s", type(error).__name__, extra=log)
+            _log.warning("review assistant call failed: %s", type(error).__name__, extra=log)
             yield "error", _UNAVAILABLE
         return
 
@@ -357,9 +379,14 @@ def stream_answer(
             proposed, snapshot, mode="llm", question=question, checked=True, model_id=model.model_id
         )
     except (MalformedAnswer, GuardRejected) as dropped:
-        _log.info("review assistant answer dropped: %s", dropped, extra=log)
-    except Exception:  # noqa: BLE001 - anything after the call falls back to the records
-        _log.exception("review assistant answer could not be checked", extra=log)
+        # The reason code only (never the question or the answer), at a level a local dev
+        # server shows, so a developer can see why an answer fell back.
+        _log.warning("review assistant answer dropped: %s", dropped, extra=log)
+    except Exception as failed:  # noqa: BLE001 - anything after the call falls back to the records
+        # The exception's type only: its message could quote the answer.
+        _log.warning(
+            "review assistant answer could not be checked: %s", type(failed).__name__, extra=log
+        )
     else:
         yield "answer", answer
         return

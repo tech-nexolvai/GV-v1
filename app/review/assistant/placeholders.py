@@ -40,11 +40,13 @@ __all__ = [
     "Rendered",
     "Slot",
     "UnknownPlaceholder",
+    "dropped_sentence",
     "group_for",
     "outcome_phrase",
     "placeholder_guide",
     "record_fields",
     "render",
+    "says_it_needs_you",
     "slots",
     "split_sentences",
     "value_of",
@@ -516,6 +518,36 @@ def _capitalised(sentence: str) -> str:
     return sentence
 
 
+#: A sentence opening with one of these continues the sentence before it; it never gets a subject
+#: of its own put in front ("On page 5, Also, …"). The guard refuses one about another record.
+CONNECTOR: Final = re.compile(
+    r"^(?:-\s+)?(?:also|then|so|and|but|however|next|finally|additionally|plus|still|meanwhile|"
+    r"besides|furthermore|moreover|lastly|again|too|otherwise|therefore|thus|instead)\b",
+    re.IGNORECASE,
+)
+
+
+def says_it_needs_you(snapshot: ReviewSnapshot, key: str) -> bool:
+    """Whether the record's outcome fill itself says it needs the reviewer ("needs your
+    decision": held and undecided). Then the queue fill would only repeat it."""
+    record = snapshot.record(key)
+    return record is not None and record.outcome == "REVIEW_REQUIRED" and record.decision is None
+
+
+def dropped_sentence(part: str, template: str, snapshot: ReviewSnapshot) -> bool:
+    """A sentence whose only fact is the queue fill ("it needs your decision in the review
+    queue") of a record whose stated outcome already says so. Code leaves it out; the guard does
+    not let a connector sentence lean on it."""
+    in_part = [slot for slot in slots(part) if slot.is_record]
+    outcome_keys = {slot.key for slot in slots(template) if slot.field == "outcome"}
+    return bool(in_part) and all(
+        slot.field == "needs_you"
+        and slot.key in outcome_keys
+        and says_it_needs_you(snapshot, slot.key)
+        for slot in in_part
+    )
+
+
 def _with_subject(part: str, header_keys: set[str], snapshot: ReviewSnapshot) -> str:
     """A sentence stating one record's facts without naming it starts "On page N," (code's)."""
     in_part = slots(part)
@@ -528,6 +560,8 @@ def _with_subject(part: str, header_keys: set[str], snapshot: ReviewSnapshot) ->
         return part
     if any(slot.key == key and slot.field == "outcome" for slot in in_part):
         return part  # an outcome needs its subject written; the guard refuses it otherwise
+    if CONNECTOR.match(part):
+        return part  # continues the sentence before, which names the same record (guard)
     prefix = "- " if part.startswith("- ") else ""
     return f"{prefix}On {{{key}.page}}, {part[len(prefix) :]}"
 
@@ -550,6 +584,8 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
     for part in re.split(r"((?<=[.?!])\s+(?=[A-Z{])|\n+)", template):
         if not part or SENTENCE_BREAK.fullmatch(part):
             pieces.append(part)
+            continue
+        if dropped_sentence(part, template, snapshot):
             continue
         if not part.startswith("- "):
             header_keys = (
@@ -578,4 +614,9 @@ def render(template: str, snapshot: ReviewSnapshot) -> Rendered:
         out.append(part[cursor:])
         text = "".join(out)
         pieces.append(_capitalised(text) if part.lstrip("- ").startswith("{") else text)
-    return Rendered(text="".join(pieces), citations=tuple(citations), groups=tuple(groups))
+    text = "".join(pieces)
+    # A dropped sentence leaves its separator behind: tidy the spaces it leaves, keep paragraphs.
+    text = re.sub(r"[ \t]+(\n|$)", r"\1", text)
+    text = re.sub(r"(?<=\S)[ \t]{2,}(?=\S)", " ", text)
+    text = re.sub(r"(\n[ \t]*){3,}", "\n\n", text).strip()
+    return Rendered(text=text, citations=tuple(citations), groups=tuple(groups))

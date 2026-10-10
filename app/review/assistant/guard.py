@@ -43,9 +43,11 @@ from typing import Final
 
 from app.review.assistant.contract import Draft
 from app.review.assistant.placeholders import (
+    CONNECTOR,
     PLACEHOLDER,
     Slot,
     UnknownPlaceholder,
+    dropped_sentence,
     slots,
     split_sentences,
     value_of,
@@ -753,7 +755,7 @@ def _outcome_has_subject(sentence: str, slot: Slot, snapshot: ReviewSnapshot) ->
     for subject in _SUBJECTS:
         if before.endswith(subject.replace("X", key).casefold()):
             return True
-    named = f"{{{key}.page}}".casefold() in before or f"{{{key}.label}}".casefold() in before
+    named = any(f"{{{key}.{field}}}".casefold() in before for field in ("page", "label", "check"))
     if named and any(re.search(rf"(?:^|\W){pronoun}$", before) for pronoun in _PRONOUNS):
         return True
     if before.endswith(f"{{{key}.page}}".casefold()):
@@ -806,14 +808,20 @@ def _check_structure(template: str, snapshot: ReviewSnapshot) -> None:
             if records and not (is_item and header_keys):
                 key = next(iter(records))
                 named = any(
-                    slot.key == key and slot.field in ("page", "label") for slot in in_sentence
+                    slot.key == key and slot.field in ("page", "label", "check")
+                    for slot in in_sentence
                 )
+                if not named and CONNECTOR.match(sentence) and previous_keys != {key}:
+                    # "Also, {C1.needs_you}" continues the sentence before; it must be the same
+                    # record's, since code puts no subject in front of a connector.
+                    raise GuardRejected("connector-without-its-subject")
                 free = _plain(PLACEHOLDER.sub(" ", sentence))
                 pointing_away = previous_keys and key not in previous_keys
                 if not named and pointing_away and _BACK_REFERENCE.search(free):
                     raise GuardRejected("fact-pointing-back-to-another-sentence")
             keys_here = {slot.key for slot in in_sentence if slot.is_record}
-            if keys_here:
+            # A sentence code will leave out (a repeated queue fill) is no anchor for the next.
+            if keys_here and not dropped_sentence(sentence, template, snapshot):
                 previous_keys = keys_here
             if is_item and header_keys and (records - header_keys):
                 raise GuardRejected("list-item-of-another-record")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from fractions import Fraction
 from typing import Final
 
 from app.review.assistant.contract import Draft, Focus
@@ -18,17 +19,22 @@ from app.review.assistant.placeholders import Slot, UnknownPlaceholder, value_of
 from app.review.assistant.records import CountertopRecord, FindingRecord, ReviewSnapshot
 
 __all__ = [
+    "COULD_NOT_CHECK",
     "GLOSSARY",
     "NOTHING_ON_THAT_PAGE",
     "NOTHING_TO_DECIDE_THERE",
     "NO_ANSWER_IN_RECORDS",
     "YOUR_DECISION",
     "answer_for_question",
+    "asks_about_deciding",
     "blockers_answer",
     "details_answer",
     "fallback_answer",
     "glossary_answer",
+    "is_ranking_question",
     "judging_answer",
+    "needs_you_answer",
+    "ranked",
     "records_answer",
 ]
 
@@ -200,9 +206,36 @@ def _subject(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -
     return f"The {{{key}.check}} check{where}"
 
 
+def _own_open(item: CountertopRecord | FindingRecord) -> bool:
+    """Whether the record's own result (not its architect check) still waits for the reviewer."""
+    return item.decision is None and item.outcome != "PASS"
+
+
+def _architect_open(item: CountertopRecord | FindingRecord) -> bool:
+    """A countertop whose own result is settled (decided, or looks right) but whose architect
+    check still needs the reviewer: the architect check is what needs them."""
+    return (
+        isinstance(item, CountertopRecord)
+        and item.architect is not None
+        and item.architect.needs_you
+        and not _own_open(item)
+    )
+
+
+def _open_outcome(item: CountertopRecord | FindingRecord) -> str | None:
+    """The outcome that makes the record need the reviewer: its own, or its architect check's."""
+    if _architect_open(item):
+        assert isinstance(item, CountertopRecord) and item.architect is not None
+        return item.architect.outcome
+    return item.outcome
+
+
 def _why(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str | None:
-    """The one field that says why a result is what it is: the hold, else the rule's reason."""
+    """The one field that says why a result is what it is: the architect check when that is what
+    still needs the reviewer, else the hold, else the rule's reason."""
     key = item.id
+    if _architect_open(item) and _has(snapshot, key, "architect"):
+        return f"{{{key}.architect}}"
     if isinstance(item, CountertopRecord):
         if _has(snapshot, key, "hold_reason"):
             return f"{{{key}.hold_reason}}"
@@ -285,11 +318,122 @@ def blockers_answer(snapshot: ReviewSnapshot) -> Draft:
     sentences = ["{signoff.status}."]
     if unchecked:
         sentences.append("{count.not_checked}.")
+        if snapshot.readiness.can_sign_off:
+            sentences.append(UNCHECKED_DO_NOT_BLOCK)
     first = (blocking if not snapshot.readiness.can_sign_off else []) + unchecked
     return Draft(
         text=" ".join(sentences),
         evidence=("blockers",),
         actions=(() if not first else (("open_queue_item", first[0].id),)),
+    )
+
+
+#: Said first when a free answer to the question was refused and code answers instead.
+COULD_NOT_CHECK: Final = "I couldn't check a free answer to that; here is what needs you."
+#: Said when sign-off is possible although some countertops have no check result.
+UNCHECKED_DO_NOT_BLOCK: Final = "Countertops with no check result do not hold up sign-off."
+#: Questions that ask code to rank or prioritise what needs the reviewer: answered by code.
+#: Deliberately narrow: "which page is first?", "worst-case tolerance", "next to the sink",
+#: "the priority of the sink check" are questions about the records, not a ranking.
+RANKING: Final = re.compile(
+    r"\bmost (?:worrying|worrisome|concerning|serious|urgent|critical|problematic)\b|"
+    r"\bworst\b(?![- ]case)|\bbiggest (?:problems?|issues?|risks?|concerns?|gaps?)\b|"
+    r"\bprioriti[sz]|\bwhere (?:do|should|can|must) (?:i|we) (?:start|begin)\b|"
+    r"\b(?:which|what)\b[^?.]{0,30}\b(?:should|must|can|do) (?:i|we)\b[^?.]{0,40}\b"
+    r"(?:first|next)\b|\bin (?:what|which) order\b"
+)
+#: A ranking question about deciding ("what should I approve first?") also gets the sentence
+#: that the decision is the reviewer's: the start item is never a recommendation.
+_DECIDING: Final = re.compile(
+    r"\bapprov|\baccept|\bdismiss|\breject|\bexception|\bsign off|\bpass\b|\bok to\b|"
+    r"\bokay to\b|\bconfirm"
+)
+
+
+def is_ranking_question(question: str) -> bool:
+    """Whether the question asks which results matter most or come first (and names no page)."""
+    folded = _folded(question)
+    return RANKING.search(folded) is not None and _PAGE.search(folded) is None
+
+
+def asks_about_deciding(question: str) -> bool:
+    """Whether the question is about approving, accepting, dismissing or signing off."""
+    return _DECIDING.search(_folded(question)) is not None
+
+
+def _difference_size(item: CountertopRecord | FindingRecord) -> Fraction:
+    if isinstance(item, CountertopRecord) and item.difference and item.difference.exact:
+        numerator, _, denominator = item.difference.exact.partition("/")
+        try:
+            return abs(Fraction(int(numerator), int(denominator or "1")))
+        except (ValueError, ZeroDivisionError):
+            return Fraction(-1)
+    return Fraction(-1)
+
+
+_RANK_ORDER: Final = {"FAIL": 0, "REVIEW_REQUIRED": 1, "NOT_FOUND": 2, "NO_APPLICABLE_RULE": 3}
+_SEVERITY_ORDER: Final = {"critical": 0, "major": 1, "minor": 2}
+
+
+def _rank_key(item: CountertopRecord | FindingRecord) -> tuple[int, int, Fraction, int, int]:
+    pages = (item.page_number,) if isinstance(item, CountertopRecord) else item.pages
+    size = Fraction(-1) if _architect_open(item) else _difference_size(item)
+    return (
+        _RANK_ORDER.get(_open_outcome(item) or "", 4),
+        _SEVERITY_ORDER.get((item.severity or "").casefold(), 3),
+        -size,
+        0 if pages else 1,
+        pages[0] if pages else 0,
+    )
+
+
+def ranked(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]:
+    """What needs the reviewer, in code's order (it judges nothing):
+
+    1. by the outcome that needs the reviewer (its own, or its architect check's when only that
+       is open): needs correction, then held, then waiting on a value, then no check result;
+    2. within an outcome, by the rulebook's severity (critical, major, minor, unknown);
+    3. then by the size of the difference, largest first (a result without one comes after);
+    4. then results on a page before page-less ones, by page.
+    So an other check's failure ranks with the countertop failures of the same severity, after
+    those with a difference, never after every countertop failure by default.
+    """
+    return sorted(_waiting(snapshot), key=_rank_key)
+
+
+def needs_you_answer(
+    snapshot: ReviewSnapshot, *, lead: str | None = None, about_deciding: bool = False
+) -> Draft:
+    """The sign-off status and one sentence naming where to start, in code's order.
+
+    The `blockers` evidence lists everything that needs the reviewer, so the text names only the
+    first item (with the reason it comes first) and its countertop card; it never repeats the
+    list. The answer to "which look most worrying?" and "where do I start?", and the default when
+    a free answer could not be checked (`lead` says so).
+    """
+    sentences = [lead] if lead else []
+    if not snapshot.checks_have_run:
+        return Draft(text=" ".join([*sentences, NOTHING_HAS_RUN]), evidence=("blockers",))
+    order = ranked(snapshot)
+    sentences.append("{signoff.status}.")
+    if not order:
+        if about_deciding:
+            sentences.append(YOUR_DECISION)
+        return Draft(text=" ".join(sentences), evidence=("blockers",))
+    first = order[0]
+    subject = _subject(snapshot, first)
+    start = f"Start with {subject[:1].lower()}{subject[1:]}: it {{{first.id}.outcome}}"
+    why = _why(snapshot, first)
+    sentences.append(f"{start}; {why}." if why else f"{start}.")
+    if snapshot.readiness.can_sign_off and all(item.outcome is None for item in order):
+        sentences.append(UNCHECKED_DO_NOT_BLOCK)
+    if about_deciding:
+        sentences.append(YOUR_DECISION)
+    card = (first.id,) if first.id.startswith("C") else ()
+    return Draft(
+        text=" ".join(sentences),
+        evidence=(*card, "blockers"),
+        actions=(("open_queue_item", first.id),),
     )
 
 
@@ -422,6 +566,8 @@ def answer_for_question(
         return _notes_answer(snapshot, no_countertop=True)
     if page is None and _NOT_CHECKED.search(folded):
         return _notes_answer(snapshot, no_countertop=False)
+    if page is None and RANKING.search(folded):
+        return needs_you_answer(snapshot)
     if page is None and _BLOCKERS.search(folded):
         return blockers_answer(snapshot)
     if page is not None:
@@ -502,12 +648,16 @@ def fallback_answer(
     cited: Sequence[str] = (),
     focus: Focus | None = None,
 ) -> Draft:
-    """What replaces a dropped model answer: the question's own records-only answer (details, a
-    fix, a term, a page), else the records the model named, else the focus, else a plain
-    statement that nothing could be checked."""
+    """What replaces a refused or failed model answer: never a dead end.
+
+    The question's own code answer when there is one (a page or the focus record, details, a
+    fix, a term, what blocks sign-off); otherwise what needs the reviewer, failures first, after
+    one line saying the free answer could not be checked. `cited` (the records the refused answer
+    named) is not trusted to choose the answer.
+    """
+    del cited
     return (
         answer_for_question(snapshot, question, focus)
-        or records_answer(snapshot, [short_id for short_id in cited if short_id[:1] in "CF"])
         or _focus_answer(snapshot, focus)
-        or Draft(text=NO_ANSWER_IN_RECORDS)
+        or needs_you_answer(snapshot, lead=COULD_NOT_CHECK)
     )

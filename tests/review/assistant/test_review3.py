@@ -157,7 +157,10 @@ def test_sign_off_with_an_unchecked_countertop_never_lists_it_as_a_blocker() -> 
     text = publish(
         blockers_answer(review), review, mode="records_only", question="q", checked=True
     ).text
-    assert text == "You can sign off. 1 countertop was not checked."
+    assert text == (
+        "You can sign off. 1 countertop was not checked. Countertops with no check result do not "
+        "hold up sign-off."
+    )
     assert _text("{count.needs_you}.", review) == "No finding needs your decision."
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
 from typing import Final, Literal, Protocol
 from uuid import UUID
 
@@ -195,6 +196,8 @@ class CountertopRecord(_Frozen):
     decision: DecisionRecord | None
     rule: RuleRecord | None
     architect: ArchitectRecord | None
+    severity: str | None = None
+    """The width check's severity from the rulebook, when it ran."""
 
 
 class FindingRecord(_Frozen):
@@ -211,6 +214,7 @@ class FindingRecord(_Frozen):
     values: tuple[str, ...]
     pages: tuple[int, ...]
     decision: DecisionRecord | None
+    severity: str | None = None
 
 
 class PageNoteRecord(_Frozen):
@@ -407,6 +411,11 @@ def _countertop(
         ),
         rule=_rule(None if item.finding_id is None else facts.get(str(item.finding_id))),
         architect=_architect(item),
+        severity=(
+            None
+            if item.finding_id is None or str(item.finding_id) not in facts
+            else facts[str(item.finding_id)].severity
+        ),
     )
 
 
@@ -414,6 +423,23 @@ def _pages(finding: ComposerFinding) -> tuple[int, ...]:
     return tuple(
         sorted({int(page) for page in finding.evidence_pages if page.isdigit() and int(page) > 0})
     )
+
+
+_CAP_ORDER: Final[Mapping[str | None, int]] = {
+    "FAIL": 0,
+    "REVIEW_REQUIRED": 1,
+    "NOT_FOUND": 2,
+    "NO_APPLICABLE_RULE": 3,
+}
+
+
+def _size(value: ExactValueOut | None) -> Fraction:
+    if value is None:
+        return Fraction(-1)
+    try:
+        return abs(Fraction(int(value.numerator), int(value.denominator)))
+    except (ValueError, ZeroDivisionError):
+        return Fraction(-1)
 
 
 def build_snapshot(
@@ -429,10 +455,15 @@ def build_snapshot(
     blocking = {str(identity) for identity in readiness.blocking_finding_ids}
 
     # Records that need the reviewer first, then page order: the cap never hides a blocker first.
+    # Records that need the reviewer first, and among them the ones the assistant would name
+    # first (failures, largest difference first; `records_only.ranked` orders the kept ones the
+    # same way), so a cap never drops the item an answer starts with.
     ordered = sorted(
         countertops.items,
         key=lambda item: (
             not (item.needs_decision or item.architect.needs_decision),
+            _CAP_ORDER.get(None if item.outcome is None else item.outcome.value, 4),
+            -_size(item.delta),
             item.page_number,
         ),
     )
@@ -475,6 +506,7 @@ def build_snapshot(
             ),
             pages=_pages(finding),
             decision=_from_effective(decisions.get(UUID(finding.key))),
+            severity=finding.severity,
         )
         for index, finding in enumerate(others[:MAX_FINDINGS], start=1)
     )
