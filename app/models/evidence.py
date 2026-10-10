@@ -865,3 +865,49 @@ class LayoutConfirmation(Base, TimestampedUUID, Immutable):
             name="layout_confirmation_actor_not_blank",
         ),
     )
+
+
+#: What an `ArchitectPageNote` says, a closed set (#1163): why the architect reader read nothing on
+#: a page or left something out of every view.
+ARCHITECT_PAGE_NOTE_KINDS: tuple[str, ...] = (
+    "no_view_found",
+    "title_not_view",
+    "stamp_not_drawing",
+    "ink_outside_views",
+    "view_refused",
+    "page_unreadable",
+)
+
+
+class ArchitectPageNote(Base, TimestampedUUID, Immutable):
+    """Why the architect reader read nothing on a page, or what it left out and why (#1163).
+
+    **Never silent.** A page of the architect's own file with no view, a stamp that holds no
+    drawing, ink left out of every view (a drawing joined to the sheet's border, notes beside a
+    view, a title block), a view refused because the stored view of its number sits elsewhere on
+    the page, a page that could not be read: each is a row here, under the run that read it, so a
+    later phase and the reviewer can show it. Nothing reads a value from it. Append-only.
+    """
+
+    __tablename__ = "architect_page_notes"
+
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="RESTRICT"), index=True
+    )
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    """One of `ARCHITECT_PAGE_NOTE_KINDS`."""
+    text: Mapped[str] = mapped_column(String(500))
+    """The note in plain words, as the reader wrote it (cut to 500 characters)."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('no_view_found', 'title_not_view', 'stamp_not_drawing', "
+            "'ink_outside_views', 'view_refused', 'page_unreadable')",
+            name="architect_page_note_kind",
+        ),
+        CheckConstraint("text !~ '^[[:space:]]*$'", name="architect_page_note_text_present"),
+    )
