@@ -1701,6 +1701,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/usage/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read all AI spending so far: this project's calls and earlier runs */
+        get: operations["project_usage_history_api_v1_projects__project_id__usage_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rules": {
         parameters: {
             query?: never;
@@ -3081,6 +3098,37 @@ export interface components {
             why_not: string | null;
         };
         /**
+         * EarlierRunOut
+         * @description One day's earlier calls for one purpose, from `ai_spend_history`.
+         */
+        EarlierRunOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /**
+             * Day
+             * Format: date
+             * @description The UTC day the calls were made.
+             */
+            day: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Models */
+            models: string[];
+            /** Output Tokens */
+            output_tokens: number;
+            /**
+             * Purpose
+             * @enum {string}
+             */
+            purpose: "reading" | "row-choice" | "chat" | "assistant" | "bake-off" | "other";
+            /** Source Label */
+            source_label: string;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /**
          * EndIn
          * @description A point in stored page space, sent as exact text, such as one `left_end` from the list.
          */
@@ -3757,6 +3805,30 @@ export interface components {
              */
             values?: string[] | null;
         };
+        /**
+         * ModelSpendOut
+         * @description One model through one provider route, over this project's calls and the earlier runs.
+         */
+        ModelSpendOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Model */
+            model: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /**
+             * Route
+             * @description Which provider the calls went through, as far as the records show. `unknown` when they do not say (the Claude readers went through Anthropic's API, later OpenRouter).
+             * @enum {string}
+             */
+            route: "bedrock" | "openrouter" | "anthropic" | "unknown";
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
         /** ModelUsageOut */
         ModelUsageOut: {
             /** Calls */
@@ -4411,6 +4483,34 @@ export interface components {
          * @enum {string}
          */
         Provenance: "G.C / Client" | "Company standard" | "Measured" | "Fabricator";
+        /**
+         * ProviderCheckOut
+         * @description What the provider itself reports as spent, read when the page asks (free, read-only).
+         */
+        ProviderCheckOut: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /**
+             * Provider
+             * @constant
+             */
+            provider: "openrouter";
+            /**
+             * Scope
+             * @description `account`: the whole account's usage; `key`: only this key's; null if none.
+             */
+            scope: ("account" | "key") | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "unavailable";
+            /** Used Usd */
+            used_usd: string | null;
+        };
         /**
          * PublicationOut
          * @description What was published, by whom, and on what basis.
@@ -5319,6 +5419,23 @@ export interface components {
             value: string;
         };
         /**
+         * SpendTotalsOut
+         * @description Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how
+         *     many had no recorded price, so the real cost is higher whenever it is not zero.
+         */
+        SpendTotalsOut: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: string;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Unpriced Calls */
+            unpriced_calls: number;
+        };
+        /**
          * StoredList
          * @description One many-valued input as stored, in layout order.
          */
@@ -5521,6 +5638,34 @@ export interface components {
             package_id?: string | null;
             /** Unpriced Calls */
             unpriced_calls: number;
+        };
+        /**
+         * UsageHistoryOut
+         * @description All AI spending so far for the project (#1165): its own calls plus earlier runs.
+         *
+         *     Not filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls
+         *     tied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.
+         *     A failed call that used no tokens counts as cost 0 (it was not charged), never as unpriced.
+         */
+        UsageHistoryOut: {
+            /**
+             * By Model
+             * @description Per model and route over both, most expensive first.
+             */
+            by_model: components["schemas"]["ModelSpendOut"][];
+            earlier: components["schemas"]["SpendTotalsOut"];
+            /**
+             * Earlier Runs
+             * @description The imported history by day, purpose and source, newest first.
+             */
+            earlier_runs: components["schemas"]["EarlierRunOut"][];
+            /**
+             * Provider Checks
+             * @description Provider-reported totals; empty when no check is configured.
+             */
+            provider_checks: components["schemas"]["ProviderCheckOut"][];
+            this_project: components["schemas"]["SpendTotalsOut"];
+            totals: components["schemas"]["SpendTotalsOut"];
         };
         /** UsageOut */
         UsageOut: {
@@ -8300,6 +8445,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    project_usage_history_api_v1_projects__project_id__usage_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageHistoryOut"];
                 };
             };
             /** @description Validation Error */

@@ -2748,6 +2748,73 @@
         "title": "DrawingOut",
         "type": "object"
       },
+      "EarlierRunOut": {
+        "description": "One day's earlier calls for one purpose, from `ai_spend_history`.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "day": {
+            "description": "The UTC day the calls were made.",
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "purpose": {
+            "enum": [
+              "reading",
+              "row-choice",
+              "chat",
+              "assistant",
+              "bake-off",
+              "other"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls",
+          "day",
+          "purpose",
+          "source_label",
+          "models"
+        ],
+        "title": "EarlierRunOut",
+        "type": "object"
+      },
       "EndIn": {
         "description": "A point in stored page space, sent as exact text, such as one `left_end` from the list.",
         "properties": {
@@ -4230,6 +4297,57 @@
         "title": "MeasurementEntry",
         "type": "object"
       },
+      "ModelSpendOut": {
+        "description": "One model through one provider route, over this project's calls and the earlier runs.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "route": {
+            "description": "Which provider the calls went through, as far as the records show. `unknown` when they do not say (the Claude readers went through Anthropic's API, later OpenRouter).",
+            "enum": [
+              "bedrock",
+              "openrouter",
+              "anthropic",
+              "unknown"
+            ],
+            "title": "Route",
+            "type": "string"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls",
+          "model",
+          "route"
+        ],
+        "title": "ModelSpendOut",
+        "type": "object"
+      },
       "ModelUsageOut": {
         "properties": {
           "calls": {
@@ -5522,6 +5640,65 @@
         ],
         "title": "Provenance",
         "type": "string"
+      },
+      "ProviderCheckOut": {
+        "description": "What the provider itself reports as spent, read when the page asks (free, read-only).",
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "provider": {
+            "const": "openrouter",
+            "title": "Provider",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "account",
+                  "key"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`account`: the whole account's usage; `key`: only this key's; null if none.",
+            "title": "Scope"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "used_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used Usd"
+          }
+        },
+        "required": [
+          "provider",
+          "status",
+          "scope",
+          "used_usd",
+          "checked_at"
+        ],
+        "title": "ProviderCheckOut",
+        "type": "object"
       },
       "PublicationOut": {
         "additionalProperties": false,
@@ -7407,6 +7584,40 @@
         "title": "SourceOut",
         "type": "object"
       },
+      "SpendTotalsOut": {
+        "description": "Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how\nmany had no recorded price, so the real cost is higher whenever it is not zero.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "input_tokens",
+          "output_tokens",
+          "cost_usd",
+          "unpriced_calls"
+        ],
+        "title": "SpendTotalsOut",
+        "type": "object"
+      },
       "StoredList": {
         "description": "One many-valued input as stored, in layout order.",
         "properties": {
@@ -7839,6 +8050,54 @@
           "models"
         ],
         "title": "UsageGroupOut",
+        "type": "object"
+      },
+      "UsageHistoryOut": {
+        "description": "All AI spending so far for the project (#1165): its own calls plus earlier runs.\n\nNot filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls\ntied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.\nA failed call that used no tokens counts as cost 0 (it was not charged), never as unpriced.",
+        "properties": {
+          "by_model": {
+            "description": "Per model and route over both, most expensive first.",
+            "items": {
+              "$ref": "#/components/schemas/ModelSpendOut"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "earlier": {
+            "$ref": "#/components/schemas/SpendTotalsOut"
+          },
+          "earlier_runs": {
+            "description": "The imported history by day, purpose and source, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/EarlierRunOut"
+            },
+            "title": "Earlier Runs",
+            "type": "array"
+          },
+          "provider_checks": {
+            "description": "Provider-reported totals; empty when no check is configured.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderCheckOut"
+            },
+            "title": "Provider Checks",
+            "type": "array"
+          },
+          "this_project": {
+            "$ref": "#/components/schemas/SpendTotalsOut"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/SpendTotalsOut"
+          }
+        },
+        "required": [
+          "totals",
+          "this_project",
+          "earlier",
+          "by_model",
+          "earlier_runs",
+          "provider_checks"
+        ],
+        "title": "UsageHistoryOut",
         "type": "object"
       },
       "UsageOut": {
@@ -13197,6 +13456,49 @@
           }
         },
         "summary": "Read project AI usage",
+        "tags": [
+          "visual reviewer"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/usage/history": {
+      "get": {
+        "operationId": "project_usage_history_api_v1_projects__project_id__usage_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageHistoryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read all AI spending so far: this project's calls and earlier runs",
         "tags": [
           "visual reviewer"
         ]

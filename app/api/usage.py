@@ -9,13 +9,16 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Subquery
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
+from app.config import Settings
 from app.models import (
+    AiSpendHistory,
     ExtractionRun,
     ModelInvocation,
     Package,
@@ -26,14 +29,21 @@ from app.models import (
     WorkflowRun,
 )
 from app.models.runs import made_a_call
+from app.provider_usage import OpenRouterUsageCheck, ProviderCheck
 from app.schemas.visual_ui import (
+    EarlierRunOut,
+    ModelSpendOut,
     ModelUsageOut,
     PackageReadingTimeOut,
+    ProviderCheckOut,
     ReadingTimeOut,
+    SpendTotalsOut,
     UsageGroupOut,
+    UsageHistoryOut,
     UsageOut,
     UsageTotalsOut,
 )
+from app.usage_history import PURPOSES, charged_cost_micros, infer_route
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -163,6 +173,24 @@ def _reading_times(
     return tuple(sorted(readings, key=lambda item: (item.started_at, str(item.revision_id))))
 
 
+def _invocation_revision() -> Subquery:
+    """Each call's package revision: its own, or its extraction run's (chat and assistant calls
+    carry their own; reading calls reach it through the run)."""
+    return (
+        select(
+            ModelInvocation.id.label("invocation_id"),
+            func.coalesce(
+                ModelInvocation.package_revision_id, WorkflowRun.package_revision_id
+            ).label("revision_id"),
+        )
+        .select_from(ModelInvocation)
+        .outerjoin(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
+        .outerjoin(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .outerjoin(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .subquery()
+    )
+
+
 def _usd(micros: int) -> str:
     return format((Decimal(micros) / Decimal(1_000_000)).quantize(Decimal("0.000001")), "f")
 
@@ -186,19 +214,7 @@ def project_usage(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="from must be before to"
         )
-    invocation_revision = (
-        select(
-            ModelInvocation.id.label("invocation_id"),
-            func.coalesce(
-                ModelInvocation.package_revision_id, WorkflowRun.package_revision_id
-            ).label("revision_id"),
-        )
-        .select_from(ModelInvocation)
-        .outerjoin(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
-        .outerjoin(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
-        .outerjoin(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
-        .subquery()
-    )
+    invocation_revision = _invocation_revision()
     base = (
         select(
             ModelInvocation.created_at,
@@ -319,4 +335,169 @@ def project_usage(
     )
 
 
-__all__ = ["project_usage", "router"]
+@dataclass(slots=True)
+class _Tally:
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_micros: int = 0
+    unpriced_calls: int = 0
+
+    def add(self, other: _Tally) -> None:
+        self.calls += other.calls
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.cost_micros += other.cost_micros
+        self.unpriced_calls += other.unpriced_calls
+
+    def out(self) -> SpendTotalsOut:
+        return SpendTotalsOut(
+            calls=self.calls,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cost_usd=_usd(self.cost_micros),
+            unpriced_calls=self.unpriced_calls,
+        )
+
+
+def provider_usage_check(request: Request) -> OpenRouterUsageCheck | None:
+    """OpenRouter's own usage total, when a key is set and the check is not switched off.
+
+    One checker per app, so its five-minute memory is shared by every request. A dependency, so a
+    test replaces it with a fake transport (no request ever leaves a test).
+    """
+    settings: Settings = request.app.state.settings
+    key = settings.openrouter_api_key
+    value = None if key is None else key.get_secret_value()
+    if not settings.usage_provider_check or not value or not value.strip():
+        return None
+    existing = getattr(request.app.state, "openrouter_usage_check", None)
+    if isinstance(existing, OpenRouterUsageCheck):
+        return existing
+    check = OpenRouterUsageCheck(value.strip())
+    request.app.state.openrouter_usage_check = check
+    return check
+
+
+@router.get(
+    "/projects/{project_id}/usage/history",
+    response_model=UsageHistoryOut,
+    summary="Read all AI spending so far: this project's calls and earlier runs",
+)
+def project_usage_history(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
+    session: Annotated[Session, Depends(get_session)],
+    provider_check: Annotated[OpenRouterUsageCheck | None, Depends(provider_usage_check)],
+    project_id: UUID,
+) -> UsageHistoryOut:
+    del principal
+    invocation_revision = _invocation_revision()
+    calls = session.execute(
+        select(
+            ModelInvocation.model_id,
+            ModelInvocation.prompt_id,
+            ModelInvocation.input_tokens,
+            ModelInvocation.output_tokens,
+            ModelInvocation.cost_micros,
+            ModelInvocation.outcome,
+        )
+        .select_from(ModelInvocation)
+        .join(invocation_revision, invocation_revision.c.invocation_id == ModelInvocation.id)
+        .join(PackageRevision, PackageRevision.id == invocation_revision.c.revision_id)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(Package.project_id == project_id)
+        .where(made_a_call())
+    ).all()
+    by_model: dict[tuple[str, str], _Tally] = defaultdict(_Tally)
+    this_project = _Tally()
+    for call in calls:
+        cost = charged_cost_micros(
+            call.cost_micros, call.outcome, call.input_tokens, call.output_tokens
+        )
+        tally = _Tally(
+            calls=1,
+            input_tokens=call.input_tokens,
+            output_tokens=call.output_tokens,
+            cost_micros=cost or 0,
+            unpriced_calls=int(cost is None),
+        )
+        this_project.add(tally)
+        by_model[(call.model_id, infer_route(call.model_id, call.prompt_id))].add(tally)
+
+    history = session.scalars(
+        select(AiSpendHistory).where(AiSpendHistory.project_id == project_id)
+    ).all()
+    earlier = _Tally()
+    runs: dict[tuple[date, str, str], tuple[_Tally, set[str]]] = {}
+    for row in history:
+        tally = _Tally(
+            calls=row.calls,
+            input_tokens=row.input_tokens,
+            output_tokens=row.output_tokens,
+            cost_micros=row.cost_micros,
+            unpriced_calls=row.unpriced_calls,
+        )
+        earlier.add(tally)
+        by_model[(row.model_id, row.route)].add(tally)
+        run_tally, models = runs.setdefault(
+            (row.occurred_on, row.purpose, row.source_label), (_Tally(), set())
+        )
+        run_tally.add(tally)
+        models.add(row.model_id)
+
+    totals = _Tally()
+    totals.add(this_project)
+    totals.add(earlier)
+    purpose_order: dict[str, int] = {purpose: index for index, purpose in enumerate(PURPOSES)}
+    return UsageHistoryOut.model_validate(
+        {
+            "totals": totals.out(),
+            "this_project": this_project.out(),
+            "earlier": earlier.out(),
+            "by_model": tuple(
+                ModelSpendOut.model_validate(
+                    {**tally.out().model_dump(), "model": model, "route": route}
+                )
+                for (model, route), tally in sorted(
+                    by_model.items(),
+                    key=lambda item: (-item[1].cost_micros, -item[1].calls, item[0]),
+                )
+            ),
+            "earlier_runs": tuple(
+                EarlierRunOut.model_validate(
+                    {
+                        **tally.out().model_dump(),
+                        "day": day,
+                        "purpose": purpose,
+                        "source_label": label,
+                        "models": tuple(sorted(models)),
+                    }
+                )
+                for (day, purpose, label), (tally, models) in sorted(
+                    runs.items(),
+                    key=lambda item: (
+                        -item[0][0].toordinal(),
+                        purpose_order.get(item[0][1], len(purpose_order)),
+                        item[0][2],
+                    ),
+                )
+            ),
+            "provider_checks": (
+                () if provider_check is None else (_provider_check_out(provider_check.check()),)
+            ),
+        }
+    )
+
+
+def _provider_check_out(check: ProviderCheck) -> ProviderCheckOut:
+    return ProviderCheckOut(
+        provider="openrouter",
+        status=check.status,
+        scope=check.scope,
+        used_usd=check.used_usd,
+        checked_at=check.checked_at,
+    )
+
+
+__all__ = ["project_usage", "project_usage_history", "provider_usage_check", "router"]
