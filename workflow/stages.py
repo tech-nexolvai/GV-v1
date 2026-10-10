@@ -2228,7 +2228,7 @@ class DatabaseStages:
                                 page.index,
                                 settings=settings,
                                 dpi=self._dpi,
-                                architect_document=architect_document,
+                                on_architect_file=architect_document,
                             ),
                         )
                     )

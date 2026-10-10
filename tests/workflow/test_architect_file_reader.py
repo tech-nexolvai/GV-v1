@@ -418,7 +418,7 @@ def test_a_renumbered_view_never_reuses_another_drawings_stored_view(
         dpi=150,
     )
     reading = read_architect_page(
-        data, 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150, architect_document=True
+        data, 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150, on_architect_file=True
     )
 
     counts = persist_architect_pages(

@@ -1,6 +1,6 @@
 """Reading the architect's own file: drawings printed as the page's content, view by view (#1163).
 
-Verification for: `extraction/architect/reader.read_architect_page(architect_document=True)`,
+Verification for: `extraction/architect/reader.read_architect_page(on_architect_file=True)`,
 `extraction/architect/page_views.find_page_views`, `extraction/architect/views.judge_by_document`
 and the reader on a page whose media box does not start at (0, 0). The sheets are
 `architect_sheet.py`'s, invented; no client value appears here.
@@ -39,7 +39,7 @@ SETTINGS = MEASURED_ARCHITECT_SETTINGS
 
 def _read(data: bytes, *, architect_document: bool = True) -> ArchitectPage:
     return read_architect_page(
-        data, 0, settings=SETTINGS, dpi=150, architect_document=architect_document
+        data, 0, settings=SETTINGS, dpi=150, on_architect_file=architect_document
     )
 
 
