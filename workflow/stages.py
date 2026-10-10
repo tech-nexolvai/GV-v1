@@ -82,6 +82,7 @@ from app.models.document import (
 )
 from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole, ViewRoleProposal
 from app.models.evidence import (
+    ArchitectPageNote,
     EvidenceArtifact,
     EvidenceArtifactKind,
     ObservationCandidate,
@@ -283,6 +284,7 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
+from workflow.architect_page_notes import PAGE_UNREADABLE, record_architect_page_note
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
     ArchitectPageInput,
@@ -291,7 +293,7 @@ from workflow.architect_pairing import (
     architect_page_input,
     persist_architect_pairings,
 )
-from workflow.architect_pairing_records import architect_views
+from workflow.architect_pairing_records import architect_view_tags, architect_views
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
@@ -2133,12 +2135,15 @@ class DatabaseStages:
         if self._architect_reader is not None:
             # Before the readers that use the drawings' roles, so a role code confirms here is the
             # one the slot reader's architect filter reads.
-            self._read_architect_drawings(
+            architect = self._read_architect_drawings(
                 session,
                 package_revision_id=package_revision_id,
                 verified_data=verified_data,
                 task_run_id=task_run.id,
             )
+            # Never silent (#1163): each page's architect notes — views found without a role,
+            # views refused, why no view was found — travel with that page's result.
+            results = _with_architect_notes(results, architect)
         if self._form_reader is not None:
             for version in _shop_document_versions_for(session, package_revision_id):
                 shop_data = verified_data.get(version)
@@ -2160,7 +2165,14 @@ class DatabaseStages:
         verified_data: Mapping[UUID, bytes],
         task_run_id: UUID,
     ) -> dict[str, object]:
-        """Read the architect's drawing on every page of the shop upload, by code (#1052).
+        """Read the architect's drawings by code: on every page of the shop upload (#1052), and on
+        every page of an architectural upload whose bytes are not the shop file's (#1163).
+
+        On the shop file only drawings pasted onto the vendor's sheets are read, each role from its
+        heading and content. The architect's own file is read with `architect_document`: a pasted
+        drawing there, or a view drawn as the page's own content, is the architect's when the
+        document's kind and the drawing's content agree. Matching its views with the vendor's
+        (Phase 3) is not done here: the values are stored for it.
 
         A same-file package — the same bytes uploaded as both drawings (#963) — is one combined set
         whose upload slots say nothing about either drawing, and gets no architect values at all.
@@ -2175,7 +2187,9 @@ class DatabaseStages:
             }
         config = hashlib.sha256(repr(settings).encode()).hexdigest()[:16]
         payload: dict[str, object] = {}
-        for version in _shop_document_versions_for(session, package_revision_id):
+        for version, architect_document in _architect_reader_versions_for(
+            session, package_revision_id
+        ):
             data = verified_data.get(version)
             if data is None:
                 continue
@@ -2185,15 +2199,24 @@ class DatabaseStages:
                 )
             )
             readings: list[tuple[Page, ArchitectPage]] = []
+            unreadable: list[tuple[Page, str]] = []
             for page in pages:
                 try:
                     readings.append(
                         (
                             page,
-                            read_architect_page(data, page.index, settings=settings, dpi=self._dpi),
+                            read_architect_page(
+                                data,
+                                page.index,
+                                settings=settings,
+                                dpi=self._dpi,
+                                on_architect_file=architect_document,
+                            ),
                         )
                     )
-                except UnreadablePdf:
+                except UnreadablePdf as error:
+                    # Skipped, never guessed at, and never silent (#1163): said below.
+                    unreadable.append((page, str(error)))
                     continue
             run = open_extraction_run(
                 session,
@@ -2204,8 +2227,35 @@ class DatabaseStages:
                 dpi=self._dpi,
             )
             counts = persist_architect_pages(
-                session, document_version_id=version, extraction_run_id=run.id, pages=readings
+                session,
+                document_version_id=version,
+                extraction_run_id=run.id,
+                pages=readings,
+                architect_document=architect_document,
             )
+            already_noted = set(
+                session.scalars(
+                    select(ArchitectPageNote.page_id).where(
+                        ArchitectPageNote.extraction_run_id == run.id,
+                        ArchitectPageNote.kind == PAGE_UNREADABLE,
+                    )
+                )
+            )
+            for page, why in unreadable:
+                if page.id in already_noted:
+                    continue  # a redelivered stage noted it already
+                text = f"the architect reader could not read this page: {why}"
+                record_architect_page_note(
+                    session,
+                    extraction_run_id=run.id,
+                    document_version_id=version,
+                    page_id=page.id,
+                    kind=PAGE_UNREADABLE,
+                    text=text,
+                )
+                counts.page_notes.append(
+                    {"page_index": page.index, "kind": PAGE_UNREADABLE, "note": text}
+                )
             payload[str(version)] = vars(counts)
             # The pairing (#1053) takes the reading with the exact candidates just stored, and only
             # the drawings whose role is the architect's now (code's or a person's).
@@ -2216,6 +2266,7 @@ class DatabaseStages:
                     reading,
                     page_id=page.id,
                     architect_views=architect_views(session, page.id),
+                    architect_tags=architect_view_tags(session, page.id),
                     candidate_ids=stored.get(page.id, {}),
                     architect_run_id=run.id,
                 )
@@ -7566,6 +7617,61 @@ def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> 
         .scalars()
         .all()
     )
+
+
+def _with_architect_notes(
+    results: Sequence[PageResult], architect: Mapping[str, object]
+) -> list[PageResult]:
+    """`results` with each page's architect-reader notes (`ArchitectCounts` lists) in its payload."""
+    noted: list[PageResult] = []
+    for result in results:
+        counts = architect.get(str(result.payload.get("document_version_id")))
+        page_index = result.payload.get("document_page_index")
+        notes: dict[str, list[object]] = {}
+        if isinstance(counts, Mapping):
+            for key in ("views_without_role", "refused_views", "page_notes"):
+                entries = counts.get(key)
+                if isinstance(entries, list):
+                    mine: list[object] = [
+                        entry
+                        for entry in entries
+                        if isinstance(entry, Mapping) and entry.get("page_index") == page_index
+                    ]
+                    if mine:
+                        notes[key] = mine
+        noted.append(
+            result if not notes else replace(result, payload={**result.payload, "architect": notes})
+        )
+    return noted
+
+
+def _architect_reader_versions_for(
+    session: Session, package_revision_id: UUID
+) -> tuple[tuple[UUID, bool], ...]:
+    """The documents the architect reader reads, each with whether it is the architect's own file.
+
+    The shop slot(s), read for drawings pasted onto the vendor's sheets (`False`), and every
+    architectural slot whose bytes are not any shop slot's (`True`, #1163): the architect's drawings
+    uploaded as their own file. An architectural slot holding the shop file's own bytes is the same
+    combined set, never read twice.
+    """
+    rows = session.execute(
+        select(PackageRevisionDocument.document_version_id, Document.kind, DocumentVersion.sha256)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(PackageRevisionDocument.document_version_id)
+    ).all()
+    shop_bytes = {str(sha) for _version, kind, sha in rows if str(kind) == DocumentKind.SHOP.value}
+    shop = [
+        (version, False) for version, kind, _sha in rows if str(kind) == DocumentKind.SHOP.value
+    ]
+    architectural = [
+        (version, True)
+        for version, kind, sha in rows
+        if str(kind) == DocumentKind.ARCHITECTURAL.value and str(sha) not in shop_bytes
+    ]
+    return (*shop, *architectural)
 
 
 def _whole_page_fallback_enabled(slot_reader: object | None) -> bool:

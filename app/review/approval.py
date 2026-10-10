@@ -54,7 +54,7 @@ from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
 from evidence.canonical import EvidenceStatus
 from rules.parameters import ParameterLayer
-from workflow.view_roles import CODE_CONFIRMER, CODE_CONTENT_CONFIRMER
+from workflow.view_roles import CODE_CONFIRMERS
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
 
@@ -212,7 +212,7 @@ INPUTS_CHANGED_NEEDS_RERUN = (
 
 
 #: Who records a drawing's role when code, not a person, decided it (`workflow/view_roles.py`).
-_CODE_CONFIRMERS = (CODE_CONFIRMER, CODE_CONTENT_CONFIRMER)
+_CODE_CONFIRMERS = tuple(sorted(CODE_CONFIRMERS))
 
 
 def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
