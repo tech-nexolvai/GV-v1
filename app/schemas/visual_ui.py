@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.row_location import RowLocation
+from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome
 
@@ -130,37 +131,6 @@ ArchitectMatchStatus = Literal[
 `not_matched_yet`: the file was indexed, but this row has no match record (an older run)."""
 
 
-class ArchitectViewRefOut(BaseModel):
-    """One view of the architect's own file (#1168), wherever a screen or a report points at it.
-
-    Same fields as the reviewer picker's (`app/schemas/architect_matches.py`, #1166): when both
-    are merged, one of them should import the other so the API has a single definition.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    view_id: UUID
-    document_id: UUID
-    document_version_id: UUID
-    file_name: str
-    page_number: int = Field(description="1-based, as a person counts pages.")
-    sheet_number: str | None
-    bubble: str | None
-    title: str | None
-    scale_note: str | None
-    label: str = Field(description="How a person names it: page, view, title and sheet.")
-    region: RowLocation | None = Field(
-        description="The view's extent on its page, in stored space; null when not stored."
-    )
-    picture_url: str | None = Field(
-        description="The stored picture of the view; null when none was rendered."
-    )
-    separated: bool = Field(
-        description="False when the view is not clearly apart from its neighbour: its dimensions "
-        "were not read."
-    )
-
-
 class ArchitectAiPickOut(BaseModel):
     """What one AI answered when asked which of the architect's views shows the countertop."""
 
@@ -235,6 +205,14 @@ class ArchitectResultOut(BaseModel):
             "The row's match with a view of the architect's own file (#1168). Null when the "
             "architect's drawing is on the vendor's sheet (a combined set) or the file was not "
             "indexed."
+        ),
+    )
+    can_pair: bool | None = Field(
+        default=None,
+        description=(
+            "Separate architect file only (#1168): whether the reviewer can pair this row's "
+            "dimensions in its matched view (the check's reason asks for a pairing). False means "
+            "the row is compared by hand or waits for a check run. Null on a combined sheet."
         ),
     )
     compared_with: ArchitectViewRefOut | None = Field(

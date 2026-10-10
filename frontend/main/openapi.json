@@ -687,7 +687,7 @@
           "matched_view": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/app__schemas__visual_ui__ArchitectViewRefOut"
+                "$ref": "#/components/schemas/ArchitectViewRefOut"
               },
               {
                 "type": "null"
@@ -1112,6 +1112,18 @@
       "ArchitectResultOut": {
         "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
         "properties": {
+          "can_pair": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Separate architect file only (#1168): whether the reviewer can pair this row's dimensions in its matched view (the check's reason asks for a pairing). False means the row is compared by hand or waits for a check run. Null on a combined sheet.",
+            "title": "Can Pair"
+          },
           "compared": {
             "default": [],
             "items": {
@@ -1123,7 +1135,7 @@
           "compared_with": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/app__schemas__visual_ui__ArchitectViewRefOut"
+                "$ref": "#/components/schemas/ArchitectViewRefOut"
               },
               {
                 "type": "null"
@@ -1402,7 +1414,7 @@
             "type": "boolean"
           },
           "view": {
-            "$ref": "#/components/schemas/app__schemas__architect_matches__ArchitectViewRefOut"
+            "$ref": "#/components/schemas/ArchitectViewRefOut"
           }
         },
         "required": [
@@ -1506,6 +1518,129 @@
           "expected_record_id"
         ],
         "title": "ArchitectViewPickIn",
+        "type": "object"
+      },
+      "ArchitectViewRefOut": {
+        "description": "One view of the architect's own file.",
+        "properties": {
+          "bubble": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bubble"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "label": {
+            "description": "How a person names it: page, view, title and sheet.",
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "description": "1-based, as a person counts pages.",
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "picture_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stored picture of the view; null when none was rendered.",
+            "title": "Picture Url"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RowLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The view's extent on its page, in stored space; null when not stored."
+          },
+          "scale_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scale Note"
+          },
+          "separated": {
+            "description": "False when the view is not clearly apart from its neighbour: its dimensions were not read.",
+            "title": "Separated",
+            "type": "boolean"
+          },
+          "sheet_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet Number"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "view_id": {
+            "format": "uuid",
+            "title": "View Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view_id",
+          "document_id",
+          "document_version_id",
+          "file_name",
+          "page_number",
+          "sheet_number",
+          "bubble",
+          "title",
+          "scale_note",
+          "label",
+          "region",
+          "picture_url",
+          "separated"
+        ],
+        "title": "ArchitectViewRefOut",
         "type": "object"
       },
       "AssemblyInput": {
@@ -8906,129 +9041,6 @@
         "title": "WallLayoutProposalOut",
         "type": "object"
       },
-      "app__schemas__architect_matches__ArchitectViewRefOut": {
-        "description": "One view of the architect's own file.",
-        "properties": {
-          "bubble": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bubble"
-          },
-          "document_id": {
-            "format": "uuid",
-            "title": "Document Id",
-            "type": "string"
-          },
-          "document_version_id": {
-            "format": "uuid",
-            "title": "Document Version Id",
-            "type": "string"
-          },
-          "file_name": {
-            "title": "File Name",
-            "type": "string"
-          },
-          "label": {
-            "description": "How a person names it: page, view, title and sheet.",
-            "title": "Label",
-            "type": "string"
-          },
-          "page_number": {
-            "description": "1-based, as a person counts pages.",
-            "title": "Page Number",
-            "type": "integer"
-          },
-          "picture_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The stored picture of the view; null when none was rendered.",
-            "title": "Picture Url"
-          },
-          "region": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RowLocation"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The view's extent on its page, in stored space; null when not stored."
-          },
-          "scale_note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scale Note"
-          },
-          "separated": {
-            "description": "False when the view is not clearly apart from its neighbour: its dimensions were not read.",
-            "title": "Separated",
-            "type": "boolean"
-          },
-          "sheet_number": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sheet Number"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "view_id": {
-            "format": "uuid",
-            "title": "View Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "view_id",
-          "document_id",
-          "document_version_id",
-          "file_name",
-          "page_number",
-          "sheet_number",
-          "bubble",
-          "title",
-          "scale_note",
-          "label",
-          "region",
-          "picture_url",
-          "separated"
-        ],
-        "title": "ArchitectViewRefOut",
-        "type": "object"
-      },
       "app__schemas__distribution__QuantityOut": {
         "description": "One exact dimension, rendered without a JSON float.",
         "properties": {
@@ -9119,129 +9131,6 @@
           "consumers"
         ],
         "title": "QuantityOut",
-        "type": "object"
-      },
-      "app__schemas__visual_ui__ArchitectViewRefOut": {
-        "description": "One view of the architect's own file (#1168), wherever a screen or a report points at it.\n\nSame fields as the reviewer picker's (`app/schemas/architect_matches.py`, #1166): when both\nare merged, one of them should import the other so the API has a single definition.",
-        "properties": {
-          "bubble": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bubble"
-          },
-          "document_id": {
-            "format": "uuid",
-            "title": "Document Id",
-            "type": "string"
-          },
-          "document_version_id": {
-            "format": "uuid",
-            "title": "Document Version Id",
-            "type": "string"
-          },
-          "file_name": {
-            "title": "File Name",
-            "type": "string"
-          },
-          "label": {
-            "description": "How a person names it: page, view, title and sheet.",
-            "title": "Label",
-            "type": "string"
-          },
-          "page_number": {
-            "description": "1-based, as a person counts pages.",
-            "title": "Page Number",
-            "type": "integer"
-          },
-          "picture_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The stored picture of the view; null when none was rendered.",
-            "title": "Picture Url"
-          },
-          "region": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RowLocation"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The view's extent on its page, in stored space; null when not stored."
-          },
-          "scale_note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scale Note"
-          },
-          "separated": {
-            "description": "False when the view is not clearly apart from its neighbour: its dimensions were not read.",
-            "title": "Separated",
-            "type": "boolean"
-          },
-          "sheet_number": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sheet Number"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          },
-          "view_id": {
-            "format": "uuid",
-            "title": "View Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "view_id",
-          "document_id",
-          "document_version_id",
-          "file_name",
-          "page_number",
-          "sheet_number",
-          "bubble",
-          "title",
-          "scale_note",
-          "label",
-          "region",
-          "picture_url",
-          "separated"
-        ],
-        "title": "ArchitectViewRefOut",
         "type": "object"
       }
     }

@@ -14,12 +14,8 @@ from uuid import UUID
 
 from openpyxl import load_workbook
 
-from app.schemas.visual_ui import (
-    ArchitectMatchOut,
-    ArchitectResultOut,
-    ArchitectViewRefOut,
-    CountertopResultOut,
-)
+from app.schemas.architect_matches import ArchitectViewRefOut
+from app.schemas.visual_ui import ArchitectMatchOut, ArchitectResultOut, CountertopResultOut
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import COUNTERTOP_COLUMNS, architect_line, write_stored_workbook
 from tests.reports.test_countertop_summary_reports import (
@@ -172,3 +168,21 @@ def test_the_workbook_has_the_match_state_and_the_view() -> None:
     assert COUNTERTOP_COLUMNS[-2:] == ("architect_match_status", "architect_compared_with")
     assert headers.index("architect_match_status") == headers.index("drawn_length") + 1
     assert headers.index("piece_1_in") > headers.index("architect_compared_with")
+
+
+def test_a_pick_waiting_for_a_run_says_so() -> None:
+    waiting = _choose().model_copy(
+        update={
+            "architect": _choose().architect.model_copy(
+                update={
+                    "match": _match("reviewer_confirmed", view=VIEW).model_copy(
+                        update={"waits_for_run": True, "source": "reviewer"}
+                    )
+                }
+            )
+        }
+    )
+    assert architect_line(waiting) == (
+        "Matches the architect: REVIEW_REQUIRED: Choose which of the architect's views shows this "
+        "countertop (one click). (waits for the next check run)"
+    )

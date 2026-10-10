@@ -2245,7 +2245,7 @@ export interface components {
              * @description Whose judgments the match rests on, in words; null while nothing is matched.
              */
             judgments: string | null;
-            matched_view: components["schemas"]["app__schemas__visual_ui__ArchitectViewRefOut"] | null;
+            matched_view: components["schemas"]["ArchitectViewRefOut"] | null;
             /**
              * Needs Decision
              * @description The reviewer still has to choose the view (status `needs_reviewer`).
@@ -2401,12 +2401,17 @@ export interface components {
          */
         ArchitectResultOut: {
             /**
+             * Can Pair
+             * @description Separate architect file only (#1168): whether the reviewer can pair this row's dimensions in its matched view (the check's reason asks for a pairing). False means the row is compared by hand or waits for a check run. Null on a combined sheet.
+             */
+            can_pair?: boolean | null;
+            /**
              * Compared
              * @default []
              */
             compared: components["schemas"]["ArchitectComparedOut"][];
             /** @description The architect view this row was compared with; null when none was. */
-            compared_with?: components["schemas"]["app__schemas__visual_ui__ArchitectViewRefOut"] | null;
+            compared_with?: components["schemas"]["ArchitectViewRefOut"] | null;
             /**
              * Compared With Text
              * @description "compared with <file>, page N, view X <title> (sheet S)"; null when none.
@@ -2482,7 +2487,7 @@ export interface components {
             score_summary: string;
             /** Shown To Ais */
             shown_to_ais: boolean;
-            view: components["schemas"]["app__schemas__architect_matches__ArchitectViewRefOut"];
+            view: components["schemas"]["ArchitectViewRefOut"];
         };
         /** ArchitectViewMatchOut */
         ArchitectViewMatchOut: {
@@ -2521,6 +2526,59 @@ export interface components {
             note?: string | null;
             /** View Id */
             view_id?: string | null;
+        };
+        /**
+         * ArchitectViewRefOut
+         * @description One view of the architect's own file.
+         */
+        ArchitectViewRefOut: {
+            /** Bubble */
+            bubble: string | null;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string;
+            /**
+             * Label
+             * @description How a person names it: page, view, title and sheet.
+             */
+            label: string;
+            /**
+             * Page Number
+             * @description 1-based, as a person counts pages.
+             */
+            page_number: number;
+            /**
+             * Picture Url
+             * @description The stored picture of the view; null when none was rendered.
+             */
+            picture_url: string | null;
+            /** @description The view's extent on its page, in stored space; null when not stored. */
+            region: components["schemas"]["RowLocation"] | null;
+            /** Scale Note */
+            scale_note: string | null;
+            /**
+             * Separated
+             * @description False when the view is not clearly apart from its neighbour: its dimensions were not read.
+             */
+            separated: boolean;
+            /** Sheet Number */
+            sheet_number: string | null;
+            /** Title */
+            title: string | null;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
         };
         /**
          * AssemblyInput
@@ -5946,59 +6004,6 @@ export interface components {
             value: string;
         };
         /**
-         * ArchitectViewRefOut
-         * @description One view of the architect's own file.
-         */
-        app__schemas__architect_matches__ArchitectViewRefOut: {
-            /** Bubble */
-            bubble: string | null;
-            /**
-             * Document Id
-             * Format: uuid
-             */
-            document_id: string;
-            /**
-             * Document Version Id
-             * Format: uuid
-             */
-            document_version_id: string;
-            /** File Name */
-            file_name: string;
-            /**
-             * Label
-             * @description How a person names it: page, view, title and sheet.
-             */
-            label: string;
-            /**
-             * Page Number
-             * @description 1-based, as a person counts pages.
-             */
-            page_number: number;
-            /**
-             * Picture Url
-             * @description The stored picture of the view; null when none was rendered.
-             */
-            picture_url: string | null;
-            /** @description The view's extent on its page, in stored space; null when not stored. */
-            region: components["schemas"]["RowLocation"] | null;
-            /** Scale Note */
-            scale_note: string | null;
-            /**
-             * Separated
-             * @description False when the view is not clearly apart from its neighbour: its dimensions were not read.
-             */
-            separated: boolean;
-            /** Sheet Number */
-            sheet_number: string | null;
-            /** Title */
-            title: string | null;
-            /**
-             * View Id
-             * Format: uuid
-             */
-            view_id: string;
-        };
-        /**
          * QuantityOut
          * @description One exact dimension, rendered without a JSON float.
          */
@@ -6039,62 +6044,6 @@ export interface components {
             semantic_type: string;
             /** Source */
             source: string;
-        };
-        /**
-         * ArchitectViewRefOut
-         * @description One view of the architect's own file (#1168), wherever a screen or a report points at it.
-         *
-         *     Same fields as the reviewer picker's (`app/schemas/architect_matches.py`, #1166): when both
-         *     are merged, one of them should import the other so the API has a single definition.
-         */
-        app__schemas__visual_ui__ArchitectViewRefOut: {
-            /** Bubble */
-            bubble: string | null;
-            /**
-             * Document Id
-             * Format: uuid
-             */
-            document_id: string;
-            /**
-             * Document Version Id
-             * Format: uuid
-             */
-            document_version_id: string;
-            /** File Name */
-            file_name: string;
-            /**
-             * Label
-             * @description How a person names it: page, view, title and sheet.
-             */
-            label: string;
-            /**
-             * Page Number
-             * @description 1-based, as a person counts pages.
-             */
-            page_number: number;
-            /**
-             * Picture Url
-             * @description The stored picture of the view; null when none was rendered.
-             */
-            picture_url: string | null;
-            /** @description The view's extent on its page, in stored space; null when not stored. */
-            region: components["schemas"]["RowLocation"] | null;
-            /** Scale Note */
-            scale_note: string | null;
-            /**
-             * Separated
-             * @description False when the view is not clearly apart from its neighbour: its dimensions were not read.
-             */
-            separated: boolean;
-            /** Sheet Number */
-            sheet_number: string | null;
-            /** Title */
-            title: string | null;
-            /**
-             * View Id
-             * Format: uuid
-             */
-            view_id: string;
         };
     };
     responses: never;

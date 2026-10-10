@@ -60,12 +60,12 @@ const comparedWith = (v: ArchitectViewRef) => `compared with ${v.file_name}, pag
 /** Every state the contract names, as the API would send it (synthetic reasons in the backend's words). */
 const STATES: Record<string, ArchitectResult> = {
   not_matched_yet: {
-    ...NOTHING,
-    not_compared_reason: "The architect's drawings were uploaded as a separate file and this countertop has not been matched with a view in it yet. Run the checks again.",
+    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-nmy', needs_decision: true, pairing_source: 'none', can_pair: false,
+    reason: "The architect's drawings were uploaded as a separate file and this countertop has not been matched with a view in it yet. Run the checks again.",
     match: match('not_matched_yet', { record_id: null, source: null }), compared_with: null, compared_with_text: null,
   },
   needs_reviewer: {
-    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-nr', needs_decision: true, pairing_source: 'none',
+    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-nr', needs_decision: true, pairing_source: 'none', can_pair: false,
     reason: "Choose which of the architect's views shows this countertop (one click).",
     match: match('needs_reviewer', { needs_decision: true, code_verdict: 'geometry_tie', ai_picks: [{ model_label: 'Reader A', answer: 'view', view_id: 'view-1', why: 'Synthetic: three bays and a sink.' }, { model_label: 'Reader B', answer: 'unsure', view_id: null, why: 'Synthetic: two look alike.' }] }),
   },
@@ -90,19 +90,34 @@ const STATES: Record<string, ArchitectResult> = {
     match: match('none_matches', { source: 'reviewer' }),
   },
   not_separated: {
-    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-ns', needs_decision: true, pairing_source: 'none',
+    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-ns', needs_decision: true, pairing_source: 'none', can_pair: false,
     reason: "The architect's view 3 on page 2 is not clearly apart from its neighbour, so its dimensions were not read. Compare this countertop by hand, then mark it checked.",
     match: match('not_separated', { matched_view: view(3, { separated: false }) }),
   },
   no_candidates: {
-    ...NOTHING,
-    not_compared_reason: "The architect's file has no views to match this countertop with, so nothing was compared.",
+    ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-nc', needs_decision: true, pairing_source: 'none', can_pair: false,
+    reason: "The architect's drawings were uploaded as a separate file, but no view was found in them to compare this countertop with. Compare it with the architect's drawings by hand, then mark it checked.",
     match: match('no_candidates'),
   },
 };
 
+/** Matched, but no dimension in the view lines up with the row: compared by hand, never "Pair it…". */
+const NO_DIMENSIONS: ArchitectResult = {
+  ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-nd', needs_decision: true, pairing_source: 'none', can_pair: false,
+  reason: "The architect's view 1 on page 2 of the architect's drawings has no dimensions that line up with this countertop. Compare it by hand, then mark it checked.",
+  match: match('auto_matched', { judgments: 'code and both AIs', matched_view: view(1) }),
+};
+/** Matched, and the AIs disagreed on the pairing in the view: the check asks for a pairing. */
+const PAIR_IN_VIEW: ArchitectResult = {
+  ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'arch-pv', needs_decision: true, pairing_source: 'none', can_pair: true,
+  reason: "Pair the architect's dimension with the vendor's (one click).",
+  match: match('auto_matched', { judgments: 'code and both AIs', matched_view: view(1) }),
+};
+
 /** A reviewer's pick recorded after the result on screen: the result is still the "choose" one. */
 const PICKED: ArchitectResult = { ...STATES.needs_reviewer, match: match('reviewer_confirmed', { source: 'reviewer', matched_view: view(2), waits_for_run: true }) };
+/** A pick after a compared FAIL: the old numbers stay on screen, uncoloured, until the next run. */
+const PICKED_AFTER_FAIL: ArchitectResult = { ...STATES.reviewer_confirmed, compared_with: null, compared_with_text: null, match: match('reviewer_confirmed', { source: 'reviewer', matched_view: view(1), waits_for_run: true }) };
 /** Matched, but nothing comparable on the view: grey "not compared", with the view to look at. */
 const MATCHED_NOT_COMPARED: ArchitectResult = {
   ...NOTHING,
@@ -136,14 +151,19 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('every match state, in plain words', () => {
   it('maps each state to what the screen asks of the reviewer', () => {
-    expect(architectState(STATES.not_matched_yet)).toBe('not-compared');
+    expect(architectState(STATES.not_matched_yet)).toBe('by-hand');
     expect(architectState(STATES.needs_reviewer)).toBe('choose-view');
     expect(architectState(STATES.auto_matched)).toBe('compared');
     expect(architectState(STATES.reviewer_confirmed)).toBe('compared');
     expect(architectState(STATES.carried_over)).toBe('compared');
     expect(architectState(STATES.none_matches)).toBe('not-compared');
     expect(architectState(STATES.not_separated)).toBe('by-hand');
-    expect(architectState(STATES.no_candidates)).toBe('not-compared');
+    expect(architectState(STATES.no_candidates)).toBe('by-hand');
+    expect(architectState(NO_DIMENSIONS)).toBe('by-hand');
+    expect(architectState(PAIR_IN_VIEW)).toBe('unpaired');
+    expect(architectState(PICKED_AFTER_FAIL)).toBe('view-picked');
+    // A combined sheet's unpaired row (no match) is as before.
+    expect(architectState({ ...NOTHING, outcome: 'REVIEW_REQUIRED', finding_id: 'c', needs_decision: true, pairing_source: 'none' })).toBe('unpaired');
     expect(architectState(PICKED)).toBe('view-picked');
     expect(architectState(COMBINED)).toBe('compared');
     // Every status has words of its own.
@@ -151,14 +171,16 @@ describe('every match state, in plain words', () => {
   });
 
   const LINES: [string, ArchitectResult, string[], string[]][] = [
-    ['not_matched_yet', STATES.not_matched_yet, ['Not compared: The architect\'s drawings were uploaded as a separate file and this countertop has not been matched with a view in it yet. Run the checks again.'], []],
+    ['not_matched_yet', STATES.not_matched_yet, ['Not matched with an architect view yet: run the checks again, or compare by hand'], ['Pair']],
     ['needs_reviewer', STATES.needs_reviewer, ["Choose which of the architect's views shows this countertop"], []],
     ['auto_matched', STATES.auto_matched, ['96"', '0"', 'Looks right', comparedWith(view(1)), 'View matched by code and both AIs'], []],
     ['reviewer_confirmed', STATES.reviewer_confirmed, ['93"', '+3"', 'Needs correction', comparedWith(view(2)), 'View chosen by a reviewer'], []],
     ['carried_over', STATES.carried_over, ['Looks right', comparedWith(view(1)), 'Same view as on the earlier revision'], []],
     ['none_matches', STATES.none_matches, ["Not compared: The reviewer found no view in the architect's drawings that shows this countertop, so nothing was compared."], []],
     ['not_separated', STATES.not_separated, ['Compare this countertop by hand', "Architect's view: Page 2, view 3: SAMPLE ELEVATION 3 (sheet Z-9)"], []],
-    ['no_candidates', STATES.no_candidates, ["Not compared: The architect's file has no views to match this countertop with, so nothing was compared."], []],
+    ['no_candidates', STATES.no_candidates, ['Compare this countertop by hand'], ['Pair']],
+    ['matched, no dimensions line up', NO_DIMENSIONS, ['Compare this countertop by hand', "Architect's view: Page 2, view 1: SAMPLE ELEVATION 1 (sheet Z-9)"], ['Pair']],
+    ['matched, a pairing asked for', PAIR_IN_VIEW, ["Pair the architect's dimension with the vendor's"], []],
     ['picked, waiting for a run', PICKED, ['View chosen: it counts once the checks run again'], ['Choose which']],
   ];
   it.each(LINES)('%s', (_, result, says, never) => {
@@ -172,12 +194,20 @@ describe('every match state, in plain words', () => {
     render(<ArchitectLine result={STATES.needs_reviewer} />);
     expect(document.querySelector('[data-architect="choose-view"] [data-outcome-icon="REVIEW_REQUIRED"]')).toBeTruthy();
     document.body.innerHTML = '';
-    for (const state of ['not_matched_yet', 'none_matches', 'no_candidates']) {
+    for (const state of ['none_matches']) {
       const { unmount } = render(<ArchitectLine result={STATES[state]} />);
       expect(document.querySelector('[data-slot="outcome-badge"]')).toBeNull();
       expect(screen.queryByRole('button')).toBeNull();
       unmount();
     }
+  });
+
+  it('a view chosen after the run leaves the old compared numbers uncoloured', () => {
+    render(<ArchitectLine result={PICKED_AFTER_FAIL} />);
+    const line = document.querySelector('[data-slot="architect-line"]')!;
+    expect(line.textContent).toContain('+3"');
+    expect(line.querySelector('[data-outcome-icon="FAIL"]')).toBeNull();
+    expect(line.querySelector('[data-slot="outcome-badge"]')).toBeNull();
   });
 
   it('a combined-sheet set (fields null) renders exactly as one without the fields', () => {
@@ -260,6 +290,23 @@ describe('Results with a separate architect file', () => {
     expect(await screen.findByRole('dialog', { name: /matches the architect\?/ })).toBeTruthy();
   });
 
+  it('"Pair it…" only where the check asks for a pairing; otherwise Decide (compare by hand)', () => {
+    const rows = [
+      row('d', 1, { architect: NO_DIMENSIONS }),
+      row('c', 2, { architect: STATES.no_candidates }),
+      row('y', 3, { architect: STATES.not_matched_yet }),
+      row('v', 4, { architect: PAIR_IN_VIEW }),
+    ];
+    setup(rows, [finding('arch-nd', 'REVIEW_REQUIRED'), finding('arch-nc', 'REVIEW_REQUIRED'), finding('arch-nmy', 'REVIEW_REQUIRED'), finding('arch-pv', 'REVIEW_REQUIRED')], ['arch-nd', 'arch-nc', 'arch-nmy', 'arch-pv']);
+    for (const id of ['d', 'c', 'y']) {
+      const sub = document.querySelector(`tr[data-architect-row="${id}"]`) as HTMLElement;
+      expect(within(sub).queryByRole('button', { name: /Pair it/ })).toBeNull();
+      expect(within(sub).getByRole('button', { name: 'Decide' })).toBeTruthy();
+    }
+    const v = document.querySelector('tr[data-architect-row="v"]') as HTMLElement;
+    expect(within(v).getByRole('button', { name: 'Pair it…' })).toBeTruthy();
+  });
+
   it('a pick waiting for a run offers nothing to click; not-compared states say why in grey', () => {
     setup(
       [row('p', 1, { architect: PICKED }), row('q', 2, { architect: STATES.none_matches }), row('r', 3, { architect: MATCHED_NOT_COMPARED })],
@@ -292,21 +339,21 @@ describe('Results with a separate architect file', () => {
 const CANDIDATES: ArchitectViewMatch = {
   row_id: 'n',
   vendor: { page_number: 4, document_version_id: VENDOR, title: 'SYNTHETIC KITCHEN', references: ['4/Z9'], region: location(VENDOR, 4, box(0.3, 0.6, 0.7, 0.7)) },
-  current: { record_id: 'record-shown-1', status: 'needs_reviewer', source: 'automatic', decided_by: null, decided_at: '2026-10-10T09:00:00Z', supersedes_id: null, note: null, reasons: [] },
+  current: { record_id: 'record-shown-1', status: 'needs_reviewer', source: 'automatic', decided_by: null, decided_at: '2026-10-10T09:00:00Z', supersedes_id: null, note: null, reasons: ['Synthetic: two views fit, and the AIs did not agree.'] },
   candidates: [
     {
       rank: 2, view: view(2), shown_to_ais: true,
-      code: { fits: true, reference_match: false, run_length_error_display: '1/2"', bays_vendor: 3, bays_architect: 3, pair_support: null },
+      code: { fits: true, reference_match: false, run_length_error_display: '0.5', bays_vendor: 3, bays_architect: 3, pair_support: null },
       score_summary: 'Fits: run length within 1/2", 3 bays on both.', evidence: ['Synthetic: same bay count.'], ai_picked_by: [], remembered: true, can_pick: true, refusal: null,
     },
     {
       rank: 1, view: view(1), shown_to_ais: true,
-      code: { fits: true, reference_match: false, run_length_error_display: '1/4"', bays_vendor: 3, bays_architect: 3, pair_support: 2 },
+      code: { fits: true, reference_match: false, run_length_error_display: '0.3', bays_vendor: 3, bays_architect: 3, pair_support: 2 },
       score_summary: 'Fits: run length within 1/4", 3 bays on both.', evidence: ['Synthetic: run length 1/4" apart.', 'Synthetic: 3 bays each.'], ai_picked_by: ['Reader A'], remembered: false, can_pick: true, refusal: null,
     },
     {
       rank: 3, view: view(3, { separated: false, picture_url: null }), shown_to_ais: false,
-      code: { fits: false, reference_match: false, run_length_error_display: '6"', bays_vendor: 3, bays_architect: 4, pair_support: null },
+      code: { fits: false, reference_match: false, run_length_error_display: '6.0', bays_vendor: 3, bays_architect: 4, pair_support: null },
       score_summary: 'Does not fit: run length 6" apart.', evidence: [], ai_picked_by: [], remembered: false, can_pick: false, refusal: 'Synthetic refusal: this view is on another countertop\'s sheet.',
     },
   ],
@@ -357,7 +404,7 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(first.querySelector('img')!.getAttribute('src')).toBe('/api/v1/projects/p/packages/k/architect-views/view-1/picture');
     expect(first.textContent).toContain('Sheet Z-9 · view 1 · SAMPLE ELEVATION 1');
     expect(first.textContent).toContain('Fits: run length within 1/4", 3 bays on both.');
-    expect(first.textContent).toContain('Picked by Reader A');
+    expect(first.textContent).toContain('Called the same by Reader A');
     const second = group.querySelector('[data-candidate="view-2"]') as HTMLElement;
     expect(second.textContent).toContain('Remembered from an earlier revision');
     expect(second.textContent).toContain("Code's pick");
@@ -367,6 +414,10 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(within(third).queryByRole('radio')).toBeNull();
     expect(third.querySelector('[data-part="refusal"]')!.textContent).toBe("Synthetic refusal: this view is on another countertop's sheet.");
     expect(third.textContent).toContain('No picture stored');
+    expect(first.querySelector('[data-part="code-facts"]')!.textContent).toContain('Run off by 0.3 in');
+    // The order is said as it is (code had a pick in this fixture), and why the reviewer is asked.
+    expect(document.querySelector('[data-part="order"]')!.textContent).toContain('In code’s order, by what is drawn');
+    expect(document.querySelector('[data-part="reasons"]')!.textContent).toBe('Synthetic: two views fit, and the AIs did not agree.');
     // Before a choice, the side-by-side asks for one.
     expect(document.querySelector('[data-slot="view-architect-pane"]')!.textContent).toContain('Choose a view below');
   });
@@ -459,6 +510,12 @@ describe('the view picker', { timeout: 15_000 }, () => {
     fireEvent.click(button);
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(posts).toHaveLength(1);
+  });
+
+  it('when code had no pick, says the AIs\' answers set the order', async () => {
+    render(<ArchitectViewPicker projectId="p" packageId="k" row={row('n', 4, { architect: STATES.needs_reviewer })} onSaved={vi.fn()} />);
+    expect((await screen.findByText(/Views the AIs called the same come first/)).textContent).toContain('then code’s order by what is drawn');
+    expect(screen.queryByText("Code's pick")).toBeNull();
   });
 
   it('keeps a note to 500 characters', async () => {

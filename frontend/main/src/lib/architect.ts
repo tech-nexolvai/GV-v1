@@ -38,7 +38,19 @@ export function architectState(result: ArchitectResult | null): ArchitectState {
   const match = result.match ?? null;
   if (match?.waits_for_run) return 'view-picked';
   if (match?.status === 'needs_reviewer' && result.needs_decision) return 'choose-view';
-  if (match?.status === 'not_separated' && result.needs_decision && result.finding_id) return 'by-hand';
+  // A row matched (or to be matched) with the architect's own file that waits for the reviewer with
+  // no pairing to confirm: a pairing is offered only where the check asks for one (`can_pair`);
+  // anything else (no dimensions line up, no views, not clearly apart, not matched yet) is compared
+  // by hand with the usual decision, never "Pair it…" into a dead end.
+  if (
+    match !== null
+    && result.finding_id
+    && result.outcome === 'REVIEW_REQUIRED'
+    && result.needs_decision
+    && !(result.pairing_source && ONE_JUDGMENT.has(result.pairing_source))
+  ) {
+    return result.can_pair ? 'unpaired' : 'by-hand';
+  }
   if (result.finding_id === null || result.finding_id === undefined || result.outcome === null || result.outcome === undefined) {
     return result.not_compared_reason ? 'not-compared' : 'none';
   }

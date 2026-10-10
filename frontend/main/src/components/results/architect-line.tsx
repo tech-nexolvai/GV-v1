@@ -34,7 +34,11 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
     return (
       <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-outcome-review-fg">
         <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} />
-        {state === 'choose-view' ? "Choose which of the architect's views shows this countertop" : 'Compare this countertop by hand'}
+        {state === 'choose-view'
+          ? "Choose which of the architect's views shows this countertop"
+          : result.match?.status === 'not_matched_yet'
+            ? 'Not matched with an architect view yet: run the checks again, or compare by hand'
+            : 'Compare this countertop by hand'}
       </span>
     );
   }

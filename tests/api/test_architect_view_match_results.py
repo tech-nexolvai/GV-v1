@@ -6,14 +6,13 @@ when a recorded result compared something against the matched view, `compared_wi
 `compared with <file>, page N, view X …`. A reviewer's pick after the live run says it waits for the
 next run. A combined sheet (no separate file) keeps every new field null and its statement count.
 
-#1166's read path (`workflow/architect_match_records.py`) is built in parallel, so these tests pass
-its effective-match lookup in, restated from its contract (the newest record of the row's chain), as
-#1167's tests do. Synthetic values only.
+The match records are written as #1166's stage and API write them; everything else is the real read
+path (#1166's `effective_architect_matches`, #1167's planning and waiting rule). Synthetic values only.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,26 +35,27 @@ from app.models import (
 )
 from app.models.document import Page
 from app.models.evidence import ArchitectViewIndexEntry, ArchitectViewMatchRecord
-from app.review.architect_view_match import (
-    PICTURE_PATH,
-    SeparateFileMatches,
-    compared_view,
-    match_out,
-    waits_for_run,
-)
-from app.schemas.visual_ui import ArchitectViewRefOut, CountertopResultsOut
+from app.review.architect_view_match import SeparateFileMatches, compared_view, match_out
+from app.review.row_location import RowLocation
+from app.schemas.architect_matches import ArchitectViewRefOut
+from app.schemas.visual_ui import CountertopResultsOut
 from reports.spreadsheet import architect_line
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_architect_row_evidence import _sealed_rows
 from workflow.architect_match_contract import EffectiveMatch, MatchedView
-from workflow.architect_row_plan import CHOOSE_ARCHITECT_VIEW, NOT_MATCHED_YET_ROW
+from workflow.architect_match_records import ARCHITECT_FILE_NAME
+from workflow.architect_pairing_contract import EffectivePairing
+from workflow.architect_row_plan import (
+    CHOOSE_ARCHITECT_VIEW,
+    NOT_MATCHED_YET_ROW,
+    PAIR_BY_REVIEWER,
+    no_dimensions_line_up_reason,
+)
 from workflow.slot_row_scope import slot_rows
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
-
-FILE_NAME = "the architect's drawings"
 
 
 @pytest.fixture
@@ -188,69 +188,22 @@ def _record(
     return record
 
 
-def _views(session: Session, ids: Collection[UUID]) -> dict[UUID, MatchedView]:
-    found: dict[UUID, MatchedView] = {}
-    for entry, index in session.execute(
-        select(ArchitectViewIndexEntry, Page.index)
-        .join(Page, Page.id == ArchitectViewIndexEntry.page_id)
-        .where(ArchitectViewIndexEntry.id.in_(tuple(ids)))
-    ):
-        found[entry.id] = MatchedView(
-            view_id=entry.id,
-            document_version_id=entry.document_version_id,
-            page_id=entry.page_id,
-            page_number=index + 1,
-            view_number=entry.view_number,
-            view_tag=entry.view_tag,
-            title=entry.title,
-            bubble=entry.bubble,
-            sheet_number=entry.sheet_number,
-            scale_note=entry.scale_note,
-            file_name=FILE_NAME,
-            separated=entry.separated,
-        )
-    return found
-
-
-def stored_matches(
-    session: Session, anchors: Collection[UUID]
-) -> dict[UUID, EffectiveMatch | None]:
-    """#1166's `effective_architect_matches`, restated: the newest record per row, two statements."""
-    newest: dict[UUID, ArchitectViewMatchRecord] = {}
-    for record in session.scalars(
-        select(ArchitectViewMatchRecord)
-        .where(ArchitectViewMatchRecord.row_anchor_candidate_id.in_(tuple(anchors)))
-        .order_by(ArchitectViewMatchRecord.created_at.desc(), ArchitectViewMatchRecord.id.desc())
-    ):
-        newest.setdefault(record.row_anchor_candidate_id, record)
-    views = _views(session, {r.matched_view_id for r in newest.values() if r.matched_view_id})
-    answers: dict[UUID, EffectiveMatch | None] = dict.fromkeys(anchors)
-    for anchor, record in newest.items():
-        answers[anchor] = EffectiveMatch(
-            record_id=record.id,
-            status=record.status,  # type: ignore[arg-type]
-            source=record.source,  # type: ignore[arg-type]
-            matched=None if record.matched_view_id is None else views[record.matched_view_id],
-            needs_reviewer=record.status == "needs_reviewer",
-            reasons=tuple(record.reasons),
-            decided_by=record.decided_by,
-        )
-    return answers
-
-
-def _run(session: Session, package_id: UUID, tmp_path: Path) -> None:
+def _run(
+    session: Session,
+    package_id: UUID,
+    tmp_path: Path,
+    pairings: dict[UUID, EffectivePairing] | None = None,
+) -> None:
+    found = pairings or {}
     DatabaseStages(
         store=LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test"),
-        architect_pairing=lambda _session, _anchor: None,
-        architect_match=lambda s, anchor: stored_matches(s, (anchor,))[anchor],
+        architect_pairing=lambda _session, anchor: found.get(anchor),
     ).run_checks(session, _revision(session, package_id).id)
     session.flush()
 
 
 def _results(session: Session, package_id: UUID) -> CountertopResultsOut:
-    return _countertop_results_for_revision(
-        session, package_id, _revision(session, package_id), matches_lookup=stored_matches
-    )
+    return _countertop_results_for_revision(session, package_id, _revision(session, package_id))
 
 
 def _blocks(results: CountertopResultsOut) -> dict[UUID, Any]:
@@ -267,12 +220,14 @@ def test_a_row_waiting_for_the_reviewer_and_a_matched_row(session: Session, tmp_
     _record(session, anchors[1], "auto_matched", view=first, reasons=("Synthetic: reference.",))
     _run(session, package_id, tmp_path)
 
-    blocks = _blocks(_results(session, package_id))
+    results = _results(session, package_id)
+    blocks = _blocks(results)
 
     waiting = blocks[anchors[0]]
     assert waiting.outcome is not None and waiting.outcome.value == "REVIEW_REQUIRED"
     assert waiting.reason == CHOOSE_ARCHITECT_VIEW
     assert waiting.needs_decision is True
+    assert waiting.can_pair is False
     assert waiting.match is not None
     assert waiting.match.status == "needs_reviewer"
     assert waiting.match.needs_decision is True
@@ -292,28 +247,42 @@ def test_a_row_waiting_for_the_reviewer_and_a_matched_row(session: Session, tmp_
     assert matched.match.reason == "Synthetic: reference."
     view = matched.match.matched_view
     assert isinstance(view, ArchitectViewRefOut)
-    assert view.view_id == first
+    assert view.view_id == first and view.view_id != second
     assert view.page_number == 2
-    assert view.file_name == FILE_NAME
+    assert view.file_name == ARCHITECT_FILE_NAME
     assert view.label == "Page 2, view 1: SAMPLE ELEVATION 1 (sheet Z-9)"
     assert view.region is not None and view.region.polygon[0] == ["0.1", "0.2"]
     assert view.picture_url is not None and view.picture_url.endswith(
         f"/architect-views/{first}/picture"
     )
-    # Matched, but nothing paired in the view yet (#1167 asks for a run): nothing was compared,
-    # so no "compared with"; the reason names the matched view.
-    assert matched.reason is not None
-    assert matched.reason.startswith(f"Matched with {FILE_NAME}, page 2, view 1")
+    # Matched, but nothing in the view lines up with the row: compared by hand (no pairing to
+    # offer), and nothing compared, so no "compared with".
+    assert matched.reason == no_dimensions_line_up_reason(_matched_view(session, first))
+    assert matched.can_pair is False
     assert matched.compared == ()
     assert matched.compared_with is None and matched.compared_with_text is None
-    assert second not in {view.view_id}
     # The report says the same as the screen.
+    item = next(i for i in results.items if i.row_id == anchors[0])
     assert (
-        architect_line(
-            next(i for i in _results(session, package_id).items if i.row_id == anchors[0])
-        )
-        == f"Matches the architect: REVIEW_REQUIRED: {CHOOSE_ARCHITECT_VIEW}"
+        architect_line(item) == f"Matches the architect: REVIEW_REQUIRED: {CHOOSE_ARCHITECT_VIEW}"
     )
+
+
+def test_a_pairing_is_offered_only_where_the_check_asks_for_one(
+    session: Session, tmp_path: Path
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    first, _second = _architect_file(session, package_id)
+    _record(session, anchors[0], "auto_matched", view=first)
+    unsettled = EffectivePairing(
+        record_id=uuid4(), source="none", status="ais-disagree", pairs=(), reasons=("Synthetic.",)
+    )
+    _run(session, package_id, tmp_path, {anchors[0]: unsettled})
+
+    block = _blocks(_results(session, package_id))[anchors[0]]
+
+    assert block.reason is not None and PAIR_BY_REVIEWER in block.reason
+    assert block.can_pair is True
 
 
 def test_a_pick_after_the_run_waits_for_the_next_run(session: Session, tmp_path: Path) -> None:
@@ -332,7 +301,8 @@ def test_a_pick_after_the_run_waits_for_the_next_run(session: Session, tmp_path:
         when=datetime.now(UTC) + timedelta(minutes=5),
     )
 
-    block = _blocks(_results(session, package_id))[anchors[0]]
+    item = next(i for i in _results(session, package_id).items if i.row_id == anchors[0])
+    block = item.architect
 
     assert block.match is not None
     assert block.match.status == "reviewer_confirmed"
@@ -341,7 +311,9 @@ def test_a_pick_after_the_run_waits_for_the_next_run(session: Session, tmp_path:
     assert block.match.needs_decision is False
     # The result on screen is still the run's ("choose"): no view was compared yet.
     assert block.reason == CHOOSE_ARCHITECT_VIEW
+    assert block.can_pair is False
     assert block.compared_with is None
+    assert architect_line(item).endswith(" (waits for the next check run)")
 
 
 def test_an_indexed_file_with_no_record_is_not_matched_yet(
@@ -358,7 +330,8 @@ def test_an_indexed_file_with_no_record_is_not_matched_yet(
         assert block.match is not None
         assert block.match.status == "not_matched_yet"
         assert block.match.record_id is None
-        assert block.not_compared_reason == NOT_MATCHED_YET_ROW
+        assert block.reason == NOT_MATCHED_YET_ROW
+        assert block.can_pair is False
         assert block.compared_with is None
 
 
@@ -366,17 +339,16 @@ def test_a_combined_sheet_keeps_every_new_field_null(session: Session, tmp_path:
     package_id, anchors = _sealed_rows(session)
     _run(session, package_id, tmp_path)
 
-    blocks = _blocks(
-        _countertop_results_for_revision(session, package_id, _revision(session, package_id))
-    )
+    blocks = _blocks(_results(session, package_id))
 
     for anchor in anchors.values():
         assert blocks[anchor].match is None
+        assert blocks[anchor].can_pair is None
         assert blocks[anchor].compared_with is None
         assert blocks[anchor].compared_with_text is None
 
 
-def test_the_statement_count_does_not_grow_with_the_rows(session: Session, tmp_path: Path) -> None:
+def test_the_statement_count_does_not_grow_with_the_rows(session: Session) -> None:
     from tests.api.test_slot_rows import _package_rows
 
     def count(package_id: UUID) -> int:
@@ -389,9 +361,7 @@ def test_the_statement_count_does_not_grow_with_the_rows(session: Session, tmp_p
         revision = _revision(session, package_id)
         event.listen(session.bind, "before_cursor_execute", counted)
         try:
-            _countertop_results_for_revision(
-                session, package_id, revision, matches_lookup=stored_matches
-            )
+            _countertop_results_for_revision(session, package_id, revision)
         finally:
             event.remove(session.bind, "before_cursor_execute", counted)
         return statements
@@ -406,9 +376,16 @@ def test_the_statement_count_does_not_grow_with_the_rows(session: Session, tmp_p
     session.flush()
     separate = count(package_id)
     # The combined sheet's own bound (`tests/api/test_visual_ui.py`, 12), then the separate file's
-    # fixed reads: the index check, the lookup's two, the records and the views.
+    # fixed reads: the index check, the effective matches (two), the matches waiting for a run,
+    # the records, the views and the package's project.
     assert combined <= 12
-    assert separate - combined <= 5
+    assert separate - combined <= 7
+
+
+def _matched_view(session: Session, view_id: UUID) -> MatchedView:
+    from workflow.architect_match_records import matched_views
+
+    return matched_views(session, {view_id})[view_id]
 
 
 # --- the words, without a database ---------------------------------------------------------------
@@ -425,14 +402,14 @@ _VIEW = MatchedView(
     bubble="3",
     sheet_number="Z-9",
     scale_note=None,
-    file_name=FILE_NAME,
+    file_name=ARCHITECT_FILE_NAME,
     separated=True,
 )
 _REF = ArchitectViewRefOut(
     view_id=UUID(int=1),
     document_id=UUID(int=4),
     document_version_id=UUID(int=2),
-    file_name=FILE_NAME,
+    file_name=ARCHITECT_FILE_NAME,
     page_number=2,
     sheet_number="Z-9",
     bubble="3",
@@ -443,22 +420,22 @@ _REF = ArchitectViewRefOut(
     picture_url=None,
     separated=True,
 )
+_WHEN = datetime(2026, 10, 10, 12, tzinfo=UTC)
 
 
 class _Record:
-    def __init__(self, source: str, created_at: datetime) -> None:
-        self.source = source
+    def __init__(self, created_at: datetime) -> None:
         self.created_at = created_at
         self.code_verdict = None
         self.code_pick_view_id = None
         self.ai_picks: list[object] = [{"model_id": "x", "answer": "maybe", "why": 3}, "junk"]
 
 
-def _found(source: str, status: str, created_at: datetime) -> SeparateFileMatches:
+def _found(status: str, created_at: datetime, *, waiting: bool = False) -> SeparateFileMatches:
     match = EffectiveMatch(
         record_id=UUID(int=9),
         status=status,  # type: ignore[arg-type]
-        source=source,  # type: ignore[arg-type]
+        source="automatic",
         matched=_VIEW,
         needs_reviewer=False,
         reasons=(),
@@ -466,40 +443,53 @@ def _found(source: str, status: str, created_at: datetime) -> SeparateFileMatche
     )
     return SeparateFileMatches(
         matches={UUID(int=7): match},
-        records={UUID(int=9): _Record(source, created_at)},  # type: ignore[dict-item]
+        waiting=frozenset({UUID(int=9)}) if waiting else frozenset(),
+        records={UUID(int=9): _Record(created_at)},  # type: ignore[dict-item]
         views={_VIEW.view_id: _REF},
     )
 
 
-def test_compared_with_names_the_view_only_for_a_compared_result() -> None:
-    run = datetime(2026, 10, 10, 12, tzinfo=UTC)
-    found = _found("automatic", "auto_matched", run - timedelta(minutes=1))
-    assert compared_view(found, UUID(int=7), compared=True, checked_at=run) == (
-        _REF,
-        "compared with the architect's drawings, page 2, view 3 SAMPLE ELEVATION (sheet Z-9)",
+def _location(version: UUID, page: int) -> RowLocation:
+    return RowLocation(
+        page_id=uuid4(), document_version_id=version, page_number=page, polygon=[["0", "0"]]
     )
-    assert compared_view(found, UUID(int=7), compared=False, checked_at=run) == (None, None)
-    assert compared_view(found, UUID(int=8), compared=True, checked_at=run) == (None, None)
-    later = _found("reviewer", "reviewer_confirmed", run + timedelta(minutes=1))
-    assert compared_view(later, UUID(int=7), compared=True, checked_at=run) == (None, None)
-    not_read = _found("automatic", "not_separated", run)
-    assert compared_view(not_read, UUID(int=7), compared=True, checked_at=run) == (None, None)
 
 
-def test_waits_for_run_only_for_a_reviewer_pick_after_the_run() -> None:
-    run = datetime(2026, 10, 10, 12, tzinfo=UTC)
-    after = _Record("reviewer", run + timedelta(seconds=1))
-    before = _Record("reviewer", run - timedelta(seconds=1))
-    automatic = _Record("automatic", run + timedelta(seconds=1))
-    assert waits_for_run(after, run) is True  # type: ignore[arg-type]
-    assert waits_for_run(before, run) is False  # type: ignore[arg-type]
-    assert waits_for_run(automatic, run) is False  # type: ignore[arg-type]
-    assert waits_for_run(after, None) is True  # type: ignore[arg-type]
+def test_compared_with_names_the_view_only_when_the_rows_own_result_used_it() -> None:
+    words = "compared with the architect's drawings, page 2, view 3 SAMPLE ELEVATION (sheet Z-9)"
+    earlier = _found("auto_matched", _WHEN - timedelta(minutes=1))
+    on_view = [_location(UUID(int=2), 2)]
+    elsewhere = [_location(UUID(int=2), 5)]
+
+    def named(found: SeparateFileMatches, locations: list[RowLocation | None]) -> object:
+        return compared_view(found, UUID(int=7), locations=locations, finding_created_at=_WHEN)
+
+    # A compared dimension on the view's page of the view's file: named.
+    assert named(earlier, on_view) == (_REF, words)
+    # Compared, but against a dimension elsewhere: not this view.
+    assert named(earlier, elsewhere) == (None, None)
+    # No stored position: the match must predate the row's own result.
+    assert named(earlier, [None]) == (_REF, words)
+    later = _found("auto_matched", _WHEN + timedelta(minutes=1))
+    assert named(later, [None]) == (None, None)
+    # Nothing compared, a pick waiting for a run, a view not read, another row: never named.
+    assert named(earlier, []) == (None, None)
+    assert named(_found("reviewer_confirmed", _WHEN, waiting=True), on_view) == (None, None)
+    assert named(_found("not_separated", _WHEN), on_view) == (None, None)
+    assert compared_view(earlier, UUID(int=8), locations=on_view, finding_created_at=_WHEN) == (
+        None,
+        None,
+    )
+
+
+def test_waits_for_run_follows_the_waiting_records_whatever_the_source() -> None:
+    assert match_out(_found("auto_matched", _WHEN, waiting=True), UUID(int=7)).waits_for_run
+    assert not match_out(_found("auto_matched", _WHEN), UUID(int=7)).waits_for_run
+    picked = match_out(_found("needs_reviewer", _WHEN, waiting=True), UUID(int=7))
+    assert picked.waits_for_run and not picked.needs_decision
 
 
 def test_odd_stored_ai_answers_are_read_safely() -> None:
-    found = _found("automatic", "auto_matched", datetime(2026, 10, 10, tzinfo=UTC))
-    out = match_out(found, UUID(int=7), checked_at=None)
+    out = match_out(_found("auto_matched", _WHEN), UUID(int=7))
     assert [(p.model_label, p.answer, p.why) for p in out.ai_picks] == [("x", "no_answer", "3")]
     assert out.matched_view == _REF
-    assert PICTURE_PATH.startswith("/api/v1/projects/")

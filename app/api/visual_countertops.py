@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from fractions import Fraction
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
@@ -34,7 +33,7 @@ from app.review.architect_view_match import (
     SeparateFileMatches,
     compared_view,
     match_out,
-    separate_file_matches,
+    separate_file_views,
 )
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
 from app.schemas.visual_ui import (
@@ -57,12 +56,15 @@ from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.wall_layouts import is_between_panels, wall_layout_words
+from workflow.architect_match_records import effective_architect_matches
 from workflow.architect_pairing_contract import EffectivePairing
-from workflow.architect_pairing_records import MatchesLookup, latest_architect_pairings
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
+    PAIR_BY_REVIEWER,
     Disposition,
     PairingLookup,
+    architect_file_indexed,
+    architect_matches_waiting_for_run,
     effective_architect_pairings,
     pairing_judgments,
     pairing_source_from_notes,
@@ -595,7 +597,6 @@ def _architect_block(
     positions: dict[str, RowLocation] | None = None,
     separate_architect_file: bool = False,
     matches: SeparateFileMatches | None = None,
-    checked_at: datetime | None = None,
 ) -> ArchitectResultOut:
     """What the architect check recorded for this row, or why nothing was compared.
 
@@ -604,9 +605,8 @@ def _architect_block(
     once for the revision; the row then says its match state and the view it was compared with.
     `None` on a combined sheet: the block is exactly as before (every new field null).
     """
-    view_match = (
-        None if matches is None else match_out(matches, row.anchor.id, checked_at=checked_at)
-    )
+    view_match = None if matches is None else match_out(matches, row.anchor.id)
+    row_match = None if matches is None else matches.matches.get(row.anchor.id)
     if finding is None:
         pairing = pairing_lookup(session, row.anchor.id)
         plan = plan_architect_row(
@@ -615,8 +615,14 @@ def _architect_block(
             pairing,
             sides=sides,
             separate_architect_file=separate_architect_file,
-            match=None if matches is None else matches.matches.get(row.anchor.id),
             architect_file_indexed=matches is not None,
+            match=row_match,
+            match_waits_for_run=(
+                matches is not None
+                and row_match is not None
+                and row_match.record_id in matches.waiting
+            ),
+            own_architect_view=None,
         )
         return ArchitectResultOut(
             not_compared_reason=(
@@ -625,6 +631,7 @@ def _architect_block(
             pairing_source=None if pairing is None else pairing.source,
             pairing_judgments=pairing_judgments(None if pairing is None else pairing.source),
             match=view_match,
+            can_pair=None if matches is None else False,
         )
     values: dict[tuple[str, int | None], dict[str, Fraction]] = {}
     for name, item in inputs.items():
@@ -664,10 +671,16 @@ def _architect_block(
                 ),
             )
         )
+    # Named only when the row's own result shows it used the view (#1168).
     view, view_text = (
         (None, None)
         if matches is None
-        else compared_view(matches, row.anchor.id, compared=bool(compared), checked_at=checked_at)
+        else compared_view(
+            matches,
+            row.anchor.id,
+            locations=[pair.architect_location for pair in compared],
+            finding_created_at=finding.created_at,
+        )
     )
     return ArchitectResultOut(
         outcome=Outcome(finding.outcome),
@@ -679,6 +692,13 @@ def _architect_block(
         pairing_source=source,
         pairing_judgments=pairing_judgments(source),
         match=view_match,
+        # A pairing is offered only where the check's reason asks for one (#1168); otherwise a
+        # matched row is compared by hand or waits for a run.
+        can_pair=(
+            None
+            if matches is None
+            else finding.id in blocking and PAIR_BY_REVIEWER in (finding.reason or "")
+        ),
         compared_with=view,
         compared_with_text=view_text,
     )
@@ -761,15 +781,9 @@ def _split_page_item(
     )
 
 
-def _batched_pairings(
-    session: Session, row_anchor_ids: list[UUID], *, matches: MatchesLookup | None = None
-) -> PairingLookup:
+def _batched_pairings(session: Session, row_anchor_ids: list[UUID]) -> PairingLookup:
     """Every listed row's pairing read at once, answered row by row as a `PairingLookup`."""
-    pairings = (
-        effective_architect_pairings(session, row_anchor_ids)
-        if matches is None
-        else latest_architect_pairings(session, row_anchor_ids, matches=matches)
-    )
+    pairings = effective_architect_pairings(session, row_anchor_ids)
 
     def lookup(_session: Session, row_anchor_id: UUID) -> EffectivePairing | None:
         return pairings.get(row_anchor_id)
@@ -783,15 +797,14 @@ def _countertop_results_for_revision(
     revision: PackageRevision,
     *,
     pairing_lookup: PairingLookup | None = None,
-    matches_lookup: MatchesLookup | None = None,
 ) -> CountertopResultsOut:
     """Shared projection used by the read API and the signed report writer.
 
     `pairing_lookup` answers, for a row the architect check wrote nothing for, why nothing was
     compared; by default every such row's pairing record (#1053) is read in one batch
     (`effective_architect_pairings`), so the statement count does not grow with the rows.
-    `matches_lookup` (#1168): every row's match with a view of the architect's own file, read in
-    one batch per revision (#1166's `effective_architect_matches` by default).
+    When the architect's drawings are their own indexed file (#1168), every row's match with one
+    of its views is read once per revision, with the matches waiting for a run and the views.
     """
     # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
     # is the source: the check asks nothing there, so neither does this list.
@@ -827,27 +840,19 @@ def _countertop_results_for_revision(
     lookup = pairing_lookup or _batched_pairings(
         session,
         [row.anchor.id for row in rows if row.anchor.id not in architect_by_row],
-        matches=matches_lookup,
     )
     sides = ReadingSides(session)
     # Asked once per revision (#1161): whether the architect's drawings came as their own file.
     separate_architect = bool(rows) and has_separate_architect_file(session, revision.id)
     # ... and, when that file was indexed, every row's match with one of its views (#1168), read
     # once. A combined sheet asks nothing more, and its architect blocks are as before.
-    view_matches = (
-        separate_file_matches(
-            session,
-            revision.id,
-            [row.anchor.id for row in rows],
-            separate_file=separate_architect,
-            package_id=package_id,
-            lookup=matches_lookup,
-        )
-        if separate_architect
-        else None
+    indexed = separate_architect and architect_file_indexed(session, revision.id)
+    row_anchor_ids = [row.anchor.id for row in rows]
+    matches = effective_architect_matches(session, row_anchor_ids) if indexed else {}
+    waiting = architect_matches_waiting_for_run(
+        session, revision.id, {match.record_id for match in matches.values() if match is not None}
     )
-    # When the live checks ran: a reviewer's view pick after it waits for the next run (#1168).
-    checked_at = max((finding.created_at for finding, _ in findings), default=None)
+    view_matches = separate_file_views(session, package_id, matches, waiting) if indexed else None
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
         for input_row in session.scalars(
@@ -1004,7 +1009,6 @@ def _countertop_results_for_revision(
                     sides=sides,
                     separate_architect_file=separate_architect,
                     matches=view_matches,
-                    checked_at=checked_at,
                     positions=(
                         None
                         if (architect := architect_by_row.get(row.anchor.id)) is None

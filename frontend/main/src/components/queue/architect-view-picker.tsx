@@ -118,10 +118,21 @@ export function ArchitectViewPicker({
     <section data-slot="architect-view-picker" aria-labelledby={`${noteId}-title`} className="flex flex-col gap-3 rounded-lg border p-3">
       <div className="flex flex-col gap-1">
         <h3 id={`${noteId}-title`} className="text-sm font-medium">Choose which of the architect&apos;s views shows this countertop</h3>
-        <p className="text-xs text-muted-foreground">
-          Nothing is chosen for you. Code ranked them by what is drawn; compare the pictures.
+        <p className="text-xs text-muted-foreground" data-part="order">
+          Nothing is chosen for you.{' '}
+          {/* The order is the server's (#1166): code's ranking when code had a pick, else the views
+              both AIs called the same first. Said as it is, never as a recommendation. */}
+          {match?.code_pick_view_id
+            ? 'In code’s order, by what is drawn; what the AIs said is on each view.'
+            : 'Views the AIs called the same come first, then code’s order by what is drawn.'}
           {data.vendor.references.length > 0 && <> The vendor&apos;s sheet refers to <span className="num">{data.vendor.references.join(', ')}</span>.</>}
         </p>
+        {/* Why the reviewer is asked, in the record's own words. */}
+        {(data.current?.reasons.length ?? 0) > 0 && (
+          <ul className="flex list-disc flex-col gap-0.5 pl-4 text-xs text-muted-foreground" aria-label="Why you are asked" data-part="reasons">
+            {data.current!.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+          </ul>
+        )}
       </div>
 
       {/* Side by side: the vendor's countertop and the view being looked at. */}
@@ -277,7 +288,7 @@ function CandidateCard({
       <div className="flex min-w-0 flex-col gap-1 sm:pl-[8.5rem]">
         {hasFacts && (
           <span id={ids.facts} className="flex flex-wrap gap-x-3 text-xs text-muted-foreground" data-part="code-facts">
-            {code.run_length_error_display !== null && <span>Length off by <span className="num text-foreground">{code.run_length_error_display}</span></span>}
+            {code.run_length_error_display !== null && <span>Run off by <span className="num text-foreground">{code.run_length_error_display} in</span></span>}
             {(code.bays_vendor !== null || code.bays_architect !== null) && (
               <span>Bays <span className="num text-foreground">{code.bays_vendor ?? '—'}</span> vendor · <span className="num text-foreground">{code.bays_architect ?? '—'}</span> architect</span>
             )}
@@ -286,7 +297,7 @@ function CandidateCard({
         {hasTags && (
           <span id={ids.tags} className="flex flex-wrap gap-1.5 text-xs" data-part="tags">
             {codePick && <Tag>Code&apos;s pick</Tag>}
-            {candidate.ai_picked_by.length > 0 && <Tag>Picked by {candidate.ai_picked_by.join(' and ')}</Tag>}
+            {candidate.ai_picked_by.length > 0 && <Tag>Called the same by {candidate.ai_picked_by.join(' and ')}</Tag>}
             {candidate.remembered && <Tag><History className="size-3" aria-hidden="true" /> Remembered from an earlier revision</Tag>}
             {!candidate.shown_to_ais && <Tag muted>Not shown to the AIs</Tag>}
           </span>
