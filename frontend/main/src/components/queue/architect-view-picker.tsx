@@ -83,7 +83,7 @@ export function ArchitectViewPicker({
   const match: ArchitectMatch | null = row.architect?.match ?? null;
 
   async function save() {
-    if (saving || (!chosen && !none)) return;
+    if (saving || !data.current || (!chosen && !none)) return;
     if (chosen && !chosen.can_pick) return;
     setSaving(true);
     setProblem(null);
@@ -93,7 +93,7 @@ export function ArchitectViewPicker({
         none_of_these: none,
         note: note.trim() || null,
         // The record on screen: if someone changed it since, the server refuses (409) and records nothing.
-        expected_record_id: data.current?.record_id ?? null,
+        expected_record_id: data.current.record_id,
       });
       onSaved();
     } catch (error) {
@@ -187,7 +187,9 @@ export function ArchitectViewPicker({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" disabled={saving || (!chosen && !none) || (chosen !== null && !chosen.can_pick)} onClick={() => void save()}>
+        {/* No record yet (an older run): there is nothing to answer until the checks run again. */}
+        {!data.current && <span className="text-xs text-muted-foreground" role="status">This countertop has no match record yet. Run the checks first.</span>}
+        <Button type="button" disabled={saving || !data.current || (!chosen && !none) || (chosen !== null && !chosen.can_pick)} onClick={() => void save()}>
           {saving ? 'Saving…' : none ? 'Save: none of these' : 'Use this view'}
         </Button>
         <span className="text-xs text-muted-foreground">Your choice counts once the checks run again.</span>

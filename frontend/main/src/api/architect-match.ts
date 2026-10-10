@@ -125,9 +125,10 @@ export interface ArchitectViewMatch {
     status: ArchitectMatchStatus;
     source: 'automatic' | 'reviewer' | 'carried';
     decided_by: string | null;
-    decided_at: string | null;
+    decided_at: string;
     supersedes_id: string | null;
     note: string | null;
+    reasons: string[];
   } | null;
   candidates: ArchitectViewCandidate[];
   can_choose_none: boolean;
@@ -138,5 +139,5 @@ export interface ArchitectViewPickIn {
   view_id: string | null;
   none_of_these: boolean;
   note: string | null;
-  expected_record_id: string | null;
+  expected_record_id: string;
 }

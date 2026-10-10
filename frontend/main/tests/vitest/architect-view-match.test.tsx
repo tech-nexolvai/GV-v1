@@ -291,7 +291,7 @@ describe('Results with a separate architect file', () => {
 const CANDIDATES: ArchitectViewMatch = {
   row_id: 'n',
   vendor: { page_number: 4, document_version_id: VENDOR, title: 'SYNTHETIC KITCHEN', references: ['4/Z9'], region: location(VENDOR, 4, box(0.3, 0.6, 0.7, 0.7)) },
-  current: { record_id: 'record-shown-1', status: 'needs_reviewer', source: 'automatic', decided_by: null, decided_at: null, supersedes_id: null, note: null },
+  current: { record_id: 'record-shown-1', status: 'needs_reviewer', source: 'automatic', decided_by: null, decided_at: '2026-10-10T09:00:00Z', supersedes_id: null, note: null, reasons: [] },
   candidates: [
     {
       rank: 2, view: view(2), shown_to_ais: true,
@@ -423,6 +423,20 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(screen.queryByRole('button', { name: 'Reload the views' })).toBeNull();
     expect(screen.getByRole('radio', { name: /View 1:/ }).getAttribute('aria-checked')).toBe('true');
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('with no match record yet (an older run), nothing can be sent', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') !== 'GET') posts.push(JSON.parse(String(init?.body)));
+      if (String(input).endsWith('/architect-view-match')) return json({ ...CANDIDATES, current: null });
+      return json({ error: 'not_found', message: 'the page picture is not ready yet', request_id: 'r' }, 404);
+    }));
+    setup();
+    await user.click(await screen.findByRole('radio', { name: /View 1:/ }));
+    expect(screen.getByText('This countertop has no match record yet. Run the checks first.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Use this view' }).hasAttribute('disabled')).toBe(true);
+    expect(posts).toEqual([]);
   });
 
   it('keeps a note to 500 characters', async () => {
