@@ -31,9 +31,9 @@ reasons. **Combined sheets never reach it:** a row whose own page has an archite
 on it is skipped, and the stage builds a matcher only when the revision's architect file was
 indexed.
 
-`MatchingArchitectPairing` runs the matcher inside the slot reader's architect step, before the
-pairing (`ArchitectPairing.pair`), and attaches each row's match to its result
-(`PageSlotResult.architect_match`). Phase 4 pairs against the matched view from there.
+The slot reader's architect step runs the matcher (`ArchitectPairing(matcher=...)`, #1167, the one
+entry point), on the rows whose own page has no architect view, attaches each row's match to its
+result (`PageSlotResult.architect_match`) and pairs against the matched view from there.
 
 Source: issue #1166 · Plan: "Type 1 with a separate architect PDF (2026-10-10)" §3 ·
 Verification: `tests/workflow/test_architect_matching.py`
@@ -76,7 +76,6 @@ from workflow.architect_pairing import (
     _VENDOR_COLOUR,
     MEASURED_PAIRING_SETTINGS,
     ArchitectPageInput,
-    ArchitectPairing,
     VendorRowInput,
     _badge,
     _badge_size,
@@ -98,7 +97,6 @@ __all__ = [
     "MEASURED_MATCH_SETTINGS",
     "ArchitectMatcher",
     "MatchQuestion",
-    "MatchingArchitectPairing",
     "VendorPageFacts",
     "match_picture",
     "vendor_drawn_row",
@@ -981,56 +979,3 @@ def _score_json(score: CandidateScore) -> dict[str, object]:
         "pair_support": score.pair_support,
         "ticks_aligned": score.ticks_aligned,
     }
-
-
-# --- inside the slot reader's architect step -------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class MatchingArchitectPairing(ArchitectPairing):
-    """The slot reader's architect step on a revision whose architect file is a separate, indexed
-    PDF: first each row's match (`ArchitectMatcher.match`, in the same batch machinery), attached
-    to its result, then the pairing exactly as `ArchitectPairing.pair` does it."""
-
-    matcher: ArchitectMatcher | None = None
-
-    def pair(
-        self,
-        results: Sequence[PageSlotResult],
-        pages: Sequence[SlotPage],
-        *,
-        ask: Callable[[Sequence[CropJob]], Mapping[tuple[str, str], object]],
-        readers: tuple[str, ...],
-        ask_the_ais: bool,
-        store: ArtifactStore | None,
-        effort: str | None,
-    ) -> tuple[PageSlotResult, ...]:
-        matched = results
-        if self.matcher is not None:
-            found = self.matcher.match(
-                results,
-                pages,
-                ask=ask,
-                readers=readers,
-                ask_the_ais=ask_the_ais,
-                store=store,
-                effort=effort,
-            )
-            matched = tuple(
-                (
-                    replace(result, architect_match=found[result.page_index])
-                    if result.page_index in found
-                    else result
-                )
-                for result in results
-            )
-        return ArchitectPairing.pair(
-            self,
-            matched,
-            pages,
-            ask=ask,
-            readers=readers,
-            ask_the_ais=ask_the_ais,
-            store=store,
-            effort=effort,
-        )

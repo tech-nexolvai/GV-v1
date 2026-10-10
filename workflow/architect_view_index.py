@@ -98,6 +98,9 @@ class ArchitectViewCrop:
     px_per_inch: Fraction | None
     """Picture pixels per real inch, when the view's scale is known."""
     indexed: IndexedView
+    box_px: tuple[int, int, int, int] | None = None
+    """Where the picture sits on its page, in the page's pixels at the reading's dpi (#1167): the
+    pairing's two-panel picture places the architect reader's span boxes on it."""
 
 
 def view_scale(view: ArchitectView) -> Fraction | None:
@@ -164,11 +167,11 @@ def _picture(
     dpi: int,
     version_id: UUID,
     store: ArtifactStore | None,
-) -> tuple[bytes | None, str | None, str | None]:
-    """The view's extent rendered vendor-layer only, stored; `(None, None, None)` without a store
-    or when it cannot be rendered."""
+) -> tuple[bytes | None, str | None, str | None, tuple[int, int, int, int] | None]:
+    """The view's extent rendered vendor-layer only, stored, and where it sits on the page in
+    pixels; all `None` without a store or when it cannot be rendered."""
     if store is None or not callable(place):
-        return None, None, None
+        return None, None, None, None
     box = view.box
     first = place(box.x0 - VIEW_PICTURE_MARGIN_PT, box.top - VIEW_PICTURE_MARGIN_PT)
     second = place(box.x1 + VIEW_PICTURE_MARGIN_PT, box.bottom + VIEW_PICTURE_MARGIN_PT)
@@ -179,7 +182,7 @@ def _picture(
         max(first.y, second.y),
     )
     if box_px[2] <= box_px[0] or box_px[3] <= box_px[1]:
-        return None, None, None
+        return None, None, None, None
     try:
         png = render_region(
             data,
@@ -190,7 +193,7 @@ def _picture(
             vendor_only=True,
         )
     except (PageTooLarge, UnreadablePdf, ValueError):
-        return None, None, None
+        return None, None, None, None
     digest = hashlib.sha256(png).hexdigest()
     key = (
         f"architect-views/{version_id}/pages/{page.index}/view-{view.annotation_index}-{digest}.png"
@@ -198,7 +201,7 @@ def _picture(
     saved = store.put(key, io.BytesIO(png), content_type="image/png")
     if saved.sha256 != digest:
         raise ValueError("stored architect view picture hash does not match its bytes")
-    return png, digest, key
+    return png, digest, key, box_px
 
 
 def _reason(view: ArchitectView, labels: SheetLabels, rows: int) -> str:
@@ -270,7 +273,7 @@ def record_architect_view_index(
                 scale = view_scale(view)
                 rows = _drawn_rows(reading, view, scale)
                 entry = existing.get((page.id, tag))
-                png, digest, key = _picture(
+                png, digest, key, box_px = _picture(
                     data,
                     page,
                     view,
@@ -312,6 +315,7 @@ def record_architect_view_index(
                     # The stored row names the picture first rendered; a re-render that differs is
                     # not shown in its place.
                     png, digest, key = None, entry.picture_sha256, entry.picture_storage_key
+                    box_px = None
                 matched = MatchedView(
                     view_id=entry.id,
                     document_version_id=version_id,
@@ -353,6 +357,7 @@ def record_architect_view_index(
                     storage_key=key if png is not None else None,
                     px_per_inch=None if scale is None else scale * dpi / _POINTS_PER_INCH,
                     indexed=indexed,
+                    box_px=box_px if png is not None else None,
                 )
     finally:
         if document is not None:

@@ -6,7 +6,9 @@ module seals both sides of each pair:
 * **The architect's value** comes from the architect's own text, read by code (#1052): a candidate
   from the `architect-text` route, unheld, with a value that its printed text reads back to exactly,
   no qualifier word printed beside it, both ends on the drawn casework outline, inside a drawing
-  whose role is confirmed as the architect's (`app/evidence/sides.py`). Never the vendor-ink
+  whose role is confirmed as the architect's (`app/evidence/sides.py`), on the vendor row's own
+  sheet or, when the architect's drawings came as their own file, in the one architect view matched
+  with the row (#1167). Never the vendor-ink
   fallback, never a reviewer's coloured markup, never millimetres. It is sealed through the evidence
   gate as one exact reading plus its drawn-length witness (`CorroborationLane.DRAWN_LENGTH`).
 * **The vendor's value** is the row's width exactly as the width check (CT-WIDTH-001) seals it:
@@ -46,7 +48,8 @@ from extraction.architect.labels import read_label
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from vocabulary.semantic_types import DocumentRole, SemanticType
-from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
+from workflow.architect_match_contract import MatchedView
+from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR, span_view_tag
 from workflow.architect_row_plan import (
     ArchitectRowPlan,
     Disposition,
@@ -59,6 +62,7 @@ __all__ = [
     "ArchitectRowOperands",
     "architect_candidate_refusal",
     "architect_row_operands",
+    "in_matched_view",
 ]
 
 
@@ -103,7 +107,12 @@ def architect_row_operands(
             else SemanticType.COUNTERTOP_PIECE_WIDTH
         )
         architect = _architect_operand(
-            session, row, pair.architect_candidate_id, semantic=semantic, name=pair.architect_name
+            session,
+            row,
+            pair.architect_candidate_id,
+            semantic=semantic,
+            name=pair.architect_name,
+            matched=plan.matched,
         )
         if isinstance(architect, str):
             return ArchitectRowOperands(
@@ -169,12 +178,13 @@ def _architect_operand(
     *,
     semantic: SemanticType,
     name: str,
+    matched: MatchedView | None = None,
 ) -> VerdictOperand | str:
     """The architect's printed value, sealed — or why it may not be used, in plain words."""
     candidate = session.get(ObservationCandidate, candidate_id)
     if candidate is None:
         return "the pairing names a dimension that is not stored."
-    refusal = architect_candidate_refusal(session, row, candidate)
+    refusal = architect_candidate_refusal(session, row, candidate, matched=matched)
     if refusal is not None:
         return refusal
     observation = _architect_canonical(session, candidate, semantic)
@@ -186,13 +196,32 @@ def _architect_operand(
     return replace(operand, evidence_observation_id=str(observation.id))
 
 
+def in_matched_view(candidate: ObservationCandidate, matched: MatchedView | None) -> bool:
+    """Whether the candidate lies in the architect view matched with the row (#1167): its page, its
+    file version and the very view it was read in (its tag). Always `False` without a match."""
+    if matched is None:
+        return False
+    return (
+        candidate.page_id == matched.page_id
+        and candidate.document_version_id == matched.document_version_id
+        and span_view_tag(candidate.ambiguity_flags or ()) == matched.view_tag
+    )
+
+
 def architect_candidate_refusal(
-    session: Session, row: SlotRow | None, candidate: ObservationCandidate
+    session: Session,
+    row: SlotRow | None,
+    candidate: ObservationCandidate,
+    *,
+    matched: MatchedView | None = None,
 ) -> str | None:
     """Why this candidate is not an architect's value this check may use; `None` when it is.
 
     Also asked by `app/verdicts/record.py`'s row guard (with `row=None`, which checks the page
     itself), so the two cannot disagree about what an architect operand is.
+
+    Where it may lie: on the vendor row's own sheet, or (#1167) in the architect view `matched` with
+    the row. Without a match the refusal is word for word as before.
     """
     run = session.get(ExtractionRun, candidate.extraction_run_id)
     flags = set(candidate.ambiguity_flags or ())
@@ -200,11 +229,17 @@ def architect_candidate_refusal(
         return "it was not read from the architect's own text by code."
     if "reviewer-markup" in flags or any(flag.startswith("ink:") for flag in flags):
         return "it is not the architect's black text."
-    if row is not None and (
-        candidate.page_id != row.anchor.page_id
-        or candidate.document_version_id != row.anchor.document_version_id
+    if (
+        row is not None
+        and (
+            candidate.page_id != row.anchor.page_id
+            or candidate.document_version_id != row.anchor.document_version_id
+        )
+        and not in_matched_view(candidate, matched)
     ):
-        return "it is on a different sheet from the vendor's row."
+        if matched is None:
+            return "it is on a different sheet from the vendor's row."
+        return "it is not on the vendor's sheet or the architect view matched with this row."
     held = next(
         (flag.removeprefix("arch-held:") for flag in flags if flag.startswith("arch-held:")), None
     )

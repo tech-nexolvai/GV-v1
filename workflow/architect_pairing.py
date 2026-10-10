@@ -33,8 +33,20 @@ makes and records that pairing for every vendor row the slot reader chose and re
 4. **The reviewer** pairs with one click (`app/api/slot_rows.py`), a new record superseding the
    latest (`reviewer`).
 
+**The architect's own file (#1167).** When the row's own page has no architect view and the
+architect's drawings came as their own PDF, the row is first matched with one view of that file
+(`ArchitectPairing.matcher`, #1166). Only a match code and both AIs made (`auto_matched`), or one a
+reviewer made on the previous revision of the identical item (`carried_over`), is paired, and only
+against that one view (`restrict_to_view`): the same position maths in real inches, and both AIs get
+one picture of two panels (`pair_picture_two_panel`, the vendor's row beside the architect view,
+`arch-pair-2panel-v1`). Every other match state gets no pairing: the row says why
+(`workflow/architect_row_plan.py`). The pairing record names the view (`architect_view_id`), and the
+read path counts it only while that view is still the row's match. A row whose own page has an
+architect view is paired exactly as before: the matcher never sees it.
+
 **What never pairs.** A span running to a fixture centre line, or whose ends are not known to sit
-on the casework outline (decision D4); a held architect value; a span from another page.
+on the casework outline (decision D4); a held architect value; a span from another page, unless it
+is in the architect view matched with the row.
 
 `latest_architect_pairing` is the read path the rule uses (`workflow/architect_pairing_contract.py`).
 It and the reviewer's helpers live in `workflow/architect_pairing_records.py`, which reads no drawing
@@ -53,13 +65,17 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
 from itertools import pairwise
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.evidence import ArchitectPairingRecord, ObservationCandidate
+from app.models.evidence import (
+    ArchitectPairingRecord,
+    ArchitectViewMatchRecord,
+    ObservationCandidate,
+)
 from app.models.runs import ModelInvocation
 from evidence.crop import RenderedPage, _crop_rgb, encode_png
 from extraction.architect.pairing import (
@@ -74,6 +90,7 @@ from extraction.architect.reader import ArchitectPage, ArchitectView
 from extraction.geometry.rows import Box
 from extraction.ink import InkClass
 from extraction.slot_reader.bedrock import (
+    ARCH_PAIR_2PANEL_PROMPT_ID,
     ARCH_PAIR_PROMPT_ID,
     ARCH_PAIR_PROMPT_IDS,
     ArchPairAnswer,
@@ -81,6 +98,7 @@ from extraction.slot_reader.bedrock import (
 )
 from extraction.slot_reader.seal import LabelState
 from units.measurement import Unit
+from workflow.architect_match_contract import MatchedView, RowMatch, restrict_to_view
 from workflow.architect_pairing_contract import PairingSource
 from workflow.architect_pairing_records import (
     DecidedPair,
@@ -90,6 +108,7 @@ from workflow.architect_pairing_records import (
     architect_spans_for_row,
     latest_architect_pairing,
     latest_record,
+    record_code_pairing_for_view,
     record_reviewer_pairing,
 )
 
@@ -106,10 +125,13 @@ __all__ = [
     "ArchitectPairing",
     "ArchitectRowInput",
     "ArchitectSpanInput",
+    "ArchitectViewMatcher",
+    "ArchitectViewPicture",
     "DecidedPair",
     "PairQuestion",
     "PairingOutcome",
     "ReviewerPairingRefused",
+    "TwoPanelPicture",
     "VendorPiece",
     "VendorRowInput",
     "architect_page_input",
@@ -119,8 +141,11 @@ __all__ = [
     "latest_record",
     "pair_by_code",
     "pair_picture",
+    "pair_picture_two_panel",
     "pair_question",
+    "pair_question_two_panel",
     "persist_architect_pairings",
+    "record_code_pairing_for_view",
     "record_reviewer_pairing",
     "resolve_answers",
     "vendor_row_input",
@@ -182,6 +207,11 @@ _MEASURE_WORDS: Final = {
 }
 
 _PICTURE_MAX_SIDE: Final = 1800
+#: The white gap between the two panels of the separate-file pairing picture (#1167).
+TWO_PANEL_GUTTER_PX: Final = 24
+#: The match states a row is paired in (#1167): a view code and both AIs chose, or one a reviewer
+#: chose on the previous revision of the identical item. Every other state gets no pairing.
+_PAIRED_MATCHES: Final = frozenset({"auto_matched", "carried_over"})
 _VENDOR_COLOUR: Final = bytes((220, 20, 60))
 _ARCHITECT_COLOUR: Final = bytes((0, 90, 220))
 _WHITE: Final = bytes((255, 255, 255))
@@ -284,6 +314,18 @@ class ArchitectPageInput:
     view_boxes: tuple[Box, ...]
     """Every pasted drawing on the page, for framing the picture."""
     reasons: tuple[str, ...] = ()
+    confirmed_views: frozenset[int] = frozenset()
+    """The numbers of the page's drawings whose role is the architect's now (#1167): a pasted
+    drawing's annotation index or a content view's number (`arch-view:<n>`)."""
+    view_extents: Mapping[int, Box] = field(default_factory=dict)
+    """Every drawing's rectangle by that number, to frame one matched view (#1167)."""
+
+    @property
+    def has_architect_view(self) -> bool:
+        """Whether the page itself holds a drawing confirmed as the architect's: then a vendor row
+        on it pairs on the page, exactly as before matching existed, and is never matched (#1167).
+        """
+        return bool(self.confirmed_views) or bool(self.rows)
 
 
 # --- outputs ---------------------------------------------------------------------------------------
@@ -507,6 +549,12 @@ def architect_page_input(
         rows=tuple(rows),
         view_boxes=tuple(view.box for view in reading.views),
         reasons=reasons,
+        confirmed_views=frozenset(
+            view.annotation_index
+            for view in reading.views
+            if view.annotation_index in architect_views
+        ),
+        view_extents={view.annotation_index: view.box for view in reading.views},
     )
 
 
@@ -879,6 +927,286 @@ def pair_question(
     )
 
 
+# --- 2b. the two AIs, when the architect's drawings are their own file (#1167) -------------------
+
+
+class ArchitectViewPicture(Protocol):
+    """The picture of one view of the architect's own file, as the view index rendered it (#1166,
+    `workflow.architect_view_index.ArchitectViewCrop`): what the right panel of the two-panel
+    question shows."""
+
+    @property
+    def png(self) -> bytes | None:
+        """An RGB PNG of the view's extent; `None` when it could not be rendered (then no AI is
+        shown the view and code's pairing stands alone)."""
+        ...
+
+    @property
+    def box_px(self) -> tuple[int, int, int, int] | None:
+        """Where the picture sits on its page, in the page's pixels at the reading's dpi: the pixels
+        the architect reader's span boxes (`ArchitectSpanInput.box_px`) are in."""
+        ...
+
+    @property
+    def px_per_inch(self) -> Fraction | None:
+        """Picture pixels per real inch, when the view's scale is known."""
+        ...
+
+
+class ArchitectViewMatcher(Protocol):
+    """The matcher (#1166, `workflow.architect_matching.ArchitectMatcher`): one `RowMatch` per row
+    it was given, by page index."""
+
+    def match(
+        self,
+        results: Sequence[PageSlotResult],
+        pages: Sequence[SlotPage],
+        *,
+        ask: Callable[[Sequence[CropJob]], Mapping[tuple[str, str], object]],
+        readers: tuple[str, ...],
+        ask_the_ais: bool,
+        store: ArtifactStore | None,
+        effort: str | None,
+    ) -> Mapping[int, RowMatch]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TwoPanelPicture:
+    png: bytes
+    common_scale: bool
+    """Both panels at the same pixels per real inch (both drawings' scales known); else only the
+    same height."""
+
+
+def _resized(rgb: bytes, width: int, height: int, factor: Fraction) -> tuple[bytes, int, int]:
+    """The picture scaled by `factor` (area-averaged down, linear up), at least one pixel a side."""
+    new_width = max(1, round(width * factor))
+    new_height = max(1, round(height * factor))
+    if (new_width, new_height) == (width, height):
+        return rgb, width, height
+    import cv2
+    import numpy as np
+
+    image = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
+    shrink = new_width < width
+    out = cv2.resize(
+        image,
+        (new_width, new_height),
+        interpolation=cv2.INTER_AREA if shrink else cv2.INTER_LINEAR,
+    )
+    return np.ascontiguousarray(out).tobytes(), new_width, new_height
+
+
+def pair_picture_two_panel(
+    vendor_page: RenderedPage,
+    vendor: VendorRowInput,
+    architect: ArchitectPageInput,
+    crop: ArchitectViewPicture,
+) -> TwoPanelPicture:
+    """The separate-file pairing picture (#1167): the vendor's row on the left, its pieces outlined
+    red as V1..Vn; the matched architect view on the right, the spans the AIs are shown outlined
+    blue as A1..Am; a 24 px white gap between; at most 1800 px a side.
+
+    When both drawings' scales are known (the vendor's from its sealed pieces, the architect view's
+    from the view index) both panels are drawn at the same pixels per real inch; otherwise at the
+    same height, and `common_scale` says so (the question tells the AIs). The marks are drawn after
+    the scaling, so they stay the same size whatever the drawings' scales. They only say *which*
+    dimension is meant; no value comes from them. `ValueError` when the view has no picture.
+    """
+    if crop.png is None or crop.box_px is None:
+        raise ValueError("the architect view has no picture to show")
+    spans = _askable_spans(architect)
+    boxes = [piece.box_px for piece in vendor.pieces]
+    frame = _union(*boxes)
+    margin = max(20, (frame[2] - frame[0]) // 25)
+    frame = (
+        max(0, frame[0] - margin),
+        max(0, frame[1] - 4 * margin),
+        min(vendor_page.width_px, frame[2] + margin),
+        min(vendor_page.height_px, frame[3] + 4 * margin),
+    )
+    vendor_width, vendor_height = frame[2] - frame[0], frame[3] - frame[1]
+    vendor_rgb = _crop_rgb(vendor_page, frame)
+    from evidence.crop import decode_rgb_png
+
+    crop_width, crop_height, crop_rgb = decode_rgb_png(crop.png)
+    crop_box = crop.box_px
+
+    vendor_pt = vendor_scale(vendor.pieces)
+    architect_px = crop.px_per_inch
+    common = vendor_pt is not None and architect_px is not None and architect_px > 0
+    if common:
+        assert vendor_pt is not None and architect_px is not None
+        vendor_factor = Fraction(1)
+        # The architect panel brought to the vendor panel's pixels per real inch.
+        architect_factor = (vendor_pt * vendor_page.dpi / 72) / architect_px
+    else:
+        height = max(vendor_height, crop_height)
+        vendor_factor = Fraction(height, vendor_height)
+        architect_factor = Fraction(height, crop_height)
+    widths = vendor_width * vendor_factor + crop_width * architect_factor
+    heights = max(vendor_height * vendor_factor, crop_height * architect_factor)
+    fit = min(
+        Fraction(1),
+        Fraction(_PICTURE_MAX_SIDE - TWO_PANEL_GUTTER_PX) / widths,
+        Fraction(_PICTURE_MAX_SIDE) / heights,
+    )
+    vendor_factor *= fit
+    architect_factor *= fit
+    left_rgb, left_width, left_height = _resized(
+        vendor_rgb, vendor_width, vendor_height, vendor_factor
+    )
+    right_rgb, right_width, right_height = _resized(
+        crop_rgb, crop_width, crop_height, architect_factor
+    )
+    width = left_width + TWO_PANEL_GUTTER_PX + right_width
+    height = max(left_height, right_height)
+    canvas = bytearray(_WHITE * (width * height))
+    stride = width * 3
+    for row in range(left_height):
+        canvas[row * stride : row * stride + left_width * 3] = left_rgb[
+            row * left_width * 3 : (row + 1) * left_width * 3
+        ]
+    offset = left_width + TWO_PANEL_GUTTER_PX
+    for row in range(right_height):
+        canvas[row * stride + offset * 3 : row * stride + (offset + right_width) * 3] = right_rgb[
+            row * right_width * 3 : (row + 1) * right_width * 3
+        ]
+
+    def placed(
+        box: tuple[int, int, int, int],
+        origin: tuple[int, int],
+        factor: Fraction,
+        shift: int,
+        limit: tuple[int, int],
+    ) -> tuple[int, int, int, int]:
+        x0 = shift + max(0, min(limit[0], round((box[0] - origin[0]) * factor)))
+        y0 = max(0, min(limit[1], round((box[1] - origin[1]) * factor)))
+        x1 = shift + max(0, min(limit[0], round((box[2] - origin[0]) * factor)))
+        y1 = max(0, min(limit[1], round((box[3] - origin[1]) * factor)))
+        return x0, y0, x1, y1
+
+    dot, thickness = 3, 2
+    for number, piece in enumerate(vendor.pieces, start=1):
+        box = placed(
+            piece.box_px, (frame[0], frame[1]), vendor_factor, 0, (left_width, left_height)
+        )
+        _outline(canvas, width, height, box, _VENDOR_COLOUR, thickness)
+        label = f"V{number}"
+        badge_width, badge_height = _badge_size(label, dot)
+        step = (number - 1) % 2
+        at = (
+            max(0, min(left_width - badge_width, (box[0] + box[2]) // 2 - badge_width // 2)),
+            max(0, min(height - badge_height, box[3] + dot + step * (badge_height + dot))),
+        )
+        _badge(canvas, width, height, at, label, _VENDOR_COLOUR, dot)
+    for number, (_rank, span) in enumerate(spans, start=1):
+        box = placed(
+            span.box_px,
+            (crop_box[0], crop_box[1]),
+            architect_factor,
+            offset,
+            (right_width, right_height),
+        )
+        _outline(canvas, width, height, box, _ARCHITECT_COLOUR, thickness)
+        label = f"A{number}"
+        badge_width, badge_height = _badge_size(label, dot)
+        step = (number - 1) % 2
+        at = (
+            max(offset, min(width - badge_width, (box[0] + box[2]) // 2 - badge_width // 2)),
+            max(0, box[1] - dot - badge_height - step * (badge_height + dot)),
+        )
+        _badge(canvas, width, height, at, label, _ARCHITECT_COLOUR, dot)
+    return TwoPanelPicture(encode_png(width, height, bytes(canvas)), common)
+
+
+def pair_question_two_panel(
+    page: SlotPage,
+    vendor: VendorRowInput,
+    architect: ArchitectPageInput,
+    crop: ArchitectViewPicture,
+    *,
+    matched: MatchedView,
+    store: ArtifactStore | None,
+    effort: str | None,
+) -> PairQuestion | None:
+    """The two-panel picture and its hash-bound packet for a row paired against the architect view
+    matched with it (#1167), or `None` when nothing could be paired. `architect` is already limited
+    to that view (`restrict_to_view`).
+
+    The packet names the view by what does not change between runs (its file version, page and
+    number), so a re-run asking the identical question reuses the stored answer (#1112); the view's
+    index row and the match record are named on the pairing record instead."""
+    from io import BytesIO
+
+    from workflow.slot_reader import _transform_packet
+
+    spans = _askable_spans(architect)
+    if not spans or not vendor.pieces:
+        return None
+    try:
+        picture = pair_picture_two_panel(page.rendered, vendor, architect, crop)
+    except ValueError:
+        # A view picture this code cannot read: no question, so code's pairing stands alone and
+        # the reviewer confirms it.
+        return None
+    digest = hashlib.sha256(picture.png).hexdigest()
+    storage_key: str | None = None
+    if store is not None:
+        storage_key = (
+            f"reader-questions/{page.document_version_id}/pages/{page.page_index}/"
+            f"arch-pair-2panel-{digest}.png"
+        )
+        saved = store.put(storage_key, BytesIO(picture.png), content_type="image/png")
+        if saved.sha256 != digest:
+            raise ValueError("stored architect-pairing picture hash does not match its bytes")
+    packet: dict[str, object] = {
+        "question_id": f"p{page.page_index}:arch-pair",
+        "document_version_id": str(page.document_version_id),
+        "page_index": page.page_index,
+        "source_page_sha256": page.rendered.page_content_hash,
+        "prompt_id": ARCH_PAIR_2PANEL_PROMPT_ID,
+        "vendor_slots": [piece.slot_index for piece in vendor.pieces],
+        "architect_candidate_ids": [str(span.candidate_id) for _rank, span in spans],
+        "architect_document_version_id": str(matched.document_version_id),
+        "architect_page_index": matched.page_number - 1,
+        "architect_view_number": matched.view_number,
+        "architect_view_tag": matched.view_tag,
+        "architect_view_picture_sha256": hashlib.sha256(crop.png or b"").hexdigest(),
+        "common_scale": picture.common_scale,
+        "page_transform": _transform_packet(page.transform),
+        "images": {"two_panel_pairing_view": {"sha256": digest, "storage_key": storage_key}},
+        **({} if effort is None else {"effort": effort}),
+    }
+    packet["packet_sha256"] = hashlib.sha256(
+        json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return PairQuestion(
+        picture_png=picture.png,
+        vendor_slots=tuple(piece.slot_index for piece in vendor.pieces),
+        architect=tuple(span for _rank, span in spans),
+        architect_rows=tuple(rank for rank, _span in spans),
+        packet=packet,
+    )
+
+
+def view_details(matched: MatchedView) -> dict[str, object]:
+    """What a pairing record says about the architect view it was made against (#1167): the read
+    path counts the record only while this view is still the row's match."""
+    return {
+        "architect_view_id": str(matched.view_id),
+        "architect_document_version_id": str(matched.document_version_id),
+        "architect_page_id": str(matched.page_id),
+        "architect_page_index": matched.page_number - 1,
+        "architect_view_number": matched.view_number,
+        "architect_view_tag": matched.view_tag,
+    }
+
+
+def _against_view(outcome: PairingOutcome, matched: MatchedView) -> PairingOutcome:
+    return replace(outcome, details={**outcome.details, **view_details(matched)})
+
+
 def _answer_json(answer: ArchPairAnswer | None, model: str) -> dict[str, object]:
     if answer is None:
         return {"model_id": model, "answered": False}
@@ -944,7 +1272,7 @@ def _judge(
         },
     }
     ai: dict[str, object] = {
-        "prompt_id": ARCH_PAIR_PROMPT_ID,
+        "prompt_id": question.packet.get("prompt_id", ARCH_PAIR_PROMPT_ID),
         "picture_sha256": question.picture_sha256,
         "packet_sha256": question.packet.get("packet_sha256"),
         "numbering": numbering,
@@ -1298,12 +1626,20 @@ def _ask_the_ais(vendor: VendorRowInput, page: ArchitectPageInput) -> bool:
 class ArchitectPairing:
     """The pairing step the slot reader runs after it has read a batch of pages (#1053).
 
-    `pages` holds the architect reader's result for each page it read, by page id. A page it did not
-    read gets no pairing at all.
+    `pages` holds the architect reader's result for each page it read, by page id. A row whose own
+    page holds a drawing confirmed as the architect's is paired on that page, exactly as before.
+
+    `matcher` (#1166/#1167) runs only when the architect's drawings came as their own file: every
+    other row is matched with one view of that file, and paired against that view only when the
+    match is `auto_matched` or `carried_over` (`restrict_to_view`), both AIs then asked the
+    two-panel question; `crops` are the views' pictures by their index row id. Without a matcher a
+    row whose own page has no architect view is paired on its page as before (nothing to pair).
     """
 
     settings: PairingSettings
     pages: Mapping[UUID, ArchitectPageInput] = field(default_factory=dict)
+    matcher: ArchitectViewMatcher | None = None
+    crops: Mapping[UUID, ArchitectViewPicture] = field(default_factory=dict)
 
     def pair(
         self,
@@ -1318,23 +1654,99 @@ class ArchitectPairing:
     ) -> tuple[PageSlotResult, ...]:
         """Every result with its pairing: code's, and one batched question to both readers for
         every row whose page has an architect span code has not refused (`ask_the_ais` only when
-        both readers are the Claude pair), weighed together by `combine`."""
+        both readers are the Claude pair), weighed together by `combine`. With a matcher, rows
+        whose own page has no architect view are matched first and carry their `architect_match`."""
         by_index = {page.page_index: page for page in pages}
         pending: dict[int, tuple[VendorRowInput, ArchitectPageInput, PairingOutcome]] = {}
         decided: dict[int, PairingOutcome] = {}
         questions: dict[int, PairQuestion] = {}
         jobs: list[CropJob] = []
+        to_match: list[PageSlotResult] = []
         for result in results:
-            architect = self.pages.get(result.page_id)
+            own = self.pages.get(result.page_id)
             vendor = vendor_row_input(result)
-            if architect is None or vendor is None:
+            if vendor is None:
                 continue
-            code, _raw = pair_by_code(vendor, architect, self.settings)
-            if not (ask_the_ais and _ask_the_ais(vendor, architect)):
+            # One rule for "this page has its own architect view" (`has_architect_view`), the
+            # one the stage also gives the matcher: such a row pairs on its page, never matched.
+            if self.matcher is not None and (own is None or not own.has_architect_view):
+                to_match.append(result)
+                continue
+            if own is None:
+                continue
+            code, _raw = pair_by_code(vendor, own, self.settings)
+            if not (ask_the_ais and _ask_the_ais(vendor, own)):
                 decided[result.page_index] = combine(code, None)
                 continue
             question = pair_question(
-                by_index[result.page_index], vendor, architect, store=store, effort=effort
+                by_index[result.page_index], vendor, own, store=store, effort=effort
+            )
+            if question is None:
+                decided[result.page_index] = combine(code, None)
+                continue
+            pending[result.page_index] = (vendor, own, code)
+            questions[result.page_index] = question
+            jobs.extend(
+                CropJob(
+                    key=_pair_key(result.page_index),
+                    model_id=model,
+                    page_index=result.page_index,
+                    png=question.picture_png,
+                    arch_pair_question=True,
+                    vendor_pieces=len(question.vendor_slots),
+                    architect_spans=len(question.architect),
+                    question_packet=question.packet,
+                )
+                for model in readers
+            )
+        matches: dict[int, RowMatch] = {}
+        if self.matcher is not None and to_match:
+            matches.update(
+                self.matcher.match(
+                    to_match,
+                    pages,
+                    ask=ask,
+                    readers=readers,
+                    ask_the_ais=ask_the_ais,
+                    store=store,
+                    effort=effort,
+                )
+            )
+        by_page = {result.page_index: result for result in results}
+        for result in (by_page[index] for index in matches if index in by_page):
+            match = matches.get(result.page_index)
+            vendor = vendor_row_input(result)
+            if match is None or vendor is None or match.chosen is None:
+                continue
+            if match.status not in _PAIRED_MATCHES:
+                # Choose the view, none matches, not clearly apart: nothing is paired, and the
+                # row says why (`workflow/architect_row_plan.py`).
+                continue
+            matched = match.chosen
+            sheet = self.pages.get(matched.page_id)
+            extent = None if sheet is None else sheet.view_extents.get(matched.view_number)
+            if sheet is None or extent is None:
+                continue
+            architect = restrict_to_view(sheet, matched.view_number, extent)
+            code, _raw = pair_by_code(vendor, architect, self.settings)
+            code = _against_view(code, matched)
+            crop = self.crops.get(matched.view_id)
+            if (
+                crop is None
+                or crop.png is None
+                or crop.box_px is None
+                or not (ask_the_ais and _ask_the_ais(vendor, architect))
+            ):
+                decided[result.page_index] = combine(code, None)
+                continue
+            question = pair_question_two_panel(
+                by_index[result.page_index],
+                vendor,
+                architect,
+                crop,
+                matched=matched,
+                store=store,
+                effort=effort,
             )
             if question is None:
                 decided[result.page_index] = combine(code, None)
@@ -1351,6 +1763,8 @@ class ArchitectPairing:
                     vendor_pieces=len(question.vendor_slots),
                     architect_spans=len(question.architect),
                     question_packet=question.packet,
+                    arch_pair_two_panel=True,
+                    arch_pair_common_scale=bool(question.packet.get("common_scale")),
                 )
                 for model in readers
             )
@@ -1372,14 +1786,20 @@ class ArchitectPairing:
             decided[page_index] = resolve_answers(
                 questions[page_index], given, vendor, architect, code
             )
-        return tuple(
-            (
-                replace(result, architect_pairing=decided[result.page_index])
-                if result.page_index in decided
-                else result
-            )
-            for result in results
-        )
+        return tuple(_with(result, decided, matches) for result in results)
+
+
+def _with(
+    result: PageSlotResult,
+    decided: Mapping[int, PairingOutcome],
+    matches: Mapping[int, RowMatch],
+) -> PageSlotResult:
+    changes: dict[str, object] = {}
+    if result.page_index in decided:
+        changes["architect_pairing"] = decided[result.page_index]
+    if result.page_index in matches:
+        changes["architect_match"] = matches[result.page_index]
+    return replace(result, **changes) if changes else result  # type: ignore[arg-type]
 
 
 def _pair_key(page_index: int) -> str:
@@ -1418,15 +1838,40 @@ def persist_architect_pairings(
     extraction_run_id: UUID,
     results: Sequence[PageSlotResult],
 ) -> int:
-    """One automatic record per vendor row read in this run that has a pairing. Append-only."""
+    """One automatic record per vendor row read in this run that has a pairing. Append-only.
+
+    A pairing made against the architect view matched with the row (#1167) also names the match
+    record stored for the row in this run (`match_record_id`), when there is one."""
     count = 0
     session.flush()
+    matched_rows = [
+        anchor
+        for result in results
+        if result.architect_pairing is not None
+        and "architect_view_id" in result.architect_pairing.details
+        and (anchor := result.owner_candidate_ids.get("slot:0")) is not None
+    ]
+    match_records: dict[UUID, UUID] = {}
+    if matched_rows:
+        for record_id, anchor_id in session.execute(
+            select(ArchitectViewMatchRecord.id, ArchitectViewMatchRecord.row_anchor_candidate_id)
+            .where(
+                ArchitectViewMatchRecord.row_anchor_candidate_id.in_(tuple(matched_rows)),
+                ArchitectViewMatchRecord.extraction_run_id == extraction_run_id,
+            )
+            .order_by(
+                ArchitectViewMatchRecord.created_at.desc(), ArchitectViewMatchRecord.id.desc()
+            )
+        ):
+            match_records.setdefault(anchor_id, record_id)
     for result in results:
         outcome = result.architect_pairing
         anchor = result.owner_candidate_ids.get("slot:0")
         if outcome is None or anchor is None or result.plan.row is None:
             continue
         details = dict(outcome.details)
+        if "architect_view_id" in details and anchor in match_records:
+            details["match_record_id"] = str(match_records[anchor])
         ai = details.get("ai")
         if isinstance(ai, dict):
             details["ai"] = {

@@ -55,6 +55,7 @@ from workflow.architect_match_records import (
     latest_match_record,
     record_reviewer_match,
 )
+from workflow.architect_pairing_records import record_code_pairing_for_view
 from workflow.slot_row_scope import SlotRow
 
 router = APIRouter(tags=["architect view matches"])
@@ -300,11 +301,14 @@ def pick_architect_view(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
         ) from error
-    # Phase 4 seam: the picked candidate's stored code pairing is recorded here, one call
-    # (`record_code_pairing_for_view`), so the reviewer confirms the pairing as today.
     try:
         # Flushed first: two reviewers superseding the same record collide on its unique index here.
         session.flush()
+        # The picked view's stored code pairing becomes the row's pairing (#1167): one judgment,
+        # so the reviewer confirms the pairing as today.
+        record_code_pairing_for_view(
+            session, anchor=row.anchor, package_revision_id=revision.id, match_record=record
+        )
         emit(
             session,
             category=AuditCategory.REVIEW_ACTION,
