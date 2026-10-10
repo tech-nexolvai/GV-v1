@@ -35,6 +35,7 @@ from workflow.architect_match_contract import MatchedView, RowMatch
 from workflow.architect_match_records import (
     ReviewerMatchRefused,
     ReviewerMatchStale,
+    architect_fingerprint,
     effective_architect_match,
     effective_architect_matches,
     latest_match_record,
@@ -43,6 +44,7 @@ from workflow.architect_match_records import (
     record_reviewer_match,
     remembered_matches,
     same_vendor_item,
+    view_carry_key,
 )
 from workflow.architect_reader import ARCHITECT_EXTRACTOR, ARCHITECT_EXTRACTOR_VERSION
 
@@ -155,7 +157,11 @@ class Indexed:
             status=status,  # type: ignore[arg-type]
             source=source,  # type: ignore[arg-type]
             chosen=None if chosen is None else self.matched_view(chosen),
-            code=CodeMatch(CodeVerdict.GEOMETRY_TIE, None, (), ("two views fit",)),
+            code=(
+                CodeMatch(CodeVerdict.GEOMETRY_CLEAR, str(chosen.id), (), ("one view fits",))
+                if status == "auto_matched" and chosen is not None
+                else CodeMatch(CodeVerdict.GEOMETRY_TIE, None, (), ("two views fit",))
+            ),
             ai_picks=tuple(
                 {"model_id": model, "answer": "view", "view_id": str(self.view.id)}
                 for model in (OPUS, SONNET)
@@ -323,6 +329,46 @@ def test_the_database_refuses_an_inconsistent_record(
         )
     else:
         session.add(ArchitectViewMatchRecord(**{**values, **changes}))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "auto-without-a-code-pick",
+        "auto-on-another-view-than-codes",
+        "code-pick-without-a-picking-verdict",
+    ],
+)
+def test_the_database_holds_decision_d1s_shape(session: Session, case: str) -> None:
+    """An automatic match needs code's own pick of that very view (decision D1)."""
+    indexed = Indexed(session)
+    session.commit()
+    values: dict[str, Any] = {
+        "package_revision_id": indexed.revision.id,
+        "vendor_page_id": indexed.page.id,
+        "row_anchor_candidate_id": indexed.anchor.id,
+        "extraction_run_id": indexed.run.id,
+        "source": "automatic",
+        "status": "auto_matched",
+        "matched_view_id": indexed.view.id,
+        "code_verdict": "geometry_clear",
+        "code_pick_view_id": indexed.view.id,
+        "ai_picks": [],
+        "candidates": [],
+        "vendor_references": [],
+        "reasons": [],
+        "details": {},
+    }
+    if case == "auto-without-a-code-pick":
+        values.update(code_verdict="geometry_tie", code_pick_view_id=None)
+    elif case == "auto-on-another-view-than-codes":
+        values.update(code_pick_view_id=indexed.crowded.id)
+    else:
+        values.update(status="needs_reviewer", matched_view_id=None, code_verdict="geometry_tie")
+    session.add(ArchitectViewMatchRecord(**values))
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
@@ -556,7 +602,7 @@ def test_a_persons_standing_decisions_are_remembered_newest_revision_first(
         (1, "reviewer_confirmed"),
     ]
     assert found[0].view_key is None
-    assert found[1].view_key == ("1" * 64, "1" * 64, "view-1")
+    assert found[1].view_key == ("1" * 64, "1" * 64, "view-1", "extent:0,0,10,10")
     assert found[1].vendor_item_key == ITEM
     assert remembered_matches(session, indexed.revision.id)[0].revision_number == 1
 
@@ -603,9 +649,29 @@ def test_a_carried_match_says_where_it_came_from(session: Session) -> None:
         ({"page_content_hash": "2" * 64}, True, False),
         ({"page_content_hash": "2" * 64, "page_index": 5}, False, False),
         ({"page_index": 5}, True, True),
+        ({"vendor_document_sha256": "9" * 64}, True, False),
     ],
 )
 def test_the_same_vendor_item_and_an_identical_one(
     change: dict[str, object], same: bool, identical: bool
 ) -> None:
     assert same_vendor_item(ITEM, {**ITEM, **change}) == (same, identical)
+
+
+def test_a_decision_remembers_the_architect_files_it_was_made_against(session: Session) -> None:
+    indexed = Indexed(session)
+    indexed.automatic(session, details={"architect_files": ["a" * 64]})
+    indexed.pick(session, none=True)
+
+    (only,) = remembered_matches(session, indexed.revision.id)
+    assert only.architect_files == ("a" * 64,)
+
+
+def test_a_views_carry_key_holds_its_picture_or_its_extent() -> None:
+    by_picture = view_carry_key("1" * 64, "2" * 64, "view-1", "3" * 64, {"x0": "0"})
+    other_picture = view_carry_key("1" * 64, "2" * 64, "view-1", "4" * 64, {"x0": "0"})
+    by_extent = view_carry_key("1" * 64, "2" * 64, "view-1", None, {"x0": "0", "top": "1"})
+    moved = view_carry_key("1" * 64, "2" * 64, "view-1", None, {"x0": "5", "top": "1"})
+
+    assert by_picture != other_picture and by_extent != moved
+    assert architect_fingerprint(["b", "a", "b"]) == ("a", "b")

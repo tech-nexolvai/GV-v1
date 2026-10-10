@@ -87,6 +87,7 @@ from workflow.architect_pairing_records import (
     architect_views,
     latest_architect_pairing,
     latest_architect_pairings,
+    span_view_tag,
 )
 from workflow.slot_row_scope import SlotRow
 
@@ -466,7 +467,10 @@ def _eligible_architect_spans(
         )
     ):
         flags = set(candidate.ambiguity_flags or ())
-        if matched is not None and f"arch-view:{matched.view_number}" not in flags:
+        if (
+            matched is not None
+            and span_view_tag(candidate.ambiguity_flags or ()) != matched.view_tag
+        ):
             continue
         if "arch-ticks-on-outline:yes" in flags and not any(
             flag.startswith("arch-held:") for flag in flags

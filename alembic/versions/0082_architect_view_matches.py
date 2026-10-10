@@ -197,6 +197,15 @@ def upgrade() -> None:
             name="architect_view_match_code_verdict",
         ),
         sa.CheckConstraint(
+            "status <> 'auto_matched' OR (source = 'automatic' AND code_verdict IN "
+            "('reference', 'geometry_clear') AND code_pick_view_id = matched_view_id)",
+            name="architect_view_match_automatic_needs_code",
+        ),
+        sa.CheckConstraint(
+            "code_pick_view_id IS NULL OR code_verdict IN ('reference', 'geometry_clear')",
+            name="architect_view_match_code_pick_verdict",
+        ),
+        sa.CheckConstraint(
             "(source = 'reviewer') = (extraction_run_id IS NULL)",
             name="architect_view_match_automatic_run",
         ),

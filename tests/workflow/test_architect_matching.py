@@ -35,8 +35,9 @@ from tests.workflow.test_architect_pairing import (
     arch_row,
 )
 from workflow.architect_match_contract import MatchedView, compared_with_text, restrict_to_view
-from workflow.architect_match_records import RememberedMatch
+from workflow.architect_match_records import RememberedMatch, view_carry_key
 from workflow.architect_matching import (
+    ALL_VIEWS_CAP,
     MATCH_PICTURE_MAX_SIDE,
     MEASURED_MATCH_SETTINGS,
     ArchitectMatcher,
@@ -102,7 +103,7 @@ def indexed(
         view=view,
         facts=ArchitectViewFacts(str(view_id), sheet, bubble, rows, separated),
         points_per_inch=ARCH_PT,
-        carry_key=("a" * 64, f"{number:064d}", "view-1"),
+        carry_key=view_carry_key("a" * 64, f"{number:064d}", "view-1", f"{number:064x}", None),
         view_number=1,
         extent=Box(Decimal(40), Decimal(20), Decimal(300), Decimal(200)),
     )
@@ -144,7 +145,7 @@ def facts(*, combined: bool = False, content: str = CONTENT) -> VendorPageFacts:
     return VendorPageFacts(
         page_index=0,
         content_hash=content,
-        references=(),
+        phrases=(),
         view_boxes=(),
         has_architect_view=combined,
     )
@@ -384,7 +385,11 @@ def test_the_result_names_the_view_it_was_compared_with() -> None:
 
 
 def remembered(
-    view: IndexedView | None, *, content: str = CONTENT, status: str = "reviewer_confirmed"
+    view: IndexedView | None,
+    *,
+    content: str = CONTENT,
+    status: str = "reviewer_confirmed",
+    files: tuple[str, ...] = ("a" * 64,),
 ) -> RememberedMatch:
     return RememberedMatch(
         record_id=uuid4(),
@@ -399,6 +404,7 @@ def remembered(
         },
         view_key=None if view is None else view.carry_key,
         created_at=datetime.now(UTC),
+        architect_files=files,
     )
 
 
@@ -537,3 +543,186 @@ def test_a_rerun_asks_the_identical_question_so_its_stored_answer_can_be_reused(
     assert first["architect_view_ids"] != second["architect_view_ids"]
     assert first["packet_sha256"] != second["packet_sha256"]
     assert question_identity(first) == question_identity(second) is not None
+
+
+# --- review fixes (PR #1170) ------------------------------------------------------------------------
+
+
+def test_a_persons_none_is_not_carried_once_the_architects_file_changed() -> None:
+    """Review finding 2: "none of these" was said of other architect drawings."""
+    asker = Asker(None, None)
+    match, _row = run(
+        [SAME, TWIN],
+        asker,
+        remembered=(remembered(None, status="none_matches", files=("b" * 64,)),),
+    )
+
+    assert (match.status, match.source) == ("needs_reviewer", "automatic")
+    assert any("have changed since" in reason for reason in match.reasons)
+    assert asker.calls == 1, "not carried, so the AIs are asked"
+
+
+def test_a_crowded_view_is_not_carried_once_the_architects_file_changed() -> None:
+    crowded = indexed(WIDTHS, number=1, separated=False)
+    match, _row = run(
+        [crowded, TWIN], Asker(None, None), remembered=(remembered(crowded, files=("b" * 64,)),)
+    )
+
+    assert match.status == "needs_reviewer"
+
+
+def test_every_record_names_the_architect_files_it_was_made_against() -> None:
+    match, _row = run([SAME, FAR], Asker(1, 1))
+
+    assert match.details is not None and match.details["architect_files"] == ["a" * 64]
+
+
+def test_a_renumbered_view_is_never_carried_in_another_views_place() -> None:
+    """Review finding 4: the same tag on the same page, but another drawing (another picture)."""
+    renumbered = replace(
+        TWIN,
+        carry_key=view_carry_key("a" * 64, f"{2:064d}", "view-1", "f" * 64, None),
+    )
+    match, _row = run([SAME, renumbered], Asker(None, None), remembered=(remembered(TWIN),))
+
+    assert match.status == "needs_reviewer"
+    assert any("not in the architect's drawings any more" in reason for reason in match.reasons)
+
+
+def test_an_identical_page_in_a_changed_vendor_file_is_never_carried() -> None:
+    """Review finding 8: the vendor's file is part of the item's identity."""
+    carried = remembered(TWIN)
+    carried = replace(
+        carried, vendor_item_key={**carried.vendor_item_key, "vendor_document_sha256": "1" * 64}
+    )
+    row = result()
+    built = replace(
+        matcher([SAME, TWIN], page_id=row.page_id, remembered=(carried,)),
+        vendor_pages={row.page_id: replace(facts(), document_sha256="2" * 64)},
+    )
+    found = built.match(
+        [row],
+        [_slot_page(row.page_id)],
+        ask=Asker(None, None),
+        readers=READERS,
+        ask_the_ais=True,
+        store=None,
+        effort="high",
+    )
+
+    match = found[row.page_index]
+    assert match.status == "needs_reviewer" and match.source == "automatic"
+    assert [item["remembered"] for item in match.candidate_json].count(True) == 1
+
+
+FRAME = Box(Decimal(80), Decimal(250), Decimal(300), Decimal(400))
+
+
+@pytest.mark.parametrize(
+    ("where", "verdict"),
+    [
+        (Box(Decimal(120), Decimal(380), Decimal(200), Decimal(390)), CodeVerdict.REFERENCE),
+        (Box(Decimal(420), Decimal(380), Decimal(500), Decimal(390)), CodeVerdict.GEOMETRY_TIE),
+    ],
+    ids=["inside-the-vendors-drawing", "elsewhere-on-the-sheet"],
+)
+def test_only_a_reference_inside_the_vendors_drawing_counts(where: Box, verdict: str) -> None:
+    """Review finding 3: a reference printed elsewhere on the sheet may name another drawing."""
+    named = indexed(WIDTHS, number=1, bubble="4 QX 1.1")
+    twin = indexed(WIDTHS, number=2, bubble="6 QX 1.1")
+    row = result()
+    page = replace(facts(), view_boxes=(FRAME,), phrases=(("REF 4/QX 1.1", where),))
+    found = replace(
+        matcher([named, twin], page_id=row.page_id), vendor_pages={row.page_id: page}
+    ).match(
+        [row],
+        [_slot_page(row.page_id)],
+        ask=Asker(1, 1),
+        readers=READERS,
+        ask_the_ais=True,
+        store=None,
+        effort="high",
+    )
+
+    assert found[row.page_index].code.verdict == verdict
+
+
+class ViewAsker:
+    """Each reader says yes to the views it is given (by view key), no to the rest."""
+
+    def __init__(self, yes: Mapping[str, set[str]]) -> None:
+        self.yes = yes
+        self.jobs: list[CropJob] = []
+        self.calls = 0
+
+    def __call__(self, jobs: Sequence[CropJob]) -> Mapping[tuple[str, str], object]:
+        self.calls += 1
+        self.jobs.extend(jobs)
+        answers: dict[tuple[str, str], object] = {}
+        for job in jobs:
+            assert job.question_packet is not None
+            shown = list(job.question_packet["architect_view_ids"])  # type: ignore[call-overload]
+            same = tuple(
+                "yes" if key in self.yes.get(job.model_id, set()) else "no" for key in shown
+            )
+            pick = same.index("yes") + 1 if same.count("yes") == 1 else 0
+            answers[(job.key, job.model_id)] = ArchMatchAnswer(job.model_id, pick, same, "drawn")
+        return answers
+
+
+def _many(count: int) -> list[IndexedView]:
+    return [indexed(None, number=n) for n in range(1, count + 1)]
+
+
+def test_without_a_code_pick_the_ais_see_every_view_and_only_order_the_list() -> None:
+    views = _many(7)
+    both, one = str(views[4].view.view_id), str(views[6].view.view_id)
+    asker = ViewAsker({OPUS: {both, one}, SONNET: {both}})
+
+    match, _row = run(views, asker)
+
+    assert match.status == "needs_reviewer" and match.chosen is None
+    assert match.code.pick is None
+    assert asker.calls == 1, "one batch"
+    keys = sorted({job.key for job in asker.jobs})
+    assert keys == ["p0:arch-match:1", "p0:arch-match:2", "p0:arch-match:3"]
+    assert len(asker.jobs) == 6
+    assert [job.architect_candidates for job in asker.jobs if job.model_id == OPUS] == [3, 3, 1]
+    order = [item["view_id"] for item in match.candidate_json]
+    assert order[:2] == [both, one]
+    assert order[2:] == [
+        str(view.view.view_id) for view in views if str(view.view.view_id) not in (both, one)
+    ]
+    first, second = match.candidate_json[:2]
+    assert "both AIs: yes" in first["evidence"] and first["rank"] == 1
+    assert sorted(first["ai_picked_by"]) == sorted([OPUS, SONNET])
+    assert second["ai_picked_by"] == [OPUS]
+    assert {pick["group"] for pick in match.ai_picks} == {1, 2, 3}
+    assert all(isinstance(pick["packet_sha256"], str) for pick in match.ai_picks)
+    assert match.details is not None and len(match.details["questions"]) == 3
+
+
+def test_every_view_is_asked_about_up_to_the_cap_and_the_reasons_say_so() -> None:
+    views = _many(17)
+    asker = ViewAsker({})
+
+    match, _row = run(views, asker)
+
+    shown = {key for job in asker.jobs for key in job.question_packet["architect_view_ids"]}  # type: ignore[index, union-attr]
+    assert len(shown) == ALL_VIEWS_CAP == 15
+    assert len({job.key for job in asker.jobs}) == 5
+    assert any("shown the first 15" in reason for reason in match.reasons)
+    unseen = [item for item in match.candidate_json if item["shown_number"] is None]
+    assert len(unseen) == 2 and all("not shown to the AIs" in i["evidence"] for i in unseen)
+    assert match.status == "needs_reviewer"
+
+
+def test_with_a_code_pick_the_ais_get_one_question_about_its_top_views() -> None:
+    views = [SAME, FAR, *_many(5)]
+    asker = Asker(1, 1)
+
+    match, _row = run(views, asker)
+
+    assert {job.key for job in asker.jobs} == {"p0:arch-match"}
+    assert all(job.architect_candidates == 3 for job in asker.jobs)
+    assert match.status == "auto_matched"

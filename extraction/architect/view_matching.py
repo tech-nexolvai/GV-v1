@@ -5,25 +5,30 @@ matched with the one architect view that draws the same countertop. Vendors rare
 architect's sheet reference, and the two drawings share almost no text, so code has two judgments
 of its own and nothing else:
 
-1. **A printed reference** (`find_references`): `REF 3/A-401` on the vendor's sheet, compared after
-   `normalise_reference` (upper case, no spaces, dashes or dots) with each architect view's own
-   `<view>/<sheet>` — the view number from its bubble, the sheet from the bubble or the title block.
-   Exactly one view named → `reference`.
+1. **A printed reference** (`find_references`): `REF 3/A-401` printed inside the vendor's drawing
+   that holds the row (the caller keeps only those), compared after `normalise_reference` (upper
+   case, no spaces, dashes or dots) with each architect view's own `<view>/<sheet>` — the view
+   number from its bubble, the sheet from the bubble or the title block. Exactly one view named →
+   `reference`, unless the drawing contradicts it: that view's run measured and more than
+   `run_length_tolerance_in + clear_margin_in` off, or another view the clear geometry winner →
+   no pick (`geometry_tie`, the reviewer decides).
 2. **Geometry** (`match_by_code`): the vendor row's run (its overall, else its chain end to end) in
    real inches through the vendor's scale, against each architect row's run through its view's own
    scale; each view's best row counts. A view **fits** only on two geometric agreements: the two
-   runs agree within `run_length_tolerance_in`, AND the row's shape agrees — at least three of its
-   ticks (both ends and an inner one) and every one of them lands on a vendor tick within the
-   pairing's tick tolerance, with the left ends or the right ends together. One length alone is
-   one number another drawing matches by chance: on a split keyed set (#1166, local proof) a
-   single-span row of the wrong view matched a vendor run to the inch. Exactly one view fits and
-   every other is more than
-   `run_length_tolerance_in + clear_margin_in` off → `geometry_clear`; two or more fit (twins), or
-   one fits with another too close behind → `geometry_tie`; none fits → `geometry_none`; the
-   vendor's scale unknown or no architect row anywhere → `no_geometry`. The number of bays (spans on
-   each row) and how well the position-pairing lines the two rows up (`pairing.pair_rows`) are kept
-   as evidence and break ties in the *ranking* only: never in the verdict, because on a split set
-   no architect span may sit on the outline and the pairing then has nothing to say.
+   runs agree within `run_length_tolerance_in`, AND the shapes agree both ways round — the row has
+   at least three ticks (both ends and an inner one), every one of them lands on a vendor tick
+   within the pairing's tick tolerance (left ends or right ends together), and at least half of the
+   vendor's inner ticks land on one of its ticks. One length alone is one number another drawing
+   matches by chance: on a split keyed set (#1166, local proof) a single-span row of the wrong view
+   matched a vendor run to the inch. Exactly one view fits, every other measured view is more than
+   `run_length_tolerance_in + clear_margin_in` off, AND no other view has dimension rows whose run
+   cannot be measured (its scale unknown: a twin code cannot rule out) → `geometry_clear`; two or
+   more fit (twins), one fits with another too close behind, or another cannot be measured →
+   `geometry_tie`; none fits → `geometry_none`; the vendor's scale unknown or no architect row with
+   a scale anywhere → `no_geometry`. The number of bays and how well the position-pairing lines the
+   two rows up (`pairing.pair_rows`) are kept as evidence and break exact ties in the *ranking*
+   only, never the verdict: on a split set no architect span may sit on the outline, and the
+   pairing then has nothing to say.
 
 **The decision** (`decide_match`, decision D1 of 2026-10-10): automatic **only** when code has a
 pick (`reference` or `geometry_clear`) AND both AIs picked that same view AND it was shown to them
@@ -273,28 +278,40 @@ def _ticks_in(row: DrawnRow) -> list[Fraction]:
     return sorted((x - origin) / row.pt_per_inch for x in xs)
 
 
-def _ticks_on_vendor(vendor: DrawnRow, row: DrawnRow, tolerance: Fraction) -> tuple[int, int]:
-    """How many of the architect row's ticks land on a vendor tick, `(landed, ticks)`, with the two
-    rows' left ends together or their right ends together, whichever lands more. A vendor that
-    splits an architect bay in two only adds vendor ticks; the architect's own must all land."""
+#: How the architect row's ticks and the vendor's meet: `(architect ticks on a vendor tick,
+#: architect ticks, vendor inner ticks on an architect tick, vendor inner ticks)`.
+_Shape = tuple[int, int, int, int]
+
+
+def _ticks_on_vendor(vendor: DrawnRow, row: DrawnRow, tolerance: Fraction) -> _Shape:
+    """How the architect row's ticks meet the vendor's, with the two rows' left ends together or
+    their right ends together, whichever lands more architect ticks (then more vendor ticks)."""
     if vendor.pt_per_inch is None or row.pt_per_inch is None or not row.spans:
-        return 0, 0
+        return 0, 0, 0, 0
     mine, theirs = _ticks_in(row), _ticks_in(vendor)
-    best = 0
+    inner = theirs[1:-1]
+    best: _Shape = (0, len(mine), 0, len(inner))
     for offset in (Fraction(0), theirs[-1] - mine[-1]):
         landed = sum(
             1 for tick in mine if any(abs(tick + offset - other) <= tolerance for other in theirs)
         )
-        best = max(best, landed)
-    return best, len(mine)
+        met = sum(
+            1 for other in inner if any(abs(tick + offset - other) <= tolerance for tick in mine)
+        )
+        best = max(
+            best, (landed, len(mine), met, len(inner)), key=lambda shape: (shape[0], shape[2])
+        )
+    return best
 
 
-def _same_shape(shape: tuple[int, int]) -> bool:
-    """A second geometric judgment beside the run's length: at least three ticks — both ends and
-    an inner one — and every one of them on a vendor tick. One length alone is one number, which
-    another drawing matches by chance."""
-    landed, ticks = shape
-    return ticks >= 3 and landed == ticks
+def _same_shape(shape: _Shape) -> bool:
+    """A second geometric judgment beside the run's length, both ways round: the architect row has
+    at least three ticks — both ends and an inner one — and every one of them lands on a vendor
+    tick; and at least half of the vendor's inner ticks land on an architect tick (a vendor may
+    split an architect bay, but a row that misses most of the vendor's joints is another drawing).
+    One length alone is one number, which another drawing matches by chance."""
+    landed, ticks, met, inner = shape
+    return ticks >= 3 and landed == ticks and 2 * met >= inner
 
 
 def _score(
@@ -310,9 +327,9 @@ def _score(
         evidence.append("the vendor's sheet prints a reference to this view")
     best: DrawnRow | None = None
     error: Fraction | None = None
-    aligned: tuple[int, int] | None = None
-    fitting: list[tuple[Fraction, str, DrawnRow, tuple[int, int]]] = []
-    measured: list[tuple[Fraction, str, DrawnRow, tuple[int, int]]] = []
+    aligned: _Shape | None = None
+    fitting: list[tuple[Fraction, str, DrawnRow, _Shape]] = []
+    measured: list[tuple[Fraction, str, DrawnRow, _Shape]] = []
     for row in view.rows:
         run = _run_in(row)
         if run is None or vendor_run is None or vendor.row is None:
@@ -329,7 +346,8 @@ def _score(
             f"its run is {_inches(error)} in off the vendor's (row {best.key}, "
             f"{len(best.spans)} bays against the vendor's "
             f"{0 if vendor.row is None else len(vendor.row.spans)}; "
-            f"{aligned[0]} of its {aligned[1]} ticks line up with the vendor's)"
+            f"{aligned[0]} of its {aligned[1]} ticks line up with the vendor's, and "
+            f"{aligned[2]} of the vendor's {aligned[3]} inner ticks with its)"
         )
     elif not view.rows:
         evidence.append("no dimension row was read in this view")
@@ -365,10 +383,12 @@ def _score(
 
 
 def _order(item: _Scored) -> tuple[int, int, Fraction, int, int]:
-    """Reference first; then views that fit, by error; then the rest by error; then views with no
-    measurable run, in document order. Pairing support breaks an exact tie in error."""
+    """Reference first; then views that fit, by error; then the rest by error; then views with rows
+    whose run cannot be measured; then views with no row; each of the last two in document order.
+    Pairing support breaks an exact tie in error."""
     if item.error is None:
-        return (0 if item.reference_match else 1, 3, Fraction(0), 0, item.position)
+        group = 3 if item.view.rows else 4
+        return (0 if item.reference_match else 1, group, Fraction(0), 0, item.position)
     group = 1 if item.fits else 2
     return (
         0 if item.reference_match else 1,
@@ -414,20 +434,69 @@ def match_by_code(
         return CodeMatch(
             CodeVerdict.NO_GEOMETRY, None, (), ("The architect's file has no view to match.",)
         )
+    geometry = _geometry(scored, vendor_run, s)
     referenced = [item for item in scored if item.reference_match]
     if len(referenced) == 1:
+        (named,) = referenced
+        clear = s.run_length_tolerance_in + s.clear_margin_in
+        if named.error is not None and named.error > clear:
+            return CodeMatch(
+                CodeVerdict.GEOMETRY_TIE,
+                None,
+                ranked,
+                (
+                    (
+                        "The vendor's drawing prints a reference to one architect view, but that "
+                        f"view's run is {_inches(named.error)} in off the vendor's: the reference "
+                        "and the drawing disagree, so code does not decide."
+                    ),
+                ),
+            )
+        if geometry.verdict is CodeVerdict.GEOMETRY_CLEAR and geometry.pick != named.view.key:
+            return CodeMatch(
+                CodeVerdict.GEOMETRY_TIE,
+                None,
+                ranked,
+                (
+                    (
+                        "The vendor's drawing prints a reference to one architect view, but "
+                        "another view is the clear geometry winner: code does not decide."
+                    ),
+                ),
+            )
         return CodeMatch(
             CodeVerdict.REFERENCE,
-            referenced[0].view.key,
+            named.view.key,
             ranked,
-            ("The vendor's sheet prints a reference to exactly one of the architect's views.",),
+            (
+                (
+                    "The vendor's drawing prints a reference to exactly one of the architect's "
+                    "views, and its geometry does not contradict it."
+                ),
+            ),
         )
-    reasons: list[str] = []
+    reasons: tuple[str, ...] = ()
     if len(referenced) > 1:
-        reasons.append(
-            f"The vendor's sheet prints references matching {len(referenced)} architect views, "
-            "so the reference does not decide."
+        reasons = (
+            (
+                f"The vendor's drawing prints references matching {len(referenced)} architect views, "
+                "so the reference does not decide."
+            ),
         )
+    return CodeMatch(geometry.verdict, geometry.pick, ranked, (*reasons, *geometry.reasons))
+
+
+@dataclass(frozen=True, slots=True)
+class _Geometry:
+    verdict: CodeVerdict
+    pick: str | None
+    reasons: tuple[str, ...]
+
+
+def _geometry(
+    scored: Sequence[_Scored], vendor_run: Fraction | None, s: MatchSettings
+) -> _Geometry:
+    """Geometry's verdict alone: a clear winner, a tie, none, or no geometry."""
     measured = [item for item in scored if item.error is not None]
     if vendor_run is None or not measured:
         why = (
@@ -435,37 +504,29 @@ def match_by_code(
             if vendor_run is None
             else "no architect view has a dimension row with a known scale"
         )
-        return CodeMatch(
-            CodeVerdict.NO_GEOMETRY,
-            None,
-            ranked,
-            (*reasons, f"Code cannot compare the drawn runs: {why}."),
+        return _Geometry(
+            CodeVerdict.NO_GEOMETRY, None, (f"Code cannot compare the drawn runs: {why}.",)
         )
     fitting = [item for item in measured if item.fits]
     if not fitting:
-        return CodeMatch(
+        return _Geometry(
             CodeVerdict.GEOMETRY_NONE,
             None,
-            ranked,
             (
-                *reasons,
                 (
                     "No architect view's run is within "
-                    f"{_inches(s.run_length_tolerance_in)} in of the vendor's."
+                    f"{_inches(s.run_length_tolerance_in)} in of the vendor's with the same shape."
                 ),
             ),
         )
     if len(fitting) > 1:
-        return CodeMatch(
+        return _Geometry(
             CodeVerdict.GEOMETRY_TIE,
             None,
-            ranked,
             (
-                *reasons,
                 (
-                    f"{len(fitting)} architect views have a run within "
-                    f"{_inches(s.run_length_tolerance_in)} in of the vendor's: code cannot tell "
-                    "them apart."
+                    f"{len(fitting)} architect views fit the vendor's run within "
+                    f"{_inches(s.run_length_tolerance_in)} in: code cannot tell them apart."
                 ),
             ),
         )
@@ -477,27 +538,38 @@ def match_by_code(
         if item is not winner and item.error is not None and item.error <= clear
     ]
     if close:
-        return CodeMatch(
+        return _Geometry(
             CodeVerdict.GEOMETRY_TIE,
             None,
-            ranked,
             (
-                *reasons,
                 (
                     "One architect view's run fits, but another is within "
                     f"{_inches(clear)} in of the vendor's too: not a clear winner."
                 ),
             ),
         )
-    return CodeMatch(
+    unmeasured = [
+        item for item in scored if item is not winner and item.view.rows and item.error is None
+    ]
+    if unmeasured:
+        return _Geometry(
+            CodeVerdict.GEOMETRY_TIE,
+            None,
+            (
+                (
+                    "One architect view's run fits, but "
+                    f"{len(unmeasured)} other view(s) have dimension rows whose run cannot be measured "
+                    "(their scale is unknown), so code cannot rule them out: not a clear winner."
+                ),
+            ),
+        )
+    return _Geometry(
         CodeVerdict.GEOMETRY_CLEAR,
         winner.view.key,
-        ranked,
         (
-            *reasons,
             (
-                "Exactly one architect view's run fits the vendor's, and every other is more than "
-                f"{_inches(clear)} in off."
+                "Exactly one architect view's run fits the vendor's, every other is more than "
+                f"{_inches(clear)} in off, and no other view's run is unknown."
             ),
         ),
     )

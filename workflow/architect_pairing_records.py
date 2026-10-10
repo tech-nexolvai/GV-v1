@@ -65,6 +65,7 @@ __all__ = [
     "ReviewerPairingRefused",
     "ReviewerPairingStale",
     "architect_spans_for_row",
+    "architect_view_tags",
     "architect_views",
     "latest_architect_pairing",
     "latest_architect_pairings",
@@ -72,6 +73,7 @@ __all__ = [
     "record_code_pairing_for_view",
     "record_reviewer_pairing",
     "record_view",
+    "span_view_tag",
 ]
 
 #: The route the architect's values are recorded under. Text read by code: never a model.
@@ -156,8 +158,9 @@ class _Where:
 
     page_id: UUID
     document_version_id: UUID
-    view_number: int | None
-    """`arch-view:<n>` for a matched view; `None` on the row's own page (any confirmed drawing)."""
+    view_tag: str | None
+    """The matched view's tag (`view-<n>`, `panel-<n>`): a span counts only when it was read in that
+    very view (`_span_tag`); `None` on the row's own page (any confirmed drawing)."""
 
 
 def _view_where(details: Mapping[str, object]) -> _Where | None:
@@ -167,10 +170,16 @@ def _view_where(details: Mapping[str, object]) -> _Where | None:
         return _Where(
             page_id=UUID(str(details["architect_page_id"])),
             document_version_id=UUID(str(details["architect_document_version_id"])),
-            view_number=int(str(details["architect_view_number"])),
+            view_tag=_text_or_none(details["architect_view_tag"]),
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _text_or_none(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("a view tag is text")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,40 +224,81 @@ def _content_number(tag: str) -> int | None:
     return int(number) if tag.startswith("view-") and number.isdigit() else None
 
 
+def _span_tag(flags: Sequence[str]) -> str | None:
+    """The tag of the view a stored span was read in: `arch-view-tag:<tag>` when the reader wrote
+    one (a view drawn as page content, #1163), else the pasted drawing's `panel-<arch-view>`."""
+    tag = _flag(flags, "arch-view-tag:")
+    if tag is not None:
+        return tag
+    view = _flag(flags, "arch-view:")
+    return f"panel-{view}" if view is not None and view.isdigit() else None
+
+
+def span_view_tag(flags: Sequence[str]) -> str | None:
+    """The tag of the view a stored architect span was read in (`_span_tag`), for the checks that
+    allow a value only from one matched view (#1167)."""
+    return _span_tag(flags)
+
+
 def architect_views(session: Session, page_id: UUID) -> set[int]:
-    """The annotation indices of the page's pasted drawings whose role is now the architect's, and
-    the numbers of its views drawn as the page's own content whose role is (#1163)."""
+    """The numbers of the page's drawings whose role is now the architect's: pasted drawings'
+    annotation indices and views drawn as content's numbers (#1163). A number held by two views of
+    which only one is the architect's counts for neither here; `architect_view_tags` tells them
+    apart exactly."""
     return _architect_views_by_page(session, (page_id,)).get(page_id, set())
 
 
-def _architect_views_by_page(session: Session, page_ids: Collection[UUID]) -> dict[UUID, set[int]]:
-    found: dict[UUID, set[int]] = {}
+def architect_view_tags(session: Session, page_id: UUID) -> set[str]:
+    """The tags (`panel-<n>`, `view-<n>`) of the page's drawings whose role is now the architect's."""
+    return _architect_view_tags_by_page(session, (page_id,)).get(page_id, set())
+
+
+def _view_roles_by_page(
+    session: Session, page_ids: Collection[UUID]
+) -> dict[UUID, dict[str, str | None]]:
+    roles: dict[UUID, dict[str, str | None]] = {}
     if not page_ids:
-        return found
-    panels: dict[UUID, set[int]] = {}
-    contents: dict[UUID, set[int]] = {}
+        return roles
     for page_id, tag, role in session.execute(
         select(DrawingView.page_id, DrawingView.tag, DrawingView.role).where(
             DrawingView.page_id.in_(tuple(page_ids))
         )
     ):
-        panel = _panel_number(tag)
-        content = _content_number(tag)
-        if panel is not None:
-            panels.setdefault(page_id, set()).add(panel)
-            if role == ViewRole.ARCH.value:
-                found.setdefault(page_id, set()).add(panel)
-        elif content is not None and role == ViewRole.ARCH.value:
-            contents.setdefault(page_id, set()).add(content)
-    # A view drawn as the page's own content (#1163) shares the `arch-view:<n>` key with a pasted
-    # drawing's annotation index. The reader never gives one page both, but should a page hold a
-    # `panel-<n>` and a `view-<n>` at once, neither number counts: which drawing a value came from
-    # would be a guess.
-    for page_id, numbers in contents.items():
-        clash = numbers & panels.get(page_id, set())
-        found.setdefault(page_id, set()).update(numbers - clash)
-        if clash:
-            found[page_id] -= clash
+        roles.setdefault(page_id, {})[tag] = role
+    return roles
+
+
+def _architect_view_tags_by_page(
+    session: Session, page_ids: Collection[UUID]
+) -> dict[UUID, set[str]]:
+    return {
+        page_id: {
+            tag
+            for tag, role in tags.items()
+            if role == ViewRole.ARCH.value
+            and (_panel_number(tag) is not None or _content_number(tag) is not None)
+        }
+        for page_id, tags in _view_roles_by_page(session, page_ids).items()
+    }
+
+
+def _architect_views_by_page(session: Session, page_ids: Collection[UUID]) -> dict[UUID, set[int]]:
+    found: dict[UUID, set[int]] = {}
+    for page_id, tags in _view_roles_by_page(session, page_ids).items():
+        architect: set[int] = set()
+        other: set[int] = set()
+        for tag, role in tags.items():
+            number = _panel_number(tag)
+            if number is None:
+                number = _content_number(tag)
+            if number is None:
+                continue
+            (architect if role == ViewRole.ARCH.value else other).add(number)
+        # `panel-<n>` and `view-<n>` share the number <n>: when only one of them is the architect's,
+        # the bare number cannot say which, so it does not count (by tag it does).
+        numbers = architect - other
+        if numbers:
+            found[page_id] = numbers
     return found
 
 
@@ -307,12 +357,14 @@ class EligibleSpan:
         return f"its value is held: {self.held_reason or 'no value was stored'}"
 
 
-def _eligible(candidate: ObservationCandidate, views: Collection[int]) -> EligibleSpan:
+def _eligible(candidate: ObservationCandidate, views: Collection[str]) -> EligibleSpan:
+    """`views`: the tags of the page's drawings whose role is now the architect's; a span counts
+    only in the very view it was read in (`_span_tag`), never another of the same number."""
     flags = candidate.ambiguity_flags or []
     outline = _flag(flags, "arch-ticks-on-outline:")
     key = _span_key(flags)
     held = _flag(flags, "arch-held:")
-    if held is None and (key is None or key[0] not in views):
+    if held is None and (key is None or _span_tag(flags) not in views):
         held = "this drawing is no longer confirmed as the architect's"
     inches = (
         None
@@ -374,30 +426,30 @@ def architect_spans_for_row(
         if named is None:
             return []
         where = named
-    views = architect_views(session, where.page_id)
+    views = architect_view_tags(session, where.page_id)
     query = select(ObservationCandidate).where(
         ObservationCandidate.extraction_run_id == run.id,
         ObservationCandidate.page_id == where.page_id,
     )
-    if where.view_number is not None:
+    if where.view_tag is not None:
         query = query.where(ObservationCandidate.document_version_id == where.document_version_id)
     candidates = [
         candidate
         for candidate in session.scalars(
             query.order_by(ObservationCandidate.created_at, ObservationCandidate.id)
         )
-        if _in_view(candidate, where.view_number)
+        if _in_view(candidate, where.view_tag)
     ]
     spans = [_eligible(candidate, views) for candidate in candidates]
     return sorted(spans, key=lambda span: (span.row or 0, span.slot or 0))
 
 
-def _in_view(candidate: ObservationCandidate, view_number: int | None) -> bool:
-    """`True` on the row's own page (`view_number` `None`); else only `arch-view:<view_number>`."""
-    if view_number is None:
+def _in_view(candidate: ObservationCandidate, view_tag: str | None) -> bool:
+    """`True` on the row's own page (`view_tag` `None`); else only a span read in that very view."""
+    if view_tag is None:
         return True
-    key = _span_key(candidate.ambiguity_flags or ())
-    return key is not None and key[0] == view_number
+    flags = candidate.ambiguity_flags or ()
+    return _span_key(flags) is not None and _span_tag(flags) == view_tag
 
 
 class ReviewerPairingRefused(ValueError):
@@ -719,7 +771,7 @@ def latest_architect_pairings(
             select(ObservationCandidate).where(ObservationCandidate.id.in_(tuple(chosen)))
         )
     }
-    views = _architect_views_by_page(
+    views = _architect_view_tags_by_page(
         session,
         {anchor.page_id for anchor in anchors.values()}
         | {view.page_id for view in matched_views.values()},
@@ -761,8 +813,8 @@ def latest_architect_pairings(
                 stated
                 if stated is not None
                 and view is not None
-                and (stated.page_id, stated.document_version_id, stated.view_number)
-                == (view.page_id, view.document_version_id, view.view_number)
+                and (stated.page_id, stated.document_version_id, stated.view_tag)
+                == (view.page_id, view.document_version_id, view.view_tag)
                 else None
             )
         answers[anchor_id] = _effective(record, where, views, parsed[anchor_id], candidates, runs)
@@ -772,7 +824,7 @@ def latest_architect_pairings(
 def _effective(
     record: ArchitectPairingRecord,
     where: _Where | None,
-    views_by_page: Mapping[UUID, set[int]],
+    views_by_page: Mapping[UUID, set[str]],
     parsed: Sequence[_Parsed | str],
     candidates: Mapping[UUID, ObservationCandidate],
     runs: Mapping[UUID, ExtractionRun],
@@ -791,12 +843,12 @@ def _effective(
         kind, candidate_id, indices = item
         candidate = candidates.get(candidate_id)
         run = None if candidate is None else runs.get(candidate.extraction_run_id)
-        if where is not None and where.view_number is not None:
+        if where is not None and where.view_tag is not None:
             if (
                 candidate is None
                 or candidate.page_id != where.page_id
                 or candidate.document_version_id != where.document_version_id
-                or not _in_view(candidate, where.view_number)
+                or not _in_view(candidate, where.view_tag)
                 or run is None
                 or run.extractor != ARCHITECT_EXTRACTOR
             ):

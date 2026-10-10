@@ -49,7 +49,7 @@ from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from vocabulary.semantic_types import DocumentRole, SemanticType
 from workflow.architect_match_contract import MatchedView
-from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
+from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR, span_view_tag
 from workflow.architect_row_plan import (
     ArchitectRowPlan,
     Disposition,
@@ -198,14 +198,13 @@ def _architect_operand(
 
 def in_matched_view(candidate: ObservationCandidate, matched: MatchedView | None) -> bool:
     """Whether the candidate lies in the architect view matched with the row (#1167): its page, its
-    file version and its `arch-view:<n>`. Always `False` without a match."""
+    file version and the very view it was read in (its tag). Always `False` without a match."""
     if matched is None:
         return False
-    flags = candidate.ambiguity_flags or ()
     return (
         candidate.page_id == matched.page_id
         and candidate.document_version_id == matched.document_version_id
-        and f"arch-view:{matched.view_number}" in flags
+        and span_view_tag(candidate.ambiguity_flags or ()) == matched.view_tag
     )
 
 

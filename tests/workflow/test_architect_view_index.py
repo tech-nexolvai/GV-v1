@@ -35,7 +35,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.runs import ModelInvocation
-from extraction.slot_reader.bedrock import ARCH_MATCH_PROMPT_ID, CropJob
+from extraction.slot_reader.bedrock import ARCH_MATCH_PROMPT_ID, ArchMatchAnswer, CropJob
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect.architect_sheet import architect_sheet
@@ -43,6 +43,7 @@ from tests.extraction.architect.combined_sheet import combined_sheet
 from tests.workflow.test_architect_file_reader import _add_architectural, _page
 from tests.workflow.test_architect_matching import result as matched_result
 from tests.workflow.test_architect_pairing import _slot_page
+from workflow.architect_matching import ArchitectMatcher
 from workflow.architect_pairing import ArchitectPairing
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -177,6 +178,8 @@ def _read(
     revision: PackageRevision,
     *,
     vendor_page: bool,
+    answer: Any = None,
+    readers: tuple[str, ...] = ("reader",),
 ) -> tuple[Any, list[CropJob], ExtractionRun]:
     shop_page = session.scalars(
         select(Page)
@@ -220,7 +223,7 @@ def _read(
 
         def ask(jobs: Sequence[CropJob]) -> dict[tuple[str, str], object]:
             asked.extend(jobs)
-            return {}
+            return {} if answer is None else {(job.key, job.model_id): answer(job) for job in jobs}
 
         architect = options["architect"]
         if architect is None:
@@ -229,7 +232,7 @@ def _read(
             [row],
             pages,
             ask=ask,
-            readers=("reader",),
+            readers=readers,
             ask_the_ais=bool(pages),
             store=None,
             effort=None,
@@ -262,7 +265,8 @@ def test_beside_an_indexed_architect_file_every_row_gets_one_match_record(
 
     handed, _asked, run = _read(session, store, monkeypatch, stages, revision, vendor_page=False)
 
-    assert isinstance(handed, ArchitectPairing) and handed.matcher is not None
+    assert isinstance(handed, ArchitectPairing)
+    assert isinstance(handed.matcher, ArchitectMatcher)
     assert len(handed.matcher.views) == 1
     assert ARCH_MATCH_PROMPT_ID not in run.config_hash, "a digest, but a different one"
     (record,) = session.scalars(select(ArchitectViewMatchRecord)).all()
@@ -316,3 +320,65 @@ def test_the_run_identity_says_the_matcher_ran(
 
     assert matched_run.config_hash != plain_run.config_hash
     assert len(matched_run.config_hash) <= 200
+
+
+def test_the_ais_are_asked_through_the_reading_and_their_answers_kept(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review item 9: the AI path end to end through `_read_slots`, with a fake asker, on a vendor
+    page that holds no architect drawing of its own (a reviewer said the pasted one is the
+    vendor's)."""
+    from app.models import ViewRole
+    from workflow.view_roles import confirm_view_role
+
+    stages, revision, _version = _extract(session, store, architect=architect_sheet())
+    shop_views = session.scalars(
+        select(DrawingView)
+        .join(Page, Page.id == DrawingView.page_id)
+        .join(
+            PackageRevisionDocument,
+            PackageRevisionDocument.document_version_id == Page.document_version_id,
+        )
+        .where(
+            PackageRevisionDocument.package_revision_id == revision.id,
+            DrawingView.role == ViewRole.ARCH.value,
+            DrawingView.tag.like("panel-%"),
+        )
+    ).all()
+    for view in shop_views:
+        confirm_view_role(session, view=view, role=ViewRole.SHOP, actor="reviewer@example.com")
+    session.commit()
+    # The run reads the roles as they stand (#1167: the pairing step and the matcher share the one
+    # "own architect view" flag the architect reader computes), so the reading runs again.
+    stages.extract_pages(session, revision.id)
+    session.commit()
+    readers = ("anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5")
+
+    def answer(job: CropJob) -> object:
+        if not job.arch_match_question:
+            return None
+        count = job.architect_candidates or 0
+        return ArchMatchAnswer(job.model_id, 1, ("yes",) + ("no",) * (count - 1), "drawn alike")
+
+    _handed, asked, _run = _read(
+        session,
+        store,
+        monkeypatch,
+        stages,
+        revision,
+        vendor_page=True,
+        answer=answer,
+        readers=readers,
+    )
+
+    match_jobs = [job for job in asked if job.arch_match_question]
+    assert {job.model_id for job in match_jobs} == set(readers)
+    assert all(job.question_packet is not None for job in match_jobs)
+    (record,) = session.scalars(select(ArchitectViewMatchRecord)).all()
+    assert record.status == "needs_reviewer", "code has no pick on this sheet: never automatic"
+    assert {pick["model_id"] for pick in record.ai_picks} == set(readers)
+    (entry,) = _index(session)
+    (candidate,) = record.candidates
+    assert candidate["view_id"] == str(entry.id)
+    assert sorted(candidate["ai_picked_by"]) == sorted(readers)
+    assert "both AIs: yes" in candidate["evidence"]

@@ -52,6 +52,7 @@ __all__ = [
     "RememberedMatch",
     "ReviewerMatchRefused",
     "ReviewerMatchStale",
+    "architect_fingerprint",
     "effective_architect_match",
     "effective_architect_matches",
     "latest_match_record",
@@ -61,6 +62,7 @@ __all__ = [
     "record_reviewer_match",
     "remembered_matches",
     "same_vendor_item",
+    "view_carry_key",
 ]
 
 #: How a result names the architect's file. The upload keeps no file name, only its kind, so the
@@ -204,7 +206,7 @@ def _invocations(session: Session, extraction_run_id: UUID) -> dict[str, dict[st
         .where(
             ModelInvocation.extraction_run_id == extraction_run_id,
             ModelInvocation.outcome == "ok",
-            ModelInvocation.reader_question_packet["question_id"].astext.like("%:arch-match"),
+            ModelInvocation.reader_question_packet["question_id"].astext.like("%:arch-match%"),
         )
         .order_by(ModelInvocation.reader_attempt_number)
     ).all()
@@ -243,11 +245,11 @@ def persist_architect_matches(
             continue
         packet = match.question_packet
         packet_sha = None if packet is None else packet.get("packet_sha256")
-        answered = invocations.get(packet_sha, {}) if isinstance(packet_sha, str) else {}
-        ai_picks = [
-            {**pick, "invocation_id": answered.get(str(pick.get("model_id")))}
-            for pick in match.ai_picks
-        ]
+        ai_picks = []
+        for pick in match.ai_picks:
+            asked = pick.get("packet_sha256", packet_sha)
+            answered = invocations.get(asked, {}) if isinstance(asked, str) else {}
+            ai_picks.append({**pick, "invocation_id": answered.get(str(pick.get("model_id")))})
         details = dict(match.details or {})
         if packet is not None:
             details["packet_sha256"] = packet_sha
@@ -398,10 +400,35 @@ class RememberedMatch:
     status: str
     vendor_item_key: Mapping[str, object]
     """`{page_content_hash, page_index, pieces, row_y_pt}` of the vendor row it was made on."""
-    view_key: tuple[str, str, str] | None
-    """`(architect document sha256, architect page content hash, view tag)` of the view it names;
-    `None` for "none of these"."""
+    view_key: tuple[str, ...] | None
+    """`view_carry_key` of the view it names; `None` for "none of these"."""
     created_at: datetime
+    architect_files: tuple[str, ...] = ()
+    """`architect_fingerprint` of the architect file(s) the decision was made against."""
+
+
+def view_carry_key(
+    document_sha256: str,
+    page_content_hash: str,
+    view_tag: str,
+    picture_sha256: str | None,
+    extent: Mapping[str, object] | None,
+) -> tuple[str, ...]:
+    """The same view on another run or revision: the same file bytes, the same page, the same tag,
+    AND the same picture (or, without one, the same extent), so a renumbered view never stands in
+    for another."""
+    drawn = (
+        f"picture:{picture_sha256}"
+        if picture_sha256
+        else "extent:"
+        + ",".join(str((extent or {}).get(key)) for key in ("x0", "top", "x1", "bottom"))
+    )
+    return (document_sha256, page_content_hash, view_tag, drawn)
+
+
+def architect_fingerprint(document_sha256s: Collection[str]) -> tuple[str, ...]:
+    """The architect file(s) a match was made against: their sorted byte hashes."""
+    return tuple(sorted(set(document_sha256s)))
 
 
 def remembered_matches(session: Session, package_revision_id: UUID) -> tuple[RememberedMatch, ...]:
@@ -429,14 +456,16 @@ def remembered_matches(session: Session, package_revision_id: UUID) -> tuple[Rem
         tips.setdefault(record.row_anchor_candidate_id, record)
     decided = [record for record in tips.values() if record.source in _DECIDED]
     view_ids = {record.matched_view_id for record in decided if record.matched_view_id}
-    keys: dict[UUID, tuple[str, str, str]] = {}
+    keys: dict[UUID, tuple[str, ...]] = {}
     if view_ids:
-        for entry_id, sha, content_hash, tag in session.execute(
+        for entry_id, sha, content_hash, tag, picture, extent in session.execute(
             select(
                 ArchitectViewIndexEntry.id,
                 DocumentVersion.sha256,
                 Page.content_hash,
                 ArchitectViewIndexEntry.view_tag,
+                ArchitectViewIndexEntry.picture_sha256,
+                ArchitectViewIndexEntry.extent,
             )
             .join(
                 DocumentVersion, DocumentVersion.id == ArchitectViewIndexEntry.document_version_id
@@ -444,7 +473,7 @@ def remembered_matches(session: Session, package_revision_id: UUID) -> tuple[Rem
             .join(Page, Page.id == ArchitectViewIndexEntry.page_id)
             .where(ArchitectViewIndexEntry.id.in_(tuple(view_ids)))
         ):
-            keys[entry_id] = (sha, content_hash, tag)
+            keys[entry_id] = view_carry_key(sha, content_hash, tag, picture, extent)
     order = {revision_id: position for position, (revision_id, _n) in enumerate(chain)}
     remembered = [
         RememberedMatch(
@@ -455,6 +484,7 @@ def remembered_matches(session: Session, package_revision_id: UUID) -> tuple[Rem
             vendor_item_key=_item_key(record.details.get("vendor_item_key")),
             view_key=None if record.matched_view_id is None else keys.get(record.matched_view_id),
             created_at=record.created_at,
+            architect_files=_files(record.details.get("architect_files")),
         )
         for record in decided
         if isinstance(record.details.get("vendor_item_key"), dict)
@@ -464,6 +494,10 @@ def remembered_matches(session: Session, package_revision_id: UUID) -> tuple[Rem
         key=lambda item: (order[item.package_revision_id], -item.created_at.timestamp())
     )
     return tuple(remembered)
+
+
+def _files(value: object) -> tuple[str, ...]:
+    return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else ()
 
 
 def _item_key(value: object) -> dict[str, object]:
@@ -482,7 +516,8 @@ def same_vendor_item(
 ) -> tuple[bool, bool]:
     """`(the same item, identical)`: the same item when the page is the same (its content, or its
     place in the vendor's file) with the same number of pieces and the row's line within
-    `VENDOR_ROW_Y_SLACK_PT`; identical when the page's content is also exactly the same."""
+    `VENDOR_ROW_Y_SLACK_PT`; identical when the page's content is also exactly the same and so is
+    the vendor's whole file (`vendor_document_sha256`)."""
     same_page = remembered.get("page_content_hash") == current.get(
         "page_content_hash"
     ) or remembered.get("page_index") == current.get("page_index")
@@ -494,5 +529,9 @@ def same_vendor_item(
         and abs(then - now) <= VENDOR_ROW_Y_SLACK_PT
     )
     same = same_page and same_row
-    identical = same and remembered.get("page_content_hash") == current.get("page_content_hash")
+    identical = (
+        same
+        and remembered.get("page_content_hash") == current.get("page_content_hash")
+        and remembered.get("vendor_document_sha256") == current.get("vendor_document_sha256")
+    )
     return same, identical
