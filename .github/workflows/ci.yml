@@ -110,7 +110,14 @@ jobs:
     services:
       postgres:
         # Every shard owns an isolated PostgreSQL service and database.
-        image: pgvector/pgvector:0.8.6-pg17
+        #
+        # **Not from Docker Hub (#1156).** The pgvector image was pulled anonymously from Docker Hub,
+        # and GitHub's shared runners hit its unauthenticated pull limit on 2026-10-09/10: every shard
+        # failed at "Initialize containers" before a test ran. The official Postgres image comes from
+        # Amazon's public mirror instead (no such limit, no account or secret), and pgvector is added
+        # to the running service by the first step below. Local development (docker-compose.yml) keeps
+        # the pgvector image.
+        image: public.ecr.aws/docker/library/postgres:17-bookworm
         env:
           POSTGRES_USER: gv_test
           POSTGRES_PASSWORD: gv_test
@@ -126,6 +133,14 @@ jobs:
       DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
+      # The official image has no pgvector; the migrations need it (`CREATE EXTENSION vector`). It
+      # comes from the PostgreSQL project's own apt repository, which the official image already
+      # trusts. No restart is needed: the extension's files only have to exist when it is created.
+      - name: Add pgvector to the test database
+        run: >-
+          docker exec ${{ job.services.postgres.id }} bash -c
+          "apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-17-pgvector"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
