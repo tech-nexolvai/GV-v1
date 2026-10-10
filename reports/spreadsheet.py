@@ -140,6 +140,10 @@ COUNTERTOP_COLUMNS: Final = (
     # Readings whose drawn length could not be checked (no scale, #1107). Last, so no earlier
     # column moves; the per-piece columns still come after it.
     "drawn_length",
+    # The architect's drawings as their own file (#1168): the row's match with one of its views,
+    # and the view it was compared with. Empty on a combined sheet. After every earlier column.
+    "architect_match_status",
+    "architect_compared_with",
 )
 
 #: The columns above that hold a number, by name: an exact value with a finite decimal form only.
@@ -508,6 +512,9 @@ def architect_line(result: CountertopResultOut) -> str:
         line += f" ({pairs})"
     if block.outcome not in (Outcome.PASS, Outcome.FAIL) and block.reason:
         line += f": {block.reason}"
+    # Which of the architect's own views it was compared with (#1168); nothing on a combined sheet.
+    if block.compared_with_text:
+        line += f"; {block.compared_with_text}"
     return line
 
 
@@ -581,6 +588,8 @@ def _countertop_row(result: CountertopResultOut, *, maximum_pieces: int) -> tupl
         _numeric_inches(None if overall is None else overall.architect),
         _numeric_inches(None if overall is None else overall.delta),
         result.drawn_length_note or "",
+        "" if result.architect.match is None else result.architect.match.status,
+        result.architect.compared_with_text or "",
         *(
             _numeric_inches(result.pieces[index].value) if index < len(result.pieces) else None
             for index in range(maximum_pieces)

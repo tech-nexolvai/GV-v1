@@ -116,6 +116,93 @@ class ArchitectComparedOut(BaseModel):
     )
 
 
+ArchitectMatchStatus = Literal[
+    "not_matched_yet",
+    "needs_reviewer",
+    "auto_matched",
+    "reviewer_confirmed",
+    "carried_over",
+    "none_matches",
+    "not_separated",
+    "no_candidates",
+]
+"""A countertop's match with a view of the architect's own file (#1166's `MatchStatus`), plus
+`not_matched_yet`: the file was indexed, but this row has no match record (an older run)."""
+
+
+class ArchitectViewRefOut(BaseModel):
+    """One view of the architect's own file (#1168), wherever a screen or a report points at it.
+
+    Same fields as the reviewer picker's (`app/schemas/architect_matches.py`, #1166): when both
+    are merged, one of them should import the other so the API has a single definition.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    view_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    file_name: str
+    page_number: int = Field(description="1-based, as a person counts pages.")
+    sheet_number: str | None
+    bubble: str | None
+    title: str | None
+    scale_note: str | None
+    label: str = Field(description="How a person names it: page, view, title and sheet.")
+    region: RowLocation | None = Field(
+        description="The view's extent on its page, in stored space; null when not stored."
+    )
+    picture_url: str | None = Field(
+        description="The stored picture of the view; null when none was rendered."
+    )
+    separated: bool = Field(
+        description="False when the view is not clearly apart from its neighbour: its dimensions "
+        "were not read."
+    )
+
+
+class ArchitectAiPickOut(BaseModel):
+    """What one AI answered when asked which of the architect's views shows the countertop."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_label: str
+    answer: Literal["view", "none", "unsure", "no_answer"]
+    view_id: UUID | None
+    why: str
+
+
+class ArchitectMatchOut(BaseModel):
+    """Which view of the architect's own file this countertop was matched with (#1168).
+
+    Read from the row's effective match record (#1166); never decided here.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    record_id: UUID | None
+    status: ArchitectMatchStatus
+    source: Literal["automatic", "reviewer", "carried"] | None
+    judgments: str | None = Field(
+        description="Whose judgments the match rests on, in words; null while nothing is matched."
+    )
+    code_verdict: str | None
+    code_pick_view_id: UUID | None
+    ai_picks: tuple[ArchitectAiPickOut, ...] = ()
+    matched_view: ArchitectViewRefOut | None
+    needs_decision: bool = Field(
+        description="The reviewer still has to choose the view (status `needs_reviewer`)."
+    )
+    reason: str | None
+    waits_for_run: bool = Field(
+        default=False,
+        description=(
+            "A reviewer's pick recorded after the live check run: the result shown does not use "
+            "it yet; it counts once the checks run again."
+        ),
+    )
+
+
 class ArchitectResultOut(BaseModel):
     """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
 
@@ -141,6 +228,22 @@ class ArchitectResultOut(BaseModel):
             "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and "
             "both AIs) or a reviewer; on one alone the result waits for the reviewer."
         ),
+    )
+    match: ArchitectMatchOut | None = Field(
+        default=None,
+        description=(
+            "The row's match with a view of the architect's own file (#1168). Null when the "
+            "architect's drawing is on the vendor's sheet (a combined set) or the file was not "
+            "indexed."
+        ),
+    )
+    compared_with: ArchitectViewRefOut | None = Field(
+        default=None,
+        description="The architect view this row was compared with; null when none was.",
+    )
+    compared_with_text: str | None = Field(
+        default=None,
+        description='"compared with <file>, page N, view X <title> (sheet S)"; null when none.',
     )
 
 

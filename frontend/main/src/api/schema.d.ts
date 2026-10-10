@@ -2097,6 +2097,23 @@ export interface components {
             revision_id: string;
         };
         /**
+         * ArchitectAiPickOut
+         * @description What one AI answered when asked which of the architect's views shows the countertop.
+         */
+        ArchitectAiPickOut: {
+            /**
+             * Answer
+             * @enum {string}
+             */
+            answer: "view" | "none" | "unsure" | "no_answer";
+            /** Model Label */
+            model_label: string;
+            /** View Id */
+            view_id: string | null;
+            /** Why */
+            why: string;
+        };
+        /**
          * ArchitectComparedOut
          * @description One width both drawings print for the same thing, as the architect check compared it.
          */
@@ -2124,6 +2141,51 @@ export interface components {
              * @description The vendor piece, counted from 1 as the row shows it; null for the overall.
              */
             vendor_piece: number | null;
+        };
+        /**
+         * ArchitectMatchOut
+         * @description Which view of the architect's own file this countertop was matched with (#1168).
+         *
+         *     Read from the row's effective match record (#1166); never decided here.
+         */
+        ArchitectMatchOut: {
+            /**
+             * Ai Picks
+             * @default []
+             */
+            ai_picks: components["schemas"]["ArchitectAiPickOut"][];
+            /** Code Pick View Id */
+            code_pick_view_id: string | null;
+            /** Code Verdict */
+            code_verdict: string | null;
+            /**
+             * Judgments
+             * @description Whose judgments the match rests on, in words; null while nothing is matched.
+             */
+            judgments: string | null;
+            matched_view: components["schemas"]["ArchitectViewRefOut"] | null;
+            /**
+             * Needs Decision
+             * @description The reviewer still has to choose the view (status `needs_reviewer`).
+             */
+            needs_decision: boolean;
+            /** Reason */
+            reason: string | null;
+            /** Record Id */
+            record_id: string | null;
+            /** Source */
+            source: ("automatic" | "reviewer" | "carried") | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_matched_yet" | "needs_reviewer" | "auto_matched" | "reviewer_confirmed" | "carried_over" | "none_matches" | "not_separated" | "no_candidates";
+            /**
+             * Waits For Run
+             * @description A reviewer's pick recorded after the live check run: the result shown does not use it yet; it counts once the checks run again.
+             * @default false
+             */
+            waits_for_run: boolean;
         };
         /** ArchitectPairIn */
         ArchitectPairIn: {
@@ -2243,8 +2305,17 @@ export interface components {
              * @default []
              */
             compared: components["schemas"]["ArchitectComparedOut"][];
+            /** @description The architect view this row was compared with; null when none was. */
+            compared_with?: components["schemas"]["ArchitectViewRefOut"] | null;
+            /**
+             * Compared With Text
+             * @description "compared with <file>, page N, view X <title> (sheet S)"; null when none.
+             */
+            compared_with_text?: string | null;
             /** Finding Id */
             finding_id?: string | null;
+            /** @description The row's match with a view of the architect's own file (#1168). Null when the architect's drawing is on the vendor's sheet (a combined set) or the file was not indexed. */
+            match?: components["schemas"]["ArchitectMatchOut"] | null;
             /**
              * Needs Decision
              * @default false
@@ -2288,6 +2359,62 @@ export interface components {
             row: number | null;
             /** Slot */
             slot: number | null;
+        };
+        /**
+         * ArchitectViewRefOut
+         * @description One view of the architect's own file (#1168), wherever a screen or a report points at it.
+         *
+         *     Same fields as the reviewer picker's (`app/schemas/architect_matches.py`, #1166): when both
+         *     are merged, one of them should import the other so the API has a single definition.
+         */
+        ArchitectViewRefOut: {
+            /** Bubble */
+            bubble: string | null;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string;
+            /**
+             * Label
+             * @description How a person names it: page, view, title and sheet.
+             */
+            label: string;
+            /**
+             * Page Number
+             * @description 1-based, as a person counts pages.
+             */
+            page_number: number;
+            /**
+             * Picture Url
+             * @description The stored picture of the view; null when none was rendered.
+             */
+            picture_url: string | null;
+            /** @description The view's extent on its page, in stored space; null when not stored. */
+            region: components["schemas"]["RowLocation"] | null;
+            /** Scale Note */
+            scale_note: string | null;
+            /**
+             * Separated
+             * @description False when the view is not clearly apart from its neighbour: its dimensions were not read.
+             */
+            separated: boolean;
+            /** Sheet Number */
+            sheet_number: string | null;
+            /** Title */
+            title: string | null;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
         };
         /**
          * AssemblyInput

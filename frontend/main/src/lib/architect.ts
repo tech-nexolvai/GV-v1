@@ -208,12 +208,12 @@ export function viewOf(result: ArchitectResult | null | undefined): ArchitectVie
 
 /**
  * The words of the link to the view: the server's own "compared with <file>, page N, view X" when it
- * was compared, else "Matched with <label>". Null when there is no view.
+ * was compared, else "Architect's view: <the server's label>". Null when there is no view.
  */
 export function viewLinkWords(result: ArchitectResult | null | undefined): string | null {
   if (result?.compared_with) return result.compared_with_text ?? `Compared with ${result.compared_with.label}`;
   const matched = result?.match?.matched_view;
-  return matched ? `Matched with ${matched.label}` : null;
+  return matched ? `Architect's view: ${matched.label}` : null;
 }
 
 /** "Sheet A-9 · view 4 · SAMPLE ELEVATION": what the architect printed for a view, in order. */

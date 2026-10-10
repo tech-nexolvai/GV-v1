@@ -32,9 +32,9 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 
 function view(n: number, extra: Partial<ArchitectViewRef> = {}): ArchitectViewRef {
   return {
-    view_id: `view-${n}`, document_id: 'doc-arch', document_version_id: ARCH, file_name: 'synthetic-architect.pdf',
+    view_id: `view-${n}`, document_id: 'doc-arch', document_version_id: ARCH, file_name: "the architect's drawings",
     page_number: 2, sheet_number: 'Z-9', bubble: String(n), title: `SAMPLE ELEVATION ${n}`, scale_note: '1/2" = 1\'-0"',
-    label: `synthetic-architect.pdf, page 2, view ${n}`, region: location(ARCH, 2, box(0.1 * n, 0.2, 0.1 * n + 0.08, 0.4)),
+    label: `Page 2, view ${n}: SAMPLE ELEVATION ${n} (sheet Z-9)`, region: location(ARCH, 2, box(0.1 * n, 0.2, 0.1 * n + 0.08, 0.4)),
     picture_url: `/synthetic/view-${n}.png`, separated: true,
     ...extra,
   };
@@ -54,6 +54,7 @@ const comparedPair = (outcome: 'PASS' | 'FAIL') => ({
   delta: x(outcome === 'PASS' ? '0' : '3', outcome === 'PASS' ? '0"' : '+3"'), vendor_display: '96"', architect_display: outcome === 'PASS' ? '96"' : '93"',
   delta_display: outcome === 'PASS' ? '0"' : '+3"', outcome, architect_location: location(ARCH, 2, box(0.12, 0.3, 0.18, 0.32)),
 });
+// The server's words (`compared_with_text`); the synthetic views number as their bubbles.
 const comparedWith = (v: ArchitectViewRef) => `compared with ${v.file_name}, page ${v.page_number}, view ${v.bubble} ${v.title} (sheet ${v.sheet_number})`;
 
 /** Every state the contract names, as the API would send it (synthetic reasons in the backend's words). */
@@ -105,7 +106,7 @@ const PICKED: ArchitectResult = { ...STATES.needs_reviewer, match: match('review
 /** Matched, but nothing comparable on the view: grey "not compared", with the view to look at. */
 const MATCHED_NOT_COMPARED: ArchitectResult = {
   ...NOTHING,
-  not_compared_reason: "Matched with synthetic-architect.pdf, page 2, view 1: the architect prints no width on this countertop's outline.",
+  not_compared_reason: "Matched with the architect's drawings, page 2, view 1: the architect prints no width on this countertop's outline.",
   match: match('auto_matched', { judgments: 'code and both AIs', matched_view: view(1) }),
 };
 /** A combined-sheet set: the new fields are null. */
@@ -156,7 +157,7 @@ describe('every match state, in plain words', () => {
     ['reviewer_confirmed', STATES.reviewer_confirmed, ['93"', '+3"', 'Needs correction', comparedWith(view(2)), 'View chosen by a reviewer'], []],
     ['carried_over', STATES.carried_over, ['Looks right', comparedWith(view(1)), 'Same view as on the earlier revision'], []],
     ['none_matches', STATES.none_matches, ["Not compared: The reviewer found no view in the architect's drawings that shows this countertop, so nothing was compared."], []],
-    ['not_separated', STATES.not_separated, ['Compare this countertop by hand', 'Matched with synthetic-architect.pdf, page 2, view 3'], []],
+    ['not_separated', STATES.not_separated, ['Compare this countertop by hand', "Architect's view: Page 2, view 3: SAMPLE ELEVATION 3 (sheet Z-9)"], []],
     ['no_candidates', STATES.no_candidates, ["Not compared: The architect's file has no views to match this countertop with, so nothing was compared."], []],
     ['picked, waiting for a run', PICKED, ['View chosen: it counts once the checks run again'], ['Choose which']],
   ];
@@ -196,7 +197,7 @@ describe('every match state, in plain words', () => {
 
   it('the link says the server\'s "compared with …" when compared, else "Matched with …"', () => {
     expect(viewLinkWords(STATES.auto_matched)).toBe(comparedWith(view(1)));
-    expect(viewLinkWords(MATCHED_NOT_COMPARED)).toBe('Matched with synthetic-architect.pdf, page 2, view 1');
+    expect(viewLinkWords(MATCHED_NOT_COMPARED)).toBe("Architect's view: Page 2, view 1: SAMPLE ELEVATION 1 (sheet Z-9)");
     expect(viewLinkWords(STATES.none_matches)).toBeNull();
     expect(viewHeading(view(4))).toBe('Sheet Z-9 · view 4 · SAMPLE ELEVATION 4');
     expect(viewHeading({ sheet_number: null, bubble: null, title: null })).toBe('No sheet or title printed');
@@ -271,7 +272,7 @@ describe('Results with a separate architect file', () => {
     const q = document.querySelector('tr[data-architect-row="q"]') as HTMLElement;
     expect(q.querySelector('[data-slot="outcome-badge"]')).toBeNull();
     const r = document.querySelector('tr[data-architect-row="r"]') as HTMLElement;
-    expect(within(r).getByRole('button', { name: 'Matched with synthetic-architect.pdf, page 2, view 1' })).toBeTruthy();
+    expect(within(r).getByRole('button', { name: "Architect's view: Page 2, view 1: SAMPLE ELEVATION 1 (sheet Z-9)" })).toBeTruthy();
   });
 
   it('the details say which view, on whose judgment, and what each AI said', async () => {
