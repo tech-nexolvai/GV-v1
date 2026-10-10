@@ -283,6 +283,7 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
+from workflow.architect_match_contract import MatchLookup
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
     ArchitectPageInput,
@@ -305,6 +306,8 @@ from workflow.architect_row_plan import (
     SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
     Disposition,
     PairingLookup,
+    architect_file_indexed,
+    effective_architect_match,
     effective_architect_pairing,
     engine_comparison_note,
     one_judgment_reason,
@@ -1698,6 +1701,7 @@ class DatabaseStages:
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
+        architect_match: MatchLookup | None = None,
     ) -> None:
         """`store` is optional because nothing builds one for a worker yet.
 
@@ -1724,6 +1728,12 @@ class DatabaseStages:
         # pairing module exists; tests pass fakes here.
         self._architect_pairing: PairingLookup = (
             effective_architect_pairing if architect_pairing is None else architect_pairing
+        )
+        # The row's match with a view of the architect's own file (#1166), read by the same check
+        # (#1167) only on a revision whose architect drawings came as their own file; tests pass
+        # fakes here.
+        self._architect_match: MatchLookup = (
+            effective_architect_match if architect_match is None else architect_match
         )
         self._timed_first_page_runs: set[UUID] = set()
         self._timing_document_version_id: str | None = None
@@ -2160,7 +2170,14 @@ class DatabaseStages:
         verified_data: Mapping[UUID, bytes],
         task_run_id: UUID,
     ) -> dict[str, object]:
-        """Read the architect's drawing on every page of the shop upload, by code (#1052).
+        """Read the architect's drawings by code: on every page of the shop upload (#1052), and on
+        every page of an architectural upload whose bytes are not the shop file's (#1163).
+
+        On the shop file only drawings pasted onto the vendor's sheets are read, each role from its
+        heading and content. The architect's own file is read with `architect_document`: a pasted
+        drawing there, or a view drawn as the page's own content, is the architect's when the
+        document's kind and the drawing's content agree. Matching its views with the vendor's
+        (Phase 3) is not done here: the values are stored for it.
 
         A same-file package — the same bytes uploaded as both drawings (#963) — is one combined set
         whose upload slots say nothing about either drawing, and gets no architect values at all.
@@ -2175,7 +2192,9 @@ class DatabaseStages:
             }
         config = hashlib.sha256(repr(settings).encode()).hexdigest()[:16]
         payload: dict[str, object] = {}
-        for version in _shop_document_versions_for(session, package_revision_id):
+        for version, architect_document in _architect_reader_versions_for(
+            session, package_revision_id
+        ):
             data = verified_data.get(version)
             if data is None:
                 continue
@@ -2190,7 +2209,13 @@ class DatabaseStages:
                     readings.append(
                         (
                             page,
-                            read_architect_page(data, page.index, settings=settings, dpi=self._dpi),
+                            read_architect_page(
+                                data,
+                                page.index,
+                                settings=settings,
+                                dpi=self._dpi,
+                                architect_document=architect_document,
+                            ),
                         )
                     )
                 except UnreadablePdf:
@@ -6387,6 +6412,7 @@ class DatabaseStages:
         defaults_set_id: str | None,
         defaults_canonical_json: str | None,
         separate_architect_file: bool = False,
+        architect_indexed: bool = False,
     ) -> int:
         """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one vendor row, beside its width.
 
@@ -6397,13 +6423,29 @@ class DatabaseStages:
         On one judgment alone (`code` or `both-ais`) the result, PASS or FAIL, waits for the
         reviewer to confirm the pairing; the engine's comparison stays in the notes and the numbers
         in the inputs. See `workflow/architect_row_plan.py` and `workflow/architect_row_evidence.py`.
+
+        When the architect's drawings came as their own file (#1167), the row's match with a view
+        of that file is read too, and the row is planned by its match state; an architect value
+        may then come only from the matched view (`architect_matched_view`). A combined sheet
+        never reads a match: everything is as before.
         """
         snapshot = store.latest(ARCHITECT_CHECK_RULE_ID)
         if snapshot is None:
             return 0
         pairing = self._architect_pairing(session, row.anchor.id)
+        # Matches exist only where the architect's own file was indexed (#1166).
+        match = (
+            self._architect_match(session, row.anchor.id)
+            if separate_architect_file and architect_indexed
+            else None
+        )
         plan = plan_architect_row(
-            session, row, pairing, separate_architect_file=separate_architect_file
+            session,
+            row,
+            pairing,
+            separate_architect_file=separate_architect_file,
+            match=match,
+            architect_file_indexed=architect_indexed,
         )
         if plan.disposition is Disposition.NOT_COMPARED:
             return 0
@@ -6477,6 +6519,7 @@ class DatabaseStages:
             scope_row_candidate_id=row.anchor.id,
             scope_label=f"{row.label} · architect",
             architect_pairing=pairing,
+            architect_matched_view=plan.matched,
         )
         return 1
 
@@ -6626,6 +6669,11 @@ class DatabaseStages:
         # The architect's drawings as their own file (#1161): not compared by this version, so the
         # revision asks the reviewer once instead of saying "nothing paired" (below).
         separate_architect = has_separate_architect_file(session, package_revision_id)
+        # ... and whether that file produced a view index this revision (#1166): its views are then
+        # matched with the vendor's rows, and #1161's one package line gives way (#1167).
+        architect_indexed = separate_architect and architect_file_indexed(
+            session, package_revision_id
+        )
         for product_type in in_scope:
             resolution = resolve(
                 store,
@@ -7051,6 +7099,7 @@ class DatabaseStages:
                         defaults_set_id=defaults_set_id,
                         defaults_canonical_json=defaults_canonical_json,
                         separate_architect_file=separate_architect,
+                        architect_indexed=architect_indexed,
                     )
                     architect_rows += architect_written
                     written += architect_written
@@ -7170,10 +7219,12 @@ class DatabaseStages:
             architect_snapshot is not None
             and ProductType.COUNTERTOP in in_scope
             and separate_architect
+            and not architect_indexed
         ):
             # **Never silent (#1161).** The architect's drawings came as their own file, which this
-            # version does not read: every row compared, if any, was compared with an architect
-            # view pasted on the vendor's sheet, never with that file. One package-level
+            # run could not read into views (#1167: once it produced a view index, each row says
+            # its own match state instead, and the line below applies): every row compared, if any,
+            # was compared with an architect view pasted on the vendor's sheet. One package-level
             # REVIEW_REQUIRED line, in place of the NO_APPLICABLE_RULE one below, so sign-off waits
             # until the reviewer has compared the widths by hand and decided it. No scope row: the
             # file is the package's, and one decision covers it.
@@ -7566,6 +7617,35 @@ def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> 
         .scalars()
         .all()
     )
+
+
+def _architect_reader_versions_for(
+    session: Session, package_revision_id: UUID
+) -> tuple[tuple[UUID, bool], ...]:
+    """The documents the architect reader reads, each with whether it is the architect's own file.
+
+    The shop slot(s), read for drawings pasted onto the vendor's sheets (`False`), and every
+    architectural slot whose bytes are not any shop slot's (`True`, #1163): the architect's drawings
+    uploaded as their own file. An architectural slot holding the shop file's own bytes is the same
+    combined set, never read twice.
+    """
+    rows = session.execute(
+        select(PackageRevisionDocument.document_version_id, Document.kind, DocumentVersion.sha256)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(PackageRevisionDocument.document_version_id)
+    ).all()
+    shop_bytes = {str(sha) for _version, kind, sha in rows if str(kind) == DocumentKind.SHOP.value}
+    shop = [
+        (version, False) for version, kind, _sha in rows if str(kind) == DocumentKind.SHOP.value
+    ]
+    architectural = [
+        (version, True)
+        for version, kind, sha in rows
+        if str(kind) == DocumentKind.ARCHITECTURAL.value and str(sha) not in shop_bytes
+    ]
+    return (*shop, *architectural)
 
 
 def _whole_page_fallback_enabled(slot_reader: object | None) -> bool:

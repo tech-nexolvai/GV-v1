@@ -139,6 +139,7 @@ from workflow.layout_proposals import (
 
 if TYPE_CHECKING:
     from storage.store import ArtifactStore
+    from workflow.architect_match_contract import RowMatch
     from workflow.architect_pairing import ArchitectPairing, PairingOutcome
     from workflow.reader_reuse import StoredAnswerSource
 
@@ -466,6 +467,10 @@ class PageSlotResult:
     architect_pairing: PairingOutcome | None = None
     """Which architect dimension measures which vendor piece (#1053); `None` when the architect
     reader did not read this page. Never changes a reading, a hold or a proposal above."""
+    architect_match: RowMatch | None = None
+    """Which view of the architect's own file shows this row's countertop (#1166), when the row's
+    own page has no architect view and the architect's drawings came as their own file; `None`
+    otherwise. Never changes a reading, a hold or a proposal above."""
     read_through: CountertopRowCandidate | None = None
     """The row the readers chose, when it had nothing printed on any piece and its widths are read
     from the vendor's `X"(N EQ)` chain for the same run (#1086); `plan.row` is then that chain.

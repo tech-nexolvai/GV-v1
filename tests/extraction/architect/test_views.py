@@ -15,6 +15,7 @@ from extraction.architect.views import (
     ViewJudgment,
     decide_without_headings,
     drawn_architectural_scale,
+    judge_by_document,
     judge_content,
     judge_view,
 )
@@ -213,3 +214,38 @@ def test_a_page_with_a_heading_is_never_decided_by_content_alone() -> None:
     )
 
     assert decide_without_headings(views, {}) == views
+
+
+# --- the architect's own file (#1163) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("counts", "heading", "agreed"),
+    [
+        # The document's kind and the drawing's content agree: the architect's, by code.
+        (_counts(feet=5, architectural=ARCH_SCALE), None, Role.ARCH),
+        (_counts(feet=5, architectural=ARCH_SCALE), "arch", Role.ARCH),
+        # The content is silent or says the vendor's: nothing is decided.
+        (_counts(feet=6), None, None),
+        (_counts(vendor=4, ratio=RATIO), None, None),
+        # A heading saying the vendor's drawing stops it, whatever the content says.
+        (_counts(feet=5, architectural=ARCH_SCALE), "shop", None),
+    ],
+)
+def test_on_the_architects_own_file_the_kind_and_the_content_must_agree(
+    counts: LabelCounts, heading: str | None, agreed: Role | None
+) -> None:
+    proposal = (
+        None
+        if heading is None
+        else PanelRoleProposal(
+            annotation_index=2, role=heading, heading=f"{heading} heading", reason="printed"
+        )
+    )
+
+    judgment = judge_by_document(2, judge_content(counts), proposal=proposal)
+
+    assert judgment.agreed is agreed
+    assert judgment.by_document_kind is (agreed is not None)
+    assert judgment.annotation_index == 2
+    assert "uploaded as the architect's drawings" in judgment.reason

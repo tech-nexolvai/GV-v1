@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from extraction.slot_reader.anthropic import BatchSpendGuard
 
 __all__ = [
+    "ARCH_PAIR_2PANEL_PROMPT_ID",
     "ARCH_PAIR_PROMPT_ID",
     "ARCH_PAIR_PROMPT_IDS",
     "CLAUDE_SPAN_PROMPT",
@@ -100,6 +101,7 @@ __all__ = [
     "RowChoiceAnswer",
     "arch_pair_answer",
     "arch_pair_prompt",
+    "arch_pair_two_panel_prompt",
     "build_arch_pair_request",
     "build_counter_break_request",
     "build_crop_request",
@@ -162,8 +164,16 @@ is not. v2 first asked what EVERY numbered architect dimension measures (`ARCH_M
 pairing; code accepts a pair only when what it measures can be the same thing
 (`workflow/architect_pairing.py`). v1 asked only for the pairing, and only when code could not pair
 by drawn position."""
-#: Earlier wordings, still recognised in stored records and invocations.
-ARCH_PAIR_PROMPT_IDS: Final = frozenset({ARCH_PAIR_PROMPT_ID, "arch-pair-v2", "arch-pair-v1"})
+ARCH_PAIR_2PANEL_PROMPT_ID: Final = "arch-pair-2panel-v1"
+"""The same pairing question (#1167) when the architect's drawings came as their own file: one
+picture of two panels, the vendor's row on the left and the architect view matched with it
+(#1166) on the right. The steps, the measure words, the answer shape and the parser are
+`arch-pair-v3`'s; only the opening says what the two panels are and whether they share a scale.
+A combined sheet is still asked `arch-pair-v3`, word for word."""
+#: Every pairing wording, still recognised in stored records and invocations.
+ARCH_PAIR_PROMPT_IDS: Final = frozenset(
+    {ARCH_PAIR_PROMPT_ID, ARCH_PAIR_2PANEL_PROMPT_ID, "arch-pair-v2", "arch-pair-v1"}
+)
 #: Earlier wordings, still recognised when a stored run is replayed (v1 asked only about appliances).
 COUNTER_BREAK_PROMPT_IDS: Final = frozenset(
     {COUNTER_BREAK_PROMPT_ID, "claude-counter-break-v2", "claude-counter-break-v1"}
@@ -253,6 +263,45 @@ def arch_pair_prompt(*, vendor_pieces: int, architect_spans: int) -> str:
         f"V1 to V{vendor_pieces}, left to right, in the red tags. Some of the architect's "
         "dimensions are outlined in blue and numbered "
         f"A1 to A{architect_spans} in the blue tags. "
+    ) + _arch_pair_steps(vendor_pieces=vendor_pieces, architect_spans=architect_spans)
+
+
+def arch_pair_two_panel_prompt(
+    *, vendor_pieces: int, architect_spans: int, common_scale: bool
+) -> str:
+    """The pairing question (`arch-pair-2panel-v1`, #1167) for one picture of two panels: the
+    vendor's countertop row on the left (`vendor_pieces` red marks), the architect view matched
+    with it on the right (`architect_spans` blue marks). `common_scale` says whether the two panels
+    are drawn at the same pixels per real inch (both drawings' scales known) or only to the same
+    height. Then `arch-pair-v3`'s steps, word for word: what every architect dimension measures,
+    then which one measures the same physical thing as each vendor piece and the whole run, judged
+    by where the ends are drawn, never by a printed number. Every example in it is invented."""
+    if vendor_pieces < 1 or architect_spans < 1:
+        raise ValueError("an architect-pairing question needs at least one mark of each kind")
+    scale = (
+        "Both panels are drawn at the same scale: the same distance on the picture is the same "
+        "real length in both. "
+        if common_scale
+        else "The two panels may be drawn at different scales: judge where things are drawn "
+        "within each panel, never by comparing lengths across the panels. "
+    )
+    return (
+        "This picture has two panels side by side, with a white gap between them. The LEFT panel "
+        "is part of a vendor's cabinet shop drawing. The RIGHT panel is one view from the "
+        "architect's drawings, a separate file, matched with it as the same run of cabinets "
+        "(black ink is the drawings'; ignore coloured reviewer marks). "
+        + scale
+        + "In the left panel the vendor's countertop row is outlined in red; its pieces are "
+        f"numbered V1 to V{vendor_pieces}, left to right, in the red tags. In the right panel "
+        "some of the architect's dimensions are outlined in blue and numbered "
+        f"A1 to A{architect_spans} in the blue tags. "
+    ) + _arch_pair_steps(vendor_pieces=vendor_pieces, architect_spans=architect_spans)
+
+
+def _arch_pair_steps(*, vendor_pieces: int, architect_spans: int) -> str:
+    """Both pairing questions after their opening: how to judge, step one (what every architect
+    dimension measures) and step two (the pairing), and the answer's shape."""
+    return (
         "Judge everything only by where each dimension's two ends (its tick marks or arrows) are "
         "drawn and which drawn lines they touch. Do not compare, read or add up the printed "
         "numbers, and never pair two dimensions because their numbers are equal or close: the "
@@ -701,8 +750,12 @@ def build_arch_pair_request(
     architect_spans: int,
     max_tokens: int,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+    two_panel: bool | None = None,
 ) -> dict[str, Any]:
-    """One numbered picture and the pairing question (#1053); Claude states its shape and effort."""
+    """One numbered picture and the pairing question (#1053); Claude states its shape and effort.
+
+    `two_panel` (#1167): `None` asks `arch-pair-v3` about one sheet; `True` / `False` asks
+    `arch-pair-2panel-v1` about two panels drawn at a common scale / not."""
     if not model_id.strip():
         raise ValueError("an architect-pairing reader model id must be stated")
     if not picture_png.startswith(_PNG_SIGNATURE):
@@ -717,8 +770,16 @@ def build_arch_pair_request(
                 "content": [
                     {"image": {"format": "png", "source": {"bytes": picture_png}}},
                     {
-                        "text": arch_pair_prompt(
-                            vendor_pieces=vendor_pieces, architect_spans=architect_spans
+                        "text": (
+                            arch_pair_prompt(
+                                vendor_pieces=vendor_pieces, architect_spans=architect_spans
+                            )
+                            if two_panel is None
+                            else arch_pair_two_panel_prompt(
+                                vendor_pieces=vendor_pieces,
+                                architect_spans=architect_spans,
+                                common_scale=two_panel,
+                            )
                         )
                     },
                 ],
@@ -745,10 +806,15 @@ def read_arch_pair(
     record_attempt: Callable[[AttemptUsage], None],
     question_packet: Mapping[str, object] | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+    two_panel: bool | None = None,
 ) -> ArchPairAnswer:
     """Ask once, re-asking only a malformed answer (`arch_pair_answer`): not one entry per vendor
     piece, an A-number outside the marks shown, or not exactly one known measure for every
-    A-number shown. Malformed twice raises `MalformedFormAnswer` (the job abstains)."""
+    A-number shown. Malformed twice raises `MalformedFormAnswer` (the job abstains).
+
+    `two_panel` as in `build_arch_pair_request`; every attempt is recorded under the prompt id
+    actually asked (`arch-pair-v3` or `arch-pair-2panel-v1`)."""
+    prompt_id = ARCH_PAIR_PROMPT_ID if two_panel is None else ARCH_PAIR_2PANEL_PROMPT_ID
     for attempt in range(2):
         request = build_arch_pair_request(
             model_id=model_id,
@@ -757,6 +823,7 @@ def read_arch_pair(
             architect_spans=architect_spans,
             max_tokens=max_tokens,
             claude_effort=claude_effort,
+            two_panel=two_panel,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -769,8 +836,8 @@ def read_arch_pair(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    ARCH_PAIR_PROMPT_ID,
-                    ARCH_PAIR_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     None,
                     None,
                     int((monotonic() - started) * 1000),
@@ -797,8 +864,8 @@ def read_arch_pair(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    ARCH_PAIR_PROMPT_ID,
-                    ARCH_PAIR_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     input_tokens,
                     output_tokens,
                     elapsed,
@@ -817,8 +884,8 @@ def read_arch_pair(
         record_attempt(
             AttemptUsage(
                 model_id,
-                ARCH_PAIR_PROMPT_ID,
-                ARCH_PAIR_PROMPT_ID,
+                prompt_id,
+                prompt_id,
                 input_tokens,
                 output_tokens,
                 elapsed,
@@ -1394,6 +1461,11 @@ class CropJob:
     `vendor_pieces` / `architect_spans` say how many V and A marks it shows."""
     vendor_pieces: int | None = None
     architect_spans: int | None = None
+    arch_pair_two_panel: bool = False
+    """With `arch_pair_question` (#1167): `png` is the two-panel picture (the vendor's row beside
+    the architect view matched with it), asked `arch-pair-2panel-v1`; `arch_pair_common_scale` says
+    whether the two panels share a scale."""
+    arch_pair_common_scale: bool = False
 
     @property
     def pictures(self) -> tuple[bytes, ...]:
@@ -1408,7 +1480,7 @@ class CropJob:
 def job_prompt_id(job: CropJob, product: ProductType | None) -> str:
     """The prompt id the job's question is asked, and its answer recorded, under."""
     if job.arch_pair_question:
-        return ARCH_PAIR_PROMPT_ID
+        return ARCH_PAIR_2PANEL_PROMPT_ID if job.arch_pair_two_panel else ARCH_PAIR_PROMPT_ID
     if job.row_question:
         return ROW_PROMPT_ID
     if job.counter_break_question:
@@ -1454,6 +1526,7 @@ def _ask(
             record_attempt=record_attempt,
             question_packet=job.question_packet,
             claude_effort=claude_effort,
+            two_panel=job.arch_pair_common_scale if job.arch_pair_two_panel else None,
         )
     if job.row_question:
         count = job.candidate_count

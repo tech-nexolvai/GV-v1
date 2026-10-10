@@ -37,11 +37,13 @@ from units.normalise import plain_marks
 __all__ = [
     "Orientation",
     "PrintedDimension",
+    "PrintedPhrase",
     "PrintedText",
     "ScaleKind",
     "ScaleNote",
     "TextChar",
     "TextSettings",
+    "find_phrases",
     "find_printed",
 ]
 
@@ -463,6 +465,39 @@ def find_printed(chars: Sequence[TextChar], settings: TextSettings) -> PrintedTe
         tuple(phrases),
         tuple(marks),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PrintedPhrase:
+    """One phrase of text as printed, where it is, which way it reads and how tall its letters are.
+
+    For finding a drawing's printed title and view bubble on a sheet (#1163); never a value.
+    """
+
+    text: str
+    box: Box
+    orientation: Orientation
+    height: Decimal
+    """The tallest of its characters' heights (across its line)."""
+
+
+def find_phrases(chars: Sequence[TextChar], settings: TextSettings) -> tuple[PrintedPhrase, ...]:
+    """Every phrase in `chars`, split where `find_printed` splits them, with its box (#1163)."""
+    readable = _deduplicated([char for char in chars if char.orientation is not None], settings)
+    found: list[PrintedPhrase] = []
+    for line in _lines(readable, settings):
+        orientation = line[0].orientation
+        assert orientation is not None
+        for phrase in _phrases(line, settings):
+            found.append(
+                PrintedPhrase(
+                    text=phrase.printed,
+                    box=phrase.box(0, len(phrase.plain)),
+                    orientation=orientation,
+                    height=max(_height(char) for char in phrase.chars),
+                )
+            )
+    return tuple(found)
 
 
 def _beside_other_sizes(

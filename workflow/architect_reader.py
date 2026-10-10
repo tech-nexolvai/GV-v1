@@ -7,7 +7,11 @@ for. This module writes its result down, behind `GV_ARCHITECT_READER_ENABLED`:
   the drawing's own content giving the same role is recorded as a code confirmation
   (`workflow/view_roles.confirm_view_role_by_code`, decision D2). On a page that prints no heading
   at all, the content of both drawings — one clearly the architect's, another clearly the vendor's
-  — is recorded the same way, naming `CODE_CONTENT_CONFIRMER`. A drawing with an earlier
+  — is recorded the same way, naming `CODE_CONTENT_CONFIRMER`. On the architect's own file (an
+  ARCHITECTURAL upload whose bytes are not the shop file's, #1163) the document's kind and the
+  drawing's content agreeing is recorded naming `CODE_DOCUMENT_CONFIRMER`; a view drawn as the
+  page's own content is the view `view-<number>` (`view_roles.content_view_tag`) and its values
+  also carry `arch-view-tag:view-<number>`. A drawing with an earlier
   confirmation — a person's above all — is left exactly as it is.
 * **One candidate per printed span, only in a drawing confirmed by code as the architect's.**
   `raw_text` is the label as printed; the value is stored **only when nothing holds it** (exact,
@@ -47,8 +51,11 @@ from workflow.architect_pairing_records import ARCHITECT_EXTRACTOR
 from workflow.view_roles import (
     CODE_CONFIRMER,
     CODE_CONTENT_CONFIRMER,
+    CODE_DOCUMENT_CONFIRMER,
     confirm_view_role_by_code,
+    content_view_tag,
     panel_tag,
+    record_content_view,
     record_panel_view,
 )
 
@@ -79,16 +86,31 @@ class ArchitectCounts:
     held: int = 0
 
 
+def _tag(view: ArchitectView) -> str:
+    if view.source == "content":
+        return content_view_tag(view.annotation_index)
+    return panel_tag(view.annotation_index)
+
+
 def _view(session: Session, page: Page, view: ArchitectView) -> DrawingView:
-    """The page's drawing view for this pasted drawing, found or created with its suggestion."""
+    """The page's drawing view for this drawing, found or created with its suggestion: a pasted
+    drawing's `panel-<annotation>`, or a view drawn as the page's content `view-<number>` (#1163).
+    """
     existing = session.execute(
-        select(DrawingView).where(
-            DrawingView.page_id == page.id, DrawingView.tag == panel_tag(view.annotation_index)
-        )
+        select(DrawingView).where(DrawingView.page_id == page.id, DrawingView.tag == _tag(view))
     ).scalar_one_or_none()
     if existing is not None:
         return existing
     judgment = view.judgment
+    if view.source == "content":
+        return record_content_view(
+            session,
+            page_id=page.id,
+            number=view.annotation_index,
+            stored_points=view.stored_points,
+            title=" ".join(part for part in (view.bubble, view.title) if part) or None,
+            reason=judgment.reason,
+        )
     return record_panel_view(
         session,
         page_id=page.id,
@@ -134,6 +156,7 @@ def persist_architect_pages(
     for page, reading in pages:
         counts.pages += 1
         architect_views: set[int] = set()
+        sources = {view.annotation_index: view.source for view in reading.views}
         for view in reading.views:
             agreed = view.judgment.agreed
             if agreed is None:
@@ -146,7 +169,13 @@ def persist_architect_pages(
                     role=_ROLES[agreed],
                     reason=view.judgment.reason,
                     confirmed_by=(
-                        CODE_CONTENT_CONFIRMER if view.judgment.by_content_alone else CODE_CONFIRMER
+                        CODE_DOCUMENT_CONFIRMER
+                        if view.judgment.by_document_kind
+                        else (
+                            CODE_CONTENT_CONFIRMER
+                            if view.judgment.by_content_alone
+                            else CODE_CONFIRMER
+                        )
                     ),
                 )
                 is not None
@@ -172,6 +201,10 @@ def persist_architect_pages(
                     + {True: "yes", False: "no", None: "unknown"}[span.on_outline],
                     *(f"arch-qualifier:{qualifier.value}" for qualifier in sorted(span.qualifiers)),
                 ]
+                if sources.get(architect_row.view_annotation_index) == "content":
+                    flags.append(
+                        "arch-view-tag:" + content_view_tag(architect_row.view_annotation_index)
+                    )
                 if span.held_reason is not None:
                     flags.append(f"arch-held:{span.held_reason[:_FLAG_REASON_LIMIT]}")
                 value = span.inches if span.held_reason is None else None

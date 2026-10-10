@@ -138,7 +138,10 @@ def test_the_v3_answer_shape_offers_each_marked_a_none_and_unsure_for_every_pair
 
 def test_v3_is_asked_and_v2_and_v1_stay_recognisable_in_stored_records() -> None:
     assert ARCH_PAIR_PROMPT_ID == "arch-pair-v3"
-    assert ARCH_PAIR_PROMPT_IDS == frozenset({"arch-pair-v3", "arch-pair-v2", "arch-pair-v1"})
+    # The two-panel wording for a separate architect file (#1167) is recognised beside them.
+    assert ARCH_PAIR_PROMPT_IDS == frozenset(
+        {"arch-pair-v3", "arch-pair-2panel-v1", "arch-pair-v2", "arch-pair-v1"}
+    )
 
 
 def test_an_array_answer_is_checked_item_by_item() -> None:

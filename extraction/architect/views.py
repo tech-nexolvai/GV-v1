@@ -60,6 +60,7 @@ __all__ = [
     "count_labels",
     "decide_without_headings",
     "drawn_architectural_scale",
+    "judge_by_document",
     "judge_content",
     "judge_view",
 ]
@@ -129,6 +130,9 @@ class ViewJudgment:
     reason: str
     by_content_alone: bool = False
     """The role was decided on a page with no headings, by the content of both drawings."""
+    by_document_kind: bool = False
+    """The role was decided on the architect's own drawing set (a separate ARCHITECTURAL upload) by
+    the document's kind and the drawing's content agreeing (#1163, ADR-0020 decision 3)."""
 
 
 def count_labels(
@@ -254,6 +258,61 @@ def judge_view(proposal: PanelRoleProposal, content: ContentJudgment) -> ViewJud
         content=content,
         agreed=agreed,
         reason=reason,
+    )
+
+
+def judge_by_document(
+    view_index: int,
+    content: ContentJudgment,
+    *,
+    proposal: PanelRoleProposal | None = None,
+) -> ViewJudgment:
+    """Both judgments for a drawing on the architect's own drawing set (#1163).
+
+    ADR-0020 decision 3: in a genuine two-PDF package the role falls back to the document's kind.
+    The kind is one judgment — the person uploading said this file is the architect's drawings —
+    and the drawing's own content (`judge_content`) is the other. The role is the architect's only
+    when the content says so too. A printed heading, where the drawing has one (`proposal`), may
+    only stop it: a heading saying the vendor's drawing on the architect's file decides nothing.
+    """
+    heading_role = None if proposal is None or proposal.role is None else Role(proposal.role)
+    heading = None if proposal is None else proposal.heading
+    heading_reason = (
+        "drawn on the page itself: no heading is pasted with it"
+        if proposal is None
+        else proposal.reason
+    )
+    agreed: Role | None = None
+    if heading_role is Role.SHOP:
+        reason = (
+            f"the file was uploaded as the architect's drawings but the heading {heading!r} says the "
+            "vendor's"
+        )
+    elif content.role is None:
+        reason = (
+            "the file was uploaded as the architect's drawings but the drawing's content says "
+            f"nothing: {content.reason}"
+        )
+    elif content.role is not Role.ARCH:
+        reason = (
+            "the file was uploaded as the architect's drawings but the drawing's content says the "
+            f"vendor's: {content.reason}"
+        )
+    else:
+        agreed = Role.ARCH
+        reason = (
+            "the file was uploaded as the architect's drawings and the drawing's content agrees: "
+            f"{content.reason}"
+        )
+    return ViewJudgment(
+        annotation_index=view_index,
+        heading_role=heading_role,
+        heading=heading,
+        heading_reason=heading_reason,
+        content=content,
+        agreed=agreed,
+        reason=reason,
+        by_document_kind=agreed is not None,
     )
 
 
