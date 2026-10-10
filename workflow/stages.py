@@ -72,6 +72,7 @@ from app.evidence.record import (
     record_unreadable_document,
     record_unreadable_page,
 )
+from app.evidence.sides import has_separate_architect_file
 from app.models.document import (
     Document,
     DocumentKind,
@@ -301,6 +302,7 @@ from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
     AUTOMATIC_SOURCES,
     NOTHING_PAIRED_ON_REVISION,
+    SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
     Disposition,
     PairingLookup,
     effective_architect_pairing,
@@ -6384,6 +6386,7 @@ class DatabaseStages:
         parameter_set_ids: Mapping[str, str],
         defaults_set_id: str | None,
         defaults_canonical_json: str | None,
+        separate_architect_file: bool = False,
     ) -> int:
         """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one vendor row, beside its width.
 
@@ -6399,7 +6402,9 @@ class DatabaseStages:
         if snapshot is None:
             return 0
         pairing = self._architect_pairing(session, row.anchor.id)
-        plan = plan_architect_row(session, row, pairing)
+        plan = plan_architect_row(
+            session, row, pairing, separate_architect_file=separate_architect_file
+        )
         if plan.disposition is Disposition.NOT_COMPARED:
             return 0
         operands: Mapping[str, VerdictOperand] = {}
@@ -6618,6 +6623,9 @@ class DatabaseStages:
         written = 0
         skipped = 0
         architect_rows = 0
+        # The architect's drawings as their own file (#1161): not compared by this version, so the
+        # revision asks the reviewer once instead of saying "nothing paired" (below).
+        separate_architect = has_separate_architect_file(session, package_revision_id)
         for product_type in in_scope:
             resolution = resolve(
                 store,
@@ -7042,6 +7050,7 @@ class DatabaseStages:
                         parameter_set_ids=cited,
                         defaults_set_id=defaults_set_id,
                         defaults_canonical_json=defaults_canonical_json,
+                        separate_architect_file=separate_architect,
                     )
                     architect_rows += architect_written
                     written += architect_written
@@ -7158,6 +7167,34 @@ class DatabaseStages:
 
         architect_snapshot = store.latest(ARCHITECT_CHECK_RULE_ID)
         if (
+            architect_snapshot is not None
+            and ProductType.COUNTERTOP in in_scope
+            and separate_architect
+        ):
+            # **Never silent (#1161).** The architect's drawings came as their own file, which this
+            # version does not read: every row compared, if any, was compared with an architect
+            # view pasted on the vendor's sheet, never with that file. One package-level
+            # REVIEW_REQUIRED line, in place of the NO_APPLICABLE_RULE one below, so sign-off waits
+            # until the reviewer has compared the widths by hand and decided it. No scope row: the
+            # file is the package's, and one decision covers it.
+            record_finding(
+                session,
+                package_revision_id=package_revision_id,
+                finding=Finding(
+                    rule_id=ARCHITECT_CHECK_RULE_ID,
+                    outcome=Outcome.REVIEW_REQUIRED,
+                    severity=architect_snapshot.rule.severity,
+                    reason=SEPARATE_ARCHITECT_FILE_NOT_COMPARED,
+                    snapshot_id=architect_snapshot.snapshot_id,
+                    engine_version=ENGINE_VERSION,
+                ),
+                operands={},
+                parameter_set_ids=cited,
+                defaults_set_id=defaults_set_id,
+                defaults_canonical_json=defaults_canonical_json,
+            )
+            written += 1
+        elif (
             architect_snapshot is not None
             and ProductType.COUNTERTOP in in_scope
             and architect_rows == 0

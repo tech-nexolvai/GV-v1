@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
-from app.evidence.sides import ReadingSides
+from app.evidence.sides import ReadingSides, has_separate_architect_file
 from app.models import (
     CanonicalObservation,
     CheckRun,
@@ -585,11 +585,18 @@ def _architect_block(
     pairing_lookup: PairingLookup,
     sides: ReadingSides,
     positions: dict[str, RowLocation] | None = None,
+    separate_architect_file: bool = False,
 ) -> ArchitectResultOut:
-    """What the architect check recorded for this row, or why nothing was compared."""
+    """What the architect check recorded for this row, or why nothing was compared.
+
+    `separate_architect_file` (#1161): the revision's architect drawings came as their own file,
+    which this version does not compare, so a row not compared says that.
+    """
     if finding is None:
         pairing = pairing_lookup(session, row.anchor.id)
-        plan = plan_architect_row(session, row, pairing, sides=sides)
+        plan = plan_architect_row(
+            session, row, pairing, sides=sides, separate_architect_file=separate_architect_file
+        )
         return ArchitectResultOut(
             not_compared_reason=(
                 plan.reason if plan.disposition is Disposition.NOT_COMPARED else NOT_CHECKED_YET
@@ -782,6 +789,10 @@ def _countertop_results_for_revision(
         session, [row.anchor.id for row in rows if row.anchor.id not in architect_by_row]
     )
     sides = ReadingSides(session)
+    # Asked once per revision, and only when some row has no architect finding to show (#1161).
+    separate_architect = any(
+        row.anchor.id not in architect_by_row for row in rows
+    ) and has_separate_architect_file(session, revision.id)
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
         for input_row in session.scalars(
@@ -936,6 +947,7 @@ def _countertop_results_for_revision(
                     blocking=need_ids,
                     pairing_lookup=lookup,
                     sides=sides,
+                    separate_architect_file=separate_architect,
                     positions=(
                         None
                         if (architect := architect_by_row.get(row.anchor.id)) is None

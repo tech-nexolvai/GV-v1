@@ -66,6 +66,7 @@ __all__ = [
     "ReadingSides",
     "SideRefusal",
     "SideRefusalReason",
+    "has_separate_architect_file",
     "page_transform_at",
     "reading_transform",
 ]
@@ -100,6 +101,27 @@ _KIND_SIDE = {
     DocumentKind.SHOP.value: DocumentRole.SHOP,
 }
 _VIEW_SIDE = {ViewRole.ARCH.value: DocumentRole.ARCH, ViewRole.SHOP.value: DocumentRole.SHOP}
+
+
+def has_separate_architect_file(session: Session, package_revision_id: UUID) -> bool:
+    """Whether this revision's architect drawings came as their own file (#1161).
+
+    True when the revision holds a shop document and an architectural document whose bytes
+    (`DocumentVersion.sha256`) are not any shop document's. The same file uploaded in both slots is
+    one combined set (#963, `same_file_as_both_sides`) and answers False, as does a revision with no
+    architectural document. One statement over the revision's own documents, however many rows ask.
+    """
+    rows = session.execute(
+        select(Document.kind, DocumentVersion.sha256)
+        .join(PackageRevisionDocument, PackageRevisionDocument.document_id == Document.id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+    ).all()
+    shop = {str(sha) for kind, sha in rows if str(kind) == DocumentKind.SHOP.value}
+    architectural = {
+        str(sha) for kind, sha in rows if str(kind) == DocumentKind.ARCHITECTURAL.value
+    }
+    return bool(shop) and bool(architectural - shop)
 
 
 def reading_transform(page: Page, run: ExtractionRun) -> PageTransform | None:
