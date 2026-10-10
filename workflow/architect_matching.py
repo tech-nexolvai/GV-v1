@@ -536,6 +536,15 @@ class ArchitectMatcher:
     ) -> dict[str, object] | None:
         if vendor is None or not view.facts.rows:
             return None
+        if any(
+            other.view.page_id == view.view.page_id
+            and other.view_number == view.view_number
+            and other.view.view_tag != view.view.view_tag
+            for other in self.views
+        ):
+            # `panel-<n>` and `view-<n>` on one page: the pairing's rows carry only the number,
+            # so which drawing a row is in would be a guess. No code pairing, never a wrong one.
+            return None
         page = self.architect_pages.get(view.view.page_id)
         if page is None:
             return None

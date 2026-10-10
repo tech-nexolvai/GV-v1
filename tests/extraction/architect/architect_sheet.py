@@ -19,6 +19,8 @@ by hand, byte by byte, like `combined_sheet.py`, whose invented architect's draw
   scale note inside the title block; `joined_border=True` — the drawing's ink joined to the border;
   `stacked=True` — a second view lower down whose drawing stands level with the first's title;
 * `approval_stamp=True` — an "approved" stamp pasted over the drawing (no dimension in it);
+* `pasted_with_heading=True` — a combined sheet: the architect's drawing pasted beside the page's
+  own drawing under an "ID SET ELEVATION" heading;
 * `printed_at=0.5` — the whole sheet printed at half size, its scale note unchanged;
 * `crop=(l, b, r, t)` — a crop box inside the media box (`pasted_sheet` takes it too);
 * `architect_sheet(origin=(dx, dy))` — the same page with a media box that starts at `(dx, dy)`;
@@ -137,8 +139,9 @@ def _page_content(
     title_block_note: bool,
     joined_border: bool,
     stacked: bool,
+    wide: bool = False,
 ) -> tuple[bytes, int]:
-    width = 1200 if views == 2 or stacked else 600
+    width = 1200 if views == 2 or stacked or wide else 600
     if vendor:
         body = _placed(vendor_stream() + _casework(), (50, 400)) + _label_block(
             60, "7", "SYNTHETIC VENDOR STYLE ELEVATION", "1:10"
@@ -201,19 +204,59 @@ def _stream(body: bytes) -> bytes:
     )
 
 
-def _annotations(approval_stamp: bool) -> tuple[str, list[bytes]]:
-    """An approval stamp pasted over the drawing (objects 6 and 7), as an architect's office or a
-    reviewer stamps a sheet: a box and the words, no dimension."""
-    if not approval_stamp:
+#: With `pasted_with_heading=True`: the architect's drawing pasted at the right of a 1200 pt page
+#: under an "ID SET ELEVATION" heading, beside the page's own drawing (a combined sheet).
+PASTED_BESIDE_RECT = (650, 350, 1150, 650)
+
+
+def _annotations(approval_stamp: bool, pasted_with_heading: bool) -> tuple[str, list[bytes]]:
+    """The page's annotations from object 6 on: an approval stamp pasted over the drawing (a box
+    and the words, no dimension), and/or the architect's drawing pasted with its printed heading."""
+    objects: list[bytes] = []
+    annots: list[int] = []
+    if approval_stamp:
+        number = 6 + len(objects)
+        body = (
+            b"1 0 0 RG 1 w 2 2 176 36 re S 1 0 0 rg BT /F1 12 Tf 10 14 Td (APPROVED AS NOTED) Tj ET"
+        )
+        objects += [
+            (
+                b"<< /Type /Annot /Subtype /Stamp /Rect [380 600 560 640] /T (OFFICE) "
+                + f"/AP << /N {number + 1} 0 R >> >>".encode()
+            ),
+            (
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 180 40] /Resources << /Font << "
+                + f"/F1 5 0 R >> >> /Length {len(body)} >>\nstream\n".encode()
+                + body
+                + b"\nendstream"
+            ),
+        ]
+        annots.append(number)
+    if pasted_with_heading:
+        number = 6 + len(objects)
+        x0, y0, x1, y1 = PASTED_BESIDE_RECT
+        compressed = zlib.compress(architect_stream())
+        objects += [
+            (
+                f"<< /Type /Annot /Subtype /FreeText /Rect [{x0} {y1 + 10} {x0 + 290} {y1 + 30}] "
+                "/Contents (ID SET ELEVATION) /T (REVIEWER) >>"
+            ).encode(),
+            (
+                f"<< /Type /Annot /Subtype /Stamp /Rect [{x0} {y0} {x1} {y1}] /T (DESIGNER) "
+                f"/AP << /N {number + 2} 0 R >> >>"
+            ).encode(),
+            (
+                f"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 {x1 - x0} {y1 - y0}] "
+                f"/Matrix [1 0 0 1 0 0] /Resources << /Font << /F1 5 0 R >> >> "
+                f"/Filter /FlateDecode /Length {len(compressed)} >>\nstream\n".encode()
+                + compressed
+                + b"\nendstream"
+            ),
+        ]
+        annots += [number, number + 1]
+    if not annots:
         return "", []
-    body = b"1 0 0 RG 1 w 2 2 176 36 re S 1 0 0 rg BT /F1 12 Tf 10 14 Td (APPROVED AS NOTED) Tj ET"
-    return " /Annots [6 0 R]", [
-        b"<< /Type /Annot /Subtype /Stamp /Rect [380 600 560 640] /T (OFFICE) /AP << /N 7 0 R >> >>",
-        (
-            f"<< /Type /XObject /Subtype /Form /BBox [0 0 180 40] /Resources << /Font << /F1 5 0 R "
-            f">> >> /Length {len(body)} >>\nstream\n".encode() + body + b"\nendstream"
-        ),
-    ]
+    return " /Annots [" + " ".join(f"{number} 0 R" for number in annots) + "]", objects
 
 
 def _crop_box(crop: tuple[int, int, int, int] | None, dx: int, dy: int, width: int) -> str:
@@ -236,6 +279,7 @@ def architect_sheet(
     joined_border: bool = False,
     stacked: bool = False,
     approval_stamp: bool = False,
+    pasted_with_heading: bool = False,
     printed_at: float = 1.0,
     origin: tuple[int, int] = (0, 0),
     crop: tuple[int, int, int, int] | None = None,
@@ -255,6 +299,7 @@ def architect_sheet(
         title_block_note=title_block_note,
         joined_border=joined_border,
         stacked=stacked,
+        wide=pasted_with_heading,
     )
     if printed_at != 1.0:
         body = f"q {printed_at} 0 0 {printed_at} 0 0 cm\n".encode() + body + b"Q\n"
@@ -262,7 +307,7 @@ def architect_sheet(
     if dx or dy:
         body = _placed(body, (dx, dy))
     media = f"[{dx} {dy} {dx + width} {dy + PAGE_HEIGHT}]"
-    annots, extra = _annotations(approval_stamp)
+    annots, extra = _annotations(approval_stamp, pasted_with_heading)
     return _pdf(
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",

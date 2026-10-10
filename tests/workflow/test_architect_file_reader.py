@@ -22,6 +22,8 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Engine, select
+from sqlalchemy import text as sql
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from alembic import command
@@ -45,11 +47,13 @@ from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionRun
 from app.review import approval
 from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS, read_architect_page
+from extraction.reader import UnreadablePdf
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect.architect_sheet import architect_sheet, pasted_sheet
 from tests.extraction.architect.combined_sheet import combined_sheet
 from vocabulary.semantic_types import DocumentRole
+from workflow.architect_page_notes import architect_page_notes_for
 from workflow.architect_pairing_records import _eligible, architect_view_tags, architect_views
 from workflow.architect_reader import ARCHITECT_EXTRACTOR, persist_architect_pages
 from workflow.review import PageResult
@@ -292,14 +296,101 @@ def test_a_crowded_architect_sheet_records_its_views_and_holds_every_value(
     assert sorted(entry["view"] for entry in noted) == ["view-1", "view-2"]
 
 
-def test_a_page_with_no_view_says_why_in_its_result(session: Session, store: LocalStore) -> None:
+def test_a_page_with_no_view_says_why_and_the_reason_is_stored(
+    session: Session, store: LocalStore
+) -> None:
     revision, version = _package(session, store, architect=architect_sheet(titled=False))
 
     results = _extract(session, store, revision)
 
+    (stored,) = architect_page_notes_for(session, revision.id)
+    assert stored.kind == "no_view_found"
+    assert stored.text.startswith("no view found")
+    assert stored.document_version_id == version.id and stored.page_index == 0
+    run = session.get(ExtractionRun, stored.extraction_run_id)
+    assert run is not None and run.extractor == ARCHITECT_EXTRACTOR
     (note,) = _architect_notes(results, version)["page_notes"]
-    assert note["note"].startswith("no view found")
+    assert note["kind"] == "no_view_found"
     assert _architect_values(session, version) == []
+
+
+def test_a_stamp_holding_no_drawing_is_stored_as_a_note(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _version = _package(session, store, architect=architect_sheet(approval_stamp=True))
+
+    _extract(session, store, revision)
+
+    kinds = [note.kind for note in architect_page_notes_for(session, revision.id)]
+    assert "stamp_not_drawing" in kinds
+
+
+def test_a_page_the_reader_cannot_read_is_stored_as_a_note(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision, version = _package(session, store, architect=architect_sheet())
+    import workflow.stages as stages_module
+
+    real = read_architect_page
+
+    def refuse(data: bytes, index: int, **kwargs: Any) -> Any:
+        if kwargs.get("on_architect_file"):
+            raise UnreadablePdf("a synthetic refusal")
+        return real(data, index, **kwargs)
+
+    monkeypatch.setattr(stages_module, "read_architect_page", refuse)
+
+    _extract(session, store, revision)
+
+    (note,) = [
+        note
+        for note in architect_page_notes_for(session, revision.id)
+        if note.document_version_id == version.id
+    ]
+    assert note.kind == "page_unreadable" and "a synthetic refusal" in note.text
+
+
+def test_the_notes_are_append_only(session: Session, store: LocalStore) -> None:
+    revision, _version = _package(session, store, architect=architect_sheet(titled=False))
+    _extract(session, store, revision)
+    assert architect_page_notes_for(session, revision.id)
+
+    for statement in (
+        "UPDATE architect_page_notes SET text = 'x'",
+        "DELETE FROM architect_page_notes",
+    ):
+        with pytest.raises(DBAPIError, match="append-only"):
+            session.execute(sql(statement))
+        session.rollback()
+
+
+def test_a_combined_sheet_uploaded_as_the_architects_file_gives_its_own_drawing_no_code_role(
+    session: Session, store: LocalStore
+) -> None:
+    """A vendor's sheet whose own drawing is page content in feet and inches with an architectural
+    scale, beside the architect's drawing pasted under its heading, uploaded in the architect's
+    slot with other bytes: no code architect role for the page's own drawing."""
+    revision, version = _package(
+        session, store, architect=architect_sheet(pasted_with_heading=True)
+    )
+
+    _extract(session, store, revision)
+
+    page = _page(session, version)
+    views = {
+        view.tag: view
+        for view in session.scalars(select(DrawingView).where(DrawingView.page_id == page.id))
+    }
+    assert views["view-1"].role is None
+    assert views["panel-1"].role == ViewRole.ARCH.value
+    assert architect_view_tags(session, page.id) == {"panel-1"}
+    own = [
+        row
+        for row in _architect_values(session, version)
+        if "arch-view-tag:view-1" in (row.ambiguity_flags or [])
+    ]
+    assert own and all(row.value_numerator is None for row in own)
+    assert all("combined sheet" in (row.review_reason or "") for row in own)
 
 
 def test_a_renumbered_view_never_reuses_another_drawings_stored_view(
@@ -327,7 +418,7 @@ def test_a_renumbered_view_never_reuses_another_drawings_stored_view(
         dpi=150,
     )
     reading = read_architect_page(
-        data, 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150, architect_document=True
+        data, 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150, on_architect_file=True
     )
 
     counts = persist_architect_pages(
@@ -340,10 +431,28 @@ def test_a_renumbered_view_never_reuses_another_drawings_stored_view(
 
     (refused,) = counts.refused_views
     assert refused["view"] == "view-1" and "renumbered" in str(refused["reason"])
-    assert counts.candidates == 0
     assert counts.views_confirmed_by_code == 0
     session.refresh(view)
-    assert view.region["points"][0] == ["0.80", "0.80"]
+    region = view.region
+    points = region.get("points") if isinstance(region, dict) else None
+    assert isinstance(points, list) and points[0] == ["0.80", "0.80"]
+    # Never silent: a stored note, and the view's values stored held under a tag no view has.
+    (note,) = [
+        n for n in architect_page_notes_for(session, revision.id) if n.kind == "view_refused"
+    ]
+    assert "view-1" in note.text and note.extraction_run_id == newer.id
+    refused_values = list(
+        session.scalars(
+            select(ObservationCandidate).where(ObservationCandidate.extraction_run_id == newer.id)
+        )
+    )
+    assert counts.candidates == len(refused_values) > 0
+    assert all(row.value_numerator is None for row in refused_values)
+    assert all(
+        "arch-view-tag:view-1~refused" in (row.ambiguity_flags or []) for row in refused_values
+    )
+    tags = architect_view_tags(session, page.id) | {"view-1"}
+    assert all(_eligible(row, tags).held_reason is not None for row in refused_values)
 
 
 def test_two_views_on_one_architect_sheet_are_two_stored_views(

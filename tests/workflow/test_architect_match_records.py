@@ -1,6 +1,6 @@
 """Architect view matches stored append-only, read back, chosen by a reviewer, remembered (#1166).
 
-Verification for migration `0082_architect_view_matches`, `persist_architect_matches`,
+Verification for migration `0083_architect_view_matches`, `persist_architect_matches`,
 `effective_architect_match(es)`, `matched_architect_view`, `record_reviewer_match`,
 `remembered_matches` and `same_vendor_item` in `workflow/architect_match_records.py`. Invented
 values only.
@@ -247,7 +247,7 @@ def test_the_migration_goes_down_and_up_when_empty(
     session.close()
     try:
         assert tables() == {"architect_view_index", "architect_view_matches"}
-        command.downgrade(config, "0081_evidence_mark_rechecks")
+        command.downgrade(config, "0082_architect_page_notes")
         assert tables() == set()
         command.upgrade(config, "head")
         assert tables() == {"architect_view_index", "architect_view_matches"}
@@ -265,7 +265,7 @@ def test_the_migration_refuses_to_go_down_over_stored_records(
     config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
     try:
         with pytest.raises(RuntimeError, match="Preserve these records"):
-            command.downgrade(config, "0081_evidence_mark_rechecks")
+            command.downgrade(config, "0082_architect_page_notes")
     finally:
         command.upgrade(config, "head")
 

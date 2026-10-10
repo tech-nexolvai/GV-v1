@@ -26,7 +26,7 @@ no AI. This module is that reading, for one page, with nothing stored:
    from one thing to another (a clearance).
 
 **The architect's own file (#1163).** When the architect's drawings are uploaded as their own PDF,
-the caller says so (`architect_document`). A drawing pasted there is read as above, its role from
+the caller says so (`on_architect_file`). A drawing pasted there is read as above, its role from
 the document's kind and its content agreeing (`views.judge_by_document`, ADR-0020 decision 3). A
 page with nothing pasted — how an architect issues a set — is read from its own content: its views
 are found from their printed titles, scale notes and bubbles (`page_views.py`), each is read inside
@@ -73,7 +73,12 @@ from extraction.architect.outline import (
     slanted_strokes,
     span_on_outline,
 )
-from extraction.architect.page_views import PageViewSettings, survey_page_views
+from extraction.architect.page_views import (
+    NO_VIEW_FOUND,
+    PageNote,
+    PageViewSettings,
+    survey_page_views,
+)
 from extraction.architect.text import Orientation as TextOrientation
 from extraction.architect.text import (
     PrintedDimension,
@@ -119,6 +124,9 @@ __all__ = [
 ]
 
 _TWO: Final = Decimal(2)
+
+#: The kind of note for a stamp that holds no drawing (`app.models.evidence.ArchitectPageNote`).
+STAMP_NOT_DRAWING: Final = "stamp_not_drawing"
 _POINTS_PER_INCH: Final = Decimal(72)
 
 #: A random but fixed id: the annotation reader asks for a document version only to label what it
@@ -260,7 +268,7 @@ class ArchitectPage:
     views: tuple[ArchitectView, ...]
     rows: tuple[ArchitectRow, ...]
     pictures: tuple[ArchitectPicture, ...] = ()
-    notes: tuple[str, ...] = ()
+    notes: tuple[PageNote, ...] = ()
     """What was left out of every view on the page and why, and why no view was found (#1163):
     never silent."""
 
@@ -1135,7 +1143,7 @@ class _Reading:
 
     views: list[ArchitectView]
     rows: list[tuple[Decimal, Decimal, ArchitectRow]]
-    notes: list[str]
+    notes: list[PageNote]
     page: _Page
 
 
@@ -1146,6 +1154,7 @@ def _read_page_content(
     settings: ArchitectSettings,
     dpi: int,
     exclude: Sequence[Box] = (),
+    hold_reason: str | None = None,
 ) -> _Reading:
     """The architect's views drawn as the page's own content, on the architect's own file (#1163).
 
@@ -1154,7 +1163,7 @@ def _read_page_content(
     pasted, so the printed scale note holds on the page). The role is the document's kind and the
     view's content agreeing (`views.judge_by_document`). A view not clearly apart from another is
     read and every value in it held, with the reason. `exclude`: pasted drawings' boxes, read on
-    their own and never twice.
+    their own and never twice. `hold_reason`: no view here gets a role, each is held with it.
     """
     page = _open_page(
         data,
@@ -1201,6 +1210,13 @@ def _read_page_content(
                 reason=f"this view is not clearly apart from another: {found_view.reason}",
             )
             view = replace(view, judgment=judgment, separated=False)
+        elif hold_reason is not None:
+            view = replace(
+                view,
+                judgment=replace(
+                    view.judgment, agreed=None, by_document_kind=False, reason=hold_reason
+                ),
+            )
         if drafted is not None:
             pending.append((len(views), *drafted))
         views.append(view)
@@ -1213,7 +1229,7 @@ def _read_pasted(
     *,
     settings: ArchitectSettings,
     dpi: int,
-    architect_document: bool,
+    on_architect_file: bool,
 ) -> tuple[_Reading, tuple[ArchitectPicture, ...]]:
     """The drawings pasted on the page, each role from its heading and its content (#1052).
 
@@ -1248,8 +1264,8 @@ def _read_pasted(
         settings=settings,
         dpi=dpi,
     )
-    notes: list[str] = []
-    if architect_document:
+    notes: list[PageNote] = []
+    if on_architect_file:
         holding: list[Any] = []
         for stamp in drawings:
             box = stamps[stamp.annotation_index][0]
@@ -1265,9 +1281,12 @@ def _read_pasted(
                 holding.append(stamp)
             else:
                 notes.append(
-                    f"a stamp pasted on the page (annotation {stamp.annotation_index}) holds no "
-                    "dimension label and no scale (an approval stamp, a seal or a mark): not read "
-                    "as a drawing"
+                    PageNote(
+                        f"a stamp pasted on the page (annotation {stamp.annotation_index}) holds "
+                        "no dimension label and no scale (an approval stamp, a seal or a mark): "
+                        "not read as a drawing",
+                        STAMP_NOT_DRAWING,
+                    )
                 )
         drawings = holding
     views: list[ArchitectView] = []
@@ -1314,12 +1333,12 @@ def read_architect_page(
     *,
     settings: ArchitectSettings,
     dpi: int,
-    architect_document: bool = False,
+    on_architect_file: bool = False,
 ) -> ArchitectPage:
     """The architect's views, rows and spans on one page of `data`, every decision with its reason.
 
     Pasted drawings are read everywhere, each role from its heading and its content
-    (`views.judge_view`, `decide_without_headings`). `architect_document` says the page belongs to
+    (`views.judge_view`, `decide_without_headings`). `on_architect_file` says the page belongs to
     a file uploaded as the architect's drawings, apart from the vendor's (#1163): there the page's
     own content is read too, view by view (`_read_page_content`), outside the pasted drawings, each
     view's role from the document's kind and its content agreeing (`views.judge_by_document`); a
@@ -1330,9 +1349,9 @@ def read_architect_page(
     no rows, never a refusal.
     """
     pasted, pictures = _read_pasted(
-        data, page_index, settings=settings, dpi=dpi, architect_document=architect_document
+        data, page_index, settings=settings, dpi=dpi, on_architect_file=on_architect_file
     )
-    if not architect_document:
+    if not on_architect_file:
         return _moved(
             ArchitectPage(
                 page_index=page_index,
@@ -1343,20 +1362,37 @@ def read_architect_page(
             pasted.page.dx,
             pasted.page.dtop,
         )
+    # A page whose pasted drawing is decided by its printed heading is a combined sheet (a combined
+    # set uploaded again in the architect's slot as other bytes): its own drawings may be the
+    # vendor's, so the upload slot gives them no role (#1163 review).
+    combined = [
+        view
+        for view in pasted.views
+        if view.judgment.agreed is not None and view.judgment.heading_role is not None
+    ]
     content = _read_page_content(
         data,
         page_index,
         settings=settings,
         dpi=dpi,
         exclude=tuple(view.box for view in pasted.views),
+        hold_reason=(
+            None
+            if not combined
+            else "this page also holds a pasted drawing decided by its printed heading (a "
+            "combined sheet), so the upload slot gives the page's own drawings no role; a person "
+            "decides"
+        ),
     )
     views = (*pasted.views, *content.views)
     notes = [*pasted.notes, *content.notes]
     if pasted.views and not content.views:
         # The content reader's "no view found" is no news on a page whose drawings are pasted.
-        notes = [note for note in notes if not note.startswith("no view found")]
-    if not views and not any(note.startswith("no view found") for note in notes):
-        notes.append("no view found: nothing on this page is a drawing view")
+        notes = [note for note in notes if note.kind != NO_VIEW_FOUND]
+    if not views and not any(note.kind == NO_VIEW_FOUND for note in notes):
+        notes.append(
+            PageNote("no view found: nothing on this page is a drawing view", NO_VIEW_FOUND)
+        )
     return _moved(
         ArchitectPage(
             page_index=page_index,

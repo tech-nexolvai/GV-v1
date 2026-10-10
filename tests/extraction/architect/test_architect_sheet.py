@@ -1,6 +1,6 @@
 """Reading the architect's own file: drawings printed as the page's content, view by view (#1163).
 
-Verification for: `extraction/architect/reader.read_architect_page(architect_document=True)`,
+Verification for: `extraction/architect/reader.read_architect_page(on_architect_file=True)`,
 `extraction/architect/page_views.find_page_views`, `extraction/architect/views.judge_by_document`
 and the reader on a page whose media box does not start at (0, 0). The sheets are
 `architect_sheet.py`'s, invented; no client value appears here.
@@ -39,7 +39,7 @@ SETTINGS = MEASURED_ARCHITECT_SETTINGS
 
 def _read(data: bytes, *, architect_document: bool = True) -> ArchitectPage:
     return read_architect_page(
-        data, 0, settings=SETTINGS, dpi=150, architect_document=architect_document
+        data, 0, settings=SETTINGS, dpi=150, on_architect_file=architect_document
     )
 
 
@@ -416,3 +416,32 @@ def test_an_arrowhead_is_never_a_tick() -> None:
         for span in row.spans
         if span.inches is not None
     )
+
+
+def test_a_combined_sheet_in_the_architects_slot_gives_its_own_drawing_no_role() -> None:
+    """A vendor's sheet whose own drawing is page content (feet and inches, an architectural
+    scale) beside the architect's drawing pasted under its "ID SET" heading, uploaded in the
+    architect's slot as other bytes: the pasted drawing keeps its heading's role, the page's own
+    drawing gets none from the slot."""
+    page = _read(architect_sheet(pasted_with_heading=True))
+
+    pasted = [view for view in page.views if view.source == "pasted"]
+    content = [view for view in page.views if view.source == "content"]
+    assert [view.judgment.agreed for view in pasted] == [Role.ARCH]
+    assert len(content) == 1
+    (own,) = content
+    assert own.judgment.content.role is Role.ARCH  # its content alone would say the architect's
+    assert own.judgment.agreed is None and not own.judgment.by_document_kind
+    assert "combined sheet" in own.judgment.reason
+    assert all(
+        span.inches is None
+        for row in page.rows
+        if row.view_source == "content"
+        for span in row.spans
+    )
+
+
+def test_page_notes_carry_their_kind() -> None:
+    assert [note.kind for note in _read(architect_sheet(titled=False)).notes] == ["no_view_found"]
+    stamped = _read(architect_sheet(approval_stamp=True)).notes
+    assert "stamp_not_drawing" in [note.kind for note in stamped]

@@ -47,7 +47,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import pairwise
-from typing import Final
+from typing import Final, Self
 
 from extraction.architect.labels import DIMENSION_PATTERN
 from extraction.architect.text import (
@@ -62,7 +62,17 @@ from extraction.architect.text import (
 from extraction.geometry.rows import Box, PageInk
 from units.normalise import plain_marks
 
-__all__ = ["PageView", "PageViewSettings", "PageViewSurvey", "find_page_views", "survey_page_views"]
+__all__ = [
+    "INK_OUTSIDE_VIEWS",
+    "NO_VIEW_FOUND",
+    "TITLE_NOT_VIEW",
+    "PageNote",
+    "PageView",
+    "PageViewSettings",
+    "PageViewSurvey",
+    "find_page_views",
+    "survey_page_views",
+]
 
 _TWO: Final = Decimal(2)
 _ZERO: Final = Decimal(0)
@@ -407,12 +417,31 @@ def _bands(anchors: Sequence[_Anchor]) -> list[list[int]]:
     return [sorted(band, key=lambda index: anchors[index].label.x0) for band in bands]
 
 
+class PageNote(str):
+    """A note about a page, in plain words, with its kind (#1163): one of `NO_VIEW_FOUND`,
+    `TITLE_NOT_VIEW`, `INK_OUTSIDE_VIEWS` here, and the reader's own kinds. It is the text itself
+    (a `str`), so it reads and compares as one; `kind` says what sort of note it is, for storing."""
+
+    kind: str
+
+    def __new__(cls, text: str, kind: str) -> Self:
+        note = super().__new__(cls, text)
+        note.kind = kind
+        return note
+
+
+#: The kinds of note this module writes (`app.models.evidence.ARCHITECT_PAGE_NOTE_KINDS`).
+NO_VIEW_FOUND = "no_view_found"
+TITLE_NOT_VIEW = "title_not_view"
+INK_OUTSIDE_VIEWS = "ink_outside_views"
+
+
 @dataclass(frozen=True, slots=True)
 class PageViewSurvey:
     """The views found on a page, and what was left out of every view and why (never silent)."""
 
     views: tuple[PageView, ...]
-    notes: tuple[str, ...]
+    notes: tuple[PageNote, ...]
 
 
 @dataclass
@@ -540,32 +569,41 @@ def _own(
 
 def _left_out(
     ownership: _Ownership, beside: Sequence[_Cluster], settings: PageViewSettings
-) -> list[str]:
+) -> list[PageNote]:
     """A note for each kind of ink left out of every view, with how much (never silent)."""
-    notes: list[str] = []
+    notes: list[PageNote] = []
     joined_border = [
         cluster for cluster in ownership.border if cluster.strokes > settings.border_strokes
     ]
     if joined_border:
         notes.append(
-            "left out as the sheet's border, round a view title: "
-            + ", ".join(
-                f"{cluster.strokes} strokes and {cluster.chars} characters"
-                for cluster in joined_border
+            PageNote(
+                "left out as the sheet's border, round a view title: "
+                + ", ".join(
+                    f"{cluster.strokes} strokes and {cluster.chars} characters"
+                    for cluster in joined_border
+                )
+                + " (drawing ink may be joined to the border)",
+                INK_OUTSIDE_VIEWS,
             )
-            + " (drawing ink may be joined to the border)"
         )
     if ownership.far_below:
         notes.append(
-            f"left out: {len(ownership.far_below)} piece(s) of ink running far below the view "
-            f"titles, as a title block does ({sum(c.strokes for c in ownership.far_below)} "
-            f"strokes, {sum(c.chars for c in ownership.far_below)} characters)"
+            PageNote(
+                f"left out: {len(ownership.far_below)} piece(s) of ink running far below the view "
+                f"titles, as a title block does ({sum(c.strokes for c in ownership.far_below)} "
+                f"strokes, {sum(c.chars for c in ownership.far_below)} characters)",
+                INK_OUTSIDE_VIEWS,
+            )
         )
     if beside:
         notes.append(
-            f"left out: {len(beside)} piece(s) of ink standing apart beside a view (notes or a "
-            f"legend; {sum(cluster.strokes for cluster in beside)} strokes, "
-            f"{sum(cluster.chars for cluster in beside)} characters)"
+            PageNote(
+                f"left out: {len(beside)} piece(s) of ink standing apart beside a view (notes or a "
+                f"legend; {sum(cluster.strokes for cluster in beside)} strokes, "
+                f"{sum(cluster.chars for cluster in beside)} characters)",
+                INK_OUTSIDE_VIEWS,
+            )
         )
     return notes
 
@@ -604,16 +642,19 @@ def survey_page_views(
     `chars` are the page's black and grey characters, `ink` its black and grey ink (strokes and the
     same characters), both with the page's origin at (0, 0).
     """
-    notes: list[str] = []
+    notes: list[PageNote] = []
     found = _anchors(chars, ink, text, settings)
     if not found:
         scales = find_printed(chars, text).scales
         notes.append(
-            "no view found: "
-            + (
-                "no scale note on this page has a view title printed right above it"
-                if scales
-                else "no scale note is printed on this page"
+            PageNote(
+                "no view found: "
+                + (
+                    "no scale note on this page has a view title printed right above it"
+                    if scales
+                    else "no scale note is printed on this page"
+                ),
+                NO_VIEW_FOUND,
             )
         )
         return PageViewSurvey((), tuple(notes))
@@ -629,12 +670,19 @@ def survey_page_views(
     for index, anchor in enumerate(found):
         if first.touched_strokes.get(index, 0) < settings.minimum_drawing_strokes:
             notes.append(
-                f"not a view: {anchor.title!r} over the scale note {anchor.scale.text!r} has no "
-                "drawing standing above it (a title block's or a note's text)"
+                PageNote(
+                    f"not a view: {anchor.title!r} over the scale note {anchor.scale.text!r} has "
+                    "no drawing standing above it (a title block's or a note's text)",
+                    TITLE_NOT_VIEW,
+                )
             )
     if not kept:
         notes.extend(_left_out(first, [], settings))
-        notes.append("no view found: no view title on this page has a drawing above it")
+        notes.append(
+            PageNote(
+                "no view found: no view title on this page has a drawing above it", NO_VIEW_FOUND
+            )
+        )
         return PageViewSurvey((), tuple(notes))
     found = kept
     ownership = _own(found, clusters, settings)

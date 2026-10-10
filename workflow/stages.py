@@ -82,6 +82,7 @@ from app.models.document import (
 )
 from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole, ViewRoleProposal
 from app.models.evidence import (
+    ArchitectPageNote,
     EvidenceArtifact,
     EvidenceArtifactKind,
     ObservationCandidate,
@@ -292,6 +293,7 @@ from workflow.architect_matching import (
     ArchitectMatcher,
     VendorPageFacts,
 )
+from workflow.architect_page_notes import PAGE_UNREADABLE, record_architect_page_note
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
     ArchitectPageInput,
@@ -2223,6 +2225,7 @@ class DatabaseStages:
                 )
             )
             readings: list[tuple[Page, ArchitectPage]] = []
+            unreadable: list[tuple[Page, str]] = []
             for page in pages:
                 try:
                     readings.append(
@@ -2233,11 +2236,13 @@ class DatabaseStages:
                                 page.index,
                                 settings=settings,
                                 dpi=self._dpi,
-                                architect_document=architect_document,
+                                on_architect_file=architect_document,
                             ),
                         )
                     )
-                except UnreadablePdf:
+                except UnreadablePdf as error:
+                    # Skipped, never guessed at, and never silent (#1163): said below.
+                    unreadable.append((page, str(error)))
                     continue
             run = open_extraction_run(
                 session,
@@ -2254,6 +2259,29 @@ class DatabaseStages:
                 pages=readings,
                 architect_document=architect_document,
             )
+            already_noted = set(
+                session.scalars(
+                    select(ArchitectPageNote.page_id).where(
+                        ArchitectPageNote.extraction_run_id == run.id,
+                        ArchitectPageNote.kind == PAGE_UNREADABLE,
+                    )
+                )
+            )
+            for page, why in unreadable:
+                if page.id in already_noted:
+                    continue  # a redelivered stage noted it already
+                text = f"the architect reader could not read this page: {why}"
+                record_architect_page_note(
+                    session,
+                    extraction_run_id=run.id,
+                    document_version_id=version,
+                    page_id=page.id,
+                    kind=PAGE_UNREADABLE,
+                    text=text,
+                )
+                counts.page_notes.append(
+                    {"page_index": page.index, "kind": PAGE_UNREADABLE, "note": text}
+                )
             payload[str(version)] = vars(counts)
             if architect_document:
                 # The architect's own file (#1166): every view indexed, with its picture.
