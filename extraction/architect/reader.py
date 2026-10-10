@@ -198,6 +198,9 @@ class ArchitectView:
     """The view title printed under a content view (`SAMPLE ROOM ELEVATION`)."""
     bubble: str | None = None
     """What a content view's bubble prints: its view number and sheet reference."""
+    separated: bool = True
+    """Whether the view stands clearly apart from every other view on the page
+    (`page_views.PageView.separated`, #1166); a pasted drawing always does."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1206,7 +1209,7 @@ def _read_page_content(
                 by_document_kind=False,
                 reason=f"this view is not clearly apart from another: {found_view.reason}",
             )
-            view = replace(view, judgment=judgment)
+            view = replace(view, judgment=judgment, separated=False)
         elif hold_reason is not None:
             view = replace(
                 view,

@@ -47,10 +47,13 @@ def _tables(engine: Engine) -> set[str]:
 
 
 def test_0083_is_the_head_and_follows_0082() -> None:
+    """0083 follows 0082, and the single head is 0083 or a migration built on it (0084 since
+    #1166)."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_config())
-    assert script.get_heads() == [_HEAD]
+    (head,) = script.get_heads()
+    assert _HEAD in {revision.revision for revision in script.walk_revisions("base", head)}
     revision = script.get_revision(_HEAD)
     assert revision is not None and revision.down_revision == _BEFORE
 

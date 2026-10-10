@@ -911,3 +911,221 @@ class ArchitectPageNote(Base, TimestampedUUID, Immutable):
         ),
         CheckConstraint("text !~ '^[[:space:]]*$'", name="architect_page_note_text_present"),
     )
+
+
+class ArchitectViewIndexEntry(Base, TimestampedUUID, Immutable):
+    """One view of the architect's own file, as one architect reader run found it (#1166).
+
+    Written only for an architect-kind file (the architect's drawings uploaded as their own PDF),
+    one row per view per run, whether or not its role was confirmed and whether or not it stands
+    clearly apart from its neighbours: the matcher must be able to offer every view, and say why a
+    view's dimensions were not read. `points_per_inch` is the view's scale as exact decimal text;
+    `extent` and `label_box` are `{x0, top, x1, bottom}` in page points (pdfplumber's frame).
+    `picture_sha256`/`picture_storage_key` name the crop of the view a reviewer and the AIs see.
+    """
+
+    __tablename__ = "architect_view_index"
+
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT")
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="RESTRICT"), index=True
+    )
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"), index=True)
+    view_number: Mapped[int] = mapped_column(Integer())
+    view_tag: Mapped[str] = mapped_column(String(32))
+    drawing_view_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("drawing_views.id", ondelete="RESTRICT"), default=None
+    )
+    sheet_number: Mapped[str | None] = mapped_column(String(64), default=None)
+    bubble: Mapped[str | None] = mapped_column(String(200), default=None)
+    title: Mapped[str | None] = mapped_column(String(300), default=None)
+    scale_note: Mapped[str | None] = mapped_column(String(100), default=None)
+    points_per_inch: Mapped[str | None] = mapped_column(String(64), default=None)
+    extent: Mapped[dict[str, object]] = mapped_column(JSONB)
+    label_box: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
+    separated: Mapped[bool] = mapped_column(Boolean())
+    role_confirmed: Mapped[bool] = mapped_column(Boolean())
+    row_count: Mapped[int] = mapped_column(Integer())
+    reason: Mapped[str] = mapped_column(String(500))
+    picture_sha256: Mapped[str | None] = mapped_column(String(64), default=None)
+    picture_storage_key: Mapped[str | None] = mapped_column(String(500), default=None)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "extraction_run_id", "page_id", "view_tag", name="uq_architect_view_index_view"
+        ),
+        CheckConstraint(
+            "view_tag ~ '^(view|panel)-[0-9]+$'", name="architect_view_index_tag_shape"
+        ),
+        CheckConstraint("view_number >= 0", name="architect_view_index_number_not_negative"),
+        CheckConstraint("row_count >= 0", name="architect_view_index_rows_not_negative"),
+        CheckConstraint(
+            "jsonb_typeof(extent) = 'object'", name="architect_view_index_extent_object"
+        ),
+        CheckConstraint(
+            "label_box IS NULL OR jsonb_typeof(label_box) = 'object'",
+            name="architect_view_index_label_box_object",
+        ),
+        CheckConstraint(
+            "picture_sha256 IS NULL OR picture_sha256 ~ '^[0-9a-f]{64}$'",
+            name="architect_view_index_picture_sha",
+        ),
+        CheckConstraint(
+            "(picture_sha256 IS NULL) = (picture_storage_key IS NULL)",
+            name="architect_view_index_picture_pair",
+        ),
+    )
+
+
+class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
+    """Which view of the architect's own file shows the same countertop as one vendor row (#1166).
+
+    Anchored, like `ArchitectPairingRecord`, to the row's first piece candidate (`slot:0`). One
+    `automatic` record per vendor countertop row per run on a revision whose architect file was
+    indexed; a reviewer's pick or "none of these" is a new `reviewer` record superseding the latest;
+    a match remembered from the previous revision of the identical vendor item is `carried`.
+    Nothing is ever edited.
+
+    `matched_view_id` is set exactly when the status names a view (`auto_matched`,
+    `reviewer_confirmed`, `carried_over`, `not_separated`). `candidates` is the ranked list shown to
+    the reviewer, every view of the file, each with code's score and evidence; `ai_picks` both AIs'
+    answers with their invocation ids; `details` the question packet's hash, the picture's key, the
+    vendor item key and where a carried match came from.
+    """
+
+    __tablename__ = "architect_view_matches"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    vendor_page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"))
+    row_anchor_candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    extraction_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), default=None
+    )
+    source: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32))
+    matched_view_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("architect_view_index.id", ondelete="RESTRICT"), default=None
+    )
+    code_verdict: Mapped[str | None] = mapped_column(String(24), default=None)
+    code_pick_view_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("architect_view_index.id", ondelete="RESTRICT"), default=None
+    )
+    ai_picks: Mapped[list[dict[str, object]]] = mapped_column(JSONB)
+    candidates: Mapped[list[dict[str, object]]] = mapped_column(JSONB)
+    vendor_title: Mapped[str | None] = mapped_column(String(300), default=None)
+    vendor_references: Mapped[list[str]] = mapped_column(JSONB)
+    reasons: Mapped[list[str]] = mapped_column(JSONB)
+    details: Mapped[dict[str, object]] = mapped_column(JSONB)
+    supersedes_id: Mapped[UUID | None] = mapped_column(default=None)
+    carried_from_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("architect_view_matches.id", ondelete="RESTRICT"), default=None
+    )
+    decided_by: Mapped[str | None] = mapped_column(String(200), default=None)
+    note: Mapped[str | None] = mapped_column(String(500), default=None)
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('automatic', 'reviewer', 'carried')", name="architect_view_match_source"
+        ),
+        CheckConstraint(
+            "status IN ('auto_matched', 'needs_reviewer', 'reviewer_confirmed', 'none_matches', "
+            "'carried_over', 'not_separated', 'no_candidates')",
+            name="architect_view_match_status",
+        ),
+        CheckConstraint(
+            "source <> 'reviewer' OR status IN ('reviewer_confirmed', 'none_matches', "
+            "'not_separated')",
+            name="architect_view_match_reviewer_status",
+        ),
+        CheckConstraint(
+            "source <> 'carried' OR status IN ('carried_over', 'none_matches', 'not_separated')",
+            name="architect_view_match_carried_status",
+        ),
+        CheckConstraint(
+            "status <> 'carried_over' OR source = 'carried'",
+            name="architect_view_match_carried_over_source",
+        ),
+        CheckConstraint(
+            "source <> 'automatic' OR status IN ('auto_matched', 'needs_reviewer', "
+            "'not_separated', 'no_candidates')",
+            name="architect_view_match_automatic_status",
+        ),
+        CheckConstraint(
+            "(matched_view_id IS NOT NULL) = (status IN ('auto_matched', 'reviewer_confirmed', "
+            "'carried_over', 'not_separated'))",
+            name="architect_view_match_matched_view",
+        ),
+        CheckConstraint(
+            "code_verdict IS NULL OR code_verdict IN ('reference', 'geometry_clear', "
+            "'geometry_tie', 'geometry_none', 'no_geometry')",
+            name="architect_view_match_code_verdict",
+        ),
+        CheckConstraint(
+            "status <> 'auto_matched' OR (source = 'automatic' AND code_verdict IN "
+            "('reference', 'geometry_clear') AND code_pick_view_id = matched_view_id)",
+            name="architect_view_match_automatic_needs_code",
+        ),
+        CheckConstraint(
+            "code_pick_view_id IS NULL OR code_verdict IN ('reference', 'geometry_clear')",
+            name="architect_view_match_code_pick_verdict",
+        ),
+        CheckConstraint(
+            "(source = 'reviewer') = (extraction_run_id IS NULL)",
+            name="architect_view_match_automatic_run",
+        ),
+        CheckConstraint(
+            "(source = 'reviewer') = (decided_by IS NOT NULL)",
+            name="architect_view_match_reviewer_named",
+        ),
+        CheckConstraint(
+            "(source = 'carried') = (carried_from_id IS NOT NULL)",
+            name="architect_view_match_carried_from",
+        ),
+        CheckConstraint(
+            "decided_by IS NULL OR decided_by !~ '^[[:space:]]*$'",
+            name="architect_view_match_actor_not_blank",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(ai_picks) = 'array'", name="architect_view_match_ai_picks_array"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(candidates) = 'array'", name="architect_view_match_candidates_array"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(vendor_references) = 'array'",
+            name="architect_view_match_references_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(reasons) = 'array'", name="architect_view_match_reasons_array"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(details) = 'object'", name="architect_view_match_details_object"
+        ),
+        UniqueConstraint("id", "row_anchor_candidate_id", name="uq_architect_view_match_id_row"),
+        ForeignKeyConstraint(
+            ["supersedes_id", "row_anchor_candidate_id"],
+            ["architect_view_matches.id", "architect_view_matches.row_anchor_candidate_id"],
+            name="fk_architect_view_match_supersedes_same_row",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "uq_architect_view_match_root",
+            "row_anchor_candidate_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NULL"),
+        ),
+        Index(
+            "uq_architect_view_match_superseded_once",
+            "supersedes_id",
+            unique=True,
+            postgresql_where=text("supersedes_id IS NOT NULL"),
+        ),
+    )

@@ -171,6 +171,7 @@ from extraction.architect.reader import (
     ArchitectSettings,
     read_architect_page,
 )
+from extraction.architect.sheet_index import read_pages_phrases
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ThreadSafeAttemptRecorder
 from extraction.fraction_parts import (
@@ -183,6 +184,7 @@ from extraction.fraction_parts import (
 )
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
+from extraction.geometry.rows import Box as RowBox
 from extraction.geometry.rows import StoredBox
 from extraction.geometry.text_association import (
     AssociationResult,
@@ -250,7 +252,7 @@ from extraction.reader import (
     read_pages,
 )
 from extraction.rows import page_rows_and_ink
-from extraction.slot_reader.bedrock import ARCH_PAIR_PROMPT_ID
+from extraction.slot_reader.bedrock import ARCH_MATCH_PROMPT_ID, ARCH_PAIR_PROMPT_ID
 from extraction.stamp_text import (
     ColouredPath,
     PixelBox,
@@ -284,6 +286,13 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
+from workflow.architect_match_records import persist_architect_matches, remembered_matches
+from workflow.architect_matching import (
+    MEASURED_MATCH_SETTINGS,
+    ArchitectMatcher,
+    MatchingArchitectPairing,
+    VendorPageFacts,
+)
 from workflow.architect_page_notes import PAGE_UNREADABLE, record_architect_page_note
 from workflow.architect_pairing import (
     MEASURED_PAIRING_SETTINGS,
@@ -293,7 +302,11 @@ from workflow.architect_pairing import (
     architect_page_input,
     persist_architect_pairings,
 )
-from workflow.architect_pairing_records import architect_view_tags, architect_views
+from workflow.architect_pairing_records import (
+    _architect_view_tags_by_page,
+    architect_view_tags,
+    architect_views,
+)
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
@@ -313,6 +326,7 @@ from workflow.architect_row_plan import (
     pair_label,
     plan_architect_row,
 )
+from workflow.architect_view_index import ArchitectViewCrop, record_architect_view_index
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -1721,6 +1735,9 @@ class DatabaseStages:
         self._architect_reader = architect_reader
         # What it read, by page id, for pairing with the vendor's rows (#1053): set per extraction.
         self._architect_pages: dict[UUID, ArchitectPageInput] = {}
+        # Every view of the architect's own file indexed in this extraction, with its picture, by
+        # index row id (#1166): set per extraction; empty on a combined sheet.
+        self._architect_view_crops: dict[UUID, ArchitectViewCrop] = {}
         # The row's effective architect pairing (#1053), read by the vendor-vs-architect check
         # (#1054). The join seam: `effective_architect_pairing` answers "no pairing" until the
         # pairing module exists; tests pass fakes here.
@@ -2132,6 +2149,7 @@ class DatabaseStages:
                         )
                     )
         self._architect_pages = {}
+        self._architect_view_crops = {}
         if self._architect_reader is not None:
             # Before the readers that use the drawings' roles, so a role code confirms here is the
             # one the slot reader's architect filter reads.
@@ -2257,6 +2275,20 @@ class DatabaseStages:
                     {"page_index": page.index, "kind": PAGE_UNREADABLE, "note": text}
                 )
             payload[str(version)] = vars(counts)
+            if architect_document:
+                # The architect's own file (#1166): every view indexed, with its picture.
+                self._architect_view_crops.update(
+                    record_architect_view_index(
+                        session,
+                        run_id=run.id,
+                        version_id=version,
+                        data=data,
+                        pages=readings,
+                        store=self._store,
+                        dpi=self._dpi,
+                        settings=settings,
+                    )
+                )
             # The pairing (#1053) takes the reading with the exact candidates just stored, and only
             # the drawings whose role is the architect's now (code's or a person's).
             session.flush()
@@ -2389,6 +2421,7 @@ class DatabaseStages:
                 pages=slot_pages,
                 task_run_id=task_run_id,
                 product=product,
+                data=data,
             )
         if not images:
             return count
@@ -2531,11 +2564,17 @@ class DatabaseStages:
         pages: Sequence[SlotPage],
         task_run_id: UUID,
         product: ProductType | None = None,
+        data: bytes | None = None,
     ) -> int:
         """Read the slot pages (#987) and persist candidates and candidate-only proposals.
 
         `product` is the drawing set's product (#994): each crop reader is told it, and the run's
         config hash and every proposal's prompt id record it.
+
+        On a revision whose architect file was indexed (#1166) each chosen row is first matched with
+        one of its views (`MatchingArchitectPairing`), and the matches are stored beside the
+        pairings; `data` is the shop file, for the references its pages print. A combined sheet
+        builds no matcher and reads exactly as before.
         """
         assert self._slot_reader is not None
         runtime = replace(self._slot_reader, product=product)
@@ -2553,14 +2592,33 @@ class DatabaseStages:
             )
         recorder = ThreadSafeAttemptRecorder()
         # The architect pairing (#1053) runs only beside the architect reader, on the pages it read.
+        matcher = (
+            self._architect_matcher(
+                session, package_revision_id=package_revision_id, pages=pages, data=data
+            )
+            if self._architect_reader is not None and self._architect_pages
+            else None
+        )
         architect = (
-            ArchitectPairing(settings=MEASURED_PAIRING_SETTINGS, pages=dict(self._architect_pages))
+            (
+                ArchitectPairing(
+                    settings=MEASURED_PAIRING_SETTINGS, pages=dict(self._architect_pages)
+                )
+                if matcher is None
+                else MatchingArchitectPairing(
+                    settings=MEASURED_PAIRING_SETTINGS,
+                    pages=dict(self._architect_pages),
+                    matcher=matcher,
+                )
+            )
             if self._architect_reader is not None and self._architect_pages
             else None
         )
         if architect is not None:
             runtime = replace(
-                runtime, architect_pairing=f"{ARCH_PAIR_PROMPT_ID}:{architect.settings!r}"
+                runtime,
+                architect_pairing=f"{ARCH_PAIR_PROMPT_ID}:{architect.settings!r}"
+                + ("" if matcher is None else f";{ARCH_MATCH_PROMPT_ID}:{matcher.settings!r}"),
             )
         results = read_slot_pages(
             pages,
@@ -2597,8 +2655,86 @@ class DatabaseStages:
                 extraction_run_id=run.id,
                 results=results,
             )
+        if matcher is not None:
+            persist_architect_matches(
+                session,
+                package_revision_id=package_revision_id,
+                extraction_run_id=run.id,
+                results=results,
+            )
         session.flush()
         return count
+
+    def _architect_matcher(
+        self,
+        session: Session,
+        *,
+        package_revision_id: UUID,
+        pages: Sequence[SlotPage],
+        data: bytes | None,
+    ) -> ArchitectMatcher | None:
+        """The matcher for this revision's architect file (#1166), or `None` when no architect
+        file was indexed in this extraction (a combined sheet, a same-file upload, or an architect
+        file with no view code could find)."""
+        settings = self._architect_reader
+        crops = self._architect_view_crops
+        if settings is None or not crops:
+            return None
+        views = tuple(
+            sorted(
+                (crop.indexed for crop in crops.values()),
+                key=lambda view: (
+                    str(view.view.document_version_id),
+                    view.view.page_number,
+                    view.view.view_number,
+                ),
+            )
+        )
+        stored = {
+            page.id: page
+            for page in session.scalars(
+                select(Page).where(Page.id.in_(tuple(page.page_id for page in pages)))
+            )
+        }
+        phrases: dict[int, tuple[tuple[str, RowBox], ...]] = {}
+        if data is not None and pages:
+            try:
+                phrases = read_pages_phrases(
+                    data, sorted({page.page_index for page in pages}), text=settings.text
+                )
+            except UnreadablePdf:
+                phrases = {}
+        roles = _architect_view_tags_by_page(session, [page.page_id for page in pages])
+        documents = {
+            version_id: sha
+            for version_id, sha in session.execute(
+                select(DocumentVersion.id, DocumentVersion.sha256).where(
+                    DocumentVersion.id.in_({page.document_version_id for page in pages})
+                )
+            )
+        }
+        vendor_pages: dict[UUID, VendorPageFacts] = {}
+        for page in pages:
+            row = stored.get(page.page_id)
+            if row is None:
+                continue
+            reading = self._architect_pages.get(page.page_id)
+            vendor_pages[page.page_id] = VendorPageFacts(
+                page_index=page.page_index,
+                content_hash=row.content_hash,
+                phrases=phrases.get(page.page_index, ()),
+                view_boxes=() if reading is None else reading.view_boxes,
+                has_architect_view=bool(roles.get(page.page_id)),
+                document_sha256=documents.get(page.document_version_id),
+            )
+        return ArchitectMatcher(
+            settings=MEASURED_MATCH_SETTINGS,
+            views=views,
+            crops=dict(crops),
+            remembered=remembered_matches(session, package_revision_id),
+            vendor_pages=vendor_pages,
+            architect_pages=dict(self._architect_pages),
+        )
 
     def _measure(
         self, operation: str, *, run_id: str, page_index: int | None = None

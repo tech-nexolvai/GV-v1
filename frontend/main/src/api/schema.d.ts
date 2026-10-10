@@ -288,6 +288,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/architect-views/{view_id}/picture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * View the stored picture of one of the architect's views
+         * @description The picture of a view of this package's architect file, only while its bytes still match the
+         *     digest recorded for them; 404 for a view of another package or one with no picture.
+         */
+        get: operations["architect_view_picture_api_v1_projects__project_id__packages__package_id__architect_views__view_id__picture_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/assistant": {
         parameters: {
             query?: never;
@@ -1431,6 +1452,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/architect-view-match": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Show which of the architect's views this countertop row is matched with, and the candidates */
+        get: operations["get_architect_view_match_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_get"];
+        put?: never;
+        /** Choose which of the architect's views shows this countertop (or none of them) */
+        post: operations["pick_architect_view_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows/{row_id}/review": {
         parameters: {
             query?: never;
@@ -2133,6 +2172,24 @@ export interface components {
              */
             revision_id: string;
         };
+        /** ArchitectCandidateCodeOut */
+        ArchitectCandidateCodeOut: {
+            /** Bays Architect */
+            bays_architect: number | null;
+            /** Bays Vendor */
+            bays_vendor: number | null;
+            /** Fits */
+            fits: boolean;
+            /** Pair Support */
+            pair_support: number | null;
+            /** Reference Match */
+            reference_match: boolean;
+            /**
+             * Run Length Error Display
+             * @description How far the view's run is from the vendor's, in inches to a tenth (display only; code decides with exact values).
+             */
+            run_length_error_display: string | null;
+        };
         /**
          * ArchitectComparedOut
          * @description One width both drawings print for the same thing, as the architect check compared it.
@@ -2161,6 +2218,49 @@ export interface components {
              * @description The vendor piece, counted from 1 as the row shows it; null for the overall.
              */
             vendor_piece: number | null;
+        };
+        /** ArchitectMatchCurrentOut */
+        ArchitectMatchCurrentOut: {
+            /**
+             * Decided At
+             * Format: date-time
+             */
+            decided_at: string;
+            /** Decided By */
+            decided_by: string | null;
+            /** Note */
+            note: string | null;
+            /** Reasons */
+            reasons: string[];
+            /**
+             * Record Id
+             * Format: uuid
+             */
+            record_id: string;
+            /** Source */
+            source: string;
+            /** Status */
+            status: string;
+            /** Supersedes Id */
+            supersedes_id: string | null;
+        };
+        /** ArchitectMatchVendorOut */
+        ArchitectMatchVendorOut: {
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** Page Number */
+            page_number: number;
+            /**
+             * References
+             * @description Architect view references printed on the vendor's sheet, normalised.
+             */
+            references: string[];
+            region: components["schemas"]["RowLocation"] | null;
+            /** Title */
+            title: string | null;
         };
         /** ArchitectPairIn */
         ArchitectPairIn: {
@@ -2325,6 +2425,121 @@ export interface components {
             row: number | null;
             /** Slot */
             slot: number | null;
+        };
+        /** ArchitectViewCandidateOut */
+        ArchitectViewCandidateOut: {
+            /** Ai Picked By */
+            ai_picked_by: string[];
+            /** Can Pick */
+            can_pick: boolean;
+            code: components["schemas"]["ArchitectCandidateCodeOut"];
+            /** Evidence */
+            evidence: string[];
+            /** Rank */
+            rank: number;
+            /** Refusal */
+            refusal: string | null;
+            /**
+             * Remembered
+             * @description A reviewer chose this view for the same item on an earlier revision. Evidence only: it is never pre-selected.
+             */
+            remembered: boolean;
+            /** Score Summary */
+            score_summary: string;
+            /** Shown To Ais */
+            shown_to_ais: boolean;
+            view: components["schemas"]["ArchitectViewRefOut"];
+        };
+        /** ArchitectViewMatchOut */
+        ArchitectViewMatchOut: {
+            /**
+             * Can Choose None
+             * @default true
+             */
+            can_choose_none: boolean;
+            /** Candidates */
+            candidates: components["schemas"]["ArchitectViewCandidateOut"][];
+            current: components["schemas"]["ArchitectMatchCurrentOut"] | null;
+            /**
+             * Row Id
+             * Format: uuid
+             */
+            row_id: string;
+            vendor: components["schemas"]["ArchitectMatchVendorOut"];
+        };
+        /**
+         * ArchitectViewPickIn
+         * @description A reviewer's pick: exactly one of a view and "none of these".
+         */
+        ArchitectViewPickIn: {
+            /**
+             * Expected Record Id
+             * Format: uuid
+             * @description The `current.record_id` the reviewer was shown. When the row's match has moved on since, nothing is recorded and the answer is 409.
+             */
+            expected_record_id: string;
+            /**
+             * None Of These
+             * @default false
+             */
+            none_of_these: boolean;
+            /** Note */
+            note?: string | null;
+            /** View Id */
+            view_id?: string | null;
+        };
+        /**
+         * ArchitectViewRefOut
+         * @description One view of the architect's own file.
+         */
+        ArchitectViewRefOut: {
+            /** Bubble */
+            bubble: string | null;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string;
+            /**
+             * Label
+             * @description How a person names it: page, view, title and sheet.
+             */
+            label: string;
+            /**
+             * Page Number
+             * @description 1-based, as a person counts pages.
+             */
+            page_number: number;
+            /**
+             * Picture Url
+             * @description The stored picture of the view; null when none was rendered.
+             */
+            picture_url: string | null;
+            /** @description The view's extent on its page, in stored space; null when not stored. */
+            region: components["schemas"]["RowLocation"] | null;
+            /** Scale Note */
+            scale_note: string | null;
+            /**
+             * Separated
+             * @description False when the view is not clearly apart from its neighbour: its dimensions were not read.
+             */
+            separated: boolean;
+            /** Sheet Number */
+            sheet_number: string | null;
+            /** Title */
+            title: string | null;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
         };
         /**
          * AssemblyInput
@@ -6368,6 +6583,39 @@ export interface operations {
             };
         };
     };
+    architect_view_picture_api_v1_projects__project_id__packages__package_id__architect_views__view_id__picture_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     review_assistant_info_api_v1_projects__project_id__packages__package_id__assistant_get: {
         parameters: {
             query?: never;
@@ -8085,6 +8333,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArchitectPairingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_architect_view_match_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                row_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchitectViewMatchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pick_architect_view_api_v1_projects__project_id__packages__package_id__slot_rows__row_id__architect_view_match_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                row_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchitectViewPickIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArchitectViewMatchOut"];
                 };
             };
             /** @description Validation Error */

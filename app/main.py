@@ -132,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # what.
     from app.api import (
         approvals,
+        architect_matches,
         background,
         company_settings,
         confirmations,
@@ -179,6 +180,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(countertop_runs.router, prefix=API_PREFIX)
     # A slot-reader wall choice or missing width belongs to one selected row, not the revision.
     app.include_router(slot_rows.router, prefix=API_PREFIX)
+    # Which of the architect's views a countertop row is matched with, when the architect's drawings
+    # are a separate PDF: chosen by a reviewer with one click when code and both AIs did not agree
+    # (#1166).
+    app.include_router(architect_matches.router, prefix=API_PREFIX)
     # Which confirmed reading is each confirmed part's width: suggested by the computer, confirmed,
     # corrected or taken back by a person, one part at a time (#913).
     app.include_router(reading_parts.router, prefix=API_PREFIX)
