@@ -17,8 +17,8 @@ view shows the same countertop as each vendor view. Two append-only tables:
 Never edited: the same append-only trigger as every other evidence table. Grants are derived from
 `ROLE_GRANTS` (append-only: `SELECT`, `INSERT`).
 
-Revision ID: 0083_architect_view_matches
-Revises: 0082_architect_page_notes
+Revision ID: 0084_architect_view_matches
+Revises: 0083_architect_page_notes
 """
 
 from collections.abc import Sequence
@@ -29,8 +29,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0083_architect_view_matches"
-down_revision: str | None = "0082_architect_page_notes"
+revision: str = "0084_architect_view_matches"
+down_revision: str | None = "0083_architect_page_notes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

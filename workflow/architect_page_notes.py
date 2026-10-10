@@ -3,7 +3,7 @@
 Why the architect reader read nothing on a page of the architect's own file, or what it left out:
 no view found, a title that is no view, a stamp holding no drawing, ink left out of every view, a
 view refused because the stored view of its number sits elsewhere, a page that could not be read.
-Each is one append-only `ArchitectPageNote` under the run that read the page (`0082`), so nothing
+Each is one append-only `ArchitectPageNote` under the run that read the page (`0083`), so nothing
 the reader declined is lost when the stage's result is reduced to a page count.
 
 **No extraction imports**, like `workflow/architect_pairing_records.py`: later phases and the API
