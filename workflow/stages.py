@@ -2160,7 +2160,14 @@ class DatabaseStages:
         verified_data: Mapping[UUID, bytes],
         task_run_id: UUID,
     ) -> dict[str, object]:
-        """Read the architect's drawing on every page of the shop upload, by code (#1052).
+        """Read the architect's drawings by code: on every page of the shop upload (#1052), and on
+        every page of an architectural upload whose bytes are not the shop file's (#1163).
+
+        On the shop file only drawings pasted onto the vendor's sheets are read, each role from its
+        heading and content. The architect's own file is read with `architect_document`: a pasted
+        drawing there, or a view drawn as the page's own content, is the architect's when the
+        document's kind and the drawing's content agree. Matching its views with the vendor's
+        (Phase 3) is not done here: the values are stored for it.
 
         A same-file package — the same bytes uploaded as both drawings (#963) — is one combined set
         whose upload slots say nothing about either drawing, and gets no architect values at all.
@@ -2175,7 +2182,9 @@ class DatabaseStages:
             }
         config = hashlib.sha256(repr(settings).encode()).hexdigest()[:16]
         payload: dict[str, object] = {}
-        for version in _shop_document_versions_for(session, package_revision_id):
+        for version, architect_document in _architect_reader_versions_for(
+            session, package_revision_id
+        ):
             data = verified_data.get(version)
             if data is None:
                 continue
@@ -2190,7 +2199,13 @@ class DatabaseStages:
                     readings.append(
                         (
                             page,
-                            read_architect_page(data, page.index, settings=settings, dpi=self._dpi),
+                            read_architect_page(
+                                data,
+                                page.index,
+                                settings=settings,
+                                dpi=self._dpi,
+                                architect_document=architect_document,
+                            ),
                         )
                     )
                 except UnreadablePdf:
@@ -7566,6 +7581,35 @@ def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> 
         .scalars()
         .all()
     )
+
+
+def _architect_reader_versions_for(
+    session: Session, package_revision_id: UUID
+) -> tuple[tuple[UUID, bool], ...]:
+    """The documents the architect reader reads, each with whether it is the architect's own file.
+
+    The shop slot(s), read for drawings pasted onto the vendor's sheets (`False`), and every
+    architectural slot whose bytes are not any shop slot's (`True`, #1163): the architect's drawings
+    uploaded as their own file. An architectural slot holding the shop file's own bytes is the same
+    combined set, never read twice.
+    """
+    rows = session.execute(
+        select(PackageRevisionDocument.document_version_id, Document.kind, DocumentVersion.sha256)
+        .join(Document, Document.id == PackageRevisionDocument.document_id)
+        .join(DocumentVersion, DocumentVersion.id == PackageRevisionDocument.document_version_id)
+        .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        .order_by(PackageRevisionDocument.document_version_id)
+    ).all()
+    shop_bytes = {str(sha) for _version, kind, sha in rows if str(kind) == DocumentKind.SHOP.value}
+    shop = [
+        (version, False) for version, kind, _sha in rows if str(kind) == DocumentKind.SHOP.value
+    ]
+    architectural = [
+        (version, True)
+        for version, kind, sha in rows
+        if str(kind) == DocumentKind.ARCHITECTURAL.value and str(sha) not in shop_bytes
+    ]
+    return (*shop, *architectural)
 
 
 def _whole_page_fallback_enabled(slot_reader: object | None) -> bool:

@@ -98,8 +98,14 @@ def _panel_number(tag: str) -> int | None:
     return int(number) if tag.startswith("panel-") and number.isdigit() else None
 
 
+def _content_number(tag: str) -> int | None:
+    number = tag.removeprefix("view-")
+    return int(number) if tag.startswith("view-") and number.isdigit() else None
+
+
 def architect_views(session: Session, page_id: UUID) -> set[int]:
-    """The annotation indices of the page's drawings whose role is now the architect's."""
+    """The annotation indices of the page's pasted drawings whose role is now the architect's, and
+    the numbers of its views drawn as the page's own content whose role is (#1163)."""
     return _architect_views_by_page(session, (page_id,)).get(page_id, set())
 
 
@@ -107,14 +113,30 @@ def _architect_views_by_page(session: Session, page_ids: Collection[UUID]) -> di
     found: dict[UUID, set[int]] = {}
     if not page_ids:
         return found
-    for page_id, tag in session.execute(
-        select(DrawingView.page_id, DrawingView.tag).where(
-            DrawingView.page_id.in_(tuple(page_ids)), DrawingView.role == ViewRole.ARCH.value
+    panels: dict[UUID, set[int]] = {}
+    contents: dict[UUID, set[int]] = {}
+    for page_id, tag, role in session.execute(
+        select(DrawingView.page_id, DrawingView.tag, DrawingView.role).where(
+            DrawingView.page_id.in_(tuple(page_ids))
         )
     ):
-        number = _panel_number(tag)
-        if number is not None:
-            found.setdefault(page_id, set()).add(number)
+        panel = _panel_number(tag)
+        content = _content_number(tag)
+        if panel is not None:
+            panels.setdefault(page_id, set()).add(panel)
+            if role == ViewRole.ARCH.value:
+                found.setdefault(page_id, set()).add(panel)
+        elif content is not None and role == ViewRole.ARCH.value:
+            contents.setdefault(page_id, set()).add(content)
+    # A view drawn as the page's own content (#1163) shares the `arch-view:<n>` key with a pasted
+    # drawing's annotation index. The reader never gives one page both, but should a page hold a
+    # `panel-<n>` and a `view-<n>` at once, neither number counts: which drawing a value came from
+    # would be a guess.
+    for page_id, numbers in contents.items():
+        clash = numbers & panels.get(page_id, set())
+        found.setdefault(page_id, set()).update(numbers - clash)
+        if clash:
+            found[page_id] -= clash
     return found
 
 
