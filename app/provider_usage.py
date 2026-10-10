@@ -1,17 +1,20 @@
-"""What OpenRouter itself says has been spent, beside the recorded total (#1165).
+"""What OpenRouter itself says this deployment's key has used (#1165).
 
-The Usage page's "Spend so far" adds up the calls this system recorded. Where a provider reports an
-account total, it is shown beside that sum as a cross-check: a gap means calls were made that were
-never recorded here (another machine, another tool), or the other way round.
+The Usage page's "Spend so far" adds up the calls this system recorded. When switched on
+(`GV_USAGE_PROVIDER_CHECK=true`, off by default) and `OPENROUTER_API_KEY` is set, the page also
+shows what OpenRouter reports for that key, as a cross-check.
 
-**Free and read-only.** `GET /api/v1/credits` (credits bought and used by the account) costs
-nothing and calls no model. Some keys may not read the account's credits; then `GET /api/v1/key`
-(what this key has used) is read instead, and the answer says which it is.
+**The key's own usage only** (`GET /api/v1/key`), never the account's credits: an account total
+spans every project and person on it. Even the key's usage covers everything that uses the key, so
+the page labels it "all projects".
 
-**The key never leaves this module.** It is sent only in the `Authorization` header to OpenRouter;
-an error keeps only its kind, never the reply's words or the key. Off when no key is set, or when
-`GV_USAGE_PROVIDER_CHECK=false`. A reply is kept for five minutes, so opening the page repeatedly
-does not ask again each time.
+**Free, read-only, and never in the way.** The request calls no model. It is served by its own
+endpoint, so the recorded totals never wait for it; it has a short timeout; the network call runs
+outside the lock; and an answer (or a failure) is kept for five minutes.
+
+**The key goes only to OpenRouter.** It is sent only in the `Authorization` header of a request to
+`openrouter.ai`; a redirect is refused rather than followed, so the header can never reach another
+host. Any error keeps only that it failed, never the reply's words or the key.
 """
 
 from __future__ import annotations
@@ -19,27 +22,36 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
-CREDITS_URL: Final = "https://openrouter.ai/api/v1/credits"
 KEY_URL: Final = "https://openrouter.ai/api/v1/key"
 CACHE_SECONDS: Final = 300.0
-TIMEOUT_SECONDS: Final = 5.0
+TIMEOUT_SECONDS: Final = 3.0
 
 #: Reads one URL with the given headers and returns (HTTP status, body). Tests pass a fake.
 Fetch = Callable[[str, Mapping[str, str], float], tuple[int, bytes]]
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect is answered as the 3xx it is: the Authorization header never follows it."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+_OPENER: Final = urllib.request.build_opener(_RefuseRedirects())
+
+
 def _urlopen_fetch(url: str, headers: Mapping[str, str], timeout: float) -> tuple[int, bytes]:
-    request = Request(url, headers=dict(headers), method="GET")
+    request = urllib.request.Request(url, headers=dict(headers), method="GET")
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return int(response.status), bytes(response.read(65536))
     except HTTPError as error:
         status = int(error.code)
@@ -49,10 +61,9 @@ def _urlopen_fetch(url: str, headers: Mapping[str, str], timeout: float) -> tupl
 
 @dataclass(frozen=True, slots=True)
 class ProviderCheck:
-    """One answer from the provider, or why there is none."""
+    """One answer from the provider, or that there is none."""
 
     status: Literal["ok", "unavailable"]
-    scope: Literal["account", "key"] | None
     used_usd: str | None
     checked_at: datetime
 
@@ -69,17 +80,8 @@ def _usd(value: object) -> str | None:
     return format(amount.quantize(Decimal("0.000001")), "f")
 
 
-def _data(body: bytes) -> Mapping[str, object] | None:
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        return None
-    data = payload.get("data") if isinstance(payload, Mapping) else None
-    return data if isinstance(data, Mapping) else None
-
-
 class OpenRouterUsageCheck:
-    """Reads OpenRouter's own usage total; at most once every five minutes."""
+    """Reads what OpenRouter reports this key has used; at most once every five minutes."""
 
     def __init__(
         self,
@@ -100,31 +102,29 @@ class OpenRouterUsageCheck:
         return "OpenRouterUsageCheck(key=<hidden>)"
 
     def check(self) -> ProviderCheck:
+        # The lock guards only the memory; the request itself runs outside it, so a slow reply
+        # never holds up another request (two at once may both ask, which is harmless).
         with self._lock:
-            now = self._clock()
-            if self._cached is not None and now - self._cached[0] < self._cache_seconds:
-                return self._cached[1]
-            result = self._ask()
-            self._cached = (now, result)
-            return result
+            cached = self._cached
+            if cached is not None and self._clock() - cached[0] < self._cache_seconds:
+                return cached[1]
+        result = self._ask()
+        with self._lock:
+            self._cached = (self._clock(), result)
+        return result
 
     def _ask(self) -> ProviderCheck:
         checked_at = datetime.now(UTC)
         try:
-            status, body = self._fetch(CREDITS_URL, self._headers, TIMEOUT_SECONDS)
-            data = _data(body) if status == 200 else None
-            used = None if data is None else _usd(data.get("total_usage"))
-            if used is not None:
-                return ProviderCheck("ok", "account", used, checked_at)
-            if status in (401, 403):
-                status, body = self._fetch(KEY_URL, self._headers, TIMEOUT_SECONDS)
-                data = _data(body) if status == 200 else None
-                used = None if data is None else _usd(data.get("usage"))
-                if used is not None:
-                    return ProviderCheck("ok", "key", used, checked_at)
-        except (URLError, TimeoutError, OSError, ValueError):
-            pass
-        return ProviderCheck("unavailable", None, None, checked_at)
+            status, body = self._fetch(KEY_URL, self._headers, TIMEOUT_SECONDS)
+            payload = json.loads(body) if status == 200 else None
+        except Exception:  # noqa: BLE001 - only that it failed is kept, never its words
+            payload = None
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        used = _usd(data.get("usage")) if isinstance(data, Mapping) else None
+        if used is None:
+            return ProviderCheck("unavailable", None, checked_at)
+        return ProviderCheck("ok", used, checked_at)
 
 
-__all__ = ["CREDITS_URL", "KEY_URL", "Fetch", "OpenRouterUsageCheck", "ProviderCheck"]
+__all__ = ["KEY_URL", "Fetch", "OpenRouterUsageCheck", "ProviderCheck"]

@@ -1,10 +1,14 @@
-"""Route and purpose of a recorded call, from its model id and prompt id only (#1165)."""
+"""Route, purpose and charged cost of a recorded call (#1165)."""
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 import pytest
 
-from app.usage_history import charged_cost_micros, infer_purpose, infer_route
+from app.runs.rates import ModelRate, ModelRates
+from app.usage_history import ChargedCost, charged_cost, infer_purpose, infer_route
 
 
 @pytest.mark.parametrize(
@@ -28,29 +32,61 @@ def test_route(model: str, prompt: str, route: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("model", "prompt", "purpose"),
+    ("prompt", "purpose"),
     [
-        ("anthropic.claude-opus-5-5", "claude-slot-span-v2", "reading"),
-        ("anthropic.claude-opus-5-5", "claude-counter-break-v2", "reading"),
-        ("anthropic.claude-opus-5-5", "slot-walls-v1", "reading"),
-        ("anthropic.claude-opus-5-5", "arch-pair-v1", "reading"),
-        ("qwen.qwen3-vl-235b-a22b", "form-reader-private-abc+product=countertop", "reading"),
-        ("anthropic.claude-opus-5-5", "slot-row-choice-v2", "row-choice"),
-        ("anthropic.claude-sonnet-5-5", "review-assistant-v2", "assistant"),
-        ("us.amazon.nova-pro-v1:0", "reviewer-chat-v2", "chat"),
-        ("us.amazon.nova-2-lite-v1:0", "dimension-reader-v1", "reading"),
-        ("mistral.mistral-large-3-675b-instruct", "dimension-reader-v1", "bake-off"),
-        ("us.amazon.nova-2-lite-v1:0", "dimension-reader-teaching-v2+abc", "bake-off"),
-        ("us.amazon.nova-pro-v1:0", "findings-composer-v3", "other"),
+        ("claude-slot-span-v2", "reading"),
+        ("claude-counter-break-v2", "reading"),
+        ("slot-walls-v1", "reading"),
+        ("arch-pair-v1", "reading"),
+        ("form-reader-private-abc+product=countertop", "reading"),
+        ("dimension-reader-v1", "reading"),
+        # The production prompt of the Qwen3-VL + Nova 2 Lite pair (#907), not a comparison.
+        ("dimension-reader-teaching-v2+49f87a3cc496", "reading"),
+        ("slot-row-choice-v2", "row-choice"),
+        ("review-assistant-v2", "assistant"),
+        ("reviewer-chat-v2", "chat"),
+        ("findings-composer-v3", "findings"),
+        ("synthetic-prompt", "other"),
     ],
 )
-def test_purpose(model: str, prompt: str, purpose: str) -> None:
-    assert infer_purpose(model, prompt) == purpose
+def test_purpose(prompt: str, purpose: str) -> None:
+    assert infer_purpose(prompt) == purpose
+
+
+RATES = ModelRates(
+    source="synthetic",
+    retrieved=date(2026, 1, 1),
+    currency="USD",
+    rates={"amazon.nova-pro-v1:0": ModelRate(Decimal("0.0008"), Decimal("0.0032"))},
+)
 
 
 def test_only_a_failed_call_with_no_tokens_is_free() -> None:
-    assert charged_cost_micros(None, "failed", 0, 0) == 0
-    assert charged_cost_micros(None, "failed", 1, 0) is None
-    assert charged_cost_micros(None, "timeout", 0, 0) is None
-    assert charged_cost_micros(None, "ok", 0, 0) is None
-    assert charged_cost_micros(12, "failed", 0, 0) == 12
+    assert charged_cost("m", None, "failed", 0, 0) == ChargedCost(0)
+    assert charged_cost("m", None, "failed", 1, 0) == ChargedCost(None)
+    assert charged_cost("m", None, "timeout", 0, 0) == ChargedCost(None)
+    assert charged_cost("m", None, "ok", 0, 0) == ChargedCost(None)
+    assert charged_cost("m", 12, "failed", 0, 0) == ChargedCost(12)
+    assert charged_cost("m", 0, "failed", 0, 0) == ChargedCost(0)
+
+
+def test_a_zero_with_tokens_is_priced_later_from_the_published_rates() -> None:
+    # A pre-#754 row: stored as 0 whatever it used. Profile ids price as their model.
+    assert charged_cost("us.amazon.nova-pro-v1:0", 0, "ok", 1000, 100, rates=RATES) == (
+        ChargedCost(1120, priced_later=True)
+    )
+    assert charged_cost("amazon.nova-pro-v1:0", 0, "failed", 10, 0, rates=RATES) == (
+        ChargedCost(8, priced_later=True)
+    )
+
+
+def test_a_zero_with_tokens_and_no_published_rate_is_unpriced_never_free() -> None:
+    assert charged_cost("mistral.unknown", 0, "ok", 1000, 100, rates=RATES) == ChargedCost(None)
+
+
+def test_the_published_file_prices_the_old_rows() -> None:
+    # The repository's own price file, through the recorder's own code.
+    assert charged_cost("mistral.ministral-3-3b-instruct", 0, "ok", 10_000, 1_000) == (
+        ChargedCost(1100, priced_later=True)
+    )
+    assert charged_cost("anthropic.claude-haiku-4-5-20251001-v1:0", 0, "ok", 10, 1).micros is None

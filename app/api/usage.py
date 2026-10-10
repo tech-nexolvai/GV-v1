@@ -31,19 +31,17 @@ from app.models import (
 from app.models.runs import made_a_call
 from app.provider_usage import OpenRouterUsageCheck, ProviderCheck
 from app.schemas.visual_ui import (
-    EarlierRunOut,
-    ModelSpendOut,
     ModelUsageOut,
     PackageReadingTimeOut,
     ProviderCheckOut,
+    ProviderChecksOut,
     ReadingTimeOut,
-    SpendTotalsOut,
     UsageGroupOut,
     UsageHistoryOut,
     UsageOut,
     UsageTotalsOut,
 )
-from app.usage_history import PURPOSES, charged_cost_micros, infer_route
+from app.usage_history import PURPOSES, charged_cost, infer_route
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -242,6 +240,7 @@ def project_usage(
     rows = session.execute(base.order_by(ModelInvocation.created_at, ModelInvocation.id)).all()
     grouped: dict[str, dict[str, list[_InvocationUsage]]] = defaultdict(lambda: defaultdict(list))
     per_run: dict[tuple[UUID, UUID], list[datetime]] = defaultdict(list)
+    all_calls: list[_InvocationUsage] = []
     for row in rows:
         invocation = _InvocationUsage(
             created_at=row.created_at,
@@ -249,9 +248,14 @@ def project_usage(
             model_id=row.model_id,
             input_tokens=row.input_tokens,
             output_tokens=row.output_tokens,
-            cost_micros=row.cost_micros,
+            # Counted as Spend so far counts it (#1165): a pre-#754 zero with tokens is priced from
+            # the published rates or unpriced, never free.
+            cost_micros=charged_cost(
+                row.model_id, row.cost_micros, row.outcome, row.input_tokens, row.output_tokens
+            ).micros,
             outcome=row.outcome,
         )
+        all_calls.append(invocation)
         package_id: UUID = row.package_id
         key = invocation.created_at.date().isoformat() if group_by == "day" else str(package_id)
         grouped[key][invocation.model_id].append(invocation)
@@ -310,18 +314,6 @@ def project_usage(
                 + (last - first).microseconds // 1000,
             )
         )
-    all_calls = [
-        _InvocationUsage(
-            created_at=row.created_at,
-            extraction_run_id=row.extraction_run_id,
-            model_id=row.model_id,
-            input_tokens=row.input_tokens,
-            output_tokens=row.output_tokens,
-            cost_micros=row.cost_micros,
-            outcome=row.outcome,
-        )
-        for row in rows
-    ]
     return UsageOut.model_validate(
         {
             "from": from_,
@@ -342,6 +334,8 @@ class _Tally:
     output_tokens: int = 0
     cost_micros: int = 0
     unpriced_calls: int = 0
+    priced_later_calls: int = 0
+    priced_later_micros: int = 0
 
     def add(self, other: _Tally) -> None:
         self.calls += other.calls
@@ -349,34 +343,33 @@ class _Tally:
         self.output_tokens += other.output_tokens
         self.cost_micros += other.cost_micros
         self.unpriced_calls += other.unpriced_calls
+        self.priced_later_calls += other.priced_later_calls
+        self.priced_later_micros += other.priced_later_micros
 
-    def out(self) -> SpendTotalsOut:
-        return SpendTotalsOut(
-            calls=self.calls,
-            input_tokens=self.input_tokens,
-            output_tokens=self.output_tokens,
-            cost_usd=_usd(self.cost_micros),
-            unpriced_calls=self.unpriced_calls,
-        )
+    def out(self) -> dict[str, object]:
+        return {
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cost_usd": _usd(self.cost_micros),
+            "unpriced_calls": self.unpriced_calls,
+            "priced_later_calls": self.priced_later_calls,
+            "priced_later_cost_usd": _usd(self.priced_later_micros),
+        }
 
 
-def provider_usage_check(request: Request) -> OpenRouterUsageCheck | None:
-    """OpenRouter's own usage total, when a key is set and the check is not switched off.
-
-    One checker per app, so its five-minute memory is shared by every request. A dependency, so a
-    test replaces it with a fake transport (no request ever leaves a test).
-    """
-    settings: Settings = request.app.state.settings
-    key = settings.openrouter_api_key
-    value = None if key is None else key.get_secret_value()
-    if not settings.usage_provider_check or not value or not value.strip():
-        return None
-    existing = getattr(request.app.state, "openrouter_usage_check", None)
-    if isinstance(existing, OpenRouterUsageCheck):
-        return existing
-    check = OpenRouterUsageCheck(value.strip())
-    request.app.state.openrouter_usage_check = check
-    return check
+def _call_tally(
+    input_tokens: int, output_tokens: int, cost: int | None, priced_later: bool
+) -> _Tally:
+    return _Tally(
+        calls=1,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_micros=cost or 0,
+        unpriced_calls=int(cost is None),
+        priced_later_calls=int(priced_later),
+        priced_later_micros=(cost or 0) if priced_later else 0,
+    )
 
 
 @router.get(
@@ -388,7 +381,6 @@ def project_usage_history(
     principal: Annotated[Principal, Depends(require_project_access)],
     _: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
     session: Annotated[Session, Depends(get_session)],
-    provider_check: Annotated[OpenRouterUsageCheck | None, Depends(provider_usage_check)],
     project_id: UUID,
 ) -> UsageHistoryOut:
     del principal
@@ -412,31 +404,51 @@ def project_usage_history(
     by_model: dict[tuple[str, str], _Tally] = defaultdict(_Tally)
     this_project = _Tally()
     for call in calls:
-        cost = charged_cost_micros(
-            call.cost_micros, call.outcome, call.input_tokens, call.output_tokens
+        cost = charged_cost(
+            call.model_id, call.cost_micros, call.outcome, call.input_tokens, call.output_tokens
         )
-        tally = _Tally(
-            calls=1,
-            input_tokens=call.input_tokens,
-            output_tokens=call.output_tokens,
-            cost_micros=cost or 0,
-            unpriced_calls=int(cost is None),
-        )
+        tally = _call_tally(call.input_tokens, call.output_tokens, cost.micros, cost.priced_later)
         this_project.add(tally)
         by_model[(call.model_id, infer_route(call.model_id, call.prompt_id))].add(tally)
 
-    history = session.scalars(
-        select(AiSpendHistory).where(AiSpendHistory.project_id == project_id)
+    # The history is one row per call; it is added up here, by group, in the database.
+    history = session.execute(
+        select(
+            AiSpendHistory.occurred_on,
+            AiSpendHistory.purpose,
+            AiSpendHistory.source_label,
+            AiSpendHistory.model_id,
+            AiSpendHistory.route,
+            func.count().label("calls"),
+            func.coalesce(func.sum(AiSpendHistory.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(AiSpendHistory.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(AiSpendHistory.cost_micros), 0).label("cost_micros"),
+            func.count().filter(AiSpendHistory.cost_micros.is_(None)).label("unpriced"),
+            func.count().filter(AiSpendHistory.priced_later).label("priced_later"),
+            func.coalesce(
+                func.sum(AiSpendHistory.cost_micros).filter(AiSpendHistory.priced_later), 0
+            ).label("priced_later_micros"),
+        )
+        .where(AiSpendHistory.project_id == project_id)
+        .group_by(
+            AiSpendHistory.occurred_on,
+            AiSpendHistory.purpose,
+            AiSpendHistory.source_label,
+            AiSpendHistory.model_id,
+            AiSpendHistory.route,
+        )
     ).all()
     earlier = _Tally()
     runs: dict[tuple[date, str, str], tuple[_Tally, set[str]]] = {}
     for row in history:
         tally = _Tally(
-            calls=row.calls,
-            input_tokens=row.input_tokens,
-            output_tokens=row.output_tokens,
-            cost_micros=row.cost_micros,
-            unpriced_calls=row.unpriced_calls,
+            calls=int(row.calls),
+            input_tokens=int(row.input_tokens),
+            output_tokens=int(row.output_tokens),
+            cost_micros=int(row.cost_micros),
+            unpriced_calls=int(row.unpriced),
+            priced_later_calls=int(row.priced_later),
+            priced_later_micros=int(row.priced_later_micros),
         )
         earlier.add(tally)
         by_model[(row.model_id, row.route)].add(tally)
@@ -456,24 +468,20 @@ def project_usage_history(
             "this_project": this_project.out(),
             "earlier": earlier.out(),
             "by_model": tuple(
-                ModelSpendOut.model_validate(
-                    {**tally.out().model_dump(), "model": model, "route": route}
-                )
+                {**tally.out(), "model": model, "route": route}
                 for (model, route), tally in sorted(
                     by_model.items(),
                     key=lambda item: (-item[1].cost_micros, -item[1].calls, item[0]),
                 )
             ),
             "earlier_runs": tuple(
-                EarlierRunOut.model_validate(
-                    {
-                        **tally.out().model_dump(),
-                        "day": day,
-                        "purpose": purpose,
-                        "source_label": label,
-                        "models": tuple(sorted(models)),
-                    }
-                )
+                {
+                    **tally.out(),
+                    "day": day,
+                    "purpose": purpose,
+                    "source_label": label,
+                    "models": tuple(sorted(models)),
+                }
                 for (day, purpose, label), (tally, models) in sorted(
                     runs.items(),
                     key=lambda item: (
@@ -483,21 +491,61 @@ def project_usage_history(
                     ),
                 )
             ),
-            "provider_checks": (
-                () if provider_check is None else (_provider_check_out(provider_check.check()),)
-            ),
         }
     )
 
 
-def _provider_check_out(check: ProviderCheck) -> ProviderCheckOut:
-    return ProviderCheckOut(
-        provider="openrouter",
-        status=check.status,
-        scope=check.scope,
-        used_usd=check.used_usd,
-        checked_at=check.checked_at,
+def provider_usage_check(request: Request) -> OpenRouterUsageCheck | None:
+    """OpenRouter's report of this key's usage, only when switched on and a key is set.
+
+    One checker per app, so its five-minute memory is shared by every request. A dependency, so a
+    test replaces it with a fake transport (no request ever leaves a test).
+    """
+    settings: Settings = request.app.state.settings
+    key = settings.openrouter_api_key
+    value = None if key is None else key.get_secret_value()
+    if not settings.usage_provider_check or not value or not value.strip():
+        return None
+    existing = getattr(request.app.state, "openrouter_usage_check", None)
+    if isinstance(existing, OpenRouterUsageCheck):
+        return existing
+    check = OpenRouterUsageCheck(value.strip())
+    request.app.state.openrouter_usage_check = check
+    return check
+
+
+@router.get(
+    "/projects/{project_id}/usage/provider-check",
+    response_model=ProviderChecksOut,
+    summary="Read what the AI provider reports this deployment's key has used (all projects)",
+)
+def project_usage_provider_check(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
+    provider_check: Annotated[OpenRouterUsageCheck | None, Depends(provider_usage_check)],
+    project_id: UUID,
+) -> ProviderChecksOut:
+    """Its own endpoint, so the recorded totals never wait for a provider or fail with it."""
+    del principal, project_id
+    if provider_check is None:
+        return ProviderChecksOut(checks=())
+    check: ProviderCheck = provider_check.check()
+    return ProviderChecksOut(
+        checks=(
+            ProviderCheckOut(
+                provider="openrouter",
+                status=check.status,
+                used_usd=check.used_usd,
+                checked_at=check.checked_at,
+            ),
+        )
     )
 
 
-__all__ = ["project_usage", "project_usage_history", "provider_usage_check", "router"]
+__all__ = [
+    "project_usage",
+    "project_usage_history",
+    "project_usage_provider_check",
+    "provider_usage_check",
+    "router",
+]

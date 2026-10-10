@@ -58,6 +58,7 @@ __all__ = [
     "APPEND_ONLY_PRIVILEGES",
     "MUTABLE_PRIVILEGES",
     "ROLE_GRANTS",
+    "SERVICES_READ_ONLY",
     "VERDICT_READS",
     "VERDICT_WRITES",
     "Role",
@@ -136,6 +137,11 @@ WORKER_ONLY: Final = (
 )
 
 
+#: Tables the services only read: written by an operator's import script (as the owner), never by
+#: the API or the worker, so neither holds `INSERT` on them (#1165).
+SERVICES_READ_ONLY: Final = ("ai_spend_history",)
+
+
 @dataclass(frozen=True, slots=True)
 class RoleGrants:
     """One role's privileges, as a table name to privilege tuple mapping.
@@ -167,12 +173,22 @@ def all_table_names() -> tuple[str, ...]:
 
 
 def _operational_grants() -> dict[str, tuple[str, ...]]:
-    """Read-write where a table is mutable, append-only where it is not."""
+    """Read-write where a table is mutable, append-only where it is not, read-only where only an
+    operator's script writes."""
     immutable = set(immutable_table_names())
-    return {
-        table: APPEND_ONLY_PRIVILEGES if table in immutable else MUTABLE_PRIVILEGES
-        for table in all_table_names()
-    }
+    for table in SERVICES_READ_ONLY:
+        if table not in Base.metadata.tables:
+            raise RuntimeError(
+                f"{table!r} is listed in SERVICES_READ_ONLY but is not a mapped table: a renamed "
+                "table left here would quietly become writable by the services."
+            )
+
+    def privileges(table: str) -> tuple[str, ...]:
+        if table in SERVICES_READ_ONLY:
+            return ("SELECT",)
+        return APPEND_ONLY_PRIVILEGES if table in immutable else MUTABLE_PRIVILEGES
+
+    return {table: privileges(table) for table in all_table_names()}
 
 
 def _app_grants() -> dict[str, tuple[str, ...]]:

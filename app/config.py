@@ -85,9 +85,10 @@ class Settings(BaseSettings):
     review_assistant_timeout_seconds: int = Field(default=60, ge=1, le=300)
     # How many earlier turns of the conversation are sent with a question (the request takes <= 6).
     review_assistant_max_history_turns: int = Field(default=6, ge=0, le=6)
-    # The Usage page shows what OpenRouter itself reports as spent beside the recorded total
-    # (#1165): a free, read-only request with `OPENROUTER_API_KEY`. Off when no key is set.
-    usage_provider_check: bool = True
+    # The Usage page can show what OpenRouter reports this key has used (all projects using the
+    # key), beside the recorded total (#1165): a free, read-only request with `OPENROUTER_API_KEY`.
+    # Off by default, and off whenever no key is set.
+    usage_provider_check: bool = False
 
     # Form-first reading is a separate, experimental proposal lane. It defaults off; when enabled,
     # every operational bound and per-reader throttle rate must be stated rather than inferred.

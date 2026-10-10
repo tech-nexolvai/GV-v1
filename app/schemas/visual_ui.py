@@ -366,7 +366,7 @@ class ReadingTimeOut(BaseModel):
 
 class SpendTotalsOut(BaseModel):
     """Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how
-    many had no recorded price, so the real cost is higher whenever it is not zero."""
+    many had no known price, so the real cost is higher whenever it is not zero."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -375,6 +375,13 @@ class SpendTotalsOut(BaseModel):
     output_tokens: int
     cost_usd: str
     unpriced_calls: int
+    priced_later_calls: int = Field(
+        description=(
+            "Calls whose own record predates real costs (#754, stored as 0 although they used "
+            "tokens), priced from the published price file instead. Included in cost_usd."
+        )
+    )
+    priced_later_cost_usd: str = Field(description="The part of cost_usd priced that way.")
 
 
 class ModelSpendOut(SpendTotalsOut):
@@ -397,23 +404,35 @@ class EarlierRunOut(SpendTotalsOut):
     model_config = ConfigDict(frozen=True)
 
     day: date = Field(description="The UTC day the calls were made.")
-    purpose: Literal["reading", "row-choice", "chat", "assistant", "bake-off", "other"]
+    purpose: Literal["reading", "row-choice", "chat", "assistant", "findings", "bake-off", "other"]
     source_label: str
     models: tuple[str, ...]
 
 
 class ProviderCheckOut(BaseModel):
-    """What the provider itself reports as spent, read when the page asks (free, read-only)."""
+    """What a provider itself reports as used by this deployment's key (free, read-only)."""
 
     model_config = ConfigDict(frozen=True)
 
     provider: Literal["openrouter"]
     status: Literal["ok", "unavailable"]
-    scope: Literal["account", "key"] | None = Field(
-        description="`account`: the whole account's usage; `key`: only this key's; null if none."
+    used_usd: str | None = Field(
+        description=(
+            "What this OpenRouter key has used, across every project and tool that uses the key; "
+            "null when it could not be read."
+        )
     )
-    used_usd: str | None
     checked_at: datetime
+
+
+class ProviderChecksOut(BaseModel):
+    """Provider-reported usage, served on its own so it never delays the recorded totals."""
+
+    model_config = ConfigDict(frozen=True)
+
+    checks: tuple[ProviderCheckOut, ...] = Field(
+        description="Empty unless the check is switched on (GV_USAGE_PROVIDER_CHECK) with a key."
+    )
 
 
 class UsageHistoryOut(BaseModel):
@@ -421,7 +440,9 @@ class UsageHistoryOut(BaseModel):
 
     Not filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls
     tied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.
-    A failed call that used no tokens counts as cost 0 (it was not charged), never as unpriced.
+    Every call is priced by `app.usage_history.charged_cost`: a failed call that used no tokens
+    costs 0 (not charged), and a pre-#754 call stored as 0 although it used tokens is priced from
+    the published rates (`priced_later_calls`) or counted as unpriced, never as free.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -434,9 +455,6 @@ class UsageHistoryOut(BaseModel):
     )
     earlier_runs: tuple[EarlierRunOut, ...] = Field(
         description="The imported history by day, purpose and source, newest first."
-    )
-    provider_checks: tuple[ProviderCheckOut, ...] = Field(
-        description="Provider-reported totals; empty when no check is configured."
     )
 
 

@@ -2780,12 +2780,23 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "priced_later_calls": {
+            "description": "Calls whose own record predates real costs (#754, stored as 0 although they used tokens), priced from the published price file instead. Included in cost_usd.",
+            "title": "Priced Later Calls",
+            "type": "integer"
+          },
+          "priced_later_cost_usd": {
+            "description": "The part of cost_usd priced that way.",
+            "title": "Priced Later Cost Usd",
+            "type": "string"
+          },
           "purpose": {
             "enum": [
               "reading",
               "row-choice",
               "chat",
               "assistant",
+              "findings",
               "bake-off",
               "other"
             ],
@@ -2807,6 +2818,8 @@
           "output_tokens",
           "cost_usd",
           "unpriced_calls",
+          "priced_later_calls",
+          "priced_later_cost_usd",
           "day",
           "purpose",
           "source_label",
@@ -4320,6 +4333,16 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "priced_later_calls": {
+            "description": "Calls whose own record predates real costs (#754, stored as 0 although they used tokens), priced from the published price file instead. Included in cost_usd.",
+            "title": "Priced Later Calls",
+            "type": "integer"
+          },
+          "priced_later_cost_usd": {
+            "description": "The part of cost_usd priced that way.",
+            "title": "Priced Later Cost Usd",
+            "type": "string"
+          },
           "route": {
             "description": "Which provider the calls went through, as far as the records show. `unknown` when they do not say (the Claude readers went through Anthropic's API, later OpenRouter).",
             "enum": [
@@ -4342,6 +4365,8 @@
           "output_tokens",
           "cost_usd",
           "unpriced_calls",
+          "priced_later_calls",
+          "priced_later_cost_usd",
           "model",
           "route"
         ],
@@ -5642,7 +5667,7 @@
         "type": "string"
       },
       "ProviderCheckOut": {
-        "description": "What the provider itself reports as spent, read when the page asks (free, read-only).",
+        "description": "What a provider itself reports as used by this deployment's key (free, read-only).",
         "properties": {
           "checked_at": {
             "format": "date-time",
@@ -5653,22 +5678,6 @@
             "const": "openrouter",
             "title": "Provider",
             "type": "string"
-          },
-          "scope": {
-            "anyOf": [
-              {
-                "enum": [
-                  "account",
-                  "key"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "`account`: the whole account's usage; `key`: only this key's; null if none.",
-            "title": "Scope"
           },
           "status": {
             "enum": [
@@ -5687,17 +5696,35 @@
                 "type": "null"
               }
             ],
+            "description": "What this OpenRouter key has used, across every project and tool that uses the key; null when it could not be read.",
             "title": "Used Usd"
           }
         },
         "required": [
           "provider",
           "status",
-          "scope",
           "used_usd",
           "checked_at"
         ],
         "title": "ProviderCheckOut",
+        "type": "object"
+      },
+      "ProviderChecksOut": {
+        "description": "Provider-reported usage, served on its own so it never delays the recorded totals.",
+        "properties": {
+          "checks": {
+            "description": "Empty unless the check is switched on (GV_USAGE_PROVIDER_CHECK) with a key.",
+            "items": {
+              "$ref": "#/components/schemas/ProviderCheckOut"
+            },
+            "title": "Checks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "checks"
+        ],
+        "title": "ProviderChecksOut",
         "type": "object"
       },
       "PublicationOut": {
@@ -7585,7 +7612,7 @@
         "type": "object"
       },
       "SpendTotalsOut": {
-        "description": "Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how\nmany had no recorded price, so the real cost is higher whenever it is not zero.",
+        "description": "Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how\nmany had no known price, so the real cost is higher whenever it is not zero.",
         "properties": {
           "calls": {
             "title": "Calls",
@@ -7603,6 +7630,16 @@
             "title": "Output Tokens",
             "type": "integer"
           },
+          "priced_later_calls": {
+            "description": "Calls whose own record predates real costs (#754, stored as 0 although they used tokens), priced from the published price file instead. Included in cost_usd.",
+            "title": "Priced Later Calls",
+            "type": "integer"
+          },
+          "priced_later_cost_usd": {
+            "description": "The part of cost_usd priced that way.",
+            "title": "Priced Later Cost Usd",
+            "type": "string"
+          },
           "unpriced_calls": {
             "title": "Unpriced Calls",
             "type": "integer"
@@ -7613,7 +7650,9 @@
           "input_tokens",
           "output_tokens",
           "cost_usd",
-          "unpriced_calls"
+          "unpriced_calls",
+          "priced_later_calls",
+          "priced_later_cost_usd"
         ],
         "title": "SpendTotalsOut",
         "type": "object"
@@ -8053,7 +8092,7 @@
         "type": "object"
       },
       "UsageHistoryOut": {
-        "description": "All AI spending so far for the project (#1165): its own calls plus earlier runs.\n\nNot filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls\ntied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.\nA failed call that used no tokens counts as cost 0 (it was not charged), never as unpriced.",
+        "description": "All AI spending so far for the project (#1165): its own calls plus earlier runs.\n\nNot filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls\ntied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.\nEvery call is priced by `app.usage_history.charged_cost`: a failed call that used no tokens\ncosts 0 (not charged), and a pre-#754 call stored as 0 although it used tokens is priced from\nthe published rates (`priced_later_calls`) or counted as unpriced, never as free.",
         "properties": {
           "by_model": {
             "description": "Per model and route over both, most expensive first.",
@@ -8074,14 +8113,6 @@
             "title": "Earlier Runs",
             "type": "array"
           },
-          "provider_checks": {
-            "description": "Provider-reported totals; empty when no check is configured.",
-            "items": {
-              "$ref": "#/components/schemas/ProviderCheckOut"
-            },
-            "title": "Provider Checks",
-            "type": "array"
-          },
           "this_project": {
             "$ref": "#/components/schemas/SpendTotalsOut"
           },
@@ -8094,8 +8125,7 @@
           "this_project",
           "earlier",
           "by_model",
-          "earlier_runs",
-          "provider_checks"
+          "earlier_runs"
         ],
         "title": "UsageHistoryOut",
         "type": "object"
@@ -13499,6 +13529,50 @@
           }
         },
         "summary": "Read all AI spending so far: this project's calls and earlier runs",
+        "tags": [
+          "visual reviewer"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/usage/provider-check": {
+      "get": {
+        "description": "Its own endpoint, so the recorded totals never wait for a provider or fail with it.",
+        "operationId": "project_usage_provider_check_api_v1_projects__project_id__usage_provider_check_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderChecksOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read what the AI provider reports this deployment's key has used (all projects)",
         "tags": [
           "visual reviewer"
         ]
