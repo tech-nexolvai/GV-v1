@@ -306,9 +306,9 @@ export function CountertopEvidence({
         ) : (
           <dl className="grid grid-cols-[58px_minmax(0,1fr)] gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
             <dt>Printed</dt>
-            <dd className="num text-foreground">{printed?.display ?? 'not read'}</dd>
+            <dd className={printed ? 'num text-foreground' : 'text-muted-foreground'}>{printed?.display ?? 'not read'}</dd>
             <dt>Needed</dt>
-            <dd className="num text-foreground">{needed?.display ?? 'not worked out'}</dd>
+            <dd className={needed ? 'num text-foreground' : 'text-muted-foreground'}>{needed?.display ?? 'not worked out'}</dd>
           </dl>
         )}
       </div>
