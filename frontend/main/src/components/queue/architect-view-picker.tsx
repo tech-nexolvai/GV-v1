@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { History, ImageOff, RefreshCw } from 'lucide-react';
 
 import {
@@ -50,6 +50,8 @@ export function ArchitectViewPicker({
   const [choice, setChoice] = useState('');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
+  // A second click before the first answer arrives must not send the pick twice.
+  const sending = useRef(false);
   const [problem, setProblem] = useState<{ text: string; reload: boolean } | null>(null);
   const noteId = useId();
 
@@ -83,8 +85,9 @@ export function ArchitectViewPicker({
   const match: ArchitectMatch | null = row.architect?.match ?? null;
 
   async function save() {
-    if (saving || !data.current || (!chosen && !none)) return;
+    if (sending.current || !data.current || (!chosen && !none)) return;
     if (chosen && !chosen.can_pick) return;
+    sending.current = true;
     setSaving(true);
     setProblem(null);
     try {
@@ -104,6 +107,7 @@ export function ArchitectViewPicker({
         setProblem({ text: error instanceof Error ? error.message : String(error), reload: false });
       }
     } finally {
+      sending.current = false;
       setSaving(false);
     }
   }
@@ -218,80 +222,95 @@ function CandidateCard({
 }) {
   const [open, setOpen] = useState(false);
   const [broken, setBroken] = useState(false);
-  const evidenceId = useId();
+  const id = useId();
+  const ids = { radio: `${id}-radio`, rank: `${id}-rank`, name: `${id}-name`, place: `${id}-place`, score: `${id}-score`, facts: `${id}-facts`, tags: `${id}-tags`, refusal: `${id}-refusal`, evidence: `${id}-evidence` };
   const { view, code } = candidate;
   const codePick = match?.code_pick_view_id === view.view_id;
+  const hasFacts = code.run_length_error_display !== null || code.bays_vendor !== null || code.bays_architect !== null;
+  const hasTags = codePick || candidate.ai_picked_by.length > 0 || candidate.remembered || !candidate.shown_to_ais;
+  // The radio is named by the view's heading and described by what the card says about it, so a
+  // screen reader hears the card's own text, never a label that replaces it.
+  const described = [ids.place, ids.score, hasFacts ? ids.facts : null, hasTags ? ids.tags : null].filter(Boolean).join(' ');
   return (
-    <label
+    <div
       data-candidate={view.view_id}
       data-can-pick={candidate.can_pick}
       className={cn(
         'flex items-start gap-3 rounded-md border p-2.5 text-sm',
-        candidate.can_pick ? 'cursor-pointer' : 'bg-muted/40 text-muted-foreground',
+        !candidate.can_pick && 'bg-muted/40 text-muted-foreground',
         selected && 'border-foreground ring-1 ring-foreground',
       )}
     >
       {candidate.can_pick ? (
-        <RadioGroupItem value={view.view_id} aria-label={`View ${candidate.rank}: ${viewHeading(view)}`} className="mt-0.5" />
+        <RadioGroupItem id={ids.radio} value={view.view_id} aria-labelledby={`${ids.rank} ${ids.name}`} aria-describedby={described} className="mt-0.5" />
       ) : (
         <span className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       )}
       <span className="num w-5 shrink-0 text-xs text-muted-foreground" aria-hidden="true">{candidate.rank}</span>
-      <span className="flex h-20 w-28 shrink-0 items-center justify-center overflow-hidden rounded-sm border bg-white">
-        {view.picture_url && !broken ? (
-          <img
-            src={architectViewPictureUrl(projectId, packageId, view.view_id)}
-            alt={`Architect's view: ${viewHeading(view)}`}
-            className="max-h-full max-w-full object-contain"
-            onError={() => setBroken(true)}
-          />
-        ) : (
-          <span className="flex flex-col items-center gap-1 p-1 text-center text-xs text-muted-foreground">
-            <ImageOff className="size-4" aria-hidden="true" />
-            {broken ? 'Picture could not be loaded' : 'No picture stored'}
-          </span>
-        )}
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="font-medium">{viewHeading(view)}</span>
-        <span className="text-xs text-muted-foreground">
-          {view.file_name}, page <span className="num">{view.page_number}</span>
-          {view.scale_note && <> · scale <span className="num">{view.scale_note}</span></>}
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      {/* Only the picture and the heading choose the view: the card's buttons stay outside the label. */}
+      <label htmlFor={candidate.can_pick ? ids.radio : undefined} className={cn('flex min-w-0 flex-1 items-start gap-3', candidate.can_pick && 'cursor-pointer')}>
+        <span className="flex h-20 w-28 shrink-0 items-center justify-center overflow-hidden rounded-sm border bg-white">
+          {view.picture_url && !broken ? (
+            <img
+              src={architectViewPictureUrl(projectId, packageId, view.view_id)}
+              alt={`Architect's view: ${viewHeading(view)}`}
+              className="max-h-full max-w-full object-contain"
+              onError={() => setBroken(true)}
+            />
+          ) : (
+            <span className="flex flex-col items-center gap-1 p-1 text-center text-xs text-muted-foreground">
+              <ImageOff className="size-4" aria-hidden="true" />
+              {broken ? 'Picture could not be loaded' : 'No picture stored'}
+            </span>
+          )}
         </span>
-        <span className="text-xs">{candidate.score_summary}</span>
-        {(code.run_length_error_display !== null || code.bays_vendor !== null || code.bays_architect !== null) && (
-          <span className="flex flex-wrap gap-x-3 text-xs text-muted-foreground" data-part="code-facts">
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="font-medium"><span id={ids.rank} className="sr-only">{`View ${candidate.rank}:`}</span><span id={ids.name}>{viewHeading(view)}</span></span>
+          <span id={ids.place} className="text-xs text-muted-foreground">
+            {view.file_name}, page <span className="num">{view.page_number}</span>
+            {view.scale_note && <> · scale <span className="num">{view.scale_note}</span></>}
+          </span>
+          <span id={ids.score} className="text-xs">{candidate.score_summary}</span>
+        </span>
+      </label>
+      <div className="flex min-w-0 flex-col gap-1 sm:pl-[8.5rem]">
+        {hasFacts && (
+          <span id={ids.facts} className="flex flex-wrap gap-x-3 text-xs text-muted-foreground" data-part="code-facts">
             {code.run_length_error_display !== null && <span>Length off by <span className="num text-foreground">{code.run_length_error_display}</span></span>}
             {(code.bays_vendor !== null || code.bays_architect !== null) && (
               <span>Bays <span className="num text-foreground">{code.bays_vendor ?? '—'}</span> vendor · <span className="num text-foreground">{code.bays_architect ?? '—'}</span> architect</span>
             )}
           </span>
         )}
-        <span className="flex flex-wrap gap-1.5 text-xs" data-part="tags">
-          {codePick && <Tag>Code&apos;s pick</Tag>}
-          {candidate.ai_picked_by.length > 0 && <Tag>Picked by {candidate.ai_picked_by.join(' and ')}</Tag>}
-          {candidate.remembered && <Tag><History className="size-3" aria-hidden="true" /> Remembered from an earlier revision</Tag>}
-          {!candidate.shown_to_ais && <Tag muted>Not shown to the AIs</Tag>}
-        </span>
-        {!candidate.can_pick && <span className="text-xs" data-part="refusal">{candidate.refusal ?? 'This view cannot be chosen.'}</span>}
+        {hasTags && (
+          <span id={ids.tags} className="flex flex-wrap gap-1.5 text-xs" data-part="tags">
+            {codePick && <Tag>Code&apos;s pick</Tag>}
+            {candidate.ai_picked_by.length > 0 && <Tag>Picked by {candidate.ai_picked_by.join(' and ')}</Tag>}
+            {candidate.remembered && <Tag><History className="size-3" aria-hidden="true" /> Remembered from an earlier revision</Tag>}
+            {!candidate.shown_to_ais && <Tag muted>Not shown to the AIs</Tag>}
+          </span>
+        )}
+        {!candidate.can_pick && <span id={ids.refusal} className="text-xs" data-part="refusal">{candidate.refusal ?? 'This view cannot be chosen.'}</span>}
         {candidate.evidence.length > 0 && (
           <>
             <button
               type="button"
               aria-expanded={open}
-              aria-controls={evidenceId}
-              onClick={(event) => { event.preventDefault(); setOpen((value) => !value); }}
+              aria-controls={ids.evidence}
+              onClick={() => setOpen((value) => !value)}
               className="self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
             >
               {open ? 'Hide why' : 'Why?'}
             </button>
-            <ul id={evidenceId} hidden={!open} className="flex list-disc flex-col gap-0.5 pl-4 text-xs text-muted-foreground" aria-label="Why code ranked it here">
+            <ul id={ids.evidence} hidden={!open} className="flex list-disc flex-col gap-0.5 pl-4 text-xs text-muted-foreground" aria-label="Why it was ranked here">
               {candidate.evidence.map((line) => <li key={line}>{line}</li>)}
             </ul>
           </>
         )}
-      </span>
-    </label>
+      </div>
+      </div>
+    </div>
   );
 }
 

@@ -65,6 +65,14 @@ export function asksForView(result: ArchitectResult | null): boolean {
   return architectState(result) === 'choose-view';
 }
 
+/**
+ * True when the numbers on screen are not a result to colour: the pairing waits for the reviewer, or a
+ * view chosen after the run means the next run may compare against a different view (#1168).
+ */
+export function neutralNumbers(result: ArchitectResult | null): boolean {
+  return awaitsPairing(result) || architectState(result) === 'view-picked';
+}
+
 /** True while the pairing waits for the reviewer: its numbers are not a result yet, so no verdict colour. */
 export function awaitsPairing(result: ArchitectResult | null): boolean {
   const state = architectState(result);

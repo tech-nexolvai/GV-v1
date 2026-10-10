@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
 import type { Finding } from '@/data/types';
 import { decisionWords, formatDelta, initials, isSplitPage, rowNeedsYou, sortValue } from '@/lib/countertop-results';
-import { architectState, awaitsPairing, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
+import { architectState, neutralNumbers, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -496,7 +496,7 @@ function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowAct
         <span className="num">{pair?.architect_display ?? '—'}</span>
       </TableCell>
       <TableCell className="num py-1.5 text-right text-muted-foreground">—</TableCell>
-      <TableCell className="py-1.5 text-right">{pair ? <ArchitectDelta pair={pair} neutral={awaitsPairing(result)} /> : '—'}</TableCell>
+      <TableCell className="py-1.5 text-right">{pair ? <ArchitectDelta pair={pair} neutral={neutralNumbers(result)} /> : '—'}</TableCell>
       <TableCell className="py-1.5" />
       <TableCell className="py-1.5">
         {needsYou ? (

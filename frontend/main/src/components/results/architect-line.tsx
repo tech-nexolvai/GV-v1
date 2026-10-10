@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
-import { architectState, awaitsPairing, confirmWords, headlinePair, matchOf, matchWords, reasonSaysItself, pairLabel, pairedByWords, viewLinkWords, viewOf } from '@/lib/architect';
+import { architectState, neutralNumbers, confirmWords, headlinePair, matchOf, matchWords, reasonSaysItself, pairLabel, pairedByWords, viewLinkWords, viewOf } from '@/lib/architect';
 
 /**
  * The vendor-vs-architect check on a countertop (#1085): "Matches the architect". Every number is
@@ -130,7 +130,7 @@ export function ArchitectLine({
       {state !== 'not-compared' && pair && (
         <>
           <ArchitectSays result={result} />
-          <ArchitectDelta pair={pair} neutral={awaitsPairing(result)} />
+          <ArchitectDelta pair={pair} neutral={neutralNumbers(result)} />
         </>
       )}
       <ArchitectStatus result={result} clamp={clamp} />
@@ -198,7 +198,7 @@ export function ArchitectPairs({ result }: { result: ArchitectResult }) {
             <th scope="row" className="py-0.5 pr-3 text-left font-normal">{pairLabel(pair)}</th>
             <td className="num py-0.5 pr-3 text-right">{pair.vendor_display ?? '—'}</td>
             <td className="num py-0.5 pr-3 text-right">{pair.architect_display ?? '—'}</td>
-            <td className="py-0.5 text-right"><ArchitectDelta pair={pair} neutral={awaitsPairing(result)} /></td>
+            <td className="py-0.5 text-right"><ArchitectDelta pair={pair} neutral={neutralNumbers(result)} /></td>
           </tr>
         ))}
       </tbody>

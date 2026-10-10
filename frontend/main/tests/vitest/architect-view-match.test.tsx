@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -440,6 +440,27 @@ describe('the view picker', { timeout: 15_000 }, () => {
     expect(posts).toEqual([]);
   });
 
+  it('names each view by its heading and describes it by the card\'s own words; "Why?" is outside the label', async () => {
+    setup();
+    const radio = await screen.findByRole('radio', { name: 'View 2: Sheet Z-9 · view 2 · SAMPLE ELEVATION 2' });
+    const described = (radio.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent ?? '').join(' | ');
+    expect(described).toContain('Fits: run length within 1/2", 3 bays on both.');
+    expect(described).toContain('Remembered from an earlier revision');
+    expect(described).toContain("Code's pick");
+    for (const why of screen.getAllByRole('button', { name: 'Why?' })) expect(why.closest('label')).toBeNull();
+  });
+
+  it('a second click before the answer sends the pick once', async () => {
+    const user = userEvent.setup();
+    const { onSaved } = setup();
+    await user.click(await screen.findByRole('radio', { name: /View 1:/ }));
+    const button = screen.getByRole('button', { name: 'Use this view' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(posts).toHaveLength(1);
+  });
+
   it('keeps a note to 500 characters', async () => {
     setup();
     const note = await screen.findByLabelText(/Note/);
@@ -568,7 +589,7 @@ describe('sign-off after a pick', () => {
     render(<SignOffPanel readiness={READY} ready={false} scope={{ ...SCOPE, viewPicksWaiting: 2 }} busy={false} onSignOff={() => {}} onReview={() => {}} onRunChecks={onRunChecks} />);
     const notice = document.querySelector('[data-part="view-picks-waiting"]')!;
     expect(notice.textContent).toContain('Run the checks again before signing off.');
-    expect(notice.textContent).toContain("You chose the architect's view for 2 countertops after the last check run.");
+    expect(notice.textContent).toContain('A view was chosen for 2 countertops after the last check run.');
     await user.click(within(notice as HTMLElement).getByRole('button', { name: 'Run checks' }));
     expect(onRunChecks).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Sign off…' }).hasAttribute('disabled')).toBe(true);

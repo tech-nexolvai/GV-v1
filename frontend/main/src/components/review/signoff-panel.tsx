@@ -126,7 +126,7 @@ export function SignOffPanel({
             <RefreshCw className="size-3.5" aria-hidden="true" /> Run the checks again before signing off.
           </span>
           <span className="text-muted-foreground">
-            You chose the architect&apos;s view for <span className="num">{picks}</span> {picks === 1 ? 'countertop' : 'countertops'} after the last check run.
+            A view was chosen for <span className="num">{picks}</span> {picks === 1 ? 'countertop' : 'countertops'} after the last check run.
           </span>
           {onRunChecks && <Button type="button" size="sm" variant="outline" onClick={onRunChecks}>Run checks</Button>}
         </div>
