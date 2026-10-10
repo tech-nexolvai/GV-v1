@@ -69,8 +69,9 @@ from verdict.operands import QUALIFIED_STATUSES, VerdictOperand
 from verdict.outcomes import DECISIVE_OUTCOMES, Outcome
 from vocabulary.part_kinds import PartKind
 from vocabulary.semantic_types import DocumentRole
+from workflow.architect_match_contract import MatchedView
 from workflow.architect_pairing_contract import EffectivePairing
-from workflow.architect_row_evidence import architect_candidate_refusal
+from workflow.architect_row_evidence import architect_candidate_refusal, in_matched_view
 
 __all__ = ["EvidenceMissing", "record_finding", "supersede_runs"]
 
@@ -123,6 +124,7 @@ def record_finding(
     scope_row_candidate_id: UUID | None = None,
     scope_label: str | None = None,
     architect_pairing: EffectivePairing | None = None,
+    architect_matched_view: MatchedView | None = None,
 ) -> FindingRow:
     """Write one decision: its run, the operands it was computed from, and the finding itself.
 
@@ -137,6 +139,9 @@ def record_finding(
     `architect_pairing` is the row's effective pairing (#1053), given only by the vendor-vs-architect
     check (#1054). It is the one thing that lets an architect's value support a row-scoped finding,
     and only the exact architect dimension it names, on the row's own page (`_paired_architect`).
+
+    `architect_matched_view` (#1167) is the view of the architect's own file matched with the row,
+    when it has one: the named dimension may then also lie in that one view, and nowhere else.
     """
     snapshot_row = session.execute(
         select(RuleSnapshotRow).where(RuleSnapshotRow.snapshot_id == finding.snapshot_id)
@@ -151,6 +156,8 @@ def record_finding(
         raise EvidenceMissing("a finding cannot name both a confirmed item and a slot-reader row")
     if architect_pairing is not None and scope_row_candidate_id is None:
         raise EvidenceMissing("an architect pairing belongs to one countertop row's finding")
+    if architect_matched_view is not None and architect_pairing is None:
+        raise EvidenceMissing("a matched architect view supports a row only through its pairing")
     if (scope_item_id is None and scope_row_candidate_id is None) != (scope_label is None):
         raise EvidenceMissing("a scoped finding needs its subject and plain name")
     if scope_item_id is not None:
@@ -233,16 +240,31 @@ def record_finding(
                 continue
             observation_id = _observation_id(operand)
             observation = session.get(CanonicalObservation, observation_id)
-            if (
-                observation is None
-                or observation.page_id != candidate.page_id
-                or observation.document_version_id != candidate.document_version_id
+            # A row matched with a view of the architect's own file (#1167): an architect value
+            # there is not on the row's page; `_paired_architect` checks it lies in that one view.
+            matched_architect = (
+                observation is not None
+                and architect_matched_view is not None
+                and observation.document_role == DocumentRole.ARCH.value
+            )
+            if observation is None or (
+                not matched_architect
+                and (
+                    observation.page_id != candidate.page_id
+                    or observation.document_version_id != candidate.document_version_id
+                )
             ):
                 raise EvidenceMissing("drawing evidence belongs to a different row or page")
             if observation.document_role == DocumentRole.ARCH.value:
                 # The architect's value is never on the vendor's row: it is allowed only as the
                 # exact dimension this row's pairing names (#1054). Everything else stays refused.
-                _paired_architect(session, observation, candidate, architect_pairing)
+                _paired_architect(
+                    session,
+                    observation,
+                    candidate,
+                    architect_pairing,
+                    matched=architect_matched_view,
+                )
                 continue
             supporters = session.execute(
                 select(ObservationCandidate)
@@ -380,6 +402,8 @@ def _paired_architect(
     observation: CanonicalObservation,
     row_candidate: ObservationCandidate,
     pairing: EffectivePairing | None,
+    *,
+    matched: MatchedView | None = None,
 ) -> None:
     """Refuse an architect operand unless it is exactly what this row's pairing names (#1054).
 
@@ -388,6 +412,10 @@ def _paired_architect(
     its drawn-length witness, and still an architect's value the check may use: read by code from
     the architect's own text, unheld, inside a drawing confirmed as the architect's
     (`architect_candidate_refusal`, the same test the check itself applies).
+
+    `matched` (#1167): the view of the architect's own file matched with the row. The dimension
+    may then lie in that view instead (its page, its file version, its `arch-view:<n>`), the
+    observation on the same page; never anywhere else. `None`: exactly as before.
     """
     if pairing is None:
         raise EvidenceMissing(
@@ -414,9 +442,20 @@ def _paired_architect(
             )
         )
     )
+    on_row_sheet = (
+        supporter.page_id == row_candidate.page_id
+        and supporter.document_version_id == row_candidate.document_version_id
+        and observation.page_id == row_candidate.page_id
+        and observation.document_version_id == row_candidate.document_version_id
+    )
+    in_view = (
+        matched is not None
+        and in_matched_view(supporter, matched)
+        and observation.page_id == matched.page_id
+        and observation.document_version_id == matched.document_version_id
+    )
     if (
-        supporter.page_id != row_candidate.page_id
-        or supporter.document_version_id != row_candidate.document_version_id
+        not (on_row_sheet or in_view)
         or supporter.value_numerator != observation.value_numerator
         or supporter.value_denominator != observation.value_denominator
         or lanes != {CorroborationLane.DRAWN_LENGTH.value}
