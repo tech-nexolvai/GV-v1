@@ -1,5 +1,5 @@
 id: CT-SINK-CABINET-WIDTH-001
-version: 1.0.1
+version: 1.1.0
 product_type: countertop
 check_type: internal
 severity: FLAG
@@ -13,10 +13,16 @@ description: >
 
 # Three-sided layouts only, which is the whole scope of the deck this comes from. Back-only and
 # island layouts may name these parts differently or add others, and that vocabulary has not been
-# sent (`CLIENT_FACTS` Q20). `scope: global` here means "every countertop package this rulebook is
-# applied to", and the rulebook is authored for the layout the client has specified.
+# sent (`CLIENT_FACTS` Q20). 1.1.0 (#1139) states this as a condition instead of a comment: 1.0.1
+# said `scope: global`, so the check ran on back-only and island rows as well. The layout is listed
+# by name, so any other layout - including one added to the vocabulary later - is NO_APPLICABLE_RULE
+# (not checked, never a PASS), and an unstated layout is REVIEW_REQUIRED, never a guess. A new
+# layout enters only by being added here on purpose. No extras: the relation has no layout-driven
+# term, so the variant only says where it applies.
 applicability:
-  scope: global
+  discriminator: wall_config
+  variants:
+    - when: back_left_right
 
 inputs:
   # `CT004` is the sink cabinet's own width as drawn — the thing being checked, not derived.
