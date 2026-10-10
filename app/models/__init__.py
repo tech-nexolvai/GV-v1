@@ -53,6 +53,8 @@ from app.models.evaluation import (
 )
 from app.models.evidence import (
     ArchitectPairingRecord,
+    ArchitectViewIndexEntry,
+    ArchitectViewMatchRecord,
     CanonicalObservation,
     EvidenceArtifact,
     EvidenceArtifactKind,
@@ -136,6 +138,8 @@ __all__ = [
     "ApprovedFinding",
     "ApprovedMatch",
     "ArchitectPairingRecord",
+    "ArchitectViewIndexEntry",
+    "ArchitectViewMatchRecord",
     "AuditEvent",
     "CanonicalObservation",
     "CaseResult",
