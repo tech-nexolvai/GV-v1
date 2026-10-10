@@ -364,6 +364,100 @@ class ReadingTimeOut(BaseModel):
     )
 
 
+class SpendTotalsOut(BaseModel):
+    """Calls, tokens and cost. `cost_usd` adds up the priced calls only; `unpriced_calls` says how
+    many had no known price, so the real cost is higher whenever it is not zero."""
+
+    model_config = ConfigDict(frozen=True)
+
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: str
+    unpriced_calls: int
+    priced_later_calls: int = Field(
+        description=(
+            "Calls whose own record predates real costs (#754, stored as 0 although they used "
+            "tokens), priced from the published price file instead. Included in cost_usd."
+        )
+    )
+    priced_later_cost_usd: str = Field(description="The part of cost_usd priced that way.")
+
+
+class ModelSpendOut(SpendTotalsOut):
+    """One model through one provider route, over this project's calls and the earlier runs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    route: Literal["bedrock", "openrouter", "anthropic", "unknown"] = Field(
+        description=(
+            "Which provider the calls went through, as far as the records show. `unknown` when "
+            "they do not say (the Claude readers went through Anthropic's API, later OpenRouter)."
+        )
+    )
+
+
+class EarlierRunOut(SpendTotalsOut):
+    """One day's earlier calls for one purpose, from `ai_spend_history`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    day: date = Field(description="The UTC day the calls were made.")
+    purpose: Literal["reading", "row-choice", "chat", "assistant", "findings", "bake-off", "other"]
+    source_label: str
+    models: tuple[str, ...]
+
+
+class ProviderCheckOut(BaseModel):
+    """What a provider itself reports as used by this deployment's key (free, read-only)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: Literal["openrouter"]
+    status: Literal["ok", "unavailable"]
+    used_usd: str | None = Field(
+        description=(
+            "What this OpenRouter key has used, across every project and tool that uses the key; "
+            "null when it could not be read."
+        )
+    )
+    checked_at: datetime
+
+
+class ProviderChecksOut(BaseModel):
+    """Provider-reported usage, served on its own so it never delays the recorded totals."""
+
+    model_config = ConfigDict(frozen=True)
+
+    checks: tuple[ProviderCheckOut, ...] = Field(
+        description="Empty unless the check is switched on (GV_USAGE_PROVIDER_CHECK) with a key."
+    )
+
+
+class UsageHistoryOut(BaseModel):
+    """All AI spending so far for the project (#1165): its own calls plus earlier runs.
+
+    Not filtered by date. `totals` = `this_project` + `earlier`. `this_project` counts the calls
+    tied to a review in this project (as `GET /usage` does); `earlier` counts the imported history.
+    Every call is priced by `app.usage_history.charged_cost`: a failed call that used no tokens
+    costs 0 (not charged), and a pre-#754 call stored as 0 although it used tokens is priced from
+    the published rates (`priced_later_calls`) or counted as unpriced, never as free.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    totals: SpendTotalsOut
+    this_project: SpendTotalsOut
+    earlier: SpendTotalsOut
+    by_model: tuple[ModelSpendOut, ...] = Field(
+        description="Per model and route over both, most expensive first."
+    )
+    earlier_runs: tuple[EarlierRunOut, ...] = Field(
+        description="The imported history by day, purpose and source, newest first."
+    )
+
+
 class UsageOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
