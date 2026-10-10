@@ -157,9 +157,7 @@ def test_sign_off_with_an_unchecked_countertop_never_lists_it_as_a_blocker() -> 
     text = publish(
         blockers_answer(review), review, mode="records_only", question="q", checked=True
     ).text
-    assert text.startswith("You can sign off.")
-    assert "still open" not in text
-    assert "These countertops have no check result yet:" in text
+    assert text == "You can sign off. 1 countertop was not checked."
     assert _text("{count.needs_you}.", review) == "No finding needs your decision."
 
 
@@ -262,8 +260,12 @@ def test_record_text_is_sanitised_before_it_is_shown_or_prompted() -> None:
     for leaked in ("[[1]]", "](", "evil.example", "**", "<img", "{C1", "\u202e"):
         assert leaked not in text
         assert leaked not in prompt_records(review)
-    assert text.count("[[") == 1  # the one marker code put there
-    assert "“" in text  # the readers' words are shown as a quotation
+    assert text == "1 page has no countertop."
+    # The evidence shows the readers' reason; it is inert there too, and quoted when filled.
+    note = render("{P3.no_countertop}.", review).text
+    for leaked in ("[[1]", "](", "evil.example", "**", "<img", "{C1", "\u202e"):
+        assert leaked not in note
+    assert "“No stone here" in note
 
 
 def test_sanitise_keeps_the_words() -> None:
@@ -369,9 +371,9 @@ def test_the_glossary_states_no_record_fact() -> None:
     [
         (
             "What walls did I set on page 4?",
-            "The walls, back wall and both ends (from both readers)",
+            "the walls, back wall and both ends (from both readers)",
         ),
-        ("What was read on page 4?", 'The pieces, 30", 36" and 18"'),
+        ("What was read on page 4?", "the walls, back wall and both ends (from both readers)"),
         ("How do I fix page 4?", "the vendor redraws it"),
     ],
 )

@@ -1,20 +1,19 @@
 import { lazy, Suspense, useState, useEffect, useRef } from 'react';
-import { ChatThread } from '../components/chat/ChatThread';
 import type { DecisionSaveResult, SimpleReviewAction } from '../components/chat/decisionSave';
-import { ChatInput } from '../components/chat/ChatInput';
-import { EvidencePanel } from '../components/chat/EvidencePanel';
 import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
+import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
+import { pageTarget, type AssistantContext, type AssistantRecords } from '@/lib/assistant';
+import { ASSISTANT_FULL_SCREEN, useMediaQuery } from '@/hooks/use-media-query';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
 import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { MessageSquare } from 'lucide-react';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
-import type { Finding, ChatMessage, PackageStatus } from '../data/types';
+import type { Finding, PackageStatus } from '../data/types';
 import {
   getPackage,
   getApprovalReadiness,
@@ -22,9 +21,6 @@ import {
   getSignedExports,
   prepareSignedExports,
   getChangedValues,
-  askReviewerChat,
-  streamReviewerChat,
-  getChatModels,
   listReviewSessions,
   openReviewSession,
   recordReviewAction,
@@ -35,11 +31,11 @@ import {
   downloadPdfReport,
   downloadRedline,
   downloadReport,
+  listRules,
 } from '../api/client';
-import type { ReviewSession, ReviewerChatReply, ApprovalReadiness, CountertopResult } from '../api/client';
-import { explanationUnavailable, factsMessage, replyMessage, withStreamStage } from '../components/chat/chatReply';
+import type { ReviewSession, ApprovalReadiness, CountertopResult } from '../api/client';
 import { MeasurementPanel } from './MeasurementPanel';
-import { loadFindings, withChain } from '../api/findings';
+import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
 import { HeaderActions, HeaderTitleExtra } from '../components/shell/ShellHeader';
@@ -70,6 +66,7 @@ const PROCESSING_STATES = new Set([
 
 interface ReviewPageProps {
   sessionId: string;
+  /** Kept for the shell's evidence rail; the review assistant (#1129) opens nothing there. */
   onEvidenceChange: (panel: React.ReactNode) => void;
   onBackToDocuments: () => void;
   /** Reports the vendor and revision once the package has loaded, for the header breadcrumb. */
@@ -77,11 +74,9 @@ interface ReviewPageProps {
   /** Reports how many findings still need the reviewer, so the sidebar shows the live count. */
   onNeedYouChange?: (count: number | null) => void;
   onPackageChanged?: () => void;
-  initialMessage?: string;
-  onMessageConsumed?: () => void;
 }
 
-export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onTitleChange, onNeedYouChange, onPackageChanged, initialMessage, onMessageConsumed }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeedYouChange, onPackageChanged }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
 
@@ -112,13 +107,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     [packageId, resultsVersion],
   );
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
-  const selectedFindingRef = useRef<string | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
-  // The review opens on Results (#1039); chat lives in a side sheet.
+  // The review opens on Results (#1039); the assistant (#1129) docks beside it.
   const [activeTab, setActiveTab] = useState<'results' | 'measure'>('results');
-  const [chatOpen, setChatOpen] = useState(Boolean(initialMessage));
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  // Mounted from the first open and only hidden after, so a closed panel keeps its conversation.
+  const [assistantMounted, setAssistantMounted] = useState(false);
+  // At this width the assistant covers the review, so it closes before taking the reviewer elsewhere.
+  const assistantFullScreen = useMediaQuery(ASSISTANT_FULL_SCREEN);
+  const assistantButton = useRef<HTMLButtonElement>(null);
+  // Rule names for the assistant's "what is left" list (as "Other checks" names them), once it opens.
+  const assistantRules = useAsync(() => (assistantMounted ? listRules() : Promise.resolve([])), [assistantMounted]);
+  // The page or countertop the reviewer last looked at, offered to the assistant as context.
+  const [lookingAt, setLookingAt] = useState<AssistantContext | null>(null);
   // "Show on drawing" (#1045): what the drawing viewer points at; `opening` restarts it fitted each time.
   const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
   const [openings, setOpenings] = useState(0);
@@ -138,7 +139,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const refreshPending = useRef(false);
   const [waitingForChecks, setWaitingForChecks] = useState(false);
   const checksBaseline = useRef('');
-  const [isProcessing, setIsProcessing] = useState(false);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSigningOff, setIsSigningOff] = useState(false);
@@ -149,9 +149,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
   const downloadPending = useRef(false);
-  // The narration models a reviewer may pick, and the current choice ('' = deployment default).
-  const [chatModels, setChatModels] = useState<{ id: string; label: string }[]>([]);
-  const [selectedModel, setSelectedModel] = useState('');
   // #1034: values saved in this session after the last check run (the API records no time for values).
   const [valuesChangedSinceRun, setValuesChangedSinceRun] = useState(false);
   // The Results filter, held here so "Review N items" can open it on what needs the reviewer.
@@ -166,23 +163,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   // A failed "Prepare signed files" request, kept apart from a failed status check (#1064).
   const [prepareError, setPrepareError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    getChatModels(projectId(), packageId)
-      .then((available) => {
-        if (cancelled) return;
-        setChatModels(available.models);
-        setSelectedModel(available.default ?? '');
-      })
-      // A missing or failing picker is not worth blocking the chat over — it falls back to the
-      // deployment default model, exactly as before this control existed.
-      .catch(() => {
-        if (!cancelled) setChatModels([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [packageId]);
   const isLoading = remote.status === 'loading';
 
   // The header shows the vendor, which is what a reviewer calls a document set.
@@ -251,7 +231,10 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   useEffect(() => {
     let current = true;
     getCountertopResults(projectId(), packageId).then(
-      (answer) => { if (current) setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [] }); },
+      (answer) => {
+        if (!current) return;
+        setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [] });
+      },
       (error: unknown) => {
         if (!current) return;
         const message = error instanceof Error ? error.message : String(error);
@@ -292,21 +275,35 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   }
 
   function openRow(rowId: string) {
+    lookAtRow(rowId);
     setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
+  }
+
+  /** Remember a countertop the reviewer opened, as the assistant's context (#1129). */
+  function lookAtRow(rowId: string) {
+    const row = countertops.status === 'ready' ? countertops.rows.find((r) => r.row_id === rowId) : undefined;
+    if (row) setLookingAt({ page_number: row.page_number, record_id: row.row_id });
   }
 
   // Where the queue opens: at one item (the Results table's "Confirm the pairing…", #1085), or at the
   // first open one.
   const [queueStart, setQueueStart] = useState<string | null>(null);
   function openQueue(startAt?: string) {
+    if (startAt?.startsWith('row:')) lookAtRow(startAt.slice(4));
     setQueueStart(startAt ?? null);
     setQueueOpening(queueOpening + 1);
     setQueueOpen(true);
   }
 
   function openViewer(target: ViewerTarget) {
+    lookAt(target);
     setViewer({ opening: openings + 1, target });
     setOpenings(openings + 1);
+  }
+
+  /** The drawing the reviewer is looking at, as the assistant's context (#1129). */
+  function lookAt(target: ViewerTarget) {
+    if (target.page !== null) setLookingAt({ page_number: target.page, record_id: target.row?.row_id ?? target.findingId });
   }
 
   /** A finding on its drawing (#1045): as its countertop when it has one, so the page strip and the picture come too. */
@@ -361,21 +358,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     return opened;
   }
 
-  // Auto-send the question WelcomePage was carrying, once the findings it will be answered from
-  // actually exist.
-  //
-  // **The fetched list is passed in rather than read from state.** Both effects run in the same
-  // commit, so `findings` is still `[]` here — `setFindings` above has been scheduled, not applied.
-  // The reply would have counted against an empty array and said "0 of 0 findings", which is not a
-  // slow render, it is the screen stating something false about the package.
-  useEffect(() => {
-    if (remote.status === 'ready' && initialMessage) {
-      void handleSend(initialMessage, remote.data.found);
-      onMessageConsumed?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remote, initialMessage]);
-
   if (isLoading) {
     return <ReviewSkeleton />;
   }
@@ -392,158 +374,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </p>
       </div>
     );
-  }
-
-  async function handleSend(text: string, source: readonly Finding[] = findings) {
-    if (isProcessing) return;
-
-    // Add user message
-    const userMsg: ChatMessage = {
-      id: `msg-u-${Date.now()}`,
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-
-    // Add typing indicator
-    const typingMsg: ChatMessage = {
-      id: `msg-typing-${Date.now()}`,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date().toISOString(),
-      is_typing: true,
-    };
-
-    setMessages(prev => [...prev, userMsg, typingMsg]);
-    setIsProcessing(true);
-
-    const replyId = `msg-a-${Date.now()}`;
-    const now = () => new Date().toISOString();
-    let factsShown = false;
-    try {
-      let response: ReviewerChatReply;
-      try {
-        // Streamed: the findings table appears as soon as the server has selected it, while the
-        // model is still writing. The explanation then replaces the pending line.
-        response = await streamReviewerChat(
-          projectId(),
-          packageId,
-          text,
-          {
-            onFacts: (facts) => {
-              factsShown = true;
-              const shown = factsMessage(facts, source, replyId, now());
-              setMessages(prev => prev.filter(m => !m.is_typing).concat(shown));
-            },
-            onStage: (stage) => {
-              setMessages(prev => prev.map(m => m.id === replyId
-                ? withStreamStage(m, stage.stage)
-                : m));
-            },
-          },
-          selectedModel || undefined,
-        );
-      } catch (streamError) {
-        // After the facts are on screen they stay; only the explanation is reported missing.
-        if (factsShown) throw streamError;
-        // Before any facts arrived nothing has been shown, so ask once the plain way. This also
-        // keeps chat working against a server that predates the stream.
-        response = await askReviewerChat(projectId(), packageId, text, selectedModel || undefined);
-      }
-      const final = replyMessage(response, source, replyId, now());
-      setMessages(prev =>
-        factsShown
-          ? prev.map(m => (m.id === replyId ? final : m))
-          : prev.filter(m => !m.is_typing).concat(final),
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (factsShown) {
-        // The findings on screen are the recorded run and still correct; keep them.
-        setMessages(prev =>
-          prev.map(m => (m.id === replyId ? explanationUnavailable(m, message) : m)),
-        );
-        return;
-      }
-      // A chat outage must not hide the already-fetched deterministic review. The page keeps its
-      // ordinary finding cards and says clearly that it is showing that plain fallback.
-      const replyMsg: ChatMessage = {
-        id: `msg-a-${Date.now()}`,
-        role: 'assistant',
-        content: `The chat service could not return narration right now, so this uses deterministic findings only.\n${message}`,
-        timestamp: new Date().toISOString(),
-        findings: [...source],
-        narration: {
-          mode: 'structured_fallback',
-          fallbackReason: message,
-        },
-      };
-      setMessages(prev => prev.filter(m => !m.is_typing).concat(replyMsg));
-    } finally {
-      setIsProcessing(false);
-    }
-  }
-
-  async function handleViewEvidence(finding: Finding) {
-    selectedFindingRef.current = finding.id;
-    setSelectedFindingId(finding.id);
-    onEvidenceChange(
-      <EvidencePanel
-        finding={finding}
-        projectId={projectId()}
-        packageId={packageId}
-        onShowDrawing={() => showDrawing(finding)}
-        loading
-        onClose={() => {
-          selectedFindingRef.current = null;
-          setSelectedFindingId(null);
-          onEvidenceChange(null);
-        }}
-      />
-    );
-    try {
-      const chain = await getFindingChain(projectId(), packageId, finding.id);
-      const enriched = withChain(finding, chain);
-      setFindings((current) => current.map((item) => (item.id === finding.id ? enriched : item)));
-      // Chat cards keep the list snapshot that produced that reply.  Update that snapshot too, or
-      // the evidence rail would have the chain while the card beside it continued to show the
-      // sparse pre-fetch row — exactly the split view a reviewer cannot audit.
-      setMessages((current) => current.map((message) => ({
-        ...message,
-        findings: message.findings?.map((item) => (item.id === finding.id ? enriched : item)),
-      })));
-      if (selectedFindingRef.current !== finding.id) return;
-      onEvidenceChange(
-        <EvidencePanel
-          finding={enriched}
-          projectId={projectId()}
-          packageId={packageId}
-          onShowDrawing={() => showDrawing(enriched)}
-          onClose={() => {
-            selectedFindingRef.current = null;
-            setSelectedFindingId(null);
-            onEvidenceChange(null);
-          }}
-        />,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (selectedFindingRef.current !== finding.id) return;
-      onEvidenceChange(
-        <EvidencePanel
-          finding={finding}
-          projectId={projectId()}
-          packageId={packageId}
-          onShowDrawing={() => showDrawing(finding)}
-          error={`Evidence could not be loaded — ${message}`}
-          onClose={() => {
-            selectedFindingRef.current = null;
-            setSelectedFindingId(null);
-            onEvidenceChange(null);
-          }}
-        />,
-      );
-    }
   }
 
   /**
@@ -831,6 +661,36 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
     }
   }
 
+  // The review assistant (#1129): the same records the Results screen and the queue use.
+  const assistantRecords: AssistantRecords = {
+    rows: countertopsReady ? countertops.rows : [],
+    rowsReady: countertopsReady,
+    pagesWithoutCountertop: countertopsReady ? countertops.pagesWithoutCountertop ?? [] : [],
+    rowsNotChecked: countertopsReady ? countertops.rowsNotChecked ?? [] : [],
+    findings,
+    blocking: readiness ? new Set(readiness.blocking_finding_ids) : null,
+    ruleNames: new Map(assistantRules.status === 'ready' ? assistantRules.data.map((rule) => [rule.rule_id, rule.name] as [string, string]) : []),
+  };
+  // Navigation only: the drawing viewer and the queue, each with its own decision forms. On a phone the
+  // panel covers the screen, so it closes first and the reviewer lands on what they asked to see.
+  function leaveAssistant() {
+    if (assistantFullScreen) setAssistantOpen(false);
+  }
+  const assistantNav: AssistantNavigation = {
+    openPage: (page) => { leaveAssistant(); openViewer(pageTarget(page, assistantRecords)); },
+    showRow: (row) => { leaveAssistant(); showRowOnDrawing(row); },
+    showFinding: (finding) => { leaveAssistant(); showDrawing(finding); },
+    openQueue: (key) => { leaveAssistant(); setActiveTab('results'); openQueue(key); },
+  };
+  function toggleAssistant() {
+    if (assistantOpen) closeAssistant();
+    else { setAssistantMounted(true); setAssistantOpen(true); }
+  }
+  function closeAssistant() {
+    setAssistantOpen(false);
+    window.setTimeout(() => assistantButton.current?.focus(), 0);
+  }
+
   const secondary: SecondaryAction[] = [
     { id: 'refresh', label: refreshing ? 'Refreshing results…' : 'Refresh results', disabled: refreshing, onSelect: () => void refreshResults() },
     ...(stage.next.kind === 'download-report'
@@ -847,13 +707,24 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
   ];
 
   return (
-    <div className="review-page">
+    // The review and the docked assistant side by side (#1129); on a phone the assistant covers it.
+    <div className="@container/review flex h-full min-h-0 w-full min-w-0">
+    <div className="review-page min-w-0 flex-1">
       <HeaderTitleExtra>
         <PackageStatusBadge status={pkg.status} />
       </HeaderTitleExtra>
       <HeaderActions>
-        <Button variant="ghost" size="sm" onClick={() => setChatOpen(true)} aria-label="Open chat">
-          <MessageSquare /> <span className="hidden xl:inline">Chat</span>
+        <Button
+          ref={assistantButton}
+          variant={assistantOpen ? 'secondary' : 'ghost'}
+          size="sm"
+          onClick={toggleAssistant}
+          // One name; whether it is open is aria-expanded's to say (the panel's own X is "Close assistant").
+          aria-label="Assistant"
+          aria-expanded={assistantOpen}
+          aria-controls={assistantMounted ? 'review-assistant' : undefined}
+        >
+          <MessageSquare /> <span className="hidden xl:inline">Assistant</span>
         </Button>
         {/* From tablet width up; on a phone the same table opens from "More actions". */}
         <span className="hidden md:inline-flex">
@@ -981,39 +852,6 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
         </div>
       )}
 
-      {/* Chat, beside the results rather than instead of them (#1039). A legacy island: the chat
-          keeps its own styles inside the shadcn sheet. */}
-      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
-        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
-          <SheetHeader className="border-b">
-            <SheetTitle>Chat</SheetTitle>
-            <SheetDescription>Ask about this review in plain words.</SheetDescription>
-          </SheetHeader>
-          <div data-legacy className="flex min-h-0 flex-1 flex-col bg-[var(--bg-base)]">
-            <ChatThread
-              messages={messages.map(m => ({
-                ...m,
-                findings: m.findings?.map(f => findings.find(rf => rf.id === f.id) ?? f),
-              }))}
-              selectedFinding={selectedFindingId}
-              recordedFindingCount={findings.length}
-              blockingFindingIds={readiness?.blocking_finding_ids}
-              onViewEvidence={handleViewEvidence}
-              onAction={handleAction}
-              onCorrect={handleCorrect}
-              onExcept={handleExcept}
-            />
-            <ChatInput
-              onSend={handleSend}
-              disabled={isProcessing}
-              models={chatModels}
-              selectedModel={selectedModel}
-              onSelectModel={setSelectedModel}
-            />
-          </div>
-        </SheetContent>
-      </Sheet>
-
       {openings > 0 && (
         <Suspense fallback={null}>
           <DrawingViewerSheet
@@ -1022,7 +860,7 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
             rows={countertops.status === 'ready' ? countertops.rows : []}
             projectId={projectId()}
             packageId={packageId}
-            onTargetChange={(target) => setViewer((current) => (current ? { ...current, target } : current))}
+            onTargetChange={(target) => { lookAt(target); setViewer((current) => (current ? { ...current, target } : current)); }}
             onClose={() => setViewer(null)}
           />
         </Suspense>
@@ -1071,6 +909,19 @@ export function ReviewPage({ sessionId, onEvidenceChange, onBackToDocuments, onT
           />
         </div>
       )}
+    </div>
+    {assistantMounted && (
+      <AssistantPanel
+        projectId={projectId()}
+        packageId={packageId}
+        setName={pkg.vendor === '—' ? 'This set' : pkg.vendor}
+        open={assistantOpen}
+        records={assistantRecords}
+        context={lookingAt}
+        nav={assistantNav}
+        onClose={closeAssistant}
+      />
+    )}
     </div>
   );
 }

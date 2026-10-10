@@ -10,8 +10,8 @@
  */
 
 import type { components, paths } from './schema';
-import { parseSseFrames } from './sse.js';
-import type { ChatStreamFacts, ChatStreamStage, ReviewerChatReply } from './chatStreamTypes';
+import { parseSseFrames, type SseFrame } from './sse.js';
+import type { AssistantAnswer, AssistantInfo, AssistantRequest, AssistantStage, AssistantStreamError } from './assistantTypes';
 
 /** Every failure the API produces has this shape — `app/errors.py`. */
 export interface ErrorEnvelope {
@@ -95,7 +95,6 @@ export type DecidedEvidence =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/evidence'>;
 export type GrantedException =
   Created<'/api/v1/projects/{project_id}/review-sessions/{review_session_id}/exceptions'>;
-export type { ChatStreamFacts, ChatStreamStage, ReviewerChatReply } from './chatStreamTypes';
 export type FillerDistributionRequest =
   paths['/api/v1/projects/{project_id}/filler-distribution']['post']['requestBody']['content']['application/json'];
 export type FillerDistributionResponse =
@@ -200,56 +199,42 @@ export function getFindingCounts(projectId: string, packageId: string) {
   );
 }
 
-/**
- * Ask about the currently live deterministic run. The backend owns the finding scope and accepts
- * only a question; it never accepts client-supplied values, finding ids, or verdicts.
- */
-export function askReviewerChat(
-  projectId: string,
-  packageId: string,
-  question: string,
-  modelId?: string | null,
-) {
-  type Body =
-    paths['/api/v1/projects/{project_id}/packages/{package_id}/chat']['post']['requestBody']['content']['application/json'];
-  // model_id is an optional presentation choice; the backend refuses any id not on its allow-list.
-  // Omit it entirely (rather than sending null) when no model is picked, so the default is used.
-  const body: Body = modelId ? { question, model_id: modelId } : { question };
-  return send<ReviewerChatReply>(`/projects/${projectId}/packages/${packageId}/chat`, body);
+// ---------------------------------------------------------------------------
+// Review assistant (#1129; backend #1128). Typed by hand in `assistantTypes.ts` until the routes are
+// in the generated schema.
+// ---------------------------------------------------------------------------
+
+/** Whether the assistant answers on this review, its model in words, and its starter questions. */
+export function getAssistant(projectId: string, packageId: string) {
+  return request<AssistantInfo>(`/projects/${projectId}/packages/${packageId}/assistant`);
 }
 
-export interface ChatStreamHandlers {
-  onFacts: (facts: ChatStreamFacts) => void;
-  /** Real progress: sent only when a provider is actually being called. */
-  onStage?: (stage: ChatStreamStage) => void;
+export interface AssistantStreamHandlers {
+  /** What the server is doing now; each stage replaces the last. */
+  onStage?: (stage: AssistantStage) => void;
 }
 
 /**
- * Ask the reviewer chat, receiving the answer in the order it becomes known.
+ * Ask the review assistant. Resolves with the one `answer` frame; `stage` frames arrive before it.
  *
- * `facts` arrives at once (it needs no model), so the findings table is on screen while the model
- * is still writing. The `narration` frame is the complete reply, **already accepted by the
- * narration guard**: the model's words are never shown in pieces, because the guard accepts or
- * rejects the whole batch and a piece could be a sentence it then discards.
- *
- * Resolves with the same body `/chat` returns. A stream that ends without a `narration` frame, or
- * that sends `error`, rejects: a truncated answer must not read as an answer.
+ * An `error` frame rejects with its own plain-words message (the server never puts exception text
+ * there), and so does a stream that ends without an answer: a cut-off answer must not read as one.
+ * Aborting `signal` rejects with the browser's AbortError, which the caller tells apart from a failure.
  */
-export async function streamReviewerChat(
+export async function streamAssistant(
   projectId: string,
   packageId: string,
-  question: string,
-  handlers: ChatStreamHandlers,
-  modelId?: string | null,
+  body: AssistantRequest,
+  handlers: AssistantStreamHandlers,
   signal?: AbortSignal,
-): Promise<ReviewerChatReply> {
-  const body = modelId ? { question, model_id: modelId } : { question };
-  const response = await fetch(`${BASE}/projects/${projectId}/packages/${packageId}/chat/stream`, {
+): Promise<AssistantAnswer> {
+  const response = await fetch(`${BASE}/projects/${projectId}/packages/${packageId}/assistant/stream`, {
     method: 'POST',
     headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   });
+  const requestId = response.headers.get('x-request-id') ?? 'unknown';
 
   if (!response.ok || !response.body) {
     let envelope: ErrorEnvelope;
@@ -259,55 +244,60 @@ export async function streamReviewerChat(
       envelope = {
         error: 'unreadable_response',
         message: `The server returned ${response.status} and a body this client could not parse.`,
-        request_id: response.headers.get('x-request-id') ?? 'unknown',
+        request_id: requestId,
       };
     }
     throw new ApiError(response.status, envelope);
   }
 
-  const requestId = response.headers.get('x-request-id') ?? 'unknown';
+  const unreadable = () =>
+    new ApiError(502, { error: 'unreadable_stream', message: 'The answer could not be read. Try again.', request_id: requestId });
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffered = '';
-  let reply: ReviewerChatReply | null = null;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const parsed = parseSseFrames(buffered + decoder.decode(value, { stream: true }));
-    buffered = parsed.rest;
-    for (const frame of parsed.frames) {
-      if (frame.event === 'facts') handlers.onFacts(frame.data as ChatStreamFacts);
-      else if (frame.event === 'stage') {
-        handlers.onStage?.(frame.data as ChatStreamStage);
-      } else if (frame.event === 'narration') reply = frame.data as ReviewerChatReply;
-      else if (frame.event === 'error') {
-        // The server never puts exception text in this frame; its detail is safe to show.
-        throw new ApiError(502, {
-          error: 'chat_stream_error',
-          message: (frame.data as { detail?: string }).detail ?? 'The explanation could not be produced.',
-          request_id: requestId,
-        });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let frames: SseFrame[];
+      try {
+        const parsed = parseSseFrames(buffered + decoder.decode(value, { stream: true }));
+        frames = parsed.frames;
+        buffered = parsed.rest;
+      } catch {
+        // A frame that is not JSON: say so in plain words, never the parser's own text.
+        throw unreadable();
+      }
+      for (const frame of frames) {
+        if (frame.event === 'stage') handlers.onStage?.(frame.data as AssistantStage);
+        else if (frame.event === 'answer') {
+          const answer = frame.data as Partial<AssistantAnswer> | null;
+          if (!answer || typeof answer.text !== 'string' || typeof answer.mode !== 'string') throw unreadable();
+          // Lists the server leaves out are empty, so nothing below has to guess.
+          return {
+            citations: [], evidence: [], actions: [], suggestions: [], sources: [], checked: false, model_id: null,
+            ...answer,
+          } as AssistantAnswer;
+        } else if (frame.event === 'error') {
+          const failure = frame.data as Partial<AssistantStreamError> | null;
+          throw new ApiError(502, {
+            error: failure?.code ?? 'assistant_error',
+            message: failure?.message ?? 'The assistant could not answer this question.',
+            request_id: requestId,
+          });
+        }
       }
     }
+  } finally {
+    // The answer or an error is the last thing that matters; stop reading either way.
+    reader.cancel().catch(() => {});
   }
 
-  if (!reply) {
-    throw new ApiError(502, {
-      error: 'incomplete_stream',
-      message: 'The answer ended before its explanation arrived. The findings shown are the recorded ones.',
-      request_id: requestId,
-    });
-  }
-  return reply;
-}
-
-export type ChatModels =
-  paths['/api/v1/projects/{project_id}/packages/{package_id}/chat/models']['get']['responses'][200]['content']['application/json'];
-
-/** The narration models a reviewer may pick from, and which one answers by default. */
-export function getChatModels(projectId: string, packageId: string) {
-  return request<ChatModels>(`/projects/${projectId}/packages/${packageId}/chat/models`);
+  throw new ApiError(502, {
+    error: 'incomplete_stream',
+    message: 'The answer stopped before it was complete. Try again.',
+    request_id: requestId,
+  });
 }
 
 /**

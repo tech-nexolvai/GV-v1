@@ -42,9 +42,6 @@ assert.match(page, /getApprovalReadiness/);
 assert.match(page, /canSignOff\(readiness\)/);
 assert.match(page, /onChecksQueued=/);
 assert.match(page, /<ResultsDashboard/, 'the review opens on the results dashboard (#1039)');
-const card = readFileSync('src/components/chat/FindingCard.tsx','utf8');
-assert.match(card, /onAction\(finding.id, pending, reason.trim\(\)\)/, 'notes reach the write handler');
-assert.match(card, /Reviewer decision/);
 const table = readFileSync('src/components/results/countertop-table.tsx','utf8');
 assert.match(table, /Show on drawing/);
 assert.match(table, /Open countertop card/);
@@ -52,6 +49,7 @@ assert.match(table, /Open countertop card/);
 // rule, and both screens use that form rather than their own.
 const draftSource = readFileSync('src/components/results/use-decision-draft.ts','utf8');
 assert.match(draftSource, /actionNeedsNote\(outcome, simple\)/, 'the shared decision form uses the same note rule');
+assert.match(draftSource, /handlers\.onAction\(finding\.id, simple, note\.trim\(\)/, 'notes reach the write handler');
 for (const screen of ['src/components/results/decide-dialog.tsx', 'src/components/queue/needs-you-queue.tsx']) {
   assert.match(readFileSync(screen,'utf8'), /useDecisionDraft\(/, `${screen} uses the shared decision form`);
 }

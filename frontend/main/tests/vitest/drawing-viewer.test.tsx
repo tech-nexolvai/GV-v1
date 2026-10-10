@@ -3,7 +3,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CountertopResult } from '@/api/client';
-import type { Finding } from '@/data/types';
 import {
   boundsOf,
   fitView,
@@ -20,7 +19,6 @@ import {
   type ViewerTarget,
 } from '@/lib/drawing-viewer';
 import { DrawingViewerSheet } from '@/components/drawing/drawing-viewer';
-import { EvidencePanel } from '@/components/chat/EvidencePanel';
 
 // Synthetic data only: nothing here comes from a client drawing.
 const VERSION = '00000000-0000-4000-8000-0000000000aa';
@@ -346,16 +344,5 @@ describe('drawing viewer: on screen', { timeout: 15_000 }, () => {
     open(target, vi.fn(), []);
     expect(await screen.findByText('No stored location', undefined, { timeout: 5000 })).toBeTruthy();
     expect(calls.some((c) => c.url.includes('/picture'))).toBe(false);
-  });
-});
-
-describe('chat evidence panel', () => {
-  it('replaces the no-evidence paragraphs with one line and a "?"', () => {
-    const finding = { id: 'f', check_id: 'rule', name: 'Synthetic rule', outcome: 'REVIEW_REQUIRED', severity: 'major', reviewer_action: null, recorded_operands: [] } as unknown as Finding;
-    render(<EvidencePanel finding={finding} projectId="p" packageId="k" onClose={() => undefined} />);
-    const line = document.querySelector('[data-slot="no-crops"]')!;
-    expect(line.textContent).toBe('No drawing crop for this check?');
-    expect(screen.getByRole('button', { name: 'Why: No drawing crop for this check' })).toBeTruthy();
-    expect(document.body.textContent).not.toMatch(/Findings built from input-only values|Recorded operands/);
   });
 });

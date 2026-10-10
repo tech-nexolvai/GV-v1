@@ -178,7 +178,7 @@ ul, ol { list-style: none; }
   to   { transform: rotate(360deg); }
 }
 
-/* `typingDot` was here, for the three-dot indicator `ThinkingStream` replaced. `slideInIndicator`
+/* `typingDot` was here, for an old chat's three-dot indicator (retired with the chat, #1129). `slideInIndicator`
    went the same way when the sidebar accent started growing from its centre. Both were left behind
    by the components that used them; a keyframe nothing references is a rule the next person has to
    read before they can be sure of that.

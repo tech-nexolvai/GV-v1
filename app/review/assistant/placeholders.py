@@ -274,7 +274,8 @@ def _decision(item: CountertopRecord | FindingRecord) -> str | None:
 
 
 def _quoted(text: str) -> str:
-    return f"“{text.rstrip('.')}”"
+    text = text.rstrip(".")
+    return f"“{text[:1].upper()}{text[1:]}”"
 
 
 def _countertop_value(item: CountertopRecord, field: str, index: int | None) -> str | None:

@@ -152,7 +152,8 @@ def test_an_answer_the_guard_drops_is_replaced_by_the_records(bad: dict[str, Any
     answer = events[-1][1]
     assert (answer.mode, answer.checked, answer.model_id) == ("records_only", True, None)
     # The records' own facts (of the records the dropped answer named, else of the question).
-    assert '84 1/2"' in answer.text and "84 3/4" not in answer.text
+    assert "84 3/4" not in answer.text and "needs correction" in answer.text
+    assert [item.kind for item in answer.evidence] == ["countertop"]  # the card shows the values
     assert "needs correction" in answer.text
 
 
