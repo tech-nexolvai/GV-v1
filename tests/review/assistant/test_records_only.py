@@ -172,8 +172,8 @@ def test_the_fallback_is_what_needs_you_with_one_line_saying_so() -> None:
     check(draft, SNAPSHOT, by_model=False)
     text = render(draft.text, SNAPSHOT).text
     assert text.startswith("I couldn't check a free answer to that; here is what needs you.")
-    assert render(draft.text, SNAPSHOT).citations == ("C1", "C2", "F1")
-    assert draft.evidence[0] == "blockers"
+    assert render(draft.text, SNAPSHOT).citations == ("C1",)
+    assert draft.evidence == ("C1", "blockers")
 
 
 def test_the_architect_outcome_is_its_own_placeholder() -> None:

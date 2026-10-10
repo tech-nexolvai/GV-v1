@@ -298,8 +298,6 @@ def blockers_answer(snapshot: ReviewSnapshot) -> Draft:
     )
 
 
-#: How many results a ranked answer lists in its text before pointing to the queue.
-MAX_RANKED: Final = 5
 #: Said first when a free answer to the question was refused and code answers instead.
 COULD_NOT_CHECK: Final = "I couldn't check a free answer to that; here is what needs you."
 #: Questions that ask code to rank or prioritise what needs the reviewer: answered by code.
@@ -340,29 +338,30 @@ def ranked(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]:
 
 
 def needs_you_answer(snapshot: ReviewSnapshot, *, lead: str | None = None) -> Draft:
-    """The sign-off status, then what needs the reviewer in code's order, each with its reason.
+    """The sign-off status and one sentence naming where to start, in code's order.
 
-    The default answer whenever a free answer could not be checked (`lead` says so), and the
-    answer to "which look most worrying?" and "what should I look at first?".
+    The `blockers` evidence lists everything that needs the reviewer, so the text names only the
+    first item (with the reason it comes first) and its countertop card; it never repeats the
+    list. The answer to "which look most worrying?" and "where do I start?", and the default when
+    a free answer could not be checked (`lead` says so).
     """
-    lines = [lead] if lead else []
+    sentences = [lead] if lead else []
     if not snapshot.checks_have_run:
-        return Draft(text="\n".join([*lines, NOTHING_HAS_RUN]), evidence=("blockers",))
+        return Draft(text=" ".join([*sentences, NOTHING_HAS_RUN]), evidence=("blockers",))
     order = ranked(snapshot)
-    lines.append("{signoff.status}.")
-    if order:
-        lines.append("What needs you, failures first:")
-        for item in order[:MAX_RANKED]:
-            why = _why(snapshot, item)
-            outcome = f"{_subject(snapshot, item)} {{{item.id}.outcome}}"
-            lines.append(f"- {outcome}; {why}" if why else f"- {outcome}")
-        if len(order) > MAX_RANKED:
-            lines.append("The rest are listed in the queue.")
-    countertops = [item.id for item in order[:MAX_EXPLAINED] if item.id.startswith("C")]
+    sentences.append("{signoff.status}.")
+    if not order:
+        return Draft(text=" ".join(sentences), evidence=("blockers",))
+    first = order[0]
+    subject = _subject(snapshot, first)
+    start = f"Start with {subject[:1].lower()}{subject[1:]}: it {{{first.id}.outcome}}"
+    why = _why(snapshot, first)
+    sentences.append(f"{start}; {why}." if why else f"{start}.")
+    card = (first.id,) if first.id.startswith("C") else ()
     return Draft(
-        text="\n".join(lines),
-        evidence=("blockers", *countertops),
-        actions=(() if not order else (("open_queue_item", order[0].id),)),
+        text=" ".join(sentences),
+        evidence=(*card, "blockers"),
+        actions=(("open_queue_item", first.id),),
     )
 
 

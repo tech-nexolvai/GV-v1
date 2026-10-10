@@ -80,6 +80,12 @@ def _ask(question: str, model: _Model | None, review: ReviewSnapshot = SNAPSHOT)
     return answer
 
 
+START = (
+    "Start with the countertop on page 4: it needs correction; the printed overall does not match "
+    "the pieces below it plus the field cut [[0]]."
+)
+
+
 # ---- 1. no dead end ------------------------------------------------------------------------------
 
 
@@ -101,8 +107,10 @@ def test_a_ranking_question_is_answered_by_code_without_a_model(question: str) -
     assert model.calls == 0
     assert answer.mode == "records_only" and answer.checked
     assert answer.text.startswith("Sign-off is blocked: 3 findings still need your decision.")
-    assert "What needs you, failures first:" in answer.text
-    assert answer.evidence[0].kind == "blockers"
+    assert answer.text.endswith(START)
+    # The text names only where to start; the blockers evidence lists everything, once.
+    assert [item.kind for item in answer.evidence] == ["countertop", "blockers"]
+    assert "page 7" not in answer.text and "page 5" not in answer.text
     assert answer.actions and answer.actions[0].kind == "open_queue_item"
 
 
@@ -147,8 +155,10 @@ def test_a_realistic_refused_answer_falls_back_to_what_needs_you() -> None:
     assert model.calls == 1
     assert answer.mode == "records_only"
     assert answer.text.startswith(COULD_NOT_CHECK)
-    assert "What needs you, failures first:" in answer.text
-    assert answer.evidence[0].kind == "blockers"
+    assert answer.text.endswith(START)
+    # The text names only where to start; the blockers evidence lists everything, once.
+    assert [item.kind for item in answer.evidence] == ["countertop", "blockers"]
+    assert "page 7" not in answer.text and "page 5" not in answer.text
     assert answer.actions
 
 
@@ -281,3 +291,20 @@ def test_the_four_real_questions() -> None:
     assert page_7.mode == left.mode == plain.mode == "llm"
     assert worrying.mode == "records_only"
     assert "On page 7, Also" not in plain.text and "review queue" not in plain.text
+
+
+def test_the_start_item_has_no_card_when_it_is_not_a_countertop() -> None:
+    base = syn.countertop_results()
+    review = snapshot(
+        syn.Inputs(
+            countertops=base.model_copy(update={"items": ()}),
+            readiness=syn.Readiness(blocking_findings=1, blocking_finding_ids=(syn.FINDING_SINK,)),
+        )
+    )
+    answer = _ask("Where should I start?", None, review)
+    assert answer.text == (
+        "Sign-off is blocked: 1 finding still needs your decision. Start with the Sink centre line "
+        "check on page 5: it is waiting on a value; the sink centre line is not given on this "
+        "sheet, so the check could not run [[0]]."
+    )
+    assert [item.kind for item in answer.evidence] == ["blockers"]
