@@ -334,7 +334,7 @@ def test_a_page_the_reader_cannot_read_is_stored_as_a_note(
     real = read_architect_page
 
     def refuse(data: bytes, index: int, **kwargs: Any) -> Any:
-        if kwargs.get("architect_document"):
+        if kwargs.get("on_architect_file"):
             raise UnreadablePdf("a synthetic refusal")
         return real(data, index, **kwargs)
 
