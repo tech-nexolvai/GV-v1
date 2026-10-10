@@ -126,6 +126,10 @@ def walls_of(config: str | None) -> Walls | None:
     """
     if config == "back_left_right":
         return Walls(back=True, left=True, right=True)
+    if config == "back_and_left":
+        return Walls(back=True, left=True, right=False)
+    if config == "back_and_right":
+        return Walls(back=True, left=False, right=True)
     if config == "back_only":
         return Walls(back=True, left=False, right=False)
     if config == "island":

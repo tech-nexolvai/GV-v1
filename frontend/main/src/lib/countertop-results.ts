@@ -203,10 +203,12 @@ export function formatDelta(delta: ExactValue | null): { text: string; sign: -1 
 /** Which walls a layout has, for the glyph; null when the layout is not established. */
 export function wallsOf(config: string | null): { back: boolean; left: boolean; right: boolean } | null {
   if (config === 'back_left_right') return { back: true, left: true, right: true };
+  if (config === 'back_and_left') return { back: true, left: true, right: false };
+  if (config === 'back_and_right') return { back: true, left: false, right: true };
   if (config === 'back_only') return { back: true, left: false, right: false };
   if (config === 'island') return { back: false, left: false, right: false };
-  // The rulebook publishes only these three layouts (rules/rulebook/ct_width_001.yaml); anything
-  // else is shown as not established rather than drawn from a guess.
+  // Only the layouts the rulebook publishes are drawn (rules/rulebook/ct_width_001.yaml); anything
+  // else is shown as not established rather than drawn from a guess. Mirrors reports/countertop_strip.py.
   return null;
 }
 

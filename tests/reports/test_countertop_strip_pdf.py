@@ -194,6 +194,34 @@ def test_caps_only_at_ends_with_a_wall() -> None:
     assert one_end.cap_right.x == pytest.approx(one_end.pieces[-1].x + one_end.pieces[-1].w)
 
 
+@pytest.mark.parametrize(
+    ("config", "left", "right"),
+    [("back_and_left", True, False), ("back_and_right", False, True)],
+)
+def test_one_end_layouts_draw_one_cap_at_the_wall_end(config: str, left: bool, right: bool) -> None:
+    # #1150: a wall at the back and one end has one field cut, so one cap, at that end only.
+    from reports.countertop_strip import StripDrawn, Walls, strip_layout, walls_of
+
+    assert walls_of(config) == Walls(back=True, left=left, right=right)
+    layout = strip_layout(
+        _row(
+            field_cut_count=1,
+            wall_layout=WallLayoutOut(config=config, label=None, source="reviewer"),
+        ),
+        1000,
+    )
+    assert isinstance(layout, StripDrawn)
+    assert layout.walls == Walls(back=True, left=left, right=right)
+    assert (layout.cap_left is not None, layout.cap_right is not None) == (left, right)
+    if left:
+        assert layout.cap_left is not None and layout.cap_left.x == 0
+        assert layout.pieces[0].x == pytest.approx(layout.cap_left.w)
+    else:
+        assert layout.pieces[0].x == 0
+        assert layout.cap_right is not None
+        assert layout.cap_right.x == pytest.approx(layout.pieces[-1].x + layout.pieces[-1].w)
+
+
 def test_missing_widths_draw_equal_boxes_not_to_scale() -> None:
     from reports.countertop_strip import MIN_CAP, StripDrawn, strip_layout
 
@@ -363,6 +391,32 @@ def test_pdf_caps_follow_the_walls_not_the_count() -> None:
     assert not any(dashed for _, _, dashed in _run_boxes(_draw(unknown)))
     assert '+1"' not in _draw(unknown).strings
     assert _draw(OVER).strings.count('+1"') == 2
+
+
+@pytest.mark.parametrize(("config", "left"), [("back_and_left", True), ("back_and_right", False)])
+def test_pdf_one_end_layouts_draw_one_wall_and_one_cap(config: str, left: bool) -> None:
+    # #1150: the PDF draws the back wall, the one end wall and its one 1" cap, nothing at the open end.
+    row = _row(
+        field_cut_count=1, wall_layout=WallLayoutOut(config=config, label=None, source="reviewer")
+    )
+    layout = _layout_for_pdf(row)
+    canvas = _draw(row)
+
+    assert canvas.strings.count('+1"') == 1
+    caps = [(x, w) for x, w, dashed in _run_boxes(canvas) if dashed]
+    cap = layout.cap_left if left else layout.cap_right
+    assert cap is not None
+    assert caps == pytest.approx([(findings_pdf._STRIP_WALL + cap.x, cap.w)])
+    end_walls = sorted(
+        x for x, y, w, h, _ in canvas.rects if w == pytest.approx(findings_pdf._STRIP_WALL - 2)
+    )
+    run_end = findings_pdf._STRIP_WALL + layout.run_end
+    assert end_walls == pytest.approx([0.0] if left else [run_end + 2])
+    assert any(
+        x1 == pytest.approx(findings_pdf._STRIP_WALL) and x2 == pytest.approx(run_end)
+        for x1, y1, x2, y2 in canvas.lines
+        if y1 == y2 and y1 > _RUN_Y + 16
+    )
 
 
 # ── The written PDF, read back with pypdf ───────────────────────────────────────────────────────
