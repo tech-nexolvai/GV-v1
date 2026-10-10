@@ -30,6 +30,8 @@ export interface AssistantRecords {
   findings: readonly Finding[];
   /** Readiness's blocking finding ids; null while it loads. */
   blocking: ReadonlySet<string> | null;
+  /** Rule id → its name in the rulebook, as "Other checks" shows it. Optional: ids fall back to labels. */
+  ruleNames?: ReadonlyMap<string, string>;
 }
 
 /** What the reviewer is looking at: the drawing, a queue item or a countertop card. */
@@ -182,12 +184,28 @@ export function historyFor(turns: readonly FinishedTurn[], max = 6): AssistantHi
 
 // ── Evidence, from the records ──────────────────────────────
 
+/**
+ * One line of "what is left before sign-off". A countertop is "Page N" with a short reason; another
+ * check is its name with its state, and identical ones (same check, same state) are one line with a
+ * count, opening the queue at the first of them.
+ */
 export interface Blocker {
+  /** The queue key it opens (the first item, for a group). */
   key: string;
+  title: string;
+  /** Page number shown in the number face, when the title is "Page N". */
   page: number | null;
+  detail: string;
   outcome: Outcome;
   word: string;
-  reason: string;
+  /** How many queue items this line stands for (more than one only for a group of checks). */
+  count: number;
+}
+
+/** A reason as one short line: its first sentence, starting with a capital, without the full stop. */
+export function shortReason(reason: string): string {
+  const first = reason.trim().split(/(?<=[.;!?])\s+/)[0].replace(/[.;]+$/, '');
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }
 
 /**
@@ -200,27 +218,49 @@ export function rowOutcome(row: Pick<CountertopResult, 'outcome' | 'needs_decisi
   return { outcome: row.outcome, word: OUTCOME_LABELS[row.outcome] };
 }
 
+/** A check's name as the "Other checks" list shows it: the rulebook's name, else its own label. */
+export function checkName(finding: Pick<Finding, 'check_id' | 'scope_label' | 'name'>, ruleNames?: ReadonlyMap<string, string>): string {
+  return ruleNames?.get(finding.check_id) ?? (finding.scope_label && finding.scope_label !== 'Package revision' ? finding.scope_label : finding.name);
+}
+
 function blockerOf(item: QueueItem, records: AssistantRecords): Blocker {
   if (item.kind === 'check') {
     const finding = records.findings.find((f) => f.id === item.findingId);
     const outcome = finding?.outcome ?? 'REVIEW_REQUIRED';
-    return { key: item.key, page: item.page, outcome, word: OUTCOME_LABELS[outcome], reason: item.label };
+    const title = finding ? checkName(finding, records.ruleNames) : item.label;
+    return { key: item.key, title, page: null, detail: item.page !== null ? `Page ${item.page}` : 'Whole set', outcome, word: OUTCOME_LABELS[outcome], count: 1 };
   }
   const row = records.rows.find((r) => r.row_id === item.rowId);
+  const title = `Page ${item.page}`;
   if (item.kind === 'architect') {
     const outcome = row?.architect?.outcome ?? 'REVIEW_REQUIRED';
-    return { key: item.key, page: item.page, outcome, word: OUTCOME_LABELS[outcome], reason: row?.architect?.reason ?? 'Matches the architect? Confirm the pairing' };
+    return { key: item.key, title, page: item.page, detail: shortReason(row?.architect?.reason ?? 'Matches the architect? Confirm the pairing'), outcome, word: OUTCOME_LABELS[outcome], count: 1 };
   }
   const look = row ? rowOutcome(row) : { outcome: 'REVIEW_REQUIRED' as Outcome, word: OUTCOME_LABELS.REVIEW_REQUIRED };
   const reason = row?.hold?.reason
     ?? (look.outcome === 'FAIL' ? 'A fail with no decision yet' : look.outcome === 'PASS' ? 'A pass waiting for your decision' : 'Waiting for your decision');
-  return { key: item.key, page: item.page, ...look, reason };
+  return { key: item.key, title, page: item.page, detail: shortReason(reason), ...look, count: 1 };
 }
 
-/** What still blocks sign-off: the queue's own list, so each item opens exactly there. */
+/**
+ * What still blocks sign-off: the queue's own list, in its order, so each line opens exactly there.
+ * Other checks with the same name and state are one line with their count.
+ */
 export function blockersOf(records: AssistantRecords): Blocker[] {
-  return buildQueue(records.rows, records.findings, records.blocking).map((item) => blockerOf(item, records));
+  const out: Blocker[] = [];
+  for (const item of buildQueue(records.rows, records.findings, records.blocking)) {
+    const blocker = blockerOf(item, records);
+    const same = item.kind === 'check' ? out.find((b) => b.page === null && b.title === blocker.title && b.outcome === blocker.outcome && b.key.startsWith('finding:')) : undefined;
+    if (same) {
+      same.count += 1;
+      same.detail = `${same.count} results`;
+    } else out.push(blocker);
+  }
+  return out;
 }
+
+/** The lines shown at most; the rest are counted and left to the queue. */
+export const BLOCKERS_SHOWN = 8;
 
 export type ResolvedEvidence =
   | { kind: 'countertop'; key: string; row: CountertopResult; finding: Finding | null }
@@ -299,7 +339,7 @@ export type UsableAction =
   | Extract<AssistantAction, { kind: 'open_page' }>
   | (Extract<AssistantAction, { kind: 'open_queue_item' }> & { queueKey: string });
 
-const actionKey = (action: UsableAction) => (action.kind === 'open_page' ? `page:${action.page_number}` : action.queueKey);
+export const actionKey = (action: UsableAction) => (action.kind === 'open_page' ? `page:${action.page_number}` : action.queueKey);
 
 /**
  * The answer's own navigation buttons. A queue item the queue does not list becomes "Open page N"
@@ -341,7 +381,7 @@ export function starterHint(question: string, records: AssistantRecords): { kind
   }
   if (/sign[ -]?off|\bleft\b|remaining/.test(q)) {
     if (!records.rowsReady || records.blocking === null) return { kind: 'left', reason: null };
-    const count = blockersOf(records).length;
+    const count = buildQueue(records.rows, records.findings, records.blocking).length;
     return { kind: 'left', reason: count === 0 ? 'Nothing blocks sign-off' : `${plural(count, 'item needs', 'items need')} you` };
   }
   const page = /\bpage\s+(\d+)\b/.exec(q);
@@ -404,4 +444,25 @@ export function failureWords(error: unknown): string {
   // Only a request that never reached the server (fetch's TypeError) is a connection problem.
   if (error instanceof TypeError) return 'The assistant could not be reached. Check the connection and try again.';
   return 'The answer could not be read. Try again.';
+}
+
+/**
+ * Where the evidence drawn under an answer already takes the reviewer: a countertop card's page and
+ * queue item, the visible "what is left" lines, the listed pages. An answer action going to one of
+ * these is the same button twice and is left out.
+ */
+export function offeredByEvidence(evidence: readonly ResolvedEvidence[], records: Pick<AssistantRecords, 'rows' | 'findings' | 'blocking'>): Set<string> {
+  const offered = new Set<string>();
+  for (const item of evidence) {
+    if (item.kind === 'countertop') {
+      offered.add(`page:${item.row.page_number}`);
+      const key = queueKeyFor(item.row.row_id, records);
+      if (key) offered.add(key);
+    } else if (item.kind === 'blockers') {
+      for (const blocker of item.items.slice(0, BLOCKERS_SHOWN)) offered.add(blocker.key);
+    } else {
+      for (const page of item.items) offered.add(`page:${page.page_number}`);
+    }
+  }
+  return offered;
 }

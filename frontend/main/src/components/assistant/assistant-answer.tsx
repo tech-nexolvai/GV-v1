@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Check, ChevronRight, Copy, File, FileText, ListChecks, Ruler } from 'lucide-react';
 
 import type { CountertopResult } from '@/api/client';
@@ -16,6 +16,9 @@ import {
   resolveEvidence,
   rowOutcome,
   usableActions,
+  actionKey,
+  offeredByEvidence,
+  BLOCKERS_SHOWN,
   type AnswerPart,
   type AssistantRecords,
   type Blocker,
@@ -137,23 +140,85 @@ function ListRow({ onClick, label, children }: { onClick: () => void; label: str
 }
 
 function BlockerList({ items, nav }: { items: readonly Blocker[]; nav: AssistantNavigation }) {
+  const shown = items.slice(0, BLOCKERS_SHOWN);
+  const rest = items.slice(BLOCKERS_SHOWN);
+  const more = rest.reduce((sum, item) => sum + item.count, 0);
   return (
-    <ul data-slot="assistant-blockers" aria-label="What is left before sign-off" className="overflow-hidden rounded-xl border bg-card">
-      {items.map((item) => (
-        <ListRow
-          key={item.key}
-          onClick={() => nav.openQueue(item.key)}
-          label={`${item.page !== null ? `Page ${item.page}` : 'Whole set'}: ${item.word}. ${item.reason}. Open it in the queue`}
-        >
-          {/* Page and reason first so they line up; the result's badge sits at the end, where its width varies. */}
-          <span className="min-w-0 flex-1">
-            {item.page !== null ? <>Page <span className="num">{item.page}</span></> : 'Whole set'}
-            <span className="block line-clamp-2 text-xs text-muted-foreground">{item.reason}</span>
+    <div className="flex flex-col gap-1.5">
+      <ul data-slot="assistant-blockers" aria-label="What is left before sign-off" className="overflow-hidden rounded-xl border bg-card">
+        {shown.map((item) => (
+          <ListRow
+            key={item.key}
+            onClick={() => nav.openQueue(item.key)}
+            label={`${item.title}: ${item.word}. ${item.detail}. Open it in the queue`}
+          >
+            {/* Title and reason first so they line up; the result's badge sits at the end, where its width varies. */}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">
+                {item.page !== null ? <>Page <span className="num">{item.page}</span></> : item.title}
+              </span>
+              <span className="block truncate text-xs text-muted-foreground" title={item.detail}>
+                {item.detail}
+              </span>
+            </span>
+            <OutcomeBadge outcome={item.outcome} label={item.word} />
+          </ListRow>
+        ))}
+      </ul>
+      {more > 0 && (
+        <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+          <span>
+            and <span className="num">{more}</span> more in the queue
           </span>
-          <OutcomeBadge outcome={item.outcome} label={item.word} />
-        </ListRow>
-      ))}
-    </ul>
+          <button
+            type="button"
+            onClick={() => nav.openQueue(rest[0].key)}
+            className="min-h-7 rounded-md px-1.5 font-medium text-foreground underline underline-offset-2 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            Open queue
+          </button>
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Longer than this, a listed reason (often the readers' own words) is cut to two lines with "Show more". */
+const LONG_REASON = 110;
+
+function ListedPage({ item, nav }: { item: { page_number: number; reason: string }; nav: AssistantNavigation }) {
+  const [expanded, setExpanded] = useState(false);
+  const reasonId = useId();
+  const long = item.reason.length > LONG_REASON;
+  return (
+    <li className="grid gap-0.5 border-t px-3.5 pt-1 pb-2.5 first:border-t-0">
+      <button
+        type="button"
+        onClick={() => nav.openPage(item.page_number)}
+        aria-label={`Page ${item.page_number}: open it on the drawing`}
+        className="-mx-1.5 flex min-h-11 items-center gap-3 rounded-md px-1.5 text-left hover:bg-muted focus-visible:bg-muted focus-visible:outline-none"
+      >
+        <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          Page <span className="num">{item.page_number}</span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
+      <p id={reasonId} className={cn('pl-7 text-xs text-muted-foreground', long && !expanded && 'line-clamp-2')}>
+        {item.reason}
+      </p>
+      {long && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={reasonId}
+          onClick={() => setExpanded(!expanded)}
+          className="ml-7 min-h-7 justify-self-start rounded-md px-1 text-xs font-medium text-foreground underline underline-offset-2 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </li>
   );
 }
 
@@ -163,13 +228,7 @@ function PageList({ items, title, nav }: { items: readonly { page_number: number
       <p className="text-xs text-muted-foreground">{title}</p>
       <ul aria-label={title} className="overflow-hidden rounded-xl border bg-card">
         {items.map((item, index) => (
-          <ListRow key={`${item.page_number}:${index}`} onClick={() => nav.openPage(item.page_number)} label={`Page ${item.page_number}: ${item.reason}. Open it on the drawing`}>
-            <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 flex-1">
-              Page <span className="num">{item.page_number}</span>
-              <span className="block line-clamp-2 text-xs text-muted-foreground">{item.reason}</span>
-            </span>
-          </ListRow>
+          <ListedPage key={`${item.page_number}:${index}`} item={item} nav={nav} />
         ))}
       </ul>
     </div>
@@ -325,7 +384,9 @@ export function AnswerView({
   const shown = useReveal(tokens.length, reveal);
   const revealing = shown < tokens.length;
   const evidence = resolveEvidence(answer.evidence, records);
-  const actions = usableActions(answer.actions, records);
+  // An action going where a card or list below already goes is the same button twice: left out.
+  const offered = offeredByEvidence(evidence, records);
+  const actions = usableActions(answer.actions, records).filter((action) => !offered.has(actionKey(action)));
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const checked = matchesRecords(answer);

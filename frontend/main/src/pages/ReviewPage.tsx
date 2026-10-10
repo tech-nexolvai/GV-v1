@@ -31,8 +31,9 @@ import {
   downloadPdfReport,
   downloadRedline,
   downloadReport,
+  listRules,
 } from '../api/client';
-import type { ReviewSession, ApprovalReadiness, CountertopResult, CountertopResults } from '../api/client';
+import type { ReviewSession, ApprovalReadiness, CountertopResult } from '../api/client';
 import { MeasurementPanel } from './MeasurementPanel';
 import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
@@ -115,10 +116,10 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   // At this width the assistant covers the review, so it closes before taking the reviewer elsewhere.
   const assistantFullScreen = useMediaQuery(ASSISTANT_FULL_SCREEN);
   const assistantButton = useRef<HTMLButtonElement>(null);
+  // Rule names for the assistant's "what is left" list (as "Other checks" names them), once it opens.
+  const assistantRules = useAsync(() => (assistantMounted ? listRules() : Promise.resolve([])), [assistantMounted]);
   // The page or countertop the reviewer last looked at, offered to the assistant as context.
   const [lookingAt, setLookingAt] = useState<AssistantContext | null>(null);
-  // Second countertop rows that were not checked (listed only), for the assistant's evidence.
-  const [rowsNotChecked, setRowsNotChecked] = useState<NonNullable<CountertopResults['rows_not_checked']>>([]);
   // "Show on drawing" (#1045): what the drawing viewer points at; `opening` restarts it fitted each time.
   const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
   const [openings, setOpenings] = useState(0);
@@ -233,7 +234,6 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       (answer) => {
         if (!current) return;
         setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [] });
-        setRowsNotChecked(answer.rows_not_checked ?? []);
       },
       (error: unknown) => {
         if (!current) return;
@@ -666,9 +666,10 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     rows: countertopsReady ? countertops.rows : [],
     rowsReady: countertopsReady,
     pagesWithoutCountertop: countertopsReady ? countertops.pagesWithoutCountertop ?? [] : [],
-    rowsNotChecked,
+    rowsNotChecked: countertopsReady ? countertops.rowsNotChecked ?? [] : [],
     findings,
     blocking: readiness ? new Set(readiness.blocking_finding_ids) : null,
+    ruleNames: new Map(assistantRules.status === 'ready' ? assistantRules.data.map((rule) => [rule.rule_id, rule.name] as [string, string]) : []),
   };
   // Navigation only: the drawing viewer and the queue, each with its own decision forms. On a phone the
   // panel covers the screen, so it closes first and the reviewer lands on what they asked to see.

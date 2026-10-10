@@ -7,7 +7,7 @@ import type { CountertopResult } from '@/api/client';
 import type { AssistantAnswer, AssistantInfo, AssistantRequest } from '@/api/assistantTypes';
 import type { Finding } from '@/data/types';
 import { ApiError } from '@/api/client';
-import { answerParts, failureWords, historyFor, matchesRecords, plainAnswer, queueKeyFor, resolveEvidence, starterHint, usableActions, type AssistantContext, type AssistantRecords } from '@/lib/assistant';
+import { answerParts, blockersOf, failureWords, historyFor, matchesRecords, plainAnswer, queueKeyFor, resolveEvidence, starterHint, usableActions, type AssistantContext, type AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
 
 // Synthetic data only: nothing here comes from a client drawing.
@@ -358,7 +358,7 @@ describe('assistant panel', () => {
     expect(nav.openQueue).toHaveBeenCalledWith('row:row-7');
     await user.click(items[2]);
     expect(nav.openQueue).toHaveBeenCalledWith('finding:f-sink');
-    await user.click(screen.getByRole('button', { name: /Page 2: Synthetic: wall cabinets only/ }));
+    await user.click(screen.getByRole('button', { name: 'Page 2: open it on the drawing' }));
     expect(nav.openPage).toHaveBeenCalledWith(2);
   });
 
@@ -521,7 +521,9 @@ describe('assistant panel', () => {
     }
     expect(server.calls.some((c) => /actions|decide|exceptions|approve|sessions|evidence/.test(c.url))).toBe(false);
     expect(nav.openQueue).toHaveBeenCalledWith('row:row-7');
-    expect(nav.openPage).toHaveBeenCalledWith(4);
+    expect(nav.openPage).toHaveBeenCalledWith(2);
+    // The answer's own "Open page 4" and "Open page 7 in the queue" duplicated the card and the list: not shown.
+    expect(nav.openPage).not.toHaveBeenCalledWith(4);
   });
 
   it('still lets the reviewer ask when the starters cannot be loaded', async () => {
@@ -530,6 +532,80 @@ describe('assistant panel', () => {
     await screen.findByText(/Suggested questions could not be loaded/);
     expect(screen.queryByRole('list', { name: 'Suggested questions' })).toBeNull();
     expect((composer() as HTMLTextAreaElement).disabled).toBe(false);
+  });
+});
+
+describe('assistant panel: less clutter', () => {
+  it('hides an answer action that a card or list in the same answer already offers', async () => {
+    const user = userEvent.setup();
+    server.replies.push([{ event: 'answer', data: answer({
+      text: 'Page 4 is short.',
+      evidence: [{ kind: 'countertop', record_id: 'row-4' }],
+      actions: [
+        { kind: 'open_page', page_number: 4, label: 'Open page 4' },
+        { kind: 'open_queue_item', record_id: 'row-4', label: 'Open page 4 in the queue' },
+        { kind: 'open_queue_item', record_id: 'row-7', label: 'Open page 7 in the queue' },
+      ],
+    }) }]);
+    mount();
+    await user.type(composer(), 'Page 4?{Enter}');
+    await screen.findByRole('region', { name: 'Countertop on page 4' });
+    expect(screen.queryByRole('button', { name: 'Open page 4' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open page 4 in the queue' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open page 7 in the queue' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /Show on drawing/ })).toHaveLength(1);
+  });
+
+  it('names other checks as "Other checks" does, groups identical ones, and caps the list', async () => {
+    const user = userEvent.setup();
+    const checks = Array.from({ length: 6 }, (_, i) => finding(`f-pkg-${i}`, { check_id: 'SYNTH-PKG', name: 'SYNTH-PKG', scope_label: 'Package revision', outcome: 'NOT_FOUND' }));
+    const held = Array.from({ length: 9 }, (_, i) => row(`row-h${i}`, 20 + i, { outcome: 'REVIEW_REQUIRED', needs_decision: true, hold: { code: 'x', reason: `synthetic: readers disagree on piece ${i}. More words follow here.` } }));
+    const records: AssistantRecords = {
+      ...RECORDS,
+      rows: [...RECORDS.rows, ...held],
+      findings: [...RECORDS.findings, ...checks, ...held.map((r) => finding(r.finding_id!, { outcome: 'REVIEW_REQUIRED' }))],
+      blocking: new Set([...RECORDS.blocking!, ...checks.map((f) => f.id), ...held.map((r) => r.finding_id!)]),
+      ruleNames: new Map([['SYNTH-PKG', 'Synthetic sink cut-out check']]),
+    };
+    server.replies.push([{ event: 'answer', data: answer({ text: 'Lots left.', evidence: [{ kind: 'blockers' }] }) }]);
+    render(
+      <AssistantPanel projectId="synthetic-project" packageId="synthetic-package" setName="Synthetic kitchen set" open
+        records={records} context={null} nav={nav as unknown as AssistantNavigation} onClose={() => {}} />,
+    );
+    await user.type(composer(), 'What is left?{Enter}');
+    const list = await screen.findByRole('list', { name: 'What is left before sign-off' });
+    const lines = within(list).getAllByRole('button');
+    expect(lines).toHaveLength(8);
+    // Countertops: "Page N", the reason's first sentence in sentence case, the badge at the end.
+    expect(lines[2].textContent).toBe('Page 20Synthetic: readers disagree on piece 0Needs your decision');
+    // 2 countertops + 9 held + 1 sink check + 1 group of six = 13 lines; 8 shown, 5 lines (10 results) left.
+    expect(screen.getByText(/more in the queue/).textContent).toBe('and 10 more in the queue');
+    await user.click(screen.getByRole('button', { name: 'Open queue' }));
+    expect(nav.openQueue).toHaveBeenCalledWith('row:row-h6');
+    expect(blockersOf(records).find((b) => b.title === 'Synthetic sink cut-out check')).toMatchObject({ count: 6, detail: '6 results', word: 'Waiting on a value' });
+    expect(blockersOf(records).filter((b) => b.title.includes('Package revision'))).toEqual([]);
+  });
+
+  it('cuts a long listed reason to two lines with a "Show more" that works by keyboard', async () => {
+    const user = userEvent.setup();
+    const long = 'Synthetic: both readers say "' + 'the elevation shows only wall cabinets and a soffit, '.repeat(4) + 'so there is no countertop line on this sheet."';
+    const records: AssistantRecords = { ...RECORDS, pagesWithoutCountertop: [{ page_number: 2, reason: long }, { page_number: 5, reason: 'Synthetic: short.' }] };
+    server.replies.push([{ event: 'answer', data: answer({ text: 'Two pages.', evidence: [{ kind: 'no_countertop_pages' }] }) }]);
+    render(
+      <AssistantPanel projectId="synthetic-project" packageId="synthetic-package" setName="Synthetic kitchen set" open
+        records={records} context={null} nav={nav as unknown as AssistantNavigation} onClose={() => {}} />,
+    );
+    await user.type(composer(), 'No countertop?{Enter}');
+    const more = await screen.findByRole('button', { name: 'Show more' });
+    expect(screen.getAllByRole('button', { name: /Show more/ })).toHaveLength(1); // the short reason has none
+    const reason = document.getElementById(more.getAttribute('aria-controls')!)!;
+    expect(reason.className).toContain('line-clamp-2');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    more.focus();
+    await user.keyboard('{Enter}');
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    expect(more.textContent).toBe('Show less');
+    expect(reason.className).not.toContain('line-clamp-2');
   });
 });
 
