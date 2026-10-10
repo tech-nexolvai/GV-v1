@@ -3682,6 +3682,53 @@ class DatabaseStages:
         except UnreadablePdf:
             return None
 
+    @property
+    def artifact_store(self) -> ArtifactStore | None:
+        """The store these stages read documents from and write pictures to, if any."""
+        return self._store
+
+    def evidence_render(self, data: bytes, page: Page) -> RenderedPage:
+        """The page as its evidence crops are cut from it: both layers, at the stage's dpi.
+
+        **Both layers.** A person reviewing evidence is shown what the sheet shows, reviewer notes
+        included; only what a model or OCR reads is vendor-only (#742). Raises as `render_page`
+        does. Public for the re-check of crops cut before #1078 (#1141), which must cut the very
+        same pixels again.
+        """
+        return render_page(
+            data,
+            page.index,
+            document_version_id=page.document_version_id,
+            page_content_hash=page.content_hash,
+            dpi=self._dpi,
+            maximum_pixels=MAXIMUM_RENDER_PIXELS,
+            vendor_only=False,
+        )
+
+    def evidence_marks(self, data: bytes, page: Page) -> EvidenceMarks:
+        """What an evidence crop on this page is checked against for GV's markup (#952).
+
+        The page's annotation layers and its markup drawn in colour, each `None` where it could not
+        be read, so a crop is never called clean without both checks. Public, and the one place
+        both the crop stage and the re-check of older crops (#1141) gather them.
+        """
+        try:
+            layers = self._read_layers(data, page.index, page.document_version_id)
+        except UnreadablePdf:
+            layers = None
+        try:
+            markup = self._coloured_markup(data, page, page.document_version_id, layers)
+        except ValueError:
+            # The reading pipeline may be configured without the markup text setting. A crop
+            # still remains useful evidence, but it cannot be called clean without the check.
+            markup = None
+        return EvidenceMarks(
+            markup=markup,
+            reviewer_layer=(
+                None if layers is None else (*layers.markup, *layers.other_layer_notes)
+            ),
+        )
+
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
         """The page as the vision readers are shown it, or `None` where it cannot be rendered."""
         try:
@@ -6029,17 +6076,7 @@ class DatabaseStages:
             if page.document_version_id not in documents:
                 documents[page.document_version_id] = _fetch(self._store, key)
             try:
-                rendered = render_page(
-                    documents[page.document_version_id],
-                    page.index,
-                    document_version_id=page.document_version_id,
-                    page_content_hash=page.content_hash,
-                    dpi=self._dpi,
-                    maximum_pixels=MAXIMUM_RENDER_PIXELS,
-                    # **Both layers.** A person reviewing evidence is shown what the sheet shows,
-                    # reviewer notes included; only what a model or OCR reads is vendor-only (#742).
-                    vendor_only=False,
-                )
+                rendered = self.evidence_render(documents[page.document_version_id], page)
             except (PageTooLarge, UnreadablePdf, ValueError) as error:
                 # One page that will not render, in a document whose others might. Every candidate on
                 # it keeps its reading and goes without a picture, which is the honest pair.
@@ -6047,35 +6084,19 @@ class DatabaseStages:
                 skipped += len(candidates)
                 continue
 
-            try:
-                layers = self._read_layers(
-                    documents[page.document_version_id], page.index, page.document_version_id
-                )
-            except UnreadablePdf:
-                layers = None
-            try:
-                markup = self._coloured_markup(
-                    documents[page.document_version_id], page, page.document_version_id, layers
-                )
-            except ValueError:
-                # The reading pipeline may be configured without the markup text setting. A crop
-                # still remains useful evidence, but it cannot be called clean without the check.
-                markup = None
+            marks = self.evidence_marks(documents[page.document_version_id], page)
 
             for candidate in candidates:
                 if candidate.id in already:
                     skipped += 1
                     continue
-                polygon = stored_polygon(candidate, rendered)
-                if polygon is None:
+                spec = evidence_crop_spec(candidate, rendered)
+                if spec is None:
                     abstained.append(
                         f"page {page.index}: a candidate's polygon does not describe a region of "
                         "this rendering"
                     )
                     continue
-                spec = CropSpec(
-                    polygon=polygon, context_margin_pt=CROP_CONTEXT_MARGIN_PT, dpi=self._dpi
-                )
                 result = generate_crop(rendered, spec, self._store)
                 if result.status is not CropStatus.AVAILABLE or result.artifact is None:
                     # `generate_crop` abstains rather than raising, and the reason is a sentence. It
@@ -6087,11 +6108,7 @@ class DatabaseStages:
                 # **Both layers are in this picture, so both are asked about (#952).** GV's marks
                 # baked into the vendor's drawing (`crop_shows_a_gv_mark`), and GV's own annotation
                 # layer, which this person-facing render paints on and the vision crops leave out.
-                mark_state = crop_mark_state(
-                    crop_pixel_box(rendered, spec),
-                    markup,
-                    None if layers is None else (*layers.markup, *layers.other_layer_notes),
-                )
+                mark_state = marks.state(rendered, spec)
                 session.add(
                     EvidenceArtifact(
                         candidate_id=candidate.id,
@@ -7975,6 +7992,22 @@ def crop_mark_state(
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceMarks:
+    """One page's inputs to the GV-mark check of a both-layer evidence crop (#952).
+
+    Gathered once per page by `DatabaseStages.evidence_marks`, for the crop stage and for the
+    re-check of crops cut before #1078 (#1141), so both ask exactly the same question.
+    """
+
+    markup: ColouredMarkup | None
+    reviewer_layer: tuple[MarkupNote, ...] | None
+
+    def state(self, rendered: RenderedPage, spec: CropSpec) -> bool | None:
+        """`crop_mark_state` for the pixels `spec` cuts from `rendered`."""
+        return crop_mark_state(crop_pixel_box(rendered, spec), self.markup, self.reviewer_layer)
+
+
 def crop_shows_a_gv_mark(crop_box: tuple[int, int, int, int], markup: ColouredMarkup) -> bool:
     """Whether markup drawn in colour, or a stamp pasted onto the drawing, lies in the crop, wholly
     or in part (#901, #929).
@@ -8384,6 +8417,15 @@ def stored_polygon(
         # `Polygon` refuses a degenerate, self-intersecting or out-of-page shape, and a text run with
         # zero width is degenerate. Every one of those is a reason not to cut a crop.
         return None
+
+
+def evidence_crop_spec(candidate: ObservationCandidate, rendered: RenderedPage) -> CropSpec | None:
+    """The spec a candidate's evidence crop is cut by, or `None` where its polygon is not a region
+    of `rendered` (`stored_polygon`). The crop stage's own, and the re-check's (#1141)."""
+    polygon = stored_polygon(candidate, rendered)
+    if polygon is None:
+        return None
+    return CropSpec(polygon=polygon, context_margin_pt=CROP_CONTEXT_MARGIN_PT, dpi=rendered.dpi)
 
 
 def _projection(
