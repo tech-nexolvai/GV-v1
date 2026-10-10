@@ -867,6 +867,52 @@ class LayoutConfirmation(Base, TimestampedUUID, Immutable):
     )
 
 
+#: What an `ArchitectPageNote` says, a closed set (#1163): why the architect reader read nothing on
+#: a page or left something out of every view.
+ARCHITECT_PAGE_NOTE_KINDS: tuple[str, ...] = (
+    "no_view_found",
+    "title_not_view",
+    "stamp_not_drawing",
+    "ink_outside_views",
+    "view_refused",
+    "page_unreadable",
+)
+
+
+class ArchitectPageNote(Base, TimestampedUUID, Immutable):
+    """Why the architect reader read nothing on a page, or what it left out and why (#1163).
+
+    **Never silent.** A page of the architect's own file with no view, a stamp that holds no
+    drawing, ink left out of every view (a drawing joined to the sheet's border, notes beside a
+    view, a title block), a view refused because the stored view of its number sits elsewhere on
+    the page, a page that could not be read: each is a row here, under the run that read it, so a
+    later phase and the reviewer can show it. Nothing reads a value from it. Append-only.
+    """
+
+    __tablename__ = "architect_page_notes"
+
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="RESTRICT"), index=True
+    )
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    """One of `ARCHITECT_PAGE_NOTE_KINDS`."""
+    text: Mapped[str] = mapped_column(String(500))
+    """The note in plain words, as the reader wrote it (cut to 500 characters)."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('no_view_found', 'title_not_view', 'stamp_not_drawing', "
+            "'ink_outside_views', 'view_refused', 'page_unreadable')",
+            name="architect_page_note_kind",
+        ),
+        CheckConstraint("text !~ '^[[:space:]]*$'", name="architect_page_note_text_present"),
+    )
+
+
 class ArchitectViewIndexEntry(Base, TimestampedUUID, Immutable):
     """One view of the architect's own file, as one architect reader run found it (#1166).
 
@@ -898,7 +944,9 @@ class ArchitectViewIndexEntry(Base, TimestampedUUID, Immutable):
     scale_note: Mapped[str | None] = mapped_column(String(100), default=None)
     points_per_inch: Mapped[str | None] = mapped_column(String(64), default=None)
     extent: Mapped[dict[str, object]] = mapped_column(JSONB)
-    label_box: Mapped[dict[str, object] | None] = mapped_column(JSONB, default=None)
+    label_box: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
     separated: Mapped[bool] = mapped_column(Boolean())
     role_confirmed: Mapped[bool] = mapped_column(Boolean())
     row_count: Mapped[int] = mapped_column(Integer())
@@ -908,7 +956,7 @@ class ArchitectViewIndexEntry(Base, TimestampedUUID, Immutable):
 
     __table_args__ = (
         UniqueConstraint(
-            "extraction_run_id", "page_id", "view_number", name="uq_architect_view_index_view"
+            "extraction_run_id", "page_id", "view_tag", name="uq_architect_view_index_view"
         ),
         CheckConstraint(
             "view_tag ~ '^(view|panel)-[0-9]+$'", name="architect_view_index_tag_shape"
@@ -998,8 +1046,12 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
             name="architect_view_match_reviewer_status",
         ),
         CheckConstraint(
-            "(source = 'carried') = (status = 'carried_over')",
+            "source <> 'carried' OR status IN ('carried_over', 'none_matches', 'not_separated')",
             name="architect_view_match_carried_status",
+        ),
+        CheckConstraint(
+            "status <> 'carried_over' OR source = 'carried'",
+            name="architect_view_match_carried_over_source",
         ),
         CheckConstraint(
             "source <> 'automatic' OR status IN ('auto_matched', 'needs_reviewer', "
@@ -1015,6 +1067,15 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
             "code_verdict IS NULL OR code_verdict IN ('reference', 'geometry_clear', "
             "'geometry_tie', 'geometry_none', 'no_geometry')",
             name="architect_view_match_code_verdict",
+        ),
+        CheckConstraint(
+            "status <> 'auto_matched' OR (source = 'automatic' AND code_verdict IN "
+            "('reference', 'geometry_clear') AND code_pick_view_id = matched_view_id)",
+            name="architect_view_match_automatic_needs_code",
+        ),
+        CheckConstraint(
+            "code_pick_view_id IS NULL OR code_verdict IN ('reference', 'geometry_clear')",
+            name="architect_view_match_code_pick_verdict",
         ),
         CheckConstraint(
             "(source = 'reviewer') = (extraction_run_id IS NULL)",

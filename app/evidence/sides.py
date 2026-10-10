@@ -21,6 +21,9 @@ the passages a setting may be cited from (`workflow/parameter_citations.py`) all
 - **A page with views** takes it from the one view whose region holds the reading, once a person has
   confirmed that view's role (`workflow/view_roles.confirm_view_role`). A reading no single view
   holds has no side, and says why.
+- **Views the architect reader found printed as content on the architect's own file** (`view-<n>`,
+  #1163) change no side vs before they existed: the page keeps its document's kind outside them and
+  inside one with no role; a role given to one decides the readings inside it.
 - **An unconfirmed view** has the upload's side only when the package has both an architectural and
   a shop document *and* the page holds that one drawing (admin, 2026-10-01, #795): a genuine two-PDF
   package, whose drawings sit in `/Stamp`s and so are views, fills its form without a confirmation
@@ -70,6 +73,10 @@ __all__ = [
     "page_transform_at",
     "reading_transform",
 ]
+
+#: How the architect reader names a view it found printed as page content on the architect's own
+#: file (`workflow.view_roles.content_view_tag`, #1163), restated here for the same reason.
+CONTENT_VIEW_PREFIX: Final = "view-"
 
 #: The route the reviewer's markup is recorded under — `workflow.stages.MARKUP_EXTRACTOR`, restated
 #: because that module reads PDFs and the API may not import it (`tests/api/test_no_heavy_work.py`).
@@ -271,6 +278,24 @@ class ReadingSides:
             )
         return self._both_kinds[document_version_id]
 
+    def _content_views_only(self, page: Page) -> bool:
+        """Whether the page is on the architect's own file and its only views are ones the
+        architect reader found printed as page content (`view-<n>`, #1163).
+
+        Such views **change no side vs before they existed**: the page keeps its document's kind
+        for every reading outside them and inside one nobody has given a role, and only a role
+        given to a view (by code's two judgments or a person) decides the readings inside it. So a
+        sheet whose views were read cleanly and one whose views were not clearly apart treat the
+        readings around them the same.
+        """
+        views = self._page_views(page)
+        return (
+            bool(views)
+            and all(view.tag.startswith(CONTENT_VIEW_PREFIX) for view, _region in views)
+            and self._kind(page.document_version_id) == DocumentKind.ARCHITECTURAL.value
+            and not self._same_file_as_both_sides(page.document_version_id)
+        )
+
     def drawings_holding(self, page: Page, reading: Polygon) -> tuple[DrawingView, ...] | None:
         """The drawings on `page` whose region contains `reading`, or `None` when it has none (#826).
 
@@ -279,7 +304,8 @@ class ReadingSides:
         a page that has views but none holding the reading cannot say which drawing it is on.
         """
         views = self._page_views(page)
-        if not views:
+        if not views or self._content_views_only(page):
+            # The architect's own file: its page is the drawing, as before its views were read.
             return None
         return tuple(
             view for view, region in views if region is not None and region.contains(reading)
@@ -292,6 +318,8 @@ class ReadingSides:
         document (admin, 2026-10-01). A confirmation always wins over this; it is asked only for a
         drawing nobody has confirmed.
         """
+        if self._content_views_only(page):
+            return _KIND_SIDE.get(self._kind(page.document_version_id) or "")
         if len(self._page_views(page)) != 1 or not self._in_two_pdf_packages(
             page.document_version_id
         ):
@@ -337,6 +365,10 @@ class ReadingSides:
 
         assert page is not None
         transform = None if run is None else reading_transform(page, run)
+        content_only = self._content_views_only(page)
+        kind_side = _KIND_SIDE.get(self._kind(row.document_version_id) or "")
+        if transform is None and content_only and kind_side is not None:
+            return kind_side
         if transform is None:
             return SideRefusal(
                 SideRefusalReason.NO_TRANSFORM,
@@ -362,6 +394,13 @@ class ReadingSides:
         holding = [
             view for view, region in views if region is not None and region.contains(reading)
         ]
+        if content_only and kind_side is not None:
+            # Views read on the architect's own file change nothing outside them, nor inside one
+            # nobody has given a role (`_content_views_only`).
+            if not holding:
+                return kind_side
+            if len(holding) == 1 and holding[0].role is None:
+                return kind_side
         if len(holding) != 1:
             return SideRefusal(
                 SideRefusalReason.NOT_IN_ONE_VIEW,

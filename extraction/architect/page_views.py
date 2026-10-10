@@ -2,7 +2,7 @@
 
 An architect issues elevations as ordinary page content: each drawing sits above its own **label
 block** — a view bubble (a circle holding the view number and the sheet reference), the view title
-(`KITCHENETTE ELEVATION`) and the scale note under it (`1/2" = 1'-0"`). Nothing is pasted, so the
+(`SAMPLE ROOM ELEVATION`) and the scale note under it (`1/2" = 1'-0"`). Nothing is pasted, so the
 combined-sheet reader, which reads only pasted drawings, finds nothing on such a page. This module
 finds the views from what is printed, by code:
 
@@ -10,19 +10,26 @@ finds the views from what is printed, by code:
    above it (an upright phrase with letters, its bottom within `title_gap_em` of the note's top and
    overlapping it across) is one view's label block. The bubble, when there is one, is the round
    ink just left of the title and scale (near-square, small, holding text); what it prints is kept
-   for the reviewer. A scale note with no title above it is not a view.
+   for the reviewer. A scale note with no title above it is not a view, and nor is a title over a
+   scale note with no drawing standing above it (`minimum_drawing_strokes`): a title block's
+   "DRAWING TITLE" over its "SCALE" field.
 2. **The drawing's extent.** The page's black and grey ink — every stroke and character — is joined
    into clusters (two pieces within `join_pt` are one cluster). A cluster belongs to the nearest
    row of label blocks it stands above (or level with, reaching at most `below_reach_em` below
-   them), and, in that row, to the one label block
-   whose column it lies in (columns split halfway between neighbouring label blocks). A cluster
-   that encloses a label block with room on all four sides is the sheet's border, never a drawing;
-   one below every label block (the title block) belongs to no view. The view's extent is its
-   label block and every cluster it owns.
-3. **Clearly separated or not at all.** A cluster that crosses a column boundary or runs into
-   another view's label block, two label blocks overlapping across one row, or two extents that
-   overlap: the views concerned are reported **not separated**, with the reason, and the caller
-   reads none of their values. One view per page is the common case and needs none of this.
+   them), and, in that row, to the one label block whose column it lies in (columns split halfway
+   between neighbouring label blocks). A cluster that encloses a label block with room on all four
+   sides is the sheet's border, never a drawing; one below every label block (the title block)
+   belongs to no view. Of the clusters a view owns, only those joined to its drawing — each within
+   `side_reach_em` across of what is joined already — are its extent: notes and legends standing
+   apart beside it are not.
+3. **Clearly separated or not at all.** A cluster that crosses a column boundary, runs into another
+   view's label block or stands right above another view's title (nearer to it than to its own),
+   two label blocks overlapping across one row, or two extents that overlap: the views concerned
+   are reported **not separated**, with the reason, and the caller reads none of their values.
+4. **Never silent.** `survey_page_views` also returns a note for everything left out of every view
+   — a border holding more than a border's strokes (a drawing joined to it), ink running far below
+   the titles, ink standing apart beside a view, a title with no drawing — and why no view was
+   found on a page with none.
 
 **What it never does.** It reads no value (the reader does that inside each extent), never reads
 coloured ink (the caller passes black and grey only), and never guesses which view an ambiguous
@@ -30,7 +37,7 @@ piece of drawing belongs to.
 
 Pure: plain values in, plain values out, everything in page points with `top` downward and the
 page's origin at (0, 0). Source: issue #1163 · Verification:
-`tests/extraction/architect/test_page_views.py`
+`tests/extraction/architect/test_architect_sheet.py`
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import pairwise
-from typing import Final
+from typing import Final, Self
 
 from extraction.architect.labels import DIMENSION_PATTERN
 from extraction.architect.text import (
@@ -55,7 +62,17 @@ from extraction.architect.text import (
 from extraction.geometry.rows import Box, PageInk
 from units.normalise import plain_marks
 
-__all__ = ["PageView", "PageViewSettings", "find_page_views"]
+__all__ = [
+    "INK_OUTSIDE_VIEWS",
+    "NO_VIEW_FOUND",
+    "TITLE_NOT_VIEW",
+    "PageNote",
+    "PageView",
+    "PageViewSettings",
+    "PageViewSurvey",
+    "find_page_views",
+    "survey_page_views",
+]
 
 _TWO: Final = Decimal(2)
 _ZERO: Final = Decimal(0)
@@ -89,6 +106,15 @@ class PageViewSettings:
     frame_margin_em: Decimal
     """A cluster reaching this many scale-note heights past a label block on all four sides is the
     sheet's border, not a drawing."""
+    border_strokes: int
+    """A border holding more strokes than this is reported: a drawing may be joined to it (a
+    border and its title block's rules are a handful of strokes; a drawing is hundreds)."""
+    side_reach_em: Decimal
+    """A cluster joins a view only within this many scale-note heights across of the view's
+    drawing (or label block): notes and legends standing apart beside it are left out."""
+    minimum_drawing_strokes: int
+    """A title over a scale note is a view only with at least this many strokes of drawing standing
+    above it: a title block's or a note's title has none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,26 +221,39 @@ def _segment_boxes(points: Sequence[tuple[Decimal, Decimal]], closed: bool) -> I
         yield Box(x, y, x, y)
 
 
-def _pieces(ink: PageInk) -> list[Box]:
-    """Every stroke segment and character of the page's ink, as boxes. A rectangle or a long curve
-    is its segments, so a border's box never swallows what it surrounds."""
-    boxes: list[Box] = [
-        Box(
-            min(line.x0, line.x1),
-            min(line.y0, line.y1),
-            max(line.x0, line.x1),
-            max(line.y0, line.y1),
+@dataclass(frozen=True, slots=True)
+class _Cluster:
+    """Ink joined into one piece: its box and how many strokes and characters it holds."""
+
+    box: Box
+    strokes: int
+    chars: int
+
+
+def _pieces(ink: PageInk) -> list[tuple[Box, bool]]:
+    """Every stroke segment and character of the page's ink, as boxes, each marked whether it is a
+    character. A rectangle or a long curve is its segments, so a border's box never swallows what
+    it surrounds."""
+    pieces: list[tuple[Box, bool]] = [
+        (
+            Box(
+                min(line.x0, line.x1),
+                min(line.y0, line.y1),
+                max(line.x0, line.x1),
+                max(line.y0, line.y1),
+            ),
+            False,
         )
         for line in ink.lines
     ]
     for curve in ink.curves:
-        boxes.extend(_segment_boxes(curve.points, curve.closed))
-    boxes.extend(character.box for character in ink.characters)
-    return boxes
+        pieces.extend((box, False) for box in _segment_boxes(curve.points, curve.closed))
+    pieces.extend((character.box, True) for character in ink.characters)
+    return pieces
 
 
-def _clusters(boxes: Sequence[Box], join: Decimal) -> list[Box]:
-    """The boxes joined into clusters: two within `join` of each other are one."""
+def _joined(boxes: Sequence[Box], join: Decimal) -> list[list[int]]:
+    """The boxes joined into groups (indices): two within `join` of each other are one."""
     parent = list(range(len(boxes)))
 
     def find(index: int) -> int:
@@ -240,11 +279,33 @@ def _clusters(boxes: Sequence[Box], join: Decimal) -> list[Box]:
                     root_a, root_b = find(first), find(second)
                     if root_a != root_b:
                         parent[root_b] = root_a
-    joined: dict[int, Box] = {}
-    for index, box in enumerate(boxes):
-        root = find(index)
-        joined[root] = box if root not in joined else joined[root].union(box)
-    return list(joined.values())
+    groups: dict[int, list[int]] = {}
+    for index in range(len(boxes)):
+        groups.setdefault(find(index), []).append(index)
+    return list(groups.values())
+
+
+def _union(boxes: Iterable[Box]) -> Box:
+    result: Box | None = None
+    for box in boxes:
+        result = box if result is None else result.union(box)
+    assert result is not None
+    return result
+
+
+def _clusters(boxes: Sequence[Box], join: Decimal) -> list[Box]:
+    """The boxes joined into clusters: two within `join` of each other are one."""
+    return [_union(boxes[index] for index in group) for group in _joined(boxes, join)]
+
+
+def _ink_clusters(ink: PageInk, join: Decimal) -> list[_Cluster]:
+    pieces = _pieces(ink)
+    boxes = [box for box, _char in pieces]
+    found: list[_Cluster] = []
+    for group in _joined(boxes, join):
+        chars = sum(1 for index in group if pieces[index][1])
+        found.append(_Cluster(_union(boxes[index] for index in group), len(group) - chars, chars))
+    return found
 
 
 def _bubble(
@@ -356,28 +417,48 @@ def _bands(anchors: Sequence[_Anchor]) -> list[list[int]]:
     return [sorted(band, key=lambda index: anchors[index].label.x0) for band in bands]
 
 
-def find_page_views(
-    chars: Sequence[TextChar],
-    ink: PageInk,
-    *,
-    text: TextSettings,
-    settings: PageViewSettings,
-) -> tuple[PageView, ...]:
-    """The drawing views printed on a page, each with its extent and whether it is clearly apart.
+class PageNote(str):
+    """A note about a page, in plain words, with its kind (#1163): one of `NO_VIEW_FOUND`,
+    `TITLE_NOT_VIEW`, `INK_OUTSIDE_VIEWS` here, and the reader's own kinds. It is the text itself
+    (a `str`), so it reads and compares as one; `kind` says what sort of note it is, for storing."""
 
-    `chars` are the page's black and grey characters, `ink` its black and grey ink (strokes and the
-    same characters), both with the page's origin at (0, 0).
-    """
-    found = _anchors(chars, ink, text, settings)
-    if not found:
-        return ()
-    bands = _bands(found)
-    # Number the views top to bottom, then left to right.
-    numbering = [index for band in bands for index in band]
-    number = {index: position + 1 for position, index in enumerate(numbering)}
-    problems: dict[int, list[str]] = defaultdict(list)
-    boundaries: dict[int, list[Decimal]] = {}
-    for band_number, band in enumerate(bands):
+    kind: str
+
+    def __new__(cls, text: str, kind: str) -> Self:
+        note = super().__new__(cls, text)
+        note.kind = kind
+        return note
+
+
+#: The kinds of note this module writes (`app.models.evidence.ARCHITECT_PAGE_NOTE_KINDS`).
+NO_VIEW_FOUND = "no_view_found"
+TITLE_NOT_VIEW = "title_not_view"
+INK_OUTSIDE_VIEWS = "ink_outside_views"
+
+
+@dataclass(frozen=True, slots=True)
+class PageViewSurvey:
+    """The views found on a page, and what was left out of every view and why (never silent)."""
+
+    views: tuple[PageView, ...]
+    notes: tuple[PageNote, ...]
+
+
+@dataclass
+class _Ownership:
+    owned: dict[int, list[_Cluster]]
+    problems: dict[int, list[str]]
+    touched_strokes: dict[int, int]
+    border: list[_Cluster]
+    far_below: list[_Cluster]
+
+
+def _boundaries(
+    found: Sequence[_Anchor], bands: Sequence[Sequence[int]], problems: dict[int, list[str]]
+) -> list[list[Decimal]]:
+    """Where each row of label blocks splits into columns: halfway between neighbouring blocks."""
+    cuts: list[list[Decimal]] = []
+    for band in bands:
         edges: list[Decimal] = []
         for left, right in pairwise(band):
             first, second = found[left].label, found[right].label
@@ -387,28 +468,49 @@ def find_page_views(
                 edges.append(first.x1)
             else:
                 edges.append((first.x1 + second.x0) / _TWO)
-        boundaries[band_number] = edges
+        cuts.append(edges)
+    return cuts
 
-    owned: dict[int, Box] = {index: found[index].label for index in range(len(found))}
-    for cluster in _clusters(_pieces(ink), settings.join_pt):
-        if any(
-            _within(
-                Box(
-                    anchor.label.x0 - settings.frame_margin_em * anchor.scale.box.height,
-                    anchor.label.top - settings.frame_margin_em * anchor.scale.box.height,
-                    anchor.label.x1 + settings.frame_margin_em * anchor.scale.box.height,
-                    anchor.label.bottom + settings.frame_margin_em * anchor.scale.box.height,
-                ),
-                cluster,
-            )
-            for anchor in found
-        ):
-            continue  # the sheet's border, round a label block: never a drawing
+
+def _is_border(cluster: _Cluster, found: Sequence[_Anchor], settings: PageViewSettings) -> bool:
+    return any(
+        _within(
+            Box(
+                anchor.label.x0 - settings.frame_margin_em * anchor.scale.box.height,
+                anchor.label.top - settings.frame_margin_em * anchor.scale.box.height,
+                anchor.label.x1 + settings.frame_margin_em * anchor.scale.box.height,
+                anchor.label.bottom + settings.frame_margin_em * anchor.scale.box.height,
+            ),
+            cluster.box,
+        )
+        for anchor in found
+    )
+
+
+def _own(
+    found: Sequence[_Anchor], clusters: Sequence[_Cluster], settings: PageViewSettings
+) -> _Ownership:
+    """Give each cluster of ink to the one view whose label block it stands above, or to none."""
+    bands = _bands(found)
+    problems: dict[int, list[str]] = defaultdict(list)
+    cuts_by_band = _boundaries(found, bands, problems)
+    result = _Ownership(
+        owned={index: [] for index in range(len(found))},
+        problems=problems,
+        touched_strokes=defaultdict(int),
+        border=[],
+        far_below=[],
+    )
+    for cluster in clusters:
+        box = cluster.box
+        if _is_border(cluster, found, settings):
+            result.border.append(cluster)  # the sheet's border, round a label block
+            continue
         below = next(
             (
                 position
                 for position, row in enumerate(bands)
-                if cluster.top
+                if box.top
                 <= max(found[index].label.bottom for index in row) + settings.label_slack_pt
             ),
             None,
@@ -420,15 +522,18 @@ def find_page_views(
         reach = settings.below_reach_em * max(
             found[index].scale.box.height for index in row_of_labels
         )
-        if cluster.bottom > lowest + max(settings.label_slack_pt, reach):
-            continue  # runs far down past the titles: a title block or border, not this drawing
-        cuts = boundaries[below]
+        if box.bottom > lowest + max(settings.label_slack_pt, reach):
+            result.far_below.append(cluster)  # runs far down past the titles
+            continue
+        cuts = cuts_by_band[below]
         columns = [
             index
             for position, index in enumerate(row_of_labels)
-            if (position == 0 or cluster.x1 > cuts[position - 1])
-            and (position == len(row_of_labels) - 1 or cluster.x0 < cuts[position])
+            if (position == 0 or box.x1 > cuts[position - 1])
+            and (position == len(row_of_labels) - 1 or box.x0 < cuts[position])
         ]
+        for index in columns:
+            result.touched_strokes[index] += cluster.strokes
         if len(columns) != 1:
             for index in columns:
                 problems[index].append(
@@ -436,18 +541,175 @@ def find_page_views(
                 )
             continue
         (owner,) = columns
+        # Ink standing right above another view's label block — its bottom nearer to that title
+        # than to its own view's — is not the owner's to take, whatever column it falls in.
+        own_distance = abs(box.bottom - found[owner].label.centre_y)
+        under = [
+            index
+            for index, anchor in enumerate(found)
+            if index != owner
+            and anchor.label.x0 < box.x1
+            and box.x0 < anchor.label.x1
+            and anchor.label.top - box.bottom >= -settings.label_slack_pt
+            and anchor.label.top - box.bottom < own_distance
+        ]
+        if under:
+            for each in under:
+                result.touched_strokes[each] += cluster.strokes
+            for each in (owner, *under):
+                problems[each].append("a piece of drawing stands above another view's title")
+            continue
         for index, anchor in enumerate(found):
-            if index != owner and _intersects(cluster, anchor.label):
+            if index != owner and _intersects(box, anchor.label):
                 for each in (owner, index):
                     problems[each].append("a piece of its drawing runs into another view's title")
-        owned[owner] = owned[owner].union(cluster)
+        result.owned[owner].append(cluster)
+    return result
+
+
+def _left_out(
+    ownership: _Ownership, beside: Sequence[_Cluster], settings: PageViewSettings
+) -> list[PageNote]:
+    """A note for each kind of ink left out of every view, with how much (never silent)."""
+    notes: list[PageNote] = []
+    joined_border = [
+        cluster for cluster in ownership.border if cluster.strokes > settings.border_strokes
+    ]
+    if joined_border:
+        notes.append(
+            PageNote(
+                "left out as the sheet's border, round a view title: "
+                + ", ".join(
+                    f"{cluster.strokes} strokes and {cluster.chars} characters"
+                    for cluster in joined_border
+                )
+                + " (drawing ink may be joined to the border)",
+                INK_OUTSIDE_VIEWS,
+            )
+        )
+    if ownership.far_below:
+        notes.append(
+            PageNote(
+                f"left out: {len(ownership.far_below)} piece(s) of ink running far below the view "
+                f"titles, as a title block does ({sum(c.strokes for c in ownership.far_below)} "
+                f"strokes, {sum(c.chars for c in ownership.far_below)} characters)",
+                INK_OUTSIDE_VIEWS,
+            )
+        )
+    if beside:
+        notes.append(
+            PageNote(
+                f"left out: {len(beside)} piece(s) of ink standing apart beside a view (notes or a "
+                f"legend; {sum(cluster.strokes for cluster in beside)} strokes, "
+                f"{sum(cluster.chars for cluster in beside)} characters)",
+                INK_OUTSIDE_VIEWS,
+            )
+        )
+    return notes
+
+
+def _reachable(
+    label: Box, owned: Sequence[_Cluster], reach: Decimal
+) -> tuple[list[_Cluster], list[_Cluster]]:
+    """The owned clusters joined to the label block's drawing, each within `reach` across of what is
+    joined already, and the ones beside it further away (notes, a legend)."""
+    extent = label
+    joined: list[_Cluster] = []
+    waiting = sorted(owned, key=lambda cluster: -cluster.strokes)
+    grew = True
+    while grew:
+        grew = False
+        for cluster in list(waiting):
+            gap = max(cluster.box.x0 - extent.x1, extent.x0 - cluster.box.x1, _ZERO)
+            if gap <= reach:
+                joined.append(cluster)
+                extent = extent.union(cluster.box)
+                waiting.remove(cluster)
+                grew = True
+    return joined, waiting
+
+
+def survey_page_views(
+    chars: Sequence[TextChar],
+    ink: PageInk,
+    *,
+    text: TextSettings,
+    settings: PageViewSettings,
+) -> PageViewSurvey:
+    """The drawing views printed on a page, each with its extent and whether it is clearly apart,
+    and a note for everything left out of every view.
+
+    `chars` are the page's black and grey characters, `ink` its black and grey ink (strokes and the
+    same characters), both with the page's origin at (0, 0).
+    """
+    notes: list[PageNote] = []
+    found = _anchors(chars, ink, text, settings)
+    if not found:
+        scales = find_printed(chars, text).scales
+        notes.append(
+            PageNote(
+                "no view found: "
+                + (
+                    "no scale note on this page has a view title printed right above it"
+                    if scales
+                    else "no scale note is printed on this page"
+                ),
+                NO_VIEW_FOUND,
+            )
+        )
+        return PageViewSurvey((), tuple(notes))
+    clusters = _ink_clusters(ink, settings.join_pt)
+    # A title over a scale note with no drawing standing above it is a title block's or a note's,
+    # not a view: left out, and said.
+    first = _own(found, clusters, settings)
+    kept = [
+        anchor
+        for index, anchor in enumerate(found)
+        if first.touched_strokes.get(index, 0) >= settings.minimum_drawing_strokes
+    ]
+    for index, anchor in enumerate(found):
+        if first.touched_strokes.get(index, 0) < settings.minimum_drawing_strokes:
+            notes.append(
+                PageNote(
+                    f"not a view: {anchor.title!r} over the scale note {anchor.scale.text!r} has "
+                    "no drawing standing above it (a title block's or a note's text)",
+                    TITLE_NOT_VIEW,
+                )
+            )
+    if not kept:
+        notes.extend(_left_out(first, [], settings))
+        notes.append(
+            PageNote(
+                "no view found: no view title on this page has a drawing above it", NO_VIEW_FOUND
+            )
+        )
+        return PageViewSurvey((), tuple(notes))
+    found = kept
+    ownership = _own(found, clusters, settings)
+    problems = ownership.problems
+    bands = _bands(found)
+    numbering = [index for band in bands for index in band]
+    number = {index: position + 1 for position, index in enumerate(numbering)}
+
+    extents: dict[int, Box] = {}
+    beside: list[_Cluster] = []
+    for index, anchor in enumerate(found):
+        joined, apart = _reachable(
+            anchor.label,
+            ownership.owned[index],
+            settings.side_reach_em * anchor.scale.box.height,
+        )
+        beside.extend(apart)
+        extents[index] = _union([anchor.label, *(cluster.box for cluster in joined)])
 
     indices = list(range(len(found)))
     for one in indices:
         for other in indices[one + 1 :]:
-            if _intersects(owned[one], owned[other]):
+            if _intersects(extents[one], extents[other]):
                 for index in (one, other):
                     problems[index].append("its drawing overlaps another view's drawing")
+
+    notes.extend(_left_out(ownership, beside, settings))
 
     views: list[PageView] = []
     for index in numbering:
@@ -467,9 +729,20 @@ def find_page_views(
                 bubble=anchor.bubble,
                 scale=anchor.scale,
                 label_box=anchor.label,
-                extent=owned[index],
+                extent=extents[index],
                 separated=separated,
                 reason=reason,
             )
         )
-    return tuple(views)
+    return PageViewSurvey(tuple(views), tuple(notes))
+
+
+def find_page_views(
+    chars: Sequence[TextChar],
+    ink: PageInk,
+    *,
+    text: TextSettings,
+    settings: PageViewSettings,
+) -> tuple[PageView, ...]:
+    """The drawing views printed on a page (`survey_page_views` without its notes)."""
+    return survey_page_views(chars, ink, text=text, settings=settings).views

@@ -28,15 +28,20 @@ row's own page has no architect view, the row was matched with one view of that 
 every row says plainly where it stands (`match`):
 
 * the file produced no view index this revision: not compared, the package asks once (#1161);
-* no match yet (checks run before matching existed): not compared, "run the checks again";
+* the file was indexed but the row has no match and no architect view of its own (read before
+  matching existed): REVIEW_REQUIRED, "run the checks again", whatever its old pairing said;
+* the match was recorded after the last check run (`match_waits_for_run`, the screen only):
+  REVIEW_REQUIRED, it waits for the next check run;
 * `needs_reviewer`: REVIEW_REQUIRED, "choose which of the architect's views shows this countertop";
 * `none_matches`: not compared, the reviewer found no view that shows it;
 * `not_separated`: REVIEW_REQUIRED, compare by hand (that view's dimensions were not read);
+* `no_candidates`: REVIEW_REQUIRED, no view was found in the file, compare by hand;
 * matched (`auto_matched`, `reviewer_confirmed`, `carried_over`): planned as on a combined sheet,
-  against the pairing made for that view only, its notes starting with `compared_with_text`; when
-  not compared, the reason starts "Matched with <file>, page N, view X: ".
+  against the pairing made under that match only, its notes starting with `compared_with_text`;
+  when not compared, the reason starts "Matched with <file>, page N, view X: "; when the run used
+  the match and nothing could be paired with it, REVIEW_REQUIRED, compare by hand.
 
-A row with no match is planned exactly as before matching existed.
+A row whose own page has an architect view is planned exactly as before matching existed.
 
 Imports nothing that reads a drawing, so the countertop results (`app/api/visual_countertops.py`)
 can ask it too (`tests/api/test_no_heavy_work.py`).
@@ -58,13 +63,18 @@ from enum import StrEnum
 from typing import Final, Literal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.evidence.sides import ReadingSides
 from app.models.document import Document, DocumentKind, PackageRevisionDocument
-from app.models.evidence import ArchitectViewIndexEntry, ObservationCandidate
+from app.models.evidence import (
+    ArchitectViewIndexEntry,
+    ArchitectViewMatchRecord,
+    ObservationCandidate,
+)
 from app.models.runs import ExtractionRun
+from app.models.verdicts import CheckRun
 from workflow.architect_match_contract import (
     MATCHED_STATUSES,
     EffectiveMatch,
@@ -74,8 +84,10 @@ from workflow.architect_match_contract import (
 from workflow.architect_pairing_contract import EffectivePairing, PairingSource
 from workflow.architect_pairing_records import (
     ARCHITECT_EXTRACTOR,
+    architect_views,
     latest_architect_pairing,
     latest_architect_pairings,
+    span_view_tag,
 )
 from workflow.slot_row_scope import SlotRow
 
@@ -83,9 +95,10 @@ __all__ = [
     "ARCHITECT_CHECK_RULE_ID",
     "AUTOMATIC_SOURCES",
     "CHOOSE_ARCHITECT_VIEW",
-    "MATCHED_VIEW_NOT_PAIRED",
+    "MATCH_WAITS_FOR_RUN",
     "NOTHING_PAIRED_ON_REVISION",
     "NOT_MATCHED_YET_ROW",
+    "NO_ARCHITECT_VIEWS",
     "NO_ARCHITECT_VIEW_MATCHES",
     "PAIR_BY_REVIEWER",
     "SEPARATE_ARCHITECT_FILE_NOT_COMPARED",
@@ -96,12 +109,14 @@ __all__ = [
     "PairingJudgments",
     "PairingLookup",
     "architect_file_indexed",
+    "architect_matches_waiting_for_run",
     "effective_architect_match",
     "effective_architect_pairing",
     "effective_architect_pairings",
     "engine_comparison_note",
     "matched_words",
     "measures_sentence",
+    "no_dimensions_line_up_reason",
     "not_separated_reason",
     "one_judgment_reason",
     "pair_label",
@@ -197,17 +212,33 @@ NO_ARCHITECT_VIEW_MATCHES: Final = (
     "The reviewer found no view in the architect's drawings that shows this countertop, so "
     "nothing was compared."
 )
-#: A matched view with no pairing made for it (the match changed after the run, or the view had
-#: nothing code could pair): the reviewer cannot pair it until the checks run again (#1167).
-MATCHED_VIEW_NOT_PAIRED: Final = (
-    "the architect's dimensions in this view have not been paired with this countertop yet. Run "
-    "the checks again."
+#: The row's match was recorded after the last check run (#1167): its comparison is made by the
+#: next check run. Shown by the countertop results only; a check run never sees it.
+MATCH_WAITS_FOR_RUN: Final = (
+    "The architect's view for this countertop was chosen after the checks ran, so it waits for the "
+    "next check run."
+)
+#: `no_candidates` in an indexed revision (#1167): the reviewer compares by hand, and is asked to.
+NO_ARCHITECT_VIEWS: Final = (
+    "The architect's drawings were uploaded as a separate file, but no view was found in them to "
+    "compare this countertop with. Compare it with the architect's drawings by hand, then mark it "
+    "checked."
 )
 
 
 def matched_words(view: MatchedView) -> str:
     """`Matched with <file>, page N, view X`: how a row not compared names its matched view."""
     return f"Matched with {view.file_name}, page {view.page_number}, view {view.view_number}"
+
+
+def no_dimensions_line_up_reason(view: MatchedView) -> str:
+    """The run used this match and nothing in the view could be paired with the row (#1167): no
+    re-run helps, so the reviewer compares by hand."""
+    return (
+        f"The architect's view {view.view_number} on page {view.page_number} of {view.file_name} "
+        "has no dimensions that line up with this countertop. Compare it by hand, then mark it "
+        "checked."
+    )
 
 
 def not_separated_reason(view: MatchedView | None) -> str:
@@ -229,6 +260,32 @@ def effective_architect_match(session: Session, row_anchor_id: UUID) -> Effectiv
     from workflow.architect_match_records import effective_architect_match as stored
 
     return stored(session, row_anchor_id)
+
+
+def architect_matches_waiting_for_run(
+    session: Session, package_revision_id: UUID, match_record_ids: Collection[UUID]
+) -> frozenset[UUID]:
+    """Which of these match records (`EffectiveMatch.record_id`) were recorded after the
+    revision's latest live check run, or before any (#1167): their rows wait for the next check
+    run (`plan_architect_row(match_waits_for_run=True)`). One statement."""
+    if not match_record_ids:
+        return frozenset()
+    checked = (
+        select(func.max(CheckRun.created_at))
+        .where(
+            CheckRun.package_revision_id == package_revision_id,
+            CheckRun.superseded_at.is_(None),
+        )
+        .scalar_subquery()
+    )
+    return frozenset(
+        session.scalars(
+            select(ArchitectViewMatchRecord.id).where(
+                ArchitectViewMatchRecord.id.in_(tuple(match_record_ids)),
+                or_(checked.is_(None), ArchitectViewMatchRecord.created_at > checked),
+            )
+        )
+    )
 
 
 def architect_file_indexed(session: Session, package_revision_id: UUID) -> bool:
@@ -410,7 +467,10 @@ def _eligible_architect_spans(
         )
     ):
         flags = set(candidate.ambiguity_flags or ())
-        if matched is not None and f"arch-view:{matched.view_number}" not in flags:
+        if (
+            matched is not None
+            and span_view_tag(candidate.ambiguity_flags or ()) != matched.view_tag
+        ):
             continue
         if "arch-ticks-on-outline:yes" in flags and not any(
             flag.startswith("arch-held:") for flag in flags
@@ -428,6 +488,8 @@ def plan_architect_row(
     separate_architect_file: bool = False,
     match: EffectiveMatch | None = None,
     architect_file_indexed: bool = False,
+    match_waits_for_run: bool = False,
+    own_architect_view: bool | None = None,
 ) -> ArchitectRowPlan:
     """Decide whether this row has anything to compare with the architect, and which pairs.
 
@@ -444,17 +506,31 @@ def plan_architect_row(
     one: the row is then planned by its match state (module docstring), and only against the
     pairing made for the matched view (the caller's lookup counts no other). `architect_file_indexed`
     (`architect_file_indexed`): the separate file produced a view index this revision, so a row
-    with no match and no pairing says it was not matched yet instead of #1161's sentence. With
-    `match=None` and the file not indexed, everything is exactly as before.
+    with no match and no architect view of its own was not matched yet: REVIEW_REQUIRED, whatever
+    its old pairing said. `own_architect_view` is whether the row's own page holds a drawing
+    confirmed as the architect's (`architect_views`; asked here when `None`). With `match=None`
+    and the file not indexed, everything is exactly as before.
+
+    `match_waits_for_run` (the countertop results only, `architect_matches_waiting_for_run`): the
+    row's match was recorded after the last check run, so it waits for the next one. A check run
+    leaves it `False`. All of these are keywords.
     """
     if match is not None:
-        return _plan_matched(session, row, pairing, match, sides=sides)
+        return _plan_matched(
+            session, row, pairing, match, sides=sides, waits_for_run=match_waits_for_run
+        )
+    if separate_architect_file and architect_file_indexed:
+        own = (
+            bool(architect_views(session, row.anchor.page_id))
+            if own_architect_view is None
+            else own_architect_view
+        )
+        if not own:
+            return ArchitectRowPlan(Disposition.UNRESOLVED, NOT_MATCHED_YET_ROW, (), (), None)
+        return _plan_architect_row(session, row, pairing, sides=sides)
     plan = _plan_architect_row(session, row, pairing, sides=sides)
     if separate_architect_file and plan.disposition is Disposition.NOT_COMPARED:
-        if not architect_file_indexed:
-            return replace(plan, reason=SEPARATE_ARCHITECT_FILE_ROW)
-        if pairing is None:
-            return replace(plan, reason=NOT_MATCHED_YET_ROW)
+        return replace(plan, reason=SEPARATE_ARCHITECT_FILE_ROW)
     return plan
 
 
@@ -465,9 +541,12 @@ def _plan_matched(
     match: EffectiveMatch,
     *,
     sides: ReadingSides | None,
+    waits_for_run: bool,
 ) -> ArchitectRowPlan:
     """A row matched (or waiting to be matched) with a view of the architect's own file (#1167)."""
     notes = tuple(f"Match: {reason}" for reason in match.reasons if reason and reason.strip())
+    if waits_for_run:
+        return ArchitectRowPlan(Disposition.UNRESOLVED, MATCH_WAITS_FOR_RUN, (), notes, None)
     if match.status == "needs_reviewer":
         return ArchitectRowPlan(Disposition.UNRESOLVED, CHOOSE_ARCHITECT_VIEW, (), notes, None)
     if match.status == "none_matches":
@@ -480,15 +559,15 @@ def _plan_matched(
         )
     view = match.matched
     if match.status not in MATCHED_STATUSES or view is None:
-        # `no_candidates`: the architect's file has no view at all, so it was not compared; the
-        # package asks once, as when the file produced no index (#1161).
-        return ArchitectRowPlan(
-            Disposition.NOT_COMPARED, SEPARATE_ARCHITECT_FILE_ROW, (), notes, None
-        )
+        # `no_candidates`: no view was found in the architect's file; the reviewer compares by
+        # hand and is asked to (never a row nobody waits for).
+        return ArchitectRowPlan(Disposition.UNRESOLVED, NO_ARCHITECT_VIEWS, (), notes, None)
     if pairing is None:
+        # The run used this match (or it is a reviewer's, whose pairing came with it) and nothing
+        # is paired under it: no re-run would pair it either.
         return ArchitectRowPlan(
             Disposition.UNRESOLVED,
-            f"{matched_words(view)}: {MATCHED_VIEW_NOT_PAIRED}",
+            no_dimensions_line_up_reason(view),
             (),
             (f"{matched_words(view)}.", *notes),
             None,

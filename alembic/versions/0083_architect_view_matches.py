@@ -17,8 +17,8 @@ view shows the same countertop as each vendor view. Two append-only tables:
 Never edited: the same append-only trigger as every other evidence table. Grants are derived from
 `ROLE_GRANTS` (append-only: `SELECT`, `INSERT`).
 
-Revision ID: 0082_architect_view_matches
-Revises: 0081_evidence_mark_rechecks
+Revision ID: 0083_architect_view_matches
+Revises: 0082_architect_page_notes
 """
 
 from collections.abc import Sequence
@@ -29,8 +29,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 from app.db.roles import ROLE_GRANTS
 
-revision: str = "0082_architect_view_matches"
-down_revision: str | None = "0081_evidence_mark_rechecks"
+revision: str = "0083_architect_view_matches"
+down_revision: str | None = "0082_architect_page_notes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -83,7 +83,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["page_id"], ["pages.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["drawing_view_id"], ["drawing_views.id"], ondelete="RESTRICT"),
         sa.UniqueConstraint(
-            "extraction_run_id", "page_id", "view_number", name="uq_architect_view_index_view"
+            "extraction_run_id", "page_id", "view_tag", name="uq_architect_view_index_view"
         ),
         sa.CheckConstraint(
             "view_tag ~ '^(view|panel)-[0-9]+$'", name="architect_view_index_tag_shape"
@@ -175,8 +175,12 @@ def upgrade() -> None:
             name="architect_view_match_reviewer_status",
         ),
         sa.CheckConstraint(
-            "(source = 'carried') = (status = 'carried_over')",
+            "source <> 'carried' OR status IN ('carried_over', 'none_matches', 'not_separated')",
             name="architect_view_match_carried_status",
+        ),
+        sa.CheckConstraint(
+            "status <> 'carried_over' OR source = 'carried'",
+            name="architect_view_match_carried_over_source",
         ),
         sa.CheckConstraint(
             "source <> 'automatic' OR status IN ('auto_matched', 'needs_reviewer', "
@@ -191,6 +195,15 @@ def upgrade() -> None:
             "code_verdict IS NULL OR code_verdict IN ('reference', 'geometry_clear', "
             "'geometry_tie', 'geometry_none', 'no_geometry')",
             name="architect_view_match_code_verdict",
+        ),
+        sa.CheckConstraint(
+            "status <> 'auto_matched' OR (source = 'automatic' AND code_verdict IN "
+            "('reference', 'geometry_clear') AND code_pick_view_id = matched_view_id)",
+            name="architect_view_match_automatic_needs_code",
+        ),
+        sa.CheckConstraint(
+            "code_pick_view_id IS NULL OR code_verdict IN ('reference', 'geometry_clear')",
+            name="architect_view_match_code_pick_verdict",
         ),
         sa.CheckConstraint(
             "(source = 'reviewer') = (extraction_run_id IS NULL)",

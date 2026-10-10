@@ -39,6 +39,7 @@ from app.models.drawing import (
 )
 from app.models.evidence import (
     ArchitectPairingRecord,
+    ArchitectViewMatchRecord,
     CanonicalObservation,
     ItemClassification,
     LayoutConfirmation,
@@ -227,6 +228,8 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
       is the company layer, not a reviewer's input to one review, and is not counted;
     - classifications and confirmed layout answers, keyed by the revision;
     - architect pairings a reviewer decided (#1088);
+    - which architect view a reviewer picked for a countertop, or "none of these" (#1166): the
+      pick is read by the next run, so sign-off waits for it;
     - slot-row wall choices and typed widths, on a reading of this revision's documents;
     - countertop-run decisions, part decisions and reading-to-part links (`workflow/
       part_operands.py`), and a person's drawing-role confirmation (code's is not reviewer input);
@@ -273,6 +276,12 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
         select(ArchitectPairingRecord.package_revision_id, ArchitectPairingRecord.created_at).where(
             ArchitectPairingRecord.package_revision_id.in_(ids),
             ArchitectPairingRecord.decided_by.is_not(None),
+        ),
+        select(
+            ArchitectViewMatchRecord.package_revision_id, ArchitectViewMatchRecord.created_at
+        ).where(
+            ArchitectViewMatchRecord.package_revision_id.in_(ids),
+            ArchitectViewMatchRecord.decided_by.is_not(None),
         ),
         select(on_page.c.package_revision_id, SlotRowReviewDecision.created_at)
         .join(

@@ -15,18 +15,22 @@ from __future__ import annotations
 import hashlib
 import io
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import Engine, select
+from sqlalchemy import text as sql
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.documents import storage_key
 from app.db.session import session_factory
-from app.evidence.sides import ReadingSides, has_separate_architect_file
+from app.evidence.record import open_extraction_run
+from app.evidence.sides import CONTENT_VIEW_PREFIX, ReadingSides, has_separate_architect_file
 from app.models import (
     Document,
     DocumentVersion,
@@ -42,18 +46,23 @@ from app.models import (
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionRun
 from app.review import approval
+from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS, read_architect_page
+from extraction.reader import UnreadablePdf
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect.architect_sheet import architect_sheet, pasted_sheet
 from tests.extraction.architect.combined_sheet import combined_sheet
 from vocabulary.semantic_types import DocumentRole
-from workflow.architect_pairing_records import architect_views
-from workflow.architect_reader import ARCHITECT_EXTRACTOR
+from workflow.architect_page_notes import architect_page_notes_for
+from workflow.architect_pairing_records import _eligible, architect_view_tags, architect_views
+from workflow.architect_reader import ARCHITECT_EXTRACTOR, persist_architect_pages
+from workflow.review import PageResult
 from workflow.view_roles import (
     CODE_CONFIRMER,
     CODE_DOCUMENT_CONFIRMER,
     CONTENT_VIEW_SOURCE,
     confirm_view_role,
+    content_view_tag,
 )
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -116,11 +125,23 @@ def _package(
     return revision, _add_architectural(session, store, revision, architect)
 
 
-def _extract(session: Session, store: LocalStore, revision: PackageRevision) -> None:
+def _extract(
+    session: Session, store: LocalStore, revision: PackageRevision
+) -> Sequence[PageResult]:
     from tests.workflow.test_architect_reader import _stages
 
-    _stages(store).extract_pages(session, revision.id)
+    results = _stages(store).extract_pages(session, revision.id)
     session.commit()
+    return results
+
+
+def _architect_notes(results: Sequence[PageResult], version: DocumentVersion) -> dict[str, Any]:
+    (result,) = [
+        result for result in results if result.payload.get("document_version_id") == str(version.id)
+    ]
+    notes = result.payload.get("architect", {})
+    assert isinstance(notes, dict)
+    return notes
 
 
 def _architect_values(session: Session, version: DocumentVersion) -> list[ObservationCandidate]:
@@ -222,39 +243,216 @@ def test_the_shop_file_is_still_read_as_before_beside_it(
     assert confirmers == {CODE_CONFIRMER}
 
 
-def test_an_architect_file_of_pasted_drawings_on_a_shifted_page_is_read(
+def test_an_architect_file_of_pasted_drawings_keeps_the_heading_rule_and_says_so(
     session: Session, store: LocalStore
 ) -> None:
-    """A sheet cut out of a larger set, its drawing pasted (no heading): read without the crop
-    crash, its role from the document's kind and its content."""
+    """A sheet cut out of a larger set, its drawing pasted with no heading: read without the crop
+    crash. A pasted drawing keeps the heading + content rule on the architect's file too (#1163
+    review), so it gets no role; it is recorded with its reason and its values stored held."""
     revision, version = _package(session, store, architect=pasted_sheet(origin=(300, 400)))
 
-    _extract(session, store, revision)
+    results = _extract(session, store, revision)
 
     page = _page(session, version)
     (view,) = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).all()
-    assert view.tag == "panel-0" and view.role == ViewRole.ARCH.value
-    (confirmation,) = session.scalars(
-        select(ViewRoleConfirmation).where(ViewRoleConfirmation.drawing_view_id == view.id)
-    ).all()
-    assert confirmation.confirmed_by == CODE_DOCUMENT_CONFIRMER
+    assert view.tag == "panel-0" and view.role is None
+    assert (
+        session.scalars(
+            select(ViewRoleConfirmation).where(ViewRoleConfirmation.drawing_view_id == view.id)
+        ).all()
+        == []
+    )
     values = _by_text(_architect_values(session, version))
-    assert values["3' - 4\""].value_numerator == 40
-    assert not any(f.startswith("arch-view-tag:") for f in values["3' - 4\""].ambiguity_flags or [])
+    held = values["3' - 4\""]
+    assert held.value_numerator is None
+    assert held.review_reason is not None and "not decided by code" in held.review_reason
+    (noted,) = _architect_notes(results, version)["views_without_role"]
+    assert noted["view"] == "panel-0"
 
 
-def test_a_crowded_architect_sheet_confirms_nothing_and_stores_no_value(
+def test_a_crowded_architect_sheet_records_its_views_and_holds_every_value(
     session: Session, store: LocalStore
 ) -> None:
+    """Never silent: two views not clearly apart are recorded with the reason, no role, and their
+    values stored held."""
     revision, version = _package(session, store, architect=architect_sheet(views=2, crowded=True))
+
+    results = _extract(session, store, revision)
+
+    page = _page(session, version)
+    views = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).all()
+    assert sorted(view.tag for view in views) == ["view-1", "view-2"]
+    assert all(view.role is None for view in views)
+    proposals = session.scalars(
+        select(ViewRoleProposal).where(ViewRoleProposal.drawing_view_id.in_([v.id for v in views]))
+    ).all()
+    assert len(proposals) == 2
+    assert all("not clearly apart" in proposal.reason for proposal in proposals)
+    stored = _architect_values(session, version)
+    assert stored
+    assert all(row.value_numerator is None and row.review_reason for row in stored)
+    assert architect_views(session, page.id) == set()
+    noted = _architect_notes(results, version)["views_without_role"]
+    assert sorted(entry["view"] for entry in noted) == ["view-1", "view-2"]
+
+
+def test_a_page_with_no_view_says_why_and_the_reason_is_stored(
+    session: Session, store: LocalStore
+) -> None:
+    revision, version = _package(session, store, architect=architect_sheet(titled=False))
+
+    results = _extract(session, store, revision)
+
+    (stored,) = architect_page_notes_for(session, revision.id)
+    assert stored.kind == "no_view_found"
+    assert stored.text.startswith("no view found")
+    assert stored.document_version_id == version.id and stored.page_index == 0
+    run = session.get(ExtractionRun, stored.extraction_run_id)
+    assert run is not None and run.extractor == ARCHITECT_EXTRACTOR
+    (note,) = _architect_notes(results, version)["page_notes"]
+    assert note["kind"] == "no_view_found"
+    assert _architect_values(session, version) == []
+
+
+def test_a_stamp_holding_no_drawing_is_stored_as_a_note(
+    session: Session, store: LocalStore
+) -> None:
+    revision, _version = _package(session, store, architect=architect_sheet(approval_stamp=True))
+
+    _extract(session, store, revision)
+
+    kinds = [note.kind for note in architect_page_notes_for(session, revision.id)]
+    assert "stamp_not_drawing" in kinds
+
+
+def test_a_page_the_reader_cannot_read_is_stored_as_a_note(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    revision, version = _package(session, store, architect=architect_sheet())
+    import workflow.stages as stages_module
+
+    real = read_architect_page
+
+    def refuse(data: bytes, index: int, **kwargs: Any) -> Any:
+        if kwargs.get("on_architect_file"):
+            raise UnreadablePdf("a synthetic refusal")
+        return real(data, index, **kwargs)
+
+    monkeypatch.setattr(stages_module, "read_architect_page", refuse)
+
+    _extract(session, store, revision)
+
+    (note,) = [
+        note
+        for note in architect_page_notes_for(session, revision.id)
+        if note.document_version_id == version.id
+    ]
+    assert note.kind == "page_unreadable" and "a synthetic refusal" in note.text
+
+
+def test_the_notes_are_append_only(session: Session, store: LocalStore) -> None:
+    revision, _version = _package(session, store, architect=architect_sheet(titled=False))
+    _extract(session, store, revision)
+    assert architect_page_notes_for(session, revision.id)
+
+    for statement in (
+        "UPDATE architect_page_notes SET text = 'x'",
+        "DELETE FROM architect_page_notes",
+    ):
+        with pytest.raises(DBAPIError, match="append-only"):
+            session.execute(sql(statement))
+        session.rollback()
+
+
+def test_a_combined_sheet_uploaded_as_the_architects_file_gives_its_own_drawing_no_code_role(
+    session: Session, store: LocalStore
+) -> None:
+    """A vendor's sheet whose own drawing is page content in feet and inches with an architectural
+    scale, beside the architect's drawing pasted under its heading, uploaded in the architect's
+    slot with other bytes: no code architect role for the page's own drawing."""
+    revision, version = _package(
+        session, store, architect=architect_sheet(pasted_with_heading=True)
+    )
 
     _extract(session, store, revision)
 
     page = _page(session, version)
-    views = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).all()
-    assert all(view.role is None for view in views)
-    assert _architect_values(session, version) == []
-    assert architect_views(session, page.id) == set()
+    views = {
+        view.tag: view
+        for view in session.scalars(select(DrawingView).where(DrawingView.page_id == page.id))
+    }
+    assert views["view-1"].role is None
+    assert views["panel-1"].role == ViewRole.ARCH.value
+    assert architect_view_tags(session, page.id) == {"panel-1"}
+    own = [
+        row
+        for row in _architect_values(session, version)
+        if "arch-view-tag:view-1" in (row.ambiguity_flags or [])
+    ]
+    assert own and all(row.value_numerator is None for row in own)
+    assert all("combined sheet" in (row.review_reason or "") for row in own)
+
+
+def test_a_renumbered_view_never_reuses_another_drawings_stored_view(
+    session: Session, store: LocalStore
+) -> None:
+    """`view-1` stored before somewhere else on the page (the views were renumbered): a new read
+    refuses it and reports it, never hanging the old view's role or region on this drawing."""
+    data = architect_sheet()
+    revision, version = _package(session, store, architect=data)
+    _extract(session, store, revision)
+    page = _page(session, version)
+    (view,) = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).all()
+    view.region = {
+        "space": "stored",
+        "points": [["0.80", "0.80"], ["0.95", "0.80"], ["0.95", "0.95"], ["0.80", "0.95"]],
+    }
+    first = session.get(ExtractionRun, _architect_values(session, version)[0].extraction_run_id)
+    assert first is not None
+    newer = open_extraction_run(
+        session,
+        task_run_id=first.task_run_id,
+        extractor=ARCHITECT_EXTRACTOR,
+        extractor_version="architect-text-test",
+        config_hash="a newer read",
+        dpi=150,
+    )
+    reading = read_architect_page(
+        data, 0, settings=MEASURED_ARCHITECT_SETTINGS, dpi=150, on_architect_file=True
+    )
+
+    counts = persist_architect_pages(
+        session,
+        document_version_id=version.id,
+        extraction_run_id=newer.id,
+        pages=[(page, reading)],
+        architect_document=True,
+    )
+
+    (refused,) = counts.refused_views
+    assert refused["view"] == "view-1" and "renumbered" in str(refused["reason"])
+    assert counts.views_confirmed_by_code == 0
+    session.refresh(view)
+    region = view.region
+    points = region.get("points") if isinstance(region, dict) else None
+    assert isinstance(points, list) and points[0] == ["0.80", "0.80"]
+    # Never silent: a stored note, and the view's values stored held under a tag no view has.
+    (note,) = [
+        n for n in architect_page_notes_for(session, revision.id) if n.kind == "view_refused"
+    ]
+    assert "view-1" in note.text and note.extraction_run_id == newer.id
+    refused_values = list(
+        session.scalars(
+            select(ObservationCandidate).where(ObservationCandidate.extraction_run_id == newer.id)
+        )
+    )
+    assert counts.candidates == len(refused_values) > 0
+    assert all(row.value_numerator is None for row in refused_values)
+    assert all(
+        "arch-view-tag:view-1~refused" in (row.ambiguity_flags or []) for row in refused_values
+    )
+    tags = architect_view_tags(session, page.id) | {"view-1"}
+    assert all(_eligible(row, tags).held_reason is not None for row in refused_values)
 
 
 def test_two_views_on_one_architect_sheet_are_two_stored_views(
@@ -318,18 +516,99 @@ def test_a_code_confirmation_by_kind_is_not_a_reviewers_input_at_sign_off() -> N
     assert CODE_DOCUMENT_CONFIRMER in approval._CODE_CONFIRMERS
 
 
-def test_a_page_holding_both_a_panel_and_a_content_view_of_one_number_counts_neither(
+def test_a_panel_and_a_content_view_of_one_number_are_told_apart_by_tag(
     session: Session, store: LocalStore
 ) -> None:
-    """`arch-view:<n>` names either; with both on one page, which one a value came from would be a
-    guess, so neither counts."""
+    """`arch-view:<n>` names either a pasted drawing or a view drawn as content; eligibility goes by
+    the very view a value was read in (`arch-view-tag`), so a `panel-1` a person said is the
+    vendor's neither hides nor lends its role to `view-1`."""
     revision, version = _package(session, store, architect=architect_sheet())
     _extract(session, store, revision)
     page = _page(session, version)
     clash = DrawingView(page_id=page.id, tag="panel-1", region={"space": "stored", "points": []})
     session.add(clash)
     session.flush()
-    confirm_view_role(session, view=clash, role=ViewRole.ARCH, actor="reviewer@example.com")
+    confirm_view_role(session, view=clash, role=ViewRole.SHOP, actor="reviewer@example.com")
     session.commit()
 
+    assert architect_view_tags(session, page.id) == {"view-1"}
+    # The bare number is ambiguous now: it counts for neither.
     assert architect_views(session, page.id) == set()
+    content_span = _by_text(_architect_values(session, version))["3' - 4\""]
+    assert _eligible(content_span, {"view-1"}).held_reason is None
+    pasted_span = ObservationCandidate(
+        document_version_id=version.id,
+        page_id=page.id,
+        extraction_run_id=content_span.extraction_run_id,
+        raw_text="3' - 4\"",
+        value_numerator=40,
+        value_denominator=1,
+        unit="in",
+        polygon=[[0, 0], [1, 0], [1, 1], [0, 1]],
+        coordinate_space="image",
+        ambiguity_flags=["architect-reader", "arch-view:1", "arch-row:9", "arch-slot:0"],
+    )
+    assert _eligible(pasted_span, {"view-1"}).held_reason is not None
+
+
+def test_the_sides_prefix_names_the_content_views_tag() -> None:
+    assert content_view_tag(7).startswith(CONTENT_VIEW_PREFIX)
+
+
+def _reading(
+    session: Session, version: DocumentVersion, polygon: list[list[int]]
+) -> ObservationCandidate:
+    """Another extractor's reading on the architect's page, placed by the architect run's frame."""
+    run_id = _architect_values(session, version)[0].extraction_run_id
+    reading = ObservationCandidate(
+        document_version_id=version.id,
+        page_id=_page(session, version).id,
+        extraction_run_id=run_id,
+        raw_text="NOTE",
+        polygon=polygon,
+        coordinate_space="image",
+        ambiguity_flags=[],
+    )
+    session.add(reading)
+    session.flush()
+    return reading
+
+
+#: In the title block (well outside any view) and inside the first drawing, at 150 dpi.
+_TITLE_BLOCK = [[80, 1540], [200, 1540], [200, 1570], [80, 1570]]
+_IN_DRAWING = [[240, 840], [260, 840], [260, 860], [240, 860]]
+
+
+@pytest.mark.parametrize("crowded", [False, True])
+def test_views_on_the_architects_file_change_no_side_outside_them(
+    session: Session, store: LocalStore, crowded: bool
+) -> None:
+    """A clean sheet and a crowded one behave the same: outside the views, and inside one with no
+    role, a reading keeps its document's side, as before the views were read."""
+    sheet = architect_sheet(views=2, crowded=True) if crowded else architect_sheet()
+    revision, version = _package(session, store, architect=sheet)
+    _extract(session, store, revision)
+    if crowded:
+        # Give it a stored value to place readings by (every value on it is held).
+        assert _architect_values(session, version)
+
+    sides = ReadingSides(session)
+
+    assert sides.of(_reading(session, version, _TITLE_BLOCK)) is DocumentRole.ARCH
+    assert sides.of(_reading(session, version, _IN_DRAWING)) is DocumentRole.ARCH
+
+
+def test_a_role_given_to_a_view_on_the_architects_file_decides_inside_it(
+    session: Session, store: LocalStore
+) -> None:
+    revision, version = _package(session, store, architect=architect_sheet())
+    _extract(session, store, revision)
+    page = _page(session, version)
+    (view,) = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).all()
+    confirm_view_role(session, view=view, role=ViewRole.SHOP, actor="reviewer@example.com")
+    session.commit()
+
+    sides = ReadingSides(session)
+
+    assert sides.of(_reading(session, version, _IN_DRAWING)) is DocumentRole.SHOP
+    assert sides.of(_reading(session, version, _TITLE_BLOCK)) is DocumentRole.ARCH

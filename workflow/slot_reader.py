@@ -63,6 +63,7 @@ from extraction.slot_reader.bedrock import (
     CROP_PROMPT_ID,
     ROW_BOX_COLOURS,
     ROW_PROMPT_ID,
+    ArchMatchAnswer,
     ArchPairAnswer,
     CounterBreakAnswer,
     CropJob,
@@ -468,9 +469,9 @@ class PageSlotResult:
     """Which architect dimension measures which vendor piece (#1053); `None` when the architect
     reader did not read this page. Never changes a reading, a hold or a proposal above."""
     architect_match: RowMatch | None = None
-    """Which view of the architect's own file shows this row's countertop (#1166), when the row's
-    own page has no architect view and the architect's drawings came as their own file; `None`
-    otherwise. Never changes a reading, a hold or a proposal above."""
+    """Which view of the architect's own file shows this row's countertop (#1166), when the
+    architect's drawings were uploaded as a separate, indexed file; `None` otherwise (a combined
+    sheet never has one). Never changes a reading, a hold or a proposal above."""
     read_through: CountertopRowCandidate | None = None
     """The row the readers chose, when it had nothing printed on any piece and its widths are read
     from the vendor's `X"(N EQ)` chain for the same run (#1086); `plan.row` is then that chain.
@@ -1063,7 +1064,13 @@ def read_slot_pages(
         items: Sequence[CropJob],
     ) -> dict[
         tuple[str, str],
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None,
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None,
     ]:
         reused: dict[
             tuple[str, str],
@@ -1072,6 +1079,7 @@ def read_slot_pages(
             | RowChoiceAnswer
             | CounterBreakAnswer
             | ArchPairAnswer
+            | ArchMatchAnswer
             | None,
         ] = {}
         if stored_answers is not None and runtime.reuse_answers and runtime.question_packets:
@@ -2396,7 +2404,13 @@ def persist_slot_readings(
 
 def _agreed_row(
     answers: Sequence[
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None
     ],
 ) -> tuple[RowChoiceAnswer | None, int | None]:
     """The row every reader named, or a "no row" answer that says why there is none.
@@ -2457,7 +2471,13 @@ _ROW_KIND_WORDS: Final = {
 def _row_kinds_and_also(
     readers: Sequence[str],
     answers: Sequence[
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None
     ],
 ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, int], ...]]:
     """Each reader's kind of answer and the second countertop rows it named, in reader order."""
@@ -2475,7 +2495,13 @@ def _row_kinds_and_also(
 def _row_picks(
     readers: Sequence[str],
     answers: Sequence[
-        ReaderAnswer | WallAnswer | RowChoiceAnswer | CounterBreakAnswer | ArchPairAnswer | None
+        ReaderAnswer
+        | WallAnswer
+        | RowChoiceAnswer
+        | CounterBreakAnswer
+        | ArchPairAnswer
+        | ArchMatchAnswer
+        | None
     ],
 ) -> tuple[tuple[str, int | None], ...]:
     """Each reader's own row pick, in reader order; `None` for a reader that gave no row answer."""

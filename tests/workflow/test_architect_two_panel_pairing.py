@@ -13,12 +13,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from fractions import Fraction
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
+import workflow.architect_row_plan as row_plan
 from evidence.crop import decode_rgb_png, encode_png
 from extraction.geometry.rows import Box
 from extraction.slot_reader.bedrock import (
@@ -55,12 +57,9 @@ from workflow.architect_pairing import (
 )
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
-    CHOOSE_ARCHITECT_VIEW,
-    NO_ARCHITECT_VIEW_MATCHES,
     NOT_MATCHED_YET_ROW,
     SEPARATE_ARCHITECT_FILE_ROW,
     Disposition,
-    matched_words,
     not_separated_reason,
     plan_architect_row,
 )
@@ -107,16 +106,21 @@ def _architect_sheet(*rows: ArchitectRowInput) -> ArchitectPageInput:
 
 @dataclass(frozen=True)
 class Picture:
-    png: bytes
-    box_px: tuple[int, int, int, int]
-    dpi: int
+    """The view index's picture of one view (#1166's `ArchitectViewCrop`, the parts read here)."""
+
+    png: bytes | None
+    box_px: tuple[int, int, int, int] | None
+    px_per_inch: Fraction | None
+    """The architect's 3/2 pt per inch at 72 dpi; `None` when the view's scale is unknown."""
 
 
-def _picture(width: int = 500, height: int = 200) -> Picture:
+def _picture(
+    width: int = 500, height: int = 200, *, px_per_inch: Fraction | None = Fraction(3, 2)
+) -> Picture:
     return Picture(
         encode_png(width, height, bytes([255]) * (width * height * 3)),
         (350, 0, 350 + width, height),
-        72,
+        px_per_inch,
     )
 
 
@@ -317,6 +321,70 @@ def test_without_the_views_picture_code_pairs_alone_and_no_ai_is_asked() -> None
     assert paired.architect_pairing.source == "code", "one judgment: the reviewer confirms it"
 
 
+def test_a_view_picture_that_could_not_be_rendered_leaves_code_alone_too() -> None:
+    sheet = _architect_sheet(_in_view(arch_row(1, WIDTHS), 1))
+    chosen = _view(1, sheet.page_id)
+
+    paired, asked = _run(
+        {sheet.page_id: sheet},
+        FakeMatcher("auto_matched", chosen),
+        crops={chosen.view_id: Picture(None, None, None)},
+    )
+
+    assert asked == []
+    assert paired.architect_pairing is not None and paired.architect_pairing.source == "code"
+
+
+def test_one_batch_one_matcher_call_and_one_rule_for_a_pages_own_architect_view() -> None:
+    """The pairing step is the matcher's one entry point (#1167 review): in one batch, the row on a
+    page with its own architect view pairs on that page (`arch-pair-v3`) and never reaches the
+    matcher; the other row is matched once and paired against its view (`arch-pair-2panel-v1`)."""
+    own = ArchitectPageInput(
+        page_id=uuid4(),
+        architect_run_id=uuid4(),
+        rows=(arch_row(1, WIDTHS),),
+        view_boxes=(Box(Decimal(380), Decimal(20), Decimal(560), Decimal(200)),),
+    )
+    sheet = _architect_sheet(_in_view(arch_row(2, WIDTHS), 1))
+    chosen = _view(1, sheet.page_id)
+    matcher = FakeMatcher("auto_matched", chosen)
+    combined = replace(_result(_sealed_owners()), page_id=own.page_id)
+    separate = replace(_result(_sealed_owners()), page_id=uuid4(), page_index=1)
+    calls: list[list[CropJob]] = []
+
+    def ask(jobs: Sequence[CropJob]) -> Mapping[tuple[str, str], object]:
+        calls.append(list(jobs))
+        return {
+            (job.key, job.model_id): answer(job.model_id, (0, (1, 2, 3)), job.architect_spans or 0)
+            for job in jobs
+        }
+
+    first, second = ArchitectPairing(
+        MEASURED_PAIRING_SETTINGS,
+        {own.page_id: own, sheet.page_id: sheet},
+        matcher=matcher,
+        crops={chosen.view_id: _picture()},
+    ).pair(
+        [combined, separate],
+        [_slot_page(own.page_id), replace(_slot_page(separate.page_id), page_index=1)],
+        ask=ask,
+        readers=(OPUS, SONNET),
+        ask_the_ais=True,
+        store=None,
+        effort="high",
+    )
+
+    assert matcher.seen == [separate.page_id], "matched once, and only the row with no own view"
+    assert first.architect_match is None and second.architect_match is not None
+    assert first.architect_pairing is not None and second.architect_pairing is not None
+    assert "architect_view_id" not in first.architect_pairing.details
+    assert second.architect_pairing.details["architect_view_id"] == str(chosen.view_id)
+    (jobs,) = calls
+    assert sorted(job_prompt_id(job, None) for job in jobs) == sorted(
+        [ARCH_PAIR_PROMPT_ID] * 2 + [ARCH_PAIR_2PANEL_PROMPT_ID] * 2
+    )
+
+
 def test_a_matched_view_the_architect_reader_did_not_read_is_not_paired() -> None:
     paired, asked = _run({}, FakeMatcher("auto_matched", _view(1, uuid4())))
 
@@ -363,7 +431,7 @@ def test_without_both_scales_the_panels_are_the_same_height_and_the_question_say
     assert vendor is not None
 
     picture = pair_picture_two_panel(
-        _slot_page(uuid4()).rendered, vendor, sheet, _picture(300, 900)
+        _slot_page(uuid4()).rendered, vendor, sheet, _picture(300, 900, px_per_inch=None)
     )
 
     width, height, _rgb = _pixels(picture.png)
@@ -375,7 +443,9 @@ def test_a_huge_view_picture_is_shrunk_to_at_most_1800_pixels_a_side() -> None:
     sheet = _architect_sheet(_in_view(arch_row(1, WIDTHS), 1))
     vendor = vendor_row_input(_result(_sealed_owners()))
     assert vendor is not None
-    big = Picture(encode_png(3000, 2500, bytes([255]) * (3000 * 2500 * 3)), (0, 0, 3000, 2500), 72)
+    big = Picture(
+        encode_png(3000, 2500, bytes([255]) * (3000 * 2500 * 3)), (0, 0, 3000, 2500), Fraction(3, 2)
+    )
 
     picture = pair_picture_two_panel(_slot_page(uuid4()).rendered, vendor, sheet, big)
 
@@ -406,14 +476,16 @@ ROW: Any = SimpleNamespace(anchor=SimpleNamespace(page_id=uuid4(), document_vers
 @pytest.mark.parametrize(
     ("status", "disposition", "reason"),
     [
-        ("needs_reviewer", Disposition.UNRESOLVED, CHOOSE_ARCHITECT_VIEW),
-        ("none_matches", Disposition.NOT_COMPARED, NO_ARCHITECT_VIEW_MATCHES),
-        ("no_candidates", Disposition.NOT_COMPARED, SEPARATE_ARCHITECT_FILE_ROW),
+        ("needs_reviewer", Disposition.UNRESOLVED, "CHOOSE_ARCHITECT_VIEW"),
+        ("none_matches", Disposition.NOT_COMPARED, "NO_ARCHITECT_VIEW_MATCHES"),
+        # #1167 review: no view found in the file asks the reviewer, never a silent "not compared".
+        ("no_candidates", Disposition.UNRESOLVED, "NO_ARCHITECT_VIEWS"),
     ],
 )
 def test_each_match_state_says_where_the_row_stands(
     status: str, disposition: Disposition, reason: str
 ) -> None:
+    reason = getattr(row_plan, reason)
     plan = plan_architect_row(None, ROW, None, separate_architect_file=True, match=_match(status, None), architect_file_indexed=True)  # type: ignore[arg-type]
 
     assert (plan.disposition, plan.reason, plan.pairs, plan.matched) == (
@@ -437,15 +509,42 @@ def test_a_view_not_clearly_apart_is_compared_by_hand() -> None:
     )
 
 
-def test_a_matched_view_with_no_pairing_for_it_waits_for_a_re_run() -> None:
+def test_a_matched_view_the_run_paired_nothing_in_is_compared_by_hand_not_re_run() -> None:
+    """#1167 review: "run the checks again" would loop; the run already used this match."""
     view = _view(2, uuid4())
 
     plan = plan_architect_row(None, ROW, None, match=_match("reviewer_confirmed", view))  # type: ignore[arg-type]
 
     assert plan.disposition is Disposition.UNRESOLVED
-    assert (plan.reason or "").startswith(f"{matched_words(view)}: ")
-    assert "Run the checks again" in (plan.reason or "")
+    assert plan.reason == row_plan.no_dimensions_line_up_reason(view)
+    assert plan.reason == (
+        "The architect's view 2 on page 2 of synthetic-architect.pdf has no dimensions that line "
+        "up with this countertop. Compare it by hand, then mark it checked."
+    )
+    assert "Run the checks again" not in plan.reason
     assert plan.matched is None, "nothing compared, so no architect value may be used"
+
+
+@pytest.mark.parametrize("status", ["auto_matched", "reviewer_confirmed", "none_matches"])
+def test_a_match_recorded_after_the_last_check_run_waits_for_the_next_one(status: str) -> None:
+    view = None if status == "none_matches" else _view(2, uuid4())
+    pairing = EffectivePairing(
+        record_id=uuid4(), source="code+ais", status="paired", pairs=(), reasons=()
+    )
+
+    plan = plan_architect_row(
+        None,  # type: ignore[arg-type]
+        ROW,
+        pairing,
+        match=_match(status, view),
+        match_waits_for_run=True,
+    )
+
+    assert (plan.disposition, plan.reason, plan.matched) == (
+        Disposition.UNRESOLVED,
+        row_plan.MATCH_WAITS_FOR_RUN,
+        None,
+    )
 
 
 def test_a_matched_row_not_compared_names_the_view_before_todays_reason() -> None:
@@ -472,17 +571,36 @@ def test_a_matched_row_not_compared_names_the_view_before_todays_reason() -> Non
 
 
 def test_with_no_match_the_separate_file_says_whether_it_was_matched_or_not_read() -> None:
-    def reason(indexed: bool) -> str | None:
+    not_compared = EffectivePairing(
+        record_id=uuid4(), source="none", status="nothing_comparable", pairs=(), reasons=()
+    )
+    sides: Any = SimpleNamespace(same_file_as_both_sides=lambda _version: False)
+
+    def plan(indexed: bool, pairing: EffectivePairing | None, own: bool = False) -> Any:
         return plan_architect_row(
             None,  # type: ignore[arg-type]
             ROW,
-            None,
+            pairing,
+            sides=sides,
             separate_architect_file=True,
             architect_file_indexed=indexed,
-        ).reason
+            own_architect_view=own,
+        )
 
-    assert reason(False) == SEPARATE_ARCHITECT_FILE_ROW, "#1161's sentence, unchanged"
-    assert reason(True) == NOT_MATCHED_YET_ROW
+    assert plan(False, None).reason == SEPARATE_ARCHITECT_FILE_ROW, "#1161's sentence, unchanged"
+    # #1167 review: indexed, no match, no architect view of its own: asked, whatever the pairing.
+    for pairing in (None, not_compared):
+        waiting = plan(True, pairing)
+        assert (waiting.disposition, waiting.reason) == (
+            Disposition.UNRESOLVED,
+            NOT_MATCHED_YET_ROW,
+        )
+    # A row whose own page has the architect's drawing is planned exactly as before.
+    own = plan(True, not_compared, own=True)
+    assert (own.disposition, own.reason) == (
+        Disposition.NOT_COMPARED,
+        "The architect prints nothing comparable for this row.",
+    )
     assert NOT_MATCHED_YET_ROW == (
         "The architect's drawings were uploaded as a separate file and this countertop has not "
         "been matched with a view in it yet. Run the checks again."

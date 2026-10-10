@@ -60,7 +60,7 @@ from app.models import (
     ViewRoleConfirmation,
     WorkflowRun,
 )
-from app.models.evidence import ItemClassification
+from app.models.evidence import ArchitectViewMatchRecord, ItemClassification
 from app.review.approval import (
     INPUTS_CHANGED_NEEDS_RERUN,
     UnaddressedReviewRequired,
@@ -427,6 +427,25 @@ def _architect_pairing(db: Session, sheet: Sheet, at: datetime | None) -> None:
     )
 
 
+def _match(sheet: Sheet, **values: object) -> ArchitectViewMatchRecord:
+    return ArchitectViewMatchRecord(
+        package_revision_id=sheet.revision.id,
+        vendor_page_id=sheet.page.id,
+        row_anchor_candidate_id=sheet.reading.id,
+        ai_picks=[],
+        candidates=[],
+        vendor_references=[],
+        reasons=[],
+        details={},
+        **values,
+    )
+
+
+def _architect_view_match(db: Session, sheet: Sheet, at: datetime | None) -> None:
+    """A reviewer's choice of the architect's view for a countertop (#1166): the next run reads it."""
+    db.add(_match(sheet, source="reviewer", status="none_matches", decided_by=ACTOR, **_at(at)))
+
+
 READ_BY_THE_CHECKS: dict[str, Callable[[Session, Sheet, datetime | None], None]] = {
     "typed-measurement": _typed_measurement,
     "project-setting": _project_setting,
@@ -439,6 +458,7 @@ READ_BY_THE_CHECKS: dict[str, Callable[[Session, Sheet, datetime | None], None]]
     "layout": _layout,
     "reading-confirmation": _reading_confirmation,
     "architect-pairing": _architect_pairing,
+    "architect-view-match": _architect_view_match,
 }
 
 
@@ -503,8 +523,8 @@ def test_another_projects_setting_and_a_global_default_do_not_block(
 
 
 def test_machine_records_do_not_block(postgres_engine: Engine) -> None:
-    """Code confirming a drawing's role, an automatic architect pairing and an evidence action's
-    own copy of a reading are not unchecked reviewer input."""
+    """Code confirming a drawing's role, an automatic architect pairing, an automatic architect
+    view match and an evidence action's own copy of a reading are not unchecked reviewer input."""
     _upgrade(postgres_engine)
     with session_factory(postgres_engine).begin() as db:
         sheet = _sheet(db)
@@ -524,6 +544,14 @@ def test_machine_records_do_not_block(postgres_engine: Engine) -> None:
                 source="code+ais",
                 status="paired",
                 decided_by=None,
+            )
+        )
+        db.add(
+            _match(
+                sheet,
+                source="automatic",
+                status="needs_reviewer",
+                extraction_run_id=sheet.reading.extraction_run_id,
             )
         )
         db.flush()
