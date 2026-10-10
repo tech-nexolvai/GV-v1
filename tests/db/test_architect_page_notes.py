@@ -1,6 +1,6 @@
-"""Migration 0082: the architect reader's page notes table, up and down (#1163).
+"""Migration 0083: the architect reader's page notes table, up and down (#1163).
 
-Verification for: `alembic/versions/0082_architect_page_notes.py` and
+Verification for: `alembic/versions/0083_architect_page_notes.py` and
 `app.models.evidence.ArchitectPageNote`. The rows are written by the stage on an invented sheet
 (`tests/extraction/architect/architect_sheet.py`); no client value appears here.
 """
@@ -26,8 +26,8 @@ from tests.extraction.architect.architect_sheet import architect_sheet
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
-_HEAD = "0082_architect_page_notes"
-_BEFORE = "0081_evidence_mark_rechecks"
+_HEAD = "0083_architect_page_notes"
+_BEFORE = "0082_ai_spend_history"
 
 
 def _config(engine: Engine) -> Config:
@@ -46,7 +46,7 @@ def _tables(engine: Engine) -> set[str]:
     return set(inspect(engine).get_table_names())
 
 
-def test_0082_is_the_head_and_follows_0081() -> None:
+def test_0083_is_the_head_and_follows_0082() -> None:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_config())
