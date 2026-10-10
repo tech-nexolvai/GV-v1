@@ -141,7 +141,7 @@ def _revision(session: Session, store: LocalStore, *drawings: bytes) -> PackageR
         )
     )
     session.flush()
-    # The field cut a reviewer set for this job: 1" per end, Raj's typical (Q1).
+    # The field cut a reviewer set for this job: 1" per end, the client lead's typical (Q1).
     field_cut = ParameterSet(
         project_id=str(project.id),
         layer=ParameterLayer.PROJECT,

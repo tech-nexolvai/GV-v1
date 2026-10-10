@@ -1,5 +1,5 @@
 id: CT-BACK-OFFSET-MIN-001
-version: 1.0.1
+version: 1.0.2
 product_type: countertop
 check_type: internal
 severity: FLAG
@@ -45,7 +45,7 @@ parameters:
     scope: project
   backsplash_thickness:
     scope: project
-  # Raj/vendor supplied 2.375"–2.5" (Q6). The 2.5" default is the false-PASS-safe end of the
+  # the client lead / vendor supplied 2.375"–2.5" (Q6). The 2.5" default is the false-PASS-safe end of the
   # range; a reviewer may override it for a project as low as 2.375".
   back_offset_minimum:
     default:

@@ -145,7 +145,7 @@ DISCRIMINATORS = {"wall_config": "back_left_right", "filler_symmetry": "equal_un
 #:
 #: **`owed_by` is the part that matters.** A rule waiting on a client value and a rule waiting on
 #: something we have not built are both abstentions, and telling them apart is the difference
-#: between "chase Raj" and "finish the work". Entering `ours` here is an admission with a date on
+#: between "chase the client lead" and "finish the work". Entering `ours` here is an admission with a date on
 #: it, not a way to make a test green.
 UNDECIDED: dict[str, tuple[str, str]] = {
     # 2026-10-09 (#1054): the vendor-vs-architect check runs per vendor countertop row read by the
@@ -422,14 +422,16 @@ def test_the_sink_cabinet_check_is_not_run_on_a_back_only_package(
     assert outcomes["CT-SINK-CUTOUT-WIDTH-001"] in ("PASS", "FAIL")
 
 
-#: Raj's own worked example, slide 4 — the layout his deck uses to show how they do it.
+#: The client lead's own worked example, slide 4 — the layout his deck uses to show how they do it.
 #: 3 + 24 + 36 + 24 + 3 = 90 on the architectural drawing; the site measures 82.
-RAJ_CABINETS = ('24"', '36"', '24"')
-RAJ_FILLERS = ('3"', '3"')
-RAJ_TYPES = ("double_door", "equipment", "double_door")
+CLIENT_LEAD_CABINETS = ('24"', '36"', '24"')
+CLIENT_LEAD_FILLERS = ('3"', '3"')
+CLIENT_LEAD_TYPES = ("double_door", "equipment", "double_door")
 
 
-def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Session) -> None:
+def test_the_client_leads_worked_example_produces_his_answer_through_run_checks(
+    session: Session,
+) -> None:
     """**The whole point of #676, #678, #681 and #684, asserted in one place.**
 
     Not through the operation, and not through the reviewer's calculator — through the check a
@@ -443,7 +445,7 @@ def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Ses
         session,
         revision,
         ParameterLayer.PROJECT,
-        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # The client lead's example moves two double-door cabinets from 24" to 21", so the package has to
         # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
         # the answer is only right within the bounds the package states.
         {
@@ -461,10 +463,10 @@ def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Ses
             **RUN_PARAMETERS,
             "CAB-FILLER-001:field_width": '82"',
             "CAB-FILLER-001:design_width": '90"',
-            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
-            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
-            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
-            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:architectural_fillers": CLIENT_LEAD_FILLERS,
+            "CAB-FILLER-001:shop_fillers": CLIENT_LEAD_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": CLIENT_LEAD_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": CLIENT_LEAD_CABINETS,
         },
     )
     record_classifications(
@@ -472,7 +474,7 @@ def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Ses
         package_revision_id=revision.id,
         rule_id="CAB-FILLER-001",
         input_name="cabinet_type",
-        categories=RAJ_TYPES,
+        categories=CLIENT_LEAD_TYPES,
         confirmed_by="reviewer",
     )
     session.flush()
@@ -496,7 +498,7 @@ def test_rajs_worked_example_produces_his_answer_through_run_checks(session: Ses
     facts = dict(trace.get("intermediates") or [])
 
     # The shop drawing still shows the architectural widths, so it FAILs — and what it should say
-    # is the answer Raj wrote down.
+    # is the answer the client lead wrote down.
     assert finding.outcome == "FAIL"
     # Rendered the way the trace stores a run: each value with its unit, in order.
     assert facts["expected_fillers"] == "2 in, 2 in"
@@ -524,7 +526,7 @@ def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
         session,
         revision,
         ParameterLayer.PROJECT,
-        # Raj's example moves two double-door cabinets from 24" to 21", so the package has to
+        # The client lead's example moves two double-door cabinets from 24" to 21", so the package has to
         # allow that. The fixture's own minimum is 24" and correctly refuses it — a reminder that
         # the answer is only right within the bounds the package states.
         {
@@ -542,10 +544,10 @@ def test_the_equipment_cabinet_a_reviewer_named_is_the_one_that_holds(
             **RUN_PARAMETERS,
             "CAB-FILLER-001:field_width": '82"',
             "CAB-FILLER-001:design_width": '90"',
-            "CAB-FILLER-001:architectural_fillers": RAJ_FILLERS,
-            "CAB-FILLER-001:shop_fillers": RAJ_FILLERS,
-            "CAB-FILLER-001:architectural_cabinets": RAJ_CABINETS,
-            "CAB-FILLER-001:shop_cabinets": RAJ_CABINETS,
+            "CAB-FILLER-001:architectural_fillers": CLIENT_LEAD_FILLERS,
+            "CAB-FILLER-001:shop_fillers": CLIENT_LEAD_FILLERS,
+            "CAB-FILLER-001:architectural_cabinets": CLIENT_LEAD_CABINETS,
+            "CAB-FILLER-001:shop_cabinets": CLIENT_LEAD_CABINETS,
         },
     )
     record_classifications(

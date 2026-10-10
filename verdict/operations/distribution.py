@@ -136,7 +136,7 @@ def _measurement(value: object, name: str) -> Measurement:
 def _sequence(values: object, name: str) -> tuple[Measurement, ...]:
     """An ordered run of measurements of any length.
 
-    Unlike `_pair`, no arity is imposed here. Raj's deck names runs of more than three cabinets,
+    Unlike `_pair`, no arity is imposed here. The client lead's deck names runs of more than three cabinets,
     two equipment cabinets and an equipment cabinet at the end; a length check would turn each of
     those drawings into a rule-authoring failure (#673).
     """
@@ -321,7 +321,7 @@ def cabinet_run_distribution(
     filler_min: Measurement,
     filler_max: Measurement,
 ) -> OperationResult:
-    """Raj's two-step distribution, computed exactly and compared against the shop drawing.
+    """The client lead's two-step distribution, computed exactly and compared against the shop drawing.
 
     **The order is his, and it is not an optimisation.** Fillers move first, to their bound; only
     what the fillers cannot absorb reaches the cabinets; and of the cabinets, only the regular ones
@@ -438,7 +438,7 @@ def cabinet_run_distribution(
     # not his: expect nothing per filler, and abstain.
     #
     # Computed before the cabinets and recorded in `facts`, so every later abstention still says
-    # what the fillers became. It is also Raj's order: a step-one answer does not depend on whether
+    # what the fillers became. It is also the client lead's order: a step-one answer does not depend on whether
     # step two worked.
     fillers_must_move = filler_total != design_filler_total
     expected_fillers: tuple[Measurement, ...] = design_filler_run
@@ -613,7 +613,7 @@ def _is_a_writable_width(value: Fraction) -> bool:
     the answer; it has found that the deck's rule does not determine the answer for this run.
 
     **This is a representability test, not a rounding rule.** It does not pick 22 5/8 over 22 3/4 —
-    that choice is question 4 to Raj, still open, and under exact match (Q2) guessing it would be a
+    that choice is question 4 to the client lead, still open, and under exact match (Q2) guessing it would be a
     wrong PASS or FAIL rather than a rounding preference. A denominator that is a power of two is a
     property of the imperial system; a tolerance or a nearest-increment would be our invention.
     """
@@ -630,7 +630,7 @@ def _apportionment_not_determined(
 ) -> OperationResult:
     """Abstain when unequal fillers have to move and the deck does not say how.
 
-    **This is ours, not Raj's.** Slide 12 lists unequal fillers as a layout in scope and slides 3
+    **This is ours, not the client lead's.** Slide 12 lists unequal fillers as a layout in scope and slides 3
     and 7 say only that each filler honours its own bound. Two fillers of 2" and 4" that must lose
     2" between them could become 1"+3", 2"+2" or 1.5"+2.5", and nothing in the deck chooses. The
     finding therefore carries what *is* determined — the total the fillers must reach, and the

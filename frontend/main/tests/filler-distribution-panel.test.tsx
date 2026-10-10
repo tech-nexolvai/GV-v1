@@ -140,7 +140,7 @@ assert.match(html, /Site field width/);
 assert.match(html, /reviewer classification/);
 assert.match(html, /distribution-cabinet-type-0/);
 assert.match(html, /distribution-cabinet-type-1/);
-// #818: the reviewer names the equipment cabinet (Raj's deck, slide 11), in this order, with
+// #818: the reviewer names the equipment cabinet (the client lead's deck, slide 11), in this order, with
 // "other" for anything else.
 const offered = [...html.split('distribution-cabinet-type-1')[0].matchAll(/<option value="([a-z_]*)"/g)].map(
   (match) => match[1],
@@ -176,10 +176,10 @@ const proposed = renderToStaticMarkup(
       throw new Error('not called during static render');
     }}
     initialResult={{
-      // Raj's first worked example, slide 4: 90" to 82".
+      // The client lead's first worked example, slide 4: 90" to 82".
       outcome: 'PASS',
       condition: 'cabinets_absorb_remainder',
-      // The full explanation Raj asked for on slides 5 and 9, from the exact numbers (#682).
+      // The full explanation the client lead asked for on slides 5 and 9, from the exact numbers (#682).
       message:
         'Wall to wall width in the architectural drawing = 90". Wall to wall width as per site ' +
         'dimensions = 82". So 8" needs to be reduced in the shop drawing cabinet elevation.',

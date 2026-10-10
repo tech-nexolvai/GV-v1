@@ -32,7 +32,7 @@ def _value(
     amount: str,
     *,
     provenance: Provenance = Provenance.GC_CLIENT,
-    set_by: str = "Raj",
+    set_by: str = "client lead",
     unit: Unit = Unit.INCH,
 ) -> ParameterValue:
     return ParameterValue(
@@ -71,7 +71,7 @@ def _load(name: str) -> Rule:
 
 
 def test_a_project_override_of_a_company_standard_is_reported() -> None:
-    """Raj's own example: the standard front offset is 4", the reviewer says 3.5" is fine here."""
+    """The client lead's own example: the standard front offset is 4", the reviewer says 3.5" is fine here."""
     report = override_report(
         [],
         _global(front_offset_required=_value("4", provenance=Provenance.COMPANY_STANDARD)),
@@ -137,7 +137,7 @@ def test_company_standards_displaced_narrows_to_the_literal_ask() -> None:
 
 
 def test_a_required_parameter_nobody_supplied_is_listed_as_outstanding() -> None:
-    """Raj: "imagine filling a form, there are some mandatory entries."
+    """The client lead: "imagine filling a form, there are some mandatory entries."
 
     The sink's interior width has no default on purpose — every sink is different — so a run without
     it cannot decide. That has to reach the reviewer *before* the run, not as a NOT_FOUND after it.

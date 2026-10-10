@@ -1664,7 +1664,7 @@ def _stone_end_hold(
 ) -> RowHold | None:
     """Hold a row whose stone does not end at the walls; the field cut is not the stone's there.
 
-    Raj's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops
+    The client lead's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops
     at full-height fillers or panels, they take it; where it runs into wall pockets, the pocket
     detail decides (GV-Brain "Field cut - when it applies", 2026-10-08). Either way the width
     check's arithmetic would not apply, so the row goes to the reviewer. Hold-only: nothing here
@@ -1869,7 +1869,7 @@ _WALL_WORD: Final = re.compile(r"\b(?:filler|field\s+cut|wall)\b", re.IGNORECASE
 
 
 def _read_wall_clues(slots: tuple[OwnerResult, ...], clues: CodeWallClues) -> CodeWallClues:
-    """Raj's row-end rule again, on the end labels the two readers sealed.
+    """The client lead's row-end rule again, on the end labels the two readers sealed.
 
     `_code_wall_clues` reads only the file's own text, and a vendor that draws its words as lines
     hides every "Filler" from it (proof run 2026-10-08: a filler sum at both ends of a row, sealed

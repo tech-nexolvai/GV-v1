@@ -114,7 +114,7 @@ def test_the_multi_valued_quantities_are_marked_as_lists(key: str) -> None:
 
 
 def test_the_vendor_back_offset_range_is_offered_as_a_confirmed_project_override() -> None:
-    """Raj supplied the vendor range, so reviewers may override the 2.5-inch standard to 2.375."""
+    """The client lead supplied the vendor range, so reviewers may override the 2.5-inch standard to 2.375."""
     needs = required_inputs(_rules())
 
     back_offset = next(p for p in needs.parameters if p.name == "back_offset_minimum")
@@ -143,7 +143,7 @@ def test_a_declared_default_is_reported_but_not_treated_as_confirmed() -> None:
 
 
 def test_the_distribution_bounds_are_asked_for_with_no_stand_in_at_all() -> None:
-    """The filler bounds come pre-filled with Raj's written rule; the cabinet bounds with nothing.
+    """The filler bounds come pre-filled with the client lead's written rule; the cabinet bounds with nothing.
 
     The filler pair follows his email — 1" and 2" — by the admin's decision of 2026-10-02 (#674), so
     the form shows them and a reviewer may change them per project. The per-type cabinet bounds have

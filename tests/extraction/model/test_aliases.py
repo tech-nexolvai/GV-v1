@@ -32,7 +32,7 @@ def _alias(
     canonical: SemanticType = SemanticType.CABINET_WIDTH,
     *,
     version: str = V3,
-    added_by: str = "raj",
+    added_by: str = "client_lead",
     rationale: str = "seen on three Ridgewood packages",
 ) -> Alias:
     return Alias(
@@ -53,7 +53,7 @@ def test_an_alias_records_who_added_it_and_why() -> None:
     """The first acceptance criterion. An alias is a small rule and needs an owner."""
     alias = _alias("CTOP")
 
-    assert alias.added_by == "raj"
+    assert alias.added_by == "client_lead"
     assert alias.rationale == "seen on three Ridgewood packages"
 
 
@@ -81,7 +81,7 @@ def test_a_free_string_canonical_term_is_refused() -> None:
             spelling="CTOP",
             canonical="cabinet_width",  # type: ignore[arg-type]
             rulebook_version=V3,
-            added_by="raj",
+            added_by="client_lead",
             rationale="why",
         )
 
@@ -228,7 +228,7 @@ def test_the_same_alias_added_twice_is_kept_rather_than_collapsed() -> None:
         V3,
         [
             _alias("CTOP", rationale="seen on Ridgewood"),
-            _alias("CTOP", rationale="confirmed by Raj 2026-08"),
+            _alias("CTOP", rationale="confirmed by the client lead, 2026-08"),
         ],
     )
 

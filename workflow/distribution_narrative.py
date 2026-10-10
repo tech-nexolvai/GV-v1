@@ -1,4 +1,4 @@
-"""Raj's own explanation of a cabinet distribution, rendered from the exact numbers.
+"""The client lead's own explanation of a cabinet distribution, rendered from the exact numbers.
 
 Slides 5 and 9 of the 2026-09-21 deck write out the wanted output twice, and say why:
 
@@ -69,7 +69,7 @@ def _run(values: Sequence[Measurement]) -> str:
 def _distinct(values: Sequence[Measurement]) -> Measurement | None:
     """The one value a run holds, or None when it holds more than one.
 
-    Raj writes "reduced from 24" to 21" each" because both regular cabinets were 24". When they
+    The client lead writes "reduced from 24" to 21" each" because both regular cabinets were 24". When they
     differ there is no "each", so the caller lists them instead of inventing a single number.
     """
     if not values:
@@ -151,7 +151,7 @@ def explain_distribution(facts: Mapping[str, object]) -> str:
 
 
 def _the_site_against_the_drawing(facts: dict[str, object]) -> str:
-    """Raj's first sentence: the two widths, and how much has to move."""
+    """The client lead's first sentence: the two widths, and how much has to move."""
     design = facts.get("design_width")
     difference = facts.get("site_difference")
     if not isinstance(design, Measurement) or not isinstance(difference, Measurement):
@@ -172,7 +172,7 @@ def _the_site_against_the_drawing(facts: dict[str, object]) -> str:
 
 
 def _what_the_fillers_can_do(facts: dict[str, object]) -> str:
-    """Raj's second sentence: the filler bound, what they absorb, what is left."""
+    """The client lead's second sentence: the filler bound, what they absorb, what is left."""
     design_fillers = facts.get("design_fillers")
     expected = facts.get("expected_fillers")
     design_total = facts.get("design_filler_total")
@@ -217,7 +217,7 @@ def _what_the_fillers_can_do(facts: dict[str, object]) -> str:
 
 
 def _what_the_cabinets_take(facts: dict[str, object]) -> str:
-    """Raj's third sentence: the equipment cabinet holds, the regular ones split the rest."""
+    """The client lead's third sentence: the equipment cabinet holds, the regular ones split the rest."""
     design = facts.get("design_cabinets")
     expected = facts.get("expected_cabinets")
     regulars = facts.get("regular_cabinets")

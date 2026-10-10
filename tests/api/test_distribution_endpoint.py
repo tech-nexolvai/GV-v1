@@ -4,7 +4,7 @@
 pick one adjustable cabinet and gave it the whole remainder — `test_larger_difference_distributes_
 to_reviewer_chosen_cabinet` asserted `['30"', '32"']` — which was the correct reading of Q9 until
 slide 11 of the 2026-09-21 deck. It is not a rounding difference: on the client's own worked
-example it returned `18" / 36" / 24"` and called it a PASS, where Raj's answer is `21" / 36" / 21"`.
+example it returned `18" / 36" / 24"` and called it a PASS, where the client lead's answer is `21" / 36" / 21"`.
 
 So the first two tests below are the two worked examples, end to end through the HTTP route.
 """
@@ -54,7 +54,7 @@ def _client() -> TestClient:
 
 
 def _payload(**updates: Any) -> dict[str, Any]:
-    """Raj's layout: filler | CAB_REGULAR | CAB_EQUIP | CAB_REGULAR | filler."""
+    """The client lead's layout: filler | CAB_REGULAR | CAB_EQUIP | CAB_REGULAR | filler."""
     payload: dict[str, Any] = {
         "assembly": {
             "cabinets": [

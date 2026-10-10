@@ -9,7 +9,7 @@
  *
  * Everything here therefore uses `BigInt`. Nothing in this file produces a `number`.
  *
- * This matters more under V1 than it would have under a tolerance band. Raj settled on exact match
+ * This matters more under V1 than it would have under a tolerance band. The client lead settled on exact match
  * (`docs/decisions/V1_VERDICT_MODEL.md` D1), so there is no band to absorb a rounding error — a
  * value that shifts by one part in 2^53 is simply a different verdict.
  */

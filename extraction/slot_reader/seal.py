@@ -393,7 +393,7 @@ def _is_explicit_mm_dual(text: str) -> bool:
 
     Both forms count: `305 mm [12"]` and the bare `305 [12]` the vendors actually print. Two
     numbers in one label is what makes a reader call it "combined"; for this form that is no reason
-    to hold it — the inch half is the value (Raj Q12) and the mm half is checked against it.
+    to hold it — the inch half is the value (the client lead's Q12) and the mm half is checked against it.
     """
     from extraction.slot_reader.labels import _MM_DUAL
 
@@ -403,7 +403,7 @@ def _is_explicit_mm_dual(text: str) -> bool:
 def mm_corroborates_inch(text: str) -> bool | None:
     """Whether a dual label's mm half agrees with its inch half; `None` if it is not a dual label.
 
-    The inch is authoritative and the mm only corroborates it (CLAUDE.md, Raj Q12). The vendor's
+    The inch is authoritative and the mm only corroborates it (CLAUDE.md, the client lead's Q12). The vendor's
     inch is the mm rounded to its own fraction, so the allowance is half that fraction's step plus
     half a millimetre: `562 [22 1/8]` (561.98 mm) agrees, `305 [10]` does not. A disagreement is a
     misread or a vendor slip, and either way the person looks.

@@ -57,14 +57,14 @@ def test_an_unattributed_user_input_is_rejected() -> None:
 
 
 def test_the_value_stays_exact() -> None:
-    value = user_input(Quantity(value="84 1/2", unit=Unit.INCH), set_by="Raj", set_at=WHEN)
+    value = user_input(Quantity(value="84 1/2", unit=Unit.INCH), set_by="client lead", set_at=WHEN)
     assert value.value.exact_value == Fraction(169, 2)
 
 
 def test_a_float_cannot_be_typed_in() -> None:
     """ADR-0001 — the exactness rule applies to hand-entered numbers too."""
     with pytest.raises(ValueError, match="float"):
-        user_input(Quantity(value=84.5, unit=Unit.INCH), set_by="Raj", set_at=WHEN)  # type: ignore[arg-type]
+        user_input(Quantity(value=84.5, unit=Unit.INCH), set_by="client lead", set_at=WHEN)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,10 @@ def test_a_company_standard_is_not_a_user_input() -> None:
     Accepting it here would let a default masquerade as a measurement."""
     with pytest.raises(UserInputError, match="not a human source"):
         user_input(
-            _field_dimension(), set_by="Raj", set_at=WHEN, provenance=Provenance.COMPANY_STANDARD
+            _field_dimension(),
+            set_by="client lead",
+            set_at=WHEN,
+            provenance=Provenance.COMPANY_STANDARD,
         )
 
 

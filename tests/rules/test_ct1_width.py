@@ -349,11 +349,12 @@ def _row(finding: Finding) -> dict[str, object]:
 
 def test_version_1_2_0_reads_the_row_as_pieces_by_the_agreed_names() -> None:
     """The coordination contract with the reader work, held exactly: one rename here and the
-    reader fills a field no rule reads. (1.1.0 added the pieces; 1.2.0 the one-end layout.)"""
+    reader fills a field no rule reads. (1.1.0 added the pieces; 1.2.0 the one-end layout; 1.2.1
+    changed note wording only.)"""
     rule = _load_rule()
     pieces = rule.inputs["piece_widths"]
 
-    assert rule.version == "1.2.0"
+    assert rule.version == "1.2.1"
     assert pieces.source.value == "SHOP"
     assert pieces.semantic_type is SemanticType.COUNTERTOP_PIECE_WIDTH
     assert pieces.semantic_type.value == "countertop_piece_width"
@@ -402,7 +403,7 @@ def test_pieces_with_no_side_walls_take_no_field_cut(wall_config: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1.2.0: a wall at one end only is one field cut (#1138; Raj: 1 inch per wall end)
+# 1.2.0: a wall at one end only is one field cut (#1138; the client lead: 1 inch per wall end)
 # ---------------------------------------------------------------------------
 
 

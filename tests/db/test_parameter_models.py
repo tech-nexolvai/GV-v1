@@ -61,7 +61,7 @@ def _value(value: str = "1/8", unit: str = "in") -> InMemoryValue:
     return InMemoryValue(
         value=Quantity(value=value, unit=unit),
         provenance=Provenance.MEASURED,
-        set_by="raj",
+        set_by="client_lead",
         set_at=WHEN,
     )
 
@@ -200,7 +200,7 @@ def test_provenance_and_author_survive_the_round_trip(session: Session) -> None:
 
     row = session.query(ParameterValue).filter_by(parameter_set_id=stored.id).first()
     assert row is not None
-    assert row.set_by == "raj"
+    assert row.set_by == "client_lead"
     assert row.provenance == Provenance.MEASURED.value
     assert row.set_at == WHEN
 
@@ -436,7 +436,7 @@ def test_a_zero_denominator_is_refused(session: Session) -> None:
             denominator=0,
             unit="in",
             provenance=Provenance.MEASURED.value,
-            set_by="raj",
+            set_by="client_lead",
             set_at=WHEN,
         )
     )
@@ -460,7 +460,7 @@ def test_one_name_appears_once_per_set(session: Session) -> None:
             denominator=16,
             unit="in",
             provenance=Provenance.MEASURED.value,
-            set_by="raj",
+            set_by="client_lead",
             set_at=WHEN,
         )
     )

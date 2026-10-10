@@ -307,7 +307,7 @@ def test_the_extraction_stage_never_receives_the_reviewer_answer(
 def test_the_generated_package_is_one_the_loader_accepts(tmp_path: Path) -> None:
     """**Input: `--make-fixture`. Outcome: a package `load_package` reads back.**
 
-    The round trip is the point. `docs/GOLD_SET_FORMAT.md` is what Raj's reviewed drawings will be
+    The round trip is the point. `docs/GOLD_SET_FORMAT.md` is what the client lead's reviewed drawings will be
     mapped onto, and a documented format nothing has ever written or read is a format that turns out
     to be wrong on the day the material arrives.
     """

@@ -107,7 +107,7 @@ export interface Finding {
   found?: string;
   delta?: string;
   /**
-   * **Absent in V1, deliberately.** Raj settled on exact match with no tolerance band
+   * **Absent in V1, deliberately.** The client lead settled on exact match with no tolerance band
    * (`docs/CLIENT_FACTS.md` Q2, `docs/decisions/V1_VERDICT_MODEL.md` D1) — the reviewer clearing a
    * flag *is* the tolerance. Nothing populates this, so the card's tolerance row never renders.
    * Kept on the type because graded tolerances are deferred past iteration 1, not ruled out.

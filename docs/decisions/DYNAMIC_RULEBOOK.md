@@ -1,7 +1,7 @@
 # Dynamic rulebook — what that already means here, and what it does not
 
-Abhishek asked on the 2026-08-25 call that the rulebook be **"dynamic — project to project, product
-to product, vendor-to-vendor… not hard-coded."** Raj answered that **"to some extent it has to be
+The client's project lead asked on the 2026-08-25 call that the rulebook be **"dynamic — project to project, product
+to product, vendor-to-vendor… not hard-coded."** The client lead answered that **"to some extent it has to be
 hard-coded."**
 
 Both are right, and the architecture already draws the line between them. This records where that
@@ -19,14 +19,14 @@ with no member a model could claim. "Dynamic" never becomes "the model decides".
 ### D1. Per-project and per-review VALUES — dynamic today
 status: EXISTS
 decision: The same published rule reaches different verdicts for different projects, because the numbers it compares come from a layered parameter set — GLOBAL, then PROJECT, then RUN — and not from the rule. A reviewer entering a cabinet depth for one job changes what that job is held to, and changes nothing for any other job. RUN exists as a third layer because a field measurement is true of the day somebody took it; recording it as a project setting would make a stale dimension authoritative on the next review.
-because: This is the substance of Abhishek's "project to project". It is already what Level 1.5 uses: `app/api/measurements.py` writes a reviewer's entries into the PROJECT and RUN layers with `Provenance.MEASURED`, and `workflow/stages.py:run_checks` resolves them beneath the rulebook's own declared defaults.
+because: This is the substance of the client's project lead's "project to project". It is already what Level 1.5 uses: `app/api/measurements.py` writes a reviewer's entries into the PROJECT and RUN layers with `Provenance.MEASURED`, and `workflow/stages.py:run_checks` resolves them beneath the rulebook's own declared defaults.
 proof: `tests/rules/test_dynamic_rulebook.py:test_the_same_rule_gives_different_verdicts_in_two_projects` — one rule, one shop reading of 25 1/2", PASS for a project with a 1 1/2" overhang and FAIL for one with 1". `test_neither_project_changed_the_rule` asserts both used the same snapshot id, which is what makes it a statement about configuration rather than about two different rules.
 source: `rules/parameters.py` (LAYER_PRECEDENCE, `resolve_all`) · `tests/rules/test_parameter_layering.py` · `tests/rules/test_project_scope.py`
 
 ### D2. Per-product and per-layout APPLICABILITY — dynamic today
 status: EXISTS
 decision: A rule applies conditionally, and which variant applies is stated per package rather than coded. `CT-WIDTH-001` adds two field cuts on a three-wall run and none against a back wall; `CAB-FILLER-001` branches on filler symmetry. Adding a layout is a variant in YAML, not a change to Python.
-because: This is Abhishek's "product to product". `product_type` selects which rules are candidates at all, and a discriminator selects the variant within one.
+because: This is the client's project lead's "product to product". `product_type` selects which rules are candidates at all, and a discriminator selects the variant within one.
 proof: `tests/rules/test_dynamic_rulebook.py:test_the_layout_changes_the_verdict_without_touching_the_rule` carries **one published snapshot** through two layouts to two different verdicts. `tests/rules/test_ct1_width.py` covers the field-cut arithmetic per layout and `tests/rules/test_applicability.py` covers resolution, including that an unstated layout abstains rather than being guessed.
 source: `rules/applicability.py` · `rules/schema.py` (`Applicability`, `ApplicabilityVariant`) · ADR-0007
 
@@ -56,8 +56,8 @@ source: ADR-0006 ("Vendor is metadata, never a rule key") · ADR-0005 · `rules/
 
 ### D6. Should vendor change the RULES, or only the labels?
 status: **BLOCKED — DECISION OWED**
-owed by: Abhishek and Raj, together
-question: Abhishek asked for "vendor-to-vendor" dynamism. The architecture currently reads that as **labels**, per D4, and refuses it as **rules**, per D5 and ADR-0006. Those are different products. If GV genuinely intends to hold different vendors to different standards — a looser filler maximum for one fabricator, say — that reverses a ratified ADR and needs saying out loud, with the reason it is defensible to the vendor being held to the stricter one.
+owed by: the client's project lead and the client lead, together
+question: the client's project lead asked for "vendor-to-vendor" dynamism. The architecture currently reads that as **labels**, per D4, and refuses it as **rules**, per D5 and ADR-0006. Those are different products. If GV genuinely intends to hold different vendors to different standards — a looser filler maximum for one fabricator, say — that reverses a ratified ADR and needs saying out loud, with the reason it is defensible to the vendor being held to the stricter one.
 not implemented either way, deliberately: building vendor-conditional rules would quietly reverse ADR-0006; building a guard against something already guarded would be theatre. The refusal in `rules/schema.py` stands until the decision changes it.
 what would change if the answer is "rules": ADR-0006's vendor section, the discriminator refusal, and the neutrality test — a coordinated change, not a configuration flag.
 
@@ -67,7 +67,7 @@ what would change if the answer is "rules": ADR-0006's vendor section, the discr
 
 ### D7. An in-app rule-authoring UI
 status: DEFERRED — not started, deliberately
-because: Rules are authored as YAML and published through the existing gate, which is enough for a rulebook of eight rules that is **not final**. `docs/decisions/CAB_CHECKS_FORMAT.md` records Raj's own format arriving on 2026-09-04 with four questions still open; `CLIENT_FACTS` Q20 has the countertop vocabulary provisional and Q21 has the filler maximum at two different numbers. An editor built now would encode today's shape of a rulebook that is still moving, and the first thing it would need is the decision in D6.
+because: Rules are authored as YAML and published through the existing gate, which is enough for a rulebook of eight rules that is **not final**. `docs/decisions/CAB_CHECKS_FORMAT.md` records the client lead's own format arriving on 2026-09-04 with four questions still open; `CLIENT_FACTS` Q20 has the countertop vocabulary provisional and Q21 has the filler maximum at two different numbers. An editor built now would encode today's shape of a rulebook that is still moving, and the first thing it would need is the decision in D6.
 when: after the rulebook stabilises and after somebody other than a developer needs to change one.
 
 ### D8. A knowledge base behind the rules
@@ -83,7 +83,7 @@ review), which variant of a rule applies (per product, per layout), and the rule
 changed at runtime, versioned, approval-gated). A reviewer can point the same rule at two projects and
 get two different answers without anybody touching Python.
 
-**Hard-coded on purpose, as Raj said it must be:** the arithmetic, and the standard every vendor is
+**Hard-coded on purpose, as the client lead said it must be:** the arithmetic, and the standard every vendor is
 held to.
 
 **Not built, and correctly so:** an authoring UI and a knowledge base, both waiting on a rulebook that

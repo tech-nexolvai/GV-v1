@@ -57,7 +57,7 @@ Reviewer-minutes go up relative to a tool that simply emits numbers. That is the
 trade: the reviewer is the control, and `AGENTS.md` §1 places them there deliberately.
 
 The client may expect more automation than this allows, since their checklist describes the
-system calculating these values. Worth stating plainly to Raj rather than discovering at
+system calculating these values. Worth stating plainly to the client lead rather than discovering at
 demonstration: the tool will compute and show the expected filler widths; a person still signs
 them off.
 

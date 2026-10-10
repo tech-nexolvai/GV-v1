@@ -1,6 +1,6 @@
 """Hints that help find a region on a busy drawing, and never help decide anything.
 
-`CALL_2026_08_25_INPUTS` N1. Raj suggested vendors outline the sink cut-out in a distinct colour —
+`CALL_2026_08_25_INPUTS` N1. The client lead suggested vendors outline the sink cut-out in a distinct colour —
 blue — so the system can find it on a crowded countertop plan. That is genuinely useful: the cut-out
 is the hardest region to locate on the sheet, and a colour convention turns a search problem into a
 mask.

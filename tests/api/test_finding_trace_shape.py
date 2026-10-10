@@ -103,7 +103,7 @@ def test_an_unrecognised_trace_is_handed_over_intact() -> None:
 
 
 def test_a_tolerance_is_absent_in_v1() -> None:
-    """Raj settled on exact match with no band, so there is nothing to record. The field stays
+    """The client lead settled on exact match with no band, so there is nothing to record. The field stays
     because graded tolerances are deferred past iteration 1 rather than ruled out."""
     trace = classify_trace(CALCULATION)
     assert isinstance(trace, CalculationTraceOut)

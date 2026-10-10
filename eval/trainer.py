@@ -9,8 +9,8 @@ that whoever makes it does not have to invent a boundary at the same time as cho
 with entirely different contracts — Google Document AI, Azure Document Intelligence, a fine-tune of
 one of the vision models already behind `extraction/models/` — and one is "do not train at all,
 because a deterministic reader plus a reviewer is enough". Committing an implementation now would
-answer that question by accident. The seam is the honest artifact; the choice is Abhishek's and it
-has no deadline this module can help with.
+answer that question by accident. The seam is the honest artifact; the choice belongs to the client's project lead,
+and it has no deadline this module can help with.
 
 **What the interface says, and it is not much on purpose.** A trainer takes an answer key and returns
 an artifact identified by content. It does *not* take drawings, a pipeline, a rulebook or a database

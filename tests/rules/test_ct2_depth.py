@@ -241,7 +241,7 @@ def test_the_backsplash_and_overhang_are_not_credited_to_the_back_offset() -> No
 
 
 def test_back_offset_default_is_25_inches_and_is_releasable() -> None:
-    """Raj supplied a range; 2.5 inches is the false-PASS-safe V1 default."""
+    """The client lead supplied a range; 2.5 inches is the false-PASS-safe V1 default."""
     rule = _load(BACK_OFFSET_RULE_PATH)
 
     default = rule.parameters["back_offset_minimum"].default

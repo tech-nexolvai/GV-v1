@@ -8,8 +8,8 @@ the gold set's question and the gold set is empty (#188) — and no test in this
 a model being right.
 
 **The free model is a stand-in.** It was chosen because it costs nothing and can run on the machine
-the drawings are already on, not because it is the provider. That decision is Abhishek's and swaps in
-through `OpenModelConfig`.
+the drawings are already on, not because it is the provider. That decision belongs to the client's project lead,
+and it swaps in through `OpenModelConfig`.
 
 Most of these run against a scripted client, with no server and no network. The one that talks to a
 real model is `test_a_configured_model_returns_a_validated_reading`, and it skips unless one is

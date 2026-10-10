@@ -25,7 +25,7 @@ def _value(fraction: str = "1", *, unit: Unit = Unit.INCH) -> ParameterValue:
     return ParameterValue(
         value=Quantity(value=fraction, unit=unit),
         provenance=Provenance.GC_CLIENT,
-        set_by="Raj",
+        set_by="client lead",
         set_at=WHEN,
     )
 
@@ -155,7 +155,7 @@ def test_reading_a_project_parameter_yields_the_provenance_carrying_type() -> No
 
     assert isinstance(value, ParameterValue)
     assert value.provenance is Provenance.GC_CLIENT
-    assert value.set_by == "Raj"
+    assert value.set_by == "client lead"
     assert value.set_at == WHEN
 
 

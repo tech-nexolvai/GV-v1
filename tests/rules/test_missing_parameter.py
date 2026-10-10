@@ -204,7 +204,7 @@ def test_a_seeded_standard_is_still_overridable_by_a_project() -> None:
             field_cut=ParameterValue(
                 value=Quantity(value="2", unit=Unit.INCH),
                 provenance=Provenance.GC_CLIENT,
-                set_by="Raj",
+                set_by="client lead",
                 set_at=WHEN,
             )
         ),

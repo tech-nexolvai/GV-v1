@@ -188,7 +188,7 @@ def test_the_acquisition_column_matches_the_deck() -> None:
 
 
 def test_ct007_is_the_confirmed_global_standard_hold_dimension() -> None:
-    """Raj's 2026-09-09 answer resolves the deck contradiction without changing equality.
+    """The client lead's 2026-09-09 answer resolves the deck contradiction without changing equality.
 
     The global acquisition records a reviewer-overridable company standard, not a minimum: more
     than four inches invokes ADA, so the front-offset rule remains exact (CLIENT_FACTS Q5, Q11).

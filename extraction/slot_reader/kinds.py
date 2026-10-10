@@ -2,7 +2,7 @@
 
 **The source of truth for a kind is what the drawing prints, or where the piece stands** (decided
 2026-10-07): a word in or at the piece's label (`Filler`, `FILLER PANEL`, a cabinet tag, `DW`,
-`REF`, `RANGE`, `EQ`), or the first or last piece of a row whose end meets a wall (Raj: a filler is
+`REF`, `RANGE`, `EQ`), or the first or last piece of a row whose end meets a wall (the client lead: a filler is
 the strip between the wall and the cabinet). Anything else is **unknown**, and unknown is an honest
 answer: the person names it on the screen (Phase 5).
 

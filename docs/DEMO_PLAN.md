@@ -7,7 +7,7 @@ not invented ad hoc.
 
 **Context.** V1 ships human-operated today: the reviewer uploads the two PDFs, confirms/types the
 dimensions (human-confirm bridge), runs the checks, reviews findings, signs off, downloads the workbook.
-The AI reading half is at the wall (Raj's reviewed drawings, #274) and is OUT of this plan. This plan is
+The AI reading half is at the wall (the client lead's reviewed drawings, #274) and is OUT of this plan. This plan is
 only about making the thing that already works credible and robust for the Graniti demo.
 
 ## Pre-implementation baseline (2026-09-09 inventory)

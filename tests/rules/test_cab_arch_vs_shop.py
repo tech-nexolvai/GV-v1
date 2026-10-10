@@ -94,7 +94,7 @@ def test_rule_authors_q2_as_exact_zero_tolerance() -> None:
 
     Version 1.1.0 said `0 mm` while its arithmetic was inches. Zero is zero in any unit, so no
     outcome changes, but a rule must state its tolerance in the unit it decides in: a reader of
-    `0 mm` could think millimetres decide, and Raj's word is inches only.
+    `0 mm` could think millimetres decide, and the client lead's word is inches only.
     """
     rule = _load_rule()
 

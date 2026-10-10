@@ -10,7 +10,7 @@ Verification: ``rules/rulebook/ct_sink_cutout_width_001.yaml``,
 **The cutout width rule used to be deliberately absent**, because the client's notes called its
 input a depth while his diagram showed a width, and authoring it would have meant choosing between
 his text and his drawing — a guess on a dimension that gets cut in stone. We asked instead. On the
-2026-08-25 call Raj confirmed the diagram ("my CT012 is width") and it is authored here now. The
+2026-08-25 call the client lead confirmed the diagram ("my CT012 is width") and it is authored here now. The
 answer matched the natural reading, which is exactly the point: being right by luck and being right
 on purpose look identical afterwards, and only one of them is repeatable.
 
@@ -241,7 +241,7 @@ def test_the_width_rule_reads_the_interior_width_and_never_the_depth() -> None:
 
 
 def test_the_width_clearance_is_editable_and_moves_the_verdict() -> None:
-    """Raj: "1/4, but make sure that is editable, sometimes it's 1/8 — a project-specific variable."
+    """The client lead: "1/4, but make sure that is editable, sometimes it's 1/8 — a project-specific variable."
 
     A constant would be right for most fabricators and silently wrong for the rest. At 1/8 the same
     drawn 32 1/2 that passed above must fail, and 32 3/4 must pass — which is only true if the
@@ -274,7 +274,7 @@ def test_the_width_and_depth_rules_share_one_clearance_parameter() -> None:
 def test_the_clearance_is_scoped_per_project_and_the_sink_width_per_run() -> None:
     """**Scope is the whole point of Q15's answer, and nothing else here would notice it changing.**
 
-    Raj asked for the clearance to be editable *per project* because it varies by fabricator. Scoped
+    The client lead asked for the clearance to be editable *per project* because it varies by fabricator. Scoped
     GLOBAL it would still have a 1/4 default, still compute, and still pass every arithmetic test in
     this module — while quietly becoming a company-wide constant a reviewer cannot set for their
     project, which is the thing he specifically said it must not be. It would also change what the

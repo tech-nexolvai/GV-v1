@@ -19,7 +19,7 @@ Sink interior dimensions do. The client's own checklist says so twice:
   specification"*
 - `[Countertop_Checks]` CT008 E42 — the source is **"G.C / Client"**
 
-The worked example Raj gave was a Kohler K-2330-G specification sheet.
+The worked example the client lead gave was a Kohler K-2330-G specification sheet.
 
 Finding **F4** in `docs/V1_RESEARCH_AND_PLAN.md` records the consequence: without a third role the
 sink-cutout family — **three of the five countertop checks** — has no authoritative source and can
@@ -28,7 +28,7 @@ only ever return `NOT_FOUND`.
 ### Why this is decidable now, although the brief says otherwise
 
 Issue #4 states that D4 depends on **Q7** (*will GV supply cut sheets per project?*), which is
-unanswered — Raj gave the concept and an example but never committed to supplying one per job.
+unanswered — the client lead gave the concept and an example but never committed to supplying one per job.
 
 That dependency does not survive being worked through. Both branches of Q7:
 

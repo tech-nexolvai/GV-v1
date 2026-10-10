@@ -67,7 +67,7 @@ def unresolved_client_parameters(rule: Rule) -> tuple[str, ...]:
     yet. That is the opposite mistake and just as effective at stopping work.
 
     A GLOBAL parameter is different: one number, owed once, and still missing on the next project
-    if nobody chases it. `back_offset_minimum` is the first — Raj's words were *"I will give a
+    if nobody chases it. `back_offset_minimum` is the first — the client lead's words were *"I will give a
     global minimum for that variable after checking with the vendor"* (client fact Q6).
 
     Decided from the rule alone rather than from a set of resolved parameters. The scope already

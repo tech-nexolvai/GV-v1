@@ -9,7 +9,7 @@ Review shop drawings against approved designs, for **cabinet and countertop**, e
 pipeline: **ingest → extract dimensions (agentic OCR + vision + geometry) → match arch↔shop → validate
 evidence → run that type's rules → verdict → reviewer signs off → output.** The reading layer the
 client stressed is **agentic OCR / vision models** ("Agentic OCR we have to use for better accuracy" —
-Aug 25 call; Abhishek to pick the models). **The pipeline layers are shared across both types** — they
+Aug 25 call; the client's project lead to pick the models). **The pipeline layers are shared across both types** — they
 are not built twice. Only the *rules* are per-type.
 
 ## Layer status
@@ -21,9 +21,9 @@ are not built twice. Only the *rules* are per-type.
 | **Extraction — mechanical** (text / geometry / OCR) | ✅ Done | vector text + geometry + OCR wired → untyped candidates + crops | — | — |
 | **Extraction — semantic** (value → *meaning*) | ⚠️ Gated | reviewer confirmation; exact vector tag + same dimension-line qualification | broader layout vocabulary and ambiguity review; no heuristic verdict operands | Q20/layout config |
 | **Retrieval** (arch↔shop match) | ⚠️ Wired but inert | matcher (id→alias→geometry), 85 tests, stage REAL | item/view detection so it returns real matches | #274 + Q20 (semantic) |
-| **Agentic AI** (agent + vision/OCR model) | ❌ Not wired | LangGraph agent built; Bedrock/Nova adapter built | wire agent+model into pipeline; creds; agentic-OCR | Abhishek's model decision **+** semantic trigger (#274+Q20) |
+| **Agentic AI** (agent + vision/OCR model) | ❌ Not wired | LangGraph agent built; Bedrock/Nova adapter built | wire agent+model into pipeline; creds; agentic-OCR | The client's project lead's model decision **+** semantic trigger (#274+Q20) |
 | **Rules — cabinet** | ✅ Done | `cab_filler`, `cab_arch_vs_shop` (2), tested | (arch-vs-shop tolerance) | Q2 |
-| **Rules — countertop** | ✅ Done | depth, width, sink-cutout ×4 (6), tested | back-offset value; more from the countertop deck | vendor value; Raj's deck |
+| **Rules — countertop** | ✅ Done | depth, width, sink-cutout ×4 (6), tested | back-offset value; more from the countertop deck | vendor value; the client lead's deck |
 | **Reviewer UI + human-confirm bridge** | ✅ Done | upload → confirm/type → run → review → sign-off → download | — | — |
 | **Output — reviewer artifacts** | ✅ Done | findings workbook, branded PDF, evidence-grounded redline, downloadable after sign-off | broader redline coverage follows qualified typed locations | semantic coverage |
 
@@ -38,14 +38,14 @@ operands.
   orchestration, both rulesets, the reviewer loop, output. It ships today, on drawings GV already has.
 - **For both types, the agentic-AI automated reading is NOT done** — semantic typing, real matching,
   and the agent/vision-OCR layer. Built-but-unwired + partly not built, all gated on **#274 (drawings)
-  + Q20 (vocabulary) + Abhishek's model decision.**
+  + Q20 (vocabulary) + the client's project lead's model decision.**
 - Nothing is per-type-blocked: cabinet and countertop are in the same state; one shared pipeline.
 
 ## Wiring order — when #274 + Q20 + the model decision land
 
 The order the automated half comes online, with what each step depends on:
 
-0. **Model connection** *(needs only Abhishek's decision — can start before the drawings)*: credential
+0. **Model connection** *(needs only the client's project lead's decision — can start before the drawings)*: credential
    and smoke-test the chosen vision/OCR adapter (Bedrock/Nova, or a parallel adapter to the same
    interface). Proves the model returns structured readings. No pipeline wiring yet.
 1. **Page classification** *(needs #274)*: build the title-block locator against real sheets so each

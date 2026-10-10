@@ -33,7 +33,7 @@ def _value(
     *,
     unit: Unit = Unit.INCH,
     provenance: Provenance = Provenance.GC_CLIENT,
-    set_by: str = "Raj",
+    set_by: str = "client lead",
     set_at: datetime = WHEN,
 ) -> ParameterValue:
     return ParameterValue(
@@ -90,7 +90,7 @@ def test_a_value_must_stay_exact() -> None:
         ParameterValue(
             value=0.125,  # type: ignore[arg-type]
             provenance=Provenance.GC_CLIENT,
-            set_by="Raj",
+            set_by="client lead",
             set_at=WHEN,
         )
 

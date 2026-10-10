@@ -5,7 +5,7 @@ row-scoped check (`workflow/slot_row_scope.py`), which shows the reason and abst
 outside `extraction/`, because the control plane may reach the second and never the first
 (`tests/api/test_no_heavy_work.py`).
 
-Raj's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops at
+The client lead's field cut is added to wall-to-wall where the stone meets a wall. Where the stone stops at
 full-height fillers or panels, they take it; where it runs into wall pockets, the pocket detail
 decides (GV-Brain "Field cut - when it applies", 2026-10-08). The readings stand either way; only
 the width check's arithmetic does not apply.

@@ -1,4 +1,4 @@
-"""Raj's two worked distribution examples, and the step they do not yet reach.
+"""The client lead's two worked distribution examples, and the step they do not yet reach.
 
 `docs/decisions/CAB_CHECKS_FORMAT.md` records two examples from the cabinet deck (received
 2026-09-04) as CAB-DIST-1 and CAB-DIST-2. They are synthetic — no drawings, no extraction — so they
@@ -28,7 +28,7 @@ that step one was right and only the ownership of step two was ever in question.
 
 **The bounds here are inputs, not defaults.** `FILLER_WIDTH_MIN`/`MAX` and the per-type cabinet bounds
 are not settled — the email said 1"/2", the 2026-08-25 call said 3-4", these examples use 2"/3", and
-all three are illustrative (CLIENT_FACTS Q21, and question 1 of the four sent back to Raj on
+all three are illustrative (CLIENT_FACTS Q21, and question 1 of the four sent back to the client lead on
 2026-09-04). Every bound below is passed explicitly per case for that reason; nothing here may become
 a default.
 
@@ -115,7 +115,7 @@ CAB_DIST_2 = DistributionExample(
 
 EXAMPLES = (CAB_DIST_1, CAB_DIST_2)
 
-# Question 4 to Raj (2026-09-04) is still open: both examples divide evenly between the two regular
+# Question 4 to the client lead (2026-09-04) is still open: both examples divide evenly between the two regular
 # cabinets, and the rounding rule for a split that does not — nearest 1/8" or 1/4", and which cabinet
 # takes the remainder — is unanswered. Under exact match (V1_VERDICT_MODEL) a guess there would not
 # be a rounding preference but a wrong PASS or FAIL. #676 therefore abstains on such a run rather
@@ -212,7 +212,7 @@ def test_step_one_computes_exactly_the_residual_the_deck_derives(
 
 
 #: Wide enough that no case is decided by a bound unless it sets its own. The real values are
-#: unsettled (CLIENT_FACTS Q21, question 1 to Raj) and must never acquire a default, here or in the
+#: unsettled (CLIENT_FACTS Q21, question 1 to the client lead) and must never acquire a default, here or in the
 #: operation — a case that needs a bound states it.
 WIDE_TYPE_BOUNDS: dict[str, Measurement] = {
     f"{kind.value}_cab_width_{edge}": _inches(1 if edge == "min" else 96)
@@ -263,7 +263,7 @@ def test_the_deck_expects_a_computed_layout_rather_than_an_abstention(
     """The target from the deck, now reached.
 
     **This was `xfail(strict=True)` until #676**, with the reason *"step two is not implemented…
-    which reading of Q9 holds is question 2 of four sent back to Raj on 2026-09-04"*. The
+    which reading of Q9 holds is question 2 of four sent back to the client lead on 2026-09-04"*. The
     2026-09-21 deck answers it: slide 11 has the reviewer *classify* a cabinet — *"User should be
     able to draw a bounding box around a cabinet and categorize that as a particular equipment
     cabinet"* — and the program then compute. Reviewer picks what may move; arithmetic decides by
@@ -445,7 +445,7 @@ def test_an_uneven_split_is_not_decided_by_this_rule() -> None:
     The deck's rule underdetermines this run, so the operation abstains and hands the reviewer the
     exact share it computed. It does not FAIL the drawing — a shop drawing carrying 22 5/8, 22 5/8
     and 22 3/4 may well be correct, and calling that a FAIL would be this system inventing the
-    rounding rule question 4 asks Raj for.
+    rounding rule question 4 asks the client lead for.
     """
     result = cabinet_run_distribution(
         field_width=_inches(108),

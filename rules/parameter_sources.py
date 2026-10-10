@@ -1,4 +1,4 @@
-"""Where each project setting may come from — Raj's checklist, as a table (#827).
+"""Where each project setting may come from — the client lead's checklist, as a table (#827).
 
 A reviewer typing the overhang into the form used to have it stored as `Measured`, the one word the
 form could record, though nobody measured it: it came from the architect's drawings or the project
@@ -56,7 +56,7 @@ ALLOWED_SOURCES: Final[Mapping[str, tuple[Provenance, ...]]] = MappingProxyType(
         # "Global minimum · company standard (U.N.O.)".
         "back_offset_minimum": _COMPANY,
         "front_offset_required": _COMPANY,
-        # Raj's written rule: "a mutable variable", 1" / 2" (#809).
+        # The client lead's written rule: "a mutable variable", 1" / 2" (#809).
         "filler_min": _COMPANY,
         "filler_max": _COMPANY,
         # ¼" by default, and "changes from fabricator to fabricator. GV doesn't decide that one."

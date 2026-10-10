@@ -140,7 +140,7 @@ non-zero after a chat; the publication gate reports zero unconfirmed tolerances 
 
 ### Phase C — Rebuild the reading layer with agreement (≈2–4 weeks, the real work)
 This is the difference between the product we have and the product they think they bought. It needs the
-model decision (Abhishek) but **not** #274 — it can start on the shop drawings we already have.
+model decision (the client's project lead) but **not** #274 — it can start on the shop drawings we already have.
 
 1. **Wire the cross-route `SECOND_READER` agreement into `extract_pages`.** Today the vector/OCR/markup
    routes write independent candidates and no cross-route agreement runs (`evidence/corroborate.py`
@@ -195,7 +195,7 @@ This is the linchpin the layer-status doc calls out: it turns the reviewer's *co
 `CAB-ARCH-VS-SHOP-001` runs for real and returns PASS/FAIL (not NOT_FOUND).
 
 ### Phase E — Q21 distribution calculator + Q9 cabinet pick (≈1–2 weeks, a real feature)
-Raj asked for a system that *calculates* the redistribution, not just checks it. The arithmetic already
+The client lead asked for a system that *calculates* the redistribution, not just checks it. The arithmetic already
 exists (`verdict/operations/distribution.py:filler_distribution`); it needs a product around it.
 
 1. **Backend endpoint** that runs `filler_distribution` with the reviewer-chosen adjustable cabinet as an
@@ -227,9 +227,9 @@ Phase E is independent of C/D and can run in parallel once A is in.
 
 - **We own and can do now:** A, B, C, E. None are blocked on the client.
 - **Blocked on the client:** D (Q20 vocabulary), F (#274 real arch set + reviewed gold cases).
-- **Owed decisions:** the model choice (Abhishek) gates C's vision route; the "vendor-to-vendor"
+- **Owed decisions:** the model choice (the client's project lead) gates C's vision route; the "vendor-to-vendor"
   dynamism question (ADR-0006, open since 2026-08-25) and CT007 exact-vs-minimum (memory.md) are owed by
-  Raj/Abhishek and should be chased in parallel — none block A/B/C.
+  the client lead / the client's project lead and should be chased in parallel — none block A/B/C.
 
 ---
 

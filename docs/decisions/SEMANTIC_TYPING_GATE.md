@@ -29,7 +29,7 @@ set of tags approved for a layout to the typing stage; there is no global defaul
 `CT0xx` inference.  The mechanical resolver accepts an exact `SemanticType` value only — it does
 not normalise an alias, expand a synonym, or infer a type from position.
 
-That makes direct tags such as `CT007` usable where Raj has finalised them, while keeping back-only,
+That makes direct tags such as `CT007` usable where the client lead has finalised them, while keeping back-only,
 island, and generic cabinet/filler geometry out of the automatic lane until their tags are genuinely
 settled.
 

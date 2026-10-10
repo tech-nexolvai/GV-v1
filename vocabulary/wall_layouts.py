@@ -1,7 +1,7 @@
 """Plain words for the published wall layouts, said the same on every screen, finding and report.
 
 The rule decides with the layout's code (`rules/rulebook/ct_width_001.yaml`); these words are only
-what a reviewer reads. Field cut is 1 inch per wall end (settled with Raj), so each layout's words
+what a reviewer reads. Field cut is 1 inch per wall end (settled with the client lead), so each layout's words
 say how many ends stand against a wall.
 
 **Stone between panels.** A row whose stone stops at full-height panels or fillers before its ends

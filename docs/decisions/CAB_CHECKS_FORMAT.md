@@ -1,11 +1,11 @@
-# Cabinet checks — Raj's structured format (cab_Checks_New.pptx)
+# Cabinet checks — the client lead's structured format (cab_Checks_New.pptx)
 
-Raj sent a 6-slide deck (`cab_Checks_New.pptx`, received 2026-09-04) laying out the **cabinet /
+The client lead sent a 6-slide deck (`cab_Checks_New.pptx`, received 2026-09-04) laying out the **cabinet /
 wall-to-wall filler distribution** logic as named variables + scenarios + worked examples. This is the
 format he proposed for the whole rulebook; countertops will follow in the same shape.
 
 **Verdict: format APPROVED.** This is the structured, named, example-driven input we had been asking
-for — it replaces the spreadsheet's `CT0xx`/A–G tangle for the cabinet side. We told Raj yes and sent
+for — it replaces the spreadsheet's `CT0xx`/A–G tangle for the cabinet side. We told the client lead yes and sent
 back four clarifying questions (below). Countertops in this same format are the real prize, because the
 sink cut-out labels that were crossed in the spreadsheet will finally land unambiguously.
 
@@ -42,7 +42,7 @@ the equipment cabinet never**:
   `..._CAB_WIDTH_MAX`. Throw an error if the rules are violated.
 
 This is exactly the calculate-then-flag distribution behind CLIENT_FACTS Q8 (field-smaller), Q9
-(only regular cabinets move) and Q21 (calculate, not just check) — now written down in Raj's own terms.
+(only regular cabinets move) and Q21 (calculate, not just check) — now written down in the client lead's own terms.
 
 ## Worked examples → distribution-logic test cases (gold candidates)
 
@@ -64,7 +64,7 @@ cabinets move too. Dev to formalize as tests for the distribution module; each l
 - Expected site: `3 | 27 | 36 | 27 | 3` = 96"
 - Derivation: fillers 2→3 (+2" total) → 90" for cabinets → 36" equip fixed → 54" ÷ 2 regular = 27" each.
 
-## Open questions sent back to Raj (2026-09-04) — PENDING CLIENT
+## Open questions sent back to the client lead (2026-09-04) — PENDING CLIENT
 
 1. **Default values for the MIN/MAX variables** (filler + per-type cabinet), or confirm they are
    per-project reviewer inputs. The examples use filler MIN 2" / MAX 3" as *variable values*, not
@@ -81,7 +81,7 @@ cabinets move too. Dev to formalize as tests for the distribution module; each l
 
 ---
 
-**Record impact:** reinforces Q8, Q9, Q21 (distribution logic, now in Raj's own vocabulary) and gives
+**Record impact:** reinforces Q8, Q9, Q21 (distribution logic, now in the client lead's own vocabulary) and gives
 CABINETS a clean named vocabulary; does NOT close Q20 (countertop final tags still deferred until the
 layouts and the countertop deck land). The four open questions above are the follow-ups.
 

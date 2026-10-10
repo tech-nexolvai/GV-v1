@@ -100,7 +100,7 @@ def _project(project_id: str = "PRJ-1", **overrides: Quantity) -> ProjectScope:
                 name: ParameterValue(
                     value=quantity,
                     provenance=Provenance.GC_CLIENT,
-                    set_by="Raj",
+                    set_by="client lead",
                     set_at=datetime(2026, 8, 13, 9, 30, tzinfo=UTC),
                 )
                 for name, quantity in overrides.items()

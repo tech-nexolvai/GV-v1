@@ -39,7 +39,7 @@ labels:
   - {name: "area:infra",       color: "0e8a16", description: "Tooling, CI, repo hygiene"}
 
   - {name: "safety-critical",  color: "b60205", description: "Touches verdict/rules/evidence — tests mandatory, false-PASS risk"}
-  - {name: "blocked:client",   color: "e99695", description: "Waiting on the client (Raj)"}
+  - {name: "blocked:client",   color: "e99695", description: "Waiting on the client lead"}
   - {name: "blocked:decision", color: "e99695", description: "Waiting on a D-series decision"}
   - {name: "blocked:data",     color: "e99695", description: "Waiting on real drawings or gold set"}
 
@@ -264,7 +264,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, safety-critical, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       `Countertop_Checks_Updated.xlsx` cell `D21` says:
 
       > *"If the wall to wall dimension is 84", total width = 1" (field cut) + Wall to Wall dimension :
@@ -292,7 +292,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, safety-critical, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       **No tolerance value appears anywhere in the client material.** We read both workbooks cell by cell
       and all 16 embedded diagrams.
 
@@ -321,7 +321,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, safety-critical, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       In `Cabinet_Checks.xlsx` diagram `CAB_image2`, the **"Cab 1 Width"** bracket appears to span both
       the `51 [2]` end segment **and** the `533 [21]` cabinet body.
 
@@ -339,7 +339,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, safety-critical, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       Our primary safety metric is the **critical false-PASS rate** — a wrong PASS that could be
       manufactured. To measure it we must know which checks are critical.
 
@@ -360,7 +360,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       The workbook contradicts itself:
       - `X19` — *"Front offset B. Typical dimension is 4" **minimum**"*
       - `X27` (pass criteria) — *"Front offset **= 4"**. Back offset = 2.375"*
@@ -378,7 +378,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, P0]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Question for Raj
+      ## Question for the client lead
       Both `CT009` (Sink Back Offset) and `CT010` (Countertop Depth) are marked *"Calculated / System
       Calc"*, and each is defined in terms of the other:
 
@@ -397,7 +397,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, P1]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## Questions for Raj — needed before the rules phase, not blocking today
+      ## Questions for the client lead — needed before the rules phase, not blocking today
 
       **Q7 — Sink cut sheets.** Will GV supply the manufacturer's spec sheet (e.g. Kohler K-2330-G) per
       project? The sink checks have no authoritative source without it. Confirms **D4**.
@@ -429,7 +429,7 @@ questions:
     labels: [type:question, blocked:client, area:rules, P1]
     milestone: "M-DEC — Decisions & Client Questions"
     body: |
-      ## For Raj — suspected typos, please confirm
+      ## For the client lead — suspected typos, please confirm
 
       We will **not** silently "fix" a client specification. Each of these looks like a copy-paste slip;
       please confirm so we can author the rule correctly.
@@ -1367,7 +1367,7 @@ epics:
       Without a gold set **no metric can be computed and no release gate can pass**, regardless of how
       much code exists. Phase 0's exit gate is "held-out ground truth exists" — we cannot reach it alone.
 
-      ## Waiting on Raj
+      ## Waiting on the client lead
       - One complete real project (shop + arch set, with a countertop-on-cabinets example)
       - 5–10 previously reviewed drawings with their mark-ups
       - Agreement on the review policy

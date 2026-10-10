@@ -7,7 +7,7 @@
  * static renders and headless screenshots, not in the running app against a live API".
  *
  * `liveDistribution.ts` holds that response, captured from `POST /filler-distribution` on a server
- * running against a real database, for Raj's slide-6 example: 90" wall, 82" site, 3" fillers and a
+ * running against a real database, for the client lead's slide-6 example: 90" wall, 82" site, 3" fillers and a
  * 36" equipment cabinet between two 24" regulars.
  */
 import assert from 'node:assert/strict';

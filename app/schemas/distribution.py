@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-#: The four categories Raj's deck names. Three regular types, each with its own width bound, plus
+#: The four categories the client lead's deck names. Three regular types, each with its own width bound, plus
 #: the equipment cabinet, which has no bound here because the distribution never moves it.
 CabinetTypeName = Literal[
     "single_door",
@@ -58,7 +58,7 @@ class AssemblyInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cabinets: tuple[CabinetInput, ...] = Field(min_length=1)
-    #: Any number, ordered left to right. Raj's examples show two, and slide 12 names layouts with
+    #: Any number, ordered left to right. The client lead's examples show two, and slide 12 names layouts with
     #: a wall on only one side, so an arity of exactly two would refuse a run the deck describes.
     fillers: tuple[FillerInput, ...] = Field(min_length=1)
 
@@ -138,7 +138,7 @@ class FillerDistributionResponse(BaseModel):
     #: The operation's own condition, passed through rather than translated, so the reviewer's
     #: screen and a stored finding use one vocabulary.
     condition: str
-    #: The full explanation, in the shape Raj's slides 5 and 9 ask for: the two widths, what the
+    #: The full explanation, in the shape the client lead's slides 5 and 9 ask for: the two widths, what the
     #: fillers could absorb, and what the cabinets take. Assembled from the exact numbers, never by
     #: a model.
     message: str

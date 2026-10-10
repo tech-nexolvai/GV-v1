@@ -49,7 +49,7 @@ data/goldset/<case-id>/
     ]
   },
   "provenance": {
-    "annotator": "raj",
+    "annotator": "client_lead",
     "annotated_on": "2026-09-08",
     "documents": [
       {

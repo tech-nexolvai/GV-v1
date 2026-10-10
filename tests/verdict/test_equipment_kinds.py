@@ -66,7 +66,7 @@ def test_the_form_offers_seven_categories_regular_first_then_equipment() -> None
 
 
 def _run(middle: CabinetCategory):  # type: ignore[no-untyped-def]
-    """Raj's scenario 2 shape: the run grows 4", the fillers take 2", the regular cabinets the rest."""
+    """The client lead's scenario 2 shape: the run grows 4", the fillers take 2", the regular cabinets the rest."""
     bounds = {
         f"{kind.value}_cab_width_{edge}": _inches(1 if edge == "min" else 96)
         for kind in CabinetType

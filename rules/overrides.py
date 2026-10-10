@@ -2,7 +2,7 @@
 
 `CLIENT_FACTS` Q10. Every check carries a GLOBAL default — the company standard. Before a run the
 reviewer may set PROJECT overrides for that job: *"the reviewer says I can manage with 3.5 inch"*.
-Raj asked for two things to come out of that, and this module produces both:
+The client lead asked for two things to come out of that, and this module produces both:
 
 * *"wherever the global and project-specific variables differ, you can send a report, a summary of
   the variable discrepancies"* — `override_report`.
@@ -130,7 +130,7 @@ def override_report(rules: Iterable[Rule], *sets: ParameterSet) -> OverrideRepor
 
     A parameter a rule declares with its own default is not outstanding when no layer sets it: the
     default is a real answer the author wrote down. Outstanding means *declared with no default and
-    supplied by nobody*, which is exactly the mandatory blank form field Raj described.
+    supplied by nobody*, which is exactly the mandatory blank form field the client lead described.
     """
     resolved = resolve_all(*sets)
 

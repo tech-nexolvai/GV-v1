@@ -1407,7 +1407,7 @@ def test_a_correction_replaces_the_decision_and_makes_a_new_item(postgres_engine
             session, proposal=proposal, kind=PartKind.CABINET, code=None, actor=ACTOR
         )
         second = confirm_part(
-            session, proposal=proposal, kind=PartKind.FILLER, code=None, actor="raj"
+            session, proposal=proposal, kind=PartKind.FILLER, code=None, actor="client_lead"
         )
         third = withdraw_part(session, proposal=proposal, actor=ACTOR)
 

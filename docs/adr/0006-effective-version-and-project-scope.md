@@ -62,7 +62,7 @@ A project carries brand, vendor, parameter overrides and its own reference set. 
 distinct ways, and conflating them would be a mistake:
 
 - **As a resolver key** — it supplies the parameter overrides for a check (filler min/max, field
-  cut size, tolerances), layering over global defaults exactly as Raj's checklist describes with
+  cut size, tolerances), layering over global defaults exactly as the client lead's checklist describes with
   *"Global / Project Based Input"*.
 - **As an isolation boundary** — retrieval and matching filter by project, so one project's
   references can never be offered as evidence in another's review. Backend proposal §7.3 already

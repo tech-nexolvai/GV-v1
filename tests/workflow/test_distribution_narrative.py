@@ -1,4 +1,4 @@
-"""Raj's slides 5 and 9, reproduced from the arithmetic rather than transcribed.
+"""The client lead's slides 5 and 9, reproduced from the arithmetic rather than transcribed.
 
 **Asserted against the numbers, not against his prose.** Matching his wording exactly would pin a
 style, and the first sensible edit to a sentence would fail a test that was meant to protect the
@@ -66,7 +66,7 @@ def _explain(
     return explain_distribution(dict(result.intermediates))
 
 
-RAJ_LAYOUT = {
+CLIENT_LEAD_LAYOUT = {
     "cabinets": (24, 36, 24),
     "types": ("double_door", "equipment", "double_door"),
     "filler_min": 2,
@@ -74,9 +74,9 @@ RAJ_LAYOUT = {
 }
 
 
-def test_slide_five_states_every_figure_raj_states() -> None:
+def test_slide_five_states_every_figure_the_client_lead_states() -> None:
     """*"...8" needs to be reduced... fillers... from 3" to 2"... absorbs 2"... 6"... 24" to 21""*"""
-    said = _explain(field=82, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    said = _explain(field=82, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT)
 
     for figure in ('90"', '82"', '8"', '3"', '2"', '6"', '36"', '24"', '21"'):
         assert figure in said, f"{figure} is missing from: {said}"
@@ -86,7 +86,7 @@ def test_slide_five_states_every_figure_raj_states() -> None:
 
 def test_slide_nine_is_the_same_paragraph_in_the_other_direction() -> None:
     """*"...8" needs be increased... maximum width of the filler is 3"... 24" to 27""*"""
-    said = _explain(field=96, design=88, fillers=(2, 2), **RAJ_LAYOUT)
+    said = _explain(field=96, design=88, fillers=(2, 2), **CLIENT_LEAD_LAYOUT)
 
     for figure in ('88"', '96"', '8"', '2"', '3"', '6"', '36"', '24"', '27"'):
         assert figure in said, f"{figure} is missing from: {said}"
@@ -96,7 +96,7 @@ def test_slide_nine_is_the_same_paragraph_in_the_other_direction() -> None:
 
 def test_the_equipment_cabinet_is_named_as_the_reason_the_cabinets_take_it_all() -> None:
     """Slide 5 gives the reason, not just the result: the equipment cabinet cannot be reduced."""
-    said = _explain(field=82, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    said = _explain(field=82, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT)
 
     assert "equipment cabinet" in said
     assert re.search(r"cannot be less than 36\"", said), said
@@ -108,11 +108,11 @@ def test_the_equipment_cabinet_is_named_as_the_reason_the_cabinets_take_it_all()
 def test_a_named_equipment_cabinet_is_the_reason_too(kind: str) -> None:
     """#818: the reviewer said *which* equipment cabinet it is. Outcome: the paragraph still gives
     its 36" as the reason the other cabinets take the whole 6", word for word as for `equipment`."""
-    named = {**RAJ_LAYOUT, "types": ("double_door", kind, "double_door")}
+    named = {**CLIENT_LEAD_LAYOUT, "types": ("double_door", kind, "double_door")}
 
     said = _explain(field=82, design=90, fillers=(3, 3), **named)
 
-    assert said == _explain(field=82, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    assert said == _explain(field=82, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT)
     assert re.search(r"cannot be less than 36\"", said), said
 
 
@@ -168,7 +168,7 @@ def test_an_uneven_split_says_the_rule_does_not_settle_it() -> None:
 
 
 def test_a_site_that_matches_says_so_in_one_line() -> None:
-    said = _explain(field=90, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    said = _explain(field=90, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT)
 
     assert "already shows the architectural widths" in said
     assert (
@@ -178,7 +178,7 @@ def test_a_site_that_matches_says_so_in_one_line() -> None:
 
 def test_fillers_that_absorb_it_all_say_no_cabinet_changes() -> None:
     """Slide 12, outcome 3: the cabinets get green checks."""
-    said = _explain(field=88, design=90, fillers=(3, 3), **RAJ_LAYOUT)
+    said = _explain(field=88, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT)
 
     assert "no cabinet changes" in said
     assert '21"' not in said, "no cabinet moved, so no new cabinet width may appear"
@@ -229,13 +229,13 @@ def test_every_condition_the_operation_can_return_produces_a_paragraph(
     """
     cases: dict[str, str] = {
         DistributionCondition.NO_CHANGE_REQUIRED.value: _explain(
-            field=90, design=90, fillers=(3, 3), **RAJ_LAYOUT
+            field=90, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT
         ),
         DistributionCondition.FILLERS_ABSORB.value: _explain(
-            field=88, design=90, fillers=(3, 3), **RAJ_LAYOUT
+            field=88, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT
         ),
         DistributionCondition.CABINETS_ABSORB_REMAINDER.value: _explain(
-            field=82, design=90, fillers=(3, 3), **RAJ_LAYOUT
+            field=82, design=90, fillers=(3, 3), **CLIENT_LEAD_LAYOUT
         ),
         DistributionCondition.CANNOT_BE_RESOLVED.value: _explain(
             field=82,

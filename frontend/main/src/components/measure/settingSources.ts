@@ -1,7 +1,7 @@
 /**
  * Where a setting came from (#827): which source the form sends, and which settings still need one.
  *
- * The server lists each setting's allowed sources, in the order Raj's checklist gives them, and
+ * The server lists each setting's allowed sources, in the order the client lead's checklist gives them, and
  * refuses any other. One allowed source needs no question, so it is sent without asking; several
  * need the reviewer's answer, because which is true is a fact about the job the system cannot know.
  */

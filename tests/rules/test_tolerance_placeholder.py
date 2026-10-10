@@ -320,7 +320,7 @@ def test_the_refusal_names_the_parameter_and_who_owes_it() -> None:
 
 
 def test_the_back_offset_rule_is_releasable_after_the_vendor_minimum_arrives() -> None:
-    """Raj supplied the vendor range; the default is an attributable global standard."""
+    """The client lead supplied the vendor range; the default is an attributable global standard."""
     rule = _load_rulebook_rule("ct_back_offset_min_001.yaml")
 
     assert unresolved_client_parameters(rule) == ()

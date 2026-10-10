@@ -119,7 +119,7 @@ description: >
 applicability:
   discriminator: wall_config           # back_left_right | back_left | back_only | island
   variants:
-    - when: back_left_right             # walls on 3 sides (Raj's starting case)
+    - when: back_left_right             # walls on 3 sides (the client lead's starting case)
       tolerance: { value: "1/8", unit: in }
       field_cut_count: 2
     - when: back_left
@@ -192,7 +192,7 @@ For `sum_within_tolerance`:
 - Pydantic models + JSON Schema for all of the above; every rule validated on publish; every finding
   stores the resolved variant + operand evidence + rule snapshot ID.
 
-## 7. New semantic types this introduces (confirm names with Raj)
+## 7. New semantic types this introduces (confirm names with the client lead)
 `countertop_overall_width`, `cabinet_width`, `filler_width`, `field_cut` (parameter), `wall_config`
 (discriminator). The `wall_config` value is established from the plan (walls present on which sides) or
 set by the reviewer; if neither, the check abstains (`REVIEW_REQUIRED`).
