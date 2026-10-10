@@ -72,11 +72,14 @@ assert.match(html, /2 in — the rulebook&#x27;s default, until GV sets its own\
 assert.match(html, /2 3\/8 in — GV&#x27;s standard, set by anant on /);
 assert.match(html, /Not set — checks that need it say &quot;not found&quot; until it is\./);
 
-// The doubt note shows only while the rulebook default is in use; a company value shows the default
-// it replaced instead.
-assert.match(html, /awaiting his confirmation \(#674\)/);
-assert.match(html, /Rulebook default: <span class="num">2 1\/2 in<\/span>/);
-assert.equal((html.match(/Rulebook default:/g) ?? []).length, 1);
+// Each row is one line (#1155): where a value came from (the doubt note, who set it, the default
+// it replaced) sits behind the row's "?", never as prose in the table. A row with nothing to add
+// has no "?". (What the "?" opens is tested in tests/vitest/settings-rules-usage.test.tsx.)
+assert.doesNotMatch(html, /awaiting his confirmation/);
+assert.doesNotMatch(html, /Rulebook default:/);
+assert.match(html, /aria-label="Where filler max comes from"/);
+assert.match(html, /aria-label="Where back offset minimum comes from"/);
+assert.doesNotMatch(html, /aria-label="Where cabinet depth comes from"/);
 
 // Which checks use each one. No column suggests a project cannot use its own number: every one of
 // these can be set differently for one project, in that review's Measurements (#1072 review).

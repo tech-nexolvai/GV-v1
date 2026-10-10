@@ -25,8 +25,8 @@ def test_a_page_is_counted_the_way_a_reviewer_counts_sheets() -> None:
     """**Input: stored index 0. Outcome: "1".**
 
     `pages.index` is zero-based, the way the reader addresses a document. A reviewer counts sheets
-    from one, and so does every other surface in the product — `EnterValuesPage` and
-    `ConfirmReadingsPage` both render `page_index + 1`.
+    from one, and so does every other surface in the product — the drawing list
+    (`frontend/main/src/components/measure/DrawingRolesList.tsx`) renders `page_index + 1`.
 
     This endpoint was the exception, and it showed: asked which sheet had the failure, the AI
     answered *"Sheet 0 has the failure"* — a sheet that exists on no drawing. The number reaching a

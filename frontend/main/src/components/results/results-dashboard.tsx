@@ -204,7 +204,7 @@ export function ResultsDashboard({
               {query ? `Nothing matches “${search.trim()}”.` : filter === 'needs-you' ? 'Nothing needs you here.' : 'No countertops in this group.'}
             </p>
           ) : (
-            <CountertopTable rows={visible} actions={actions} architectNotice={sharedReason !== null} />
+            <CountertopTable rows={visible} allRows={rows} actions={actions} architectNotice={sharedReason !== null} />
           )}
         </>
       )}

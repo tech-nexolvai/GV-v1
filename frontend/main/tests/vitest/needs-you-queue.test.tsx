@@ -174,28 +174,28 @@ const key = (k: string) => act(() => void fireEvent.keyDown(document.body, { key
 describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
   it('opens on the first item, says how far along, and J / K move between items', async () => {
     setup();
-    expect(title()).toBe('Synthetic countertop walls');
+    expect(title()).toBe('Countertop · page 2');
     expect(document.querySelector('[data-slot="queue-progress"]')?.textContent).toContain('0 of 4');
     key('j');
-    expect(title()).toBe('Synthetic countertop panels');
+    expect(title()).toBe('Countertop · page 5');
     key('j');
     key('j');
     // A package-level check is named by its rule.
     expect(await screen.findByRole('heading', { name: 'Synthetic sink rule' }, { timeout: 5000 })).toBeTruthy();
     key('k');
-    expect(title()).toBe('Synthetic countertop fail');
+    expect(title()).toBe('Countertop · page 12');
   });
 
   it('an item\'s facts say the walls in words, and carry the row\'s drawn-length note only when it has one (#1126, #1107)', () => {
     const NOTE = 'Drawn length not checked (no scale): piece 2, the overall';
     setup({ rows: [FAIL, DONE, PANELS, { ...WALLS, drawn_length_note: NOTE }] });
-    expect(title()).toBe('Synthetic countertop walls');
+    expect(title()).toBe('Countertop · page 2');
     const item = () => document.querySelector('[data-slot="queue-item"]') as HTMLElement;
     expect(item().querySelector('[data-slot="drawn-length-note"]')?.textContent).toBe(NOTE);
     const walls = [...item().querySelectorAll('[data-slot="queue-facts"] > div')].find((chip) => chip.querySelector('dt')?.textContent === 'Walls')!;
     expect(walls.querySelector('dd')?.textContent).toBe('Not set');
     key('j');
-    expect(title()).toBe('Synthetic countertop panels');
+    expect(title()).toBe('Countertop · page 5');
     expect(item().querySelector('[data-slot="drawn-length-note"]')).toBeNull();
   });
 
@@ -204,7 +204,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(document.activeElement?.getAttribute('data-slot')).toBe('needs-you-queue');
     key('j');
     key('j');
-    expect(title()).toBe('Synthetic countertop fail');
+    expect(title()).toBe('Countertop · page 12');
     key('1'); // Confirm finding: a FAIL confirmed needs no note
     act(() => void fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' }));
     await waitFor(() => expect(props.handlers.onAction).toHaveBeenCalledWith('f-fail', 'confirm', undefined));
@@ -261,7 +261,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     rerender({ rows: decided, blocking: new Set(['f-walls', 'f-panels', 'f-sink']) });
     key('j');
     key('j');
-    expect(title()).toBe('Synthetic countertop fail');
+    expect(title()).toBe('Countertop · page 12');
     expect(screen.getByText(/Decided: Confirmed/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'History' }));
     const list = await screen.findByRole('list', { name: 'Decisions, newest first' }, { timeout: 5000 });
@@ -316,7 +316,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     await user.click(within(first).getByRole('radio', { name: 'Island; no wall ends' }));
     key('j');
     key('j');
-    expect(title()).toBe('Synthetic countertop fail');
+    expect(title()).toBe('Countertop · page 12');
     const next = await screen.findByRole('radiogroup', { name: 'Wall layout' }, { timeout: 5000 });
     expect(within(next).getAllByRole('radio').every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
     expect(screen.getByRole('button', { name: 'Use this wall layout' })).toHaveProperty('disabled', true);
@@ -385,7 +385,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     const { rerender } = setup();
     key('j');
     key('j');
-    expect(title()).toBe('Synthetic countertop fail');
+    expect(title()).toBe('Countertop · page 12');
     // Saved: readiness no longer blocks it, but the countertop rows have not reloaded yet.
     rerender({ blocking: new Set(['f-walls', 'f-panels', 'f-sink']) });
     expect(document.querySelector('[data-slot="queue-item"]')?.getAttribute('data-status')).toBe('decided');
@@ -432,7 +432,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     await user.click(within(walls).getByRole('radio', { name: 'Back wall only' }));
     await user.click(screen.getByRole('button', { name: 'Use this wall layout' }));
     key('j');
-    expect(title()).toBe('Synthetic countertop walls');
+    expect(title()).toBe('Countertop · page 2');
     await act(async () => release());
   });
 
@@ -446,7 +446,7 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     fireEvent.keyDown(screen.getByLabelText(/Why is this not checkable\?/), { key: 'Enter', ctrlKey: true });
     await waitFor(() => expect(onAction).toHaveBeenCalled());
     key('j');
-    expect(title()).toBe('Synthetic countertop walls');
+    expect(title()).toBe('Countertop · page 2');
     await act(async () => finish({ saved: true }));
   });
 });

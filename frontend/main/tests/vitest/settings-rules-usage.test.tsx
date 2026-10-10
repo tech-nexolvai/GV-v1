@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -50,11 +50,35 @@ describe('Company settings', () => {
     expect(screen.getByRole('progressbar', { name: '1 of 3 set by GV' }).getAttribute('aria-valuenow')).toBe(String((1 / 3) * 100));
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows.map((row) => row.getAttribute('data-source'))).toEqual(['rulebook', 'company', 'none']);
-    expect(within(rows[0]).getByText('Synthetic note on the default.')).toBeTruthy();
     expect(table.textContent).not.toMatch(/Same on every project|Can use its own/); // no lock the system does not have
-    expect(rows[1].textContent).toContain('by Synthetic Admin on');
-    expect(within(rows[1]).getByText('1/4 in')).toBeTruthy(); // the rulebook default it replaced
     expect(within(rows[2]).getByText('Not set — checks that need it say "not found" until it is.')).toBeTruthy();
+  });
+
+  it('keeps each row to one line: where a value came from is behind its "?", none of it lost (#1155)', async () => {
+    const user = userEvent.setup();
+    routes['GET /company-settings'] = () => json(SETTINGS);
+    render(<CompanySettingsPage />);
+    const table = await screen.findByRole('table', { name: "GV's standard numbers" });
+    const rows = within(table).getAllByRole('row').slice(1);
+    // No provenance prose on screen in the table itself (the screen-reader sentence stays).
+    const shown = table.cloneNode(true) as HTMLElement;
+    shown.querySelectorAll('.sr-only').forEach((node) => node.remove());
+    expect(shown.textContent).not.toContain('Synthetic note on the default.');
+    expect(shown.textContent).not.toContain('Synthetic Admin');
+    expect(shown.textContent).not.toContain('Rulebook default:');
+    // A row with nothing to add has no "?".
+    expect(within(rows[2]).queryByRole('button', { name: /comes from/ })).toBeNull();
+
+    // The rulebook's note on the default in use.
+    await user.click(within(rows[0]).getByRole('button', { name: 'Where filler min comes from' }));
+    expect((await screen.findByRole('dialog')).textContent).toBe('Synthetic note on the default.');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    // Who set GV's standard and when, and the rulebook default it replaced.
+    await user.click(within(rows[1]).getByRole('button', { name: 'Where sink clearance comes from' }));
+    const tip = await screen.findByRole('dialog');
+    expect(tip.textContent).toMatch(/^Set by Synthetic Admin on .+\.Rulebook default: 1\/4 in$/);
   });
 
   it('saves only the typed values, trimmed, through the same request', async () => {

@@ -279,7 +279,7 @@ function SegmentBox({ segment, stripY, stripBottom, hatch, corrected }: SegmentB
 
       {corrected && (
         <g className={`elevation__badge-mark elevation__badge-mark--${state}`}>
-          <circle cx={centre} cy={stripY} r={8} />
+          <circle cx={centre} cy={stripY} r={9} />
           <text x={centre} y={stripY + 4} textAnchor="middle">{changed ? '✕' : '✓'}</text>
         </g>
       )}

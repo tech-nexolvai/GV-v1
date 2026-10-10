@@ -140,7 +140,7 @@ describe('Results: a split page', () => {
 
   it('on a phone: the reason in the card, no countertop card button, no picture', () => {
     dashboard();
-    const card = within(screen.getByRole('list', { name: 'Countertops' })).getAllByRole('listitem').find((li) => li.textContent?.includes('Synthetic page 3'))!;
+    const card = within(screen.getByRole('list', { name: 'Countertops' })).getAllByRole('listitem').find((li) => li.textContent?.includes('Countertop · page 3'))!;
     expect(card.querySelector('[data-slot="split-page"]')?.textContent).toContain(SPLIT_REASON);
     expect(within(card).queryByRole('button', { name: 'Open countertop card' })).toBeNull();
     expect(card.querySelector('[data-slot="countertop-strip"]')).toBeNull();
@@ -260,7 +260,7 @@ describe('the "Needs you" queue: a split page', { timeout: 15_000 }, () => {
       />,
     );
     const item = document.querySelector<HTMLElement>('[data-slot="queue-item"]')!;
-    expect(item.querySelector('h2')?.textContent).toBe('Synthetic page 3');
+    expect(item.querySelector('h2')?.textContent).toBe('Countertop · page 3');
     expect(item.querySelector('[data-slot="split-page"]')?.textContent).toContain(SPLIT_REASON);
     expect(item.querySelector('[data-slot="countertop-strip"]')).toBeNull();
     expect(item.querySelector('[data-slot="queue-facts"]')).toBeNull();

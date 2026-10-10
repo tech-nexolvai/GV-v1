@@ -90,7 +90,8 @@ function StripSvg({ layout, size }: { layout: Extract<StripLayout, { status: 'dr
   const x0 = WALL; // the left wall face
   const end = x0 + layout.width;
   const runEnd = x0 + Math.max(...layout.pieces.map((p) => p.x + p.w), layout.caps.right ? layout.caps.right.x + layout.caps.right.w : 0);
-  const labelSize = full ? 12 : 11;
+  // Nothing under 12px (#1155), in either size.
+  const labelSize = 12;
   const fits = (piece: StripPiece) => piece.w >= (piece.label ?? '?').length * labelSize * 0.62 + 6;
 
   return (
@@ -131,7 +132,7 @@ function StripSvg({ layout, size }: { layout: Extract<StripLayout, { status: 'dr
           <g key={i} data-cap={i === 0 ? 'left' : 'right'} data-label={cap.label}>
             <rect x={x0 + cap.x} y={y.top} width={cap.w} height={y.bottom - y.top} className="fill-background stroke-foreground" strokeWidth="1" strokeDasharray="2 2" />
             {/* In the label row, flush with the outer edge, so it never sits on the back-wall line. */}
-            <text x={i === 0 ? x0 + cap.x - WALL : x0 + cap.x + cap.w + WALL} y={y.pieceLabel} textAnchor={i === 0 ? 'start' : 'end'} className="num fill-muted-foreground" fontSize={10}>{cap.label}</text>
+            <text x={i === 0 ? x0 + cap.x - WALL : x0 + cap.x + cap.w + WALL} y={y.pieceLabel} textAnchor={i === 0 ? 'start' : 'end'} className="num fill-muted-foreground" fontSize={12}>{cap.label}</text>
           </g>
         ) : null,
       )}

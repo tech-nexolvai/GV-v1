@@ -437,7 +437,7 @@ describe('the queue on screen: "Matches the architect?"', { timeout: 15_000 }, (
       />,
     );
     // Opened at the architect item, not the first open one (the width FAIL on page 2).
-    expect(document.querySelector('[data-slot="queue-item"] h2')?.textContent).toBe('Synthetic countertop q: matches the architect?');
+    expect(document.querySelector('[data-slot="queue-item"] h2')?.textContent).toBe('Countertop · page 6: matches the architect?');
     expect(document.querySelector('[data-slot="queue-decision"]')).toBeNull();
     act(() => void fireEvent.keyDown(document.body, { key: '1' })); // the decision keys do nothing here
     expect(document.querySelector('[data-slot="queue-decision"]')).toBeNull();

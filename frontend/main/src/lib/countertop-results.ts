@@ -175,6 +175,28 @@ export function sharedNotComparedReason(rows: readonly Pick<CountertopResult, 'a
   return shared;
 }
 
+/** The label code gives a countertop row when nothing tells it apart: it adds nothing to "page N". */
+const GENERIC_LABEL = /^countertop row on page \d+$/i;
+/** "Countertop row 2.1 on page 2": the part that tells it apart is "row 2.1". */
+const NUMBERED_LABEL = /^countertop (row \S+) on page \d+$/i;
+
+/**
+ * What tells a countertop apart from the others on its page (#1155), or null when nothing needs to:
+ * the page is said once on its own ("Countertop · page N", as the assistant's card says it), and the
+ * API's label is kept only when another countertop shares the page and the label is not the generic
+ * one. A numbered label keeps only its row ("row 2.1"); any other label is kept whole. The label is
+ * the API's own text, never invented.
+ */
+export function distinguishingLabel(
+  row: Pick<CountertopResult, 'row_id' | 'page_number' | 'label'>,
+  rows: readonly Pick<CountertopResult, 'row_id' | 'page_number'>[],
+): string | null {
+  const label = row.label.trim();
+  if (GENERIC_LABEL.test(label)) return null;
+  if (!rows.some((other) => other.row_id !== row.row_id && other.page_number === row.page_number)) return null;
+  return label.match(NUMBERED_LABEL)?.[1] ?? label;
+}
+
 /** The filter a reviewer lands on: what needs them, when anything does. */
 export function defaultFilter(rows: readonly CountertopResult[]): Filter {
   return rows.some(rowNeedsYou) ? 'needs-you' : 'all';

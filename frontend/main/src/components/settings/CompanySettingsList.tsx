@@ -1,5 +1,6 @@
 import { Progress } from '@/components/ui/progress';
 import { Input } from '@/components/ui/input';
+import { InfoTip } from '@/components/ui/info-tip';
 import { cn } from '@/lib/utils';
 import {
   inUseSentence,
@@ -26,6 +27,45 @@ function SourceBadge({ setting }: { setting: CompanySetting }) {
     >
       {SOURCE_WORD[source]}
     </span>
+  );
+}
+
+/**
+ * Where a value came from, behind "?" (#1155) so each row stays one line: who set GV's standard and
+ * when, the rulebook's note on its default while that default is in use, and the default a GV
+ * standard replaced. Nothing when there is nothing to add.
+ */
+function provenanceOf(setting: CompanySetting) {
+  return {
+    setBy: setting.in_use_from === 'company' && setting.company_set_by ? setting.company_set_by : null,
+    note: setting.rulebook_note && setting.in_use_from === 'rulebook' ? setting.rulebook_note : null,
+    replaced: setting.rulebook_default && setting.in_use_from !== 'rulebook' ? setting.rulebook_default : null,
+  };
+}
+
+function hasProvenance(setting: CompanySetting): boolean {
+  const { setBy, note, replaced } = provenanceOf(setting);
+  return Boolean(setBy || note || replaced);
+}
+
+function Provenance({ setting }: { setting: CompanySetting }) {
+  const { setBy, note, replaced } = provenanceOf(setting);
+  if (!setBy && !note && !replaced) return null;
+  return (
+    <InfoTip label={`Where ${settingLabel(setting.name).toLowerCase()} comes from`}>
+      {setBy && (
+        <p data-part="set-by">
+          Set by {setBy}
+          {setting.company_set_at && <> on {settingDate(setting.company_set_at)}</>}.
+        </p>
+      )}
+      {note && <p className="text-muted-foreground" data-part="note">{note}</p>}
+      {replaced && (
+        <p data-part="rulebook-default">
+          Rulebook default: <span className="num">{replaced}</span>
+        </p>
+      )}
+    </InfoTip>
   );
 }
 
@@ -80,44 +120,38 @@ export function CompanySettingsList({
           </thead>
           <tbody>
             {settings.map((setting) => (
-              <tr key={setting.name} className="border-b align-top last:border-b-0" data-source={setting.in_use_from ?? 'none'}>
+              <tr key={setting.name} className="border-b align-middle last:border-b-0" data-source={setting.in_use_from ?? 'none'}>
                 <th scope="row" className="min-w-40 px-3 py-2 text-left font-normal">
                   <label className="font-medium" htmlFor={`company-${setting.name}`}>
                     {settingLabel(setting.name)}
                   </label>{' '}
                   <code className="text-xs text-muted-foreground">{setting.name}</code>
-                  {setting.rulebook_note && setting.in_use_from === 'rulebook' && (
-                    <p className="mt-1 max-w-md text-xs text-muted-foreground" data-part="note">{setting.rulebook_note}</p>
-                  )}
                 </th>
                 <td className="px-3 py-2">
-                  <div className="flex flex-col gap-1">
-                    <span className="num" aria-hidden="true">{setting.in_use ?? '—'}</span>
+                  {/* One line (#1155): the value, where it comes from, "?" for the story behind it, the box. */}
+                  {/* In columns from a tablet up, so the boxes line up row under row; wrapping on a phone. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 sm:grid sm:grid-cols-[minmax(6rem,max-content)_8rem_2.75rem_8rem]">
+                    <span className="num whitespace-nowrap" aria-hidden="true">{setting.in_use ?? '—'}</span>
                     <span aria-hidden="true"><SourceBadge setting={setting} /></span>
-                    {setting.in_use_from === 'company' && setting.company_set_by && (
-                      <span className="text-xs text-muted-foreground" aria-hidden="true">
-                        by {setting.company_set_by}
-                        {setting.company_set_at && <> on {settingDate(setting.company_set_at)}</>}
-                      </span>
+                    {/* An empty cell keeps the box in its column when there is no "?". */}
+                    {/* The "?" centred in a 44 px column, so its invisible finger target never covers the box. */}
+                    {hasProvenance(setting) ? (
+                      <span className="flex sm:justify-center"><Provenance setting={setting} /></span>
+                    ) : (
+                      <span className="hidden sm:block" aria-hidden="true" />
                     )}
                     {/* The same facts as one sentence, for a screen reader. */}
                     <span className="sr-only" id={`company-${setting.name}-now`}>{inUseSentence(setting)}</span>
-                    {/* The new value sits under the one in use, so it stays in view on a phone. */}
                     <Input
                       id={`company-${setting.name}`}
                       type="text"
-                      className="num mt-1 w-32"
+                      className="num h-8 w-32"
                       placeholder={'e.g. 2 1/2"'}
                       aria-describedby={`company-${setting.name}-now`}
                       value={drafts[setting.name] ?? ''}
                       disabled={saving}
                       onChange={(event) => onDraft(setting.name, event.target.value)}
                     />
-                    {setting.rulebook_default && setting.in_use_from !== 'rulebook' && (
-                      <p className="text-xs text-muted-foreground">
-                        Rulebook default: <span className="num">{setting.rulebook_default}</span>
-                      </p>
-                    )}
                   </div>
                 </td>
                 <td className="hidden px-3 py-2 lg:table-cell" data-part="used-by">

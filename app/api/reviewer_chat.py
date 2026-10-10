@@ -158,9 +158,9 @@ def _evidence_page(reference: object) -> str | None:
     if not isinstance(document, str) or not document.strip():
         return None
     # `pages.index` is zero-based, the way the reader addresses a document; a reviewer counts sheets
-    # from one, and so does every other surface in the product (`EnterValuesPage`,
-    # `ConfirmReadingsPage`). This endpoint was the exception, which put "Sheet 0 has the failure"
-    # into an AI answer — a sheet that exists on no drawing.
+    # from one, and so does every other surface in the product (for example the drawing list in
+    # `frontend/main/src/components/measure/DrawingRolesList.tsx`). This endpoint was the exception,
+    # which put "Sheet 0 has the failure" into an AI answer — a sheet that exists on no drawing.
     #
     # The comment here previously called the raw value intentional because this endpoint "does not
     # calculate a new page number or infer a sheet title". Not inferring a *title* is right and

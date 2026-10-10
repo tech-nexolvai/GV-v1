@@ -247,6 +247,15 @@ describe('ReviewPage: sign-off, then the signed report', () => {
     expect(posts.filter((url) => url.endsWith('/approve'))).toEqual([]);
   });
 
+  it('the Results tab says what still needs you with the outcome glyph and in words, not a coloured number alone (#1155)', async () => {
+    serveReadiness(() => ({ revision_id: 'rev', can_approve: false, blocking_findings: 3, blocking_finding_ids: ['f-a'], reason: 'Synthetic: still blocked.' }));
+    render(<Page />);
+    const tab = await screen.findByRole('tab', { name: 'Results 3 need you' });
+    const badge = tab.querySelector('[data-slot="results-tab-badge"]')!;
+    expect(badge.querySelector('[data-outcome-icon="REVIEW_REQUIRED"]')).not.toBeNull();
+    expect(badge.querySelector('.num')?.textContent).toBe('3');
+  });
+
   it("while the server holds sign-off for a pairing, the panel shows its reason and Sign off stays off", async () => {
     serveReadiness(() => ({ revision_id: 'rev', can_approve: false, blocking_findings: 0, blocking_finding_ids: [], reason: PAIRING_NEEDS_RERUN }));
     render(<Page />);
