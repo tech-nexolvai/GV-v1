@@ -291,7 +291,7 @@ from workflow.architect_pairing import (
     architect_page_input,
     persist_architect_pairings,
 )
-from workflow.architect_pairing_records import architect_views
+from workflow.architect_pairing_records import architect_view_tags, architect_views
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
@@ -2133,12 +2133,15 @@ class DatabaseStages:
         if self._architect_reader is not None:
             # Before the readers that use the drawings' roles, so a role code confirms here is the
             # one the slot reader's architect filter reads.
-            self._read_architect_drawings(
+            architect = self._read_architect_drawings(
                 session,
                 package_revision_id=package_revision_id,
                 verified_data=verified_data,
                 task_run_id=task_run.id,
             )
+            # Never silent (#1163): each page's architect notes — views found without a role,
+            # views refused, why no view was found — travel with that page's result.
+            results = _with_architect_notes(results, architect)
         if self._form_reader is not None:
             for version in _shop_document_versions_for(session, package_revision_id):
                 shop_data = verified_data.get(version)
@@ -2219,7 +2222,11 @@ class DatabaseStages:
                 dpi=self._dpi,
             )
             counts = persist_architect_pages(
-                session, document_version_id=version, extraction_run_id=run.id, pages=readings
+                session,
+                document_version_id=version,
+                extraction_run_id=run.id,
+                pages=readings,
+                architect_document=architect_document,
             )
             payload[str(version)] = vars(counts)
             # The pairing (#1053) takes the reading with the exact candidates just stored, and only
@@ -2231,6 +2238,7 @@ class DatabaseStages:
                     reading,
                     page_id=page.id,
                     architect_views=architect_views(session, page.id),
+                    architect_tags=architect_view_tags(session, page.id),
                     candidate_ids=stored.get(page.id, {}),
                     architect_run_id=run.id,
                 )
@@ -7581,6 +7589,32 @@ def _shop_document_versions_for(session: Session, package_revision_id: UUID) -> 
         .scalars()
         .all()
     )
+
+
+def _with_architect_notes(
+    results: Sequence[PageResult], architect: Mapping[str, object]
+) -> list[PageResult]:
+    """`results` with each page's architect-reader notes (`ArchitectCounts` lists) in its payload."""
+    noted: list[PageResult] = []
+    for result in results:
+        counts = architect.get(str(result.payload.get("document_version_id")))
+        page_index = result.payload.get("document_page_index")
+        notes: dict[str, list[object]] = {}
+        if isinstance(counts, Mapping):
+            for key in ("views_without_role", "refused_views", "page_notes"):
+                entries = counts.get(key)
+                if isinstance(entries, list):
+                    mine: list[object] = [
+                        entry
+                        for entry in entries
+                        if isinstance(entry, Mapping) and entry.get("page_index") == page_index
+                    ]
+                    if mine:
+                        notes[key] = mine
+        noted.append(
+            result if not notes else replace(result, payload={**result.payload, "architect": notes})
+        )
+    return noted
 
 
 def _architect_reader_versions_for(

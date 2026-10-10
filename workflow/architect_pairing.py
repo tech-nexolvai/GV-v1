@@ -442,6 +442,7 @@ def architect_page_input(
     architect_views: Collection[int],
     candidate_ids: Mapping[tuple[int, int, int], UUID],
     architect_run_id: UUID | None,
+    architect_tags: Collection[str] | None = None,
 ) -> ArchitectPageInput:
     """One page's architect rows for the pairing.
 
@@ -449,12 +450,22 @@ def architect_page_input(
     (code's two judgments or a person's); `candidate_ids` maps `(view, row rank, slot)` to the
     candidate the architect reader stored for that span.
     """
-    views = {view.annotation_index: view for view in reading.views}
+
+    def tag(source: str, number: int) -> str:
+        return f"view-{number}" if source == "content" else f"panel-{number}"
+
+    def is_architect(source: str, number: int) -> bool:
+        # By tag when given (#1163): `panel-<n>` and `view-<n>` share a number.
+        if architect_tags is not None:
+            return tag(source, number) in architect_tags
+        return number in architect_views
+
+    views = {(view.source, view.annotation_index): view for view in reading.views}
     rows: list[ArchitectRowInput] = []
     for row in reading.rows:
-        if row.view_annotation_index not in architect_views:
+        if not is_architect(row.view_source, row.view_annotation_index):
             continue
-        view = views.get(row.view_annotation_index)
+        view = views.get((row.view_source, row.view_annotation_index))
         scale, scale_reason = (
             (None, "the drawing is unknown") if view is None else (_architect_scale(view))
         )
@@ -488,7 +499,7 @@ def architect_page_input(
             )
         )
     reasons: tuple[str, ...] = ()
-    if not any(view.annotation_index in architect_views for view in reading.views):
+    if not any(is_architect(view.source, view.annotation_index) for view in reading.views):
         reasons = ("No drawing on this sheet is confirmed as the architect's.",)
     return ArchitectPageInput(
         page_id=page_id,
