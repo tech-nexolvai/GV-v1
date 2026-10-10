@@ -111,6 +111,14 @@ def _cut(text: str | None) -> str | None:
     return collapsed if len(collapsed) <= MAX_TEXT else collapsed[: MAX_TEXT - 1].rstrip() + "…"
 
 
+def _reason(text: str | None) -> str | None:
+    """A reason shown on its own reads as a sentence: it starts with a capital letter."""
+    cut = _cut(text)
+    if cut is None or not cut[:1].islower():
+        return cut
+    return cut[:1].upper() + cut[1:]
+
+
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -328,7 +336,7 @@ def _rule(finding: ComposerFinding | None) -> RuleRecord | None:
         name=finding.check_name,
         tolerance=_cut(finding.tolerance),
         comparison=_cut(finding.comparison),
-        reason=_cut(finding.reason),
+        reason=_reason(finding.reason),
     )
 
 
@@ -339,8 +347,8 @@ def _architect(item: CountertopResultOut) -> ArchitectRecord | None:
     return ArchitectRecord(
         outcome=None if block.outcome is None else block.outcome.value,
         outcome_label=None if block.outcome is None else outcome_label(block.outcome.value),
-        reason=_cut(block.reason),
-        not_compared_reason=_cut(block.not_compared_reason),
+        reason=_reason(block.reason),
+        not_compared_reason=_reason(block.not_compared_reason),
         needs_you=block.needs_decision,
         pairs=tuple(
             ArchitectPairRecord(
@@ -390,8 +398,8 @@ def _countertop(
         wall=_cut(item.wall_layout.label),
         wall_source=item.wall_layout.source,
         hold_code=None if item.hold is None else item.hold.code,
-        hold_reason=None if item.hold is None else _cut(item.hold.reason),
-        drawn_length_note=_cut(item.drawn_length_note),
+        hold_reason=None if item.hold is None else _reason(item.hold.reason),
+        drawn_length_note=_reason(item.drawn_length_note),
         decision=(
             None
             if decision is None
@@ -457,7 +465,7 @@ def build_snapshot(
             outcome=finding.outcome,
             outcome_label=outcome_label(finding.outcome),
             needs_you=finding.key in blocking,
-            reason=_cut(finding.reason),
+            reason=_reason(finding.reason),
             comparison=_cut(finding.comparison),
             tolerance=_cut(finding.tolerance),
             values=tuple(
@@ -499,11 +507,11 @@ def build_snapshot(
         countertops=countertop_records,
         other_checks=other_records,
         pages_without_countertop=tuple(
-            PageNoteRecord(page_number=page.page_number, reason=_cut(page.reason) or "")
+            PageNoteRecord(page_number=page.page_number, reason=_reason(page.reason) or "")
             for page in countertops.pages_without_countertop[:MAX_PAGE_NOTES]
         ),
         rows_not_checked=tuple(
-            PageNoteRecord(page_number=page.page_number, reason=_cut(page.reason) or "")
+            PageNoteRecord(page_number=page.page_number, reason=_reason(page.reason) or "")
             for page in countertops.rows_not_checked[:MAX_PAGE_NOTES]
         ),
         omitted=omitted,

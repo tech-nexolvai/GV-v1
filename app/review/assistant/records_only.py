@@ -180,59 +180,66 @@ def _has(snapshot: ReviewSnapshot, key: str, field: str) -> bool:
     return True
 
 
+#: The label code gives a countertop row when the drawing names none: it adds nothing to "page N".
+_GENERIC_LABEL: Final = re.compile(r"^countertop row on page \d+$", re.IGNORECASE)
+
+
 def _subject(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str:
+    """The record's subject: its page, and its label only when it tells two countertops apart."""
     key = item.id
     if isinstance(item, CountertopRecord):
-        return f"The countertop on {{{key}.page}} ({{{key}.label}})"
+        others = [
+            other
+            for other in snapshot.countertops
+            if other.page_number == item.page_number and other.id != key
+        ]
+        if others and not _GENERIC_LABEL.match(item.label.strip()):
+            return f"The countertop on {{{key}.page}} ({{{key}.label}})"
+        return f"The countertop on {{{key}.page}}"
     where = f" on {{{key}.page}}" if _has(snapshot, key, "page") else ""
     return f"The {{{key}.check}} check{where}"
+
+
+def _why(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str | None:
+    """The one field that says why a result is what it is: the hold, else the rule's reason."""
+    key = item.id
+    if isinstance(item, CountertopRecord):
+        if _has(snapshot, key, "hold_reason"):
+            return f"{{{key}.hold_reason}}"
+        if item.outcome not in ("PASS", None) and _has(snapshot, key, "reason"):
+            return f"{{{key}.reason}}"
+        return None
+    if item.outcome != "PASS" and _has(snapshot, key, "reason"):
+        return f"{{{key}.reason}}"
+    return None
 
 
 def _record_lines(
     snapshot: ReviewSnapshot,
     item: CountertopRecord | FindingRecord,
-    fields: Sequence[str] | None = None,
+    extra: Sequence[str] = (),
 ) -> str:
-    """The record's outcome as a header, then one list line per fact it holds."""
+    """One sentence: the subject and its outcome, then why. The evidence card under the
+    answer carries the values, so the text never repeats them; `extra` adds a named field only
+    when the question asks for it (the walls, the architect check)."""
     key = item.id
-    if fields is None:
-        if isinstance(item, CountertopRecord):
-            fields = (
-                "printed",
-                "needed",
-                "difference",
-                "tolerance",
-                "reason",
-                "hold_reason",
-                "drawn_length_note",
-                "architect",
-                "needs_you",
-            )
-        else:
-            fields = ("reason", "comparison", "tolerance", "needs_you")
-    lines: list[str] = []
-    for field in fields:
-        if not _has(snapshot, key, field):
-            continue
-        if (
-            field == "reason"
-            and isinstance(item, CountertopRecord)
-            and (item.outcome == "PASS" or (item.rule and item.rule.reason == item.hold_reason))
-        ):
-            continue
-        lines.append(f"- {{{key}.{field}}}")
-    if item.decision is not None and item.decision.note:
-        lines.append(f"- {{{key}.decision}}")
-    header = f"{_subject(snapshot, item)} {{{key}.outcome}}"
-    return "\n".join([header + (":" if lines else "."), *lines])
+    parts = [f"{_subject(snapshot, item)} {{{key}.outcome}}"]
+    if extra:
+        parts.extend(f"{{{key}.{field}}}" for field in extra if _has(snapshot, key, field))
+    else:
+        why = _why(snapshot, item)
+        if why is not None:
+            parts.append(why)
+    # One sentence, so it names its subject once and carries one citation.
+    return "; ".join(parts) + "."
 
 
 def _explain(
     snapshot: ReviewSnapshot,
     items: Sequence[CountertopRecord | FindingRecord],
-    fields: Sequence[str] | None = None,
+    extra: Sequence[str] = (),
 ) -> Draft:
-    paragraphs = [_record_lines(snapshot, item, fields) for item in items[:MAX_EXPLAINED]]
+    paragraphs = [_record_lines(snapshot, item, extra) for item in items[:MAX_EXPLAINED]]
     if len(items) > MAX_EXPLAINED:
         paragraphs.append("The rest are listed in the queue.")
     return Draft(
@@ -255,10 +262,6 @@ def _actions_for(items: Sequence[CountertopRecord | FindingRecord]) -> tuple[tup
     return tuple(actions)
 
 
-def _list_line(snapshot: ReviewSnapshot, item: CountertopRecord | FindingRecord) -> str:
-    return f"- {_subject(snapshot, item)} {{{item.id}.outcome}}"
-
-
 def _waiting(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]:
     return [
         record
@@ -270,62 +273,55 @@ def _waiting(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]
 def blockers_answer(snapshot: ReviewSnapshot) -> Draft:
     """What still stands between this package and sign-off, in sign-off readiness's own numbers.
 
-    Results that block sign-off are listed under it only when sign-off is blocked; countertops
-    with no check result are listed apart, since readiness does not wait for them, so the answer
-    never says "you can sign off" and lists blockers together.
+    The text is the sign-off status (and, when some countertops have no check result, their
+    count, which readiness does not wait for); the `blockers` evidence lists every open item, so
+    the text never repeats the list.
     """
     if not snapshot.checks_have_run:
         return Draft(text=NOTHING_HAS_RUN, evidence=("blockers",))
     waiting = _waiting(snapshot)
     blocking = [item for item in waiting if item.outcome is not None]
     unchecked = [item for item in waiting if item.outcome is None]
-    lines = ["{signoff.status}."]
-    if blocking and not snapshot.readiness.can_sign_off:
-        lines.append("These are still open in the queue:")
-        lines.extend(_list_line(snapshot, item) for item in blocking[:MAX_LISTED])
-        if len(blocking) > MAX_LISTED:
-            lines.append("The rest are listed in the queue.")
+    sentences = ["{signoff.status}."]
     if unchecked:
-        lines.append("These countertops have no check result yet:")
-        lines.extend(_list_line(snapshot, item) for item in unchecked[:MAX_LISTED])
+        sentences.append("{count.not_checked}.")
     first = (blocking if not snapshot.readiness.can_sign_off else []) + unchecked
     return Draft(
-        text="\n".join(lines),
+        text=" ".join(sentences),
         evidence=("blockers",),
         actions=(() if not first else (("open_queue_item", first[0].id),)),
     )
 
 
 def _notes_answer(snapshot: ReviewSnapshot, *, no_countertop: bool) -> Draft:
+    """One sentence with the count; the evidence group lists the pages and the readers' reasons."""
     notes = snapshot.pages_without_countertop if no_countertop else snapshot.rows_not_checked
     group = "no_countertop_pages" if no_countertop else "rows_not_checked"
-    field = "no_countertop" if no_countertop else "second_row"
-    if not notes:
-        return Draft(text=f"{{count.{group}}}.", evidence=(group,))
-    lines = [f"{{count.{group}}}:"]
-    lines.extend(f"- {{P{note.page_number}.{field}}}" for note in notes[:MAX_LISTED])
-    if len(notes) > MAX_LISTED:
-        lines.append("The rest are listed under the countertop results.")
     return Draft(
-        text="\n".join(lines),
+        text=f"{{count.{group}}}.",
         evidence=(group,),
-        actions=(("open_page", f"P{notes[0].page_number}"),),
+        actions=(() if not notes else (("open_page", f"P{notes[0].page_number}"),)),
     )
 
 
-def _page_notes(snapshot: ReviewSnapshot, page: int) -> list[str]:
-    return [
-        f"{{P{page}.{field}}}."
-        for field in ("no_countertop", "second_row")
-        if _has(snapshot, f"P{page}", field)
-    ]
+def _page_notes(snapshot: ReviewSnapshot, page: int) -> tuple[list[str], list[str]]:
+    """Short sentences for a page's notes, and the evidence groups that hold their reasons."""
+    sentences: list[str] = []
+    groups: list[str] = []
+    if _has(snapshot, f"P{page}", "no_countertop"):
+        sentences.append(f"{{P{page}.page}} has no countertop.")
+        groups.append("no_countertop_pages")
+    if _has(snapshot, f"P{page}", "second_row"):
+        sentences.append(f"{{P{page}.page}} also has a second countertop that was not checked.")
+        groups.append("rows_not_checked")
+    return sentences, groups
 
 
 def _page_answer(
-    snapshot: ReviewSnapshot, page: int, *, want: str, fields: Sequence[str] | None = None
+    snapshot: ReviewSnapshot, page: int, *, want: str, extra: Sequence[str] = ()
 ) -> Draft:
     records = list(snapshot.on_page(page))
-    notes = _page_notes(snapshot, page)
+    notes, groups = _page_notes(snapshot, page)
     if not records and not notes:
         return Draft(text=NOTHING_ON_THAT_PAGE)
     if want == "fail":
@@ -334,39 +330,30 @@ def _page_answer(
         chosen = [item for item in records if item.needs_you] or records
     else:
         chosen = records
-    draft = _explain(snapshot, chosen, fields) if chosen else Draft(text="")
+    draft = _explain(snapshot, chosen, extra) if chosen else Draft(text="")
     if not notes:
         return draft
     return Draft(
-        text="\n\n".join(part for part in (draft.text, "\n".join(notes)) if part),
-        evidence=draft.evidence,
+        text="\n\n".join(part for part in (draft.text, " ".join(notes)) if part),
+        evidence=(*draft.evidence, *groups),
         actions=draft.actions or (("open_page", f"P{page}"),),
     )
 
 
-_DETAIL_FIELDS: Final = (
-    "walls",
-    "printed",
-    "pieces",
-    "field_cut",
-    "needed",
-    "difference",
-    "drawn_length_note",
-)
-_FIX_FIELDS: Final = ("reason", "printed", "needed", "difference", "hold_reason", "needs_you")
 _FIX_NOTE: Final = (
-    "The assistant and the app do not change the drawing; the vendor redraws it. Open the item "
-    "in the queue to look at it on the drawing and record what goes back to the vendor."
+    "The app does not change the drawing; the vendor redraws it. Open the item in the queue to "
+    "see it on the drawing and record what goes back to the vendor."
 )
 
 
 def details_answer(snapshot: ReviewSnapshot, page: int) -> Draft:
-    """What was read on a page: walls, printed overall, pieces, field cut, needed overall."""
-    return _page_answer(snapshot, page, want="any", fields=_DETAIL_FIELDS)
+    """What was read on a page: the outcome and the walls in text; the evidence card shows the
+    printed overall, the pieces, the field cut and the needed overall."""
+    return _page_answer(snapshot, page, want="any", extra=("walls",))
 
 
 def _fix_answer(snapshot: ReviewSnapshot, page: int) -> Draft:
-    draft = _page_answer(snapshot, page, want="fail", fields=_FIX_FIELDS)
+    draft = _page_answer(snapshot, page, want="fail")
     if draft.text == NOTHING_ON_THAT_PAGE:
         return draft
     return Draft(
@@ -442,6 +429,8 @@ def answer_for_question(
             return _fix_answer(snapshot, page)
         if _DETAIL_WORDS.search(folded):
             return details_answer(snapshot, page)
+        if "architect" in folded:
+            return _page_answer(snapshot, page, want="any", extra=("architect",))
         want = (
             "fail"
             if _FAIL_WORDS.search(folded)
@@ -470,27 +459,34 @@ def judging_answer(snapshot: ReviewSnapshot, page: int | None, focus: Focus | No
         record = None if focus.record_id is None else snapshot.by_record_id(focus.record_id)
         if record is not None:
             return Draft(
-                text="\n".join([_list_line(snapshot, record)[2:] + ".", YOUR_DECISION]),
+                text=f"{_subject(snapshot, record)} {{{record.id}.outcome}}. {YOUR_DECISION}",
+                evidence=(record.id,) if record.id.startswith("C") else (),
                 actions=((("open_queue_item", record.id),) if record.needs_you else ()),
             )
         page = focus.page_number
     if page is None:
         blockers = blockers_answer(snapshot)
         return Draft(
-            text=f"{blockers.text}\n{YOUR_DECISION}",
+            text=f"{blockers.text} {YOUR_DECISION}",
             evidence=blockers.evidence,
             actions=blockers.actions,
         )
     records = list(snapshot.on_page(page))
-    notes = _page_notes(snapshot, page)
+    notes, groups = _page_notes(snapshot, page)
     if not records and not notes:
         return Draft(text=NOTHING_ON_THAT_PAGE)
-    lines = [_list_line(snapshot, item)[2:] + "." for item in records[:MAX_LISTED]]
-    lines.extend(notes)
-    lines.append(YOUR_DECISION if records else NOTHING_TO_DECIDE_THERE)
+    sentences = [
+        f"{_subject(snapshot, item)} {{{item.id}.outcome}}." for item in records[:MAX_EXPLAINED]
+    ]
+    sentences.extend(notes)
+    sentences.append(YOUR_DECISION if records else NOTHING_TO_DECIDE_THERE)
     waiting = next((item for item in records if item.needs_you), None)
     return Draft(
-        text="\n".join(lines),
+        text=" ".join(sentences),
+        evidence=(
+            *(item.id for item in records[:MAX_EXPLAINED] if item.id.startswith("C")),
+            *groups,
+        ),
         actions=(
             (("open_queue_item", waiting.id),)
             if waiting is not None
