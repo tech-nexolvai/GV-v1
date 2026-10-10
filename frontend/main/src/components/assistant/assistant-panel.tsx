@@ -300,7 +300,7 @@ export function AssistantPanel({
         {turns.map((turn, index) => {
           const latest = index === turns.length - 1;
           return (
-            <div key={turn.id} className="flex flex-col gap-6">
+            <div key={turn.id} className="flex min-w-0 flex-col gap-6">
               <div data-slot="assistant-question" className="max-w-[85%] self-end rounded-[16px_16px_4px_16px] bg-muted px-3.5 py-2 break-words whitespace-pre-line">
                 {turn.context && (
                   <span className="block text-xs text-muted-foreground">

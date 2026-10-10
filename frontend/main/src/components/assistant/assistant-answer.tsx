@@ -157,7 +157,7 @@ function BlockerList({ items, nav }: { items: readonly Blocker[]; nav: Assistant
               <span className="block truncate">
                 {item.page !== null ? <>Page <span className="num">{item.page}</span></> : item.title}
               </span>
-              <span className="block truncate text-xs text-muted-foreground" title={item.detail}>
+              <span className="block line-clamp-2 text-xs text-muted-foreground" title={item.detail}>
                 {item.detail}
               </span>
             </span>
@@ -411,7 +411,9 @@ export function AnswerView({
   }
 
   return (
-    <div data-slot="assistant-answer" data-mode={answer.mode} className="grid min-w-0 gap-3">
+    // One column that may shrink: an auto column would grow to the longest one-line (truncated) reason
+    // and push the lists past the panel's edge.
+    <div data-slot="assistant-answer" data-mode={answer.mode} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
       <p className="leading-relaxed break-words whitespace-pre-line">
         {visibleParts(tokens, shown).map((part, index) =>
           part.kind === 'cite' ? <CiteChip key={index} part={part} nav={nav} /> : part.text,
