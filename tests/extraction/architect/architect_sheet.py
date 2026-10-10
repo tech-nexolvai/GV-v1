@@ -14,6 +14,13 @@ by hand, byte by byte, like `combined_sheet.py`, whose invented architect's draw
 * `architect_sheet(vendor=True)` — the vendor's kind of drawing (millimetres, `1:10`) under a title;
 * `architect_sheet(titled=False)` — the scale note and bubble printed, but no view title;
 * `architect_sheet(wall=True)` — a wall line right of the drawing running down past its title;
+* `ticks="big"` / `"arrow"` — 7 pt slashes, or arrowheads in place of slashes;
+* `notes=True` — general notes printed beside the view; `title_block_note=True` — a title over a
+  scale note inside the title block; `joined_border=True` — the drawing's ink joined to the border;
+  `stacked=True` — a second view lower down whose drawing stands level with the first's title;
+* `approval_stamp=True` — an "approved" stamp pasted over the drawing (no dimension in it);
+* `printed_at=0.5` — the whole sheet printed at half size, its scale note unchanged;
+* `crop=(l, b, r, t)` — a crop box inside the media box (`pasted_sheet` takes it too);
 * `architect_sheet(origin=(dx, dy))` — the same page with a media box that starts at `(dx, dy)`;
 * `pasted_sheet(origin=...)` — the architect's drawing pasted as a `/Stamp` on such a page, no
   heading (the crop crash).
@@ -21,6 +28,7 @@ by hand, byte by byte, like `combined_sheet.py`, whose invented architect's draw
 
 from __future__ import annotations
 
+import re
 import zlib
 
 from tests.extraction.architect.combined_sheet import architect_stream, vendor_stream
@@ -49,15 +57,29 @@ def _circle(cx: float, cy: float, r: float) -> bytes:
     ).encode()
 
 
-def _label_block(x: float, number: str, title: str | None, scale: str) -> bytes:
-    """A bubble at `x`, the title to its right and the scale note under the title."""
+def _label_block(
+    x: float, number: str, title: str | None, scale: str, *, base: float = 315
+) -> bytes:
+    """A bubble at `x` (its middle at height `base`), the title to its right and the scale note
+    under the title."""
     return (
-        _circle(x + 18, 315, 16)
-        + f"0 0 0 RG 0.3 w {x + 2} 315 m {x + 34} 315 l S\n".encode()
-        + _text(x + 15, 320, number, size=7)
-        + _text(x + 8, 305, "ID 9.9", size=5)
-        + (b"" if title is None else _text(x + 44, 318, title, size=14))
-        + _text(x + 44, 300, scale, size=8)
+        _circle(x + 18, base, 16)
+        + f"0 0 0 RG 0.3 w {x + 2} {base} m {x + 34} {base} l S\n".encode()
+        + _text(x + 15, base + 5, number, size=7)
+        + _text(x + 8, base - 10, "ID 9.9", size=5)
+        + (b"" if title is None else _text(x + 44, base + 3, title, size=14))
+        + _text(x + 44, base - 15, scale, size=8)
+    )
+
+
+def _casework() -> bytes:
+    """A row of plain cabinet boxes (line-work only), so the vendor-style drawing is a drawing."""
+    return (
+        b"0 0 0 RG 0.5 w "
+        + b" ".join(
+            f"{x} 100 m {x} 160 l S {x} 160 m {x + 40} 160 l S".encode() for x in range(40, 300, 40)
+        )
+        + b"\n"
     )
 
 
@@ -75,26 +97,78 @@ def _frame(width: float) -> bytes:
 
 
 #: With `wall=True`, a wall line drawn right of the drawing and down past its title, to here.
-WALL_X, WALL_BOTTOM = 470, 285
+WALL_X, WALL_BOTTOM = 318, 285
+#: With `notes=True`, a column of general notes printed beside the view, from here rightwards.
+NOTES_X = 420
+
+
+def _ticks(stream: bytes, ticks: str) -> bytes:
+    """The drawing's tick slashes redrawn: `big` (7 pt across, still a slash) or `arrow`
+    (arrowheads pointing at the tick from both sides, 7 by 3 pt: never a slash)."""
+    if ticks == "slash":
+        return stream
+
+    def redraw(match: re.Match[bytes]) -> bytes:
+        x0, y0, x1, y1 = (float(value) for value in match.groups())
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if ticks == "big":
+            return f"0.6 w {cx - 3.5} {cy - 3.5} m {cx + 3.5} {cy + 3.5} l S".encode()
+        return (
+            f"{cx} {cy} m {cx - 7} {cy + 1.5} l {cx - 7} {cy - 1.5} l h f "
+            f"{cx} {cy} m {cx + 7} {cy + 1.5} l {cx + 7} {cy - 1.5} l h f"
+        ).encode()
+
+    return re.sub(rb"0\.6 w (\S+) (\S+) m (\S+) (\S+) l S", redraw, stream)
+
+
+def _drawing(ticks: str) -> bytes:
+    return _ticks(architect_stream(scale_note=False), ticks)
 
 
 def _page_content(
-    *, views: int, crowded: bool, vendor: bool, titled: bool, wall: bool
+    *,
+    views: int,
+    crowded: bool,
+    vendor: bool,
+    titled: bool,
+    wall: bool,
+    ticks: str,
+    notes: bool,
+    title_block_note: bool,
+    joined_border: bool,
+    stacked: bool,
 ) -> tuple[bytes, int]:
-    width = 1200 if views == 2 else 600
+    width = 1200 if views == 2 or stacked else 600
     if vendor:
-        body = _placed(vendor_stream(), (50, 400)) + _label_block(
+        body = _placed(vendor_stream() + _casework(), (50, 400)) + _label_block(
             60, "7", "SYNTHETIC VENDOR STYLE ELEVATION", "1:10"
         )
         return _frame(width) + body, width
-    body = _placed(architect_stream(scale_note=False), DRAWING_ORIGIN)
+    body = _placed(_drawing(ticks), DRAWING_ORIGIN)
     body += _label_block(60, "3", "SYNTHETIC ELEVATION" if titled else None, '1/4" = 1\'-0"')
     if wall:
         body += f"0 0 0 RG 0.8 w {WALL_X} {WALL_BOTTOM} m {WALL_X} 600 l S\n".encode()
     if views == 2:
         origin = CROWDED_ORIGIN if crowded else SECOND_ORIGIN
-        body += _placed(architect_stream(scale_note=False), origin)
+        body += _placed(_drawing(ticks), origin)
         body += _label_block(origin[0] + 10, "4", "SECOND SYNTHETIC ELEVATION", '1/4" = 1\'-0"')
+    if stacked:
+        # A second view lower down at the right: its drawing reaches up level with the first
+        # view's title, and stands right above its own title.
+        body += _placed(_drawing(ticks), (650, 275))
+        body += _label_block(660, "5", "LOWER SYNTHETIC ELEVATION", '1/4" = 1\'-0"', base=250)
+    if notes:
+        lines = ["GENERAL NOTES", "1. VERIFY ALL SIZES ON SITE", "2. 2' - 0\" CLEAR TO WALL"]
+        body += b"".join(
+            _text(NOTES_X, 600 - 14 * row, line, size=6) for row, line in enumerate(lines)
+        )
+    if title_block_note:
+        body += _text(300, 60, "DRAWING TITLE", size=8) + _text(
+            300, 48, 'SCALE: 1/4" = 1\'-0"', size=6
+        )
+    if joined_border:
+        # The floor line drawn on to the sheet's border: the drawing's ink joins the border's.
+        body += b"0 0 0 RG 0.5 w 20 410 m 100 410 l S\n"
     return _frame(width) + body, width
 
 
@@ -127,6 +201,28 @@ def _stream(body: bytes) -> bytes:
     )
 
 
+def _annotations(approval_stamp: bool) -> tuple[str, list[bytes]]:
+    """An approval stamp pasted over the drawing (objects 6 and 7), as an architect's office or a
+    reviewer stamps a sheet: a box and the words, no dimension."""
+    if not approval_stamp:
+        return "", []
+    body = b"1 0 0 RG 1 w 2 2 176 36 re S 1 0 0 rg BT /F1 12 Tf 10 14 Td (APPROVED AS NOTED) Tj ET"
+    return " /Annots [6 0 R]", [
+        b"<< /Type /Annot /Subtype /Stamp /Rect [380 600 560 640] /T (OFFICE) /AP << /N 7 0 R >> >>",
+        (
+            f"<< /Type /XObject /Subtype /Form /BBox [0 0 180 40] /Resources << /Font << /F1 5 0 R "
+            f">> >> /Length {len(body)} >>\nstream\n".encode() + body + b"\nendstream"
+        ),
+    ]
+
+
+def _crop_box(crop: tuple[int, int, int, int] | None, dx: int, dy: int, width: int) -> str:
+    if crop is None:
+        return ""
+    left, bottom, right, top = crop
+    return f" /CropBox [{dx + left} {dy + bottom} {dx + width - right} {dy + PAGE_HEIGHT - top}]"
+
+
 def architect_sheet(
     *,
     views: int = 1,
@@ -134,27 +230,50 @@ def architect_sheet(
     vendor: bool = False,
     titled: bool = True,
     wall: bool = False,
+    ticks: str = "slash",
+    notes: bool = False,
+    title_block_note: bool = False,
+    joined_border: bool = False,
+    stacked: bool = False,
+    approval_stamp: bool = False,
+    printed_at: float = 1.0,
     origin: tuple[int, int] = (0, 0),
+    crop: tuple[int, int, int, int] | None = None,
 ) -> bytes:
     """One page drawn as an architect issues it. `origin` moves the media box's corner (and the
-    content with it), as a sheet cut out of a larger set."""
+    content with it), as a sheet cut out of a larger set; `crop` sets a crop box that many points
+    inside the media box (left, bottom, right, top); `printed_at` shrinks the whole sheet, as a
+    reduced print does, its scale note unchanged."""
     body, width = _page_content(
-        views=views, crowded=crowded, vendor=vendor, titled=titled, wall=wall
+        views=views,
+        crowded=crowded,
+        vendor=vendor,
+        titled=titled,
+        wall=wall,
+        ticks=ticks,
+        notes=notes,
+        title_block_note=title_block_note,
+        joined_border=joined_border,
+        stacked=stacked,
     )
+    if printed_at != 1.0:
+        body = f"q {printed_at} 0 0 {printed_at} 0 0 cm\n".encode() + body + b"Q\n"
     dx, dy = origin
     if dx or dy:
         body = _placed(body, (dx, dy))
     media = f"[{dx} {dy} {dx + width} {dy + PAGE_HEIGHT}]"
+    annots, extra = _annotations(approval_stamp)
     return _pdf(
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             (
-                f"<< /Type /Page /Parent 2 0 R /MediaBox {media} /Contents 4 0 R "
-                "/Resources << /Font << /F1 5 0 R >> >> >>"
+                f"<< /Type /Page /Parent 2 0 R /MediaBox {media}{_crop_box(crop, dx, dy, width)}"
+                f"{annots} /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
             ).encode(),
             _stream(body),
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            *extra,
         ]
     )
 
@@ -163,9 +282,12 @@ def architect_sheet(
 PASTED_RECT = (50, 350, 550, 650)
 
 
-def pasted_sheet(*, origin: tuple[int, int] = (0, 0)) -> bytes:
+def pasted_sheet(
+    *, origin: tuple[int, int] = (0, 0), crop: tuple[int, int, int, int] | None = None
+) -> bytes:
     """The architect's drawing pasted as a `/Stamp` (at 1:1) on a page whose media box starts at
-    `origin`, nothing else on it: no heading, no vendor's drawing."""
+    `origin` (and, with `crop`, whose crop box sits inside it), nothing else on it: no heading, no
+    vendor's drawing."""
     dx, dy = origin
     x0, y0, x1, y1 = PASTED_RECT
     compressed = zlib.compress(architect_stream())
@@ -181,8 +303,8 @@ def pasted_sheet(*, origin: tuple[int, int] = (0, 0)) -> bytes:
             b"<< /Type /Catalog /Pages 2 0 R >>",
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             (
-                f"<< /Type /Page /Parent 2 0 R /MediaBox [{dx} {dy} {dx + 600} {dy + PAGE_HEIGHT}] "
-                "/Annots [5 0 R] /Contents 4 0 R >>"
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [{dx} {dy} {dx + 600} {dy + PAGE_HEIGHT}]"
+                f"{_crop_box(crop, dx, dy, 600)} /Annots [5 0 R] /Contents 4 0 R >>"
             ).encode(),
             b"<< /Length 0 >>\nstream\n\nendstream",
             (

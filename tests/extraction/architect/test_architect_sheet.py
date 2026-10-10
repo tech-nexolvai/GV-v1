@@ -203,22 +203,22 @@ def test_a_pasted_drawing_on_a_shifted_page_is_read_without_the_crop_crash(
     assert view.source == "pasted"
     spans = _spans(page)
     assert spans["3' - 4\""].printed_inches == Fraction(40)
-    if architect_document:
-        assert view.judgment.agreed is Role.ARCH and view.judgment.by_document_kind
-        assert spans["3' - 4\""].inches == Fraction(40)
-        assert spans["3' - 4\""].on_outline is True
-    else:
-        # No heading on the shop file: no role, every value held, exactly as on any page.
-        assert view.judgment.agreed is None
-        assert _usable(page) == []
+    assert spans["3' - 4\""].on_outline is True
+    witness = spans["3' - 4\""].witness_inches
+    assert witness is not None and abs(witness - 40) < 1
+    # A pasted drawing keeps the heading + content rule on either file (#1163 review): no heading
+    # here, and no vendor's drawing beside it, so no role and every value held.
+    assert view.judgment.agreed is None
+    assert not view.judgment.by_document_kind
+    assert _usable(page) == []
 
 
 def test_a_pasted_drawing_reads_the_same_wherever_the_page_starts() -> None:
     plain = _read(pasted_sheet())
     shifted = _read(pasted_sheet(origin=(300, 400)))
 
-    assert {text: span.inches for text, span in _spans(shifted).items()} == {
-        text: span.inches for text, span in _spans(plain).items()
+    assert {text: span.printed_inches for text, span in _spans(shifted).items()} == {
+        text: span.printed_inches for text, span in _spans(plain).items()
     }
     assert shifted.views[0].box.x0 - plain.views[0].box.x0 == Decimal(300)
 
@@ -273,3 +273,146 @@ def test_a_wall_drawn_a_little_past_the_title_is_still_the_drawings() -> None:
 
     assert view.extent.x1 >= WALL_X
     assert view.extent.bottom >= PAGE_HEIGHT - WALL_BOTTOM
+
+
+# --- review fixes (#1163 review) -----------------------------------------------------------------
+
+
+def test_an_approval_stamp_on_an_architect_page_does_not_hide_its_drawing() -> None:
+    """A stamp holding no dimension (an approval stamp, a seal) is not a pasted drawing: the page's
+    own content is still read, and the stamp is noted."""
+    page = _read(architect_sheet(approval_stamp=True))
+
+    (view,) = page.views
+    assert view.source == "content" and view.judgment.agreed is Role.ARCH
+    spans = _spans(page)
+    assert spans["3' - 4\""].inches == Fraction(40)
+    assert spans["2' - 2\""].inches == Fraction(26)
+    assert any("holds no dimension label and no scale" in note for note in page.notes)
+
+
+def test_a_page_with_no_view_says_why() -> None:
+    page = _read(architect_sheet(titled=False))
+
+    assert page.views == ()
+    assert any(note.startswith("no view found") for note in page.notes)
+
+
+def test_a_drawing_joined_to_the_sheet_border_is_said_never_dropped_silently() -> None:
+    page = _read(architect_sheet(joined_border=True))
+
+    assert _usable(page) == []
+    assert any("border" in note and "joined" in note for note in page.notes)
+
+
+def test_a_combined_set_on_the_architects_slot_keeps_the_heading_and_content_rule() -> None:
+    """The same combined set uploaded in the architect's slot as other bytes: its pasted drawings
+    are decided by their headings and content, never by the slot, and nothing else is read."""
+    from tests.extraction.architect.combined_sheet import combined_sheet
+
+    data = combined_sheet()
+    plain = _read(data, architect_document=False)
+    slot = _read(data, architect_document=True)
+
+    assert [(v.annotation_index, v.judgment.agreed) for v in slot.views] == [
+        (v.annotation_index, v.judgment.agreed) for v in plain.views
+    ]
+    assert not any(view.judgment.by_document_kind for view in slot.views)
+    assert all(view.source == "pasted" for view in slot.views)
+    assert {t: s.inches for t, s in _spans(slot).items()} == {
+        t: s.inches for t, s in _spans(plain).items()
+    }
+
+
+@pytest.mark.parametrize("origin", [(0, 0), (300, 400)])
+def test_a_crop_box_inside_the_media_box_reads_the_same(origin: tuple[int, int]) -> None:
+    plain = _read(architect_sheet(origin=origin))
+    cropped = _read(architect_sheet(origin=origin, crop=(10, 15, 5, 8)))
+
+    assert {t: s.inches for t, s in _spans(cropped).items()} == {
+        t: s.inches for t, s in _spans(plain).items()
+    }
+    assert [(s.x0_pt, s.x1_pt) for s in _spans(cropped).values()] == [
+        (s.x0_pt, s.x1_pt) for s in _spans(plain).values()
+    ]
+
+
+def test_a_pasted_drawing_under_an_offset_crop_box_is_found_in_its_box() -> None:
+    """The crop box 60 pt below the media box's top: the stamp's rectangle (measured from the crop
+    box) and the page's ink must be in one frame, or the drawing's rows fall outside its box."""
+    plain = _read(pasted_sheet(), architect_document=False)
+    cropped = _read(pasted_sheet(crop=(10, 15, 5, 60)), architect_document=False)
+
+    assert {t: s.printed_inches for t, s in _spans(cropped).items()} == {
+        t: s.printed_inches for t, s in _spans(plain).items()
+    }
+    assert _spans(cropped)
+
+
+def test_notes_printed_beside_a_view_are_not_part_of_it() -> None:
+    from tests.extraction.architect.architect_sheet import NOTES_X
+
+    page = _read(architect_sheet(notes=True))
+
+    (view,) = page.views
+    assert view.box.x1 < NOTES_X
+    assert "2' - 0\"" not in _spans(page)
+    assert any("standing apart beside a view" in note for note in page.notes)
+
+
+def test_a_title_block_title_over_its_scale_field_is_not_a_view() -> None:
+    page = _read(architect_sheet(title_block_note=True))
+
+    assert [view.title for view in page.views] == ["SYNTHETIC ELEVATION"]
+    assert any(note.startswith("not a view: 'DRAWING TITLE'") for note in page.notes)
+
+
+def test_drawing_standing_right_above_another_views_title_is_not_taken() -> None:
+    page = _read(architect_sheet(stacked=True))
+
+    assert len(page.views) == 2
+    for view in page.views:
+        assert view.judgment.agreed is None
+        assert "not clearly apart" in view.judgment.reason
+    assert _usable(page) == []
+
+
+def test_a_sheet_printed_at_half_size_holds_every_value_and_says_so() -> None:
+    page = _read(architect_sheet(printed_at=0.5))
+
+    (view,) = page.views
+    assert view.points_per_inch is None
+    assert "printed at 50.0% of its stated scale" in view.scale_reason
+    assert "paste factor" not in view.scale_reason
+    assert _usable(page) == []
+    assert all(
+        "printed at 50.0%" in (span.held_reason or "")
+        for row in page.rows
+        for span in row.spans
+        if span.text is not None
+    )
+
+
+def test_a_7pt_tick_slash_is_a_tick() -> None:
+    spans = _spans(_read(architect_sheet(ticks="big")))
+
+    assert spans["3' - 4\""].inches == Fraction(40)
+    assert spans["2' - 2\""].inches == Fraction(26)
+
+
+def test_an_arrowhead_is_never_a_tick() -> None:
+    """Arrowheads 7 by 3 pt at each end: within the size limit, but lying along the row."""
+    page = _read(architect_sheet(ticks="arrow"))
+
+    arrow_ends = {
+        Decimal(str(x)) + Decimal(d)
+        for x in (110, 170, 209, 135.5, 250, 286)
+        for d in ("-3.5", "3.5")
+    }
+    assert not any(tick in arrow_ends for row in page.rows for tick in row.ticks)
+    assert all(
+        span.inches == span.printed_inches
+        for row in page.rows
+        for span in row.spans
+        if span.inches is not None
+    )
