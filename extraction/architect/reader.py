@@ -73,7 +73,7 @@ from extraction.architect.outline import (
     slanted_strokes,
     span_on_outline,
 )
-from extraction.architect.page_views import PageViewSettings, find_page_views
+from extraction.architect.page_views import PageViewSettings, survey_page_views
 from extraction.architect.text import Orientation as TextOrientation
 from extraction.architect.text import (
     PrintedDimension,
@@ -187,7 +187,7 @@ class ArchitectView:
     source: str = "pasted"
     """`pasted` (a `/Stamp` or a drawing `/Square`) or `content` (the page's own content, #1163)."""
     title: str | None = None
-    """The view title printed under a content view (`KITCHENETTE ELEVATION`)."""
+    """The view title printed under a content view (`SAMPLE ROOM ELEVATION`)."""
     bubble: str | None = None
     """What a content view's bubble prints: its view number and sheet reference."""
 
@@ -237,6 +237,8 @@ class ArchitectRow:
     spans: tuple[ArchitectSpan, ...]
     points_per_inch: Decimal | None
     """The drawing's scale (`ArchitectView.points_per_inch`), repeated for the pairing."""
+    view_source: str = "pasted"
+    """Its view's `ArchitectView.source`: with `view_annotation_index`, which view it is in."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +257,9 @@ class ArchitectPage:
     views: tuple[ArchitectView, ...]
     rows: tuple[ArchitectRow, ...]
     pictures: tuple[ArchitectPicture, ...] = ()
+    notes: tuple[str, ...] = ()
+    """What was left out of every view on the page and why, and why no view was found (#1163):
+    never silent."""
 
 
 #: Measured on both client sets (#1052, report `1052-report.md`): the row finder's E1 thresholds,
@@ -265,9 +270,15 @@ MEASURED_ARCHITECT_SETTINGS = ArchitectSettings(
     # pasted drawings): the vendor's E1 thresholds with a larger slash. The vendor's rows are never built
     # with these.
     rows=replace(MEASURED_SETTINGS, slash_maximum_pt=Decimal(6)),
-    # An architect's sheet at its own size draws its slashes up to about 6.5 pt across (measured
-    # on a keyed set's sheets, #1163); the pasted drawings above were shrunk to 0.7–0.9 of that.
-    content_rows=replace(MEASURED_SETTINGS, slash_maximum_pt=Decimal(8)),
+    # An architect's drawing at its own size draws its slashes up to about 6.5 pt across (measured
+    # locally on a test split of one keyed set: its pasted architect drawings put back on pages of
+    # their own at full size, #1163); the pasted drawings above were shrunk to 0.7–0.9 of that.
+    # **Tuned on that test split only: to be proved again on the architect's real PDF.**
+    # Only marks drawn at about 45 degrees are slashes there: a larger size limit must not let in an
+    # arrowhead lying along its row (7 by 3 pt), which a slash never is.
+    content_rows=replace(
+        MEASURED_SETTINGS, slash_maximum_pt=Decimal(8), slash_squareness_fraction=Decimal("0.35")
+    ),
     text=TextSettings(
         same_line_em=Decimal("0.3"),
         space_em=Decimal("0.15"),
@@ -297,9 +308,11 @@ MEASURED_ARCHITECT_SETTINGS = ArchitectSettings(
     scale_agreement=Decimal("0.04"),
     leave_one_out_minimum=2,
     tick_pair_pt=Decimal(2),
-    # Chosen on a synthetic sheet laid out as an architect's set prints one (a title over its scale
-    # note, a bubble to their left, a border and a title block); checked locally on a keyed set of
-    # 13 architect sheets, where it found every view and nothing else (#1163).
+    # Chosen on synthetic sheets laid out as an architect's set prints one (a title over its scale
+    # note, a bubble to their left, a border and a title block, notes beside it); checked locally on
+    # a test split of one keyed set — its 13 pasted architect drawings put back on pages of their
+    # own, one drawing a page, with made-up title blocks — where it found every view and nothing
+    # else (#1163). **Not proved on an architect's real issued PDF: to be proved again on one.**
     views=PageViewSettings(
         title_gap_em=Decimal("1.5"),
         title_reach_em=Decimal(2),
@@ -310,6 +323,9 @@ MEASURED_ARCHITECT_SETTINGS = ArchitectSettings(
         join_pt=Decimal(3),
         label_slack_pt=Decimal(6),
         below_reach_em=Decimal(4),
+        border_strokes=12,
+        side_reach_em=Decimal(3),
+        minimum_drawing_strokes=12,
         frame_margin_em=Decimal(2),
     ),
 )
@@ -591,8 +607,16 @@ def _witness(
     drafts: Sequence[_Draft],
     absolute: Decimal | None,
     settings: ArchitectSettings,
+    *,
+    on_page: bool = False,
 ) -> tuple[Decimal | None, Decimal | None, str]:
-    """Judgment (B) for every labelled span of one drawing; returns the drawing's scale."""
+    """Judgment (B) for every labelled span of one drawing; returns the drawing's scale.
+
+    `on_page`: the drawing is the page's own content (#1163), so witness (ii) is the printed scale
+    alone, and labels agreeing with each other but not with it say the sheet was printed at another
+    size (a reduced print), which holds every value with that reason.
+    """
+    absolute_name = "the printed scale" if on_page else "the printed scale and paste factor"
     labelled = [draft for draft in drafts if draft.value is not None and draft.x1 > draft.x0]
     ratios = {
         id(draft): (draft.x1 - draft.x0) / _as_decimal(draft.value)
@@ -610,7 +634,7 @@ def _witness(
         if len(others) >= settings.leave_one_out_minimum:
             witnesses.append(("the drawing's other labels", _median(others)))
         if absolute is not None:
-            witnesses.append(("the printed scale and paste factor", absolute))
+            witnesses.append((absolute_name, absolute))
         if not witnesses:
             draft.hold(
                 "no scale witness: the drawing has too few other labels and no usable scale note"
@@ -626,6 +650,34 @@ def _witness(
                     f"the drawn length through {name} is {expected:.2f} in, the label says "
                     f"{printed.normalize()} in"
                 )
+    agreeing = (
+        []
+        if median is None
+        else [
+            ratio
+            for ratio in ratios.values()
+            if abs(ratio - median) <= settings.scale_agreement * median
+        ]
+    )
+    if (
+        on_page
+        and absolute is not None
+        and len(agreeing) >= 3
+        and 2 * len(agreeing) > len(ratios)
+        and abs(_median(agreeing) - absolute) > settings.scale_agreement * absolute
+    ):
+        # Most labels agree with each other, and not with the printed scale: the page is not at
+        # its stated size (a reduced print), so neither scale can be trusted for a value.
+        labels_scale = _median(agreeing)
+        printed_at = (labels_scale / absolute * 100).quantize(Decimal("0.1"))
+        reason = (
+            f"the labels agree with each other at {labels_scale:.4f} pt per inch but the printed "
+            f"scale gives {absolute:.4f}: the sheet appears printed at {printed_at}% of its stated "
+            "scale, so no scale is given and every value is held"
+        )
+        for draft in labelled:
+            draft.hold(f"the sheet appears printed at {printed_at}% of its stated scale")
+        return median, None, reason
     witnessed = [ratios[id(draft)] for draft in labelled if not draft.held]
     if len(witnessed) >= 3:
         chosen = _median(witnessed)
@@ -643,7 +695,7 @@ def _witness(
         return (
             median,
             absolute,
-            f"the printed scale and paste factor give {absolute:.4f} pt per inch",
+            f"{absolute_name} gives {absolute:.4f} pt per inch",
         )
     return median, None, "no scale: too few witnessed labels and no usable scale note"
 
@@ -651,24 +703,64 @@ def _witness(
 class _ZeroOrigin:
     """A pdfplumber page's objects moved so the visible page's top-left corner is (0, 0) (#1163).
 
-    pdfplumber keeps a page's own coordinates: on a page whose media box does not start at (0, 0) —
-    a sheet cut out of a larger set — every `x` is offset by the box's left edge and every `top` by
-    its top, and the row finder (which keeps its strips inside `0..width` and `0..height`) refused
-    the page with "a Box's x1 must not be left of x0". The pasted drawings' rectangles
-    (`_page_box`) are already measured from the visible page's corner, so the page's objects are
-    moved to the same frame here, read there, and the result moved back (`_moved`).
+    pdfplumber keeps a page's own coordinates: on a page whose media box or crop box does not start
+    at (0, 0) — a sheet cut out of a larger set — every `x` is offset by the visible box's left edge
+    and every `top` by its top, and the row finder (which keeps its strips inside `0..width` and
+    `0..height`) refused the page with "a Box's x1 must not be left of x0". **One origin for
+    everything: the crop box's top-left corner**, the visible page, which is also where the pasted
+    drawings' rectangles are measured from (`_page_box`). The page's objects are moved to that
+    frame here, those lying wholly outside the visible page are left out and those reaching past it
+    held to it (nobody sees what is outside), the page is read there, and the result moved back
+    (`_moved`). `exclude` (in the moved frame) leaves
+    out every object whose middle lies in one of its boxes.
     """
 
-    def __init__(self, page: Any) -> None:
-        x0, top, x1, bottom = (_decimal(value) for value in page.bbox)
+    def __init__(self, page: Any, exclude: Sequence[Box] = ()) -> None:
+        x0, top, x1, bottom = (_decimal(value) for value in page.cropbox)
         self.dx = x0
         self.dtop = top
         self.width = x1 - x0
         self.height = bottom - top
-        self.lines = [self._move(obj) for obj in page.lines]
-        self.rects = [self._move(obj) for obj in page.rects]
-        self.curves = [self._move(obj) for obj in page.curves]
-        self.chars = [self._move(obj) for obj in page.chars]
+        self._exclude = tuple(exclude)
+        self.lines = self._kept(page.lines)
+        self.rects = self._kept(page.rects)
+        self.curves = self._kept(page.curves)
+        self.chars = self._kept(page.chars)
+
+    def _kept(self, objects: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        kept: list[dict[str, Any]] = []
+        for obj in objects:
+            moved = self._move(obj)
+            box = _box(moved)
+            if box.x1 < 0 or box.x0 > self.width or box.bottom < 0 or box.top > self.height:
+                continue
+            middle_x, middle_y = box.centre_x, box.centre_y
+            if any(
+                area.x0 <= middle_x <= area.x1 and area.top <= middle_y <= area.bottom
+                for area in self._exclude
+            ):
+                continue
+            kept.append(self._clamped(moved, box))
+        return kept
+
+    def _clamped(self, obj: dict[str, Any], box: Box) -> dict[str, Any]:
+        """An object reaching past the visible page, held to it: what lies outside is not seen (a
+        background rectangle larger than a cropped sheet would otherwise give rows off the page)."""
+        if box.x0 >= 0 and box.top >= 0 and box.x1 <= self.width and box.bottom <= self.height:
+            return obj
+
+        def x(value: object) -> Decimal:
+            return min(max(_decimal(value), Decimal(0)), self.width)
+
+        def top(value: object) -> Decimal:
+            return min(max(_decimal(value), Decimal(0)), self.height)
+
+        clamped = dict(obj)
+        clamped["x0"], clamped["x1"] = x(obj["x0"]), x(obj["x1"])
+        clamped["top"], clamped["bottom"] = top(obj["top"]), top(obj["bottom"])
+        if obj.get("pts"):
+            clamped["pts"] = [(x(px), top(pt)) for px, pt in obj["pts"]]
+        return clamped
 
     def _move(self, obj: dict[str, Any]) -> dict[str, Any]:
         if not self.dx and not self.dtop:
@@ -746,13 +838,15 @@ def _open_page(
     rows: RowSettings,
     settings: ArchitectSettings,
     dpi: int,
+    exclude: Sequence[Box] = (),
 ) -> _Page:
-    """The page's black and grey text and ink, its rows and line-work, and where things land."""
+    """The page's black and grey text and ink, its rows and line-work, and where things land;
+    `exclude` leaves out what lies in those boxes (pasted drawings, read on their own)."""
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
             page = document.pages[page_index]
             transform, height = page_frame(page, dpi)
-            moved = _ZeroOrigin(page)
+            moved = _ZeroOrigin(page, exclude)
             ink = ink_from_page(moved, drawing_boxes=tuple(drawing_boxes))
             pixel = pixel_placement(page, dpi)
             fills = _pattern_fills(moved)
@@ -886,6 +980,7 @@ def _read_drawing(
         ],
         absolute,
         settings,
+        on_page=source == "content",
     )
     outline_scale = chosen if chosen is not None else absolute
     # The drawing's labelled dimension lines: a row stacked between a tick and the drawing is
@@ -962,9 +1057,9 @@ def _rows_of(
     pending: Sequence[_Pending],
     page: _Page,
     settings: ArchitectSettings,
-) -> tuple[ArchitectRow, ...]:
-    """Every read drawing's labelled rows, ranked top to bottom across the page; a span in a drawing
-    whose role is not the architect's by code is held with the reason."""
+) -> list[tuple[Decimal, Decimal, ArchitectRow]]:
+    """Every read drawing's labelled rows, unranked, with where they sit; a span in a drawing whose
+    role is not the architect's by code is held with the reason."""
     rows: list[tuple[Decimal, Decimal, ArchitectRow]] = []
     for position, view_rows, drafts_by_row in pending:
         view = views[position]
@@ -1018,31 +1113,59 @@ def _rows_of(
                         tick_source=row.source,
                         spans=spans,
                         points_per_inch=view.points_per_inch,
+                        view_source=view.source,
                     ),
                 )
             )
+    return rows
+
+
+def _ranked(rows: Sequence[tuple[Decimal, Decimal, ArchitectRow]]) -> tuple[ArchitectRow, ...]:
+    """The page's rows ranked top to bottom (then left to right): `arch-row:<rank>`."""
     ordered = sorted(rows, key=lambda item: (item[0], item[1]))
     return tuple(replace(row, rank=rank) for rank, (_y, _x, row) in enumerate(ordered, start=1))
 
 
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """One page's drawings read on one opened page, rows not yet ranked."""
+
+    views: list[ArchitectView]
+    rows: list[tuple[Decimal, Decimal, ArchitectRow]]
+    notes: list[str]
+    page: _Page
+
+
 def _read_page_content(
-    data: bytes, page_index: int, *, settings: ArchitectSettings, dpi: int
-) -> ArchitectPage:
+    data: bytes,
+    page_index: int,
+    *,
+    settings: ArchitectSettings,
+    dpi: int,
+    exclude: Sequence[Box] = (),
+) -> _Reading:
     """The architect's views drawn as the page's own content, on the architect's own file (#1163).
 
-    Views come from what is printed (`page_views.find_page_views`): each is read inside its extent
+    Views come from what is printed (`page_views.survey_page_views`): each is read inside its extent
     exactly as a pasted drawing is, at the page's own scale (a paste factor of exactly 1: nothing is
     pasted, so the printed scale note holds on the page). The role is the document's kind and the
     view's content agreeing (`views.judge_by_document`). A view not clearly apart from another is
-    read and every value in it held, with the reason.
+    read and every value in it held, with the reason. `exclude`: pasted drawings' boxes, read on
+    their own and never twice.
     """
     page = _open_page(
-        data, page_index, drawing_boxes=(), rows=settings.content_rows, settings=settings, dpi=dpi
+        data,
+        page_index,
+        drawing_boxes=(),
+        rows=settings.content_rows,
+        settings=settings,
+        dpi=dpi,
+        exclude=exclude,
     )
-    found = find_page_views(page.chars, page.ink, text=settings.text, settings=settings.views)
+    survey = survey_page_views(page.chars, page.ink, text=settings.text, settings=settings.views)
     views: list[ArchitectView] = []
     pending: list[_Pending] = []
-    for found_view in found:
+    for found_view in survey.views:
         extent = found_view.extent
         corners = (
             page.place(extent.x0, extent.top),
@@ -1078,39 +1201,27 @@ def _read_page_content(
         if drafted is not None:
             pending.append((len(views), *drafted))
         views.append(view)
-    rows = _rows_of(views, pending, page, settings)
-    return _moved(
-        ArchitectPage(page_index=page_index, views=tuple(views), rows=rows),
-        page.dx,
-        page.dtop,
-    )
+    return _Reading(views, _rows_of(views, pending, page, settings), list(survey.notes), page)
 
 
-def read_architect_page(
+def _read_pasted(
     data: bytes,
     page_index: int,
     *,
     settings: ArchitectSettings,
     dpi: int,
-    architect_document: bool = False,
-) -> ArchitectPage:
-    """The architect's views, rows and spans on one page of `data`, every decision with its reason.
+    architect_document: bool,
+) -> tuple[_Reading, tuple[ArchitectPicture, ...]]:
+    """The drawings pasted on the page, each role from its heading and its content (#1052).
 
-    `architect_document` says the page belongs to a file uploaded as the architect's drawings, apart
-    from the vendor's (#1163). There a pasted drawing's role is the document's kind and its content
-    agreeing (`views.judge_by_document`), and a page with nothing pasted is read from its own
-    content, view by view (`_read_page_content`). Without it — the vendor's file, a combined sheet —
-    only pasted drawings are read, their role from the heading and the content (`views.judge_view`).
-
-    Raises `UnreadablePdf` when the page cannot be read; a page with no architect's drawing returns
-    no rows, never a refusal.
+    On the architect's own file (#1163) a stamp is a pasted drawing only when it holds a dimension
+    label (feet and inches, inches, or millimetres with inches) or a scale note: an approval stamp,
+    a seal or a reviewer's mark holds none, is left to the page's content reader, and is noted. The role rule is the same everywhere: a combined set uploaded in the
+    architect's slot as other bytes is still decided by its headings and content, never by the
+    slot.
     """
-    # A page with pasted drawings and no notes is "unreadable" to the markup reader (it has no
-    # markup), and still has its drawings: only the stamps and headings are used here.
     layers = read_markup_layer(data, page_index, document_version_id=_UNSTORED, dpi=dpi)
     stamps, pictures = _stamps(data, page_index)
-    if architect_document and not stamps and not pictures:
-        return _read_page_content(data, page_index, settings=settings, dpi=dpi)
     proposals = {
         proposal.annotation_index: proposal
         for proposal in propose_panel_roles(layers.vendor_stamps, layers.markup)
@@ -1134,6 +1245,28 @@ def read_architect_page(
         settings=settings,
         dpi=dpi,
     )
+    notes: list[str] = []
+    if architect_document:
+        holding: list[Any] = []
+        for stamp in drawings:
+            box = stamps[stamp.annotation_index][0]
+            inside = [
+                char
+                for char in page.chars
+                if box.x0 <= char.box.centre_x <= box.x1
+                and box.top <= char.box.centre_y <= box.bottom
+            ]
+            printed = find_printed(inside, settings.text)
+            counts = count_labels(printed.dimensions, printed.phrases, printed.scales)
+            if printed.scales or counts.feet_and_inches + counts.vendor_style + counts.small_inches:
+                holding.append(stamp)
+            else:
+                notes.append(
+                    f"a stamp pasted on the page (annotation {stamp.annotation_index}) holds no "
+                    "dimension label and no scale (an approval stamp, a seal or a mark): not read "
+                    "as a drawing"
+                )
+        drawings = holding
     views: list[ArchitectView] = []
     pending: list[_Pending] = []
     for stamp in drawings:
@@ -1141,8 +1274,6 @@ def read_architect_page(
         proposal = proposals[stamp.annotation_index]
 
         def judge(content: ContentJudgment, proposal: PanelRoleProposal = proposal) -> ViewJudgment:
-            if architect_document:
-                return judge_by_document(proposal.annotation_index, content, proposal=proposal)
             return judge_view(proposal, content)
 
         view, drafted = _read_drawing(
@@ -1153,12 +1284,11 @@ def read_architect_page(
             tuple((point.x, point.y) for point in stamp.extent.points),
             page,
             settings,
-            always_read=architect_document,
         )
         if drafted is not None:
             pending.append((len(views), *drafted))
         views.append(view)
-    if not architect_document and not printed_headings(layers.markup):
+    if not printed_headings(layers.markup):
         # A page printing no heading at all: both roles from the content of both drawings, only
         # when that is clear on both sides (`views.decide_without_headings`).
         drawn = {
@@ -1172,9 +1302,66 @@ def read_architect_page(
         views = [
             replace(view, judgment=judgment) for view, judgment in zip(views, decided, strict=True)
         ]
-    rows = _rows_of(views, pending, page, settings)
+    return _Reading(views, _rows_of(views, pending, page, settings), notes, page), pictures
+
+
+def read_architect_page(
+    data: bytes,
+    page_index: int,
+    *,
+    settings: ArchitectSettings,
+    dpi: int,
+    architect_document: bool = False,
+) -> ArchitectPage:
+    """The architect's views, rows and spans on one page of `data`, every decision with its reason.
+
+    Pasted drawings are read everywhere, each role from its heading and its content
+    (`views.judge_view`, `decide_without_headings`). `architect_document` says the page belongs to
+    a file uploaded as the architect's drawings, apart from the vendor's (#1163): there the page's
+    own content is read too, view by view (`_read_page_content`), outside the pasted drawings, each
+    view's role from the document's kind and its content agreeing (`views.judge_by_document`); a
+    stamp holding no dimension label is not a drawing there; and every page says why nothing was
+    read when nothing was (`ArchitectPage.notes`).
+
+    Raises `UnreadablePdf` when the page cannot be read; a page with no architect's drawing returns
+    no rows, never a refusal.
+    """
+    pasted, pictures = _read_pasted(
+        data, page_index, settings=settings, dpi=dpi, architect_document=architect_document
+    )
+    if not architect_document:
+        return _moved(
+            ArchitectPage(
+                page_index=page_index,
+                views=tuple(pasted.views),
+                rows=_ranked(pasted.rows),
+                pictures=pictures,
+            ),
+            pasted.page.dx,
+            pasted.page.dtop,
+        )
+    content = _read_page_content(
+        data,
+        page_index,
+        settings=settings,
+        dpi=dpi,
+        exclude=tuple(view.box for view in pasted.views),
+    )
+    views = (*pasted.views, *content.views)
+    notes = [*pasted.notes, *content.notes]
+    if pasted.views and not content.views:
+        # The content reader's "no view found" is no news on a page whose drawings are pasted.
+        notes = [note for note in notes if not note.startswith("no view found")]
+    if not views and not any(note.startswith("no view found") for note in notes):
+        notes.append("no view found: nothing on this page is a drawing view")
     return _moved(
-        ArchitectPage(page_index=page_index, views=tuple(views), rows=rows, pictures=pictures),
-        page.dx,
-        page.dtop,
+        ArchitectPage(
+            page_index=page_index,
+            views=views,
+            rows=_ranked([*pasted.rows, *content.rows]),
+            pictures=pictures,
+            notes=tuple(notes),
+        ),
+        content.page.dx,
+        content.page.dtop,
     )

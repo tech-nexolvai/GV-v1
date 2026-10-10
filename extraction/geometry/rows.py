@@ -262,6 +262,10 @@ class RowSettings:
     """A tick slash is a tiny mark: between these in both axes."""
     slash_maximum_points: int
     """A slash is a thin parallelogram with this many path points at most; a digit has dozens."""
+    slash_squareness_fraction: Decimal | None
+    """When set, a slash's width and height differ by at most this fraction of the larger: a tick
+    slash is drawn at 45 degrees, an arrowhead lies long along its row (#1163). `None`: not checked
+    (the vendor's rows, as measured)."""
     slash_reach_pt: Decimal
     """A slash's centre sits within this of the row's line."""
     slash_size_tolerance_pt: Decimal
@@ -311,6 +315,8 @@ class RowSettings:
         for field in fields(self):
             name = field.name
             value = getattr(self, name)
+            if name == "slash_squareness_fraction" and value is None:
+                continue
             if name.endswith(("_pt", "_fraction")):
                 if not isinstance(value, Decimal):
                     raise TypeError(f"{name} must be a Decimal")
@@ -338,6 +344,7 @@ MEASURED_SETTINGS = RowSettings(
     slash_minimum_pt=Decimal("0.6"),
     slash_maximum_pt=Decimal(4),
     slash_maximum_points=8,
+    slash_squareness_fraction=None,
     slash_reach_pt=Decimal("1.6"),
     slash_size_tolerance_pt=Decimal("0.25"),
     slash_merge_floor_pt=Decimal("1.0"),
@@ -653,9 +660,14 @@ def _slashes(ink: PageInk, settings: RowSettings) -> tuple[_Slash, ...]:
     """
     found: list[_Slash] = []
     low, high = settings.slash_minimum_pt, settings.slash_maximum_pt
+    squareness = settings.slash_squareness_fraction
+
+    def square(width: Decimal, height: Decimal) -> bool:
+        return squareness is None or abs(width - height) <= squareness * max(width, height)
+
     for line in ink.lines:
         dx, dy = abs(line.x0 - line.x1), abs(line.y0 - line.y1)
-        if low <= dx <= high and low <= dy <= high:
+        if low <= dx <= high and low <= dy <= high and square(dx, dy):
             found.append(_Slash((line.x0 + line.x1) / _TWO, (line.y0 + line.y1) / _TWO, dx, dy))
     for curve in ink.curves:
         box = curve.box
@@ -663,6 +675,7 @@ def _slashes(ink: PageInk, settings: RowSettings) -> tuple[_Slash, ...]:
             low <= box.width <= high
             and low <= box.height <= high
             and len(curve.points) <= settings.slash_maximum_points
+            and square(box.width, box.height)
         ):
             found.append(_Slash(box.centre_x, box.centre_y, box.width, box.height))
     found.sort(key=lambda slash: (slash.x, slash.y))
