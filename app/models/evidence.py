@@ -1023,6 +1023,15 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
             name="architect_view_match_code_verdict",
         ),
         CheckConstraint(
+            "status <> 'auto_matched' OR (source = 'automatic' AND code_verdict IN "
+            "('reference', 'geometry_clear') AND code_pick_view_id = matched_view_id)",
+            name="architect_view_match_automatic_needs_code",
+        ),
+        CheckConstraint(
+            "code_pick_view_id IS NULL OR code_verdict IN ('reference', 'geometry_clear')",
+            name="architect_view_match_code_pick_verdict",
+        ),
+        CheckConstraint(
             "(source = 'reviewer') = (extraction_run_id IS NULL)",
             name="architect_view_match_automatic_run",
         ),

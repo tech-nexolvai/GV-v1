@@ -41,7 +41,14 @@ from extraction.geometry.rows import Box
 from extraction.reader import UnreadablePdf
 from extraction.stamp_text import drawing_ink, stamps_only
 
-__all__ = ["SheetLabels", "read_page_phrases", "read_sheet_labels"]
+__all__ = [
+    "SheetLabels",
+    "read_page_phrases",
+    "read_pages_phrases",
+    "read_sheet_labels",
+    "read_sheets_labels",
+    "sheet_labels_on",
+]
 
 #: A sheet number: one to three letters, an optional dash, dot or space, one to four digits, an
 #: optional decimal part and an optional letter (`A-401`, `ID 7.4`, `A501`, `A-401A`).
@@ -88,26 +95,49 @@ def _chars(page: Any) -> list[TextChar]:
     return chars
 
 
-def _page_phrases(data: bytes, page_index: int, text: TextSettings) -> tuple[PrintedPhrase, ...]:
+def _pages_phrases(
+    data: bytes, page_indices: Sequence[int], text: TextSettings
+) -> dict[int, tuple[PrintedPhrase, ...]]:
+    """Each page's phrases, the document opened once."""
+    found: dict[int, tuple[PrintedPhrase, ...]] = {}
     try:
         with pdfplumber.open(io.BytesIO(data)) as document:
-            if not 0 <= page_index < len(document.pages):
-                raise UnreadablePdf(f"page {page_index} is beyond the document's pages")
-            chars = _chars(document.pages[page_index])
+            for page_index in page_indices:
+                if not 0 <= page_index < len(document.pages):
+                    raise UnreadablePdf(f"page {page_index} is beyond the document's pages")
+                found[page_index] = find_phrases(_chars(document.pages[page_index]), text)
     except UnreadablePdf:
         raise
     except Exception as error:
-        raise UnreadablePdf(f"page {page_index}'s text could not be read: {error}") from error
-    return find_phrases(chars, text)
+        raise UnreadablePdf(f"the pages' text could not be read: {error}") from error
+    return found
+
+
+def _page_phrases(data: bytes, page_index: int, text: TextSettings) -> tuple[PrintedPhrase, ...]:
+    return _pages_phrases(data, (page_index,), text)[page_index]
+
+
+def read_pages_phrases(
+    data: bytes, page_indices: Sequence[int], *, text: TextSettings
+) -> dict[int, tuple[tuple[str, Box], ...]]:
+    """Every black or grey phrase, with where it is printed (pdfplumber's frame), on each page's
+    content and inside its pasted drawings. The file is opened once for the pages' content; each
+    page's pasted drawings are flattened on their own (`stamp_text.stamps_only`)."""
+    content = _pages_phrases(data, page_indices, text)
+    found: dict[int, tuple[tuple[str, Box], ...]] = {}
+    for page_index in page_indices:
+        pasted = _page_phrases(stamps_only(data, page_index), page_index, text)
+        found[page_index] = tuple(
+            (phrase.text, phrase.box) for phrase in (*content[page_index], *pasted)
+        )
+    return found
 
 
 def read_page_phrases(data: bytes, page_index: int, *, text: TextSettings) -> tuple[str, ...]:
     """Every black or grey phrase on the page's content and inside its pasted drawings."""
-    phrases = [phrase.text for phrase in _page_phrases(data, page_index, text)]
-    phrases.extend(
-        phrase.text for phrase in _page_phrases(stamps_only(data, page_index), page_index, text)
+    return tuple(
+        phrase for phrase, _box in read_pages_phrases(data, (page_index,), text=text)[page_index]
     )
-    return tuple(phrases)
 
 
 def _near_label(number: PrintedPhrase, labels: Sequence[PrintedPhrase]) -> bool:
@@ -134,11 +164,26 @@ def read_sheet_labels(data: bytes, page_index: int, *, text: TextSettings) -> Sh
 
     Raises `UnreadablePdf` when the page's text cannot be read.
     """
-    phrases = [
-        phrase
-        for phrase in _page_phrases(data, page_index, text)
-        if phrase.orientation is Orientation.UPRIGHT
-    ]
+    return _labels(_page_phrases(data, page_index, text))
+
+
+def read_sheets_labels(
+    data: bytes, page_indices: Sequence[int], *, text: TextSettings
+) -> dict[int, SheetLabels]:
+    """`read_sheet_labels` for many pages, the file opened once."""
+    return {
+        page_index: _labels(phrases)
+        for page_index, phrases in _pages_phrases(data, page_indices, text).items()
+    }
+
+
+def sheet_labels_on(page: Any, *, text: TextSettings) -> SheetLabels:
+    """`read_sheet_labels` for a pdfplumber page the caller already has open."""
+    return _labels(find_phrases(_chars(page), text))
+
+
+def _labels(printed: Sequence[PrintedPhrase]) -> SheetLabels:
+    phrases = [phrase for phrase in printed if phrase.orientation is Orientation.UPRIGHT]
     labelled = {
         match.group(1).upper() for phrase in phrases for match in _LABELLED.finditer(phrase.text)
     }

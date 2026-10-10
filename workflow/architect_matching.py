@@ -10,15 +10,21 @@ vendor row the slot reader chose and read, on a revision whose architect file wa
    the file is ranked; the position-pairing of the vendor row against each view with rows is kept
    as that candidate's `code_pairing`, for the reviewer and for Phase 4.
 2. **Both Claude readers**, in the slot reader's own batch (same pacer, effort, spend guard and
-   stored-answer reuse, #1112): one picture, the vendor's view on the left with the row outlined in
-   red (`V`), the top three ranked architect views on the right numbered in blue, all at the same
-   size per real inch when every scale is known; the fixed question `arch-view-match-v1`, judged
-   only by what is drawn.
+   stored-answer reuse, #1112), the fixed question `arch-view-match-v1`, judged only by what is
+   drawn. Each picture shows the vendor's view on the left with the row outlined in red (`V`) and up
+   to three architect views on the right numbered in blue, all at the same size per real inch when
+   every scale is known. When code has a pick: one picture of its top three views (D1 needs both AIs
+   on that very view). When code has none: every view with a picture, in code's order, three to a
+   picture, at most `ALL_VIEWS_CAP` (Anant, PR #1170) — their answers then only ORDER the
+   reviewer's list (views both AIs called the same first, then one AI's, then code's ranking);
+   nothing is chosen.
 3. **Decided by decision D1** (`view_matching.decide_match`): automatic only when code picks a view
    and both AIs pick that same view. Twins, ties and doubt go to the reviewer with nothing chosen.
 4. **Remembered** (decision D3): a person's earlier decision for the same vendor item is carried
-   (`carried`) only when the vendor's page is identical and code does not contradict it; otherwise
-   it is shown on its candidate as "remembered", never chosen. No AI is asked for a carried row.
+   (`carried`) only when the vendor's page and file are identical and code does not contradict it;
+   a "none of these" or a view not clearly apart only when the architect's file(s) are identical
+   too (every record keeps their fingerprint). Otherwise it is shown on its candidate as
+   "remembered", never chosen. No AI is asked for a carried row.
 
 **Never silent.** Every vendor row with a chosen row gets exactly one `RowMatch`, with its status and
 reasons. **Combined sheets never reach it:** a row whose own page has an architect view confirmed
@@ -54,12 +60,17 @@ from extraction.architect.view_matching import (
     MatchSettings,
     VendorViewFacts,
     decide_match,
+    find_references,
     match_by_code,
 )
 from extraction.geometry.rows import Box
 from extraction.slot_reader.bedrock import ARCH_MATCH_PROMPT_ID, ArchMatchAnswer, CropJob
 from workflow.architect_match_contract import MatchStatus, RowMatch, restrict_to_view
-from workflow.architect_match_records import RememberedMatch, same_vendor_item
+from workflow.architect_match_records import (
+    RememberedMatch,
+    architect_fingerprint,
+    same_vendor_item,
+)
 from workflow.architect_pairing import (
     _ARCHITECT_COLOUR,
     _VENDOR_COLOUR,
@@ -82,6 +93,7 @@ if TYPE_CHECKING:
     from workflow.slot_reader import PageSlotResult, SlotPage
 
 __all__ = [
+    "ALL_VIEWS_CAP",
     "MATCH_PICTURE_MAX_SIDE",
     "MEASURED_MATCH_SETTINGS",
     "ArchitectMatcher",
@@ -120,13 +132,16 @@ class VendorPageFacts:
     page_index: int
     """Its place in the vendor's file (0-based)."""
     content_hash: str
-    references: tuple[str, ...]
-    """Architect view references printed on it, normalised (`view_matching.find_references`)."""
+    phrases: tuple[tuple[str, Box], ...]
+    """Every black or grey phrase printed on it, with where (pdfplumber's frame): references to an
+    architect view count only inside the vendor's drawing that holds the row."""
     view_boxes: tuple[Box, ...]
     """The drawings pasted on it (pdfplumber's frame), for framing the vendor's view."""
     has_architect_view: bool
     """A view on this page is confirmed as the architect's: a combined sheet, never matched."""
     title: str | None = None
+    document_sha256: str | None = None
+    """The vendor's whole file: an identical item is on an unchanged file."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +182,8 @@ def _item_key(result: PageSlotResult, facts: VendorPageFacts | None) -> dict[str
         "page_index": None if facts is None else facts.page_index,
         "pieces": len(result.plan.slots),
         "row_y_pt": None if row is None else str(row.y),
+        "vendor_document_version_id": str(result.document_version_id),
+        "vendor_document_sha256": None if facts is None else facts.document_sha256,
     }
 
 
@@ -305,6 +322,11 @@ def _frame(
 
 # --- the matcher -----------------------------------------------------------------------------------
 
+#: When code has no pick, both AIs are asked about at most this many views of a row, in pictures
+#: of `MatchSettings.shown_to_ais` views each (Anant's decision on PR #1170): their answers only
+#: order the reviewer's list, never decide.
+ALL_VIEWS_CAP: Final = 15
+
 
 @dataclass(frozen=True, slots=True)
 class _Pending:
@@ -313,16 +335,56 @@ class _Pending:
     code: CodeMatch
     item_key: Mapping[str, object]
     facts: VendorPageFacts | None
+    references: tuple[str, ...]
+    """The references printed inside the vendor's drawing that holds the row."""
     remembered: RememberedMatch | None
     remembered_view: str | None
     """The remembered decision's view, as a key of this run's index; `None` for none or gone."""
     forced_reasons: tuple[str, ...]
-    """Why a person's earlier decision makes the reviewer decide again (code contradicts it)."""
-    question: MatchQuestion | None
+    """Why a person's earlier decision makes the reviewer decide again (code contradicts it, or the
+    architect's file changed since a "none of these")."""
+    questions: tuple[MatchQuestion, ...]
+    """One picture when code has a pick (its top views); every view in groups when it has none."""
+    asked_reasons: tuple[str, ...] = ()
 
 
-def _key(page_index: int) -> str:
-    return f"p{page_index}:arch-match"
+def _key(page_index: int, group: int | None = None) -> str:
+    """The question's id: `p{i}:arch-match` for code's top views, `p{i}:arch-match:{n}` for the
+    n-th group of every view."""
+    return f"p{page_index}:arch-match" if group is None else f"p{page_index}:arch-match:{group}"
+
+
+def _row_frame(result: PageSlotResult, facts: VendorPageFacts | None) -> Box | None:
+    """The smallest drawing pasted on the vendor's page that holds the whole row (pdfplumber's
+    frame); `None` when none does (the page itself is the vendor's drawing)."""
+    row = result.plan.row
+    if row is None or facts is None or not row.ticks:
+        return None
+    x0, x1 = row.ticks[0], row.ticks[-1]
+    holding = [
+        box
+        for box in facts.view_boxes
+        if box.x0 <= x0 and x1 <= box.x1 and box.top <= row.y <= box.bottom
+    ]
+    if not holding:
+        return None
+    return min(holding, key=lambda box: (box.x1 - box.x0) * (box.bottom - box.top))
+
+
+def _inside(box: Box, frame: Box) -> bool:
+    middle_x, middle_y = (box.x0 + box.x1) / 2, (box.top + box.bottom) / 2
+    return frame.x0 <= middle_x <= frame.x1 and frame.top <= middle_y <= frame.bottom
+
+
+def _references(result: PageSlotResult, facts: VendorPageFacts | None) -> tuple[str, ...]:
+    """Only references printed inside the vendor's drawing that holds the row count: a reference
+    elsewhere on the sheet may name another drawing's view."""
+    if facts is None:
+        return ()
+    frame = _row_frame(result, facts)
+    return find_references(
+        text for text, box in facts.phrases if frame is None or _inside(box, frame)
+    )
 
 
 @dataclass(frozen=True)
@@ -330,7 +392,7 @@ class ArchitectMatcher:
     """Matches vendor rows with the views of the revision's architect file (#1166).
 
     `views` and `crops` come from `record_architect_view_index` (this run's index); `remembered`
-    from `remembered_matches`; `vendor_pages` from the stage (references printed, page identity,
+    from `remembered_matches`; `vendor_pages` from the stage (phrases printed, page identity,
     pasted drawings, and whether the page holds an architect view of its own); `architect_pages`
     is the pairing's input for every page the architect reader read, for each candidate's position
     pairing.
@@ -342,6 +404,11 @@ class ArchitectMatcher:
     remembered: tuple[RememberedMatch, ...] = ()
     vendor_pages: Mapping[UUID, VendorPageFacts] = field(default_factory=dict)
     architect_pages: Mapping[UUID, ArchitectPageInput] = field(default_factory=dict)
+
+    @property
+    def fingerprint(self) -> tuple[str, ...]:
+        """The architect file(s) these views come from (`architect_fingerprint`)."""
+        return architect_fingerprint([view.carry_key[0] for view in self.views])
 
     def _view(self, key: str) -> IndexedView:
         return next(view for view in self.views if str(view.view.view_id) == key)
@@ -374,7 +441,19 @@ class ArchitectMatcher:
         assert remembered is not None
         code = pending.code
         named = f"on revision {remembered.revision_number}"
+        same_files = remembered.architect_files == self.fingerprint
         if remembered.view_key is None:
+            if not same_files:
+                return (
+                    None,
+                    None,
+                    (
+                        (
+                            f"The reviewer found no matching architect view {named}, but the architect's "
+                            "drawings have changed since: the reviewer decides again."
+                        ),
+                    ),
+                )
             if code.pick is not None:
                 return (
                     None,
@@ -392,7 +471,8 @@ class ArchitectMatcher:
                 (
                     (
                         f"Carried from {named}: the reviewer found no view in the architect's drawings "
-                        "that shows this countertop, and the vendor's page is unchanged."
+                        "that shows this countertop, and neither the vendor's page nor the architect's "
+                        "drawings have changed."
                     ),
                 ),
             )
@@ -420,6 +500,18 @@ class ArchitectMatcher:
             )
         view = self._view(pending.remembered_view)
         if not view.view.separated:
+            if not same_files:
+                return (
+                    None,
+                    None,
+                    (
+                        (
+                            f"The view the reviewer chose {named} is not clearly apart from its "
+                            "neighbour, and the architect's drawings have changed since: the reviewer "
+                            "decides again."
+                        ),
+                    ),
+                )
             return (
                 "not_separated",
                 pending.remembered_view,
@@ -466,50 +558,61 @@ class ArchitectMatcher:
     def _candidates(
         self,
         pending: _Pending,
-        shown: Sequence[str],
-        picked_by: Mapping[str, list[str]],
-        remembered_view: str | None,
+        said: Mapping[str, Mapping[str, str]],
+        shown: Mapping[str, int],
     ) -> tuple[dict[str, object], ...]:
-        return tuple(
-            {
-                "view_id": score.key,
-                "rank": score.rank,
-                "shown_number": shown.index(score.key) + 1 if score.key in shown else None,
-                "score": _score_json(score),
-                "evidence": [
-                    *score.evidence,
-                    *(
-                        [f"remembered from revision {pending.remembered.revision_number}"]
-                        if pending.remembered is not None and score.key == remembered_view
-                        else []
-                    ),
-                ],
-                "code_pairing": self._code_pairing(pending.vendor, self._view(score.key)),
-                "remembered": score.key == remembered_view,
-                "ai_picked_by": list(picked_by.get(score.key, [])),
-            }
-            for score in pending.code.ranked
-        )
+        """Every view, the reviewer's order: when the AIs looked at every view (code had no pick),
+        views both AIs called the same first, then views one AI did, then code's ranking; else
+        code's ranking. `said` is each view's answers by model; `shown` its number in its picture.
+        """
+        grouped = bool(pending.questions) and pending.code.pick is None
 
-    def _question(
+        def yes(key: str) -> int:
+            return sum(1 for word in said.get(key, {}).values() if word == "yes")
+
+        scores = list(pending.code.ranked)
+        if grouped:
+            scores.sort(key=lambda score: (-yes(score.key), score.rank))
+        remembered_view = pending.remembered_view
+        out: list[dict[str, object]] = []
+        for place, score in enumerate(scores, start=1):
+            evidence = [*score.evidence]
+            answers = said.get(score.key)
+            if answers:
+                evidence.append(_said_words(answers))
+            elif pending.questions and score.key not in shown:
+                evidence.append("not shown to the AIs")
+            if pending.remembered is not None and score.key == remembered_view:
+                evidence.append(f"remembered from revision {pending.remembered.revision_number}")
+            out.append(
+                {
+                    "view_id": score.key,
+                    "rank": place,
+                    "code_rank": score.rank,
+                    "shown_number": shown.get(score.key),
+                    "score": _score_json(score),
+                    "evidence": evidence,
+                    "code_pairing": self._code_pairing(pending.vendor, self._view(score.key)),
+                    "remembered": score.key == remembered_view,
+                    "ai_picked_by": [
+                        model for model, word in (answers or {}).items() if word == "yes"
+                    ],
+                }
+            )
+        return tuple(out)
+
+    def _picture_question(
         self,
         page: SlotPage,
         pending: _Pending,
+        shown: Sequence[str],
+        question_id: str,
         *,
         store: ArtifactStore | None,
         effort: str | None,
-    ) -> MatchQuestion | None:
+    ) -> MatchQuestion:
         vendor = pending.vendor
-        if vendor is None or not vendor.pieces:
-            return None
-        shown: list[str] = []
-        for score in pending.code.ranked[: self.settings.shown_to_ais]:
-            crop = self.crops.get(UUID(score.key))
-            if crop is None or crop.png is None:
-                break
-            shown.append(score.key)
-        if not shown:
-            return None
+        assert vendor is not None
         crops = [self.crops[UUID(key)] for key in shown]
         row_px = _union(*(piece.box_px for piece in vendor.pieces))
         frame = _frame(page, pending.result, pending.facts, row_px)
@@ -532,7 +635,7 @@ class ArchitectMatcher:
             if saved.sha256 != digest:
                 raise ValueError("stored architect-match picture hash does not match its bytes")
         packet: dict[str, object] = {
-            "question_id": _key(page.page_index),
+            "question_id": question_id,
             "document_version_id": str(page.document_version_id),
             "page_index": page.page_index,
             "source_page_sha256": page.rendered.page_content_hash,
@@ -549,6 +652,67 @@ class ArchitectMatcher:
         ).hexdigest()
         return MatchQuestion(picture, tuple(shown), common, packet)
 
+    def _questions(
+        self,
+        page: SlotPage,
+        pending: _Pending,
+        *,
+        store: ArtifactStore | None,
+        effort: str | None,
+    ) -> tuple[tuple[MatchQuestion, ...], tuple[str, ...]]:
+        """Code has a pick: one picture of its top views (D1 needs both AIs on that very view).
+        Code has none: every view with a picture, in code's order, in groups of
+        `shown_to_ais`, at most `ALL_VIEWS_CAP` views; the AIs' answers then only order the
+        reviewer's list."""
+        vendor = pending.vendor
+        if vendor is None or not vendor.pieces:
+            return (), ()
+        index = pending.result.page_index
+        pictured = [
+            score.key
+            for score in pending.code.ranked
+            if (crop := self.crops.get(UUID(score.key))) is not None and crop.png is not None
+        ]
+        if pending.code.pick is not None:
+            top: list[str] = []
+            for score in pending.code.ranked[: self.settings.shown_to_ais]:
+                if score.key not in pictured:
+                    break
+                top.append(score.key)
+            if not top:
+                return (), ()
+            return (
+                (
+                    self._picture_question(
+                        page, pending, top, _key(index), store=store, effort=effort
+                    ),
+                ),
+                (),
+            )
+        reasons: list[str] = []
+        if len(pictured) < len(pending.code.ranked):
+            reasons.append(
+                f"{len(pending.code.ranked) - len(pictured)} architect view(s) have no picture, "
+                "so the AIs were not shown them."
+            )
+        if len(pictured) > ALL_VIEWS_CAP:
+            reasons.append(
+                f"The architect's file has {len(pictured)} views with a picture; the AIs were "
+                f"shown the first {ALL_VIEWS_CAP} in code's order."
+            )
+            pictured = pictured[:ALL_VIEWS_CAP]
+        size = self.settings.shown_to_ais
+        groups = [pictured[start : start + size] for start in range(0, len(pictured), size)]
+        return (
+            tuple(
+                self._picture_question(
+                    page, pending, group, _key(index, number), store=store, effort=effort
+                )
+                for number, group in enumerate(groups, start=1)
+            ),
+            tuple(reasons),
+        )
+
     def match(
         self,
         results: Sequence[PageSlotResult],
@@ -560,8 +724,8 @@ class ArchitectMatcher:
         store: ArtifactStore | None,
         effort: str | None,
     ) -> dict[int, RowMatch]:
-        """Every chosen vendor row's match, by page index: code, one batched question to both
-        readers (`ask_the_ais` only when they are the Claude pair), decided by D1; a person's earlier
+        """Every chosen vendor row's match, by page index: code, one batched ask of both readers
+        (`ask_the_ais` only when they are the Claude pair), decided by D1; a person's earlier
         decision carried only to an identical item code does not contradict."""
         by_index = {page.page_index: page for page in pages}
         facts = [view.facts for view in self.views]
@@ -577,11 +741,8 @@ class ArchitectMatcher:
                 continue
             vendor = vendor_row_input(result)
             drawn = None if vendor is None else vendor_drawn_row(vendor)
-            code = match_by_code(
-                VendorViewFacts(drawn, () if page_facts is None else page_facts.references),
-                facts,
-                self.settings,
-            )
+            references = _references(result, page_facts)
+            code = match_by_code(VendorViewFacts(drawn, references), facts, self.settings)
             item_key = _item_key(result, page_facts)
             remembered, identical, remembered_view = self._remembered(item_key)
             row = _Pending(
@@ -590,10 +751,11 @@ class ArchitectMatcher:
                 code=code,
                 item_key=item_key,
                 facts=page_facts,
+                references=references,
                 remembered=remembered,
                 remembered_view=remembered_view,
                 forced_reasons=(),
-                question=None,
+                questions=(),
             )
             if remembered is not None and identical and self.views:
                 status, chosen, reasons = self._carried(row)
@@ -605,8 +767,7 @@ class ArchitectMatcher:
                         chosen=chosen,
                         reasons=reasons,
                         ai_picks=(),
-                        shown=(),
-                        picked_by={},
+                        said={},
                         extra={
                             "carried_from_id": str(remembered.record_id),
                             "carried_from_revision": remembered.revision_number,
@@ -616,12 +777,13 @@ class ArchitectMatcher:
                 row = replace(row, forced_reasons=reasons)
             page = by_index.get(result.page_index)
             if ask_the_ais and readers and page is not None and self.views:
-                question = self._question(page, row, store=store, effort=effort)
-                if question is not None:
-                    row = replace(row, question=question)
+                questions, asked_reasons = self._questions(page, row, store=store, effort=effort)
+                row = replace(row, questions=questions, asked_reasons=asked_reasons)
+                for question in questions:
+                    question_id = str(question.packet["question_id"])
                     jobs.extend(
                         CropJob(
-                            key=_key(result.page_index),
+                            key=question_id,
                             model_id=model,
                             page_index=result.page_index,
                             png=question.picture_png,
@@ -637,30 +799,47 @@ class ArchitectMatcher:
         decided: dict[int, RowMatch] = dict(carried)
         for row in pending:
             index = row.result.page_index
-            question = row.question
-            shown = () if question is None else question.shown
-            picks: list[str | None] = []
             ai_picks: list[dict[str, object]] = []
-            picked_by: dict[str, list[str]] = {}
-            if question is not None:
+            said: dict[str, dict[str, str]] = {}
+            single = len(row.questions) == 1 and row.code.pick is not None
+            yes_by_model: dict[str, list[str]] = {model: [] for model in readers}
+            picks: list[str | None] = []
+            for number, question in enumerate(row.questions, start=1):
                 for model in readers:
-                    answer = answers.get((_key(index), model))
-                    pick, entry = _ai_pick(model, answer, shown)
-                    picks.append(pick)
+                    answer = answers.get((str(question.packet["question_id"]), model))
+                    pick, entry = _ai_pick(model, answer, question.shown)
+                    entry["packet_sha256"] = question.packet.get("packet_sha256")
+                    if not single:
+                        entry["group"] = number
                     ai_picks.append(entry)
-                    if pick is not None:
-                        picked_by.setdefault(pick, []).append(model)
-            decision = decide_match(row.code, picks, shown, [view.facts for view in self.views])
+                    if single:
+                        picks.append(pick)
+                    if isinstance(answer, ArchMatchAnswer):
+                        for key, word in zip(question.shown, answer.same, strict=False):
+                            said.setdefault(key, {})[model] = word
+                            if word == "yes":
+                                yes_by_model[model].append(key)
+                    else:
+                        for key in question.shown:
+                            said.setdefault(key, {})[model] = "no_answer"
+            if row.questions and not single:
+                # Each AI's one view, when it said yes to exactly one across every picture: shown
+                # to D1 as evidence only (code has no pick, so nothing is automatic).
+                picks = [
+                    yes_by_model[model][0] if len(yes_by_model[model]) == 1 else None
+                    for model in readers
+                ]
+            shown = [key for question in row.questions for key in question.shown]
+            decision = decide_match(row.code, picks, shown, facts)
             decision = _second_look(decision, row)
             decided[index] = self._row_match(
                 row,
                 status=decision.status,  # type: ignore[arg-type]
                 source="automatic",
                 chosen=decision.chosen,
-                reasons=(*row.forced_reasons, *decision.reasons),
+                reasons=(*row.forced_reasons, *decision.reasons, *row.asked_reasons),
                 ai_picks=tuple(ai_picks),
-                shown=shown,
-                picked_by=picked_by,
+                said=said,
                 extra={},
             )
         return decided
@@ -674,27 +853,44 @@ class ArchitectMatcher:
         chosen: str | None,
         reasons: Sequence[str],
         ai_picks: tuple[Mapping[str, object], ...],
-        shown: Sequence[str],
-        picked_by: Mapping[str, list[str]],
+        said: Mapping[str, Mapping[str, str]],
         extra: Mapping[str, object],
     ) -> RowMatch:
         facts = row.facts
+        shown = {
+            key: number
+            for question in row.questions
+            for number, key in enumerate(question.shown, start=1)
+        }
         return RowMatch(
             status=status,
             source=source,
             chosen=None if chosen is None else self._view(chosen).view,
             code=row.code,
             ai_picks=ai_picks,
-            candidate_json=self._candidates(row, shown, picked_by, row.remembered_view),
+            candidate_json=self._candidates(row, said, shown),
             reasons=(*reasons, *row.code.reasons),
-            question_packet=None if row.question is None else row.question.packet,
+            question_packet=None if not row.questions else row.questions[0].packet,
             details={
                 "vendor_item_key": dict(row.item_key),
                 "vendor_title": None if facts is None else facts.title,
-                "vendor_references": [] if facts is None else list(facts.references),
+                "vendor_references": list(row.references),
+                "architect_files": list(self.fingerprint),
+                "questions": [question.packet.get("packet_sha256") for question in row.questions],
                 **extra,
             },
         )
+
+
+def _said_words(answers: Mapping[str, str]) -> str:
+    """What the AIs said of one view, in plain words: "both AIs: yes", "one AI: yes, one: no"."""
+    words = sorted(answers.values())
+    if len(words) >= 2 and len(set(words)) == 1:
+        return f"both AIs: {words[0].replace('_', ' ')}"
+    return "AIs: " + ", ".join(
+        f"{model.rsplit('.', 1)[-1]} {word.replace('_', ' ')}"
+        for model, word in sorted(answers.items())
+    )
 
 
 def _second_look(decision: MatchDecision, row: _Pending) -> MatchDecision:

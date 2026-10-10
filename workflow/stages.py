@@ -170,8 +170,7 @@ from extraction.architect.reader import (
     ArchitectSettings,
     read_architect_page,
 )
-from extraction.architect.sheet_index import read_page_phrases
-from extraction.architect.view_matching import find_references
+from extraction.architect.sheet_index import read_pages_phrases
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.form_reader.runner import ThreadSafeAttemptRecorder
 from extraction.fraction_parts import (
@@ -184,6 +183,7 @@ from extraction.fraction_parts import (
 )
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import DetectedDimensions, detect
+from extraction.geometry.rows import Box as RowBox
 from extraction.geometry.rows import StoredBox
 from extraction.geometry.text_association import (
     AssociationResult,
@@ -300,7 +300,11 @@ from workflow.architect_pairing import (
     architect_page_input,
     persist_architect_pairings,
 )
-from workflow.architect_pairing_records import architect_view_tags, architect_views
+from workflow.architect_pairing_records import (
+    _architect_views_by_page,
+    architect_view_tags,
+    architect_views,
+)
 from workflow.architect_reader import (
     ARCHITECT_EXTRACTOR,
     ARCHITECT_EXTRACTOR_VERSION,
@@ -2664,26 +2668,36 @@ class DatabaseStages:
                 select(Page).where(Page.id.in_(tuple(page.page_id for page in pages)))
             )
         }
+        phrases: dict[int, tuple[tuple[str, RowBox], ...]] = {}
+        if data is not None and pages:
+            try:
+                phrases = read_pages_phrases(
+                    data, sorted({page.page_index for page in pages}), text=settings.text
+                )
+            except UnreadablePdf:
+                phrases = {}
+        roles = _architect_views_by_page(session, [page.page_id for page in pages])
+        documents = {
+            version_id: sha
+            for version_id, sha in session.execute(
+                select(DocumentVersion.id, DocumentVersion.sha256).where(
+                    DocumentVersion.id.in_({page.document_version_id for page in pages})
+                )
+            )
+        }
         vendor_pages: dict[UUID, VendorPageFacts] = {}
         for page in pages:
             row = stored.get(page.page_id)
             if row is None:
                 continue
-            references: tuple[str, ...] = ()
-            if data is not None:
-                try:
-                    references = find_references(
-                        read_page_phrases(data, page.page_index, text=settings.text)
-                    )
-                except UnreadablePdf:
-                    references = ()
             reading = self._architect_pages.get(page.page_id)
             vendor_pages[page.page_id] = VendorPageFacts(
                 page_index=page.page_index,
                 content_hash=row.content_hash,
-                references=references,
+                phrases=phrases.get(page.page_index, ()),
                 view_boxes=() if reading is None else reading.view_boxes,
-                has_architect_view=bool(architect_views(session, page.page_id)),
+                has_architect_view=bool(roles.get(page.page_id)),
+                document_sha256=documents.get(page.document_version_id),
             )
         return ArchitectMatcher(
             settings=MEASURED_MATCH_SETTINGS,

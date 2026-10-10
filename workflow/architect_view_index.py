@@ -29,7 +29,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import pdfplumber
@@ -40,14 +40,14 @@ from app.models import DocumentVersion, DrawingView, Page
 from app.models.evidence import ArchitectViewIndexEntry
 from extraction.architect.pairing import DrawnRow, DrawnSpan
 from extraction.architect.reader import ArchitectPage, ArchitectSettings, ArchitectView
-from extraction.architect.sheet_index import SheetLabels, read_sheet_labels
+from extraction.architect.sheet_index import SheetLabels, sheet_labels_on
 from extraction.architect.view_matching import ArchitectViewFacts
 from extraction.geometry.rows import Box
 from extraction.rasterise import PageTooLarge, render_region
 from extraction.reader import UnreadablePdf, pixel_placement
 from workflow.architect_match_contract import MatchedView
-from workflow.architect_match_records import ARCHITECT_FILE_NAME
-from workflow.architect_pairing_records import architect_views
+from workflow.architect_match_records import ARCHITECT_FILE_NAME, view_carry_key
+from workflow.architect_pairing_records import _architect_views_by_page
 from workflow.view_roles import content_view_tag, panel_tag
 
 if TYPE_CHECKING:
@@ -79,8 +79,8 @@ class IndexedView:
     """`facts.key` is `str(view.view_id)`."""
     points_per_inch: Fraction | None
     """Page points per real inch of the view; `None` when unknown."""
-    carry_key: tuple[str, str, str]
-    """`(document sha256, page content hash, view tag)`: the same view on another revision."""
+    carry_key: tuple[str, ...]
+    """`architect_match_records.view_carry_key`: the same view on another run or revision."""
     view_number: int
     extent: Box
     """The view's extent in page points (pdfplumber's frame)."""
@@ -239,21 +239,23 @@ def record_architect_view_index(
         document = pdfplumber.open(io.BytesIO(data))
     except Exception:  # noqa: BLE001
         document = None
+    read = [page for page, reading in pages if reading.views]
+    roles = _architect_views_by_page(session, [page.id for page in read])
+    tags: dict[UUID, dict[str, UUID]] = {}
+    if read:
+        for view_id, page_id, tag in session.execute(
+            select(DrawingView.id, DrawingView.page_id, DrawingView.tag).where(
+                DrawingView.page_id.in_([page.id for page in read])
+            )
+        ):
+            tags.setdefault(page_id, {})[tag] = view_id
     try:
         for page, reading in pages:
             if not reading.views:
                 continue
-            try:
-                labels = read_sheet_labels(data, page.index, text=settings.text)
-            except UnreadablePdf as error:
-                labels = SheetLabels(None, f"the sheet's text could not be read: {error}")
-            confirmed = architect_views(session, page.id)
-            drawing_views = {
-                tag: view_id
-                for view_id, tag in session.execute(
-                    select(DrawingView.id, DrawingView.tag).where(DrawingView.page_id == page.id)
-                )
-            }
+            labels = _labels(document, page.index, settings)
+            confirmed = roles.get(page.id, set())
+            drawing_views = tags.get(page.id, {})
             place = (
                 None
                 if document is None or page.index >= len(document.pages)
@@ -330,7 +332,13 @@ def record_architect_view_index(
                         separated=entry.separated,
                     ),
                     points_per_inch=scale,
-                    carry_key=(version.sha256, page.content_hash, entry.view_tag),
+                    carry_key=view_carry_key(
+                        version.sha256,
+                        page.content_hash,
+                        entry.view_tag,
+                        entry.picture_sha256,
+                        entry.extent,
+                    ),
                     view_number=entry.view_number,
                     extent=view.box,
                 )
@@ -347,6 +355,16 @@ def record_architect_view_index(
             document.close()
     session.flush()
     return crops
+
+
+def _labels(document: Any, page_index: int, settings: ArchitectSettings) -> SheetLabels:
+    """The sheet's number from the already open file."""
+    if document is None or page_index >= len(document.pages):
+        return SheetLabels(None, "the sheet's text could not be read")
+    try:
+        return sheet_labels_on(document.pages[page_index], text=settings.text)
+    except Exception as error:  # noqa: BLE001 - a page whose text cannot be read gets no number
+        return SheetLabels(None, f"the sheet's text could not be read: {error}")
 
 
 def _exact(value: Fraction) -> str:

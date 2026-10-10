@@ -129,15 +129,36 @@ def test_a_view_answers_to_its_bubble_mark_with_either_sheet() -> None:
 # --- code -----------------------------------------------------------------------------------------
 
 
-def test_a_reference_to_exactly_one_view_is_codes_pick_even_against_its_geometry() -> None:
-    """The vendor printed which view it is; a different run length is the mismatch type 1 exists
-    to catch, so it is never a reason to doubt the reference."""
+def test_a_reference_to_exactly_one_view_is_codes_pick_when_geometry_agrees() -> None:
+    named = replace(SAME, bubble="9 QX 1.1")
+    code = match_by_code(vendor(references=("9/QX11",)), [named, FAR], SETTINGS)
+
+    assert code.verdict is CodeVerdict.REFERENCE and code.pick == "same"
+    assert code.ranked[0].reference_match
+
+
+def test_a_reference_to_a_view_with_no_measurable_run_still_decides() -> None:
+    named = replace(ROWLESS, bubble="9 QX 1.1")
+    code = match_by_code(vendor(references=("9/QX11",)), [named, FAR], SETTINGS)
+
+    assert code.verdict is CodeVerdict.REFERENCE and code.pick == "rowless"
+
+
+def test_a_reference_clearly_contradicted_by_its_views_run_does_not_decide() -> None:
+    """Review finding 3: the referenced view's run is 8 in off (more than 1 + 3)."""
     off = replace(FAR, bubble="9 QX 1.1")
     code = match_by_code(vendor(references=("9/QX11",)), [SAME, off], SETTINGS)
 
-    assert code.verdict is CodeVerdict.REFERENCE and code.pick == "far"
-    assert [score.key for score in code.ranked] == ["far", "same"]
-    assert code.ranked[0].reference_match
+    assert code.verdict is CodeVerdict.GEOMETRY_TIE and code.pick is None
+    assert "disagree" in code.reasons[0]
+
+
+def test_a_reference_against_another_views_clear_geometry_does_not_decide() -> None:
+    named = replace(ROWLESS, bubble="9 QX 1.1")  # nothing measured: not contradicted by itself
+    code = match_by_code(vendor(references=("9/QX11",)), [named, SAME, FAR], SETTINGS)
+
+    assert code.verdict is CodeVerdict.GEOMETRY_TIE and code.pick is None
+    assert "clear geometry winner" in code.reasons[0]
 
 
 def test_two_views_answering_the_reference_do_not_decide() -> None:
@@ -189,6 +210,31 @@ def test_a_vendor_splitting_an_architect_bay_still_fits() -> None:
 
     assert code.verdict is CodeVerdict.GEOMETRY_CLEAR and code.pick == "coarser"
     assert code.ranked[0].ticks_aligned == 3
+
+
+def test_a_twin_whose_scale_is_unknown_keeps_the_fitting_view_from_being_clear() -> None:
+    """Review finding 1: ticks at 0/6/12/18. W fits with a known scale; its twin T has the same
+    rows but no scale; three other views do not fit. Code must not call W the clear winner."""
+    small = (6, 6, 6)
+    w = view("W", small)
+    twin = view("T", small, scale=None)
+    others = [view(f"other-{n}", (40 + n, 30)) for n in range(3)]
+    code = match_by_code(vendor(small), [w, twin, *others, ROWLESS], SETTINGS)
+
+    assert code.verdict is CodeVerdict.GEOMETRY_TIE and code.pick is None
+    assert "cannot be measured" in code.reasons[-1]
+    keys = [score.key for score in code.ranked]
+    assert keys.index("T") < keys.index("rowless"), "a view with rows ranks before one without"
+
+
+def test_a_row_that_misses_most_of_the_vendors_joints_never_fits() -> None:
+    """Review finding 6: every architect tick lands, but only one of the vendor's six inner ticks
+    meets an architect tick."""
+    sparse = view("sparse", (30, 42))
+    code = match_by_code(vendor((10, 10, 10, 10, 10, 10, 12)), [sparse, FAR], SETTINGS)
+
+    assert code.verdict is CodeVerdict.GEOMETRY_NONE
+    assert not code.ranked[0].fits and code.ranked[0].ticks_aligned == 3
 
 
 def test_one_fit_with_another_view_close_behind_is_a_tie() -> None:
