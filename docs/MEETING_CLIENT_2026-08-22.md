@@ -1,15 +1,15 @@
-# Call with Raj — talking points (2026-08-22)
+# Call with the client lead — talking points (2026-08-22)
 
-Plain-language agenda for the call. Part A is what Raj has already confirmed (so we recap, not
+Plain-language agenda for the call. Part A is what the client lead has already confirmed (so we recap, not
 re-ask). Part B is what's still open — the questions for this call, most important first.
 
 **Two things matter most on this call:**
 1. **The real drawings** — the single biggest thing; everything we measure quality against is built from them.
-2. **The sink cut-out (width vs depth)** — the question Raj said he needs a call to explain. Let him walk us through it.
+2. **The sink cut-out (width vs depth)** — the question the client lead said he needs a call to explain. Let him walk us through it.
 
 ---
 
-## Part A — What Raj has already told us (confirm, don't re-open)
+## Part A — What the client lead has already told us (confirm, don't re-open)
 
 **Q. How strict should the checks be — how close is "close enough"?**
 A. For the first version, **exact match**: the system flags any difference, and the reviewer clears the false alarms on screen. No tolerance band for now.

@@ -79,7 +79,7 @@ def _synthetic(status: Status, blocks: Blocks) -> ClientFact:
     """A fact built here rather than borrowed from the file.
 
     These tests used to reach for a live question — `Q5` was the standing example of one that stops
-    work. Raj then answered it, and three tests failed for a reason that had nothing to do with the
+    work. The client lead then answered it, and three tests failed for a reason that had nothing to do with the
     code: the client answering is the system working. Behaviour is asserted against a fact we
     construct; the file's own contents are asserted separately, above.
     """
@@ -119,7 +119,7 @@ def test_an_answered_question_stops_nothing_whatever_it_blocks() -> None:
 
 def test_the_gate_line_says_which_kind_of_blocked() -> None:
     assert "changes the formula" in _synthetic(Status.OPEN, Blocks.FORMULA).gate_line()
-    # Synthetic, not `FACTS["Q2"]`. Q2 was the standing example of an open value question until Raj
+    # Synthetic, not `FACTS["Q2"]`. Q2 was the standing example of an open value question until the client lead
     # answered it, and this line then failed for a reason that had nothing to do with the code —
     # exactly what `_synthetic` exists to prevent, one assertion below where it says so.
     assert "PROVISIONAL" in _synthetic(Status.OPEN, Blocks.VALUE).gate_line()
@@ -207,7 +207,7 @@ def test_a_blocks_nothing_question_is_neither() -> None:
 
 def test_only_an_open_value_question_is_provisional() -> None:
     """Resolved through the real file, so it needs a real open value question — but *whichever* one
-    that is, not a named one. Naming Q2 here meant Raj answering it broke the test, which is the
+    that is, not a named one. Naming Q2 here meant the client lead answering it broke the test, which is the
     system working reported as a failure.
     """
     open_value = next(

@@ -95,7 +95,7 @@ def test_every_source_is_one_a_person_or_the_company_can_give() -> None:
 @pytest.mark.parametrize(
     ("name", "sources"),
     [
-        # Raj, 2026-08-25: "changes from fabricator to fabricator. GV doesn't decide that one."
+        # The client lead, 2026-08-25: "changes from fabricator to fabricator. GV doesn't decide that one."
         ("sink_cutout_clearance", (Provenance.COMPANY_STANDARD, Provenance.FABRICATOR)),
         # "Specified · G.C / Client · Project Specific".
         ("countertop_overhang", (Provenance.GC_CLIENT,)),
@@ -106,7 +106,7 @@ def test_every_source_is_one_a_person_or_the_company_can_give() -> None:
         ("front_offset_required", (Provenance.COMPANY_STANDARD,)),
     ],
 )
-def test_the_sources_are_the_ones_raj_and_the_admin_gave(
+def test_the_sources_are_the_ones_the_client_lead_and_the_admin_gave(
     name: str, sources: tuple[Provenance, ...]
 ) -> None:
     assert allowed_sources(name) == sources

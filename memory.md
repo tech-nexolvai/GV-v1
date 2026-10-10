@@ -79,12 +79,12 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   operations. Before Phase 3, fold in `docs/RULE_ENGINE_SPEC.md`: `sum_within_tolerance` + `sum`,
   variable-length inputs (cardinality one/many, scope same_assembly), applicability variants
   (tolerance + field-cut count by wall_config), literal + USER_INPUT operand sources. Needed for
-  CT-1 (countertop width = cabinets + fillers + field cut) and Raj's cabinet-filler distribution.
-- **Semantic type vocabulary** — confirm exact names with Raj: `countertop_overall_width`,
+  CT-1 (countertop width = cabinets + fillers + field cut) and the client lead's cabinet-filler distribution.
+- **Semantic type vocabulary** — confirm exact names with the client lead: `countertop_overall_width`,
   `cabinet_width`, `filler_width`, `wall_config`, `field_dimension`, materials, etc.
 - **How `wall_config` is established** — read from the plan (walls on which sides) or reviewer input;
   if neither → REVIEW.
-- **CT007 — exact value or minimum? RAJ TO CONFIRM.** The 2026-09-07 countertop deck says both: its
+- **CT007 — exact value or minimum? CLIENT LEAD TO CONFIRM.** The 2026-09-07 countertop deck says both: its
   variable table gives CT007's acquisition as "Global **minimum**", its prose and Q5 call it a global
   **constant** (U.N.O). `>= 4"` passes a sink held six inches back; `= 4"` fails it.
   `ct_sink_offset_front_001` deliberately stays EXACT and `Acquisition` for CT007 is left unset until
@@ -92,7 +92,7 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
 - **Back-offset shortfall — warn or fail? OURS to decide.** That deck says "warn" when the remainder
   falls below the vendor minimum; the shipped `ct_back_offset_min_001` is `severity: CRITICAL`
   (pre-dates the deck). Not changed either way yet.
-- **Uneven distribution splits — RAJ TO CONFIRM (two of them).** Both of his worked examples divide
+- **Uneven distribution splits — CLIENT LEAD TO CONFIRM (two of them).** Both of his worked examples divide
   evenly (6" over two cabinets), so neither says (a) how a remainder that does not divide into a
   drawable width is apportioned — 4" over three cabinets is 22 2/3" — nor (b) how a change is shared
   between fillers that started *unequal*, a layout slide 12 names as in scope. `cabinet_run_distribution`
@@ -100,7 +100,7 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   a verdict, not a rounding preference, so do not infer either rule from the two examples.
 
 ## Client status (waiting on / confirmed)
-- **Waiting on Raj:** full countertop + cabinet rules (with tolerance + severity), one complete real
+- **Waiting on the client lead:** full countertop + cabinet rules (with tolerance + severity), one complete real
   project (shop + arch set with a countertop-on-cabinets example), global rules per item type, and a
   5–10 case gold-set of past reviewed drawings with mark-ups. All "will send."
 - **Received 2026-09-07 — the countertop deck** (`C_Tops_Checks_New.pptx` →
@@ -115,7 +115,7 @@ is exact arithmetic against a tolerance — never an LLM judgment. Primary safet
   changed"), and the program then computes. Reviewer picks what may move; arithmetic decides by how
   much. Q9 is refined, not contradicted. Still owed: the bound *values* (#674) and the two uneven-split
   rules above.
-- **Confirmed by Raj:** tolerance depends on wall layout; checklist targets vanity tops (reusable for
+- **Confirmed by the client lead:** tolerance depends on wall layout; checklist targets vanity tops (reusable for
   kitchen if same layout); review is by category but must cross-check compatibility (countertop vs
   cabinet); dimensions live on dimension lines; inch & mm always agree (but Q12 settled that INCHES govern —
   mm is the vendor's machine reference and never a verdict operand); build against

@@ -1,6 +1,6 @@
 """CT-ARCH-WIDTH-001: the vendor's countertop widths against the architect's, exact, in inches.
 
-Raj, 24 Jul: "overall dimensions has to match". Settled with Raj: exact match, inches only, every
+The client lead, 24 Jul: "overall dimensions has to match". Settled with the client lead: exact match, inches only, every
 difference a flag. Which architect dimension measures the same thing as which vendor piece is the
 pairing's job (#1053); this rule only compares the pairs it is given, position by position.
 
@@ -65,7 +65,7 @@ def test_the_rule_compares_architect_and_vendor_widths_exactly_in_inches() -> No
     rule = _rule()
 
     assert rule.id == "CT-ARCH-WIDTH-001"
-    assert rule.version == "1.0.0"
+    assert rule.version == "1.0.1"
     assert rule.product_type is ProductType.COUNTERTOP
     assert rule.check_type is CheckType.ARCH_VS_SHOP
     assert rule.severity is Severity.FLAG

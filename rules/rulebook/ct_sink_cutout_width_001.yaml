@@ -1,5 +1,5 @@
 id: CT-SINK-CUTOUT-WIDTH-001
-version: 1.0.1
+version: 1.0.2
 product_type: countertop
 check_type: internal
 severity: FLAG
@@ -13,14 +13,14 @@ description: >
   This rule was held back on purpose. The client's spreadsheet said the cutout width came from
   the interior DEPTH (S19) while their diagram showed it coming from the width, and rather than
   pick the reading that looked natural we asked, because a guess here sizes a hole that gets
-  cut in stone. On the 2026-08-25 call Raj confirmed the diagram: "my CT012 is width". The
+  cut in stone. On the 2026-08-25 call the client lead confirmed the diagram: "my CT012 is width". The
   answer matched the natural reading, which is the point — we were right without having had to
   be lucky.
 
   The interior width comes from the sink's cut sheet and is supplied per drawing set by the
   reviewer, so it is run-scoped with no default: absent, this is NOT FOUND rather than a guess.
 
-  The clearance is deliberately not a constant. Raj: "1/4, but make sure that is editable,
+  The clearance is deliberately not a constant. The client lead: "1/4, but make sure that is editable,
   sometimes it's 1/8 — a project-specific variable." It varies by fabricator, which is exactly
   what a project-scoped parameter is for.
 

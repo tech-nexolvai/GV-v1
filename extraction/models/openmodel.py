@@ -7,7 +7,7 @@ adapter carries one now, for nothing, against a model that can run on the machin
 already on.
 
 **This is not the provider decision.** The model here is a stand-in chosen because it is free and
-local, and nothing about that choice is a recommendation. Abhishek decides the provider, and it swaps
+local, and nothing about that choice is a recommendation. The client's project lead decides the provider, and it swaps
 in through `OpenModelConfig` — the pipeline seam is `extract(request) -> ObservationCandidate` either
 way, which is the whole point of writing a second one.
 

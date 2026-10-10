@@ -298,11 +298,11 @@ def test_the_vendor_report_names_its_approver_and_the_time(tmp_path: Path) -> No
         _package(),
         list(covered),
         LocalStore(tmp_path),
-        signed_off=_signed_off(*covered, approved_by="raj"),
+        signed_off=_signed_off(*covered, approved_by="client_lead"),
     )
     text = _text(tmp_path, stored.key)
 
-    assert "raj" in text
+    assert "client_lead" in text
     assert "2026-08-25" in text
     assert str(APPROVAL) in text
 
@@ -463,14 +463,14 @@ def test_the_sign_off_is_read_from_the_stored_approval(
         revision = _stored_revision(session)
         covered = [_stored_finding(session, revision) for _ in range(2)]
         _stored_finding(session, revision)  # signed off by nobody
-        _approve(session, revision, covered, by="raj")
+        _approve(session, revision, covered, by="client_lead")
         revision_id = revision.id
         covered_ids = {finding.id for finding in covered}
 
     with unit_of_work(sessions) as session:
         signed = sign_off(session, revision_id)
 
-    assert signed.approved_by == "raj"
+    assert signed.approved_by == "client_lead"
     assert signed.package_revision_id == revision_id
     assert signed.finding_ids == covered_ids, "only the linked findings are covered"
 
@@ -503,7 +503,7 @@ def test_a_re_approved_revision_uses_the_sign_off_in_force(
         revision = _stored_revision(session)
         first = _stored_finding(session, revision)
         second = _stored_finding(session, revision)
-        _approve(session, revision, [first], by="raj", when=APPROVED_AT)
+        _approve(session, revision, [first], by="client_lead", when=APPROVED_AT)
         _approve(
             session, revision, [first, second], by="anant", when=APPROVED_AT + timedelta(hours=1)
         )
@@ -528,7 +528,7 @@ def test_two_approvals_at_the_same_instant_are_refused(
     with unit_of_work(sessions) as session:
         revision = _stored_revision(session)
         finding = _stored_finding(session, revision)
-        _approve(session, revision, [finding], by="raj", when=APPROVED_AT)
+        _approve(session, revision, [finding], by="client_lead", when=APPROVED_AT)
         _approve(session, revision, [finding], by="anant", when=APPROVED_AT)
         revision_id = revision.id
 

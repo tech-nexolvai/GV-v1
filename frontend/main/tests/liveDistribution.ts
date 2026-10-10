@@ -1,7 +1,7 @@
 /**
  * A real `POST /filler-distribution` response, captured 2026-09-27.
  *
- * Not a fixture: this is what the running server sent, against a real database, for Raj's slide-6
+ * Not a fixture: this is what the running server sent, against a real database, for the client lead's slide-6
  * example — a 90" wall measured at 82", 3" fillers, and a 36" equipment cabinet between two 24"
  * regulars. Captured rather than written, because the thing it is here to catch is the shape the
  * server actually sends differing from the shape the component reads, and a hand-written object

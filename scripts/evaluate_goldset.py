@@ -197,7 +197,7 @@ def make_fixture(directory: Path) -> Path:
     """Write a synthetic package — two drawings and an answer key — and return its path.
 
     **A fixture, not a drawing.** It exists so this tool is runnable and testable today with no
-    client material, and so the format has a worked example Raj's answers can be mapped onto. The
+    client material, and so the format has a worked example the client lead's answers can be mapped onto. The
     numbers in it are arbitrary and nothing is tuned against them.
 
     **Two answers, on purpose: one the system gets and one it does not.** The drawing says `25.5"`,

@@ -341,7 +341,7 @@ def decision_brief(number: int, title: str, body: str) -> None:
         "Evidence (verified, `docs/V1_RESEARCH_AND_PLAN.md` §F1)",
         "Recommendation",
         "Consequence if rejected",
-        "Question for Raj",
+        "Question for the client lead",
         "What we need",
         "Why it blocks",
         "Why it matters",

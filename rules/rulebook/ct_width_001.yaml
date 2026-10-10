@@ -1,5 +1,5 @@
 id: CT-WIDTH-001
-version: 1.2.0
+version: 1.2.1
 product_type: countertop
 check_type: internal
 severity: FLAG
@@ -64,7 +64,7 @@ parameters:
       value: 1
       unit: in
     note: >-
-      company standard 1 in per wall end (Raj, CLIENT_FACTS Q1: "1 inch is typical, customizable
+      company standard 1 in per wall end (the client lead, CLIENT_FACTS Q1: "1 inch is typical, customizable
       per project"; adopted by the admin on 2026-10-07). A company or project value replaces it.
 
 derivations:

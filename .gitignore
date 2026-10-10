@@ -63,3 +63,10 @@ frontend/dist/
 # source directory. Nothing tracked sits under either path today, so this ignores only scratch.
 /tmp/
 /output/
+
+# --- Client meeting documents and Office lock files ---
+# The 2026-08-22 client meeting .docx stays on the owner's machine, untracked (#1151). The pattern
+# names no person on purpose: client staff names never go into tracked files. `~$*` is the lock
+# file Office writes beside any open document.
+/docs/Meeting_*_2026-08-22.docx
+~$*

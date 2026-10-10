@@ -413,7 +413,7 @@ def test_an_overridden_company_standard_is_noted_on_the_finding() -> None:
     override = ParameterValue(
         value=Quantity(value="3", unit=Unit.INCH),
         provenance=Provenance.GC_CLIENT,
-        set_by="Raj",
+        set_by="client lead",
         set_at=WHEN,
     )
     resolved = resolve(

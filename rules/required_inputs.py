@@ -165,7 +165,7 @@ class RequiredInputs:
     discriminators: tuple[DiscriminatorNeed, ...]
 
 
-#: Parameters that no reviewer may supply while their authority remains unresolved. Raj supplied
+#: Parameters that no reviewer may supply while their authority remains unresolved. The client lead supplied
 #: CT009's vendor range on 2026-09-09, so V1 currently has none.
 BLOCKED_PARAMETERS: frozenset[str] = frozenset()
 

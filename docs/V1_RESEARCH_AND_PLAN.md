@@ -276,7 +276,7 @@ a differing cabinet count is itself a finding, and must never silently compare t
 
 ### F10 — Extraction targets are richer than "dimensions on dimension lines"
 
-`memory.md` records Raj as confirming "dimensions live on dimension lines". The real drawing shows
+`memory.md` records the client lead as confirming "dimensions live on dimension lines". The real drawing shows
 that is true but incomplete. Rule-relevant facts also live in **free-text notes** (the 5″ filler panel
 and its field-cut instruction), **material codes**, **view tags** and the **title block**. Extraction
 scope must include annotation text, not dimensions alone.
@@ -424,7 +424,7 @@ Pure Python, synthetic tests, no client dependency, and it is the safety-critica
 
 | Epic | Substance | Blocked on |
 |---|---|---|
-| **B1 Gold set** | Annotate real packages: values, units, IDs, polygons, matches, expected findings | Raj: real project + 5–10 reviewed cases |
+| **B1 Gold set** | Annotate real packages: values, units, IDs, polygons, matches, expected findings | The client lead: real project + 5–10 reviewed cases |
 | **B2 Extraction core** | pikepdf repair → pypdfium2 render → pdfplumber vector; dimension-token parser; note/material/tag extraction (F10) | Real PDFs |
 | **B3 Chain-closure validator** | The self-verifying check from F3 | Real PDFs (design can start now) |
 | **B4 Canonical evidence + gate** | Candidate → canonical → sealed operand; dual-unit corroboration lane (F2); evidence states | B2 |
@@ -452,7 +452,7 @@ both are fully testable today with zero client dependency. A3 is small and can l
 | Unit rounding consumes the tolerance budget (F1, verified) | False PASS — the primary safety metric | D1; no silent unit mixing; dedicated test suite from the measured table |
 | Tolerances are assumed, not client-confirmed (Q2) | Every verdict is unsound | Placeholders must fail loudly; block Phase 3 sign-off on Q2 |
 | Field-cut count ambiguity (Q1) | CT-1 arithmetic wrong | Blocking question; do not guess |
-| Client checklist errors treated as spec (Q15–Q20) | Wrong rules authored confidently | Confirm as typos with Raj; never silently correct a client spec |
+| Client checklist errors treated as spec (Q15–Q20) | Wrong rules authored confidently | Confirm as typos with the client lead; never silently correct a client spec |
 | Rules cover one wall config only (F12) | Unchecked packages look clean | D7 explicit "no applicable rule" |
 | Gold set never arrives | Nothing is measurable; no release gate can pass | Track A proceeds regardless; escalate early — this is the long pole |
 | Scope drift toward design (F11) | Contractual and liability exposure | D8; reviewer sign-off on any emitted value |
@@ -465,7 +465,7 @@ both are fully testable today with zero client dependency. A3 is small and can l
 schema, derivations engine, applicability resolver, parameter model, eval harness, and rule authoring
 with placeholder tolerances. This is the safety-critical core and the hardest part of the product.
 
-**Blocked on Raj:** tolerance values (Q2), the field-cut question (Q1), the gold set, and all
+**Blocked on the client lead:** tolerance values (Q2), the field-cut question (Q1), the gold set, and all
 extraction work.
 
 **The long pole is the gold set.** Without it no metric can be computed and no release gate can pass,

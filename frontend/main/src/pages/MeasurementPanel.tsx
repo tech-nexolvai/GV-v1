@@ -111,7 +111,7 @@ type Parameter = {
   rule_ids: string[];
   declared_default: string | null;
   blocked: boolean;
-  /** Where a value may come from (#827), in the order Raj's checklist gives them. */
+  /** Where a value may come from (#827), in the order the client lead's checklist gives them. */
   sources?: SettingSource[];
   /** Where the architect's drawing states it (#866): a page and a crop, never the number. */
   found?: SettingPointer | null;

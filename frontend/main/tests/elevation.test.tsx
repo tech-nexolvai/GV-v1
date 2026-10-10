@@ -44,7 +44,7 @@ function response(overrides: Partial<FillerDistributionResponse>): FillerDistrib
   } as FillerDistributionResponse;
 }
 
-// Raj's deck, scenario 1 (slides 4-6): 90" arch, 82" site -> 2 / 21 / 36 / 21 / 2.
+// The client lead's deck, scenario 1 (slides 4-6): 90" arch, 82" site -> 2 / 21 / 36 / 21 / 2.
 const scenario1 = response({
   design_width: inches(90),
   field_dimension: { name: 'field_width', source: 'USER_INPUT', status: 'HUMAN_CONFIRMED', value: inches(82) },
@@ -60,7 +60,7 @@ const scenario1 = response({
   ],
 });
 
-// Raj's deck, scenario 2 (slides 8-10): 88" arch, 96" site -> 3 / 27 / 36 / 27 / 3.
+// The client lead's deck, scenario 2 (slides 8-10): 88" arch, 96" site -> 3 / 27 / 36 / 27 / 3.
 const scenario2 = response({
   design_width: inches(88),
   field_dimension: { name: 'field_width', source: 'USER_INPUT', status: 'HUMAN_CONFIRMED', value: inches(96) },

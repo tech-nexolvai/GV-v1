@@ -20,7 +20,7 @@ model/retrieval/memory/internet access and uses no `eval`. Primary metric = crit
 - **Respect the trust boundaries.** Never import extraction/retrieval/network code into `verdict/`.
   Never let retrieval output become a verdict operand.
 - **Exact numbers only** in the verdict path: `Fraction`/`Decimal`; unknown unit → REVIEW.
-  **Inches are authoritative** — Raj's Q12: mm on GV drawings is the vendor's machine reference and is
+  **Inches are authoritative** — the client lead's Q12: mm on GV drawings is the vendor's machine reference and is
   never a verdict operand. mm may still corroborate that an inch was *read* correctly, which is one of
   only two ways a single reader can qualify evidence, so it is not discarded — it just never decides.
   Exact match (Q2) makes this stricter, not looser: with no tolerance band, a float's rounding *is*

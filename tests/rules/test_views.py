@@ -58,7 +58,7 @@ def _authored_rule_ids() -> frozenset[str]:
     ],
 )
 def test_cutouts_and_offsets_read_from_the_plan(rule_id: str) -> None:
-    """Raj's first grouping: cut-out position, front and back offsets."""
+    """The client lead's first grouping: cut-out position, front and back offsets."""
     assert views_for(rule_id) == frozenset({PageType.PLAN})
     assert may_read_from(rule_id, PageType.PLAN)
 
@@ -106,7 +106,7 @@ def test_an_unrouted_check_reads_from_nothing() -> None:
 
 
 def test_countertop_depth_is_unrouted_rather_than_guessed() -> None:
-    """`CT-DEPTH-001` is in none of the three groupings Raj gave.
+    """`CT-DEPTH-001` is in none of the three groupings the client lead gave.
 
     Placing it by inference — depth sounds sectional, so try section — would be a routing decision
     made by guesswork that nobody would ever see was made. It stays unrouted until the full list
@@ -160,7 +160,7 @@ def test_every_routed_id_is_a_rule_that_exists() -> None:
 def test_the_outstanding_list_is_reportable_rather_than_discovered_one_abstention_at_a_time() -> (
     None
 ):
-    """`unrouted` exists so the missing half of Raj's list can be printed at startup or in a report.
+    """`unrouted` exists so the missing half of the client lead's list can be printed at startup or in a report.
 
     Discovering it one NOT_FOUND at a time, during a review, is how a missing decision gets mistaken
     for a broken check.

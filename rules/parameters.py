@@ -78,7 +78,7 @@ class Provenance(StrEnum):
     FABRICATOR = "Fabricator"
     """The stone fabricator set it for this job — e.g. the sink cut-out clearance (#827).
 
-    Raj, 2026-08-25: the clearance *"changes from fabricator to fabricator. GV doesn't decide that
+    The client lead, 2026-08-25: the clearance *"changes from fabricator to fabricator. GV doesn't decide that
     one."* Without this word, a clearance changed for one job had no honest source to record.
     """
 

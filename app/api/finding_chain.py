@@ -127,7 +127,7 @@ class CalculationTraceOut(BaseModel):
     intermediates: tuple[tuple[str, str], ...] = ()
     comparison: str = ""
     tolerance: str | None = None
-    """Always absent in V1. Raj settled on exact match with no band, so there is no tolerance to
+    """Always absent in V1. The client lead settled on exact match with no band, so there is no tolerance to
     record — the reviewer clearing a flag is the tolerance. Kept because graded tolerances are
     deferred past iteration 1 rather than ruled out."""
 

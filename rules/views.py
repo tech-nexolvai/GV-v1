@@ -9,17 +9,17 @@ Overhang is the case that makes the point. It is only dimensioned in a section �
 elevation entirely — so a plan-only pipeline never checks it and reports nothing wrong, which is a
 false pass by omission rather than by arithmetic.
 
-**An unmapped check is refused, not waved through.** Raj owes the full check-to-view list, and until
+**An unmapped check is refused, not waved through.** The client lead owes the full check-to-view list, and until
 it lands `views_for` answers `None` for anything not in the working set below, and `may_read_from`
 answers `False`. That is the deliberately awkward direction: a permissive default would let every
 future check read any page, silently, and nothing downstream could tell that routing had never been
 decided for it. Refusing turns the missing list into an abstention a reviewer sees.
 
-**The countertop width check reads from the elevation (#1139).** Raj's grouping put the
+**The countertop width check reads from the elevation (#1139).** The client lead's grouping put the
 wall-to-wall dimension in plan, and this map first routed `CT-WIDTH-001` there. V1 does not read it
 there: it reads the countertop row, the overall and the pieces under it, off the vendor's front
 elevation. A plan-only route would have refused every width check V1 makes the day something read
-this map, so the route follows what V1 reads. The other routes stay as Raj grouped them.
+this map, so the route follows what V1 reads. The other routes stay as the client lead grouped them.
 
 **Nothing consumes this yet.** Still true after #1139, which fixed the map and wired nothing. There
 is no pipeline joining a rule to the page its operands came from
@@ -54,7 +54,7 @@ class UnroutedCheckError(LookupError):
 
 #: The working set from the 2026-08-25 call, keyed by rule id.
 #:
-#: Raj gave three groupings and offered the complete mapping later:
+#: The client lead gave three groupings and offered the complete mapping later:
 #:
 #: * **Plan** — cut-out position, front and back offsets, the wall-to-wall dimension.
 #: * **Elevation** — cabinet widths, fillers, tags.
@@ -123,7 +123,7 @@ def may_read_from(rule_id: str, page_type: PageType | None) -> bool:
 def unrouted(rule_ids: frozenset[str] | set[str] | tuple[str, ...]) -> tuple[str, ...]:
     """Which of these checks have no view mapping, sorted.
 
-    For a startup check or a report: the answer is the outstanding half of Raj's list, and it should
+    For a startup check or a report: the answer is the outstanding half of the client lead's list, and it should
     be visible as a list of names rather than discovered one abstention at a time.
     """
     return tuple(sorted(rule_id for rule_id in rule_ids if rule_id not in CHECK_VIEWS))

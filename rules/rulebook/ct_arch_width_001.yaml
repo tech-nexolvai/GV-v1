@@ -1,5 +1,5 @@
 id: CT-ARCH-WIDTH-001
-version: 1.0.0
+version: 1.0.1
 product_type: countertop
 check_type: arch_vs_shop
 severity: FLAG
@@ -7,7 +7,7 @@ arithmetic_unit: in
 
 name: Countertop widths match the architect's drawing
 description: >
-  The vendor's countertop row must match the architect's drawing (Raj, 24 Jul: "overall dimensions
+  The vendor's countertop row must match the architect's drawing (the client lead, 24 Jul: "overall dimensions
   has to match"). For each width both drawings print for the same thing - the row's overall, or one
   vendor piece paired with one architect dimension - the vendor's inch value must equal the
   architect's exactly; any difference is a flag for the reviewer. Inches only: millimetres never

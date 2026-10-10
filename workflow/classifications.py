@@ -1,7 +1,7 @@
 """What a reviewer said each item in an ordered run is, and how it reaches a check.
 
 `cabinet_type` is declared in a rule's `inputs:` with `source: USER_INPUT`, exactly as `field_width`
-is, and for the same reason: it is not on either drawing as a value this system can read. Raj's deck
+is, and for the same reason: it is not on either drawing as a value this system can read. The client lead's deck
 is explicit about who supplies it — slide 11 has the reviewer draw a box around a cabinet and
 *categorise* it — so nothing here infers one, and a cabinet nobody classified is simply absent.
 

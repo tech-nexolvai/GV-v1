@@ -1,7 +1,7 @@
 """The rulebook is dynamic where it should be, and the demonstration is a verdict.
 
-Abhishek asked on the 2026-08-25 call that the rulebook be *"dynamic — project to project, product
-to product, vendor-to-vendor… not hard-coded"*, and Raj answered that *"to some extent it has to be
+The client's project lead asked on the 2026-08-25 call that the rulebook be *"dynamic — project to project, product
+to product, vendor-to-vendor… not hard-coded"*, and the client lead answered that *"to some extent it has to be
 hard-coded."* Both are right, and the architecture already draws the line between them. This file
 proves the part that is dynamic by making the same published rule reach **different verdicts**,
 without a line of Python changing between the two runs.
@@ -212,7 +212,7 @@ def test_the_layout_changes_the_verdict_without_touching_the_rule(
     `tests/rules/test_ct1_width.py` already shows each layout applying its own field-cut count, and
     `tests/rules/test_applicability.py` shows the resolver choosing variants — but neither carries a
     single *published snapshot* through two contexts to two different verdicts, which is the claim
-    Abhishek's question is actually about.
+    the client's project lead's question is actually about.
 
     Two 1" field cuts on a three-wall run; the same numbers against a back wall need none. Same rule,
     same measurements, different answer, no code.

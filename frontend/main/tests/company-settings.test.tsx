@@ -17,7 +17,7 @@ const settings: CompanySetting[] = [
     scope: 'global',
     rule_ids: ['CAB-FILLER-001'],
     rulebook_default: '2 in',
-    rulebook_note: '2" is Raj\'s written rule — awaiting his confirmation (#674).',
+    rulebook_note: '2" is the client lead\'s written rule — awaiting his confirmation (#674).',
     company_value: null,
     company_set_by: null,
     company_set_at: null,

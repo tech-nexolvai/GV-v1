@@ -86,7 +86,7 @@ class SemanticType(str, Enum):
     WALL_CONFIG = "wall_config"
     FIELD_DIMENSION = "field_dimension"
     MATERIAL = "material"
-    #: Which category a cabinet is, from the reviewer. Raj's 2026-09-21 deck names the categories —
+    #: Which category a cabinet is, from the reviewer. The client lead's 2026-09-21 deck names the categories —
     #: `CAB_REGULAR` and `CAB_EQUIP` on every scenario slide, and the three regular types through
     #: their bounds (`SINGLE_DOOR_CAB_WIDTH_MIN` and siblings) — but gives no client code for the
     #: classification itself, because on his drawings it is a label a person reads off the
@@ -97,7 +97,7 @@ class SemanticType(str, Enum):
     #: Named "category" and not "type" deliberately. `cabinet_type` is already the *operand* name
     #: `cabinet_run_distribution` takes, and `tests/rules/test_no_hardcoded_types.py` reads a bare
     #: semantic-type string in production code as a mistake — correctly, since it cannot tell an
-    #: operand name from a type reference. Raj's own word on slide 11 is "categorize", so this
+    #: operand name from a type reference. The client lead's own word on slide 11 is "categorize", so this
     #: avoids the collision by being more faithful rather than by exempting the guard.
     CABINET_CATEGORY = "cabinet_category"
 

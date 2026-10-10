@@ -89,7 +89,7 @@ def _with_rulebook_filler_defaults() -> dict[str, ResolvedParameter]:
 
 
 #: Every bound the rule needs, supplied per test, at the GLOBAL layer. The filler pair matches the
-#: rule's own defaults (Raj's email, #674); the cabinet bounds have none, so each arrives here
+#: rule's own defaults (the client lead's email, #674); the cabinet bounds have none, so each arrives here
 #: explicitly and a test that wants a different bound says so.
 def _parameters(**overrides: int | Fraction) -> dict[str, ResolvedParameter]:
     values: dict[str, int | Fraction] = {
@@ -184,7 +184,7 @@ def test_rule_declares_the_client_sources_bounds_and_exact_operation() -> None:
     for run in ("architectural_fillers", "shop_fillers", "architectural_cabinets", "shop_cabinets"):
         assert rule.inputs[run].cardinality is Cardinality.MANY
 
-    # The filler bounds follow Raj's written rule — his email's 1" and 2" — by the admin's decision
+    # The filler bounds follow the client lead's written rule — his email's 1" and 2" — by the admin's decision
     # of 2026-10-02 (#674), each with a note that his deck's worked examples use 2" and 3". The
     # per-type cabinet bounds, which he has never given, still have no default at all.
     defaults = {name: p.default for name, p in rule.parameters.items() if p.default is not None}
@@ -194,11 +194,11 @@ def test_rule_declares_the_client_sources_bounds_and_exact_operation() -> None:
     }
     for name in ("filler_min", "filler_max"):
         note = rule.parameters[name].note
-        assert note is not None and "Raj" in note and "#674" in note
+        assert note is not None and "client lead" in note and "#674" in note
 
 
 def test_the_first_worked_example_runs_as_a_check() -> None:
-    """Raj's slide 4 through the engine: 90" to 82" gives fillers 2" and regulars 21".
+    """The client lead's slide 4 through the engine: 90" to 82" gives fillers 2" and regulars 21".
 
     **This is what #681 is for.** The arithmetic has been right since #676 and reachable through the
     API since #678, but the rule a package check runs still called the step-one-only operation — so
@@ -412,15 +412,21 @@ def test_operation_still_refuses_malformed_modes_and_bounds() -> None:
         )
 
 
-def test_a_finding_on_rajs_default_bounds_says_his_examples_differ() -> None:
-    """**#674, the admin's decision of 2026-10-02.** Outcome: a check that used Raj's written 1"/2"
+def test_a_finding_on_the_client_leads_default_bounds_says_his_examples_differ() -> None:
+    """**#674, the admin's decision of 2026-10-02.** Outcome: a check that used the client lead's written 1"/2"
     says, on the finding itself, that his worked examples use 2"/3" and that we are asking him."""
     finding = execute(
         publish(_load_rule()), _operands(proposed_fillers=(2, 2)), _with_rulebook_filler_defaults()
     )
 
-    assert any(note.startswith("filler_min: 1\" is Raj's written rule") for note in finding.notes)
-    assert any(note.startswith("filler_max: 2\" is Raj's written rule") for note in finding.notes)
+    assert any(
+        note.startswith("filler_min: 1\" is the client lead's written rule")
+        for note in finding.notes
+    )
+    assert any(
+        note.startswith("filler_max: 2\" is the client lead's written rule")
+        for note in finding.notes
+    )
 
 
 def test_a_company_standard_at_the_defaults_own_value_carries_no_doubt() -> None:
@@ -447,7 +453,7 @@ def test_a_bound_a_reviewer_set_carries_no_doubt() -> None:
 
 
 def test_bounds_other_than_the_default_carry_no_doubt() -> None:
-    """Raj's worked-example values, supplied as the global bounds, are not the rule's default."""
+    """The client lead's worked-example values, supplied as the global bounds, are not the rule's default."""
     finding = execute(
         publish(_load_rule()),
         _operands(

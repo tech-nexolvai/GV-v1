@@ -416,14 +416,15 @@ def test_a_parameter_without_a_note_hashes_as_it_did_before_notes_existed() -> N
     noted = _rule(
         parameters={
             "filler_min": Parameter(
-                default=Quantity(value=1, unit=Unit.INCH), note="Raj's written rule (#674)"
+                default=Quantity(value=1, unit=Unit.INCH),
+                note="the client lead's written rule (#674)",
             )
         }
     )
 
     assert "note" not in json.loads(canonical_json(plain))["parameters"]["filler_min"]
     assert json.loads(canonical_json(noted))["parameters"]["filler_min"]["note"] == (
-        "Raj's written rule (#674)"
+        "the client lead's written rule (#674)"
     )
     assert compute_snapshot_id(plain) != compute_snapshot_id(noted)
 

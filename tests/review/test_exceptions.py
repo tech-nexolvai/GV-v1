@@ -366,12 +366,12 @@ def test_an_applied_exception_is_reported_with_who_why_and_until_when() -> None:
     grant = _grant(
         ExceptionScope.FINDING,
         finding.finding_id,
-        approved_by="raj",
+        approved_by="client_lead",
         reason="client accepted the 3mm overhang on this run",
     )
     explanation = decide(finding, [grant], when=NOW).explain()
 
-    assert "raj" in explanation
+    assert "client_lead" in explanation
     assert "3mm overhang" in explanation
     assert NEXT_MONTH.isoformat() in explanation
     assert "stands and is reported unchanged" in explanation

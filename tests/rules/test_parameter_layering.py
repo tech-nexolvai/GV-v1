@@ -34,7 +34,7 @@ def _value(
     amount: str,
     *,
     provenance: Provenance = Provenance.GC_CLIENT,
-    set_by: str = "Raj",
+    set_by: str = "client lead",
     unit: Unit = Unit.INCH,
 ) -> ParameterValue:
     return ParameterValue(
@@ -182,10 +182,10 @@ def test_explain_names_the_value_its_source_and_what_it_overrode() -> None:
     line = resolve(
         "sink_front_offset",
         _global(sink_front_offset=_value("4", provenance=Provenance.COMPANY_STANDARD)),
-        _project(sink_front_offset=_value("3", set_by="Raj")),
+        _project(sink_front_offset=_value("3", set_by="client lead")),
     ).explain()
     assert "sink_front_offset = 3 in" in line
-    assert "project" in line and "Raj" in line
+    assert "project" in line and "client lead" in line
     assert "overrides 4 in (global)" in line
 
 

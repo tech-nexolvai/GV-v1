@@ -137,7 +137,7 @@ def test_a_company_value_replaces_the_rulebook_default_and_says_so(session: Sess
         ({"name": "back_offset_minimum", "value": "2"}, "with its unit"),
         ({"name": "back_offset_minumum", "value": '2"'}, "not a company standard"),
         ({"name": "sink_interior_width", "value": '28"'}, "not a company standard"),
-        # Per project by Raj's checklist (#817): entered for each job, never for the company.
+        # Per project by the client lead's checklist (#817): entered for each job, never for the company.
         ({"name": "cabinet_side_thickness", "value": '3/4"'}, "per-project setting"),
         ({"name": "single_door_cab_width_min", "value": '9"'}, "per-project setting"),
     ],

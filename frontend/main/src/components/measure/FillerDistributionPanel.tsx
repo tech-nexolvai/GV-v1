@@ -219,7 +219,7 @@ export function FillerDistributionPanel({
 
           <DistributionTable result={result} />
 
-          {/* Raj's own explanation (slides 5 and 9), composed from the exact figures. */}
+          {/* The client lead's own explanation (slides 5 and 9), composed from the exact figures. */}
           {result.message && <p className="text-sm">{result.message}</p>}
 
           <details className="text-xs text-muted-foreground">

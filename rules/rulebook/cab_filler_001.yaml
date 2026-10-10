@@ -1,5 +1,5 @@
 id: CAB-FILLER-001
-version: 2.1.0
+version: 2.1.1
 product_type: cabinet
 check_type: arch_vs_shop
 severity: FLAG
@@ -59,7 +59,7 @@ inputs:
     scope: same_assembly
     cardinality: many
   # The reviewer's own classification, for the same reason `field_width` is a USER_INPUT: it is not
-  # on either drawing as a value this system can read. Raj's deck, slide 11 — the reviewer draws a
+  # on either drawing as a value this system can read. The client lead's deck, slide 11 — the reviewer draws a
   # box around a cabinet and categorises it.
   cabinet_type:
     source: USER_INPUT
@@ -67,15 +67,15 @@ inputs:
     scope: same_assembly
     cardinality: many
 
-# **The filler bounds follow Raj's written rule** — the admin's decision, 2026-10-02: stick with what
-# Raj said. His email states the rule: "Keep minimum filler width as 1" and create a mutable variable
+# **The filler bounds follow the client lead's written rule** — the admin's decision, 2026-10-02: stick with what
+# the client lead said. His email states the rule: "Keep minimum filler width as 1" and create a mutable variable
 # which can be adjusted later", and for the maximum "please use 2"" (CLIENT_FACTS Q8, Q21). His
 # 2026-09-21 deck's two worked examples use 2" and 3" instead; a number inside an example does not
 # replace a rule he wrote, so the defaults are 1" and 2", every finding that relies on them says the
-# examples differ, and Raj is asked which is right (#674). Global, so a project or run value — Raj's
+# examples differ, and the client lead is asked which is right (#674). Global, so a project or run value — the client lead's
 # "mutable variable" — replaces them, and the override report shows it.
 #
-# The per-type cabinet bounds still carry no default: Raj has never given them ("we will provide the
+# The per-type cabinet bounds still carry no default: the client lead has never given them ("we will provide the
 # complete list we typically follow for the final run"). A parameter no layer supplies is NOT_FOUND
 # (#67, AGENTS.md §2.4), which sends a reviewer to find the number rather than handing them a
 # confident verdict computed from a guess.
@@ -86,7 +86,7 @@ parameters:
       unit: in
     scope: global
     note: >-
-      1" is Raj's written rule (his email: "Keep minimum filler width as 1""). The worked examples
+      1" is the client lead's written rule (his email: "Keep minimum filler width as 1""). The worked examples
       in his 2026-09-21 deck use 2" — awaiting his confirmation (#674).
   filler_max:
     default:
@@ -94,7 +94,7 @@ parameters:
       unit: in
     scope: global
     note: >-
-      2" is Raj's written rule (his email: "please use 2""). The worked examples in his 2026-09-21
+      2" is the client lead's written rule (his email: "please use 2""). The worked examples in his 2026-09-21
       deck use 3" — awaiting his confirmation (#674).
   single_door_cab_width_min:
     scope: project

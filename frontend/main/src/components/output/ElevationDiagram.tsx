@@ -1,7 +1,7 @@
 /**
  * The cabinet run drawn twice: as the architectural drawing has it, and as corrected for the site.
  *
- * This is Raj's slide 6 and slide 10 as a drawing rather than a paragraph. A reviewer should see
+ * This is the client lead's slide 6 and slide 10 as a drawing rather than a paragraph. A reviewer should see
  * what moved without reading anything: changed parts carry the review colour and an ✕, parts kept
  * from the arch drawing carry a ✓, and the equipment cabinet is hatched because its width is fixed.
  *

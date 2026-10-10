@@ -1,4 +1,4 @@
-"""What a cabinet *is*, as Raj's deck names it.
+"""What a cabinet *is*, as the client lead's deck names it.
 
 Seven categories: the deck's three regular types and its equipment cabinet, named (#818). Three regular types carry their own width bound on
 slides 3 and 7 — `SINGLE_DOOR_CAB_WIDTH_MIN`, `DOUBLE_DOOR_CAB_WIDTH_MIN`,
@@ -60,7 +60,7 @@ class CabinetCategory(StrEnum):
         """The stem of this category's two width-bound parameters.
 
         `single_door` gives `single_door_cab_width_min` and `..._max`, which is how the rulebook
-        names them and how Raj's glossary names them. Equipment has no bound and raises, rather than
+        names them and how the client lead's glossary names them. Equipment has no bound and raises, rather than
         returning a name nothing supplies.
         """
         if self.is_equipment:
