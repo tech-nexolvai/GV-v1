@@ -4,8 +4,8 @@
 same strings `units/normalise.py` already parses for extraction, converted exactly. Three reasons,
 and the third is the one that decided it:
 
-* A JSON number would be a float in most clients. `frontend/main/src/api/fractions.ts` explains why
-  the outbound direction never uses one, and the inbound direction has the same problem: 25.5 is
+* A JSON number would be a float in most clients. `app/api/finding_chain.py` explains why the
+  outbound direction never uses one, and the inbound direction has the same problem: 25.5 is
   representable and 1/3 of an inch is not, so some values would arrive already wrong.
 * The parser is tested, and it is the same parser that reads a drawing. A second numeric format here
   would be a second definition of what `25 1/2` means.

@@ -41,7 +41,7 @@ try {
   await test('an evidence-only confirmation cannot hide the still-required review buttons', () => {
     const html = results({});
     assert.match(html, />Decide<\/button>/);
-    assert.match(html, /Pending/);
+    assert.match(html, /Not decided yet/);
     assert.doesNotMatch(html, /Checked: OK/, 'a confirmation that did not finish the review never reads as a decision');
   });
   await test('an expired exception keeps review controls available', () => {

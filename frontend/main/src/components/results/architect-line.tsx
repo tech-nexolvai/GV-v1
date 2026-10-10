@@ -138,6 +138,33 @@ export function ArchitectPairs({ result }: { result: ArchitectResult }) {
   );
 }
 
+/** The shared reason's words (#1126): the headline, and the reason without the headline's prefix. */
+function sharedNotice(reason: string): { headline: string; body: string } {
+  const notYet = reason.startsWith('Not checked yet');
+  // The headline already says "not compared" / "not checked yet": the reason is not prefixed twice.
+  const body = reason.replace(/^(Not compared|Not checked yet):\s*/, '');
+  return {
+    headline: notYet ? 'not checked yet on any countertop' : 'not compared on any countertop',
+    body: body.charAt(0).toUpperCase() + body.slice(1),
+  };
+}
+
+/** "Why?", which opens the reason in place. */
+function WhyButton({ open, controls, onToggle }: { open: boolean; controls: string; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={controls}
+      onClick={onToggle}
+      className="inline-flex items-center gap-0.5 rounded-md align-baseline text-xs whitespace-nowrap underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      Why?
+      <ChevronDown className={cn('size-3.5 self-center transition-transform motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
+    </button>
+  );
+}
+
 /**
  * One quiet notice above the table (#1126) when every countertop is "not compared" with the
  * architect for the same reason: said once, not under every row. The reason is the API's own text,
@@ -146,10 +173,7 @@ export function ArchitectPairs({ result }: { result: ArchitectResult }) {
 export function ArchitectNotice({ reason, className }: { reason: string; className?: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const notYet = reason.startsWith('Not checked yet');
-  // The headline already says "not compared" / "not checked yet": the reason is not prefixed twice.
-  const body = reason.replace(/^(Not compared|Not checked yet):\s*/, '');
-  const shown = body.charAt(0).toUpperCase() + body.slice(1);
+  const { headline, body } = sharedNotice(reason);
   return (
     <section
       data-slot="architect-notice"
@@ -159,23 +183,40 @@ export function ArchitectNotice({ reason, className }: { reason: string; classNa
       <div className="flex items-start gap-2">
         <CircleDashed className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         <p className="min-w-0">
-          <span className="font-medium text-foreground">Matches the architect:</span>{' '}
-          {notYet ? 'not checked yet on any countertop' : 'not compared on any countertop'}{' '}
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-controls={id}
-            onClick={() => setOpen((value) => !value)}
-            className="inline-flex items-center gap-0.5 rounded-md align-baseline text-xs whitespace-nowrap underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            Why?
-            <ChevronDown className={cn('size-3.5 self-center transition-transform motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
-          </button>
+          <span className="font-medium text-foreground">Matches the architect:</span> {headline}{' '}
+          <WhyButton open={open} controls={id} onToggle={() => setOpen((value) => !value)} />
         </p>
       </div>
       <p id={id} hidden={!open} data-slot="architect-notice-reason" className="max-w-3xl pl-6 text-xs">
-        {shown}
+        {body}
       </p>
     </section>
+  );
+}
+
+/**
+ * The same, as one short line on a single countertop (the queue, #1155): when every countertop
+ * shares the reason, the item says "not compared on any countertop" instead of the whole sentence
+ * each time. The reason is one click away, behind "Why?".
+ */
+export function ArchitectSharedLine({ reason, className }: { reason: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const { headline, body } = sharedNotice(reason);
+  return (
+    <div data-slot="architect-line" data-shared="true" className={cn('flex flex-col gap-1 font-sans text-sm', className)}>
+      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-xs font-medium text-muted-foreground">Architect</span>
+        <span data-architect="not-compared" className="text-xs text-muted-foreground">
+          {headline.charAt(0).toUpperCase() + headline.slice(1)}
+        </span>
+        <span className="text-muted-foreground">
+          <WhyButton open={open} controls={id} onToggle={() => setOpen((value) => !value)} />
+        </span>
+      </p>
+      <p id={id} hidden={!open} data-slot="architect-shared-reason" className="text-xs text-muted-foreground">
+        {body}
+      </p>
+    </div>
   );
 }

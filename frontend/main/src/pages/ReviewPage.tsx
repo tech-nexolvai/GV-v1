@@ -9,6 +9,7 @@ import type { BulkResult } from '@/components/results/other-checks';
 import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
 import { MessageSquare } from 'lucide-react';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
@@ -799,10 +800,17 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
           }}
         >
           <TabsList>
-            <TabsTrigger value="results">
+            {/* The outcome glyph with the count, never colour alone; in words for a screen reader (#1155). */}
+            <TabsTrigger
+              value="results"
+              aria-label={readiness !== null && readiness.blocking_findings > 0 ? `Results ${readiness.blocking_findings} ${readiness.blocking_findings === 1 ? 'needs you' : 'need you'}` : undefined}
+            >
               Results
               {readiness !== null && readiness.blocking_findings > 0 && (
-                <span className="num rounded-full bg-outcome-review-bg px-1.5 text-xs text-outcome-review-fg">{readiness.blocking_findings}</span>
+                <span data-slot="results-tab-badge" aria-hidden="true" className="inline-flex items-center gap-1 rounded-full bg-outcome-review-bg px-1.5 text-xs text-outcome-review-fg">
+                  <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />
+                  <span className="num">{readiness.blocking_findings}</span>
+                </span>
               )}
             </TabsTrigger>
             <TabsTrigger value="measure">Measurements</TabsTrigger>

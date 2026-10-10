@@ -299,15 +299,18 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       const item = queue.locator('[data-slot="queue-item"]');
       if (!(await item.isVisible())) break;
       const title = (await item.locator('h2').innerText()).trim();
-      const pageText = (await item.locator('section[aria-label="This item"]').innerText()).match(/Page (\d+)/)?.[1];
+      // A countertop says its page in its name ("Countertop · page N", #1155); a check below it.
+      const pageText = (await item.locator('section[aria-label="This item"]').innerText()).match(/[Pp]age (\d+)/)?.[1];
       const status = await item.getAttribute('data-status');
       const key = `${title}|${pageText}|${status}`;
       if (seen.has(key)) break; // back at an item already seen: the end of the list
       seen.add(key);
       const kind: ItemKind = title.endsWith(': matches the architect?') ? 'architect' : 'countertop';
-      const label = kind === 'architect' ? title.slice(0, -': matches the architect?'.length) : title;
+      const name = kind === 'architect' ? title.slice(0, -': matches the architect?'.length) : title;
+      // What tells two countertops on one page apart, after "Countertop · page N · " (#1155).
+      const extra = name.match(/^Countertop · page \d+ · (.+)$/)?.[1];
       const candidates = pageText ? byPage.get(Number(pageText)) ?? [] : [];
-      const row = candidates.find((c) => c.label === label) ?? (candidates.length === 1 ? candidates[0] : undefined);
+      const row = candidates.find((c) => extra !== undefined && (c.label === extra || c.label.match(/^Countertop (row \S+) on page \d+$/i)?.[1] === extra)) ?? (candidates.length === 1 ? candidates[0] : undefined);
       if (!row && pageText) differences.push(`${phase}: queue item "${title}" on page ${pageText} is not in the results`);
       const did = row && status === 'open' ? await act(row, item, kind) : null;
       if (did) {

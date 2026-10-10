@@ -104,7 +104,7 @@ the codebase distinguishes a chain that legitimately does not close, and without
 produces confident false REVIEWs.
 
 **5 · Confirm, don't author** — *3–5 days, needs 1–4*
-Revive `ConfirmReadingsPage` (built, never routed). Three buckets: auto-accept where readers agree
+Revive `ConfirmReadingsPage` (built, never routed; removed as dead code in #1155, still in git history). Three buckets: auto-accept where readers agree
 and the chain closes; pre-filled awaiting confirm; **do not pre-fill when unsure** — a wrong guess
 anchors the reviewer. Bulk confirm, keyboard-driven, crop beside every value. Never show a
 confidence percentage; route on it, show the bucket and the action.

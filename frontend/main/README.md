@@ -139,7 +139,7 @@ checks. It opens from the header's "Review N items" and the "Needs you" card.
   history. A wall answer saved in the same sitting counts at once, before the rows reload.
 - **It never claims "all done"** while the readiness API still blocks on results it does not hold
   (for example new results from a run made while it was open): it offers to load them instead.
-- **Keys:** J / K, 1 / 2 / 3, N, Enter. **"Change decision"** records a new action; the history
+- **Keys:** J / K, 1 / 2 / 3, N, Enter. Their hints are left out on a touch screen (#1155). **"Change decision"** records a new action; the history
   popover reads `GET .../findings/{id}/actions`.
 
 **The Measurements wizard** (`pages/MeasurementPanel.tsx`, step bar in `pages/MeasurementSectionNav.tsx`,
@@ -185,7 +185,7 @@ How it works:
   promises no retry, because asking again returns the same failed request (an admin retries it).
 
 **Company settings, Rulebook and Usage** (#1072):
-- **Company settings** (`components/settings/CompanySettingsList.tsx`): one table, with a meter of how many have a value and how many GV set. Each row shows where the value in use comes from (GV standard / rulebook default / not set, as a word), whether a project may use its own, the checks that use it, and a box for a new value. Saving sends the same `POST /company-settings`, typed values only.
+- **Company settings** (`components/settings/CompanySettingsList.tsx`): one table, with a meter of how many have a value and how many GV set. Each row is one line: the value in use, where it comes from (GV standard / rulebook default / not set, as a word), the checks that use it, and a box for a new value. Who set it and when, the rulebook's note on its default, and the default a GV standard replaced sit behind the row's "?" (#1155). Saving sends the same `POST /company-settings`, typed values only.
 - **Rulebook** (`components/rulebook/`, counts in `lib/rulebook-overview.ts`): a products × check types grid (a cell filters the table), the severity and the release note every rule shares said once, and the rules as one sortable, searchable table.
 - **Usage** (`pages/UsagePage.tsx`, arithmetic in `lib/usage.ts`, charts in `components/usage/usage-charts.tsx`, loaded lazily): `GET /usage` by day and by drawing set, plus `packages-summary` for names and recorded results.
   - **Reading time is shown as not measured.** The API's `package_reading_times` spans saved call times, which one reading writes together; a real duration is requested in #1071.

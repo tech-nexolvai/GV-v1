@@ -47,7 +47,8 @@ export function AppTopbar({
       data-tw
       className="grid h-14 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 border-b bg-background px-2 font-sans text-foreground sm:gap-3 sm:px-3"
     >
-      <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+      {/* A size container, so "Documents" can give way to the review's name when the left half is short of room. */}
+      <div data-slot="topbar-where" className="@container flex min-w-0 items-center gap-1.5 sm:gap-2">
         <SidebarTrigger aria-label="Toggle sidebar" />
         <Separator orientation="vertical" className="mr-1 hidden data-[orientation=vertical]:h-4 sm:block" />
         {titleHeading && <h1 className="sr-only">{title}</h1>}
@@ -55,6 +56,11 @@ export function AppTopbar({
           <BreadcrumbList className="flex-nowrap">
             {crumbs.map((crumb, index) => {
               const last = index === crumbs.length - 1;
+              // On a review (three crumbs), "Documents" shows only when the left half has room for it
+              // and still leaves the name about 300px or more (#1155: 44rem; the rest of the left half
+              // takes about 24rem with Documents); otherwise the name gets the room, so widening the
+              // window never makes the name shorter. The sidebar's Documents link goes to the same place.
+              const roomOnly = crumbs.length > 2 && index === 0;
               return (
                 <Fragment key={`${index}-${crumb.label}`}>
                   {/* The name (second-to-last of three) gives way first; "Revision N" is never cut. */}
@@ -64,7 +70,9 @@ export function AppTopbar({
                         ? crumbs.length > 2 ? 'shrink-0' : 'min-w-0'
                         : index === crumbs.length - 2 && crumbs.length > 2
                           ? 'hidden min-w-0 md:inline-flex'
-                          : 'hidden shrink-0 md:inline-flex'
+                          : roomOnly
+                            ? 'hidden shrink-0 @min-[44rem]:inline-flex'
+                            : 'hidden shrink-0 md:inline-flex'
                     }
                   >
                     {last || !crumb.onSelect ? (
@@ -77,7 +85,7 @@ export function AppTopbar({
                       </BreadcrumbLink>
                     )}
                   </BreadcrumbItem>
-                  {!last && <BreadcrumbSeparator className="hidden md:inline-flex" />}
+                  {!last && <BreadcrumbSeparator className={roomOnly ? 'hidden @min-[44rem]:inline-flex' : 'hidden md:inline-flex'} />}
                 </Fragment>
               );
             })}

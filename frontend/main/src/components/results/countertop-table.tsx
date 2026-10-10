@@ -20,6 +20,7 @@ import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from '
 import { SplitPageNote } from './split-page-note';
 import { CarriedOver } from './carried-over';
 import { DrawnLengthNote } from './drawn-length-note';
+import { CountertopName, CountertopTitle } from './countertop-title';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -51,10 +52,16 @@ const COLUMNS: ColumnDef<CountertopResult>[] = [
 
 export function CountertopTable({
   rows,
+  allRows = rows,
   actions,
   architectNotice = false,
 }: {
   rows: CountertopResult[];
+  /**
+   * Every countertop of the review, filtered or not: a label is kept only when it tells two
+   * countertops on one page apart (#1155), including one the filter hides.
+   */
+  allRows?: readonly CountertopResult[];
   actions: RowActions;
   /**
    * Every countertop is "not compared" with the architect for the same reason, and the dashboard
@@ -148,7 +155,8 @@ export function CountertopTable({
                     <TableCell className="num">{row.page_number}</TableCell>
                     <TableCell className="max-w-40">
                       <div className="flex flex-col gap-1">
-                        <span className="truncate font-medium" title={row.label}>{row.label}</span>
+                        {/* The page has its own column: the name says only what tells it apart (#1155). */}
+                        <span className="truncate font-medium" title={row.label}><CountertopName row={row} rows={allRows} /></span>
                         {row.hold && <HoldChip hold={row.hold} />}
                         {/* A split page's reason is the whole story (#1093): in the row, not only on hover. */}
                         {row.hold && isSplitPage(row) && (
@@ -187,10 +195,8 @@ export function CountertopTable({
           return (
             <li key={row.row_id} className={cn('rounded-xl border bg-card p-3', rowNeedsYou(row) && 'border-outcome-review-fg/40')}>
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{row.label}</p>
-                  <p className="text-xs text-muted-foreground">Page <span className="num">{row.page_number}</span></p>
-                </div>
+                {/* The page once, in the name (#1155); a label only when it tells two apart. */}
+                <p className="min-w-0 truncate font-medium"><CountertopTitle row={row} rows={allRows} /></p>
                 <ResultCell row={row} />
               </div>
               <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
@@ -275,7 +281,7 @@ function DecidedBy({ row }: { row: CountertopResult }) {
     if (row.reviewer_decision?.action === 'correct') {
       return <span className="text-xs text-outcome-review-fg">Corrected — run checks again</span>;
     }
-    return <span className="text-xs text-muted-foreground">Pending</span>;
+    return <span className="text-xs text-muted-foreground">Not decided yet</span>;
   }
   if (row.reviewer_decision) {
     const decision = row.reviewer_decision;
@@ -476,7 +482,7 @@ function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowAct
       <TableCell className="py-1.5" />
       <TableCell className="py-1.5">
         {needsYou ? (
-          <span className="text-muted-foreground">Pending</span>
+          <span className="text-muted-foreground">Not decided yet</span>
         ) : finding?.reviewer_action ? (
           <span>{decisionWords(finding.reviewer_action, result.outcome ?? null)}{finding.reviewed_by ? <span className="text-muted-foreground"> · {finding.reviewed_by}</span> : null}{finding.reviewer_carried_over && <> <CarriedOver /></>}</span>
         ) : result.outcome === 'PASS' || result.outcome === 'FAIL' ? (

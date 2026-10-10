@@ -4,7 +4,7 @@ import { CheckCircle2, ChevronLeft, ChevronRight, History, X } from 'lucide-reac
 import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta, isSplitPage } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, isSplitPage, sharedNotComparedReason } from '@/lib/countertop-results';
 import { targetFromArchitect, targetFromFinding, targetFromRow, type Mark } from '@/lib/drawing-viewer';
 import { architectState, pairedByWords } from '@/lib/architect';
 import {
@@ -27,7 +27,8 @@ import { cn } from '@/lib/utils';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { SplitPageNote } from '@/components/results/split-page-note';
 import { CarriedOver } from '@/components/results/carried-over';
-import { ArchitectLine, ArchitectPairs, ArchitectStatus } from '@/components/results/architect-line';
+import { ArchitectLine, ArchitectPairs, ArchitectSharedLine, ArchitectStatus } from '@/components/results/architect-line';
+import { CountertopTitle } from '@/components/results/countertop-title';
 import { ArchitectPairingPanel } from './architect-pairing';
 import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
@@ -42,6 +43,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Progress } from '@/components/ui/progress';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { useMediaQuery } from '@/hooks/use-media-query';
 
 export interface QueueProps {
   open: boolean;
@@ -94,6 +96,13 @@ export function NeedsYouQueue(props: QueueProps) {
 }
 
 const IN_FIELD = 'input, textarea, select, [contenteditable="true"]';
+/** No fine pointer of any kind: a touch-only screen, where key hints would only be noise. */
+const TOUCH_ONLY = 'not all and (any-pointer: fine)';
+
+/** A reason shown on its own starts with a capital, whatever case the record keeps (display only). */
+function sentence(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string | null): number {
   const asked = startAt ? items.findIndex((item) => item.key === startAt) : -1;
@@ -191,6 +200,11 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const [changing, setChanging] = useState(false);
   const rules = useAsync(() => listRules(), []);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  // Key hints only where a keyboard is likely (#1155): a fine pointer (mouse, trackpad) anywhere.
+  // A touch-only screen has no J / K / Enter to press; a tablet with a trackpad keeps the hints.
+  const touch = useMediaQuery(TOUCH_ONLY);
+  // Said once for every countertop when they all share it (#1126), as on Results.
+  const sharedReason = sharedNotComparedReason(rows);
 
   const item: QueueItem | undefined = list[index];
   const status: ItemStatus = item ? itemStatus(item, live) : 'decided';
@@ -314,26 +328,30 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   return (
     <TooltipProvider delayDuration={250}>
       <div data-tw data-slot="needs-you-queue" tabIndex={-1} className="flex h-full min-h-0 flex-col font-sans text-foreground outline-none">
-        <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2">
+        {/* On a phone: the title, the position and close on one line, the progress on the next. */}
+        <header data-slot="queue-header" className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
             <DialogTitle className="text-base font-semibold">Needs you</DialogTitle>
             <DialogDescription className="sr-only">Decide the items still blocking sign-off, one at a time.</DialogDescription>
           </div>
-          <div className="flex min-w-48 flex-1 items-center gap-3" data-slot="queue-progress">
+          <div className="order-last flex min-w-48 basis-full items-center gap-3 sm:order-none sm:basis-auto sm:flex-1" data-slot="queue-progress">
             <Progress value={list.length ? (progress.handled / progress.total) * 100 : 100} className="h-2 flex-1" aria-label="Items handled" />
             <span className="num shrink-0 text-sm">
               {progress.handled} of {progress.total}
             </span>
           </div>
-          <div className="flex items-center gap-1">
-            <Button size="sm" variant="outline" onClick={() => go(index - 1)} disabled={draft.saving || savingWall || index <= 0 || list.length === 0} aria-label="Previous item (K)">
-              <ChevronLeft /> <kbd className="num text-xs text-muted-foreground">K</kbd>
+          <div className="flex items-center gap-1" data-slot="queue-position">
+            {/* Keys only where there is a keyboard to press them (#1155): not on a touch screen. */}
+            <Button size="sm" variant="outline" onClick={() => go(index - 1)} disabled={draft.saving || savingWall || index <= 0 || list.length === 0} aria-label={touch ? 'Previous item' : 'Previous item (K)'}>
+              <ChevronLeft />
+              {!touch && <kbd className="num text-xs text-muted-foreground">K</kbd>}
             </Button>
             <span className="num w-14 text-center text-xs text-muted-foreground" aria-live="polite">
               {list.length ? `${index + 1} / ${list.length}` : '—'}
             </span>
-            <Button size="sm" variant="outline" onClick={() => go(index + 1)} disabled={draft.saving || savingWall || index >= list.length - 1} aria-label="Next item (J)">
-              <kbd className="num text-xs text-muted-foreground">J</kbd> <ChevronRight />
+            <Button size="sm" variant="outline" onClick={() => go(index + 1)} disabled={draft.saving || savingWall || index >= list.length - 1} aria-label={touch ? 'Next item' : 'Next item (J)'}>
+              {!touch && <kbd className="num text-xs text-muted-foreground">J</kbd>}
+              <ChevronRight />
             </Button>
             <DialogClose asChild>
               <Button size="icon-sm" variant="ghost" aria-label="Close the queue">
@@ -397,8 +415,14 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
               <section aria-label="This item" className="flex flex-col gap-4 p-4 lg:overflow-y-auto lg:border-r">
                 <div className="flex flex-col gap-1.5">
                   {/* A package-level check is named by its rule; its scope ("Package revision") goes below. */}
+                  {/* A countertop says its page once, in its name (#1155). */}
                   <h2 className="text-lg font-semibold leading-tight">
-                    {item.kind === 'check' && finding ? ruleName(finding.check_id) : item.kind === 'architect' ? `${item.label}: matches the architect?` : item.label}
+                    {item.kind === 'check' ? (finding ? ruleName(finding.check_id) : item.label) : (
+                      <>
+                        <CountertopTitle row={{ row_id: item.rowId, page_number: item.page, label: item.label }} rows={rows} />
+                        {item.kind === 'architect' && ': matches the architect?'}
+                      </>
+                    )}
                   </h2>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {item.kind === 'architect' ? architect && <ArchitectStatus result={architect} /> : target && <TonePill target={target} />}
@@ -408,7 +432,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                         <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} /> Needs you
                       </span>
                     )}
-                    {item.page !== null && <span className="num">Page {item.page}</span>}
+                    {item.kind === 'check' && item.page !== null && <span className="num">Page {item.page}</span>}
                     {item.kind === 'check' && <span>{item.label}</span>}
                   </div>
                 </div>
@@ -422,7 +446,8 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                     <Facts row={row} />
                   </>
                 )}
-                {row && <ArchitectLine result={row.architect} />}
+                {/* Every countertop shares one "not compared" reason: one short line, as Results says it (#1155). */}
+                {row && (sharedReason !== null && architectState(row.architect ?? null) === 'not-compared' ? <ArchitectSharedLine reason={sharedReason} /> : <ArchitectLine result={row.architect} />)}
                 {item.kind === 'architect' && architect && (
                   <div className="flex flex-col gap-2" data-slot="queue-architect">
                     <ArchitectPairs result={architect} />
@@ -528,14 +553,14 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="submit" disabled={!draft.ready || draft.saving}>
                     {draft.saving ? 'Saving…' : 'Record decision'}
-                    <kbd className="num ml-1 hidden text-xs opacity-70 sm:inline">Enter</kbd>
+                    {!touch && <kbd className="num ml-1 hidden text-xs opacity-70 sm:inline">Enter</kbd>}
                   </Button>
                   {changing && (
                     <Button type="button" variant="ghost" onClick={() => { draft.reset(); setChanging(false); }}>
                       Keep the decision
                     </Button>
                   )}
-                  <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">1 2 3 choose · N note · J K move</span>
+                  {!touch && <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">1 2 3 choose · N note · J K move</span>}
                 </div>
               </form>
             )}
@@ -608,7 +633,7 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
   }
 
   return (
-    <section aria-labelledby="queue-walls" data-slot="queue-walls" className="flex flex-col gap-2 rounded-lg border p-3">
+    <section aria-labelledby="queue-walls" data-slot="queue-walls" className="@container flex flex-col gap-2 rounded-lg border p-3">
       <h3 id="queue-walls" className="text-sm font-medium">
         Walls for this countertop
       </h3>
@@ -625,9 +650,20 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
       {!question.betweenPanels && question.proposal && (
         <p className="text-sm text-muted-foreground">The readers propose: {wallWords(question.proposal).toLowerCase()}. Not confirmed.</p>
       )}
-      <ToggleGroup type="single" variant="outline" size="sm" value={choice} onValueChange={setChoice} aria-label="Wall layout" className="flex-wrap justify-start">
+      {/* One per row, or all of them in one row when three or fewer fit; never a ragged 2 + 1 (#1155). */}
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        spacing={1}
+        value={choice}
+        onValueChange={setChoice}
+        aria-label="Wall layout"
+        data-layout={question.choices.length <= 3 ? 'row-when-room' : 'column'}
+        className={cn('grid w-full grid-cols-1', question.choices.length <= 3 && '@min-[42rem]:grid-flow-col @min-[42rem]:auto-cols-fr @min-[42rem]:grid-cols-none')}
+      >
         {question.choices.map((config) => (
-          <ToggleGroupItem key={config} value={config} className="gap-1.5 px-2.5">
+          <ToggleGroupItem key={config} value={config} className="w-full justify-start gap-1.5 px-2.5">
             <WallLayoutPicture config={config} />
             {wallWords(config)}
           </ToggleGroupItem>
@@ -641,7 +677,7 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
           Open countertop card
         </Button>
       </div>
-      {question.reason && <p className="text-xs text-muted-foreground">{question.reason}</p>}
+      {question.reason && <p className="text-xs text-muted-foreground">{sentence(question.reason)}</p>}
       <p className="text-xs text-muted-foreground">The result changes only after the checks run again.</p>
       {error && (
         <p role="alert" className="text-sm text-outcome-fail-fg">

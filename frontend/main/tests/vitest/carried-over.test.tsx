@@ -74,7 +74,7 @@ describe('carried-over decisions (#1073)', () => {
     expect(carriedRow.textContent).toContain('Not checkable');
     expect(table.querySelector('tr[data-row-id="n"] [data-slot="carried-over"]')).toBeNull();
     // The phone list says it too.
-    const card = within(screen.getByRole('list', { name: 'Countertops' })).getAllByRole('listitem').find((li) => li.textContent?.includes('Synthetic countertop c'))!;
+    const card = within(screen.getByRole('list', { name: 'Countertops' })).getAllByRole('listitem').find((li) => li.textContent?.includes('Countertop · page 4'))!;
     expect(card.querySelector('[data-slot="carried-over"]')?.textContent).toBe('carried over');
   });
 
