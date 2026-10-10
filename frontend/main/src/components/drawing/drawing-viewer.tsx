@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useState } from 'react';
-import { Crosshair, Maximize, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Crosshair, Maximize, PanelRight, X, ZoomIn, ZoomOut } from 'lucide-react';
 
 import { getFindingChain, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
@@ -35,6 +35,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { pageKey, useBlob, useBlobCache } from './blob-cache';
 import { EvidenceCrops, NoCrops } from './evidence-crops';
+import { FramedPage } from './framed-page';
 import { PageCanvas, TonePill } from './page-canvas';
 import { PageStrip } from './page-strip';
 
@@ -120,6 +121,10 @@ export function DrawingViewer({
   const [box, setBox] = useState<Size | null>(null);
   const [frame, setFrame] = useState<{ key: string; natural: Size; view: View } | null>(null);
   const [activeReading, setActiveReading] = useState<string | null>(null);
+  // The architect's page beside the vendor's (#1168): open when "compared with …" opened the viewer.
+  const [secondOpen, setSecondOpen] = useState(Boolean(target.showSecond && target.second));
+  const second = target.second ?? null;
+  const showSecond = secondOpen && second !== null;
 
   // Derived, not reset in an effect: another page's size and zoom are simply not this page's.
   const placed = frame && frame.key === pictureKey ? frame : null;
@@ -275,6 +280,11 @@ export function DrawingViewer({
               <Button size="sm" variant="ghost" onClick={findOutline} disabled={!view || !target.outline}>
                 <Crosshair /> Find outline
               </Button>
+              {second && (
+                <Button size="sm" variant={showSecond ? 'secondary' : 'ghost'} aria-pressed={showSecond} onClick={() => setSecondOpen((open) => !open)}>
+                  <PanelRight /> Architect&apos;s view
+                </Button>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button type="button" className="ml-auto inline-flex size-6 items-center justify-center rounded-full border text-xs text-muted-foreground" aria-label="How to move around">
@@ -286,23 +296,51 @@ export function DrawingViewer({
                 </TooltipContent>
               </Tooltip>
             </div>
-            <PageCanvas
-              picture={picture}
-              onRetry={retryPicture}
-              target={target}
-              others={embedded ? [] : others}
-              marks={marksHere}
-              activeMark={activeMark}
-              readings={onThisPage}
-              activeReading={activeReading}
-              natural={natural}
-              view={view}
-              limits={limits}
-              onView={setView}
-              onLoaded={onLoaded}
-              onBox={setBox}
-              onSelect={select}
-            />
+            {(() => {
+              const canvas = (
+                <PageCanvas
+                  picture={picture}
+                  onRetry={retryPicture}
+                  target={target}
+                  others={embedded ? [] : others}
+                  marks={marksHere}
+                  activeMark={activeMark}
+                  readings={onThisPage}
+                  activeReading={activeReading}
+                  natural={natural}
+                  view={view}
+                  limits={limits}
+                  onView={setView}
+                  onLoaded={onLoaded}
+                  onBox={setBox}
+                  onSelect={select}
+                />
+              );
+              if (!showSecond || !second) return canvas;
+              // Two panes (#1168): the vendor's page above (beside, on a wide screen) the architect's view.
+              return (
+                <div data-slot="drawing-two-panes" className="flex min-h-0 flex-1 flex-col 2xl:flex-row">
+                  <section aria-label="Vendor's drawing" className="flex min-h-0 flex-1 flex-col">
+                    <p className="shrink-0 border-b px-2 py-1 text-xs font-medium">Vendor&apos;s drawing{target.page !== null && <>, page <span className="num">{target.page}</span></>}</p>
+                    {canvas}
+                  </section>
+                  <FramedPage
+                    key={second.key}
+                    slot="drawing-second-pane"
+                    className="border-t 2xl:border-t-0 2xl:border-l"
+                    projectId={projectId}
+                    packageId={packageId}
+                    cache={cache}
+                    page={second.page}
+                    documentVersionId={second.documentVersionId}
+                    region={second.region}
+                    heading={<>Architect&apos;s drawing · {second.label}</>}
+                    regionLabel={`Architect's view: ${second.heading}`}
+                    pictureAlt={`Architect's drawing, page ${second.page}`}
+                  />
+                </div>
+              );
+            })()}
             {!embedded && <PageStrip pages={pages} current={currentPage} cache={cache} projectId={projectId} packageId={packageId} onPick={pickPage} />}
           </div>
 

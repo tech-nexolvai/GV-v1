@@ -7,7 +7,7 @@ import { ASSISTANT_FULL_SCREEN, useMediaQuery } from '@/hooks/use-media-query';
 import { ResultsDashboard, type CountertopsState } from '@/components/results/results-dashboard';
 import type { BulkResult } from '@/components/results/other-checks';
 import { recordEach, signOffSummary, type Filter } from '@/lib/countertop-results';
-import { architectFindingIds } from '@/lib/architect';
+import { architectFindingIds, viewPicksWaiting } from '@/lib/architect';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
@@ -152,6 +152,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   const downloadPending = useRef(false);
   // #1034: values saved in this session after the last check run (the API records no time for values).
   const [valuesChangedSinceRun, setValuesChangedSinceRun] = useState(false);
+  // Rows whose architect view the reviewer chose in this sitting (#1168): only a new run uses them.
+  const [viewPicksSaved, setViewPicksSaved] = useState<ReadonlySet<string>>(new Set());
   // The Results filter, held here so "Review N items" can open it on what needs the reviewer.
   const [resultsFilter, setResultsFilter] = useState<Filter | null>(null);
   const [recordIdsOpen, setRecordIdsOpen] = useState(false);
@@ -271,6 +273,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
 
   function checksQueued() {
     setValuesChangedSinceRun(false);
+    setViewPicksSaved(new Set());
     checksBaseline.current = findings.map(f => f.id).sort().join(',');
     setReadiness(null); setWaitingForChecks(true); setActiveTab('results');
   }
@@ -316,6 +319,11 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   /** A countertop row on its drawing page (#1039, #1045). */
   function showRowOnDrawing(row: CountertopResult) {
     openViewer(targetFromRow(row));
+  }
+
+  /** "compared with <file>, page N, view X" (#1168): the row's page with the architect's view beside it. */
+  function showArchitectView(row: CountertopResult) {
+    openViewer({ ...targetFromRow(row), showSecond: true });
   }
 
   /**
@@ -601,6 +609,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     architect: countertopsReady ? findings.filter((finding) => architectIds.has(finding.id)).length : null,
     otherChecks: countertopsReady ? findings.filter((finding) => !countertopFindingIds.has(finding.id) && !architectIds.has(finding.id)).length : null,
     total: findings.length,
+    viewPicksWaiting: countertopsReady ? viewPicksWaiting(countertops.rows, viewPicksSaved) : viewPicksSaved.size,
   };
   const signer = session?.reviewer ?? (remote.status === 'ready' ? remote.data.me : null);
 
@@ -828,6 +837,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
               busy={isSigningOff}
               onSignOff={openSignOff}
               onReview={() => openQueue()}
+              onRunChecks={() => act('run-checks')}
             />
           )}
           {isApproved && (
@@ -856,6 +866,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onShowDrawing={showRowOnDrawing}
             onOpenQueue={openQueue}
             onOpenCard={(row) => openRow(row.row_id)}
+            onShowArchitectView={showArchitectView}
           />
         </div>
       )}
@@ -896,6 +907,12 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onPairingSaved={() => {
               // So does an architect pairing (#1085): only a new check run uses it.
               if (findings.length > 0) setValuesChangedSinceRun(true);
+            }}
+            onViewPicked={(rowId) => {
+              // And an architect view chosen (#1168): it counts once the checks run again.
+              if (findings.length > 0) setValuesChangedSinceRun(true);
+              setViewPicksSaved((current) => new Set(current).add(rowId));
+              setCountertopsVersion((n) => n + 1);
             }}
             onOpenCard={(row) => openRow(row.row_id)}
             startAt={queueStart}

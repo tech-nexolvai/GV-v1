@@ -57,6 +57,8 @@ export function PageCanvas({
   onLoaded,
   onBox,
   onSelect,
+  pictureAlt,
+  outlineNote = true,
 }: {
   picture: BlobState;
   onRetry: () => void;
@@ -75,6 +77,10 @@ export function PageCanvas({
   onLoaded: (size: Size) => void;
   onBox: (size: Size) => void;
   onSelect: (target: ViewerTarget) => void;
+  /** The picture's name for a screen reader; the vendor's page unless said otherwise (#1168). */
+  pictureAlt?: string;
+  /** Say "Outline not stored" when the target has none; off where the target is only a page (#1168). */
+  outlineNote?: boolean;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const gesture = useRef<{ pointers: Map<number, { x: number; y: number }>; dragging: boolean; suppressClick: boolean; start: { x: number; y: number } | null }>({
@@ -206,7 +212,7 @@ export function PageCanvas({
           <img
             key={picture.url}
             src={picture.url}
-            alt={`Vendor drawing, page ${page}`}
+            alt={pictureAlt ?? `Vendor drawing, page ${page}`}
             draggable={false}
             className="block size-full bg-white"
             onLoad={(event) => onLoaded({ w: event.currentTarget.naturalWidth, h: event.currentTarget.naturalHeight })}
@@ -293,7 +299,7 @@ export function PageCanvas({
         <CanvasNote icon={<ImageOff className="size-5" aria-hidden="true" />} line="The page picture could not be loaded" why={picture.error} onRetry={onRetry} role="alert" />
       )}
       {page === null && <CanvasNote icon={<ImageOff className="size-5" aria-hidden="true" />} line="No stored location" why="This result has no recorded page or outline, so nothing is drawn." />}
-      {placed && !target.outline && (
+      {placed && !target.outline && outlineNote && (
         <span data-slot="no-outline" className="absolute top-3 left-3 rounded-full border bg-background/95 px-2 py-0.5 text-xs text-muted-foreground shadow-sm">
           {/* A split page (#1093) has no line at all; anything else had one whose place was not stored. */}
           {target.row && isSplitPage(target.row) ? 'No line chosen: nothing is outlined' : 'Outline not stored: nothing is drawn'}

@@ -1,4 +1,4 @@
-import type { ArchitectCompared, ArchitectResult, ArchitectSpan, CountertopResult } from '@/api/client';
+import type { ArchitectCompared, ArchitectMatch, ArchitectMatchStatus, ArchitectResult, ArchitectSpan, ArchitectViewRef, CountertopResult } from '@/api/client';
 
 /**
  * The vendor-vs-architect check on screen (#1085), kept free of React so it can be tested alone.
@@ -17,7 +17,15 @@ export type ArchitectState =
   /** Waiting for a pairing nobody has made yet (no automatic pairing at all). */
   | 'unpaired'
   /** A recorded result: PASS / FAIL from two judgments or a reviewer's pairing, or another abstention. */
-  | 'compared';
+  | 'compared'
+  /** Separate architect file (#1168): the reviewer chooses which of the architect's views shows the countertop. */
+  | 'choose-view'
+  /** Separate architect file: the reviewer chose a view after this result; only a new check run uses it. */
+  | 'view-picked'
+  /** Separate architect file: nothing to pair, so the reviewer compares by hand (the usual decision). */
+  | 'by-hand'
+  /** Separate architect file: the row was never matched with a view (an older run); only a new run helps. */
+  | 'run-again';
 
 export function architectOf(row: Pick<CountertopResult, 'architect'>): ArchitectResult | null {
   return row.architect ?? null;
@@ -27,6 +35,25 @@ const ONE_JUDGMENT = new Set(['code', 'both-ais']);
 
 export function architectState(result: ArchitectResult | null): ArchitectState {
   if (!result) return 'none';
+  // The view match comes first (#1168): a pick waiting for a run, then a view still to choose, then a
+  // matched view that cannot be read. All three are null on a combined-sheet set, which reads as today.
+  const match = result.match ?? null;
+  if (match?.waits_for_run) return 'view-picked';
+  if (match?.status === 'needs_reviewer' && result.needs_decision) return 'choose-view';
+  if (match?.status === 'not_matched_yet' && result.finding_id && result.needs_decision) return 'run-again';
+  // A row matched (or to be matched) with the architect's own file that waits for the reviewer with
+  // no pairing to confirm: a pairing is offered only where the check asks for one (`can_pair`);
+  // anything else (no dimensions line up, no views, not clearly apart, not matched yet) is compared
+  // by hand with the usual decision, never "Pair it…" into a dead end.
+  if (
+    match !== null
+    && result.finding_id
+    && result.outcome === 'REVIEW_REQUIRED'
+    && result.needs_decision
+    && !(result.pairing_source && ONE_JUDGMENT.has(result.pairing_source))
+  ) {
+    return result.can_pair ? 'unpaired' : 'by-hand';
+  }
   if (result.finding_id === null || result.finding_id === undefined || result.outcome === null || result.outcome === undefined) {
     return result.not_compared_reason ? 'not-compared' : 'none';
   }
@@ -46,6 +73,19 @@ export function architectState(result: ArchitectResult | null): ArchitectState {
 export function reasonSaysItself(result: Pick<ArchitectResult, 'not_compared_reason'>): boolean {
   const reason = result.not_compared_reason ?? '';
   return reason.startsWith('Not checked yet') || reason.startsWith('Not compared');
+}
+
+/** True while the row waits for the reviewer's view choice (#1168): open the queue's view picker. */
+export function asksForView(result: ArchitectResult | null): boolean {
+  return architectState(result) === 'choose-view';
+}
+
+/**
+ * True when the numbers on screen are not a result to colour: the pairing waits for the reviewer, or a
+ * view chosen after the run means the next run may compare against a different view (#1168).
+ */
+export function neutralNumbers(result: ArchitectResult | null): boolean {
+  return awaitsPairing(result) || architectState(result) === 'view-picked';
 }
 
 /** True while the pairing waits for the reviewer: its numbers are not a result yet, so no verdict colour. */
@@ -155,4 +195,71 @@ export function vendorSideWords(kind: string, pieces: readonly number[]): string
   if (sorted.length === 0) return 'No piece';
   if (sorted.length === 1) return `Piece ${sorted[0] + 1}`;
   return `Pieces ${sorted[0] + 1}–${sorted[sorted.length - 1] + 1}`;
+}
+
+// ── The architect's view (#1168: the architect's drawings uploaded as a separate file) ──
+
+export function matchOf(result: ArchitectResult | null | undefined): ArchitectMatch | null {
+  return result?.match ?? null;
+}
+
+/** Each match state in plain words, short enough for one line. The server's reason says the rest. */
+export const MATCH_WORDS: Record<ArchitectMatchStatus, string> = {
+  not_matched_yet: 'Not matched with an architect view yet',
+  needs_reviewer: "Choose which of the architect's views shows this countertop",
+  auto_matched: 'View matched by code and both AIs',
+  reviewer_confirmed: 'View chosen by a reviewer',
+  carried_over: 'Same view as on the earlier revision',
+  none_matches: "No view in the architect's drawings shows this countertop",
+  not_separated: "The architect's view is not clearly apart from its neighbour",
+  no_candidates: "The architect's file has no views to match",
+};
+
+/** The match state in words, or null on a combined-sheet set (no match). */
+export function matchWords(result: ArchitectResult | null | undefined): string | null {
+  const match = matchOf(result);
+  return match ? MATCH_WORDS[match.status] ?? null : null;
+}
+
+/**
+ * The architect view this row is about, for "Show the architect's view": the one it was compared with,
+ * else the matched one (matched but not compared, or not clearly apart). Null on a combined set.
+ */
+export function viewOf(result: ArchitectResult | null | undefined): ArchitectViewRef | null {
+  return result?.compared_with ?? result?.match?.matched_view ?? null;
+}
+
+/**
+ * The words of the link to the view: the server's own "compared with <file>, page N, view X" when it
+ * was compared, else "Architect's view: <the server's label>". Null when there is no view.
+ */
+export function viewLinkWords(result: ArchitectResult | null | undefined): string | null {
+  if (result?.compared_with) return result.compared_with_text ?? `Compared with ${result.compared_with.label}`;
+  const matched = result?.match?.matched_view;
+  return matched ? `Architect's view: ${matched.label}` : null;
+}
+
+/** "Sheet A-9 · view 4 · SAMPLE ELEVATION": what the architect printed for a view, in order. */
+export function viewHeading(view: Pick<ArchitectViewRef, 'sheet_number' | 'bubble' | 'title'>): string {
+  const parts = [
+    view.sheet_number ? `Sheet ${view.sheet_number}` : null,
+    view.bubble ? `view ${view.bubble}` : null,
+    view.title,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(' · ') : 'No sheet or title printed';
+}
+
+/** What one AI said, in words: "picked view 2", "said none of them", "was not sure", "gave no answer". */
+export function aiPickWords(pick: { answer: string; view_id: string | null }, viewName: (viewId: string) => string | null): string {
+  switch (pick.answer) {
+    case 'view': return pick.view_id ? `picked ${viewName(pick.view_id) ?? 'a view'}` : 'picked a view';
+    case 'none': return 'said none of them';
+    case 'unsure': return 'was not sure';
+    default: return 'gave no answer';
+  }
+}
+
+/** How many rows wait for a check run because a reviewer chose their architect view after it. */
+export function viewPicksWaiting(rows: readonly Pick<CountertopResult, 'row_id' | 'architect'>[], savedHere: ReadonlySet<string> = new Set()): number {
+  return rows.filter((row) => row.architect?.match?.waits_for_run || savedHere.has(row.row_id)).length;
 }

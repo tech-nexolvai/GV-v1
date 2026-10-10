@@ -20,7 +20,7 @@ Reads the records only (`workflow/architect_match_records.py`): no drawing is re
 from __future__ import annotations
 
 import hashlib
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -34,9 +34,12 @@ from app.api.slot_rows import _current_row
 from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
-from app.models import DocumentVersion, PackageRevisionDocument, Page
-from app.models.evidence import ArchitectViewIndexEntry
-from app.review.row_location import RowLocation, row_location
+from app.models import PackageRevisionDocument, Page
+from app.models.evidence import ArchitectViewIndexEntry, ArchitectViewMatchRecord
+from app.review.architect_views_out import API_PREFIX, PICTURE_PATH
+from app.review.architect_views_out import view_out as _view_out
+from app.review.architect_views_out import views_by_id as _views
+from app.review.row_location import row_location
 from app.schemas.architect_matches import (
     ArchitectCandidateCodeOut,
     ArchitectMatchCurrentOut,
@@ -44,12 +47,10 @@ from app.schemas.architect_matches import (
     ArchitectViewCandidateOut,
     ArchitectViewMatchOut,
     ArchitectViewPickIn,
-    ArchitectViewRefOut,
 )
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from workflow.architect_match_records import (
-    ARCHITECT_FILE_NAME,
     ReviewerMatchRefused,
     ReviewerMatchStale,
     latest_match_record,
@@ -60,85 +61,20 @@ from workflow.slot_row_scope import SlotRow
 
 router = APIRouter(tags=["architect view matches"])
 
-#: The prefix `app/main.py` mounts this router under (`API_PREFIX`), for the picture links.
-API_PREFIX: Final = "/api/v1"
-PICTURE_PATH: Final = (
-    "/projects/{project_id}/packages/{package_id}/architect-views/{view_id}/picture"
-)
 _NOT_FOUND: Final = "Not found"
 
 
-def _label(entry: ArchitectViewIndexEntry, page_number: int) -> str:
-    words = f"Page {page_number}, view {entry.view_number}"
-    if entry.title:
-        words += f": {entry.title}"
-    if entry.sheet_number:
-        words += f" (sheet {entry.sheet_number})"
-    return words
-
-
-def _region(entry: ArchitectViewIndexEntry, page_number: int) -> RowLocation | None:
-    points = entry.extent.get("stored_points") if isinstance(entry.extent, dict) else None
-    if not isinstance(points, list) or len(points) < 3:
-        return None
-    try:
-        polygon = [[str(point[0]), str(point[1])] for point in points]
-    except (IndexError, TypeError):
-        return None
-    return RowLocation(
-        page_id=entry.page_id,
-        document_version_id=entry.document_version_id,
-        page_number=page_number,
-        polygon=polygon,
-    )
-
-
-def _views(
-    session: Session, view_ids: set[UUID]
-) -> dict[UUID, tuple[ArchitectViewIndexEntry, int, UUID]]:
-    if not view_ids:
-        return {}
-    return {
-        entry.id: (entry, page_index + 1, document_id)
-        for entry, page_index, document_id in session.execute(
-            select(ArchitectViewIndexEntry, Page.index, DocumentVersion.document_id)
-            .join(Page, Page.id == ArchitectViewIndexEntry.page_id)
-            .join(
-                DocumentVersion, DocumentVersion.id == ArchitectViewIndexEntry.document_version_id
-            )
-            .where(ArchitectViewIndexEntry.id.in_(tuple(view_ids)))
-        )
-    }
-
-
-def _view_out(
-    entry: ArchitectViewIndexEntry,
-    page_number: int,
-    document_id: UUID,
-    *,
-    project_id: UUID,
-    package_id: UUID,
-) -> ArchitectViewRefOut:
-    return ArchitectViewRefOut(
-        view_id=entry.id,
-        document_id=document_id,
-        document_version_id=entry.document_version_id,
-        file_name=ARCHITECT_FILE_NAME,
-        page_number=page_number,
-        sheet_number=entry.sheet_number,
-        bubble=entry.bubble,
-        title=entry.title,
-        scale_note=entry.scale_note,
-        label=_label(entry, page_number),
-        region=_region(entry, page_number),
-        picture_url=(
-            None
-            if entry.picture_storage_key is None
-            else API_PREFIX
-            + PICTURE_PATH.format(project_id=project_id, package_id=package_id, view_id=entry.id)
-        ),
-        separated=entry.separated,
-    )
+def candidate_order(
+    record: ArchitectViewMatchRecord,
+) -> Literal["code", "ais_then_code", "code_ais_not_asked"]:
+    """How the record's candidates were ordered (`ArchitectMatcher._candidates`, #1166): when the
+    AIs were asked (the record names their questions) and code had no pick, the views both AIs
+    called the same come first; with a code pick, code's order; with no question, code's order.
+    A reviewer's record copies these from the record it answered."""
+    questions = (record.details or {}).get("questions")
+    if not isinstance(questions, list) or not questions:
+        return "code_ais_not_asked"
+    return "code" if record.code_pick_view_id is not None else "ais_then_code"
 
 
 def _int(value: object) -> int | None:
@@ -241,6 +177,7 @@ def _match_out(
         ),
         candidates=candidates,
         can_choose_none=True,
+        order=None if current is None else candidate_order(current),
     )
 
 

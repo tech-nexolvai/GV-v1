@@ -29,6 +29,12 @@ from app.models import (
 )
 from app.models.evidence import EvidenceArtifactKind
 from app.review.approval import readiness_and_decisions
+from app.review.architect_view_match import (
+    SeparateFileMatches,
+    compared_view,
+    match_out,
+    separate_file_views,
+)
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
@@ -50,11 +56,19 @@ from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.wall_layouts import is_between_panels, wall_layout_words
+from workflow.architect_match_records import effective_architect_matches
 from workflow.architect_pairing_contract import EffectivePairing
+
+# The batch form of `architect_views` (#1167), private to its module: the countertop results ask
+# it once per revision instead of once per row.
+from workflow.architect_pairing_records import _architect_views_by_page
 from workflow.architect_row_plan import (
     ARCHITECT_CHECK_RULE_ID,
+    PAIR_BY_REVIEWER,
     Disposition,
     PairingLookup,
+    architect_file_indexed,
+    architect_matches_waiting_for_run,
     effective_architect_pairings,
     pairing_judgments,
     pairing_source_from_notes,
@@ -586,16 +600,36 @@ def _architect_block(
     sides: ReadingSides,
     positions: dict[str, RowLocation] | None = None,
     separate_architect_file: bool = False,
+    matches: SeparateFileMatches | None = None,
 ) -> ArchitectResultOut:
     """What the architect check recorded for this row, or why nothing was compared.
 
-    `separate_architect_file` (#1161): the revision's architect drawings came as their own file,
-    which this version does not compare, so a row not compared says that.
+    `separate_architect_file` (#1161): the revision's architect drawings came as their own file.
+    `matches` (#1168): when that file was indexed, every row's match with one of its views, read
+    once for the revision; the row then says its match state and the view it was compared with.
+    `None` on a combined sheet: the block is exactly as before (every new field null).
     """
+    view_match = None if matches is None else match_out(matches, row.anchor.id)
+    row_match = None if matches is None else matches.matches.get(row.anchor.id)
     if finding is None:
         pairing = pairing_lookup(session, row.anchor.id)
         plan = plan_architect_row(
-            session, row, pairing, sides=sides, separate_architect_file=separate_architect_file
+            session,
+            row,
+            pairing,
+            sides=sides,
+            separate_architect_file=separate_architect_file,
+            architect_file_indexed=matches is not None,
+            match=row_match,
+            match_waits_for_run=(
+                matches is not None
+                and row_match is not None
+                and row_match.record_id in matches.waiting
+            ),
+            # Read once per revision for the rows with no match (#1168): no query per row.
+            own_architect_view=(
+                None if matches is None else row.anchor.page_id in matches.own_view_pages
+            ),
         )
         return ArchitectResultOut(
             not_compared_reason=(
@@ -603,6 +637,8 @@ def _architect_block(
             ),
             pairing_source=None if pairing is None else pairing.source,
             pairing_judgments=pairing_judgments(None if pairing is None else pairing.source),
+            match=view_match,
+            can_pair=None if matches is None else False,
         )
     values: dict[tuple[str, int | None], dict[str, Fraction]] = {}
     for name, item in inputs.items():
@@ -642,6 +678,17 @@ def _architect_block(
                 ),
             )
         )
+    # Named only when the row's own result shows it used the view (#1168).
+    view, view_text = (
+        (None, None)
+        if matches is None
+        else compared_view(
+            matches,
+            row.anchor.id,
+            locations=[pair.architect_location for pair in compared],
+            finding_created_at=finding.created_at,
+        )
+    )
     return ArchitectResultOut(
         outcome=Outcome(finding.outcome),
         finding_id=finding.id,
@@ -651,6 +698,18 @@ def _architect_block(
         not_compared_reason=None,
         pairing_source=source,
         pairing_judgments=pairing_judgments(source),
+        match=view_match,
+        # A pairing is offered only where the check's reason asks for one (#1168); otherwise a
+        # matched row is compared by hand or waits for a run.
+        can_pair=(
+            None
+            if matches is None
+            else finding.id in blocking and PAIR_BY_REVIEWER in (finding.reason or "")
+            # A view chosen after the run: the pairing waits for that run, never offered now.
+            and (row_match is None or row_match.record_id not in matches.waiting)
+        ),
+        compared_with=view,
+        compared_with_text=view_text,
     )
 
 
@@ -753,6 +812,8 @@ def _countertop_results_for_revision(
     `pairing_lookup` answers, for a row the architect check wrote nothing for, why nothing was
     compared; by default every such row's pairing record (#1053) is read in one batch
     (`effective_architect_pairings`), so the statement count does not grow with the rows.
+    When the architect's drawings are their own indexed file (#1168), every row's match with one
+    of its views is read once per revision, with the matches waiting for a run and the views.
     """
     # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
     # is the source: the check asks nothing there, so neither does this list.
@@ -786,13 +847,33 @@ def _countertop_results_for_revision(
         if rule_id == ARCHITECT_CHECK_RULE_ID
     }
     lookup = pairing_lookup or _batched_pairings(
-        session, [row.anchor.id for row in rows if row.anchor.id not in architect_by_row]
+        session,
+        [row.anchor.id for row in rows if row.anchor.id not in architect_by_row],
     )
     sides = ReadingSides(session)
-    # Asked once per revision, and only when some row has no architect finding to show (#1161).
-    separate_architect = any(
-        row.anchor.id not in architect_by_row for row in rows
-    ) and has_separate_architect_file(session, revision.id)
+    # Asked once per revision (#1161): whether the architect's drawings came as their own file.
+    separate_architect = bool(rows) and has_separate_architect_file(session, revision.id)
+    # ... and, when that file was indexed, every row's match with one of its views (#1168), read
+    # once. A combined sheet asks nothing more, and its architect blocks are as before.
+    indexed = separate_architect and architect_file_indexed(session, revision.id)
+    row_anchor_ids = [row.anchor.id for row in rows]
+    matches = effective_architect_matches(session, row_anchor_ids) if indexed else {}
+    waiting = architect_matches_waiting_for_run(
+        session, revision.id, {match.record_id for match in matches.values() if match is not None}
+    )
+    # Which vendor pages hold their own architect drawing, for the rows with no match (one
+    # statement, only when such a row exists): `plan_architect_row` would ask once per row.
+    unmatched_pages = {row.anchor.page_id for row in rows if matches.get(row.anchor.id) is None}
+    own_view_pages = (
+        frozenset(_architect_views_by_page(session, unmatched_pages))
+        if indexed and unmatched_pages
+        else frozenset()
+    )
+    view_matches = (
+        separate_file_views(session, package_id, matches, waiting, own_view_pages=own_view_pages)
+        if indexed
+        else None
+    )
     verdict_inputs_by_finding: dict[UUID, dict[str, VerdictInput]] = {}
     if findings:
         for input_row in session.scalars(
@@ -948,6 +1029,7 @@ def _countertop_results_for_revision(
                     pairing_lookup=lookup,
                     sides=sides,
                     separate_architect_file=separate_architect,
+                    matches=view_matches,
                     positions=(
                         None
                         if (architect := architect_by_row.get(row.anchor.id)) is None

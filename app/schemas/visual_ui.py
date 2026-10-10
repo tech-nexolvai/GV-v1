@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.row_location import RowLocation
+from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome
 
@@ -116,6 +117,62 @@ class ArchitectComparedOut(BaseModel):
     )
 
 
+ArchitectMatchStatus = Literal[
+    "not_matched_yet",
+    "needs_reviewer",
+    "auto_matched",
+    "reviewer_confirmed",
+    "carried_over",
+    "none_matches",
+    "not_separated",
+    "no_candidates",
+]
+"""A countertop's match with a view of the architect's own file (#1166's `MatchStatus`), plus
+`not_matched_yet`: the file was indexed, but this row has no match record (an older run)."""
+
+
+class ArchitectAiPickOut(BaseModel):
+    """What one AI answered when asked which of the architect's views shows the countertop."""
+
+    model_config = ConfigDict(frozen=True)
+
+    model_label: str
+    answer: Literal["view", "none", "unsure", "no_answer"]
+    view_id: UUID | None
+    why: str
+
+
+class ArchitectMatchOut(BaseModel):
+    """Which view of the architect's own file this countertop was matched with (#1168).
+
+    Read from the row's effective match record (#1166); never decided here.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    record_id: UUID | None
+    status: ArchitectMatchStatus
+    source: Literal["automatic", "reviewer", "carried"] | None
+    judgments: str | None = Field(
+        description="Whose judgments the match rests on, in words; null while nothing is matched."
+    )
+    code_verdict: str | None
+    code_pick_view_id: UUID | None
+    ai_picks: tuple[ArchitectAiPickOut, ...] = ()
+    matched_view: ArchitectViewRefOut | None
+    needs_decision: bool = Field(
+        description="The reviewer still has to choose the view (status `needs_reviewer`)."
+    )
+    reason: str | None
+    waits_for_run: bool = Field(
+        default=False,
+        description=(
+            "A reviewer's pick recorded after the live check run: the result shown does not use "
+            "it yet; it counts once the checks run again."
+        ),
+    )
+
+
 class ArchitectResultOut(BaseModel):
     """The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
 
@@ -141,6 +198,30 @@ class ArchitectResultOut(BaseModel):
             "Whose judgments the pairing rests on. An automatic PASS or FAIL needs two (code and "
             "both AIs) or a reviewer; on one alone the result waits for the reviewer."
         ),
+    )
+    match: ArchitectMatchOut | None = Field(
+        default=None,
+        description=(
+            "The row's match with a view of the architect's own file (#1168). Null when the "
+            "architect's drawing is on the vendor's sheet (a combined set) or the file was not "
+            "indexed."
+        ),
+    )
+    can_pair: bool | None = Field(
+        default=None,
+        description=(
+            "Separate architect file only (#1168): whether the reviewer can pair this row's "
+            "dimensions in its matched view (the check's reason asks for a pairing). False means "
+            "the row is compared by hand or waits for a check run. Null on a combined sheet."
+        ),
+    )
+    compared_with: ArchitectViewRefOut | None = Field(
+        default=None,
+        description="The architect view this row was compared with; null when none was.",
+    )
+    compared_with_text: str | None = Field(
+        default=None,
+        description='"compared with <file>, page N, view X <title> (sheet S)"; null when none.',
     )
 
 

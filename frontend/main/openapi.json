@@ -330,6 +330,49 @@
         "title": "ApprovalReadinessOut",
         "type": "object"
       },
+      "ArchitectAiPickOut": {
+        "description": "What one AI answered when asked which of the architect's views shows the countertop.",
+        "properties": {
+          "answer": {
+            "enum": [
+              "view",
+              "none",
+              "unsure",
+              "no_answer"
+            ],
+            "title": "Answer",
+            "type": "string"
+          },
+          "model_label": {
+            "title": "Model Label",
+            "type": "string"
+          },
+          "view_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View Id"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_label",
+          "answer",
+          "view_id",
+          "why"
+        ],
+        "title": "ArchitectAiPickOut",
+        "type": "object"
+      },
       "ArchitectCandidateCodeOut": {
         "properties": {
           "bays_architect": {
@@ -593,6 +636,141 @@
           "reasons"
         ],
         "title": "ArchitectMatchCurrentOut",
+        "type": "object"
+      },
+      "ArchitectMatchOut": {
+        "description": "Which view of the architect's own file this countertop was matched with (#1168).\n\nRead from the row's effective match record (#1166); never decided here.",
+        "properties": {
+          "ai_picks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ArchitectAiPickOut"
+            },
+            "title": "Ai Picks",
+            "type": "array"
+          },
+          "code_pick_view_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Pick View Id"
+          },
+          "code_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Verdict"
+          },
+          "judgments": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whose judgments the match rests on, in words; null while nothing is matched.",
+            "title": "Judgments"
+          },
+          "matched_view": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectViewRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_decision": {
+            "description": "The reviewer still has to choose the view (status `needs_reviewer`).",
+            "title": "Needs Decision",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "automatic",
+                  "reviewer",
+                  "carried"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "status": {
+            "enum": [
+              "not_matched_yet",
+              "needs_reviewer",
+              "auto_matched",
+              "reviewer_confirmed",
+              "carried_over",
+              "none_matches",
+              "not_separated",
+              "no_candidates"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waits_for_run": {
+            "default": false,
+            "description": "A reviewer's pick recorded after the live check run: the result shown does not use it yet; it counts once the checks run again.",
+            "title": "Waits For Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "record_id",
+          "status",
+          "source",
+          "judgments",
+          "code_verdict",
+          "code_pick_view_id",
+          "matched_view",
+          "needs_decision",
+          "reason"
+        ],
+        "title": "ArchitectMatchOut",
         "type": "object"
       },
       "ArchitectMatchVendorOut": {
@@ -934,6 +1112,18 @@
       "ArchitectResultOut": {
         "description": "The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).\n\n`finding_id` and `outcome` are null when nothing was compared for this row; then\n`not_compared_reason` says why, and no reviewer decision is needed for it. Values are the ones\nthe recorded check used, never recomputed.",
         "properties": {
+          "can_pair": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Separate architect file only (#1168): whether the reviewer can pair this row's dimensions in its matched view (the check's reason asks for a pairing). False means the row is compared by hand or waits for a check run. Null on a combined sheet.",
+            "title": "Can Pair"
+          },
           "compared": {
             "default": [],
             "items": {
@@ -941,6 +1131,29 @@
             },
             "title": "Compared",
             "type": "array"
+          },
+          "compared_with": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectViewRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The architect view this row was compared with; null when none was."
+          },
+          "compared_with_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\"compared with <file>, page N, view X <title> (sheet S)\"; null when none.",
+            "title": "Compared With Text"
           },
           "finding_id": {
             "anyOf": [
@@ -953,6 +1166,17 @@
               }
             ],
             "title": "Finding Id"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArchitectMatchOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The row's match with a view of the architect's own file (#1168). Null when the architect's drawing is on the vendor's sheet (a combined set) or the file was not indexed."
           },
           "needs_decision": {
             "default": false,
@@ -1231,6 +1455,23 @@
                 "type": "null"
               }
             ]
+          },
+          "order": {
+            "anyOf": [
+              {
+                "enum": [
+                  "code",
+                  "ais_then_code",
+                  "code_ais_not_asked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the candidates are ordered, from what the matcher did (#1168): `code` (code had a pick; the AIs were asked about its top views), `ais_then_code` (code had no pick; views both AIs called the same come first, then code's order), `code_ais_not_asked` (the AIs were not asked; code's order). Null when the row has no record.",
+            "title": "Order"
           },
           "row_id": {
             "format": "uuid",
