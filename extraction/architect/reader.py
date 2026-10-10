@@ -26,7 +26,7 @@ no AI. This module is that reading, for one page, with nothing stored:
    from one thing to another (a clearance).
 
 **The architect's own file (#1163).** When the architect's drawings are uploaded as their own PDF,
-the caller says so (`architect_document`). A drawing pasted there is read as above, its role from
+the caller says so (`on_architect_file`). A drawing pasted there is read as above, its role from
 the document's kind and its content agreeing (`views.judge_by_document`, ADR-0020 decision 3). A
 page with nothing pasted — how an architect issues a set — is read from its own content: its views
 are found from their printed titles, scale notes and bubbles (`page_views.py`), each is read inside
@@ -1226,7 +1226,7 @@ def _read_pasted(
     *,
     settings: ArchitectSettings,
     dpi: int,
-    architect_document: bool,
+    on_architect_file: bool,
 ) -> tuple[_Reading, tuple[ArchitectPicture, ...]]:
     """The drawings pasted on the page, each role from its heading and its content (#1052).
 
@@ -1262,7 +1262,7 @@ def _read_pasted(
         dpi=dpi,
     )
     notes: list[PageNote] = []
-    if architect_document:
+    if on_architect_file:
         holding: list[Any] = []
         for stamp in drawings:
             box = stamps[stamp.annotation_index][0]
@@ -1330,12 +1330,12 @@ def read_architect_page(
     *,
     settings: ArchitectSettings,
     dpi: int,
-    architect_document: bool = False,
+    on_architect_file: bool = False,
 ) -> ArchitectPage:
     """The architect's views, rows and spans on one page of `data`, every decision with its reason.
 
     Pasted drawings are read everywhere, each role from its heading and its content
-    (`views.judge_view`, `decide_without_headings`). `architect_document` says the page belongs to
+    (`views.judge_view`, `decide_without_headings`). `on_architect_file` says the page belongs to
     a file uploaded as the architect's drawings, apart from the vendor's (#1163): there the page's
     own content is read too, view by view (`_read_page_content`), outside the pasted drawings, each
     view's role from the document's kind and its content agreeing (`views.judge_by_document`); a
@@ -1346,9 +1346,9 @@ def read_architect_page(
     no rows, never a refusal.
     """
     pasted, pictures = _read_pasted(
-        data, page_index, settings=settings, dpi=dpi, architect_document=architect_document
+        data, page_index, settings=settings, dpi=dpi, on_architect_file=on_architect_file
     )
-    if not architect_document:
+    if not on_architect_file:
         return _moved(
             ArchitectPage(
                 page_index=page_index,
