@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from fractions import Fraction
 from typing import Final
 
 from app.review.assistant.contract import Draft, Focus
@@ -18,6 +19,7 @@ from app.review.assistant.placeholders import Slot, UnknownPlaceholder, value_of
 from app.review.assistant.records import CountertopRecord, FindingRecord, ReviewSnapshot
 
 __all__ = [
+    "COULD_NOT_CHECK",
     "GLOSSARY",
     "NOTHING_ON_THAT_PAGE",
     "NOTHING_TO_DECIDE_THERE",
@@ -28,7 +30,10 @@ __all__ = [
     "details_answer",
     "fallback_answer",
     "glossary_answer",
+    "is_ranking_question",
     "judging_answer",
+    "needs_you_answer",
+    "ranked",
     "records_answer",
 ]
 
@@ -293,6 +298,74 @@ def blockers_answer(snapshot: ReviewSnapshot) -> Draft:
     )
 
 
+#: How many results a ranked answer lists in its text before pointing to the queue.
+MAX_RANKED: Final = 5
+#: Said first when a free answer to the question was refused and code answers instead.
+COULD_NOT_CHECK: Final = "I couldn't check a free answer to that; here is what needs you."
+#: Questions that ask code to rank or prioritise what needs the reviewer: answered by code.
+RANKING: Final = re.compile(
+    r"\bmost (?:worrying|worrisome|concerning|serious|urgent|important|critical|problematic)\b|"
+    r"\bworst\b|\bbiggest (?:problems?|issues?|risks?|concerns?|gaps?)\b|"
+    r"\b(?:which|what)\b.{0,40}\b(?:first|next)\b|\bprioriti[sz]|\bpriority\b|\brank|"
+    r"\bin (?:what|which) order\b|\bwhere (?:do|should) i start\b|\bstart with\b"
+)
+
+
+def is_ranking_question(question: str) -> bool:
+    """Whether the question asks which results matter most or come first."""
+    return RANKING.search(_folded(question)) is not None
+
+
+def _difference_size(item: CountertopRecord | FindingRecord) -> Fraction:
+    if isinstance(item, CountertopRecord) and item.difference and item.difference.exact:
+        numerator, _, denominator = item.difference.exact.partition("/")
+        try:
+            return abs(Fraction(int(numerator), int(denominator or "1")))
+        except (ValueError, ZeroDivisionError):
+            return Fraction(-1)
+    return Fraction(-1)
+
+
+_RANK_ORDER: Final = {"FAIL": 0, "REVIEW_REQUIRED": 1, "NOT_FOUND": 2, "NO_APPLICABLE_RULE": 3}
+
+
+def ranked(snapshot: ReviewSnapshot) -> list[CountertopRecord | FindingRecord]:
+    """What needs the reviewer, failures first (largest difference first), then held results,
+    then those waiting on a value, then countertops with no check result. Code's order, from
+    the records; it judges nothing."""
+    return sorted(
+        _waiting(snapshot),
+        key=lambda item: (_RANK_ORDER.get(item.outcome or "", 4), -_difference_size(item)),
+    )
+
+
+def needs_you_answer(snapshot: ReviewSnapshot, *, lead: str | None = None) -> Draft:
+    """The sign-off status, then what needs the reviewer in code's order, each with its reason.
+
+    The default answer whenever a free answer could not be checked (`lead` says so), and the
+    answer to "which look most worrying?" and "what should I look at first?".
+    """
+    lines = [lead] if lead else []
+    if not snapshot.checks_have_run:
+        return Draft(text="\n".join([*lines, NOTHING_HAS_RUN]), evidence=("blockers",))
+    order = ranked(snapshot)
+    lines.append("{signoff.status}.")
+    if order:
+        lines.append("What needs you, failures first:")
+        for item in order[:MAX_RANKED]:
+            why = _why(snapshot, item)
+            outcome = f"{_subject(snapshot, item)} {{{item.id}.outcome}}"
+            lines.append(f"- {outcome}; {why}" if why else f"- {outcome}")
+        if len(order) > MAX_RANKED:
+            lines.append("The rest are listed in the queue.")
+    countertops = [item.id for item in order[:MAX_EXPLAINED] if item.id.startswith("C")]
+    return Draft(
+        text="\n".join(lines),
+        evidence=("blockers", *countertops),
+        actions=(() if not order else (("open_queue_item", order[0].id),)),
+    )
+
+
 def _notes_answer(snapshot: ReviewSnapshot, *, no_countertop: bool) -> Draft:
     """One sentence with the count; the evidence group lists the pages and the readers' reasons."""
     notes = snapshot.pages_without_countertop if no_countertop else snapshot.rows_not_checked
@@ -422,6 +495,8 @@ def answer_for_question(
         return _notes_answer(snapshot, no_countertop=True)
     if page is None and _NOT_CHECKED.search(folded):
         return _notes_answer(snapshot, no_countertop=False)
+    if page is None and RANKING.search(folded):
+        return needs_you_answer(snapshot)
     if page is None and _BLOCKERS.search(folded):
         return blockers_answer(snapshot)
     if page is not None:
@@ -502,12 +577,16 @@ def fallback_answer(
     cited: Sequence[str] = (),
     focus: Focus | None = None,
 ) -> Draft:
-    """What replaces a dropped model answer: the question's own records-only answer (details, a
-    fix, a term, a page), else the records the model named, else the focus, else a plain
-    statement that nothing could be checked."""
+    """What replaces a refused or failed model answer: never a dead end.
+
+    The question's own code answer when there is one (a page or the focus record, details, a
+    fix, a term, what blocks sign-off); otherwise what needs the reviewer, failures first, after
+    one line saying the free answer could not be checked. `cited` (the records the refused answer
+    named) is not trusted to choose the answer.
+    """
+    del cited
     return (
         answer_for_question(snapshot, question, focus)
-        or records_answer(snapshot, [short_id for short_id in cited if short_id[:1] in "CF"])
         or _focus_answer(snapshot, focus)
-        or Draft(text=NO_ANSWER_IN_RECORDS)
+        or needs_you_answer(snapshot, lead=COULD_NOT_CHECK)
     )

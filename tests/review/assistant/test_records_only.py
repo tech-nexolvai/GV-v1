@@ -14,7 +14,6 @@ from app.review.assistant.guard import check
 from app.review.assistant.placeholders import render
 from app.review.assistant.records import ReviewSnapshot
 from app.review.assistant.records_only import (
-    NO_ANSWER_IN_RECORDS,
     NOTHING_ON_THAT_PAGE,
     NOTHING_TO_DECIDE_THERE,
     YOUR_DECISION,
@@ -168,14 +167,13 @@ def test_the_focus_record_answers_a_vague_question() -> None:
     assert "carried over from the earlier run" in _text(draft)
 
 
-def test_the_fallback_prefers_the_records_the_model_named() -> None:
-    draft = fallback_answer(SNAPSHOT, "anything", cited=("C9", "C2", "P4"))
-    assert render(draft.text, SNAPSHOT).citations == ("C2",)
+def test_the_fallback_is_what_needs_you_with_one_line_saying_so() -> None:
+    draft = fallback_answer(SNAPSHOT, "Who drew it?", cited=("C9", "C2", "P4"))
     check(draft, SNAPSHOT, by_model=False)
-
-
-def test_the_fallback_says_plainly_when_nothing_can_be_checked() -> None:
-    assert fallback_answer(SNAPSHOT, "Who drew it?").text == NO_ANSWER_IN_RECORDS
+    text = render(draft.text, SNAPSHOT).text
+    assert text.startswith("I couldn't check a free answer to that; here is what needs you.")
+    assert render(draft.text, SNAPSHOT).citations == ("C1", "C2", "F1")
+    assert draft.evidence[0] == "blockers"
 
 
 def test_the_architect_outcome_is_its_own_placeholder() -> None:

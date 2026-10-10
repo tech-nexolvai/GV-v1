@@ -43,6 +43,7 @@ from typing import Final
 
 from app.review.assistant.contract import Draft
 from app.review.assistant.placeholders import (
+    CONNECTOR,
     PLACEHOLDER,
     Slot,
     UnknownPlaceholder,
@@ -808,6 +809,10 @@ def _check_structure(template: str, snapshot: ReviewSnapshot) -> None:
                 named = any(
                     slot.key == key and slot.field in ("page", "label") for slot in in_sentence
                 )
+                if not named and CONNECTOR.match(sentence) and previous_keys != {key}:
+                    # "Also, {C1.needs_you}" continues the sentence before; it must be the same
+                    # record's, since code puts no subject in front of a connector.
+                    raise GuardRejected("connector-without-its-subject")
                 free = _plain(PLACEHOLDER.sub(" ", sentence))
                 pointing_away = previous_keys and key not in previous_keys
                 if not named and pointing_away and _BACK_REFERENCE.search(free):
