@@ -3,6 +3,7 @@ import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { CountertopResult } from '@/api/client';
+import { wallsOf } from '@/lib/countertop-results';
 import { inchesOf, stripLayout } from '@/lib/countertop-strip';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 
@@ -76,6 +77,25 @@ describe('countertop picture: layout', () => {
     expect(drawn(PANELS).caps).toEqual({ left: null, right: null });
     expect(drawn({ ...OVER, wall_layout: { ...OVER.wall_layout, config: 'island' } }).caps).toEqual({ left: null, right: null });
     expect(drawn({ ...OVER, wall_layout: { config: null, label: null, source: 'not established' } }).walls).toBeNull();
+  });
+
+  it('a wall at the back and one end draws one cap, at that end only (#1150)', () => {
+    expect(wallsOf('back_and_left')).toEqual({ back: true, left: true, right: false });
+    expect(wallsOf('back_and_right')).toEqual({ back: true, left: false, right: true });
+    const oneEnd = (config: string) => drawn({ ...OVER, field_cut_count: 1, wall_layout: { config, label: null, source: 'reviewer' } });
+    const left = oneEnd('back_and_left');
+    expect(left.walls).toEqual({ back: true, left: true, right: false });
+    expect(left.caps.right).toBeNull();
+    expect(left.caps.left?.label).toBe('+1"');
+    expect(left.caps.left?.x).toBe(0);
+    expect(left.pieces[0].x).toBeCloseTo(left.caps.left!.w, 6);
+    const right = oneEnd('back_and_right');
+    expect(right.walls).toEqual({ back: true, left: false, right: true });
+    expect(right.caps.left).toBeNull();
+    expect(right.caps.right?.label).toBe('+1"');
+    expect(right.pieces[0].x).toBe(0);
+    const last = right.pieces[right.pieces.length - 1];
+    expect(right.caps.right!.x).toBeCloseTo(last.x + last.w, 6);
   });
 
   it('a held row is overlaid and shows no difference', () => {
