@@ -103,6 +103,16 @@ export interface LiveData {
    * the server's record times, plus pairings saved in this sitting. Only a new run uses them.
    */
   pairingsSaved?: ReadonlySet<string>;
+  /** Rows whose architect view the reviewer chose in this sitting (#1168). Only a new run uses them. */
+  viewsPicked?: ReadonlySet<string>;
+}
+
+/**
+ * True when the reviewer chose this row's architect view after its result (#1168): the server's
+ * `waits_for_run`, or a pick saved in this sitting. Only a new check run uses it.
+ */
+export function viewPickWaits(rowId: string, row: CountertopResult | undefined, live: Pick<LiveData, 'viewsPicked'>): boolean {
+  return Boolean(row?.architect?.match?.waits_for_run) || (live.viewsPicked?.has(rowId) ?? false);
 }
 
 /**
@@ -139,7 +149,7 @@ export function itemStatus(item: QueueItem, live: LiveData): ItemStatus {
     if (live.corrected?.has(findingId) || live.findings.get(findingId)?.reviewer_action === 'correct') return 'waiting-for-run';
     const blocking = live.blocking !== null ? live.blocking.has(findingId) : (row?.architect?.needs_decision ?? true);
     if (!blocking) return 'decided';
-    return live.pairingsSaved?.has(item.rowId) ? 'waiting-for-run' : 'open';
+    return live.pairingsSaved?.has(item.rowId) || viewPickWaits(item.rowId, row, live) ? 'waiting-for-run' : 'open';
   }
   if (live.corrected?.has(item.findingId) || live.findings.get(item.findingId)?.reviewer_action === 'correct') return 'waiting-for-run';
   if (live.blocking === null) return 'open';

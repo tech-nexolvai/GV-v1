@@ -14,6 +14,7 @@ import {
   progressOf,
   findingIdOf,
   unaccountedBlocking,
+  viewPickWaits,
   wallQuestion,
   wallWords,
   BETWEEN_PANELS_WORDS,
@@ -27,9 +28,10 @@ import { cn } from '@/lib/utils';
 import { CountertopStrip } from '@/components/results/CountertopStrip';
 import { SplitPageNote } from '@/components/results/split-page-note';
 import { CarriedOver } from '@/components/results/carried-over';
-import { ArchitectLine, ArchitectPairs, ArchitectSharedLine, ArchitectStatus } from '@/components/results/architect-line';
+import { ArchitectLine, ArchitectPairs, ArchitectSharedLine, ArchitectStatus, ArchitectViewLink, MatchTag } from '@/components/results/architect-line';
 import { CountertopTitle } from '@/components/results/countertop-title';
 import { ArchitectPairingPanel } from './architect-pairing';
+import { ArchitectViewPicker } from './architect-view-picker';
 import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
 import { WallGlyph, WallLayoutPicture } from '@/components/results/wall-glyph';
@@ -66,6 +68,8 @@ export interface QueueProps {
   onWallSaved: () => void;
   /** An architect pairing was saved (#1085): likewise, only a new check run uses it. */
   onPairingSaved?: () => void;
+  /** An architect view was chosen for this row (#1168): likewise, only a new check run uses it. */
+  onViewPicked?: (rowId: string) => void;
   onOpenCard: (row: CountertopResult) => void;
   /** Open at this item (its key), when it is in the list; otherwise at the first open one. */
   startAt?: string | null;
@@ -110,10 +114,12 @@ function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string
   return Math.max(0, items.findIndex((item) => itemStatus(item, live) === 'open'));
 }
 
-function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onOpenCard, startAt }: QueueProps) {
+function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt }: QueueProps) {
   const [wallsSaved, setWallsSaved] = useState<ReadonlySet<string>>(new Set());
   // Architect pairings saved in this sitting (#1085); the server's own record times are added below.
   const [pairingsSaved, setPairingsSaved] = useState<ReadonlySet<string>>(new Set());
+  // Architect views chosen in this sitting (#1168); the server's own `waits_for_run` is read from the rows.
+  const [viewsPicked, setViewsPicked] = useState<ReadonlySet<string>>(new Set());
   // The spans the pairing panel offers, drawn beside the item's own marks.
   const [pairMarks, setPairMarks] = useState<{ rowId: string; marks: Mark[]; active: string | null } | null>(null);
   const [slotVersion, setSlotVersion] = useState(0);
@@ -124,6 +130,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
     blocking,
     slots: slots.status === 'ready' ? new Map(slots.data.rows.map((s) => [s.row_id, s])) : null,
     wallsSaved,
+    viewsPicked,
   };
 
   // The list is taken once the readiness answer is in: without it the package-level checks would
@@ -216,10 +223,12 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const architect = architectRow?.architect ?? null;
   const architectAsk = architect ? architectState(architect) : null;
   const pairingAsked = item?.kind === 'architect' && status === 'open' && (architectAsk === 'confirm' || architectAsk === 'unpaired');
+  // "Which of the architect's views?" (#1168): answered by the view picker, never by the decision form.
+  const viewAsked = item?.kind === 'architect' && status === 'open' && architectAsk === 'choose-view';
   const findingId = item ? findingIdOf(item, live) : null;
   const finding = findingId ? live.findings.get(findingId) ?? null : null;
   // A pairing question is answered by the pairing, never by the decision form.
-  const deciding = finding !== null && (status === 'open' || changing) && !pairingAsked;
+  const deciding = finding !== null && (status === 'open' || changing) && !pairingAsked && !viewAsked;
   const draft = useDecisionDraft(deciding ? finding : null);
   // A draft belongs to one result. If the result under this item is replaced (a check run finished
   // while the queue was open), the half-written choice and note are dropped, never re-aimed.
@@ -452,6 +461,9 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   <div className="flex flex-col gap-2" data-slot="queue-architect">
                     <ArchitectPairs result={architect} />
                     {pairedByWords(architect) && <p className="text-xs text-muted-foreground">{pairedByWords(architect)}</p>}
+                    {/* The view it was matched with (#1168); "Architect's view" on the drawing shows it beside. */}
+                    <ArchitectViewLink result={architect} />
+                    <MatchTag result={architect} />
                     {architect.reason && <p className="text-sm text-muted-foreground">{architect.reason}</p>}
                     {target && target.marks.length > 0 && <MarkNotes marks={target.marks} at={target} />}
                   </div>
@@ -472,6 +484,19 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                       onPairingSaved?.();
                     }}
                     onMarks={(marks, active) => setPairMarks({ rowId: architectRow.row_id, marks, active })}
+                  />
+                )}
+                {viewAsked && architectRow && (
+                  <ArchitectViewPicker
+                    key={architectRow.row_id}
+                    projectId={projectId}
+                    packageId={packageId}
+                    row={architectRow}
+                    onSaved={() => {
+                      setViewsPicked((current) => new Set(current).add(architectRow.row_id));
+                      setBrowsing(false);
+                      onViewPicked?.(architectRow.row_id);
+                    }}
                   />
                 )}
                 {item.kind === 'check' && finding?.reason && <p className="line-clamp-3 text-sm text-muted-foreground" title={finding.reason}>{finding.reason}</p>}
@@ -497,6 +522,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                     status={status}
                     wallSaved={row !== null && wallsSaved.has(row.row_id)}
                     pairingSaved={item.kind === 'architect' && live.pairingsSaved?.has(item.rowId) === true}
+                    viewPicked={item.kind === 'architect' && viewPickWaits(item.rowId, architectRow ?? undefined, live)}
                     corrected={finding !== null && (live.corrected?.has(finding.id) ?? false)}
                     row={row}
                     finding={finding}
@@ -693,6 +719,7 @@ function DecidedSummary({
   status,
   wallSaved,
   pairingSaved = false,
+  viewPicked = false,
   corrected,
   row,
   finding,
@@ -706,6 +733,8 @@ function DecidedSummary({
   wallSaved: boolean;
   /** An architect pairing recorded after the result (#1085). */
   pairingSaved?: boolean;
+  /** An architect view chosen after the result (#1168). */
+  viewPicked?: boolean;
   /** The result to word the decision against, when it is not the row's own (the architect's). */
   outcome?: CountertopResult['outcome'];
   /** A correction somewhere in this finding's history (only a new run clears it). */
@@ -725,7 +754,9 @@ function DecidedSummary({
           <CheckCircle2 className="size-4" aria-hidden="true" />
           {decision?.action === 'correct' || corrected
             ? 'Corrected. A correction is settled only by running the checks again; nothing recorded after it clears it.'
-            : pairingSaved
+            : viewPicked
+              ? 'View chosen. It counts once the checks run again.'
+              : pairingSaved
               ? 'Pairing saved. It counts once the checks run again.'
               : wallSaved
               ? 'Wall answer saved. Run the checks to see the result.'

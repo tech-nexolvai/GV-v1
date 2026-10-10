@@ -11,6 +11,7 @@
 
 import type { components, paths } from './schema';
 import { parseSseFrames, type SseFrame } from './sse.js';
+import type { ArchitectMatchFields, ArchitectViewMatch, ArchitectViewPickIn } from './architect-match';
 import type { AssistantAnswer, AssistantInfo, AssistantRequest, AssistantStage, AssistantStreamError } from './assistantTypes';
 
 /** Every failure the API produces has this shape — `app/errors.py`. */
@@ -151,7 +152,11 @@ export function getApprovalReadiness(projectId: string, packageId: string) {
 
 /** One row per countertop of the live check run, with its exact numbers (#1035). Read-only. */
 export type CountertopResults = components['schemas']['CountertopResultsOut'];
-export type CountertopResult = CountertopResults['items'][number];
+/**
+ * One countertop row. TEMPORARY (#1168): its `architect` carries the hand-written view-match fields
+ * until `schema.d.ts` is regenerated; then this is `CountertopResults['items'][number]` again.
+ */
+export type CountertopResult = Omit<CountertopResults['items'][number], 'architect'> & { architect?: ArchitectResult };
 /** A vendor page where both AIs found no countertop line (#1093): listed, never blocking. */
 export type PageWithoutCountertop = components['schemas']['PageWithoutCountertopOut'];
 export type ExactValue = components['schemas']['ExactValueOut'];
@@ -938,7 +943,8 @@ export function listSlotReaderRows(projectId: string, packageId: string) {
 }
 
 /** The vendor-vs-architect check on one countertop row (#1054): what was compared, and how it was paired. */
-export type ArchitectResult = components['schemas']['ArchitectResultOut'];
+/** TEMPORARY (#1168): `& ArchitectMatchFields` goes once `schema.d.ts` carries the view match. */
+export type ArchitectResult = components['schemas']['ArchitectResultOut'] & ArchitectMatchFields;
 export type ArchitectCompared = components['schemas']['ArchitectComparedOut'];
 /** One row's architect pairing (#1053): the current record, the one that counts, and every offered span. */
 export type ArchitectPairing = components['schemas']['ArchitectPairingOut'];
@@ -963,6 +969,30 @@ export function saveArchitectPairing(
   body: { pairs: ArchitectPairIn[]; note: string | null; expected_record_id?: string },
 ) {
   return send<ArchitectPairing>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-pairing`, body);
+}
+
+// ── The architect's view a countertop is compared with (#1168, separate architect PDF) ──
+
+export type { ArchitectAiPick, ArchitectMatch, ArchitectMatchStatus, ArchitectViewCandidate, ArchitectViewMatch, ArchitectViewPickIn, ArchitectViewRef } from './architect-match';
+
+/** The ranked views a reviewer chooses from, and the record on screen (Phase 3's reviewer API). */
+export function getArchitectViewMatch(projectId: string, packageId: string, rowId: string) {
+  return request<ArchitectViewMatch>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-view-match`);
+}
+
+/**
+ * Record which of the architect's views shows this countertop, or `none_of_these`. Sent only on the
+ * reviewer's click. `expected_record_id` names the record on screen: if someone changed it since, the
+ * server refuses with 409 and records nothing; a refused pick is a 422 with the reason. The pick
+ * counts once the checks run again.
+ */
+export function pickArchitectView(projectId: string, packageId: string, rowId: string, body: ArchitectViewPickIn) {
+  return send<ArchitectViewMatch>(`/projects/${projectId}/packages/${packageId}/slot-rows/${rowId}/architect-view-match`, body);
+}
+
+/** The stored picture of one architect view (the server checks its digest before serving it). */
+export function architectViewPictureUrl(projectId: string, packageId: string, viewId: string): string {
+  return `${BASE}/projects/${projectId}/packages/${packageId}/architect-views/${viewId}/picture`;
 }
 
 export function reviewSlotReaderRow(

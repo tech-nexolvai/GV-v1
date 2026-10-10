@@ -71,6 +71,7 @@ export function ResultsDashboard({
   onShowDrawing,
   onOpenCard,
   onOpenQueue,
+  onShowArchitectView,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -89,6 +90,8 @@ export function ResultsDashboard({
   onOpenCard: (row: CountertopResult) => void;
   /** Opens the "Needs you" queue (#1050) from the "Needs you" card, or at one item (its key). */
   onOpenQueue?: (startAt?: string) => void;
+  /** The architect's page beside the vendor's, framing the row's matched view (#1168). */
+  onShowArchitectView?: (row: CountertopResult) => void;
 }) {
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
@@ -139,6 +142,7 @@ export function ResultsDashboard({
       if (finding) setDeciding({ finding, title: `${row.label}: matches the architect?` });
     },
     onPairArchitect: onOpenQueue ? (row) => onOpenQueue(architectItemKey(row.row_id)) : undefined,
+    onShowArchitectView,
   };
 
   return (

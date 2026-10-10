@@ -16,7 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WallGlyph } from './wall-glyph';
 import { CountertopStrip } from './CountertopStrip';
-import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus } from './architect-line';
+import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus, ArchitectViewLink, MatchTag } from './architect-line';
+import { ArchitectMatchDetails } from './architect-match-details';
 import { SplitPageNote } from './split-page-note';
 import { CarriedOver } from './carried-over';
 import { DrawnLengthNote } from './drawn-length-note';
@@ -32,8 +33,10 @@ export interface RowActions {
   architectFinding?: (row: CountertopResult) => Finding | undefined;
   /** A recorded architect result that needs a decision: the usual Decide dialog. */
   onDecideArchitect?: (row: CountertopResult) => void;
-  /** A pairing to confirm or make: the queue, at this row's "Matches the architect?" item. */
+  /** A pairing to confirm or make, or a view to choose (#1168): the queue, at this row's "Matches the architect?" item. */
   onPairArchitect?: (row: CountertopResult) => void;
+  /** The architect's page beside the vendor's, framing the view this row was matched with (#1168). */
+  onShowArchitectView?: (row: CountertopResult) => void;
 }
 
 /**
@@ -177,7 +180,7 @@ export function CountertopTable({
                   {open && (
                     <TableRow className="hover:bg-transparent">
                       <TableCell colSpan={10} className="bg-muted/30 whitespace-normal">
-                        <RowDetails row={row} />
+                        <RowDetails row={row} onShowArchitectView={actions.onShowArchitectView} />
                       </TableCell>
                     </TableRow>
                   )}
@@ -217,7 +220,9 @@ export function CountertopTable({
                 <div className="mt-2"><HoldChip hold={row.hold} /></div>
               ) : null}
               <DrawnLengthNote row={row} className="mt-2" />
-              {hasArchitectLine(row, architectNotice) && <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp />}
+              {hasArchitectLine(row, architectNotice) && (
+                <ArchitectLine result={row.architect} className="mt-2 border-t pt-2" clamp onOpenView={actions.onShowArchitectView ? () => actions.onShowArchitectView?.(row) : undefined} />
+              )}
               <ArchitectAction row={row} actions={actions} />
               {/* A split page has no pieces to show: its note above says why. */}
               {!isSplitPage(row) && (
@@ -225,7 +230,7 @@ export function CountertopTable({
                   <button type="button" className="mt-2 text-xs text-muted-foreground underline-offset-2 hover:underline" aria-expanded={open} onClick={() => toggle(row.row_id)}>
                     {open ? 'Hide pieces' : 'Show pieces'}
                   </button>
-                  {open && <div className="mt-2"><RowDetails row={row} /></div>}
+                  {open && <div className="mt-2"><RowDetails row={row} onShowArchitectView={actions.onShowArchitectView} /></div>}
                 </>
               )}
             </li>
@@ -369,7 +374,7 @@ function SplitWalls() {
 const SOURCE_ICON = { sealed: Lock, typed: PencilLine, missing: CircleDashed } as const;
 const SOURCE_WORD = { sealed: 'both AIs agreed', typed: 'typed by a reviewer', missing: 'missing' } as const;
 
-function RowDetails({ row }: { row: CountertopResult }) {
+function RowDetails({ row, onShowArchitectView }: { row: CountertopResult; onShowArchitectView?: (row: CountertopResult) => void }) {
   return (
     <div className="flex flex-col gap-3 py-1 font-sans">
       {/* A split page (#1093) has no line, so no pieces and no picture: its note says why. */}
@@ -387,6 +392,10 @@ function RowDetails({ row }: { row: CountertopResult }) {
           <p className="text-xs font-medium">Matches the architect</p>
           <p className="max-w-2xl"><ArchitectStatus result={row.architect} /></p>
         </div>
+      )}
+      {/* Which of the architect's views, and who matched it (#1168); nothing on a combined-sheet set. */}
+      {row.architect?.match && (
+        <ArchitectMatchDetails result={row.architect} onOpenView={onShowArchitectView ? () => onShowArchitectView(row) : undefined} />
       )}
     </div>
   );
@@ -449,9 +458,12 @@ function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowAct
         <TableCell colSpan={2} className="py-1.5" />
         {/* One line: the same reason often repeats on every row; the whole of it is in the title. */}
         <TableCell colSpan={8} className="max-w-0 py-1.5">
-          <div className="truncate" title={result.not_compared_reason ?? undefined}>
-            <span className="mr-2 font-medium text-muted-foreground">Architect</span>
-            <ArchitectStatus result={result} />
+          <div className="flex min-w-0 items-baseline gap-2">
+            <div className="min-w-0 truncate" title={result.not_compared_reason ?? undefined}>
+              <span className="mr-2 font-medium text-muted-foreground">Architect</span>
+              <ArchitectStatus result={result} />
+            </div>
+            <ArchitectViewLink result={result} onOpen={actions.onShowArchitectView ? () => actions.onShowArchitectView?.(row) : undefined} className="shrink-0" />
           </div>
         </TableCell>
       </TableRow>
@@ -468,9 +480,15 @@ function ArchitectRow({ row, actions }: { row: CountertopResult; actions: RowAct
           <span className="font-medium text-muted-foreground">Architect</span>
           {pairedBy && <span className="truncate text-muted-foreground" title={pairedBy}>{pairedBy}</span>}
           {result.compared.length > 1 && <span className="text-muted-foreground">{result.compared.length} compared: see details</span>}
+          <MatchTag result={result} />
         </div>
       </TableCell>
-      <TableCell className="py-1.5 whitespace-normal"><ArchitectStatus result={result} /></TableCell>
+      <TableCell className="py-1.5 whitespace-normal">
+        <div className="flex flex-col items-start gap-0.5">
+          <ArchitectStatus result={result} />
+          <ArchitectViewLink result={result} onOpen={actions.onShowArchitectView ? () => actions.onShowArchitectView?.(row) : undefined} />
+        </div>
+      </TableCell>
       <TableCell className="py-1.5 text-right">
         <span className="sr-only">Architect&apos;s drawing says </span>
         {/* A piece's width is not the overall: said so, beside the number. */}
@@ -501,14 +519,15 @@ function ArchitectAction({ row, actions }: { row: CountertopResult; actions: Row
   const result = row.architect ?? null;
   const state = architectState(result);
   if (!result?.needs_decision) return null;
-  if ((state === 'confirm' || state === 'unpaired') && actions.onPairArchitect) {
+  if ((state === 'confirm' || state === 'unpaired' || state === 'choose-view') && actions.onPairArchitect) {
     return (
       <Button size="sm" variant="outline" className="ml-1" onClick={() => actions.onPairArchitect?.(row)}>
-        {state === 'confirm' ? 'Confirm the pairing…' : 'Pair it…'}
+        {state === 'confirm' ? 'Confirm the pairing…' : state === 'choose-view' ? 'Choose the view…' : 'Pair it…'}
       </Button>
     );
   }
-  if (state === 'compared' && actions.onDecideArchitect && actions.architectFinding?.(row)) {
+  // A view not clearly apart (#1168) is compared by hand, then decided like any recorded result.
+  if ((state === 'compared' || state === 'by-hand') && actions.onDecideArchitect && actions.architectFinding?.(row)) {
     return (
       <Button size="sm" className="ml-1" onClick={() => actions.onDecideArchitect?.(row)}>Decide</Button>
     );

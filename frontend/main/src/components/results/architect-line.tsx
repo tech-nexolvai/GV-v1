@@ -1,12 +1,12 @@
 import { useId, useState } from 'react';
-import { ChevronDown, CircleDashed } from 'lucide-react';
+import { ChevronDown, CircleDashed, History, PanelRight, RefreshCw } from 'lucide-react';
 
 import type { ArchitectCompared, ArchitectResult } from '@/api/client';
 import { cn } from '@/lib/utils';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
-import { architectState, awaitsPairing, confirmWords, headlinePair, reasonSaysItself, pairLabel, pairedByWords } from '@/lib/architect';
+import { architectState, awaitsPairing, confirmWords, headlinePair, matchOf, matchWords, reasonSaysItself, pairLabel, pairedByWords, viewLinkWords, viewOf } from '@/lib/architect';
 
 /**
  * The vendor-vs-architect check on a countertop (#1085): "Matches the architect". Every number is
@@ -27,6 +27,22 @@ export function ArchitectStatus({ result, clamp = false }: { result: ArchitectRe
         title={clamp ? result.not_compared_reason ?? undefined : undefined}
       >
         {reasonSaysItself(result) ? result.not_compared_reason : <>Not compared: {result.not_compared_reason}</>}
+      </span>
+    );
+  }
+  if (state === 'choose-view' || state === 'by-hand') {
+    return (
+      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium text-outcome-review-fg">
+        <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} />
+        {state === 'choose-view' ? "Choose which of the architect's views shows this countertop" : 'Compare this countertop by hand'}
+      </span>
+    );
+  }
+  if (state === 'view-picked') {
+    // The reviewer's part is done; not a result yet, so no outcome colour (as a saved pairing).
+    return (
+      <span data-architect={state} className="inline-flex items-center gap-1 text-xs font-medium">
+        <RefreshCw className="size-3.5" aria-hidden="true" /> View chosen: it counts once the checks run again
       </span>
     );
   }
@@ -89,9 +105,21 @@ export function ArchitectSays({ result }: { result: ArchitectResult }) {
 
 /**
  * The whole line, for the countertop card and the phone list: "Architect", what it says, the
- * difference, the result, and who paired it. Nothing for a row with no architect result.
+ * difference, the result, and who paired it; then, when the architect's drawings are a separate file
+ * (#1168), the view it was compared with as a link. Nothing for a row with no architect result.
  */
-export function ArchitectLine({ result, className, clamp = false }: { result: ArchitectResult | null | undefined; className?: string; clamp?: boolean }) {
+export function ArchitectLine({
+  result,
+  className,
+  clamp = false,
+  onOpenView,
+}: {
+  result: ArchitectResult | null | undefined;
+  className?: string;
+  clamp?: boolean;
+  /** Opens the architect's page beside the vendor's, framing the view (#1168). */
+  onOpenView?: () => void;
+}) {
   if (!result || architectState(result) === 'none') return null;
   const pair = headlinePair(result);
   const pairedBy = pairedByWords(result);
@@ -107,7 +135,47 @@ export function ArchitectLine({ result, className, clamp = false }: { result: Ar
       )}
       <ArchitectStatus result={result} clamp={clamp} />
       {state !== 'not-compared' && pairedBy && <span className="text-xs text-muted-foreground">{pairedBy}</span>}
+      <ArchitectViewLink result={result} onOpen={onOpenView} />
+      <MatchTag result={result} />
     </div>
+  );
+}
+
+/**
+ * "compared with <file>, page N, view X" (#1168): the server's own words, as a link that opens the
+ * architect's page beside the vendor's. Nothing on a combined-sheet set (no separate file, no view).
+ */
+export function ArchitectViewLink({ result, onOpen, className }: { result: ArchitectResult | null | undefined; onOpen?: () => void; className?: string }) {
+  const words = viewLinkWords(result);
+  if (!words || !viewOf(result)) return null;
+  if (!onOpen) return <span data-slot="architect-view-link" className={cn('text-xs text-muted-foreground', className)}>{words}</span>;
+  return (
+    <button
+      type="button"
+      data-slot="architect-view-link"
+      onClick={onOpen}
+      className={cn('inline-flex min-w-0 items-center gap-1 rounded-sm text-left text-xs underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring', className)}
+    >
+      <PanelRight className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0">{words}</span>
+    </button>
+  );
+}
+
+/**
+ * Who matched the view, in small grey words (#1168), only where the line does not already say it:
+ * "View matched by code and both AIs", "View chosen by a reviewer", "Same view as on the earlier
+ * revision". The waiting and asking states say theirs in the status.
+ */
+export function MatchTag({ result }: { result: ArchitectResult | null | undefined }) {
+  const match = matchOf(result);
+  if (!match || !['auto_matched', 'reviewer_confirmed', 'carried_over'].includes(match.status)) return null;
+  if (architectState(result ?? null) === 'view-picked') return null;
+  return (
+    <span data-slot="architect-match-tag" data-match={match.status} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      {match.status === 'carried_over' && <History className="size-3.5" aria-hidden="true" />}
+      {matchWords(result)}
+    </span>
   );
 }
 

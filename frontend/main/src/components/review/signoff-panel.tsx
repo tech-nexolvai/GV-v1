@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Loader2, Signature } from 'lucide-react';
+import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Signature } from 'lucide-react';
 
 import type { ApprovalReadiness } from '@/api/client';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,12 @@ export interface SignOffScope {
   otherChecks: number | null;
   /** Every recorded result of the revision: the server approves them all. */
   total: number;
+  /**
+   * Countertops whose architect view a reviewer chose after the last check run (#1168): the server's
+   * `waits_for_run`, plus picks made in this sitting. Only a new run uses them; the readiness API
+   * blocks sign-off until then, and this says why in words.
+   */
+  viewPicksWaiting?: number;
 }
 
 function results(count: number) {
@@ -73,6 +79,7 @@ export function SignOffPanel({
   busy,
   onSignOff,
   onReview,
+  onRunChecks,
 }: {
   readiness: ApprovalReadiness | null;
   /** The page's own `canSignOff` (readiness says yes, nothing blocks, no run is pending). */
@@ -81,8 +88,11 @@ export function SignOffPanel({
   busy: boolean;
   onSignOff: () => void;
   onReview: () => void;
+  /** Takes the reviewer to Run checks (the Measurements form saves first). */
+  onRunChecks?: () => void;
 }) {
   const blocking = readiness?.blocking_findings ?? 0;
+  const picks = scope.viewPicksWaiting ?? 0;
   return (
     <section
       data-tw
@@ -108,6 +118,19 @@ export function SignOffPanel({
           </span>
         )}
       </div>
+
+      {/* A view chosen after the last run (#1168): said whatever readiness says, never enabling anything. */}
+      {picks > 0 && (
+        <div data-part="view-picks-waiting" className="flex flex-wrap items-center gap-2 text-sm" role="status">
+          <span className="inline-flex items-center gap-1 font-medium">
+            <RefreshCw className="size-3.5" aria-hidden="true" /> Run the checks again before signing off.
+          </span>
+          <span className="text-muted-foreground">
+            You chose the architect&apos;s view for <span className="num">{picks}</span> {picks === 1 ? 'countertop' : 'countertops'} after the last check run.
+          </span>
+          {onRunChecks && <Button type="button" size="sm" variant="outline" onClick={onRunChecks}>Run checks</Button>}
+        </div>
+      )}
 
       {readiness !== null && !ready && (
         <div className="flex flex-wrap items-center gap-2 text-sm" role="status">

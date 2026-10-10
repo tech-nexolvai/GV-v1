@@ -12,6 +12,8 @@ import type { Finding, Outcome } from '@/data/types';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
 import { drawingPoints } from '@/components/output/reviewerResults';
 import { bucketOf, sortRows } from '@/lib/countertop-results';
+import { viewHeading, viewLinkWords, viewOf } from '@/lib/architect';
+import type { ArchitectViewRef } from '@/api/architect-match';
 
 export type Point = [number, number];
 export interface Size { w: number; h: number }
@@ -115,6 +117,44 @@ export interface ViewerTarget {
   row: CountertopResult | null;
   /** Grey marks beside the outline: the architect's compared dimensions (#1085). */
   marks: Mark[];
+  /**
+   * The architect's page this countertop was matched with, when the architect's drawings are a
+   * separate file (#1168): shown in a second pane, framing the view. Null on a combined-sheet set.
+   */
+  second?: SecondPage | null;
+  /** Open with the second pane showing ("compared with …" was clicked). */
+  showSecond?: boolean;
+}
+
+/** A page of another file shown beside the vendor's (#1168), framing one region of it. */
+export interface SecondPage {
+  key: string;
+  /** What the link said: "compared with <file>, page N, view X", or "Matched with …". */
+  label: string;
+  /** What the architect printed for the view: sheet, bubble, title. */
+  heading: string;
+  page: number;
+  documentVersionId: string;
+  /** The view's frame, from its stored 0–1 region only; null when none is stored (never guessed). */
+  region: Point[] | null;
+}
+
+/** One architect view as a second pane. */
+export function secondPageOf(view: ArchitectViewRef, label: string = view.label): SecondPage {
+  return {
+    key: `view:${view.view_id}`,
+    label,
+    heading: viewHeading(view),
+    page: view.page_number,
+    documentVersionId: view.document_version_id,
+    region: outlineOf(view.region?.polygon),
+  };
+}
+
+/** The architect view a row was compared (or matched) with, as a second pane; null on a combined set. */
+export function architectSecondPage(row: Pick<CountertopResult, 'architect'>): SecondPage | null {
+  const view = viewOf(row.architect);
+  return view ? secondPageOf(view, viewLinkWords(row.architect) ?? view.label) : null;
 }
 
 /** The architect's compared dimensions of a row, as grey marks (#1085). Exact API text in labels. */
@@ -176,6 +216,7 @@ export function targetFromRow(row: CountertopResult): ViewerTarget {
     needsYou: bucketOf(row) === 'needs-you',
     row,
     marks: architectMarks(row),
+    second: architectSecondPage(row),
   };
 }
 
