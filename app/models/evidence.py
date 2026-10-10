@@ -898,7 +898,9 @@ class ArchitectViewIndexEntry(Base, TimestampedUUID, Immutable):
     scale_note: Mapped[str | None] = mapped_column(String(100), default=None)
     points_per_inch: Mapped[str | None] = mapped_column(String(64), default=None)
     extent: Mapped[dict[str, object]] = mapped_column(JSONB)
-    label_box: Mapped[dict[str, object] | None] = mapped_column(JSONB, default=None)
+    label_box: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), default=None
+    )
     separated: Mapped[bool] = mapped_column(Boolean())
     role_confirmed: Mapped[bool] = mapped_column(Boolean())
     row_count: Mapped[int] = mapped_column(Integer())
@@ -998,8 +1000,12 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
             name="architect_view_match_reviewer_status",
         ),
         CheckConstraint(
-            "(source = 'carried') = (status = 'carried_over')",
+            "source <> 'carried' OR status IN ('carried_over', 'none_matches', 'not_separated')",
             name="architect_view_match_carried_status",
+        ),
+        CheckConstraint(
+            "status <> 'carried_over' OR source = 'carried'",
+            name="architect_view_match_carried_over_source",
         ),
         CheckConstraint(
             "source <> 'automatic' OR status IN ('auto_matched', 'needs_reviewer', "

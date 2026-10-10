@@ -34,6 +34,9 @@ from typing import Any, Final, Literal, get_args
 from extraction.form_reader.bedrock import MalformedFormAnswer, _response_text
 
 __all__ = [
+    "ARCH_MATCH_NONE",
+    "ARCH_MATCH_SAME",
+    "ARCH_MATCH_UNSURE",
     "ARCH_MEASURES",
     "ARCH_PAIR_NONE",
     "ARCH_PAIR_UNSURE",
@@ -50,6 +53,7 @@ __all__ = [
     "ClaudeEffort",
     "PictureWouldBeResized",
     "RowKind",
+    "arch_match_schema",
     "arch_pair_schema",
     "claude_answer",
     "is_claude_model",
@@ -244,6 +248,46 @@ def arch_pair_schema(architect_spans: int) -> dict[str, object]:
             },
             "overall": pairing,
             "pieces": {"type": "array", "items": pairing},
+            "why": _STRING,
+        }
+    )
+
+
+#: The architect-view match question's words (`arch-view-match-v1`, #1166): whether one numbered
+#: architect view draws the same countertop as the vendor's, and the overall pick's two non-view
+#: answers.
+ARCH_MATCH_SAME: Final[tuple[str, ...]] = ("yes", "no", "unsure")
+ARCH_MATCH_NONE: Final = "none"
+ARCH_MATCH_UNSURE: Final = "unsure"
+
+
+def arch_match_schema(candidates: int) -> dict[str, object]:
+    """The answer shape of the architect-view match question `arch-view-match-v1` (#1166) for a
+    picture with `candidates` numbered architect views: for each view whether it draws the same
+    countertop (`yes`, `no`, `unsure`), then one pick from a closed list per picture: `1` .. `<k>`,
+    `none` or `unsure`. Each view answered exactly once, and a pick that agrees with the per-view
+    answers, are checked by the reader: the schema subset has no counts."""
+    if isinstance(candidates, bool) or candidates < 1:
+        raise ValueError("an architect-view match question needs at least one architect view")
+    return _object(
+        {
+            "candidates": {
+                "type": "array",
+                "items": _object(
+                    {
+                        "n": {"type": "integer"},
+                        "same": {"type": "string", "enum": list(ARCH_MATCH_SAME)},
+                    }
+                ),
+            },
+            "pick": {
+                "type": "string",
+                "enum": [
+                    *(str(k) for k in range(1, candidates + 1)),
+                    ARCH_MATCH_NONE,
+                    ARCH_MATCH_UNSURE,
+                ],
+            },
             "why": _STRING,
         }
     )

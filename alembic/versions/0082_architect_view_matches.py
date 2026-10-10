@@ -175,8 +175,12 @@ def upgrade() -> None:
             name="architect_view_match_reviewer_status",
         ),
         sa.CheckConstraint(
-            "(source = 'carried') = (status = 'carried_over')",
+            "source <> 'carried' OR status IN ('carried_over', 'none_matches', 'not_separated')",
             name="architect_view_match_carried_status",
+        ),
+        sa.CheckConstraint(
+            "status <> 'carried_over' OR source = 'carried'",
+            name="architect_view_match_carried_over_source",
         ),
         sa.CheckConstraint(
             "source <> 'automatic' OR status IN ('auto_matched', 'needs_reviewer', "
