@@ -29,9 +29,9 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.document import DocumentKind
+from app.models.document import DocumentKind, clean_file_name
 from vocabulary.semantic_types import ProductType
 
 #: A lowercase hex SHA-256, matched against the same shape the database checks
@@ -208,6 +208,20 @@ class UploadConfirmation(BaseModel):
             "Ingestion builds the real page manifest and a disagreement shows up there."
         ),
     )
+    file_name: str | None = Field(
+        default=None,
+        description=(
+            "The file's name as the browser gave it, to name the file in results and reports. "
+            "Display text only: never a key, never used by a check. Cleaned before it is stored "
+            "(base name only, no control characters, at most 255 characters). Optional: without "
+            "it the file is named by its kind."
+        ),
+    )
+
+    @field_validator("file_name")
+    @classmethod
+    def _clean_file_name(cls, value: str | None) -> str | None:
+        return clean_file_name(value)
 
 
 class DocumentVersionOut(BaseModel):
@@ -223,3 +237,5 @@ class DocumentVersionOut(BaseModel):
     storage_key: str
     size_bytes: int
     created_at: datetime
+    file_name: str | None = None
+    """The cleaned name the reviewer uploaded (#1174), or None (an older upload, or none sent)."""

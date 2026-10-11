@@ -130,6 +130,8 @@ export interface paths {
          *
          *     Returns `201` when a version was created and `200` when these exact bytes had already been
          *     confirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.
+         *     A repeat with another `file_name` changes nothing either: the version keeps the name it was
+         *     confirmed with (#1174).
          *
          *     Reading the object to hash it is the one piece of real work here, and it is bounded by the size of
          *     one drawing. It is also the only honest way to verify: `AGENTS.md` §2.7 pins a document version to
@@ -3370,6 +3372,8 @@ export interface components {
              * Format: uuid
              */
             document_id: string;
+            /** File Name */
+            file_name?: string | null;
             /**
              * Id
              * Format: uuid
@@ -5947,6 +5951,11 @@ export interface components {
          *     request: the API cannot know an upload finished, and it will not take "it finished" on trust.
          */
         UploadConfirmation: {
+            /**
+             * File Name
+             * @description The file's name as the browser gave it, to name the file in results and reports. Display text only: never a key, never used by a check. Cleaned before it is stored (base name only, no control characters, at most 255 characters). Optional: without it the file is named by its kind.
+             */
+            file_name?: string | null;
             /**
              * Page Count
              * @description How many pages the file has. Your count, not ours — the API never opens the file. Ingestion builds the real page manifest and a disagreement shows up there.

@@ -11,8 +11,10 @@ Verification: ``tests/db/test_document_models.py``.
 
 from __future__ import annotations
 
+import unicodedata
 from decimal import Decimal
 from enum import StrEnum
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import (
@@ -35,6 +37,7 @@ from vocabulary.page_types import PageType
 #: which imports nothing itself. ``app.models.document.PageType`` keeps working unchanged, and the
 #: page-type check constraint below is still derived from the members, so it renders identically.
 __all__ = [
+    "FILE_NAME_LIMIT",
     "Document",
     "DocumentKind",
     "DocumentVersion",
@@ -42,6 +45,7 @@ __all__ = [
     "Page",
     "PageType",
     "SourceArtifact",
+    "clean_file_name",
 ]
 
 
@@ -57,6 +61,48 @@ class DocumentKind(StrEnum):
 DOCUMENT_KIND_VALUES = ", ".join(f"'{kind.value}'" for kind in DocumentKind)
 PAGE_TYPE_VALUES = ", ".join(f"'{page_type.value}'" for page_type in PageType)
 SHA256_PATTERN = "^[0-9a-f]{64}$"
+
+
+#: The longest uploaded file name kept, in characters (#1174). A display text, never a key.
+FILE_NAME_LIMIT: Final = 255
+
+#: Characters stripped from an uploaded file name besides the control characters (Unicode `Cc`):
+#: the line and paragraph separators, and the direction marks, embeddings, overrides and isolates
+#: that make a name read differently from what it is (an override can make `.exe` read as `.pdf`).
+_INVISIBLE: Final = frozenset(
+    "\u061c\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
+#: An extension shorter than this is kept whole when a long name is shortened (`….pdf`).
+_EXTENSION_LIMIT: Final = 16
+
+
+def clean_file_name(raw: str | None) -> str | None:
+    """The file name a reviewer uploaded, as it may be stored and shown (#1174), or None.
+
+    Display text only: never a key, never read by any check. The browser's name is cleaned, never
+    trusted: the base name only (whatever follows the last `/` or `\\`, so `C:\\fakepath\\x.pdf` is
+    `x.pdf`); control characters and direction marks removed; spaces at either end trimmed;
+    composed to NFC, so a name typed on one system matches the same name typed on another; at most
+    `FILE_NAME_LIMIT` characters, keeping a short extension when a long name is shortened. Every
+    other character, any script, is kept. Nothing left (or only `.`/`..`) is None, and None reads
+    as "the architect's drawings" wherever the file is named.
+    """
+    if raw is None:
+        return None
+    name = unicodedata.normalize("NFC", raw)
+    name = "".join(
+        char for char in name if unicodedata.category(char) != "Cc" and char not in _INVISIBLE
+    )
+    name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if name in ("", ".", ".."):
+        return None
+    if len(name) <= FILE_NAME_LIMIT:
+        return name
+    stem, dot, extension = name.rpartition(".")
+    if stem and dot and len(extension) < _EXTENSION_LIMIT:
+        suffix = "…." + extension
+        return name[: FILE_NAME_LIMIT - len(suffix)].rstrip() + suffix
+    return name[: FILE_NAME_LIMIT - 1].rstrip() + "…"
 
 
 class SourceArtifact(Base, TimestampedUUID, Immutable):
@@ -115,6 +161,17 @@ class DocumentVersion(Base, TimestampedUUID, Immutable):
     source_artifact_id: Mapped[UUID]
     sha256: Mapped[str] = mapped_column(String(64))
     page_count: Mapped[int]
+    file_name: Mapped[str | None] = mapped_column(String(FILE_NAME_LIMIT), default=None)
+    """The file name the reviewer uploaded, cleaned by `clean_file_name` (#1174).
+
+    **Display text only.** It names the file in the results, the architect view picker and the
+    reports, and is never a key, never compared, never read by a check. On this row, not the
+    document or the artifact: a name belongs to one upload (a re-upload may be named differently),
+    and the bytes alone do not have one. Set once, when the upload is confirmed, like every column
+    here. Null for an upload made before #1174, or one whose name cleaned to nothing; a reader then
+    says "the architect's drawings". A name may hold a client's job or drawing number, so it is
+    stored here and never logged.
+    """
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -124,6 +181,13 @@ class DocumentVersion(Base, TimestampedUUID, Immutable):
         ),
         CheckConstraint(f"sha256 ~ '{SHA256_PATTERN}'", name="document_version_sha256"),
         CheckConstraint("page_count >= 0", name="document_version_page_count"),
+        # What `clean_file_name` guarantees, held for every writer: something to show, no path,
+        # no control characters.
+        CheckConstraint(
+            "file_name IS NULL OR (file_name !~ '^[[:space:]]*$' AND file_name !~ '[/\\\\]' "
+            "AND file_name !~ '[[:cntrl:]]')",
+            name="document_version_file_name",
+        ),
         UniqueConstraint("document_id", "sha256"),
         # Kept, and ADR-0018 gives it the rationale it never had. Under the membership model a drawing
         # is carried into a later revision by one link row and no new version, so this never obstructs

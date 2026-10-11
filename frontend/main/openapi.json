@@ -3351,6 +3351,17 @@
             "title": "Document Id",
             "type": "string"
           },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -8699,6 +8710,18 @@
         "additionalProperties": false,
         "description": "Tell the API the bytes have landed, and what they were.\n\nThe hash is required and re-checked against the stored object. That is the whole substance of this\nrequest: the API cannot know an upload finished, and it will not take \"it finished\" on trust.",
         "properties": {
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file's name as the browser gave it, to name the file in results and reports. Display text only: never a key, never used by a check. Cleaned before it is stored (base name only, no control characters, at most 255 characters). Optional: without it the file is named by its kind.",
+            "title": "File Name"
+          },
           "page_count": {
             "description": "How many pages the file has. Your count, not ours \u2014 the API never opens the file. Ingestion builds the real page manifest and a disagreement shows up there.",
             "minimum": 1.0,
@@ -9617,7 +9640,7 @@
     },
     "/api/v1/projects/{project_id}/documents/{document_id}/confirm": {
       "post": {
-        "description": "Check the bytes, then write the version in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row or version.\n3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or\n   neither does. Extraction is a separate package-level request after both PDFs are confirmed.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
+        "description": "Check the bytes, then write the version in one transaction.\n\nIn order:\n\n1. The stored object for your declared hash must exist. Nothing there is `409` \u2014 there is no upload\n   to confirm, which is different from a bad request.\n2. It is read and hashed. If it does not hash to what you declared, the request is refused with\n   `422` and **nothing at all is written** \u2014 no artifact row or version.\n3. The `SourceArtifact` and `DocumentVersion` are written in one transaction. Either both land or\n   neither does. Extraction is a separate package-level request after both PDFs are confirmed.\n\nReturns `201` when a version was created and `200` when these exact bytes had already been\nconfirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.\nA repeat with another `file_name` changes nothing either: the version keeps the name it was\nconfirmed with (#1174).\n\nReading the object to hash it is the one piece of real work here, and it is bounded by the size of\none drawing. It is also the only honest way to verify: `AGENTS.md` \u00a72.7 pins a document version to\nexact bytes, and taking the client's word for the hash would make that pin a restatement of their\nclaim. A backend that computes the checksum itself can answer this without a read; the local\nfilesystem cannot, and #221 is where that becomes worth optimising.",
         "operationId": "confirm_upload_api_v1_projects__project_id__documents__document_id__confirm_post",
         "parameters": [
           {

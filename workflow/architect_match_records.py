@@ -52,6 +52,7 @@ __all__ = [
     "RememberedMatch",
     "ReviewerMatchRefused",
     "ReviewerMatchStale",
+    "architect_file_name",
     "architect_fingerprint",
     "effective_architect_match",
     "effective_architect_matches",
@@ -65,8 +66,8 @@ __all__ = [
     "view_carry_key",
 ]
 
-#: How a result names the architect's file. The upload keeps no file name, only its kind, so the
-#: architect's file is named by what it is.
+#: How a result names the architect's file when its upload has no name stored (#1174): one made
+#: before names were kept, or one whose name cleaned to nothing. Named by what it is.
 ARCHITECT_FILE_NAME: Final = "the architect's drawings"
 
 #: Two readings of a vendor row are the same item's row when their dimension lines are this close,
@@ -101,19 +102,29 @@ class _MatchedResult(Protocol):
 # --- reading -------------------------------------------------------------------------------------
 
 
+def architect_file_name(stored: str | None) -> str:
+    """How the screen and the reports name the architect's file (#1174): the name the reviewer
+    uploaded (`DocumentVersion.file_name`, already cleaned), or "the architect's drawings" when none
+    is stored. Display text only: nothing compares it or keys anything on it."""
+    return stored or ARCHITECT_FILE_NAME
+
+
 def matched_views(session: Session, view_ids: Collection[UUID]) -> dict[UUID, MatchedView]:
     """The architect views named, as a person and the report name them, in one statement."""
     if not view_ids:
         return {}
     rows = session.execute(
-        select(ArchitectViewIndexEntry, Page.index)
+        select(ArchitectViewIndexEntry, Page.index, DocumentVersion.file_name)
         .join(Page, Page.id == ArchitectViewIndexEntry.page_id)
+        .join(DocumentVersion, DocumentVersion.id == ArchitectViewIndexEntry.document_version_id)
         .where(ArchitectViewIndexEntry.id.in_(tuple(view_ids)))
     ).all()
-    return {entry.id: _matched_view(entry, index) for entry, index in rows}
+    return {entry.id: _matched_view(entry, index, file_name) for entry, index, file_name in rows}
 
 
-def _matched_view(entry: ArchitectViewIndexEntry, page_index: int) -> MatchedView:
+def _matched_view(
+    entry: ArchitectViewIndexEntry, page_index: int, file_name: str | None
+) -> MatchedView:
     return MatchedView(
         view_id=entry.id,
         document_version_id=entry.document_version_id,
@@ -125,7 +136,7 @@ def _matched_view(entry: ArchitectViewIndexEntry, page_index: int) -> MatchedVie
         bubble=entry.bubble,
         sheet_number=entry.sheet_number,
         scale_note=entry.scale_note,
-        file_name=ARCHITECT_FILE_NAME,
+        file_name=architect_file_name(file_name),
         separated=entry.separated,
     )
 

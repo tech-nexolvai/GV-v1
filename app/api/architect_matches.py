@@ -120,7 +120,7 @@ def _match_out(
         found = views.get(view_id)
         if found is None:
             continue
-        entry, page_number, document_id = found
+        entry, page_number, document_id, file_name = found
         score = item.get("score") if isinstance(item.get("score"), dict) else {}
         assert isinstance(score, dict)
         evidence = item.get("evidence")
@@ -130,7 +130,12 @@ def _match_out(
             ArchitectViewCandidateOut(
                 rank=_int(item.get("rank")) or 0,
                 view=_view_out(
-                    entry, page_number, document_id, project_id=project_id, package_id=package_id
+                    entry,
+                    page_number,
+                    document_id,
+                    file_name=file_name,
+                    project_id=project_id,
+                    package_id=package_id,
                 ),
                 shown_to_ais=item.get("shown_number") is not None,
                 code=ArchitectCandidateCodeOut(

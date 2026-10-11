@@ -163,3 +163,16 @@ describe('NewReviewForm while uploading', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('pkg'));
   });
 });
+
+describe('the uploaded file name (#1174)', () => {
+  it('is sent with each confirmation, as the browser gave it', async () => {
+    await createPackage('p', { vendor: 'Synthetic vendor', productType: 'countertop', architectural: pdf('Synthetic Plans A.pdf', 'architect bytes'), shop: pdf('synthetic-shop.pdf', 'shop bytes') });
+    const confirms = vi.mocked(fetch).mock.calls
+      .filter(([input]) => String(input).includes('/confirm'))
+      .map(([input, init]) => [String(input).replace(/^.*\/api\/v1/, ''), JSON.parse(String(init?.body))]);
+    expect(confirms).toEqual([
+      ['/projects/p/documents/doc-architectural/confirm', { sha256: expect.any(String), page_count: 3, file_name: 'Synthetic Plans A.pdf' }],
+      ['/projects/p/documents/doc-shop/confirm', { sha256: expect.any(String), page_count: 3, file_name: 'synthetic-shop.pdf' }],
+    ]);
+  });
+});

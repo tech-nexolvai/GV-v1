@@ -1,8 +1,8 @@
 """One view of the architect's own file, as the screen and the reports name it (#1166, #1168).
 
 Shared by the reviewer picker (`app/api/architect_matches.py`) and the countertop results
-(`app/review/architect_view_match.py`), so both describe a view the same way: its page, sheet,
-title, stored frame and picture link.
+(`app/review/architect_view_match.py`), so both describe a view the same way: its file (the name
+the reviewer uploaded, #1174), page, sheet, title, stored frame and picture link.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from app.models import DocumentVersion, Page
 from app.models.evidence import ArchitectViewIndexEntry
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
-from workflow.architect_match_records import ARCHITECT_FILE_NAME
+from workflow.architect_match_records import architect_file_name
 
 __all__ = ["API_PREFIX", "PICTURE_PATH", "view_out", "views_by_id"]
 
@@ -55,13 +55,20 @@ def _region(entry: ArchitectViewIndexEntry, page_number: int) -> RowLocation | N
 
 def views_by_id(
     session: Session, view_ids: set[UUID]
-) -> dict[UUID, tuple[ArchitectViewIndexEntry, int, UUID]]:
+) -> dict[UUID, tuple[ArchitectViewIndexEntry, int, UUID, str | None]]:
+    """Each view with its 1-based page number, its document and its upload's stored file name
+    (#1174, None for an older upload), in one statement."""
     if not view_ids:
         return {}
     return {
-        entry.id: (entry, page_index + 1, document_id)
-        for entry, page_index, document_id in session.execute(
-            select(ArchitectViewIndexEntry, Page.index, DocumentVersion.document_id)
+        entry.id: (entry, page_index + 1, document_id, file_name)
+        for entry, page_index, document_id, file_name in session.execute(
+            select(
+                ArchitectViewIndexEntry,
+                Page.index,
+                DocumentVersion.document_id,
+                DocumentVersion.file_name,
+            )
             .join(Page, Page.id == ArchitectViewIndexEntry.page_id)
             .join(
                 DocumentVersion, DocumentVersion.id == ArchitectViewIndexEntry.document_version_id
@@ -76,6 +83,7 @@ def view_out(
     page_number: int,
     document_id: UUID,
     *,
+    file_name: str | None,
     project_id: UUID,
     package_id: UUID,
 ) -> ArchitectViewRefOut:
@@ -83,7 +91,8 @@ def view_out(
         view_id=entry.id,
         document_id=document_id,
         document_version_id=entry.document_version_id,
-        file_name=ARCHITECT_FILE_NAME,
+        # The name the reviewer uploaded, or "the architect's drawings" (#1174).
+        file_name=architect_file_name(file_name),
         page_number=page_number,
         sheet_number=entry.sheet_number,
         bubble=entry.bubble,
