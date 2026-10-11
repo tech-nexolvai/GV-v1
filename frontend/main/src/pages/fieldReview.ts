@@ -29,6 +29,8 @@ export interface FieldReviewInput {
   proposedCandidateIds: readonly string[] | null;
   candidates: ReadonlyMap<string, ReviewedCandidate>;
   placementUnverified: boolean;
+  /** The box shows a value saved for only some of the checks it feeds (#1183). */
+  savedPartly?: boolean;
 }
 
 export const REASON = {
@@ -37,10 +39,13 @@ export const REASON = {
   oneReader: 'Only one AI reader read this number.',
   unplaced: 'Where this number sits on the drawing could not be checked.',
   missing: 'The reading behind this value is no longer listed. Check it on the drawing.',
+  savedPartly: 'Saved for some of the checks it feeds; save again to cover all.',
 } as const;
 
 export function fieldReview(input: FieldReviewInput): FieldReview {
   if (!input.hasValue) return { state: 'empty', reason: REASON.empty };
+  // Not done until every check it feeds holds it: one of them would still read nothing (#1183).
+  if (input.savedPartly) return { state: 'needs_look', reason: REASON.savedPartly };
   if (input.reviewerOwned) return { state: 'done', reason: null };
   const ids = input.proposedCandidateIds;
   if (!ids || ids.length === 0) return { state: 'needs_look', reason: REASON.oneReader };

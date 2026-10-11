@@ -21,6 +21,7 @@ import {
   downloadLayoutProposalCrop,
   downloadSettingPassageCrop,
   enterMeasurements,
+  getCompanySettings,
   getRequiredInputs,
   listCandidates,
   listSemanticTypes,
@@ -61,6 +62,27 @@ import {
 import { layoutChoiceDefaults } from './layoutChoices';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
+import { CompanySettingsInUse } from '../components/measure/CompanySettingsInUse';
+import { SavedValueNote } from '../components/measure/SavedValueNote';
+import { SavedConflicts } from '../components/measure/SavedConflicts';
+import type { CompanySetting } from '@/components/settings/companySettings';
+import { mixedQuantity } from '@/lib/fractions';
+import {
+  blankUses,
+  measurementUnchanged,
+  savedChangesSince,
+  savedParametersByName,
+  savedQuantitiesByKey,
+  savedText,
+  savedTexts,
+  settingUnchanged,
+  showsSaved,
+  typedBy,
+  type SavedChange,
+  type SavedParameter,
+  type SavedQuantity,
+  type SavedSnapshot,
+} from '@/lib/saved-values';
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
 import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
@@ -168,6 +190,9 @@ type Needed = {
   rules_published: number;
   revision_state: string;
   still_reading: boolean;
+  /** What this review already holds (#1074), put back into the form after a reload (#1183). */
+  saved_measurements?: SavedQuantity[];
+  saved_parameters?: SavedParameter[];
 };
 
 const REQUIRED_INPUTS_POLL_MS = 5000;
@@ -362,6 +387,15 @@ export function MeasurementPanel({
   const [onlyNeeded, setOnlyNeeded] = useState(true);
   /** Bumped to re-fetch the form while the reader is still working. */
   const [reload, setReload] = useState(0);
+  /**
+   * Bumped after a save, to read back what the server now holds and who typed it (#1183). Kept apart
+   * from `reload`, which the step 1–2 sections also follow: a save of values must not refresh them.
+   */
+  const [savedReload, setSavedReload] = useState(0);
+  /** GV's company settings (#1183): what a blank setting uses. `null` while loading or after a failure. */
+  const [company, setCompany] = useState<CompanySetting[] | null>(null);
+  const [companyError, setCompanyError] = useState<string | null>(null);
+  const [companyRetry, setCompanyRetry] = useState(0);
   // Decisions on parts, which change the runs under each countertop (#893).
   const [partsDecided, setPartsDecided] = useState(0);
   // Readings confirmed here, which a part's width may then be linked to (#913).
@@ -376,6 +410,16 @@ export function MeasurementPanel({
    */
   const [aiFilled, setAiFilled] = useState<Record<string, string[]>>({});
   const reviewerEditedSinglesRef = useRef<Set<string>>(new Set());
+  /** Settings whose value, source or reference the reviewer touched: never refilled (#1183). */
+  const reviewerEditedSettingsRef = useRef<Set<string>>(new Set());
+  /** Settings whose source and reference were refilled from the saved record, not chosen (#1183). */
+  const refilledSettingRef = useRef<Set<string>>(new Set());
+  /**
+   * Saved values someone changed after this form was opened, found by the re-read before a save
+   * (#1183), with that fresh read. The save stops until the reviewer chooses for each one.
+   */
+  const [savedConflicts, setSavedConflicts] = useState<SavedChange[]>([]);
+  const [pendingSnapshot, setPendingSnapshot] = useState<SavedSnapshot | null>(null);
   const reviewerEditedManyRef = useRef<Set<string>>(new Set());
   const resetPackageIdRef = useRef<string | undefined>(undefined);
   const loadedDataPackageIdRef = useRef<string | null>(null);
@@ -443,6 +487,10 @@ export function MeasurementPanel({
       setChoices({});
       setSourceChoices({});
       setReferences({});
+      reviewerEditedSettingsRef.current = new Set();
+      refilledSettingRef.current = new Set();
+      setSavedConflicts([]);
+      setPendingSnapshot(null);
       setDeclinedCitations({});
       setCandidates([]);
       setSemanticTypes([]);
@@ -468,9 +516,30 @@ export function MeasurementPanel({
         {},
       );
       const nextMarks: Record<string, string[]> = {};
+      // **What the server already holds comes back first (#1183).** A saved value is what the checks
+      // read, so it outranks a confirmed reading or a proposal; a box the reviewer is editing, or one
+      // already filled, is left alone. Settings' sources and references come back with their values.
+      const savedQuantities = savedQuantitiesByKey(required.saved_measurements);
+      const savedSettings = (required.saved_parameters ?? []).filter((saved) =>
+        required.parameters.some((parameter) => parameter.name === saved.name && !parameter.blocked),
+      );
 
       setSingles((prior) => {
         const next = { ...prior };
+        for (const quantity of required.quantities.filter((q) => !q.many)) {
+          const saved = savedQuantities[quantity.key];
+          if (
+            saved?.values.length === 1 &&
+            !reviewerEditedSinglesRef.current.has(quantity.key) &&
+            !(next[quantity.key] ?? '').trim()
+          ) {
+            next[quantity.key] = savedText(saved.values[0]);
+          }
+        }
+        for (const saved of savedSettings) {
+          if (reviewerEditedSettingsRef.current.has(saved.name)) continue;
+          if (!(next[saved.name] ?? '').trim()) next[saved.name] = savedText(saved.value);
+        }
         for (const quantity of required.quantities.filter((q) => !q.many)) {
           const confirmed = confirmedByKey[quantity.key] ?? [];
           if (
@@ -503,6 +572,11 @@ export function MeasurementPanel({
           if (reviewerEditedManyRef.current.has(quantity.key)) continue;
           const existing = next[quantity.key] ?? [''];
           if (existing.some((value) => value.trim())) continue;
+          const saved = savedQuantities[quantity.key];
+          if (saved?.values.length) {
+            next[quantity.key] = savedTexts(saved);
+            continue;
+          }
           const confirmed = (confirmedByKey[quantity.key] ?? []).filter((value) => value.trim());
           next[quantity.key] = confirmed.length ? confirmed : [''];
         }
@@ -524,6 +598,26 @@ export function MeasurementPanel({
       });
 
       setAiFilled((prior) => ({ ...prior, ...nextMarks }));
+      // A source or reference the reviewer touched is theirs; only an untouched, empty one is refilled.
+      const refillable = savedSettings.filter((saved) => !reviewerEditedSettingsRef.current.has(saved.name));
+      setSourceChoices((prior) => {
+        const next = { ...prior };
+        for (const saved of refillable) {
+          if (next[saved.name]) continue;
+          next[saved.name] = saved.source;
+          refilledSettingRef.current.add(saved.name);
+        }
+        return next;
+      });
+      setReferences((prior) => {
+        const next = { ...prior };
+        for (const saved of refillable) {
+          if (next[saved.name] || !saved.reference) continue;
+          next[saved.name] = saved.reference;
+          refilledSettingRef.current.add(saved.name);
+        }
+        return next;
+      });
       setChoices((prior) => {
         const defaults = layoutChoiceDefaults(required.discriminators);
         if (Object.keys(defaults).length === 0) return prior;
@@ -585,7 +679,21 @@ export function MeasurementPanel({
       cancelled = true;
     };
     // Re-fetch only when the selected package changes, never on a keystroke within its form.
-  }, [selectedPackageId, selectedPageNumber, reload, resourceRetry]);
+  }, [selectedPackageId, selectedPageNumber, reload, resourceRetry, savedReload]);
+
+  // GV's company settings (#1183): read, never written here. A failure is said in step 4 and leaves
+  // the rest of the form alone; read again after a save, since a blank box may now mean something new.
+  useEffect(() => {
+    if (!selectedPackageId) return;
+    let cancelled = false;
+    void getCompanySettings().then(
+      (read) => { if (!cancelled) { setCompany(read.settings); setCompanyError(null); } },
+      (caught: unknown) => { if (!cancelled) { setCompany(null); setCompanyError(caught instanceof ApiError ? caught.message : String(caught)); } },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPackageId, companyRetry, savedReload]);
 
   /**
    * Go back and look while the drawings are still being read.
@@ -790,8 +898,31 @@ export function MeasurementPanel({
       setError(`Say where ${unsourced} came from before saving.`);
       return false;
     }
+    // **What the server holds now, not when the form opened (#1183).** A value someone else saved
+    // since then stops the save until the reviewer chooses: skipping an "unchanged" box would let the
+    // checks judge a number this screen does not show, and sending it would overwrite theirs unseen.
+    // If the re-read fails, nothing is skipped: every visible value is sent, as before #1183.
+    const current: SavedSnapshot | null = await getRequiredInputs(projectId(), packageId, selectedPageNumber).then(
+      (read) => {
+        const fresh = read as unknown as Needed;
+        return { saved_measurements: fresh.saved_measurements ?? [], saved_parameters: fresh.saved_parameters ?? [] };
+      },
+      () => null,
+    );
+    if (current) {
+      const changed = savedChangesSince(needed, current);
+      if (changed.length > 0) {
+        setSavedConflicts(changed);
+        setPendingSnapshot(current);
+        return false;
+      }
+    }
     try {
       const confirmedFromDrawing = await confirmAcceptedProposals();
+      // **A value the server already holds, unchanged, is not sent again (#1183).** The server keeps
+      // every value a save leaves out, with who typed it and when; sending it would restamp it.
+      const savedQuantities = savedQuantitiesByKey(current?.saved_measurements);
+      const savedSettings = savedParametersByName(current?.saved_parameters);
 
       // **One typed value fans out to every rule input it feeds.** The mapping is the server's, taken
       // from `consumers` — a reviewer measures the front offset once, and three rules receive it.
@@ -806,6 +937,7 @@ export function MeasurementPanel({
         if (quantity.many) {
           const values = (runs[quantity.key] ?? []).map((v) => v.trim()).filter(Boolean);
           if (!values.length) return [];
+          if (measurementUnchanged(values, savedQuantities[quantity.key])) return [];
           return consumers.map((c) => ({
             rule_id: c.rule_id as string,
             name: c.input_name as string,
@@ -814,6 +946,7 @@ export function MeasurementPanel({
         }
         const value = (singles[quantity.key] ?? '').trim();
         if (!value) return [];
+        if (measurementUnchanged(value, savedQuantities[quantity.key])) return [];
         return consumers.map((c) => ({
           rule_id: c.rule_id as string,
           name: c.input_name as string,
@@ -833,7 +966,8 @@ export function MeasurementPanel({
             source: sourceChoices[p.name],
             reference: references[p.name],
           }),
-        );
+        )
+        .filter((entry) => !settingUnchanged(entry, savedSettings[entry.name]));
 
       const result = await enterMeasurements(projectId(), packageId, {
         parameters,
@@ -842,13 +976,23 @@ export function MeasurementPanel({
       });
       // Echo the parse, not the input: `25.5"` and `25 1/2"` are the same value and a reviewer should
       // see that the system agrees — which is also how a mistyped unit becomes visible.
+      // Mixed numbers, as everywhere else (#1183): `25 1/2 in`, never `51/2 in`.
       setStored([
-        ...result.parameters.map((v) => `${v.name} = ${v.numerator}/${v.denominator} ${v.unit}`),
-        ...result.measurements.map((v) => `${v.name} = ${v.numerator}/${v.denominator} ${v.unit}`),
+        ...result.parameters.map((v) => `${v.name} = ${mixedQuantity(v)}`),
+        ...result.measurements.map((v) => `${v.name} = ${mixedQuantity(v)}`),
         ...(result.lists ?? []).map(
-          (l) => `${l.name} = [${l.values.map((v) => `${v.numerator}/${v.denominator}`).join(', ')}]`,
+          (l) => `${l.name} = [${l.values.map((v) => mixedQuantity({ ...v, unit: null })).join(', ')}]`,
         ),
       ]);
+      // Read back what is now held, so each box says who typed it and when (#1183). The snapshot is
+      // updated before this returns, so a quick second save does not take this one for someone else's.
+      try {
+        const after = (await getRequiredInputs(projectId(), packageId, selectedPageNumber)) as unknown as Needed;
+        setNeeded((prior) => prior && { ...prior, saved_measurements: after.saved_measurements ?? [], saved_parameters: after.saved_parameters ?? [] });
+      } catch {
+        // The reload below reads it again.
+      }
+      setSavedReload((count) => count + 1);
       return true;
     } catch (caught) {
       // The server's own message, verbatim. It names the field and says what to do about it; a
@@ -912,6 +1056,75 @@ export function MeasurementPanel({
       );
     } finally {
       setProposing(false);
+    }
+  }
+
+  /** A setting's value typed by the reviewer (#1183): theirs from now on, never refilled. A source and
+   *  reference refilled from the saved record belong to the saved number, so they go when it changes. */
+  function onSettingValue(name: string, value: string) {
+    reviewerEditedSettingsRef.current.add(name);
+    setSingles((prior) => ({ ...prior, [name]: value }));
+    const saved = savedParametersByName(needed?.saved_parameters)[name];
+    if (refilledSettingRef.current.has(name) && !(saved && showsSaved(value, [savedText(saved.value)]))) {
+      refilledSettingRef.current.delete(name);
+      const drop = (prior: Record<string, string>) => {
+        const next = { ...prior };
+        delete next[name];
+        return next;
+      };
+      setSourceChoices(drop);
+      setReferences(drop);
+    }
+  }
+
+  /** A setting's source or reference chosen by the reviewer (#1183): theirs, never refilled. */
+  function onSettingAnswer(name: string, set: (update: (prior: Record<string, string>) => Record<string, string>) => void, value: string) {
+    reviewerEditedSettingsRef.current.add(name);
+    refilledSettingRef.current.delete(name);
+    set((prior) => ({ ...prior, [name]: value }));
+  }
+
+  /**
+   * The reviewer's choice for a value someone else saved since the form opened (#1183): keep what this
+   * screen shows (it is sent on the next save), or take theirs into the box. Once every one is
+   * answered, the form's snapshot becomes the fresh read, and the next save compares against it.
+   */
+  function resolveSavedConflict(change: SavedChange, keepMine: boolean) {
+    const fresh = pendingSnapshot;
+    if (!keepMine && fresh) {
+      if (change.kind === 'quantity') {
+        const saved = savedQuantitiesByKey(fresh.saved_measurements)[change.key];
+        const many = needed?.quantities.find((quantity) => quantity.key === change.key)?.many ?? false;
+        releaseField(change.key);
+        if (saved && many) {
+          const edits = new Set(reviewerEditedManyRef.current);
+          edits.delete(change.key);
+          reviewerEditedManyRef.current = edits;
+          setReviewerEditedMany(edits);
+          setRuns((prior) => ({ ...prior, [change.key]: savedTexts(saved) }));
+        } else if (saved) {
+          const edits = new Set(reviewerEditedSinglesRef.current);
+          edits.delete(change.key);
+          reviewerEditedSinglesRef.current = edits;
+          setReviewerEditedSingles(edits);
+          setSingles((prior) => ({ ...prior, [change.key]: savedText(saved.values[0]) }));
+        }
+      } else {
+        const saved = savedParametersByName(fresh.saved_parameters)[change.key];
+        if (saved) {
+          reviewerEditedSettingsRef.current.delete(change.key);
+          refilledSettingRef.current.add(change.key);
+          setSingles((prior) => ({ ...prior, [change.key]: savedText(saved.value) }));
+          setSourceChoices((prior) => ({ ...prior, [change.key]: saved.source }));
+          setReferences((prior) => ({ ...prior, [change.key]: saved.reference ?? '' }));
+        }
+      }
+    }
+    const remaining = savedConflicts.filter((item) => item.id !== change.id);
+    setSavedConflicts(remaining);
+    if (remaining.length === 0 && fresh) {
+      setNeeded((prior) => prior && { ...prior, saved_measurements: [...(fresh.saved_measurements ?? [])], saved_parameters: [...(fresh.saved_parameters ?? [])] });
+      setPendingSnapshot(null);
     }
   }
 
@@ -997,6 +1210,15 @@ export function MeasurementPanel({
       ? (runs[quantity.key] ?? []).some((value) => value.trim().length > 0)
       : (singles[quantity.key] ?? '').trim().length > 0;
   const filledFieldCount = needed.quantities.filter(hasValue).length;
+  /** What the server holds, by field and by setting (#1183). */
+  const savedQuantities = savedQuantitiesByKey(needed.saved_measurements);
+  const savedSettings = savedParametersByName(needed.saved_parameters);
+  /** Whether a box shows exactly what was typed and saved: then it is a person's value, with a name and a date. */
+  const showsSavedValue = (quantity: Quantity): boolean => {
+    const saved = savedQuantities[quantity.key];
+    if (!saved) return false;
+    return showsSaved(quantity.many ? (runs[quantity.key] ?? []) : (singles[quantity.key] ?? ''), savedTexts(saved));
+  };
   /** Each reading the form could have been filled from, by id, with what the evidence path says. */
   const candidatesById = new Map<string, ReviewedCandidate & CandidateOut>(
     candidates.map((candidate) => [candidate.candidate_id, candidate as ReviewedCandidate & CandidateOut]),
@@ -1007,7 +1229,10 @@ export function MeasurementPanel({
       hasValue: hasValue(quantity),
       reviewerOwned:
         (quantity.many ? reviewerEditedMany.has(quantity.key) : reviewerEditedSingles.has(quantity.key)) ||
-        (readingsByKey[quantity.key] ?? []).length > 0,
+        (readingsByKey[quantity.key] ?? []).length > 0 ||
+        (showsSavedValue(quantity) && savedQuantities[quantity.key].complete),
+      // Saved for only some of the checks it feeds: not done, and shown under "only what needs a look".
+      savedPartly: showsSavedValue(quantity) && !savedQuantities[quantity.key].complete,
       proposedCandidateIds: aiFilled[quantity.key] ?? null,
       candidates: candidatesById,
       placementUnverified: unverifiedFields.has(quantity.key),
@@ -1027,10 +1252,11 @@ export function MeasurementPanel({
    */
   const fieldOrigin = (
     quantity: Quantity,
-  ): 'empty' | 'proposed' | 'unplaced' | 'confirmed' | 'tagged' | 'typed' => {
+  ): 'empty' | 'saved' | 'proposed' | 'unplaced' | 'confirmed' | 'tagged' | 'typed' => {
     const readings = readingsByKey[quantity.key] ?? [];
     return measurementValueOrigin({
       hasValue: hasValue(quantity),
+      showsSaved: showsSavedValue(quantity),
       humanEdited: quantity.many ? reviewerEditedMany.has(quantity.key) : reviewerEditedSingles.has(quantity.key),
       proposed: quantity.key in aiFilled,
       placementUnverified: unverifiedFields.has(quantity.key),
@@ -1066,12 +1292,13 @@ export function MeasurementPanel({
   // with a rulebook value (blank means "use it"; the line under it says that value is a stand-in);
   // a blocked one waits on the vendor and is not the reviewer's to fill.
   const fillableSettings = needed.parameters.filter((parameter) => !parameter.blocked);
+  // A blank setting counts when it has a value in use: GV's company setting or the rulebook's (#1183).
   const stepCounts: Record<MeasureStep, StepCount | null> = {
     drawings: sumCounts([sectionCounts.roles, sectionCounts.parts]),
     runs: sumCounts([sectionCounts.runs, sectionCounts.rows, sectionCounts.links]),
     values: { done: reviewSummary.done + reviewSummary.agreed, total: measurementFieldCount },
     settings: {
-      done: fillableSettings.filter((parameter) => (singles[parameter.name] ?? '').trim() !== '' || Boolean(parameter.declared_default)).length,
+      done: fillableSettings.filter((parameter) => (singles[parameter.name] ?? '').trim() !== '' || blankUses(parameter, company) !== null).length,
       total: fillableSettings.length,
     },
   };
@@ -1114,13 +1341,19 @@ export function MeasurementPanel({
             <div className="flex flex-wrap items-center gap-1.5" id={`value-chips-${quantity.key}`} data-part="value-chips">
               <ReviewChip state={review.state} />
               {/* With no value, the state chip says it; one "needs a value" is enough. */}
-              {origin !== 'empty' && origin !== 'typed' && origin !== 'confirmed' && (
+              {origin !== 'empty' && origin !== 'typed' && origin !== 'confirmed' && origin !== 'saved' && (
                 <Badge variant="outline" className="font-normal" data-origin-chip={origin}>
                   {ORIGIN_LABEL[origin]}
                 </Badge>
               )}
               {(origin === 'typed' || origin === 'confirmed') && (
                 <span className="text-xs text-muted-foreground">{ORIGIN_LABEL[origin]}</span>
+              )}
+              {/* Saved before (#1183): who typed it and when, from the server's record. */}
+              {origin === 'saved' && savedQuantities[quantity.key] && (
+                <span className="text-xs text-muted-foreground" data-part="saved-by">
+                  {typedBy(savedQuantities[quantity.key].set_by, savedQuantities[quantity.key].set_at)}
+                </span>
               )}
               {quantity.key in aiFilled && (
                 <span className="text-xs text-muted-foreground">
@@ -1244,6 +1477,15 @@ export function MeasurementPanel({
           </div>
         </div>
         {review.reason && review.state !== 'empty' && <Hint>{review.reason}</Hint>}
+        {savedQuantities[quantity.key] && (
+          <SavedValueNote
+            texts={savedTexts(savedQuantities[quantity.key])}
+            setBy={savedQuantities[quantity.key].set_by}
+            setAt={savedQuantities[quantity.key].set_at}
+            showsSaved={origin === 'saved'}
+            blank={!hasValue(quantity)}
+          />
+        )}
         {pictured.length > 0 && packageId && (
           <div className="flex flex-wrap gap-2">
             {pictured.map((candidate) => (
@@ -1717,7 +1959,8 @@ export function MeasurementPanel({
               })}
               <FillerDistributionPanel
                 quantities={needed.quantities}
-                parameters={needed.parameters}
+                // A blank setting uses what the checks use: GV's company setting, else the rulebook's (#1183).
+                parameters={needed.parameters.map((parameter) => ({ ...parameter, declared_default: blankUses(parameter, company)?.value ?? null }))}
                 singles={singles}
                 runs={runs}
                 fieldWidth={fieldDimensionKey ? (singles[fieldDimensionKey] ?? '') : ''}
@@ -1765,6 +2008,11 @@ export function MeasurementPanel({
                 <div className="divide-y rounded-xl border bg-card">
                   {needed.parameters.map((parameter) => {
                     const pointer = citingPointer(parameter, declinedCitations);
+                    const typed = singles[parameter.name] ?? '';
+                    const saved = parameter.blocked ? undefined : savedSettings[parameter.name];
+                    const savedValue = saved ? savedText(saved.value) : null;
+                    const showing = saved !== undefined && showsSaved(typed, [savedValue ?? '']);
+                    const blank = blankUses(parameter, company);
                     return (
                       <div className="grid gap-x-4 gap-y-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]" key={parameter.name}>
                         {/* A compact row (#1061): the setting | its value and where it came from. */}
@@ -1803,7 +2051,7 @@ export function MeasurementPanel({
                                 ) : null
                               }
                               onChange={(value) =>
-                                setSingles((prior) => ({ ...prior, [parameter.name]: value }))
+                                onSettingValue(parameter.name, value)
                               }
                               onDecline={() =>
                                 setDeclinedCitations((prior) => ({ ...prior, [parameter.name]: true }))
@@ -1817,12 +2065,26 @@ export function MeasurementPanel({
                                 placeholder=""
                                 value={singles[parameter.name] ?? ''}
                                 onChange={(e) =>
-                                  setSingles((prior) => ({ ...prior, [parameter.name]: e.target.value }))
+                                  onSettingValue(parameter.name, e.target.value)
                                 }
                               />
-                              {parameter.declared_default && (
+                              {/* What a blank box uses, as a hint, never put in the box (#1183). */}
+                              {!saved && !typed.trim() && blank && (
                                 <Hint>
-                                  Blank uses the rulebook&apos;s <span className="num text-foreground">{parameter.declared_default}</span>, a stand-in the client has not confirmed.
+                                  {blank.kind === 'company' ? (
+                                    <>
+                                      Blank uses GV&apos;s company setting <span className="num text-foreground">{blank.value}</span>
+                                      {blank.setBy && blank.setAt && <>, {typedBy(blank.setBy, blank.setAt)}</>}.
+                                    </>
+                                  ) : blank.kind === 'rulebook' ? (
+                                    <>
+                                      Blank uses the rulebook default <span className="num text-foreground">{blank.value}</span>, a stand-in the client has not confirmed.
+                                    </>
+                                  ) : (
+                                    <>
+                                      Blank uses GV&apos;s company setting if one is recorded, else the rulebook default <span className="num text-foreground">{blank.value}</span>.
+                                    </>
+                                  )}
                                 </Hint>
                               )}
                               <SettingSourceFields
@@ -1830,10 +2092,10 @@ export function MeasurementPanel({
                                 chosen={sourceChoices[parameter.name] ?? ''}
                                 reference={references[parameter.name] ?? ''}
                                 onChoose={(value) =>
-                                  setSourceChoices((prior) => ({ ...prior, [parameter.name]: value }))
+                                  onSettingAnswer(parameter.name, setSourceChoices, value)
                                 }
                                 onReference={(value) =>
-                                  setReferences((prior) => ({ ...prior, [parameter.name]: value }))
+                                  onSettingAnswer(parameter.name, setReferences, value)
                                 }
                               />
                               {parameter.found && (
@@ -1851,6 +2113,17 @@ export function MeasurementPanel({
                               )}
                             </>
                           )}
+                          {/* Saved before (#1183): who typed it and when, from the server's record. */}
+                          {saved && showing && (
+                            <span className="text-xs text-muted-foreground" data-part="saved-by">
+                              {typedBy(saved.value.set_by, saved.value.set_at)}
+                              {saved.layer === 'run' ? ', for this review' : ', for this project'}
+                              {saved.source && <> ({saved.source})</>}
+                            </span>
+                          )}
+                          {saved && !showing && (
+                            <SavedValueNote texts={[savedValue ?? '']} setBy={saved.value.set_by} setAt={saved.value.set_at} showsSaved={false} blank={!typed.trim()} />
+                          )}
                         </div>
                       </div>
                     );
@@ -1858,6 +2131,17 @@ export function MeasurementPanel({
                 </div>
               </StepSection>
             </div>
+
+            <CompanySettingsInUse
+              settings={company}
+              error={companyError}
+              onRetry={() => {
+                setCompanyError(null);
+                setCompany(null);
+                setCompanyRetry((count) => count + 1);
+              }}
+              saved={savedSettings}
+            />
 
             {needed.discriminators.length > 0 && (
               <StepSection
@@ -1949,6 +2233,14 @@ export function MeasurementPanel({
           className="sticky bottom-0 z-10 -mx-4 flex flex-col gap-2 border-t bg-background px-4 pt-3 pb-4 sm:-mx-6 sm:px-6 sm:pb-9"
         >
           {error && <LoadError>{error}</LoadError>}
+          <SavedConflicts
+            conflicts={savedConflicts}
+            labelOf={(change) => {
+              const quantity = change.kind === 'quantity' ? needed.quantities.find((item) => item.key === change.key) : undefined;
+              return quantity ? fieldLabel(quantity) : sentence(change.key.replace(/_/g, ' '));
+            }}
+            onChoose={resolveSavedConflict}
+          />
           {accepted && (
             <p className="flex flex-wrap items-center gap-1.5 text-sm" role="status">
               <span>

@@ -8,6 +8,7 @@
  */
 
 import { getFindingChain, listFindings } from './client';
+import { mixedQuantity } from '../lib/fractions';
 import { collectFindingPages } from '../components/output/reviewerResults.js';
 import type { Evidence, Finding, Outcome, ReviewerAction, Severity, Trace } from '../data/types';
 
@@ -70,9 +71,8 @@ export function withChain(finding: Finding, chain: Chain): Finding {
     // Prefer the engine's own exact rendering when it recorded this operand (for example a mixed
     // fraction); otherwise render the immutable rational. Never use JavaScript floating point or
     // parse display text to manufacture a comparison value.
-    value: tracedValues.get(operand.name) ?? (operand.denominator === '1'
-      ? `${operand.numerator} ${operand.unit}`
-      : `${operand.numerator}/${operand.denominator} ${operand.unit}`),
+    // A mixed number (#1183), `2 1/2 in`, never `5/2 in`.
+    value: tracedValues.get(operand.name) ?? mixedQuantity(operand),
     source: tracedSources.get(operand.name) ?? operand.evidence?.document_role ?? 'RECORDED',
     status: operand.evidence_status,
     hasEvidence: operand.evidence !== null,
