@@ -46,7 +46,7 @@ from extraction.geometry.rows import Box
 from extraction.rasterise import PageTooLarge, render_region
 from extraction.reader import UnreadablePdf, pixel_placement
 from workflow.architect_match_contract import MatchedView
-from workflow.architect_match_records import ARCHITECT_FILE_NAME, view_carry_key
+from workflow.architect_match_records import architect_file_name, view_carry_key
 from workflow.architect_pairing_records import _architect_view_tags_by_page
 from workflow.view_roles import content_view_tag, panel_tag
 
@@ -327,7 +327,7 @@ def record_architect_view_index(
                     bubble=entry.bubble,
                     sheet_number=entry.sheet_number,
                     scale_note=entry.scale_note,
-                    file_name=ARCHITECT_FILE_NAME,
+                    file_name=architect_file_name(version.file_name),
                     separated=entry.separated,
                 )
                 indexed = IndexedView(

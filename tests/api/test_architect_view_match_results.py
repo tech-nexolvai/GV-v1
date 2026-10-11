@@ -13,6 +13,7 @@ path (#1166's `effective_architect_matches`, #1167's planning and waiting rule).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,13 @@ from app.models import (
 )
 from app.models.document import Page
 from app.models.evidence import ArchitectViewIndexEntry, ArchitectViewMatchRecord
-from app.review.architect_view_match import SeparateFileMatches, compared_view, match_out
+from app.models.verdicts import Finding
+from app.review.architect_view_match import (
+    SeparateFileMatches,
+    compared_view,
+    match_out,
+    separate_file_views,
+)
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
 from app.schemas.visual_ui import CountertopResultsOut
@@ -43,8 +50,9 @@ from reports.spreadsheet import architect_line
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_architect_row_evidence import _sealed_rows
-from workflow.architect_match_contract import EffectiveMatch, MatchedView
-from workflow.architect_match_records import ARCHITECT_FILE_NAME
+from workflow.architect_match_contract import EffectiveMatch, MatchedView, compared_with_text
+from workflow.architect_match_records import ARCHITECT_FILE_NAME, effective_architect_matches
+from workflow.architect_pairing import view_details
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import (
     CHOOSE_ARCHITECT_VIEW,
@@ -77,15 +85,22 @@ def _revision(session: Session, package_id: UUID) -> PackageRevision:
     return session.query(PackageRevision).filter_by(package_id=package_id).one()
 
 
-def _architect_file(session: Session, package_id: UUID, views: int = 2) -> list[UUID]:
-    """An architect file of its own (different bytes), one page, indexed with `views` views."""
+def _architect_file(
+    session: Session, package_id: UUID, views: int = 2, *, file_name: str | None = None
+) -> list[UUID]:
+    """An architect file of its own (different bytes), one page, indexed with `views` views,
+    uploaded with `file_name` (#1174; None is an upload made before names were kept)."""
     revision = _revision(session, package_id)
     document = Document(package_id=package_id, kind="architectural")
     artifact = SourceArtifact(storage_key=f"synthetic/{uuid4()}", sha256="e" * 64, size=1)
     session.add_all((document, artifact))
     session.flush()
     version = DocumentVersion(
-        document_id=document.id, source_artifact_id=artifact.id, sha256="e" * 64, page_count=2
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        sha256="e" * 64,
+        page_count=2,
+        file_name=file_name,
     )
     session.add(version)
     session.flush()
@@ -439,6 +454,89 @@ def _matched_view(session: Session, view_id: UUID) -> MatchedView:
     from workflow.architect_match_records import matched_views
 
     return matched_views(session, {view_id})[view_id]
+
+
+# --- the uploaded file's name (#1174) -------------------------------------------------------------
+
+#: Made up. A real name may hold a client's job or drawing number.
+UPLOADED = "Synthetic Plans <Rev B> & Co.pdf"
+
+
+def test_the_uploaded_name_names_the_file_on_the_screen_and_in_the_reports(
+    session: Session, tmp_path: Path
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    first, _second = _architect_file(session, package_id, file_name=UPLOADED)
+    _record(session, anchors[0], "auto_matched", view=first)
+    _run(session, package_id, tmp_path)
+
+    results = _results(session, package_id)
+    item = next(i for i in results.items if i.row_id == anchors[0])
+    block = item.architect
+    view = _matched_view(session, first)
+
+    # The view as the results and the picker name it.
+    assert view.file_name == UPLOADED
+    assert block.match is not None and block.match.matched_view is not None
+    assert block.match.matched_view.file_name == UPLOADED
+    # Matched, nothing lines up: the check's reason and its "Matched with …" note name the file.
+    assert block.reason == (
+        f"The architect's view 1 on page 2 of {UPLOADED} has no dimensions that line up with "
+        "this countertop. Compare it by hand, then mark it checked."
+    )
+    finding = session.get_one(Finding, block.finding_id)
+    assert f"Matched with {UPLOADED}, page 2, view 1." in (finding.notes or [])
+    # `compared with …`, from the stored match, once a compared dimension sits on the view's page.
+    found = separate_file_views(
+        session,
+        package_id,
+        effective_architect_matches(session, [anchors[0]]),
+        frozenset(),
+    )
+    ref, words = compared_view(
+        found,
+        anchors[0],
+        locations=[_location(view.document_version_id, view.page_number)],
+        finding_created_at=datetime.now(UTC),
+    )
+    assert ref is not None and ref.file_name == UPLOADED
+    assert words == f"compared with {UPLOADED}, page 2, view 1 SAMPLE ELEVATION 1 (sheet Z-9)"
+    assert words == compared_with_text(view)
+    # The reports repeat the screen's words (`tests/reports/test_architect_view_match_reports.py`
+    # renders a named view in the PDF and the workbook).
+    assert architect_line(item) == f"Matches the architect: REVIEW_REQUIRED: {block.reason}"
+
+
+def test_an_older_upload_with_no_name_is_the_architect_s_drawings(
+    session: Session, tmp_path: Path
+) -> None:
+    package_id, anchors = _sealed_rows(session)
+    first, _second = _architect_file(session, package_id, file_name=None)
+    _record(session, anchors[0], "auto_matched", view=first)
+    _run(session, package_id, tmp_path)
+
+    block = _blocks(_results(session, package_id))[anchors[0]]
+    view = _matched_view(session, first)
+
+    assert view.file_name == ARCHITECT_FILE_NAME == "the architect's drawings"
+    assert block.match is not None and block.match.matched_view is not None
+    assert block.match.matched_view.file_name == ARCHITECT_FILE_NAME
+    assert block.reason is not None and "of the architect's drawings has no" in block.reason
+    assert compared_with_text(view).startswith("compared with the architect's drawings, page 2")
+
+
+def test_the_name_is_never_a_key_two_names_read_the_same() -> None:
+    """Two uploads differing only by name give the same match, pairing and fingerprint inputs:
+    the name is in `file_name` and the words, nowhere else."""
+    named = replace(_VIEW, file_name=UPLOADED)
+    assert view_details(named) == view_details(_VIEW)
+    assert "file_name" not in view_details(named)
+    assert {f.name for f in fields(named)} - {"file_name"} == {f.name for f in fields(_VIEW)} - {
+        "file_name"
+    }
+    assert compared_with_text(named).replace(UPLOADED, ARCHITECT_FILE_NAME) == (
+        compared_with_text(_VIEW)
+    )
 
 
 # --- the words, without a database ---------------------------------------------------------------

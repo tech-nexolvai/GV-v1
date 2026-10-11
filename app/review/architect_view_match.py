@@ -91,9 +91,14 @@ def separate_file_views(
         assert project_id is not None
         views = {
             view_id: view_out(
-                entry, page_number, document_id, project_id=project_id, package_id=package_id
+                entry,
+                page_number,
+                document_id,
+                file_name=file_name,
+                project_id=project_id,
+                package_id=package_id,
             )
-            for view_id, (entry, page_number, document_id) in found.items()
+            for view_id, (entry, page_number, document_id, file_name) in found.items()
         }
     return SeparateFileMatches(
         matches=matches,

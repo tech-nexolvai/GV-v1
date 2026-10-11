@@ -186,3 +186,50 @@ def test_a_pick_waiting_for_a_run_says_so() -> None:
         "Matches the architect: REVIEW_REQUIRED: Choose which of the architect's views shows this "
         "countertop (one click). (waits for the next check run)"
     )
+
+
+#: Made up, with characters a renderer could mistake for markup or a formula (#1174).
+UPLOADED = "=Synthetic <Plans> & Co.pdf"
+NAMED_WITH = f"compared with {UPLOADED}, page 2, view 3 SAMPLE ELEVATION (sheet Z-9)"
+
+
+def _named() -> CountertopResultOut:
+    view = VIEW.model_copy(update={"file_name": UPLOADED})
+    compared = _compared()
+    return compared.model_copy(
+        update={
+            "architect": compared.architect.model_copy(
+                update={
+                    "match": _match("auto_matched", view=view),
+                    "compared_with": view,
+                    "compared_with_text": NAMED_WITH,
+                }
+            )
+        }
+    )
+
+
+def test_the_reports_name_the_uploaded_file_as_plain_text() -> None:
+    """The uploaded name (#1174) is written as it is: text in the PDF, a text cell (never a
+    formula) in the workbook."""
+    assert architect_line(_named()).endswith(f"; {NAMED_WITH}")
+    text = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=12),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                countertop_results=(_named(),),
+            )
+        )
+    )
+    assert UPLOADED in text
+    book = load_workbook(
+        BytesIO(write_stored_workbook((_stored(),), countertop_results=(_named(),)))
+    )
+    sheet = book["Countertops"]
+    headers = [cell.value for cell in sheet[1]]
+    cell = sheet.cell(2, headers.index("architect_compared_with") + 1)
+    assert cell.value == NAMED_WITH
+    assert cell.data_type == "s"

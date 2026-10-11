@@ -247,6 +247,7 @@ def _version_query(document_id: UUID, sha256: str) -> Select[Any]:
             DocumentVersion.sha256,
             DocumentVersion.page_count,
             DocumentVersion.created_at,
+            DocumentVersion.file_name,
             SourceArtifact.storage_key,
             SourceArtifact.size.label("size_bytes"),
         )
@@ -407,6 +408,8 @@ def confirm_upload(
 
     Returns `201` when a version was created and `200` when these exact bytes had already been
     confirmed. The repeat is a genuine no-op: the same version comes back and it does not start work.
+    A repeat with another `file_name` changes nothing either: the version keeps the name it was
+    confirmed with (#1174).
 
     Reading the object to hash it is the one piece of real work here, and it is bounded by the size of
     one drawing. It is also the only honest way to verify: `AGENTS.md` §2.7 pins a document version to
@@ -457,6 +460,9 @@ def confirm_upload(
         source_artifact_id=artifact.id,
         sha256=digest,
         page_count=body.page_count,
+        # The name the reviewer uploaded, already cleaned by the request model (#1174). Display
+        # text only, and never logged: it may hold a client's job or drawing number.
+        file_name=body.file_name,
     )
     try:
         session.add(artifact)
@@ -532,6 +538,7 @@ def confirm_upload(
         storage_key=artifact.storage_key,
         size_bytes=artifact.size,
         created_at=version.created_at,
+        file_name=version.file_name,
     )
 
 

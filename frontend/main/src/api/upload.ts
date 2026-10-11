@@ -171,9 +171,12 @@ export async function uploadDocument(
   // few that need it makes every page slower for no one's benefit.
   const { countPdfPages } = await import('./pdf');
   const pageCount = await countPdfPages(file);
+  // The file's name goes with the confirmation so the results, the picker and the reports can name
+  // the upload (#1174). Display text only; the API cleans it before storing it.
   await post(`/projects/${projectId}/documents/${ticket.document_id}/confirm`, {
     sha256: digest,
     page_count: pageCount,
+    file_name: file.name,
   });
 
   onProgress?.({ step: 'Uploaded', file: file.name, kind });

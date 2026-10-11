@@ -34,7 +34,15 @@ from app.api.architect_matches import (
 from app.audit.events import AuditEvent
 from app.auth.roles import Action, Principal, Role
 from app.db.session import session_factory
-from app.models import ObservationCandidate, PackageRevision, Project
+from app.models import (
+    Document,
+    DocumentVersion,
+    ObservationCandidate,
+    PackageRevision,
+    Page,
+    Project,
+    SourceArtifact,
+)
 from app.models.evidence import ArchitectViewIndexEntry, ArchitectViewMatchRecord
 from app.models.runs import ExtractionRun
 from app.schemas.architect_matches import ArchitectViewPickIn
@@ -81,9 +89,20 @@ class Row:
     """A synthetic countertop row, two indexed architect views (the second not clearly apart, the
     first with a stored picture), and one automatic match that needs the reviewer."""
 
-    def __init__(self, session: Session, store: LocalStore, *, matched: bool = True) -> None:
+    def __init__(
+        self,
+        session: Session,
+        store: LocalStore,
+        *,
+        matched: bool = True,
+        file_name: str | None = None,
+    ) -> None:
+        """`file_name` (#1174): the views sit on an architect upload of their own named so."""
         self.project_id, self.package_id, anchors = _package_rows(session, piece_count=3)
         self.anchor = session.get_one(ObservationCandidate, anchors[0])
+        version_id, page_id = self.anchor.document_version_id, self.anchor.page_id
+        if file_name is not None:
+            version_id, page_id = _named_architect_upload(session, self.package_id, file_name)
         slot_run = session.get_one(ExtractionRun, self.anchor.extraction_run_id)
         self.revision_id = session.scalars(
             select(PackageRevision.id).where(PackageRevision.package_id == self.package_id)
@@ -103,8 +122,8 @@ class Row:
         def view(number: int, *, separated: bool, picture: bool) -> ArchitectViewIndexEntry:
             entry = ArchitectViewIndexEntry(
                 extraction_run_id=architect_run.id,
-                document_version_id=self.anchor.document_version_id,
-                page_id=self.anchor.page_id,
+                document_version_id=version_id,
+                page_id=page_id,
                 view_number=number,
                 view_tag=f"view-{number}",
                 sheet_number="Z-101",
@@ -202,6 +221,37 @@ class Row:
         )
 
 
+def _named_architect_upload(
+    session: Session, package_id: UUID, file_name: str
+) -> tuple[UUID, UUID]:
+    """An architect file uploaded as `file_name`, with one page: its version and page."""
+    document = Document(package_id=package_id, kind="architectural")
+    artifact = SourceArtifact(storage_key=f"synthetic/{uuid4()}", sha256="d" * 64, size=1)
+    session.add_all((document, artifact))
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        sha256="d" * 64,
+        page_count=1,
+        file_name=file_name,
+    )
+    session.add(version)
+    session.flush()
+    page = Page(
+        document_version_id=version.id,
+        index=0,
+        content_hash="c" * 64,
+        width_pt=1224,
+        height_pt=792,
+        rotation=0,
+        has_vector_text=True,
+    )
+    session.add(page)
+    session.flush()
+    return version.id, page.id
+
+
 def _records(session: Session) -> list[ArchitectViewMatchRecord]:
     return list(
         session.scalars(
@@ -238,6 +288,30 @@ def test_get_lists_every_candidate_ranked_with_nothing_chosen(
     assert first.view.region is not None and len(first.view.region.polygon) == 4
     assert second.remembered and not second.view.separated and second.view.picture_url is None
     assert shown.can_choose_none and shown.vendor.references == ["3/Q101"]
+
+
+def test_the_picker_names_the_uploaded_file(session: Session, store: LocalStore) -> None:
+    """#1174: each view says which upload it is on, by the name the reviewer uploaded."""
+    named = Row(session, store, file_name="Synthetic Plans <A> & Co.pdf")
+
+    shown = get_architect_view_match(
+        named.principal, session, named.project_id, named.package_id, named.anchor.id
+    )
+
+    assert [c.view.file_name for c in shown.candidates] == ["Synthetic Plans <A> & Co.pdf"] * 2
+    assert shown.candidates[0].view.label == "Page 1, view 1: SYNTHETIC ELEVATION (sheet Z-101)"
+
+
+def test_the_picker_falls_back_for_an_upload_with_no_name(
+    session: Session, store: LocalStore
+) -> None:
+    row = Row(session, store)
+
+    shown = get_architect_view_match(
+        row.principal, session, row.project_id, row.package_id, row.anchor.id
+    )
+
+    assert {c.view.file_name for c in shown.candidates} == {"the architect's drawings"}
 
 
 def test_a_row_never_matched_shows_no_record_and_no_candidates(

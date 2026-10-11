@@ -687,3 +687,27 @@ describe('sign-off after a pick', () => {
     expect(document.querySelector('[data-part="view-picks-waiting"]')).toBeNull();
   });
 });
+
+describe('the uploaded file is named by its name (#1174)', { timeout: 15_000 }, () => {
+  // Made up, with characters a renderer could mistake for markup.
+  const NAME = 'Synthetic <b>Plans</b> & Co "Rev B".pdf';
+  const named = (n: number) => view(n, { file_name: NAME });
+
+  it('the line says the server\'s "compared with <name> …" as plain text', () => {
+    const result: ArchitectResult = { ...STATES.auto_matched, match: match('auto_matched', { judgments: 'code and both AIs', matched_view: named(1) }), compared_with: named(1), compared_with_text: comparedWith(named(1)) };
+    render(<ArchitectLine result={result} onOpenView={() => {}} />);
+    const line = document.querySelector('[data-slot="architect-line"]')!;
+    expect(line.textContent).toContain(`compared with ${NAME}, page 2, view 1`);
+    expect(line.querySelector('b')).toBeNull(); // the name is text, never markup
+  });
+
+  it('the picker names the upload each view is on', async () => {
+    const body: ArchitectViewMatch = { ...CANDIDATES, candidates: CANDIDATES.candidates.map((c) => ({ ...c, view: { ...c.view, file_name: NAME } })) };
+    vi.stubGlobal('fetch', vi.fn(async () => json(body)));
+    render(<ArchitectViewPicker projectId="p" packageId="k" row={row('n', 4, { architect: STATES.needs_reviewer })} onSaved={vi.fn()} />);
+    const group = await screen.findByRole('radiogroup', { name: "The architect's views" });
+    const first = group.querySelector('[data-candidate="view-1"]') as HTMLElement;
+    expect(first.textContent).toContain(`${NAME}, page 2`);
+    expect(first.querySelector('b')).toBeNull();
+  });
+});

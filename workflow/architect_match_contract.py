@@ -94,6 +94,8 @@ class MatchedView:
     sheet_number: str | None
     scale_note: str | None
     file_name: str
+    """The name the reviewer uploaded, or "the architect's drawings" when none is stored (#1174).
+    Display text only: the words a result says, never compared and never a key."""
     separated: bool
 
 
