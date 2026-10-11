@@ -7,9 +7,11 @@ field. The page location only decides what picture to show a person.
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Final
 from uuid import UUID, uuid4
 
 from app.config import Settings
@@ -31,6 +33,30 @@ from extraction.form_reader.schema import PageFormAnswer
 from extraction.ink import InkClass, PageInk
 from extraction.stamp_text import PixelBox
 from units.measurement import Measurement
+
+#: The most characters a reading run's identity holds: `extraction_runs.config_hash` is
+#: `String(200)` (#1173). A label built from configured reader ids is held to it here, because
+#: those ids can be any length and a label past it makes the run unsavable.
+RUN_LABEL_CHARACTERS: Final = 200
+
+
+def form_reader_run_label(*, dpi: int, reader_ids: tuple[str, str], prompt_id: str) -> str:
+    """The whole-page form reader's run identity, which always fits its column (#1173).
+
+    Written out where it fits, exactly as before. Past the column the reader-id pair becomes a
+    digest, and past it even then everything after the dpi is a digest of the label written out:
+    shorter, never cut short, so two configurations are still two runs.
+    """
+    tail = f"prompt={prompt_id};gv_mark_guard=v1;ink=v1"
+    pair = f"{reader_ids[0]}|{reader_ids[1]}"
+    written = f"dpi={dpi};readers={pair};{tail}"
+    if len(written) <= RUN_LABEL_CHARACTERS:
+        return written
+    readers = f"dpi={dpi};readers={hashlib.sha256(pair.encode()).hexdigest()[:16]}"
+    shorter = f"{readers};{tail}"
+    if len(shorter) <= RUN_LABEL_CHARACTERS:
+        return shorter
+    return f"{readers};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
 
 
 @dataclass(frozen=True, slots=True)

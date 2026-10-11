@@ -346,6 +346,7 @@ from workflow.findings_composer import (
 from workflow.form_reader import (
     FormPageImage,
     FormReaderRuntime,
+    form_reader_run_label,
     persist_form_proposals,
     read_form_pages,
 )
@@ -2452,9 +2453,8 @@ class DatabaseStages:
             task_run_id=task_run_id,
             extractor="extraction.form_reader",
             extractor_version="form-reader-v5-gv-mark-v1-ink-v1",
-            config_hash=(
-                f"dpi={self._dpi};readers={runtime.reader_ids[0]}|{runtime.reader_ids[1]};"
-                f"prompt={prompt.prompt_id};gv_mark_guard=v1;ink=v1"
+            config_hash=form_reader_run_label(
+                dpi=self._dpi, reader_ids=runtime.reader_ids, prompt_id=prompt.prompt_id
             ),
             dpi=self._dpi,
         )
@@ -2645,7 +2645,7 @@ class DatabaseStages:
             task_run_id=task_run_id,
             extractor="extraction.form_reader",
             extractor_version=f"{SLOT_READER_VERSION}-ink-v1",
-            config_hash=f"dpi={self._dpi};{runtime.config_hash}",
+            config_hash=runtime.run_label(self._dpi),
             dpi=self._dpi,
         )
         self._record_reader_attempts(session, run.id, recorder.snapshot())
@@ -5569,10 +5569,15 @@ class DatabaseStages:
             )
         )
         digest = hashlib.sha256(everything.encode()).hexdigest()[:16]
-        return (
+        written = (
             f"dpi={self._dpi};{drawing.config_hash};second={second.config.model_id};"
             f"readers={digest}"
         )
+        if len(written) <= RUN_IDENTITY_CHARACTERS:
+            return written
+        # A second reader's model id long enough to run past the column (#1173): it is already in
+        # the fingerprint, so it is left out of the words rather than cut short.
+        return f"dpi={self._dpi};{drawing.config_hash};readers={digest}"
 
     def _read_page_by_fraction_parts(
         self,

@@ -34,7 +34,7 @@ from collections.abc import Mapping, Sequence
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import String, select
 from sqlalchemy.orm import Session
 
 from app.models.document import Page
@@ -120,7 +120,18 @@ def open_extraction_run(
     row still recorded the old one, so the stored evidence described a configuration that did not
     produce it. Nothing downstream could detect that, because both the geometry and the hash are
     individually well-formed. A different configuration is a different run.
+
+    **A `config_hash` longer than its column is refused here, by name** (#1173), rather than left
+    to the database's bare "value too long" on the flush, which named neither the field nor the
+    extractor.
     """
+    column = ExtractionRun.__table__.c.config_hash.type
+    limit = column.length if isinstance(column, String) else None
+    if limit is not None and len(config_hash) > limit:
+        raise ValueError(
+            f"{extractor} run's config_hash is {len(config_hash)} characters; "
+            f"extraction_runs.config_hash holds {limit}: {config_hash!r}"
+        )
     with session.no_autoflush:
         existing = session.execute(
             select(ExtractionRun).where(

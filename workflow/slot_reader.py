@@ -130,7 +130,7 @@ from extraction.slot_reader.walls import (
 from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
-from workflow.form_reader import FormReaderRuntime
+from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
     WALL_READER_FLAG,
@@ -262,20 +262,45 @@ class SlotReaderRuntime:
         )
 
     @property
-    def config_hash(self) -> str:
-        """The run's identity: the readers and prompts in words, the rest as a digest.
-
-        A digest because `extraction_runs.config_hash` holds 200 characters and the crop settings
-        alone are several times that: the full text made every slot-reader run unstorable.
-        """
+    def _identity_tail(self) -> str:
+        """Everything in the run's identity after the readers: prompts, flags, cap, settings digest."""
         detail = hashlib.sha256(self.config_detail.encode()).hexdigest()[:16]
         return (
-            f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};"
             f"prompt={self.prompt_id}+{WALL_PROMPT_ID};stacked_agreement={self.allow_stacked};"
             f"question_packets={self.question_packets};"
             f"spend_cap_usd={self.spend_cap_usd};"
             f"detail={detail}"
         )
+
+    @property
+    def config_hash(self) -> str:
+        """The run's identity written out: the readers and prompts in words, the rest as a digest.
+
+        A digest because `extraction_runs.config_hash` holds 200 characters and the crop settings
+        alone are several times that: the full text made every slot-reader run unstorable. The
+        reader ids are still in words here, so this can run past the column with long ids; what is
+        stored is `run_label`, which is this whenever it fits.
+        """
+        return f"readers={self.form.reader_ids[0]}|{self.form.reader_ids[1]};{self._identity_tail}"
+
+    def run_label(self, dpi: int) -> str:
+        """The run's identity as stored in `extraction_runs.config_hash`: always fits (#1173).
+
+        `dpi=<n>;` and `config_hash` where that fits, so every label that already fit (the Claude
+        pair's) is unchanged. Past the column — the Kimi/Qwen pair with a product named came to just
+        over 200, and the save failed every pass — the reader-id pair becomes a digest, as `detail=`
+        already is; and past it even then (an absurd spend cap), everything after the readers is a
+        digest of the whole label written out. Never cut short: two configurations are two labels.
+        """
+        written = f"dpi={dpi};{self.config_hash}"
+        if len(written) <= RUN_LABEL_CHARACTERS:
+            return written
+        pair = f"{self.form.reader_ids[0]}|{self.form.reader_ids[1]}"
+        readers = f"dpi={dpi};readers={hashlib.sha256(pair.encode()).hexdigest()[:16]}"
+        shorter = f"{readers};{self._identity_tail}"
+        if len(shorter) <= RUN_LABEL_CHARACTERS:
+            return shorter
+        return f"{readers};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
 
 
 def configured_slot_reader(
