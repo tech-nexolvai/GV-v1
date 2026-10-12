@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
@@ -22,9 +23,19 @@ from app.models.rules import RuleSnapshot as StoredRuleSnapshot
 from app.models.verdicts import CheckRun, Finding
 from app.verdicts.rulebook import from_row
 from rules.overrides import override_report
-from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
-from rules.schema import Quantity
+from rules.parameters import (
+    ParameterLayer,
+    ParameterSet,
+    ParameterValue,
+    Provenance,
+    ResolvedParameter,
+    is_rulebook_default,
+    resolve_all,
+)
+from rules.schema import Quantity, Rule
+from units.imperial import format_inches
 from units.measurement import Unit
+from vocabulary.setting_names import setting_name
 
 UNAVAILABLE = "Not available for this check run; re-run the checks to see it"
 NOT_RUN = "Run checks to see changed values"
@@ -36,6 +47,36 @@ class ChangedValues:
     message: str | None
     company_standards_displaced: tuple[str, ...]
     outstanding: tuple[str, ...]
+    entered: tuple[UsedValue, ...] = ()
+    """Every setting a person entered for this job or package that set no GV standard aside (#1181):
+    a sink's size, an overhang with no company default."""
+    defaults_used: tuple[UsedValue, ...] = ()
+    """Every GV default (a company value an admin set) that stood in for a check because the job set
+    none (#1181). The rulebook's own defaults are not listed: they are the rules as published."""
+
+
+@dataclass(frozen=True, slots=True)
+class UsedValue:
+    """One setting a run used, said in plain words (#1181)."""
+
+    name: str
+    text: str
+    where: str
+    """`this job`, `this package` or `GV default`."""
+    source: str
+    set_by: str
+    set_at: datetime
+
+    def line(self) -> str:
+        """For the reviewer and the signed report: what, where from, who and when."""
+        return (
+            f"{setting_name(self.name)}: {self.text} ({self.where}; {self.source}; "
+            f"set by {self.set_by} on {self.set_at.strftime('%d %b %Y')})"
+        )
+
+    def plain(self) -> str:
+        """For the vendor's redline: the setting and its value only, never a person or a note."""
+        return f"{setting_name(self.name)}: {self.text}"
 
 
 def _unavailable() -> ChangedValues:
@@ -150,9 +191,9 @@ def changed_values_for_revision(
             layers.append(stored)
         if "global" not in citations or not isinstance(citations["global"], str):
             return _unavailable()
-        report = override_report(
-            snapshots.values(), *layered_parameter_sets(defaults, tuple(layers))
-        )
+        layered = layered_parameter_sets(defaults, tuple(layers))
+        report = override_report(snapshots.values(), *layered)
+        entered, defaults_used = _entered(snapshots.values(), layered)
     except (KeyError, TypeError, ValueError):
         return _unavailable()
     return ChangedValues(
@@ -160,4 +201,46 @@ def changed_values_for_revision(
         None,
         tuple(item.explain() for item in report.company_standards_displaced),
         report.outstanding,
+        entered,
+        defaults_used,
     )
+
+
+def _used(name: str, resolved: ResolvedParameter, where: str) -> UsedValue:
+    value = resolved.value
+    exact = value.value.exact_value
+    unit = value.value.unit
+    return UsedValue(
+        name=name,
+        text=f'{format_inches(exact)}"' if unit is Unit.INCH else f"{exact} {unit.value}",
+        where=where,
+        source=value.source_text,
+        set_by=value.set_by,
+        set_at=value.set_at,
+    )
+
+
+def _entered(
+    rules: Iterable[Rule], layered: tuple[ParameterSet, ...]
+) -> tuple[tuple[UsedValue, ...], tuple[UsedValue, ...]]:
+    """Settings a person entered that displaced no GV standard, and GV defaults that stood in (#1181).
+
+    The run's own settings, resolved as the check resolved them. A dimension typed off a drawing is
+    stored beside the settings (`rule_id:name`) and is not a setting, so only names a rule declares as
+    a parameter count. A value that set a GV standard aside is already in the report's first list.
+    """
+    declared = {name for rule in rules for name in rule.parameters}
+    entered: list[UsedValue] = []
+    defaults: list[UsedValue] = []
+    for name, resolved in sorted(resolve_all(*layered).items()):
+        if name not in declared:
+            continue
+        if resolved.layer is ParameterLayer.GLOBAL:
+            if not is_rulebook_default(resolved.value):
+                defaults.append(_used(name, resolved, "GV default"))
+            continue
+        if resolved.overrides_a_company_standard:
+            continue
+        where = "this package" if resolved.layer is ParameterLayer.RUN else "this job"
+        entered.append(_used(name, resolved, where))
+    return tuple(entered), tuple(defaults)

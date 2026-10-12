@@ -1189,6 +1189,13 @@ def _listing(
             line("Required values not set", font="Helvetica-Bold", size=12.0)
             for value in changed_values.outstanding or ("None",):
                 paragraph(value)
+            # The vendor's copy: each setting's plain name and value, never who typed it or a note.
+            line("Values entered for this job", font="Helvetica-Bold", size=12.0)
+            for text in [value.plain() for value in changed_values.entered] or ["None"]:
+                paragraph(text)
+            line("GV defaults used", font="Helvetica-Bold", size=12.0)
+            for text in [value.plain() for value in changed_values.defaults_used] or ["None"]:
+                paragraph(text)
         line("")
 
     _derived_section(findings, line, paragraph)

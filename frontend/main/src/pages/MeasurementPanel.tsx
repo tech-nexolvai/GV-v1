@@ -85,6 +85,9 @@ import {
   type SavedSnapshot,
 } from '@/lib/saved-values';
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
+import type { components } from '../api/schema';
+import { InForceNote } from '../components/measure/InForceNote';
+import { SinkEntryCard } from '../components/measure/SinkEntry';
 import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
   citingPointer,
@@ -138,6 +141,8 @@ type Parameter = {
   sources?: SettingSource[];
   /** Where the architect's drawing states it (#866): a page and a crop, never the number. */
   found?: SettingPointer | null;
+  /** What a run would use now (#1181): GV's default, the sink card, a typed value; null if nothing. */
+  in_force?: components['schemas']['InForceOut'] | null;
 };
 type LayoutProposal = {
   value: string;
@@ -2180,6 +2185,7 @@ export function MeasurementPanel({
                             {parameter.scope === 'run' ? 'This review only' : 'This project'}
                           </span>
                           <span className="num break-all text-xs text-muted-foreground">{parameter.name} · {parameter.rule_ids.join(', ')}</span>
+                          <InForceNote inForce={parameter.in_force} />
                         </div>
                         <div className="flex min-w-0 flex-col gap-2">
                           {parameter.blocked ? (
@@ -2298,6 +2304,8 @@ export function MeasurementPanel({
               }}
               saved={savedSettings}
             />
+            {/* The project's sink, entered once for every sink check (#1181). */}
+            <SinkEntryCard packageId={packageId} onSaved={onValuesSaved} />
 
             {needed.discriminators.length > 0 && (
               <StepSection

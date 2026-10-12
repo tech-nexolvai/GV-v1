@@ -23,6 +23,7 @@ Verification: `tests/api/test_findings_query.py`
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -152,6 +153,62 @@ class ExceptionOut(BaseModel):
     exception rather than each one composing its own."""
 
 
+class SavedInputOut(BaseModel):
+    """A value for a waiting input that is on record now, typed after the result was recorded.
+
+    The result still says "waiting": only a new check run uses it. This is what lets the screen say
+    so instead of asking again.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(description='The exact value as a drawing writes it, `1 1/2"`.')
+    set_by: str
+    set_at: datetime
+    source: str | None = Field(
+        default=None, description="Where it came from, `G.C / Client: <note>`; null for a reading."
+    )
+    layer: Literal["company", "project", "run"] = Field(
+        description="`company` for GV's default, `project` for this job, `run` for this package."
+    )
+
+
+class MissingInputOut(BaseModel):
+    """One value a waiting check could not run without, as a field a reviewer can fill (#1181).
+
+    Worked out from the rule and the values the run had, not from the reason's prose: every input
+    and setting the rule declares that the run did not have. A setting the rulebook gives a default
+    is never missing, and a missing one is never treated as zero.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str = Field(
+        description="The setting's name (`countertop_overhang`) or the drawing quantity (`SHOP:CT007`)."
+    )
+    label: str
+    unit: Literal["in"]
+    where_to_find: str
+    scope: Literal["project", "sink", "drawing"] = Field(
+        description=(
+            "`project`: a setting for this job, saved as a project value. `sink`: the project's sink "
+            "entry. `drawing`: a dimension on the drawing nobody has read; never typed here."
+        )
+    )
+    askable: bool = Field(
+        description=(
+            "Whether the reviewer may type it here. False for a `drawing` value: people confirm "
+            "readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the "
+            "check waits until the drawing is read or supplied."
+        )
+    )
+    sources: list[str] = Field(
+        default_factory=list,
+        description="For a `project` setting, the sources it may be recorded with; empty otherwise.",
+    )
+    saved: SavedInputOut | None = None
+
+
 class FindingOut(BaseModel):
     """One finding, with enough version information to go and reconstruct it.
 
@@ -217,6 +274,12 @@ class FindingOut(BaseModel):
     `None` means no exception has ever covered this finding. An expired one is reported with
     `in_force: false`, because that is the moment the finding most needs looking at again.
     """
+
+    missing_inputs: list[MissingInputOut] = Field(
+        default_factory=list, json_schema_extra=optional_in_schema
+    )
+    """For a check waiting on a value (`NOT_FOUND`, revision-wide): exactly the values it could not
+    run without, each with where to find it (#1181). Empty for every other result."""
 
 
 class FindingPage(BaseModel):

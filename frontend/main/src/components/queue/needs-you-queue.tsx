@@ -36,6 +36,7 @@ import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
 import { WallGlyph, WallLayoutPicture } from '@/components/results/wall-glyph';
 import { DrawnLengthNote } from '@/components/results/drawn-length-note';
+import { NeedsValues } from '@/components/results/needs-values';
 import { DrawingViewer, MarkNotes } from '@/components/drawing/drawing-viewer';
 import { TonePill } from '@/components/drawing/page-canvas';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
@@ -73,6 +74,8 @@ export interface QueueProps {
   onOpenCard: (row: CountertopResult) => void;
   /** Open at this item (its key), when it is in the list; otherwise at the first open one. */
   startAt?: string | null;
+  /** A value typed where a waiting check asked for it (#1181): only a new check run uses it. */
+  onValuesSaved?: () => void;
 }
 
 /**
@@ -114,7 +117,7 @@ function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string
   return Math.max(0, items.findIndex((item) => itemStatus(item, live) === 'open'));
 }
 
-function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt }: QueueProps) {
+function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt, onValuesSaved }: QueueProps) {
   const [wallsSaved, setWallsSaved] = useState<ReadonlySet<string>>(new Set());
   // Architect pairings saved in this sitting (#1085); the server's own record times are added below.
   const [pairingsSaved, setPairingsSaved] = useState<ReadonlySet<string>>(new Set());
@@ -510,6 +513,18 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
                 {item.kind === 'check' && finding?.reason && <p className="line-clamp-3 text-sm text-muted-foreground" title={finding.reason}>{finding.reason}</p>}
+                {/* A check waiting on a value asks for exactly that value, here (#1181). */}
+                {item.kind === 'check' && finding && status === 'open' && (finding.missing_inputs?.length ?? 0) > 0 && (
+                  <NeedsValues
+                    finding={finding}
+                    packageId={packageId}
+                    onSaved={() => onValuesSaved?.()}
+                    onRunChecks={() => {
+                      onOpenChange(false);
+                      onAct('run-checks');
+                    }}
+                  />
+                )}
                 {!(target && target.page !== null) && <p className="text-xs text-muted-foreground lg:hidden">No drawing location for this item.</p>}
 
                 {item.kind === 'countertop' && !row && (

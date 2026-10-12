@@ -49,7 +49,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, Integer, Row, Select, and_, case, func, or_, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
@@ -68,6 +68,7 @@ from app.review.carry_over import decision_records
 from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.row_location import row_location
 from app.review.session import exceptions_for_revision
+from app.review.waiting_values import missing_inputs_for
 from app.schemas.findings import (
     OUTCOME_ORDER,
     SEVERITY_ORDER,
@@ -77,6 +78,7 @@ from app.schemas.findings import (
     FindingPage,
     ReviewerActionOut,
 )
+from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome, Severity
 from vocabulary.reviewer_reasons import finding_reviewer_reason
 from workflow.changed_values import ChangedValues, changed_values_for_revision
@@ -392,6 +394,11 @@ class ChangedValuesOut(BaseModel):
     message: str | None
     company_standards_displaced: tuple[str, ...]
     outstanding: tuple[str, ...]
+    entered: tuple[str, ...] = Field(default=(), json_schema_extra=optional_in_schema)
+    """Settings entered for this job or package that set no GV standard aside, in plain words, with
+    who and when (#1181)."""
+    defaults_used: tuple[str, ...] = Field(default=(), json_schema_extra=optional_in_schema)
+    """GV defaults that stood in because the job set none (#1181)."""
 
 
 @router.get(
@@ -423,6 +430,8 @@ def get_changed_values(
         message=summary.message,
         company_standards_displaced=summary.company_standards_displaced,
         outstanding=summary.outstanding,
+        entered=tuple(value.line() for value in summary.entered),
+        defaults_used=tuple(value.line() for value in summary.defaults_used),
     )
 
 
@@ -530,6 +539,10 @@ def list_findings(
     # `app/review/exceptions.py` enforces expiry at the moment of reading for exactly that reason.
     carried_from = _reviewer_actions(session, items)
     _exception_annotations(session, items, when=datetime.now(UTC), carried_from=carried_from)
+    # A check waiting on a value says which values, as fields, and whether one was typed since (#1181).
+    waiting = missing_inputs_for(session, project_id, items)
+    for item in items:
+        item.missing_inputs = waiting.get(item.id, [])
 
     next_cursor = None
     if len(rows) > limit and items:

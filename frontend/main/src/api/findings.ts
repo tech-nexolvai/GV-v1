@@ -47,6 +47,7 @@ export function toFinding(listed: Listed): Finding {
     reviewed_at: listed.reviewer_action?.at ?? null,
     reviewer_carried_over: listed.reviewer_action?.carried_over ?? false,
     created_at: listed.created_at,
+    missing_inputs: listed.missing_inputs ?? [],
   };
 }
 

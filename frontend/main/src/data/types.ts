@@ -145,6 +145,11 @@ export interface Finding {
   reviewer_carried_over?: boolean;
   /** When the check run recorded this result. A row input saved after it means the result is out of date. */
   created_at?: string;
+  /**
+   * For a check waiting on a value (#1181): exactly the values it could not run without, each with
+   * its unit, where to find it, and the value typed since, if any. Empty for every other result.
+   */
+  missing_inputs?: components['schemas']['MissingInputOut'][];
 }
 
 /** A package as the list and the sidebar show it.

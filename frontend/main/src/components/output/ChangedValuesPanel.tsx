@@ -65,6 +65,28 @@ export function ChangedValuesPanel({ value, state, currentRevisionId }: Props) {
             </div>
           )}
         </section>
+        {/* GV defaults that stood in because the job set none (#1181). */}
+        {(value.defaults_used?.length ?? 0) > 0 && (
+          <section aria-labelledby="changed-values-defaults" className="flex flex-col gap-2">
+            <h3 id="changed-values-defaults" className="text-sm font-medium">GV defaults used</h3>
+            <ul className="flex flex-col gap-1 text-sm">
+              {value.defaults_used!.map((line) => (
+                <li key={line} className="break-words">{line}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {/* Values typed for this job that set no GV standard aside: a sink, an overhang (#1181). */}
+        {(value.entered?.length ?? 0) > 0 && (
+          <section aria-labelledby="changed-values-entered" className="flex flex-col gap-2">
+            <h3 id="changed-values-entered" className="text-sm font-medium">Entered for this job</h3>
+            <ul className="flex flex-col gap-1 text-sm">
+              {value.entered!.map((line) => (
+                <li key={line} className="break-words">{line}</li>
+              ))}
+            </ul>
+          </section>
+        )}
         <section aria-labelledby="changed-values-outstanding" className="flex flex-col gap-2">
           <h3 id="changed-values-outstanding" className="text-sm font-medium">Required values not set</h3>
           {value.outstanding.length ? (

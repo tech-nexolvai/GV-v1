@@ -146,7 +146,10 @@ def test_the_revision_follows_the_architect_view_matches() -> None:
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision(REVISION)
     assert found is not None and found.down_revision == BEFORE
-    assert script.get_current_head() == REVISION
+    # On the chain to the head; a later migration (0086, #1181) may follow it.
+    assert REVISION in {
+        rev.revision for rev in script.walk_revisions("base", script.get_current_head())
+    }
 
 
 def test_the_migrated_column_is_nullable_and_holds_only_clean_names(

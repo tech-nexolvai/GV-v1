@@ -65,17 +65,18 @@ def _by_name(response: Any) -> dict[str, dict[str, Any]]:
     return {setting["name"]: setting for setting in response.json()["settings"]}
 
 
-def test_the_list_holds_gvs_standards_and_nothing_per_project(session: Session) -> None:
-    """**#817, the admin's decision of 2026-10-02.** Outcome: exactly the six settings the rulebook
-    gives a default — the back-offset minimum with its 2.5" in use, and so on, and since #991 the
-    field cut at GV's 1" (admin, 2026-10-07). Not the per-project ones (side panel, overhang,
-    backsplash, cabinet depth, the cabinet width bounds), and not the sink's cut-sheet size, which
-    is one review's."""
+def test_the_list_holds_gvs_standards_and_the_four_project_defaults(session: Session) -> None:
+    """**#817, the admin's decision of 2026-10-02, and #1181 (2026-10-11).** Outcome: the six
+    settings the rulebook gives a default — the back-offset minimum with its 2.5" in use, and so on,
+    and since #991 the field cut at GV's 1" (admin, 2026-10-07) — and, since #1181, the four
+    per-project settings GV may give a default (overhang, backsplash, side panel, cabinet depth),
+    each empty. Not the cabinet width bounds (mandatory per project), and not the sink's cut-sheet
+    size, which is the sink entry's."""
     response = _client(session).get(URL)
 
     assert response.status_code == 200, response.text
     settings = _by_name(response)
-    assert set(settings) == {
+    standards = {
         "back_offset_minimum",
         "front_offset_required",
         "sink_cutout_clearance",
@@ -83,6 +84,16 @@ def test_the_list_holds_gvs_standards_and_nothing_per_project(session: Session) 
         "filler_max",
         "field_cut",
     }
+    defaults = {
+        "countertop_overhang",
+        "backsplash_thickness",
+        "cabinet_side_thickness",
+        "cabinet_depth",
+    }
+    assert set(settings) == standards | defaults
+    assert {name for name, item in settings.items() if item["kind"] == "standard"} == standards
+    for name in defaults:
+        assert (settings[name]["in_use"], settings[name]["rulebook_default"]) == (None, None), name
     field_cut = settings["field_cut"]
     assert (field_cut["scope"], field_cut["rulebook_default"], field_cut["in_use_from"]) == (
         "project",
@@ -118,6 +129,22 @@ def test_saving_one_standard_keeps_the_ones_saved_before(session: Session) -> No
         assert settings[name]["company_set_by"] == "a admin"
 
 
+def test_a_company_default_for_a_project_setting_is_saved_and_in_use(session: Session) -> None:
+    """#1181: GV's usual side panel, saved once. Outcome: in use as GV's, set by the admin."""
+    response = _client(session).post(
+        URL, json={"values": [{"name": "cabinet_side_thickness", "value": '3/4"'}]}
+    )
+
+    assert response.status_code == 201, response.text
+    side = _by_name(response)["cabinet_side_thickness"]
+    assert (side["in_use"], side["in_use_from"], side["company_set_by"], side["kind"]) == (
+        "3/4 in",
+        "company",
+        "a admin",
+        "project_default",
+    )
+
+
 def test_a_company_value_replaces_the_rulebook_default_and_says_so(session: Session) -> None:
     response = _client(session).post(
         URL, json={"values": [{"name": "back_offset_minimum", "value": '2 3/8"'}]}
@@ -137,8 +164,7 @@ def test_a_company_value_replaces_the_rulebook_default_and_says_so(session: Sess
         ({"name": "back_offset_minimum", "value": "2"}, "with its unit"),
         ({"name": "back_offset_minumum", "value": '2"'}, "not a company standard"),
         ({"name": "sink_interior_width", "value": '28"'}, "not a company standard"),
-        # Per project by the client lead's checklist (#817): entered for each job, never for the company.
-        ({"name": "cabinet_side_thickness", "value": '3/4"'}, "per-project setting"),
+        # Mandatory per project by the client lead's checklist (#817): never a company value.
         ({"name": "single_door_cab_width_min", "value": '9"'}, "per-project setting"),
     ],
 )
@@ -146,7 +172,7 @@ def test_a_value_with_no_unit_or_a_name_no_check_uses_is_refused(
     session: Session, entry: dict[str, str], says: str
 ) -> None:
     """A bare number is never guessed at; a misspelt or run-only name would be a standard no check
-    ever reads; and a per-project setting is not GV's to fix for every job (#817)."""
+    ever reads; and a cabinet width bound is not GV's to fix for every job (#817)."""
     response = _client(session).post(URL, json={"values": [entry]})
 
     assert response.status_code == 422, response.text

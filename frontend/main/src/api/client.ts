@@ -1065,6 +1065,30 @@ export function getCompanySettings() {
   return request<CompanySettings>('/company-settings');
 }
 
+/** The sink this project's sink checks use (#1181); `sink` is null until one is entered. */
+export type ProjectSink = Get<'/api/v1/projects/{project_id}/sink'>;
+export type SinkEntry = components['schemas']['SinkEntryIn'];
+
+export function getProjectSink(projectId: string) {
+  return request<ProjectSink>(`/projects/${projectId}/sink`);
+}
+
+/** The sink size one package's checks use now, and whether each number is the sink card's or typed for the package. */
+export type SinkInUse = Get<'/api/v1/projects/{project_id}/packages/{package_id}/sink-in-use'>;
+
+export function getSinkInUse(projectId: string, packageId: string) {
+  return request<SinkInUse>(`/projects/${projectId}/packages/${packageId}/sink-in-use`);
+}
+
+/**
+ * Enter the project's sink: its name and inside width and depth. Sizes go as typed, with their unit;
+ * a bare number or a zero comes back 422. Every sink check of every package in the job reads it once
+ * the checks run again.
+ */
+export function saveProjectSink(projectId: string, entry: SinkEntry) {
+  return send<ProjectSink>(`/projects/${projectId}/sink`, entry);
+}
+
 /**
  * Record GV's standard numbers. Only the values sent change; every one not sent stays as it was.
  * Refused for anyone but an admin, with the same "Not found" every authorisation failure gives.
