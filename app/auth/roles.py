@@ -19,8 +19,9 @@ class Role(StrEnum):
     """The three roles. Deliberately few — a role per endpoint is a permission system nobody reads."""
 
     REVIEWER = "reviewer"
-    """Confirms evidence, enters a project's values, and approves packages. May not change what the
-    rules say, nor what was uploaded."""
+    """Starts reviews (creates a package, uploads and reads its drawings), confirms evidence, enters
+    a project's values, and approves packages. May not change what the rules say, nor GV's company
+    standards."""
 
     RULE_ADMIN = "rule_admin"
     """Publishes rule snapshots. May not approve the packages those rules judge.
@@ -40,16 +41,22 @@ class Action(StrEnum):
     CONFIRM_EVIDENCE = "confirm_evidence"
     APPROVE_PACKAGE = "approve_package"
     PUBLISH_RULE = "publish_rule"
+    #: Administer a project itself. No route needs it since #1182 moved starting a review (create,
+    #: upload, confirm, read) to `START_REVIEW`; kept admin-only for project administration.
     MANAGE_PROJECT = "manage_project"
     #: Enter a project's values, ask the AI to fill them, and ask for the checks (#824). Its own action
-    #: rather than `MANAGE_PROJECT`, because the person who fills the form is usually the reviewer,
-    #: while creating packages and uploading drawings stay the admin's. Running the checks decides
-    #: nothing on its own: a reviewer still signs off on every finding.
+    #: rather than `MANAGE_PROJECT`, because the person who fills the form is usually the reviewer.
+    #: Running the checks decides nothing on its own: a reviewer still signs off on every finding.
     ENTER_VALUES = "enter_values"
     #: Record GV's company standards — the numbers every project starts from (#812). Its own action
     #: rather than `MANAGE_PROJECT`, because it changes every future verdict on every project, not
     #: one job's.
     MANAGE_COMPANY_STANDARDS = "manage_company_standards"
+    #: Start a review: create a package, upload its drawings, confirm them and start the AI reading
+    #: (#1182). Its own action rather than `MANAGE_PROJECT`, because starting a review is the
+    #: reviewer's everyday work: with `MANAGE_PROJECT` (admin only) a signed-in reviewer could not get
+    #: a single drawing checked. Reading decides nothing; a reviewer still signs off on every finding.
+    START_REVIEW = "start_review"
 
 
 #: Which roles may take which action. Exhaustive over `Action` — see `_every_action_is_assigned`.
@@ -65,6 +72,7 @@ PERMISSIONS: dict[Action, frozenset[Role]] = {
     Action.MANAGE_PROJECT: frozenset({Role.ADMIN}),
     Action.ENTER_VALUES: frozenset({Role.REVIEWER, Role.ADMIN}),
     Action.MANAGE_COMPANY_STANDARDS: frozenset({Role.ADMIN}),
+    Action.START_REVIEW: frozenset({Role.REVIEWER, Role.ADMIN}),
 }
 
 

@@ -47,6 +47,7 @@ import { Progress } from '@/components/ui/progress';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useMediaQuery } from '@/hooks/use-media-query';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 export interface QueueProps {
   open: boolean;
@@ -118,6 +119,7 @@ function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string
 }
 
 function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt, onValuesSaved }: QueueProps) {
+  const signedOff = useSignedOff();
   const [wallsSaved, setWallsSaved] = useState<ReadonlySet<string>>(new Set());
   // Architect pairings saved in this sitting (#1085); the server's own record times are added below.
   const [pairingsSaved, setPairingsSaved] = useState<ReadonlySet<string>>(new Set());
@@ -262,7 +264,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   }
 
   async function saveDecision() {
-    if (!deciding || !draft.ready) return;
+    if (!deciding || !draft.ready || signedOff) return;
     const from = index;
     if (await draft.save(handlers)) {
       setChanging(false);
@@ -606,7 +608,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
               >
                 <DecisionFields draft={draft} idPrefix="queue" big noteRef={noteRef} allowProblem={!split} />
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button type="submit" disabled={!draft.ready || draft.saving}>
+                  <Button type="submit" disabled={!draft.ready || draft.saving || signedOff}>
                     {draft.saving ? 'Saving…' : 'Record decision'}
                     {!touch && <kbd className="num ml-1 hidden text-xs opacity-70 sm:inline">Enter</kbd>}
                   </Button>
@@ -672,7 +674,10 @@ function Chip({ term, value }: { term: string; value: string }) {
  */
 function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion; onSave: (rowId: string, config: string) => Promise<void>; onOpenCard: () => void }) {
   const [choice, setChoice] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [savingNow, setSaving] = useState(false);
+  // Nothing is answered on a signed-off review (#1182): the buttons stay off, as while saving.
+  const signedOff = useSignedOff();
+  const saving = savingNow || signedOff;
   const [error, setError] = useState<string | null>(null);
 
   async function save(config: string) {
@@ -733,7 +738,7 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
         </Button>
       </div>
       {question.reason && <p className="text-xs text-muted-foreground">{sentence(question.reason)}</p>}
-      <p className="text-xs text-muted-foreground">The result changes only after the checks run again.</p>
+      <p className="text-xs text-muted-foreground">{signedOff ? SIGNED_OFF_NOTE : 'The result changes only after the checks run again.'}</p>
       {error && (
         <p role="alert" className="text-sm text-outcome-fail-fg">
           {error}

@@ -262,3 +262,25 @@ def test_an_optional_operand_bound_to_a_missing_parameter_is_still_not_found() -
     assert finding.outcome is Outcome.NOT_FOUND
     assert "cabinets" in finding.reason
     assert finding.trace is None
+
+
+@pytest.mark.parametrize("bad", [Fraction(0), Fraction(-1), Fraction(-1, 16)])
+@pytest.mark.parametrize("where", ["pieces", "cabinets", "fillers"])
+def test_a_width_of_zero_or_less_in_any_list_is_held_never_summed(
+    bad: Fraction, where: str
+) -> None:
+    """#1182 (1.1.0). Input: one value of 0 or less in the pieces, the cabinets or the fillers.
+    Output: REVIEW_REQUIRED naming it, before any sum is taken."""
+    lists: dict[str, tuple[Measurement, ...] | None] = {
+        "pieces": None,
+        "cabinets": CABINETS,
+        "fillers": FILLERS,
+    }
+    lists[where] = (*(lists[where] or inches(21)), inch(bad))
+
+    result = row_total(**lists)
+
+    assert isinstance(result, OperationResult)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert result.comparison.startswith(f"{where}[")
+    assert "never zero or less" in result.comparison

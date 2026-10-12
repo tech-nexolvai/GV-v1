@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 import {
   AlertCircle,
   AlertTriangle,
@@ -434,6 +435,7 @@ export function MeasurementPanel({
   /** A run from this panel (step 4 or the header) is being saved and requested, until it is queued. */
   onRunStateChange?: (running: boolean) => void;
 }) {
+  const signedOff = useSignedOff();
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [selectedPageNumber, setSelectedPageNumber] = useState(1);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -824,7 +826,7 @@ export function MeasurementPanel({
   };
 
   async function confirmFromMeasure(candidate: CandidateOut, semanticType: string) {
-    if (!packageId || !needed || !candidate.source || !candidate.value) return;
+    if (signedOff || !packageId || !needed || !candidate.source || !candidate.value) return;
     const target = needed.quantities.find(
       (quantity) => quantity.key === `${candidate.source}:${semanticType}`,
     );
@@ -934,7 +936,7 @@ export function MeasurementPanel({
    * sending both would put a value with no provenance in front of the one with it.
    */
   async function confirmAcceptedProposals(): Promise<Set<string>> {
-    if (!packageId || !needed) return new Set();
+    if (signedOff || !packageId || !needed) return new Set();
     const confirmed = new Set<string>();
     for (const [key, candidateIds] of Object.entries(aiFilled)) {
       const quantity = needed.quantities.find((item) => item.key === key);
@@ -1099,7 +1101,8 @@ export function MeasurementPanel({
    * claim on this screen and it yields to both.
    */
   async function onPropose() {
-    if (!packageId || !needed) return;
+    // The AI's proposals feed a save, and nothing is saved on a closed review (#1182).
+    if (signedOff || !packageId || !needed) return;
     setProposing(true);
     setProposalSteps([]);
     setProposal(null);
@@ -1919,7 +1922,7 @@ export function MeasurementPanel({
                     variant="outline"
                     className="shrink-0 self-start"
                     onClick={() => void onPropose()}
-                    disabled={busy || candidates.length === 0}
+                    disabled={busy || signedOff || candidates.length === 0}
                   >
                     <Sparkles aria-hidden="true" /> Ask again
                   </Button>
@@ -1943,7 +1946,7 @@ export function MeasurementPanel({
                       variant="outline"
                       className="shrink-0 self-start"
                       onClick={() => void onPropose()}
-                      disabled={busy || candidates.length === 0}
+                      disabled={busy || signedOff || candidates.length === 0}
                     >
                       <Sparkles aria-hidden="true" /> Fill with AI
                     </Button>
@@ -1966,7 +1969,7 @@ export function MeasurementPanel({
                 <AssignmentProgress steps={proposalSteps} result={proposal} error={proposalError} />
               )}
               {(proposal || proposalError) && !proposing && (
-                <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => void onPropose()}>
+                <Button type="button" size="sm" variant="outline" className="self-start" disabled={signedOff} onClick={() => void onPropose()}>
                   <Sparkles aria-hidden="true" /> Ask again
                 </Button>
               )}
@@ -2019,7 +2022,7 @@ export function MeasurementPanel({
                                 className={SELECT_CLASS}
                                 aria-label={`Meaning for AI reading ${candidate.value}`}
                                 value={candidateChoices[candidate.candidate_id] ?? ''}
-                                disabled={confirming !== null || !candidate.crop_key || availableTypes.length === 0}
+                                disabled={signedOff || confirming !== null || !candidate.crop_key || availableTypes.length === 0}
                                 onChange={(event) => {
                                   const type = event.target.value;
                                   setCandidateChoices((current) => ({ ...current, [candidate.candidate_id]: type }));
@@ -2405,6 +2408,7 @@ export function MeasurementPanel({
             }}
             onChoose={resolveSavedConflict}
           />
+          {signedOff && <p className="text-sm text-muted-foreground" role="note" data-part="signed-off">{SIGNED_OFF_NOTE}</p>}
           {accepted && (
             <p className="flex flex-wrap items-center gap-1.5 text-sm" role="status">
               <span>
@@ -2463,7 +2467,7 @@ export function MeasurementPanel({
             )}
             <span className="ml-auto" />
             {(step === 'values' || step === 'settings') && (
-              <Button type="button" variant="outline" onClick={onSave} disabled={busy}>
+              <Button type="button" variant="outline" onClick={onSave} disabled={busy || signedOff}>
                 Save values
               </Button>
             )}
@@ -2473,7 +2477,7 @@ export function MeasurementPanel({
                 Next <ChevronRight aria-hidden="true" />
               </Button>
             ) : (
-              <Button key="run-checks" type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy || Boolean(runChecksBlocked)} aria-describedby={runChecksBlocked ? 'measure-run-blocked' : undefined}>
+              <Button key="run-checks" type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy || signedOff || Boolean(runChecksBlocked)} aria-describedby={runChecksBlocked ? 'measure-run-blocked' : undefined}>
                 <Play aria-hidden="true" /> Run checks
               </Button>
             )}

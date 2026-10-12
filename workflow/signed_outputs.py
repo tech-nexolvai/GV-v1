@@ -1,4 +1,9 @@
-"""Publish all three files for one frozen approval; never run a check or a model."""
+"""Publish all three files for one frozen approval; never run a check or a model.
+
+Everything the files print comes from the approval's frozen snapshot or from immutable rows the
+snapshot re-verifies (findings, their operands and evidence, the uploaded drawings): the countertop
+section too, since #1182.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +13,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.visual_countertops import _countertop_results_for_revision
-from app.models.package import PackageRevision
 from app.models.review import Approval
 from app.models.signed_exports import (
     ApprovalExportBundle,
@@ -17,7 +20,12 @@ from app.models.signed_exports import (
     ApprovalExportSnapshot,
 )
 from app.models.verdicts import OutputArtifact, OutputArtifactKind
-from app.review.signed_exports import SignedExportRefused, finding_rows, load_snapshot
+from app.review.signed_exports import (
+    SignedExportRefused,
+    finding_rows,
+    frozen_countertop_results,
+    load_snapshot,
+)
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import (
     StoredFinding,
@@ -85,10 +93,9 @@ def generate_signed_outputs(
         )
         for finding, run, rule, definition in rows
     )
-    revision = db.get(PackageRevision, payload.package_revision_id)
-    if revision is None:
-        raise SignedExportRefused("approved revision is not available")
-    countertop_results = _countertop_results_for_revision(db, revision.package_id, revision)
+    # The countertop section is the one frozen at sign-off, never rebuilt from the live database
+    # (#1182): every page of one signed document says what was approved.
+    countertop_results = frozen_countertop_results(db, payload)
     countertop_labels = tuple(
         f"Page {item.page_number} — {item.label}" for item in countertop_results.items
     )

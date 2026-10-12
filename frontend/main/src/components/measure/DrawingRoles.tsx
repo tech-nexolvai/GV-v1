@@ -7,6 +7,7 @@ import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { DrawingRolesList } from './DrawingRolesList.js';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { LoadError } from './wizard-ui.js';
+import { refuseClosed, useSignedOff } from '@/lib/signed-off';
 
 /**
  * Loads a package's drawings and saves a reviewer's answer about each (#795).
@@ -31,6 +32,8 @@ export function DrawingRoles({
   const [views, setViews] = useState<DrawingView[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
+  // Nothing is sent on a closed review (#1182); the person is told why instead.
+  const signedOff = useSignedOff();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   useEffect(() => {
@@ -57,7 +60,7 @@ export function DrawingRoles({
   }, [packageId, loadAttempt]);
 
   async function choose(view: DrawingView, role: DrawingRole) {
-    await saveDecision(view.view_id, async () => {
+    await saveDecision(view.view_id, signedOff ? refuseClosed : async () => {
       const updated = await confirmDrawingRole(projectId(), packageId, view.view_id, role);
       setViews((current) =>
         current ? current.map((item) => (item.view_id === updated.view_id ? updated : item)) : current,

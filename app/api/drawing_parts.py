@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.drawing_views import NOT_FOUND_DETAIL, _revision
+from app.api.signed_off import open_revision
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.db.session import is_unique_violation
@@ -589,6 +590,7 @@ def part_crop(
     response_model=PartOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say what one suggested part is: a cabinet, a filler or a countertop",
+    dependencies=[Depends(open_revision)],
 )
 def confirm_part_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -621,6 +623,7 @@ def confirm_part_endpoint(
     response_model=PartOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say one suggestion is not a part",
+    dependencies=[Depends(open_revision)],
 )
 def withdraw_part_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -649,6 +652,7 @@ def withdraw_part_endpoint(
     response_model=PartOut,
     status_code=status.HTTP_201_CREATED,
     summary="Add a part the suggestions missed, by its two ends on the drawing",
+    dependencies=[Depends(open_revision)],
 )
 def add_part_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],

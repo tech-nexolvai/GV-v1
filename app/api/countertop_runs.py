@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.api.drawing_views import NOT_FOUND_DETAIL, _revision
+from app.api.signed_off import open_revision
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.db.session import is_unique_violation
@@ -385,6 +386,7 @@ def list_runs(
     response_model=CountertopOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say which parts make up the run beneath one countertop",
+    dependencies=[Depends(open_revision)],
 )
 def confirm_run_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -420,6 +422,7 @@ def confirm_run_endpoint(
     response_model=CountertopOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say the run suggested or confirmed beneath one countertop is wrong",
+    dependencies=[Depends(open_revision)],
 )
 def withdraw_run_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],

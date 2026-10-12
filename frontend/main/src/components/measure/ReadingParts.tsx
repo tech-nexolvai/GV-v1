@@ -8,6 +8,7 @@ import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { ReadingPartsList } from './ReadingPartsList.js';
 import { LoadError } from './wizard-ui.js';
+import { refuseClosed, useSignedOff } from '@/lib/signed-off';
 
 /**
  * Loads each confirmed part's suggested reading and saves a person's decision on one part at a time
@@ -22,6 +23,8 @@ export function ReadingParts({ packageId, refresh, onProgress, onState }: { pack
   const [links, setLinks] = useState<ReadingLinks | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
+  // Nothing is sent on a closed review (#1182); the person is told why instead.
+  const signedOff = useSignedOff();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
@@ -47,7 +50,7 @@ export function ReadingParts({ packageId, refresh, onProgress, onState }: { pack
   }, [packageId, refresh, decided, loadAttempt]);
 
   async function save(part: LinkPart, decide: () => Promise<unknown>) {
-    await saveDecision(part.item_id, decide, (item, state) => {
+    await saveDecision(part.item_id, signedOff ? refuseClosed : decide, (item, state) => {
       setFeedback((current) => ({ ...current, [item]: state }));
     }, () => setDecided((count) => count + 1));
   }

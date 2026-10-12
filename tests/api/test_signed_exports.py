@@ -433,7 +433,7 @@ def test_signed_report_lists_a_split_page_and_the_pages_with_no_countertop(
             pages_without_countertop=(PageWithoutCountertopOut(page_number=4, reason=NONE_REASON),),
         )
 
-    monkeypatch.setattr("workflow.signed_outputs._countertop_results_for_revision", results)
+    monkeypatch.setattr("app.review.signed_exports._countertop_results_for_revision", results)
     assert client.post(base + "/signed-exports").status_code == 202
     generate_signed_outputs(session, store, approval.id)
     session.commit()
@@ -465,7 +465,7 @@ def test_signed_report_lists_a_second_countertop_row_that_was_not_checked(
             rows_not_checked=(RowNotCheckedOut(page_number=2, reason=SECOND_ROW_REASON),),
         )
 
-    monkeypatch.setattr("workflow.signed_outputs._countertop_results_for_revision", results)
+    monkeypatch.setattr("app.review.signed_exports._countertop_results_for_revision", results)
     assert client.post(base + "/signed-exports").status_code == 202
     generate_signed_outputs(session, store, approval.id)
     session.commit()

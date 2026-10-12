@@ -21,6 +21,7 @@ import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 /** The value of the "None of these" choice; a view's id is never this. */
 export const NONE_OF_THESE = 'none-of-these';
@@ -49,7 +50,10 @@ export function ArchitectViewPicker({
   const answer = useAsync(() => getArchitectViewMatch(projectId, packageId, row.row_id), [projectId, packageId, row.row_id, version]);
   const [choice, setChoice] = useState('');
   const [note, setNote] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [savingNow, setSaving] = useState(false);
+  // Nothing is saved on a closed review (#1182): every button stays off, as while saving.
+  const signedOff = useSignedOff();
+  const saving = savingNow || signedOff;
   // A second click before the first answer arrives must not send the pick twice.
   const sending = useRef(false);
   const [problem, setProblem] = useState<{ text: string; reload: boolean } | null>(null);
@@ -211,7 +215,7 @@ export function ArchitectViewPicker({
         <Button type="button" disabled={saving || !data.current || (!chosen && !none) || (chosen !== null && !chosen.can_pick)} onClick={() => void save()}>
           {saving ? 'Saving…' : none ? 'Save: none of these' : 'Use this view'}
         </Button>
-        <span className="text-xs text-muted-foreground">Your choice counts once the checks run again.</span>
+        <span className="text-xs text-muted-foreground">{signedOff ? SIGNED_OFF_NOTE : 'Your choice counts once the checks run again.'}</span>
       </div>
     </section>
   );

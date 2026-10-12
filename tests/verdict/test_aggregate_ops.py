@@ -182,7 +182,10 @@ def test_all_five_operations_have_versioned_registry_specs() -> None:
         "all_within_tolerance",
         "row_total",
     }
-    assert all(spec.version == "1.0.0" for spec in AGGREGATE_SPECS)
+    versions = {spec.name: spec.version for spec in AGGREGATE_SPECS}
+    # 1.1.0 (#1182): a row piece of zero or less is held for the reviewer.
+    assert versions.pop("row_total") == "1.1.0"
+    assert all(version == "1.0.0" for version in versions.values())
     kinds = {spec.name: spec.kind for spec in AGGREGATE_SPECS}
     assert kinds["sum"] is OperationKind.DERIVATION
     assert kinds["count"] is OperationKind.DERIVATION

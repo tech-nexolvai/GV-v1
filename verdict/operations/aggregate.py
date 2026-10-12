@@ -232,7 +232,25 @@ def row_total(
     **Never picks a source.** Two disagreeing totals are a question about the drawing or the form,
     and preferring one would make whichever we preferred the answer — the failure `AGENTS.md` §2.4
     forbids. Mixed units across the lists raise, and the engine turns that into REVIEW_REQUIRED.
+
+    **A piece of zero or less is REVIEW_REQUIRED (1.1.0, #1182).** No piece, cabinet or filler of a
+    real row is zero or negative wide, so such a value is a mistake (a `0` typed for a piece nobody
+    could read, a stray minus sign) and adding it could make the row come out right by accident:
+    `0 + 21 + 18` passed against 39 before. It is held for the reviewer in every source, before any
+    sum is taken.
     """
+    for name, values in (("pieces", pieces), ("cabinets", cabinets), ("fillers", fillers)):
+        if values is None:
+            continue
+        for index, value in enumerate(_require_measurements(values, name)):
+            if value.exact <= 0:
+                return _abstain(
+                    Outcome.REVIEW_REQUIRED,
+                    f"{name}[{index}] is {_written(value)}. A piece of a row is never zero or less "
+                    "wide, so this value is a mistake and the row's length cannot be taken from "
+                    "it. Correct or clear that value.",
+                    (f"{name}[{index}]", value),
+                )
     kinds_given = (cabinets is not None, fillers is not None)
     if pieces is None:
         if cabinets is None or fillers is None:
@@ -328,7 +346,8 @@ AGGREGATE_SPECS: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "row_total",
-        "1.0.0",
+        # 1.1.0 (#1182): a piece of zero or less is held for the reviewer, never summed.
+        "1.1.0",
         {"pieces": Arity.LIST, "cabinets": Arity.LIST, "fillers": Arity.LIST},
         row_total,
         OperationKind.DERIVATION,

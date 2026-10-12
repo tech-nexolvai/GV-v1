@@ -24,11 +24,13 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.api.drawing_views import _revision
+from app.api.signed_off import open_revision
 from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.models import ObservationCandidate, SlotRowReviewDecision
 from app.review.row_location import RowLocation, architect_locations, row_location
+from app.review.sizes import NOT_ABOVE_ZERO, typed_negative
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from vocabulary.reviewer_reasons import reviewer_reason
@@ -256,6 +258,7 @@ def list_slot_rows(
     response_model=SlotRowOut,
     status_code=status.HTTP_201_CREATED,
     summary="Confirm a wall choice or fill missing widths for one slot-reader row",
+    dependencies=[Depends(open_revision)],
 )
 def review_slot_row(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -302,6 +305,11 @@ def review_slot_row(
 
     normalized: dict[str, object] = {}
     for key, text in body.measurements.items():
+        if typed_negative(text):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key.replace('_', ' ').capitalize()}: {NOT_ABOVE_ZERO}",
+            )
         try:
             measurement = normalise_to_inches(text)
         except (UnitNormalisationError, ValueError) as error:
@@ -309,6 +317,12 @@ def review_slot_row(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Enter a valid width for {key.replace('_', ' ')}.",
             ) from error
+        if measurement.exact <= 0:
+            # Every value on a row is a width; zero or less is a mistake that could pass (#1182).
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key.replace('_', ' ').capitalize()}: {NOT_ABOVE_ZERO}",
+            )
         normalized[key] = {
             "numerator": measurement.exact.numerator,
             "denominator": measurement.exact.denominator,
@@ -550,6 +564,7 @@ def get_architect_pairing(
     response_model=ArchitectPairingOut,
     status_code=status.HTTP_201_CREATED,
     summary="Pair the architect's dimensions with one countertop row (or say none is comparable)",
+    dependencies=[Depends(open_revision)],
 )
 def pair_architect_dimensions(
     principal: Annotated[Principal, Depends(require_project_access)],

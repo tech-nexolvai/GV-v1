@@ -1,0 +1,205 @@
+{
+  "results": {
+    "items": [
+      {
+        "agreement": {
+          "both_readers_agreed_on_row": null,
+          "code_clue_used": false,
+          "values_agreed": [
+            null,
+            null
+          ]
+        },
+        "architect": {
+          "can_pair": null,
+          "compared": [],
+          "compared_with": null,
+          "compared_with_text": null,
+          "finding_id": null,
+          "match": null,
+          "needs_decision": false,
+          "not_compared_reason": "No architect dimension is paired with this row.",
+          "outcome": null,
+          "pairing_judgments": null,
+          "pairing_source": null,
+          "reason": null
+        },
+        "delta": null,
+        "drawn_length_note": null,
+        "expected_total": null,
+        "field_cut_count": null,
+        "field_cut_per_end": null,
+        "finding_id": "161bfc2d-e312-4337-8640-40dbc61ddf4f",
+        "hold": null,
+        "label": "Countertop row on page 1",
+        "needs_decision": true,
+        "outcome": "REVIEW_REQUIRED",
+        "page_number": 1,
+        "pieces": [
+          {
+            "canonical_observation_id": null,
+            "index": 0,
+            "kind": null,
+            "location": null,
+            "source": "sealed",
+            "value": {
+              "denominator": "1",
+              "display": "20\"",
+              "numerator": "20"
+            }
+          }
+        ],
+        "printed_overall": {
+          "denominator": "1",
+          "display": "22\"",
+          "numerator": "22"
+        },
+        "printed_overall_canonical_observation_id": null,
+        "printed_overall_location": null,
+        "reviewer_decision": {
+          "action": "dismiss",
+          "actor": "reviewer@example.com",
+          "carried_from_finding_id": null,
+          "carried_over": false,
+          "note": "Synthetic note: checked by hand.",
+          "time": "2026-10-11T10:00:00Z"
+        },
+        "row_id": "d976dd62-16cb-4ed8-a3de-56a5c3b61d92",
+        "row_location": {
+          "coordinate_space": "stored",
+          "document_version_id": "1bffdf80-7c58-4685-8248-5726eae8f215",
+          "page_id": "6126371c-266e-465c-a30c-841335573fa2",
+          "page_number": 1,
+          "polygon": [
+            [
+              "0",
+              "0"
+            ],
+            [
+              "0.007843137254901960784313725490",
+              "0"
+            ],
+            [
+              "0.007843137254901960784313725490",
+              "0.006060606060606060606060606061"
+            ],
+            [
+              "0",
+              "0.006060606060606060606060606061"
+            ]
+          ]
+        },
+        "wall_layout": {
+          "config": "back_left_right",
+          "label": "back wall and both ends",
+          "source": "drawing clues"
+        }
+      },
+      {
+        "agreement": {
+          "both_readers_agreed_on_row": null,
+          "code_clue_used": false,
+          "values_agreed": [
+            null,
+            null
+          ]
+        },
+        "architect": {
+          "can_pair": null,
+          "compared": [],
+          "compared_with": null,
+          "compared_with_text": null,
+          "finding_id": null,
+          "match": null,
+          "needs_decision": false,
+          "not_compared_reason": "No architect dimension is paired with this row.",
+          "outcome": null,
+          "pairing_judgments": null,
+          "pairing_source": null,
+          "reason": null
+        },
+        "delta": null,
+        "drawn_length_note": null,
+        "expected_total": null,
+        "field_cut_count": null,
+        "field_cut_per_end": null,
+        "finding_id": "abedbcee-c942-4ad5-b252-d7858fa0eecb",
+        "hold": {
+          "code": "stone-short-of-ends",
+          "reason": "Synthetic: the stone stops short of the walls."
+        },
+        "label": "Countertop row on page 2",
+        "needs_decision": true,
+        "outcome": "REVIEW_REQUIRED",
+        "page_number": 2,
+        "pieces": [
+          {
+            "canonical_observation_id": null,
+            "index": 0,
+            "kind": null,
+            "location": null,
+            "source": "sealed",
+            "value": {
+              "denominator": "1",
+              "display": "21\"",
+              "numerator": "21"
+            }
+          }
+        ],
+        "printed_overall": {
+          "denominator": "1",
+          "display": "23\"",
+          "numerator": "23"
+        },
+        "printed_overall_canonical_observation_id": null,
+        "printed_overall_location": null,
+        "reviewer_decision": null,
+        "row_id": "abfc15bb-a40a-42c5-ba38-e5aa5517fc90",
+        "row_location": {
+          "coordinate_space": "stored",
+          "document_version_id": "1bffdf80-7c58-4685-8248-5726eae8f215",
+          "page_id": "f2e75a03-d0cd-40a0-8921-2c4ccc6f73ea",
+          "page_number": 2,
+          "polygon": [
+            [
+              "0",
+              "0"
+            ],
+            [
+              "0.007843137254901960784313725490",
+              "0"
+            ],
+            [
+              "0.007843137254901960784313725490",
+              "0.006060606060606060606060606061"
+            ],
+            [
+              "0",
+              "0.006060606060606060606060606061"
+            ]
+          ]
+        },
+        "wall_layout": {
+          "config": "back_left_right",
+          "label": "back wall and both ends",
+          "source": "drawing clues"
+        }
+      }
+    ],
+    "package_id": "c6384226-c87b-4bb0-92c4-0120dd1acc81",
+    "pages_without_countertop": [
+      {
+        "page_number": 3,
+        "reason": "Synthetic: both readers found no countertop line on this page."
+      }
+    ],
+    "revision_id": "da23cda8-0e31-4789-8eb1-13453232e7e6",
+    "rows_not_checked": [
+      {
+        "page_number": 2,
+        "reason": "Synthetic: a second countertop row was named on this page and not checked."
+      }
+    ]
+  },
+  "schema_version": 1
+}

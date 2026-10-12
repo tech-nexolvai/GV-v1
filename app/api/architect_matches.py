@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
 from app.api.drawing_views import _revision
+from app.api.signed_off import open_revision
 from app.api.slot_rows import _current_row
 from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
@@ -214,6 +215,7 @@ def get_architect_view_match(
     response_model=ArchitectViewMatchOut,
     status_code=status.HTTP_201_CREATED,
     summary="Choose which of the architect's views shows this countertop (or none of them)",
+    dependencies=[Depends(open_revision)],
 )
 def pick_architect_view(
     principal: Annotated[Principal, Depends(require_project_access)],

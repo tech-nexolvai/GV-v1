@@ -25,11 +25,11 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.utils import get_dependant
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
+from app.api.dependencies import get_artifact_store, get_session
 from app.auth import (
     AUTHORISATION_MARKER,
     PERMISSIONS,
@@ -49,6 +49,7 @@ from app.main import create_app
 from app.models import OutboxEntry, Package, PackageRevision, PackageState, Project
 from app.models.evidence import ItemClassification
 from app.models.parameters import ParameterValue
+from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
 
@@ -127,15 +128,18 @@ def test_a_reviewer_cannot_approve_a_project_they_do_not_belong_to() -> None:
 
 
 def test_a_reviewer_enters_a_projects_values_but_does_not_run_the_project() -> None:
-    """#824, the admin's decision: the person who fills the form is usually the reviewer. Creating
-    packages, uploading drawings and setting GV's standards stay the admin's, and a rule admin, who
-    decides what the rules say, does not fill in a job's numbers."""
+    """#824, the admin's decision: the person who fills the form is usually the reviewer. Setting
+    GV's standards stays the admin's, and a rule admin, who decides what the rules say, does not
+    fill in a job's numbers. Since #1182 the reviewer also starts a review (create, upload, read).
+    """
     reviewer, rule_admin = _principal(Role.REVIEWER), _principal(Role.RULE_ADMIN)
 
     assert reviewer.may(Action.ENTER_VALUES)
+    assert reviewer.may(Action.START_REVIEW)
     assert not reviewer.may(Action.MANAGE_PROJECT)
     assert not reviewer.may(Action.MANAGE_COMPANY_STANDARDS)
     assert not rule_admin.may(Action.ENTER_VALUES)
+    assert not rule_admin.may(Action.START_REVIEW)
 
 
 def test_admin_is_listed_explicitly_rather_than_short_circuited() -> None:
@@ -707,22 +711,28 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
-def _calling_as(session: Session, principal: Principal) -> TestClient:
+def _calling_as(
+    session: Session, principal: Principal, *, store: LocalStore | None = None
+) -> TestClient:
     app = _app_with(principal)
     app.dependency_overrides[get_session] = lambda: session
+    if store is not None:
+        app.dependency_overrides[get_artifact_store] = lambda: store
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _package(session: Session) -> str:
+def _store(root: Path) -> LocalStore:
+    return LocalStore(root=root, ticket_secret=b"a secret only this test knows")
+
+
+def _package(session: Session, state: PackageState = PackageState.NEEDS_INPUT) -> str:
     if session.get(Project, PROJECT_A) is None:
         session.add(Project(id=PROJECT_A, name="authorisation tests"))
         session.flush()
     package = Package(project_id=PROJECT_A, vendor="Apex Glass & Stone")
     session.add(package)
     session.flush()
-    session.add(
-        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.NEEDS_INPUT)
-    )
+    session.add(PackageRevision(package_id=package.id, revision_number=1, state=state))
     session.commit()
     return f"/api/v1/projects/{PROJECT_A}/packages/{package.id}"
 
@@ -864,22 +874,79 @@ def test_entering_values_is_still_refused_to_who_may_not(
     assert list(session.execute(select(OutboxEntry.id)).scalars()) == [], why
 
 
-@pytest.mark.parametrize(
-    ("path", "body"),
-    [
-        (f"/api/v1/projects/{PROJECT_A}/packages", {}),
-        ("{package}/documents", {}),
-        ("/api/v1/company-settings", {"values": []}),
-    ],
-    ids=["create-package", "upload-document", "company-standard"],
-)
-def test_a_reviewer_still_cannot_create_upload_or_set_a_standard(
-    session: Session, path: str, body: dict
-) -> None:
+def _admin() -> Principal:
+    return Principal(id="an admin", roles=frozenset({Role.ADMIN}), projects=frozenset({PROJECT_A}))
+
+
+def test_a_reviewer_still_cannot_set_a_company_standard(session: Session) -> None:
     """Outcome: 404 for the reviewer. **And not 404 for an admin sending the same request**, or the
-    refusal could be a missing package rather than the role, and this test would prove nothing."""
-    url = path.format(package=_package(session))
-    admin = Principal(id="an admin", roles=frozenset({Role.ADMIN}), projects=frozenset({PROJECT_A}))
+    refusal could be something other than the role, and this test would prove nothing."""
+    url = "/api/v1/company-settings"
+    body: dict = {"values": []}
 
     assert _calling_as(session, _reviewer()).post(url, json=body).status_code == 404
-    assert _calling_as(session, admin).post(url, json=body).status_code != 404
+    assert _calling_as(session, _admin()).post(url, json=body).status_code != 404
+
+
+def _start_review_calls(session: Session, client: TestClient) -> dict[str, int]:
+    """Every step of starting a review, as the screen takes them: create the package, register a
+    drawing, get its upload ticket, confirm it, start the reading. Status code per step."""
+    package = _package(session, state=PackageState.CREATED)
+    created = client.post(
+        f"/api/v1/projects/{PROJECT_A}/packages", json={"product_type": "countertop"}
+    )
+    package_id = UUID(package.rsplit("/", 1)[1])
+    sha = "c" * 64
+    registered = client.post(f"{package}/documents", json={"kind": "shop", "sha256": sha})
+    from app.models.document import Document, DocumentKind
+
+    document = Document(package_id=package_id, kind=DocumentKind.ARCHITECTURAL.value)
+    session.add(document)
+    session.commit()
+    documents = f"/api/v1/projects/{PROJECT_A}/documents/{document.id}"
+    ticket = client.post(f"{documents}/uploads", json={"sha256": sha})
+    confirmed = client.post(f"{documents}/confirm", json={"sha256": sha, "page_count": 1})
+    extract = client.post(f"{package}/extract")
+    return {
+        "create": created.status_code,
+        "register": registered.status_code,
+        "ticket": ticket.status_code,
+        "confirm": confirmed.status_code,
+        "extract": extract.status_code,
+    }
+
+
+@pytest.mark.parametrize("who", [_reviewer(), _admin()], ids=["reviewer", "admin"])
+def test_a_reviewer_and_an_admin_can_start_a_review(
+    session: Session, tmp_path: Path, who: Principal
+) -> None:
+    """#1182. Outcome: none of the five steps is refused for the role. Create, register and the
+    ticket succeed; confirm says nothing was uploaded yet (409) and the reading says no drawing is
+    confirmed yet (422): both are the next step talking, not the role."""
+    client = _calling_as(session, who, store=_store(tmp_path))
+
+    assert _start_review_calls(session, client) == {
+        "create": 201,
+        "register": 201,
+        "ticket": 201,
+        "confirm": 409,
+        "extract": 422,
+    }
+
+
+def test_a_rule_admin_cannot_start_a_review(session: Session, tmp_path: Path) -> None:
+    """Outcome: 404 on all five steps, in the same words as absent, and nothing created or queued
+    beyond the packages this test made itself."""
+    client = _calling_as(session, _principal(Role.RULE_ADMIN), store=_store(tmp_path))
+
+    statuses = _start_review_calls(session, client)
+
+    assert set(statuses.values()) == {404}, statuses
+    assert session.scalar(select(func.count()).select_from(Package)) == 1
+    assert list(session.execute(select(OutboxEntry.id)).scalars()) == []
+
+
+def test_starting_a_review_is_its_own_action_for_reviewers_and_admins() -> None:
+    assert PERMISSIONS[Action.START_REVIEW] == frozenset({Role.REVIEWER, Role.ADMIN})
+    assert PERMISSIONS[Action.MANAGE_COMPANY_STANDARDS] == frozenset({Role.ADMIN})
+    assert PERMISSIONS[Action.PUBLISH_RULE] == frozenset({Role.RULE_ADMIN, Role.ADMIN})

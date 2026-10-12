@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
+from app.api.signed_off import ensure_revision_writable, open_revision, open_session_revision
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.evidence import CanonicalObservation
 from app.models.package import Package, PackageRevision
@@ -57,6 +58,7 @@ from app.review.session import (
     open_session,
     record_action,
 )
+from app.review.sizes import NOT_ABOVE_ZERO, is_positive_size, typed_negative
 from app.schemas.review import (
     DecidedEvidenceOut,
     DecideEvidence,
@@ -176,6 +178,11 @@ def _corrected_inches(db: Session, observation_id: UUID, typed: str) -> Fraction
                 "number that gets cut."
             ),
         )
+    if is_positive_size(observation.semantic_type) and typed_negative(typed):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"corrected_value: {NOT_ABOVE_ZERO}",
+        )
     try:
         measured = normalise_to_inches(typed)
     except UnitNormalisationError as refused:
@@ -186,6 +193,11 @@ def _corrected_inches(db: Session, observation_id: UUID, typed: str) -> Fraction
                 "number with no unit cannot be read and must not be guessed at."
             ),
         ) from refused
+    if is_positive_size(observation.semantic_type) and measured.exact <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"corrected_value: {NOT_ABOVE_ZERO}",
+        )
     return measured.exact
 
 
@@ -194,6 +206,7 @@ def _corrected_inches(db: Session, observation_id: UUID, typed: str) -> Fraction
     response_model=ReviewSessionOut,
     status_code=status.HTTP_201_CREATED,
     summary="Open a review session over one package revision",
+    dependencies=[Depends(open_revision)],
 )
 def open_review_session(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -211,6 +224,8 @@ def open_review_session(
     del package_id
     if not _revision_is_in_project(db, project_id, body.package_revision_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    # The dependency checked the package's newest revision; the body may name an older one (#1182).
+    ensure_revision_writable(db, body.package_revision_id)
 
     try:
         opened = open_session(
@@ -318,6 +333,7 @@ def list_finding_actions(
     response_model=ReviewActionOut,
     status_code=status.HTTP_201_CREATED,
     summary="Record what the reviewer did to one finding",
+    dependencies=[Depends(open_session_revision)],
 )
 def record_review_action(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -358,6 +374,7 @@ def record_review_action(
     response_model=DecidedEvidenceOut,
     status_code=status.HTTP_201_CREATED,
     summary="Confirm or correct one reading behind a finding",
+    dependencies=[Depends(open_session_revision)],
 )
 def decide_evidence(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -427,6 +444,7 @@ def decide_evidence(
     response_model=ReviewExceptionOut,
     status_code=status.HTTP_201_CREATED,
     summary="Accept one specific deviation, until a date",
+    dependencies=[Depends(open_session_revision)],
 )
 def grant_review_exception(
     principal: Annotated[Principal, Depends(require_project_access)],
