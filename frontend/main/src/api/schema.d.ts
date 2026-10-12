@@ -3451,6 +3451,11 @@ export interface components {
             expected_total: components["schemas"]["ExactValueOut"] | null;
             /** Field Cut Count */
             field_cut_count: number | null;
+            /**
+             * Field Cut In Force
+             * @description The field cut per wall end a check run would use now, e.g. `1"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. For the field-cut explanation, labelled as the current value.
+             */
+            field_cut_in_force?: string | null;
             field_cut_per_end: components["schemas"]["ExactValueOut"] | null;
             /** Finding Id */
             finding_id: string | null;
@@ -3479,6 +3484,8 @@ export interface components {
              */
             row_id: string;
             row_location: components["schemas"]["RowLocation"] | null;
+            /** @description When the row's walls were not established: the width check for every wall case (#1202), from its recorded result. Empty otherwise. */
+            wall_cases?: components["schemas"]["WallCasesOut"];
             wall_layout: components["schemas"]["WallLayoutOut"];
         };
         /** CountertopResultsOut */
@@ -6617,6 +6624,11 @@ export interface components {
             decided_at: string | null;
             /** Decision Id */
             decision_id: string | null;
+            /**
+             * Field Cut In Force
+             * @description The field cut per wall end a check run would use now, e.g. `1"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. Each choice's result is hidden when it differs from the one the recorded result used.
+             */
+            field_cut_in_force?: string | null;
             /** Held Reason */
             held_reason: string | null;
             /** Label */
@@ -6633,10 +6645,17 @@ export interface components {
             row_location?: components["schemas"]["RowLocation"] | null;
             /** Values */
             values: components["schemas"]["SlotRowValueOut"][];
+            /** @description Each wall choice's result (#1202): the overall it needs and PASS or FAIL against the vendor's printed overall, as the width check recorded them for every wall case. Empty with `unavailable_reason` when there is no such result. Nothing is chosen. */
+            wall_cases?: components["schemas"]["WallCasesOut"];
             /** Wall Config */
             wall_config: string | null;
             /** Wall Confirmation Allowed */
             wall_confirmation_allowed: boolean;
+            /**
+             * Wall Evidence
+             * @description What code saw at the row's ends, in plain words (#1202): wall ink (a hatch running up the end, a solid band, a tall wall line) and the vendor's words there, which are evidence only and never decide the walls.
+             */
+            wall_evidence?: string[];
             /** Wall Layout Choices */
             wall_layout_choices: string[];
             /** Wall Proposal */
@@ -6645,6 +6664,12 @@ export interface components {
             wall_reason: string | null;
             /** Wall Source */
             wall_source: string | null;
+            /**
+             * Walls Needed
+             * @description False when the row's recorded width result is wrong (or right) for every wall case (#1202): the walls do not change it, so no wall answer is asked for.
+             * @default true
+             */
+            walls_needed: boolean;
         };
         /** SlotRowReviewIn */
         SlotRowReviewIn: {
@@ -7131,6 +7156,51 @@ export interface components {
             /** Views */
             views: components["schemas"]["ViewOut"][];
         };
+        /**
+         * WallCaseOut
+         * @description One wall case the width check was run for, as the verdict engine recorded it (#1202).
+         */
+        WallCaseOut: {
+            /** @description What the overall should be in this case, as the engine worked it out. */
+            expected_total: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Field Cut Count
+             * @description Field cuts this case adds: 2, 1 or 0.
+             */
+            field_cut_count: number | null;
+            /** @description The field cut this case adds in all, as the engine worked it out. */
+            field_cut_total: components["schemas"]["ExactValueOut"] | null;
+            /** Layout */
+            layout: string;
+            outcome: components["schemas"]["Outcome"];
+            /**
+             * Words
+             * @description The case in the field-cut rule's words: "walls at both ends".
+             */
+            words: string;
+        };
+        /**
+         * WallCasesOut
+         * @description The width check for every wall case, from the row's recorded result (#1202).
+         *
+         *     Empty `cases` with `unavailable_reason` when there is no such result: a number is not sealed,
+         *     the row is held, the checks have not run, or a value was saved after the last run.
+         */
+        WallCasesOut: {
+            /**
+             * Cases
+             * @default []
+             */
+            cases: components["schemas"]["WallCaseOut"][];
+            /** @description The project's field cut per wall end the cases used. */
+            field_cut_per_end?: components["schemas"]["ExactValueOut"] | null;
+            /** @description The row's pieces added up, as the engine worked it out. */
+            pieces_add_up_to?: components["schemas"]["ExactValueOut"] | null;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+            /** @description The vendor's printed overall the cases were checked against. */
+            vendor_wrote?: components["schemas"]["ExactValueOut"] | null;
+        };
         /** WallLayoutOut */
         WallLayoutOut: {
             /**
@@ -7153,10 +7223,16 @@ export interface components {
             /** Label */
             label: string | null;
             /**
+             * Line
+             * @description The results line, in plain words: which walls were used and who decided (#1202), e.g. "walls at both ends — seen on the drawing at both ends and confirmed by both AIs", "back wall and left end — chosen by <reviewer>", "not needed: wrong for every wall case". Null while the walls are not established.
+             */
+            line?: string | null;
+            /**
              * Source
+             * @description Who set the walls the result used. `code ink and both AIs` (#1202): code saw wall ink at both row ends and both AIs said a wall at both ends; the one automatic layout. `not needed`: the width is wrong (or right) for every wall case, so no walls were used. `drawing clues` and `both readers` are only on results from before #1202.
              * @enum {string}
              */
-            source: "drawing clues" | "both readers" | "reviewer" | "between panels" | "not established";
+            source: "drawing clues" | "both readers" | "reviewer" | "between panels" | "not established" | "code ink and both AIs" | "not needed";
         };
         /**
          * WallLayoutProposalOut

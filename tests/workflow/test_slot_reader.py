@@ -1951,7 +1951,7 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     ).one()
     assert proposal.discriminator_name == "wall_config"
     assert proposal.proposed_value == "back_left_right"
-    assert proposal.prompt_id == "slot-walls-v2"
+    assert proposal.prompt_id == "slot-walls-v3"
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
@@ -2016,12 +2016,13 @@ def test_walls_the_readers_do_not_settle_propose_nothing(session: Any, tmp_path:
     assert reader_sealed_wall_config(session, revision.id) is None
 
 
-def test_vendor_filler_word_is_a_positive_wall_clue_but_gv_ink_is_not() -> None:
+def test_vendor_filler_word_is_wall_evidence_but_gv_ink_is_not() -> None:
+    """#1202: the vendor's words at an end are recorded as evidence only; GV's are not even that."""
     from dataclasses import replace
 
     from extraction.ink import InkClass, InkLabel
     from extraction.slot_reader.walls import E3_WALL_SETTINGS
-    from workflow.slot_reader import _code_wall_clues, _wall_job_pictures
+    from workflow.slot_reader import _code_wall_words, _wall_job_pictures
 
     page = slot_page(sheets.sheet(text_labels()))
     plan = plan_slots(
@@ -2037,42 +2038,43 @@ def test_vendor_filler_word_is_a_positive_wall_clue_but_gv_ink_is_not() -> None:
     center_x = page.rows.to_pixels((slot.x0 + slot.x1) / 2, plan.row.y)[0]
     center_y = page.rows.to_pixels(plan.row.x0, plan.row.y)[1]
 
-    def clues(ink_class: InkClass, x: int = center_x) -> Any:
+    def words(ink_class: InkClass, x: int = center_x) -> Any:
         label = InkLabel("FILLER", (x - 8, center_y - 3, x + 8, center_y + 3), ink_class)
         updated = replace(page, ink=replace(page.ink, labels=(*page.ink.labels, label)))
-        return _code_wall_clues(updated, plan, pictures)
+        return _code_wall_words(updated, plan, pictures)
 
-    assert clues(InkClass.VENDOR).left is True
-    assert clues(InkClass.GV).left is None
+    assert words(InkClass.VENDOR).left is True
+    assert words(InkClass.GV).left is False
     row_start = page.rows.to_pixels(plan.row.x0, plan.row.y)[0]
-    assert clues(InkClass.VENDOR, row_start - 20).left is None
+    assert words(InkClass.VENDOR, row_start - 20).left is False
 
 
-def test_two_positive_drawing_wall_clues_skip_the_reader_question(monkeypatch: Any) -> None:
-    from extraction.slot_reader.walls import CodeWallClues
+def _with_wall_ink(monkeypatch: Any, left: bool, right: bool) -> None:
+    """Code's wall ink at the row's ends, as `wall_pictures` would report it."""
+    from dataclasses import replace
 
-    page = slot_page(sheets.sheet(text_labels()))
-    clients = FakeReaders(lambda _model, _png: '12"')
-    monkeypatch.setattr(
-        "workflow.slot_reader._code_wall_clues",
-        lambda _page, _plan, _pictures: CodeWallClues(left=True, right=True),
-    )
+    from extraction.slot_reader import walls as walls_module
+    from extraction.slot_reader.walls import WallInkSeen
 
-    (result,) = read_slot_pages(
-        [page], runtime=runtime(clients), record_attempt=lambda _attempt: None
-    )
+    real = walls_module.wall_pictures
 
-    assert result.walls is not None
-    assert result.walls.outcome.config == "back_left_right"
-    assert result.walls.outcome.source == "vendor-drawing-clues"
-    assert clients.wall_requests == []
+    def seen(row: Any, ink: Any, *, settings: Any) -> Any:
+        return replace(real(row, ink, settings=settings), ink=WallInkSeen(left, right))
+
+    monkeypatch.setattr("workflow.slot_reader.wall_pictures", seen)
 
 
-def _claude_walls_read(texts: Mapping[int | None, str]) -> PageSlotResult:
+def _claude_walls(
+    walls: Mapping[str, str],
+    counter_break: Callable[[str], Mapping[str, object]] | None = None,
+    texts: Mapping[int | None, str] = TEXTS,
+) -> tuple[PageSlotResult, FakeReaders]:
     page = glyph_page()
     lookup = claude_crops_to_texts(page, texts)
     readers = FakeReaders(
-        lambda _model, png: lookup.get(png, '2"'), walls=lambda _model: UNSURE_WALLS
+        lambda _model, png: lookup.get(png, '2"'),
+        walls=lambda _model: walls,
+        **({} if counter_break is None else {"counter_break": counter_break}),
     )
     base = runtime(readers)
     configured = replace(
@@ -2085,26 +2087,141 @@ def _claude_walls_read(texts: Mapping[int | None, str]) -> PageSlotResult:
         claude_row_reader=True,
     )
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=lambda _attempt: None)
-    return result
+    return result, readers
 
 
-def test_a_filler_both_readers_sealed_at_each_row_end_settles_the_walls() -> None:
-    """Proof run 2026-10-08: a vendor draws its "Filler" sums as lines, so the file's text has no
-    "Filler"; the sealed readings are the only place the drawing's own clue shows up."""
-    result = _claude_walls_read(TEXTS | {0: '10"+2"Filler', 2: '10"+2"Filler'})
+def test_code_wall_ink_at_both_ends_and_both_ais_set_the_walls_automatically(
+    monkeypatch: Any,
+) -> None:
+    """#1202: the three conditions together — code's ink at both ends, both AIs "yes" at both
+    ends, and nothing saying the stone stops short — and the AIs were asked."""
+    _with_wall_ink(monkeypatch, True, True)
+    result, readers = _claude_walls(BOTH_WALLS, _to_walls)
+
+    assert readers.wall_requests, "both AIs are always asked"
+    assert result.walls is not None
+    assert result.walls.outcome.config == "back_left_right"
+    assert result.walls.outcome.source == "code-ink-and-both-ais"
+
+
+def test_code_wall_ink_at_one_end_only_goes_to_the_reviewer(monkeypatch: Any) -> None:
+    _with_wall_ink(monkeypatch, True, False)
+    result, _ = _claude_walls(BOTH_WALLS, _to_walls)
+
+    assert result.walls is not None
+    assert result.walls.outcome.source == "readers", "a proposal the reviewer confirms"
+
+
+def test_both_ais_with_no_code_wall_ink_go_to_the_reviewer(monkeypatch: Any) -> None:
+    _with_wall_ink(monkeypatch, False, False)
+    result, _ = _claude_walls(BOTH_WALLS, _to_walls)
+
+    assert result.walls is not None
+    assert result.walls.outcome.source == "readers"
+
+
+def test_code_ink_and_both_ais_but_stone_between_panels_go_to_the_reviewer(
+    monkeypatch: Any,
+) -> None:
+    _with_wall_ink(monkeypatch, True, True)
+    result, _ = _claude_walls(
+        BOTH_WALLS,
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": "short_of_ends" if model == SONNET else "to_walls",
+            "why": "stone sits between full-height panels",
+        },
+    )
+
+    assert result.walls is not None
+    assert result.walls.outcome.source == "readers"
+    assert result.check_hold is not None
+
+
+@pytest.mark.parametrize(
+    ("opus", "sonnet"),
+    [
+        ("open_end", "to_walls"),
+        ("open_end", "open_end"),
+        ("unsure", "unsure"),
+        ("no_stone", "to_walls"),
+    ],
+)
+def test_only_both_ais_saying_the_stone_runs_to_the_walls_allows_automatic_walls(
+    monkeypatch: Any, opus: str, sonnet: str
+) -> None:
+    """#1202 review: an open end, "unsure" or "no stone" is not the stone meeting the walls."""
+    _with_wall_ink(monkeypatch, True, True)
+    result, _ = _claude_walls(
+        BOTH_WALLS,
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": opus if model == OPUS else sonnet,
+            "why": "synthetic",
+        },
+    )
+
+    assert result.walls is not None
+    assert result.walls.outcome.config == "back_left_right"
+    assert result.walls.outcome.source == "readers", "a proposal the reviewer confirms"
+
+
+def test_the_stone_question_counts_only_two_to_walls_answers() -> None:
+    from types import SimpleNamespace
+
+    from workflow.slot_reader import stone_runs_to_walls
+
+    def said(*values: str) -> list[Any]:
+        return [SimpleNamespace(stone_ends=value) for value in values]
+
+    assert stone_runs_to_walls(said("to_walls", "to_walls"))
+    assert not stone_runs_to_walls(said("to_walls"))
+    assert not stone_runs_to_walls(said("to_walls", "open_end"))
+    assert not stone_runs_to_walls(said("to_walls", "short_of_ends"))
+
+
+def test_automatic_walls_need_the_judged_row_to_be_the_row_read() -> None:
+    """#1202 review: a row read through its equal-share chain keeps automatic walls only when the
+    chain has exactly the same two ends as the row whose walls the AIs and code judged."""
+    from types import SimpleNamespace
+
+    from workflow.slot_reader import same_row_ends
+
+    judged = SimpleNamespace(x0=Decimal(100), x1=Decimal(300))
+    assert same_row_ends(judged, SimpleNamespace(x0=Decimal(100), x1=Decimal(300)))  # type: ignore[arg-type]
+    assert not same_row_ends(judged, SimpleNamespace(x0=Decimal(101), x1=Decimal(300)))  # type: ignore[arg-type]
+    assert not same_row_ends(judged, None)  # type: ignore[arg-type]
+
+
+def test_code_wall_ink_never_decides_alone(monkeypatch: Any) -> None:
+    """Before #1202 code's clues at both ends settled the walls and the AIs were not asked."""
+    _with_wall_ink(monkeypatch, True, True)
+    result, readers = _claude_walls(UNSURE_WALLS, _to_walls)
+
+    assert readers.wall_requests
+    assert result.walls is not None and result.walls.outcome.config is None
+
+
+def test_the_vendors_words_at_both_ends_are_never_decisive() -> None:
+    """Proof run 2026-10-08 found "Filler" sums only in the sealed readings; #1202 keeps them as
+    evidence and never lets them set the walls (fillers stood at free ends five times)."""
+    result, _ = _claude_walls(UNSURE_WALLS, texts=TEXTS | {0: '10"+2"Filler', 2: '10"+2"Filler'})
 
     assert [slot.outcome.state for slot in result.slots][::2] == [LabelState.SEALED] * 2
     assert result.walls is not None
-    assert result.walls.code_clues.left is True and result.walls.code_clues.right is True
-    assert result.walls.outcome.config == "back_left_right"
-    assert result.walls.outcome.source == "vendor-drawing-clues"
+    assert result.walls.words.left is True and result.walls.words.right is True
+    assert result.walls.outcome.config is None
+    with_ais, _ = _claude_walls(
+        BOTH_WALLS, _to_walls, TEXTS | {0: '10"+2"Filler', 2: '10"+2"Filler'}
+    )
+    assert with_ais.walls is not None and with_ais.walls.outcome.source == "readers"
 
 
-def test_a_filler_read_at_one_end_only_leaves_the_walls_to_the_person() -> None:
-    result = _claude_walls_read(TEXTS | {0: '10"+2"Filler'})
+def test_a_filler_read_at_one_end_only_is_evidence_at_that_end() -> None:
+    result, _ = _claude_walls(UNSURE_WALLS, texts=TEXTS | {0: '10"+2"Filler'})
 
     assert result.walls is not None
-    assert result.walls.code_clues.left is True and result.walls.code_clues.right is None
+    assert result.walls.words.left is True and result.walls.words.right is False
     assert result.walls.outcome.config is None
 
 

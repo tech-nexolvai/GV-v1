@@ -10,6 +10,7 @@ import type { CountertopResult, PageWithoutCountertop, SlotReaderRow } from '@/a
 import type { Finding } from '@/data/types';
 import { sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
+import type { WallCases } from '@/lib/wall-rule';
 
 export type QueueItem =
   | { kind: 'countertop'; key: string; rowId: string; findingId: string | null; page: number; label: string }
@@ -254,20 +255,31 @@ export interface WallQuestion {
   rowId: string;
   /** The published choices, in the server's order. Nothing is pre-selected. */
   choices: string[];
-  /** What the readers (or the drawing) proposed, shown as text only. */
+  /** What the readers proposed, shown as text only. */
   proposal: string | null;
   /** Stone between full-height panels: one click for "back only", as on the countertop card (#1025). */
   betweenPanels: boolean;
   reason: string | null;
+  /** Each choice's recorded result (#1202), or a reason there is none. */
+  cases: WallCases | null;
+  /** The project's field cut now, for the rule's "i". */
+  fieldCut: string | null;
+  /** Walls at both ends set automatically (code's ink and both AIs): shown, and still changeable. */
+  automatic: boolean;
 }
+
+/** The one automatic wall layout (#1202): code's wall ink at both ends and both AIs. */
+export const AUTOMATIC_WALL_SOURCE = 'code-ink-and-both-ais';
 
 /**
  * The wall question for a row, when the reviewer can still answer it: the server allows a wall
- * confirmation and none is saved yet. Walls found in the vendor's drawing are not a question.
+ * confirmation and none is saved yet. Walls set automatically (code's ink at both ends and both AIs)
+ * are offered too, so a reviewer can always correct them (#1202 review). Not a question: a result
+ * that is the same for every wall case. An older run's drawing-clue layout is only a proposal.
  */
 export function wallQuestion(slot: SlotReaderRow | null | undefined): WallQuestion | null {
   if (!slot || !slot.wall_confirmation_allowed || slot.wall_config !== null) return null;
-  if (slot.wall_source === 'vendor-drawing-clues' && slot.wall_proposal) return null;
+  if (slot.walls_needed === false) return null;
   if (slot.wall_layout_choices.length === 0) return null;
   return {
     rowId: slot.row_id,
@@ -275,5 +287,8 @@ export function wallQuestion(slot: SlotReaderRow | null | undefined): WallQuesti
     proposal: slot.wall_proposal,
     betweenPanels: slot.wall_source === 'between-panels' && slot.wall_proposal === 'back_only',
     reason: slot.wall_reason,
+    cases: slot.wall_cases ?? null,
+    fieldCut: slot.field_cut_in_force ?? slot.wall_cases?.field_cut_per_end?.display ?? null,
+    automatic: slot.wall_source === AUTOMATIC_WALL_SOURCE && slot.wall_proposal === 'back_left_right',
   };
 }

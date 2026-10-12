@@ -37,6 +37,7 @@ import { ArchitectViewPicker } from './architect-view-picker';
 import { DecisionFields } from '@/components/results/decision-form';
 import { useDecisionDraft, type DecideHandlers } from '@/components/results/use-decision-draft';
 import { WallGlyph, WallLayoutPicture } from '@/components/results/wall-glyph';
+import { WallChoiceResult, WallRuleInfo, WallsLine } from '@/components/results/wall-rule-info';
 import { DrawnLengthNote } from '@/components/results/drawn-length-note';
 import { NeedsValues } from '@/components/results/needs-values';
 import { DrawingViewer, MarkNotes } from '@/components/drawing/drawing-viewer';
@@ -694,6 +695,8 @@ function Facts({ row }: { row: CountertopResult }) {
           </dd>
         </div>
       </dl>
+      {/* Which walls were used and who decided (#1202), with GV's field-cut rule behind the "i". */}
+      <WallsLine row={row} />
       <DrawnLengthNote row={row} />
     </div>
   );
@@ -735,8 +738,9 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
 
   return (
     <section aria-labelledby="queue-walls" data-slot="queue-walls" className="@container flex flex-col gap-2 rounded-lg border p-3">
-      <h3 id="queue-walls" className="text-sm font-medium">
+      <h3 id="queue-walls" className="flex items-center gap-1.5 text-sm font-medium">
         Walls for this countertop
+        <WallRuleInfo fieldCut={question.fieldCut} cases={question.cases} />
       </h3>
       {question.betweenPanels && (
         <>
@@ -748,7 +752,10 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
           <p className="text-xs text-muted-foreground">Or choose another layout:</p>
         </>
       )}
-      {!question.betweenPanels && question.proposal && (
+      {!question.betweenPanels && question.automatic && (
+        <p className="text-sm text-muted-foreground">Walls at both ends: seen on the drawing at both ends and confirmed by both AIs. Choose another layout only if that is wrong.</p>
+      )}
+      {!question.betweenPanels && !question.automatic && question.proposal && (
         <p className="text-sm text-muted-foreground">The readers propose: {wallWords(question.proposal).toLowerCase()}. Not confirmed.</p>
       )}
       {/* One per row, or all of them in one row when three or fewer fit; never a ragged 2 + 1 (#1155). */}
@@ -764,12 +771,17 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
         className={cn('grid w-full grid-cols-1', question.choices.length <= 3 && '@min-[42rem]:grid-flow-col @min-[42rem]:auto-cols-fr @min-[42rem]:grid-cols-none')}
       >
         {question.choices.map((config) => (
-          <ToggleGroupItem key={config} value={config} className="w-full justify-start gap-1.5 px-2.5">
+          <ToggleGroupItem key={config} value={config} className="h-auto min-h-8 w-full flex-wrap justify-start gap-x-1.5 gap-y-0.5 px-2.5 py-1">
             <WallLayoutPicture config={config} />
             {wallWords(config)}
+            {/* What this choice gives, as the check recorded it (#1202); choosing is still only a draft. */}
+            <WallChoiceResult cases={question.cases} layout={config} />
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
+      {question.cases?.unavailable_reason && (
+        <p data-slot="wall-choices-no-results" className="text-xs text-muted-foreground">{question.cases.unavailable_reason}</p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant={question.betweenPanels ? 'outline' : 'default'} disabled={!choice || saving} onClick={() => void save(choice)}>
           Use this wall layout

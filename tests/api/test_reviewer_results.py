@@ -106,7 +106,7 @@ def test_review_note_preserves_the_recorded_outcome(
 def test_row_and_finding_return_the_same_normalized_location(
     session: Session, tmp_path: Path
 ) -> None:
-    project, package, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    project, package, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     rows = list_slot_rows(reviewer(), session, project, package).rows
     assert rows[0].row_location.page_number == 1
     assert rows[0].row_location.coordinate_space == "stored"

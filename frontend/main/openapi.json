@@ -3125,6 +3125,18 @@
             ],
             "title": "Field Cut Count"
           },
+          "field_cut_in_force": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The field cut per wall end a check run would use now, e.g. `1\"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. For the field-cut explanation, labelled as the current value.",
+            "title": "Field Cut In Force"
+          },
           "field_cut_per_end": {
             "anyOf": [
               {
@@ -3244,6 +3256,10 @@
                 "type": "null"
               }
             ]
+          },
+          "wall_cases": {
+            "$ref": "#/components/schemas/WallCasesOut",
+            "description": "When the row's walls were not established: the width check for every wall case (#1202), from its recorded result. Empty otherwise."
           },
           "wall_layout": {
             "$ref": "#/components/schemas/WallLayoutOut"
@@ -9650,6 +9666,18 @@
             ],
             "title": "Decision Id"
           },
+          "field_cut_in_force": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The field cut per wall end a check run would use now, e.g. `1\"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. Each choice's result is hidden when it differs from the one the recorded result used.",
+            "title": "Field Cut In Force"
+          },
           "held_reason": {
             "anyOf": [
               {
@@ -9695,6 +9723,10 @@
             "title": "Values",
             "type": "array"
           },
+          "wall_cases": {
+            "$ref": "#/components/schemas/WallCasesOut",
+            "description": "Each wall choice's result (#1202): the overall it needs and PASS or FAIL against the vendor's printed overall, as the width check recorded them for every wall case. Empty with `unavailable_reason` when there is no such result. Nothing is chosen."
+          },
           "wall_config": {
             "anyOf": [
               {
@@ -9709,6 +9741,14 @@
           "wall_confirmation_allowed": {
             "title": "Wall Confirmation Allowed",
             "type": "boolean"
+          },
+          "wall_evidence": {
+            "description": "What code saw at the row's ends, in plain words (#1202): wall ink (a hatch running up the end, a solid band, a tall wall line) and the vendor's words there, which are evidence only and never decide the walls.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Wall Evidence",
+            "type": "array"
           },
           "wall_layout_choices": {
             "items": {
@@ -9749,6 +9789,12 @@
               }
             ],
             "title": "Wall Source"
+          },
+          "walls_needed": {
+            "default": true,
+            "description": "False when the row's recorded width result is wrong (or right) for every wall case (#1202): the walls do not change it, so no wall answer is asked for.",
+            "title": "Walls Needed",
+            "type": "boolean"
           }
         },
         "required": [
@@ -10923,6 +10969,126 @@
         "title": "ViewsOut",
         "type": "object"
       },
+      "WallCaseOut": {
+        "description": "One wall case the width check was run for, as the verdict engine recorded it (#1202).",
+        "properties": {
+          "expected_total": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the overall should be in this case, as the engine worked it out."
+          },
+          "field_cut_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Field cuts this case adds: 2, 1 or 0.",
+            "title": "Field Cut Count"
+          },
+          "field_cut_total": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The field cut this case adds in all, as the engine worked it out."
+          },
+          "layout": {
+            "title": "Layout",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "words": {
+            "description": "The case in the field-cut rule's words: \"walls at both ends\".",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layout",
+          "words",
+          "field_cut_count",
+          "field_cut_total",
+          "expected_total",
+          "outcome"
+        ],
+        "title": "WallCaseOut",
+        "type": "object"
+      },
+      "WallCasesOut": {
+        "description": "The width check for every wall case, from the row's recorded result (#1202).\n\nEmpty `cases` with `unavailable_reason` when there is no such result: a number is not sealed,\nthe row is held, the checks have not run, or a value was saved after the last run.",
+        "properties": {
+          "cases": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/WallCaseOut"
+            },
+            "title": "Cases",
+            "type": "array"
+          },
+          "field_cut_per_end": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The project's field cut per wall end the cases used."
+          },
+          "pieces_add_up_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The row's pieces added up, as the engine worked it out."
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          },
+          "vendor_wrote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's printed overall the cases were checked against."
+          }
+        },
+        "title": "WallCasesOut",
+        "type": "object"
+      },
       "WallLayoutOut": {
         "properties": {
           "carried_by": {
@@ -10984,13 +11150,28 @@
             ],
             "title": "Label"
           },
+          "line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The results line, in plain words: which walls were used and who decided (#1202), e.g. \"walls at both ends \u2014 seen on the drawing at both ends and confirmed by both AIs\", \"back wall and left end \u2014 chosen by <reviewer>\", \"not needed: wrong for every wall case\". Null while the walls are not established.",
+            "title": "Line"
+          },
           "source": {
+            "description": "Who set the walls the result used. `code ink and both AIs` (#1202): code saw wall ink at both row ends and both AIs said a wall at both ends; the one automatic layout. `not needed`: the width is wrong (or right) for every wall case, so no walls were used. `drawing clues` and `both readers` are only on results from before #1202.",
             "enum": [
               "drawing clues",
               "both readers",
               "reviewer",
               "between panels",
-              "not established"
+              "not established",
+              "code ink and both AIs",
+              "not needed"
             ],
             "title": "Source",
             "type": "string"

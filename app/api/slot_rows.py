@@ -30,13 +30,28 @@ from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.lifecycle.carry_forward import wall_answer_origins
 from app.models import ObservationCandidate, SlotRowReviewDecision
+from app.models.verdicts import Finding
 from app.review.row_location import RowLocation, architect_locations, row_location
 from app.review.sizes import NOT_ABOVE_ZERO, typed_negative
+from app.review.wall_cases import (
+    current_field_cut,
+    field_cut_changed,
+    field_cut_text,
+    latest_width_findings,
+    unavailable_reason,
+    wall_cases_out,
+)
+from app.schemas.visual_ui import WallCasesOut
 from units.imperial import format_inches
 from units.normalise import UnitNormalisationError, normalise_to_inches
+from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
-from vocabulary.wall_layouts import BETWEEN_PANELS_WORDS, is_between_panels
+from vocabulary.wall_layouts import (
+    AUTOMATIC_WALL_SOURCE,
+    BETWEEN_PANELS_WORDS,
+    is_between_panels,
+)
 from workflow.architect_pairing_records import (
     DecidedPair,
     ReviewerPairingRefused,
@@ -47,6 +62,7 @@ from workflow.architect_pairing_records import (
     record_reviewer_pairing,
 )
 from workflow.countertop_runs import published_wall_layouts
+from workflow.layout_proposals import WALL_INK_FLAG, WALL_WORDS_FLAG
 from workflow.slot_row_scope import (
     SlotRow,
     candidate_is_sealed,
@@ -54,6 +70,7 @@ from workflow.slot_row_scope import (
     latest_row_decision,
     slot_rows,
 )
+from workflow.wall_cases import is_every_wall_case
 
 router = APIRouter(tags=["slot-reader rows"])
 
@@ -96,6 +113,37 @@ class SlotRowOut(BaseModel):
     carried_given_at: datetime | None = Field(
         default=None, description="When the carried answer was originally given."
     )
+    wall_cases: WallCasesOut = Field(
+        default_factory=WallCasesOut,
+        description=(
+            "Each wall choice's result (#1202): the overall it needs and PASS or FAIL against the "
+            "vendor's printed overall, as the width check recorded them for every wall case. "
+            "Empty with `unavailable_reason` when there is no such result. Nothing is chosen."
+        ),
+    )
+    walls_needed: bool = Field(
+        default=True,
+        description=(
+            "False when the row's recorded width result is wrong (or right) for every wall case "
+            "(#1202): the walls do not change it, so no wall answer is asked for."
+        ),
+    )
+    field_cut_in_force: str | None = Field(
+        default=None,
+        description=(
+            'The field cut per wall end a check run would use now, e.g. `1"` (#1202): the '
+            "run's, else the project's, else GV's default, else the rulebook's. Each choice's "
+            "result is hidden when it differs from the one the recorded result used."
+        ),
+    )
+    wall_evidence: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What code saw at the row's ends, in plain words (#1202): wall ink (a hatch running up "
+            "the end, a solid band, a tall wall line) and the vendor's words there, which are "
+            "evidence only and never decide the walls."
+        ),
+    )
 
 
 class SlotRowsOut(BaseModel):
@@ -117,7 +165,40 @@ class SlotRowReviewIn(BaseModel):
         return values
 
 
-def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRowOut:
+def _wall_evidence(flags: set[str]) -> list[str]:
+    """Code's wall ink and the vendor's words at the row's ends, as plain lines (#1202)."""
+    lines: list[str] = []
+    ink = next(
+        (flag.removeprefix(WALL_INK_FLAG) for flag in flags if flag.startswith(WALL_INK_FLAG)), ""
+    )
+    ends = [side for side in ("left", "right") if f"{side}=True" in ink]
+    if ends:
+        lines.append(
+            "Code saw wall ink at both ends."
+            if len(ends) == 2
+            else f"Code saw wall ink at the {ends[0]} end only."
+        )
+    words = next(
+        (flag.removeprefix(WALL_WORDS_FLAG) for flag in flags if flag.startswith(WALL_WORDS_FLAG)),
+        "",
+    )
+    worded = [side for side in ("left", "right") if f"{side}=True" in words]
+    if worded:
+        where = "both ends" if len(worded) == 2 else f"the {worded[0]} end"
+        lines.append(
+            f"The vendor's words at {where} (filler, field cut or wall) are evidence only; "
+            "they never decide the walls."
+        )
+    return lines
+
+
+def _row_out(
+    session: Session,
+    row: SlotRow,
+    layouts: tuple[str, ...],
+    finding: Finding | None = None,
+    field_cut: Fraction | None = None,
+) -> SlotRowOut:
     proposal_by_candidate = row.proposals
     candidate_by_position: dict[int | None, ObservationCandidate] = {}
     for candidate in row.candidates:
@@ -212,6 +293,33 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
             f"confirm '{BETWEEN_PANELS_WORDS}'."
         )
 
+    if (
+        source == AUTOMATIC_WALL_SOURCE
+        and wall_proposal_value == "back_left_right"
+        and held_flag is None
+    ):
+        reason = reason or "Seen on the drawing at both ends and confirmed by both AIs."
+
+    between_panels = any(
+        is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
+    )
+    saved_after = (
+        finding is not None
+        and decision is not None
+        and decision.created_at is not None
+        and finding.created_at is not None
+        and decision.created_at > finding.created_at
+    )
+    # The project's field cut changed since this result: its numbers are out of date (#1202).
+    stale = field_cut_changed(finding, field_cut)
+    why_not = unavailable_reason(finding, saved_after=saved_after, field_cut_changed=stale)
+    walls_needed = not (
+        finding is not None
+        and not saved_after
+        and not stale
+        and is_every_wall_case(finding.trace)
+        and finding.outcome in (Outcome.PASS.value, Outcome.FAIL.value)
+    )
     origin = wall_answer_origins(session, (decision,)).get(decision.id) if decision else None
     return SlotRowOut(
         row_id=row.anchor.id,
@@ -232,6 +340,14 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
         carried_from_revision=None if origin is None else origin.revision_number,
         carried_given_at=None if origin is None else origin.given_at,
         wall_config=None if decision is None else decision.wall_config,
+        wall_cases=wall_cases_out(
+            None if finding is None else finding.trace,
+            between_panels=between_panels,
+            unavailable_reason=why_not,
+        ),
+        walls_needed=walls_needed,
+        field_cut_in_force=field_cut_text(field_cut),
+        wall_evidence=_wall_evidence(wall_flags),
     )
 
 
@@ -262,8 +378,13 @@ def list_slot_rows(
 ) -> SlotRowsOut:
     revision = _revision(session, project_id, package_id)
     layouts = published_wall_layouts(session)
+    rows = slot_rows(session, revision.id)
+    findings = latest_width_findings(session, revision.id, [row.anchor.id for row in rows])
+    field_cut = current_field_cut(session, revision.id, project_id=project_id) if rows else None
     return SlotRowsOut(
-        rows=[_row_out(session, row, layouts) for row in slot_rows(session, revision.id)]
+        rows=[
+            _row_out(session, row, layouts, findings.get(row.anchor.id), field_cut) for row in rows
+        ]
     )
 
 
@@ -382,7 +503,14 @@ def review_slot_row(
             status_code=status.HTTP_409_CONFLICT,
             detail="This row was just updated. Reload it before confirming again.",
         ) from error
-    return _row_out(session, _current_row(session, revision.id, row_id), layouts)
+    findings = latest_width_findings(session, revision.id, [row_id])
+    return _row_out(
+        session,
+        _current_row(session, revision.id, row_id),
+        layouts,
+        findings.get(row_id),
+        current_field_cut(session, revision.id, project_id=project_id),
+    )
 
 
 # --- the architect pairing (#1053) ----------------------------------------------------------------

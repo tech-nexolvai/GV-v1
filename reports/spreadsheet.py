@@ -69,10 +69,12 @@ from app.schemas.visual_ui import (
     PageWithoutCountertopOut,
     RowNotCheckedOut,
 )
+from reports.countertop_strip import field_cut_text
 from reports.signed_review import SignedReview
 from units.measurement import Measurement
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, is_abstention
+from vocabulary.wall_layouts import field_cut_footnote
 from workflow.changed_values import ChangedValues
 
 __all__ = [
@@ -671,6 +673,12 @@ def _write_countertops_sheet(workbook: Workbook, results: Sequence[CountertopRes
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             if row_index % 2 == 0:
                 cell.fill = PatternFill("solid", fgColor=_LIGHT_GRAY)
+    # The field-cut rule in one line, under the table (#1202), with the field cut the results used.
+    note = sheet.cell(
+        row=len(results) + 3, column=1, value=field_cut_footnote(field_cut_text(results))
+    )
+    note.number_format = TEXT_FORMAT
+    note.font = Font(name="Courier New", italic=True)
     sheet.freeze_panes = "A2"
 
 

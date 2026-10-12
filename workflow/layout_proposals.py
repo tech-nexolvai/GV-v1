@@ -3,10 +3,12 @@
 The classifier proposes; the reviewer confirms. Keeping those two writes separate is what prevents a
 closed-question model answer from becoming rule applicability by accident.
 
-**Wall layouts may come from positive vendor-drawing clues or be proposed by readers.** A complete
-code-backed clue is recorded separately. Reader-only proposals remain unselected in the Measure
-form and are not sent to a check until the reviewer explicitly chooses one. It may only be used when
-all of these hold, each of which can only withhold it:
+**A revision-wide wall layout is only ever a proposal (#1202).** Code never settles the walls alone:
+an older run's "vendor drawing clues" proposal is no longer sent to a check, and a layout the
+readers sealed stays unselected in the Measure form until the reviewer explicitly chooses one. The
+one automatic wall layout is per countertop row (code's ink at both ends and both AIs,
+`workflow/slot_row_scope.effective_row_wall`), never revision-wide. A proposal may only be shown
+when all of these hold, each of which can only withhold it:
 
 - the newest slot-reader run of the revision asked about walls, and **every** row it asked about
   sealed the **same** layout (one row for the person, or two that disagree, and there is none);
@@ -48,7 +50,10 @@ __all__ = [
     "WALLS_HELD_FLAG",
     "WALLS_SEALED_FLAG",
     "WALL_CANDIDATE_TEXT",
+    "WALL_INK_FLAG",
+    "WALL_INK_WHY_FLAG",
     "WALL_READER_FLAG",
+    "WALL_WORDS_FLAG",
     "ReaderSealedLayout",
     "SlotReaderWall",
     "confirmed_discriminators",
@@ -63,7 +68,7 @@ __all__ = [
 
 #: Prompt ids whose layout proposals represent two-reader agreement, not one answer. Kept local so
 #: the API does not import the extraction layer.
-READER_AGREEMENT_PROMPT_IDS: Final = frozenset({"slot-walls-v2", "slot-walls-v1"})
+READER_AGREEMENT_PROMPT_IDS: Final = frozenset({"slot-walls-v3", "slot-walls-v2", "slot-walls-v1"})
 DRAWING_CLUE_WALL_PROMPT_ID: Final = "slot-walls-drawing-clues-v1"
 DRAWING_CLUE_WALL_PROMPT_IDS: Final = frozenset({DRAWING_CLUE_WALL_PROMPT_ID})
 #: How the slot reader marks each row's wall candidate, and its outcome.
@@ -71,6 +76,11 @@ WALL_READER_FLAG: Final = "wall-reader"
 WALLS_SEALED_FLAG: Final = "walls-sealed:"
 WALLS_HELD_FLAG: Final = "walls-held:"
 WALL_CANDIDATE_TEXT: Final = "walls: "
+#: Code's own wall judgment at each end (#1202): `wall-ink:left=<bool>,right=<bool>`, and why.
+WALL_INK_FLAG: Final = "wall-ink:"
+WALL_INK_WHY_FLAG: Final = "wall-ink-why:"
+#: The vendor's words at the row's ends (#1202): evidence for the reviewer, never a decision.
+WALL_WORDS_FLAG: Final = "wall-words:"
 WALL_CONFIG: Final = SemanticType.WALL_CONFIG.value
 #: Where a discriminator in a check request came from, as its payload records it (#992).
 DISCRIMINATOR_FROM_REVIEWER: Final = "reviewer"

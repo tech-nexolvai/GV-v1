@@ -44,8 +44,9 @@ from extraction.slot_reader.walls import WALL_PROMPT_IDS
 from rules.parameters import ParameterSet, resolve_all
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation
+from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE
 from workflow.changed_values import layered_parameter_sets
-from workflow.layout_proposals import reader_sealed_wall_config, slot_reader_wall_for_page
+from workflow.layout_proposals import slot_reader_wall_for_page
 from workflow.measurements import run_parameters_for
 from workflow.part_operands import countertop_scopes, current_wall_layout
 
@@ -395,8 +396,10 @@ def product_case_for_page(
             and row_wall.selected
             and not row_wall.held
             and not row_wall.row_held
-            and row_wall.layout is not None
-            and row_wall.source in {"vendor-drawing-clues", "drawing-and-readers"}
+            and row_wall.layout == "back_left_right"
+            # As the check (#1202): only code's wall ink at both ends with both AIs, never code
+            # alone and never a readers' proposal, settles a row's walls without the reviewer.
+            and row_wall.source == AUTOMATIC_WALL_SOURCE
             and len(page_scopes) <= 1
         ):
             wall_layout = row_wall.layout
@@ -417,10 +420,9 @@ def product_case_for_page(
             and row_wall.source in {"readers", "drawing-and-readers"}
         )
     else:
-        # Preserve the pre-row path only when this page has no slot-reader row answer at all.
-        legacy_layout = reader_sealed_wall_config(session, package_revision_id)
-        wall_layout = None if legacy_layout is None else legacy_layout.value
-        wall_layout_used = legacy_layout is not None and legacy_layout.extraction_run_id == run_id
+        # No row answer for this page: no walls (#1202). A revision-wide layout the readers sealed
+        # is only a proposal, and the check never uses one without the reviewer.
+        wall_layout = None
     wall_candidates = tuple(
         (page_index, candidate)
         for page_index, candidate in session.execute(

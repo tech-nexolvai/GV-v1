@@ -60,7 +60,12 @@ from vocabulary.drawn_length import (
     engine_result_note,
     not_checked_note,
 )
-from vocabulary.wall_layouts import is_between_panels, wall_layout_words
+from vocabulary.wall_layouts import (
+    AUTOMATIC_WALLS_LINE,
+    VENDOR_WALLS_PASS_REASON,
+    is_between_panels,
+    wall_layout_words,
+)
 from workflow.slot_row_scope import (
     SlotRow,
     SlotRowQualification,
@@ -115,6 +120,13 @@ class SlotRowCheck:
     unwitnessed: tuple[int | None, ...] = ()
     """The operands' sealed readings whose drawn length was not checked (no scale): piece slots
     from 0, `None` for the overall (#1107). Reviewer-typed values are never listed."""
+    walls_automatic: bool = False
+    """The walls were set automatically (code's wall ink at both ends and both AIs), not by the
+    reviewer for this row: a PASS on them waits for one click (#1202 review)."""
+    walls_open: bool = False
+    """The row qualified and every width sealed, and only its walls are not established (#1202):
+    `operands` are filled, `eligible` stays `False`, and the width check is run for every wall
+    case instead (`workflow/wall_cases.py`)."""
 
 
 def unwitnessed_positions(
@@ -134,6 +146,38 @@ def unwitnessed_positions(
         and NO_DRAWN_LENGTH_WITNESS in (candidate.ambiguity_flags or ())
         # The file's own text is a non-model witness: such a reading never needs the click.
         and f"reader-id:{TEXT_LAYER}" not in (candidate.ambiguity_flags or ())
+    )
+
+
+def confirm_vendor_walls_pass(
+    finding: Finding, *, walls_automatic: bool, unwitnessed: tuple[int | None, ...] = ()
+) -> Finding:
+    """A width PASS resting on walls set automatically waits for one click (#1202 review).
+
+    Walls at both ends seen by code and both AIs are still read from the vendor's drawing, which
+    can be wrong about walls; "no PASS where the vendor-drawn wall is the only evidence". The
+    engine's PASS is kept in the notes, as `confirm_unwitnessed_pass` keeps it, with the row's
+    "drawn length not checked" line when it has one. A FAIL, or walls a reviewer chose, are left
+    unchanged.
+    """
+    if finding.outcome is not Outcome.PASS or not walls_automatic:
+        return finding
+    witness = not_checked_note(unwitnessed)
+    return Finding(
+        rule_id=finding.rule_id,
+        outcome=Outcome.REVIEW_REQUIRED,
+        severity=finding.severity,
+        reason=VENDOR_WALLS_PASS_REASON,
+        snapshot_id=finding.snapshot_id,
+        engine_version=finding.engine_version,
+        parameter_set_ids=finding.parameter_set_ids,
+        evidence_refs=finding.evidence_refs,
+        variant=finding.variant,
+        notes=(
+            engine_result_note(finding.outcome.value, finding.reason),
+            *((witness,) if witness is not None else ()),
+            *finding.notes,
+        ),
     )
 
 
@@ -364,14 +408,22 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
     if not qualification.eligible:
         return SlotRowCheck(False, qualification.reason, layout, wall_reason, wall_note, {}, ())
     if layout is None:
+        waiting = wall_note or "Choose this row's wall layout."
+        # Only the walls are missing (#1202): seal the numbers exactly as the check would, so the
+        # width can be worked out for every wall case. A row that does not seal waits as before.
+        sealed_open = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+        if isinstance(sealed_open, str):
+            return SlotRowCheck(False, waiting, None, wall_reason, wall_note, {}, ())
         return SlotRowCheck(
             False,
-            wall_note or "Choose this row's wall layout.",
+            waiting,
             None,
             wall_reason,
             wall_note,
-            {},
-            (),
+            sealed_open[0],
+            sealed_open[1],
+            unwitnessed_positions(candidates_by_position),
+            walls_open=True,
         )
     sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
     if isinstance(sealed, str):
@@ -386,6 +438,7 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
         operands,
         observation_ids,
         unwitnessed_positions(candidates_by_position),
+        walls_automatic=row.decision is None or row.decision.wall_config is None,
     )
 
 
@@ -456,14 +509,10 @@ def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:
         )
     )
     provenance = (
-        f"Wall layout: {words} ({value}), confirmed by the reviewer for this row "
-        f"({row.decision.confirmed_by} on {row.decision.created_at.isoformat()})."
+        f"Wall layout: {words} ({value}), chosen by {row.decision.confirmed_by} for this row "
+        f"(confirmed by the reviewer on {row.decision.created_at.isoformat()})."
         if value is not None and row.decision is not None and confirmed is not None
-        else (
-            f"Wall layout: {words} ({value}), established from vendor drawing clues for this row."
-            if value is not None
-            else reason
-        )
+        else (f"Wall layout: {AUTOMATIC_WALLS_LINE} ({value})." if value is not None else reason)
     )
     return value, why, provenance
 

@@ -180,6 +180,10 @@ class InkCurve:
     box: Box
     points: tuple[tuple[Decimal, Decimal], ...]
     closed: bool = False
+    fill_lightness: Decimal | None = None
+    """How light the path's fill is, from 0 (black) to 1 (white), when it is filled in black or
+    grey; `None` when it is not filled (#1202). A wall drawn as a solid grey or black band is a
+    filled path, so the wall-ink check needs this; nothing else reads it."""
 
 
 @dataclass(frozen=True, slots=True)

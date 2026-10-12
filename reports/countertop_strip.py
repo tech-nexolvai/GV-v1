@@ -24,6 +24,7 @@ Verification: tests/reports/test_countertop_strip_pdf.py.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -36,6 +37,7 @@ __all__ = [
     "StripRefused",
     "StripSpan",
     "Walls",
+    "field_cut_text",
     "inches_of",
     "strip_layout",
     "walls_of",
@@ -228,3 +230,16 @@ def _layout(
         walls=walls,
         held=result.hold is not None,
     )
+
+
+def field_cut_text(results: Iterable[CountertopResultOut]) -> str | None:
+    """The field cut per wall end the results used (`1"`), for the field-cut footnote (#1202).
+
+    Read from a recorded result, never worked out: a result's own field cut, else the one its wall
+    cases used. `None` when no result names one; the footnote then names no number.
+    """
+    for result in results:
+        value = result.field_cut_per_end or result.wall_cases.field_cut_per_end
+        if value is not None:
+            return value.display
+    return None

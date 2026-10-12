@@ -1,35 +1,40 @@
-"""Which ends of a countertop row stand against a wall: two readers agree, code may object (#992).
+"""Which ends of a countertop row stand against a wall: two judgments, never one (#992, #1202).
 
 **The question, and why two readers.** CT-WIDTH-001 adds a field cut per wall end, so its variant
 needs the wall layout (`wall_config`). E3 (2026-10-07) showed both readers the row with its ends
-marked and the whole vendor view, and asked one narrow question per end: 9 rows agreed-right,
-0 agreed-wrong, 4 to the person. The admin approved it as a seal (2026-10-07): a side counts only
-when both readers, of different makers, say the same "yes" or the same "no".
+marked and the whole vendor view, and asked one narrow question per end. A side counts only when
+both readers, of different makers, say the same "yes" or the same "no".
 
-**The layout from the two ends** (admin's rule):
+**What the two readers' agreement gives** (admin's rule), always as a *proposal* the row's reviewer
+confirms with one click (`workflow/slot_row_scope.effective_row_wall`):
 - both ends "yes" → `back_left_right`;
-- left "yes" and right agreed "no" → `back_and_left`; the reverse → `back_and_right` (#1138: the
-  field cut is 1 inch per wall end, so one wall end is one field cut; the side is kept so the
-  picture puts the cut at the wall). An open end is never inferred from absence: only the two
-  readers' agreed "no" says an end is open;
+- left "yes" and right agreed "no" → `back_and_left`; the reverse → `back_and_right` (#1138: one
+  wall end is one field cut). An open end is never inferred from absence;
 - both ends "no" → `back_only` **only** when both readers call the view a plan and both see the
-  back wall — an elevation does not show what is behind the run, so the back wall is not inferred;
-- anything else — an end unsure, a reader missing, readers that differ — → the person.
+  back wall;
+- anything else → the person.
 
-A layout the readers sealed is still only a proposal: the row's reviewer confirms it before a check
-uses it (`workflow/slot_row_scope.effective_row_wall`). Only code's own clues at both ends settle a
-row without a click, and code never sees an open end, so a one-end layout always needs the click.
+**The one automatic layout (#1202, decided 2026-10-13).** The walls research found that both AIs
+agreeing always matched what the vendor drew, and was wrong exactly when the vendor drew a wall
+that is not there (an island drawn with a wall at one end). Code's own wall ink seen at *both* ends
+was never wrong. So `back_left_right` is set without a click only on two independent judgments:
+- **code** sees wall ink at both row ends, in black or grey vendor ink only (`WallInkSeen`): a hatch
+  whose strokes run up the end, a solid grey or black band, or a wall drawn in section rising above the
+  cabinets beside the end. Never words, never colour, never absence;
+- **both AIs** say "yes" at the left end and at the right end;
+- and nothing says the stone stops at panels or runs into wall pockets (`stone_meets_walls`).
 
-**Code may object, never approve.** E3's hatch check looks for a wall's hatching beside each row
-end: many parallel strokes, or a cross-hatch, beside the end and along the drawing's height. Where
-it sees one and a reader says "no wall" there, the row goes to the person. It cannot see a dotted
-or plain-line wall, so seeing nothing proves nothing, and it is never a reason to seal.
+Every other layout, and every other combination, goes to the reviewer. Words at the ends (a
+filler, a field cut, the word WALL) are only evidence for the reviewer: they were wrong at free ends.
+
+**Code may object.** Where code sees wall ink at an end and a reader says "no wall" there, the row
+goes to the person. Seeing nothing proves nothing: walls are often not drawn.
 
 **Pure.** No I/O and no float: the geometry is `Decimal`, the hatch's angles are binned against
 written-down tangents instead of computed with trigonometry. The pictures are cut by the caller from
 the boxes this module gives.
 
-Source: issue #992 · Verification: `tests/extraction/slot_reader/test_walls.py`
+Source: issues #992, #1202 · Verification: `tests/extraction/slot_reader/test_walls.py`
 """
 
 from __future__ import annotations
@@ -42,31 +47,38 @@ from typing import Final, Literal
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.geometry.rows import Box, CountertopRowCandidate, PageInk
+from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE, READERS_WALL_SOURCE
 
 __all__ = [
+    "AUTOMATIC_WALL_SOURCE",
     "BACK_AND_LEFT",
     "BACK_AND_RIGHT",
     "BACK_LEFT_RIGHT",
     "BACK_ONLY",
     "E3_WALL_SETTINGS",
+    "READERS_WALL_SOURCE",
     "WALL_PROMPT",
     "WALL_PROMPT_ID",
     "WALL_PROMPT_IDS",
-    "CodeWallClues",
     "HatchSeen",
     "Side",
     "WallAnswer",
+    "WallInkSeen",
     "WallOutcome",
     "WallPictures",
     "WallSettings",
-    "code_wall_outcome",
+    "band_at",
     "hatch_at",
     "seal_walls",
+    "tall_line_at",
     "wall_pictures",
 ]
 
-WALL_PROMPT_ID: Final = "slot-walls-v2"
-"""v2 (#1111): every answer field is defined, each with one example of a yes and one of a no, all
+WALL_PROMPT_ID: Final = "slot-walls-v3"
+"""v3 (#1202): v2 without its sentence saying code decides the walls from the vendor's words at both
+ends, which is no longer true (code's words are evidence only), and "Still" from the next; the
+rest is v2 word for word.
+v2 (#1111): every answer field is defined, each with one example of a yes and one of a no, all
 invented. v1 never said what `view` means (yet two readers saying `plan` can seal `back_only`), how
 to judge a back wall in an elevation, or that a wall-to-wall dimension shows a wall only at an end
 it meets: a run can be shorter than wall to wall. It also names the colour of our marks (magenta,
@@ -74,7 +86,7 @@ which no reviewer markup uses) and says that the vendor's own words at an end ma
 (`_code_wall_clues` and `_read_wall_clues` in `workflow/slot_reader.py`; `seal_walls` is unchanged).
 v1 (#992): E3's question (2026-10-07, `research/E3/ask.py`)."""
 #: Earlier wordings, still recognised when a stored run is replayed. Their answers have one shape.
-WALL_PROMPT_IDS: Final = frozenset({WALL_PROMPT_ID, "slot-walls-v1"})
+WALL_PROMPT_IDS: Final = frozenset({WALL_PROMPT_ID, "slot-walls-v2", "slot-walls-v1"})
 BACK_LEFT_RIGHT: Final = "back_left_right"
 BACK_AND_LEFT: Final = "back_and_left"
 BACK_AND_RIGHT: Final = "back_and_right"
@@ -123,9 +135,7 @@ WALL_PROMPT: Final = (
     'what you saw that decided that answer, or for unsure what is missing. Example: "hatched '
     'wall band touches the left end". Not an example: "yes" or "there is a wall", which repeat '
     "the answer without saying what you saw.\n"
-    "Code also reads the vendor's own words at the run's end pieces: a filler, a field cut or the "
-    "word WALL at an end counts as a wall there, and when both ends have such words code decides "
-    "the walls whatever the answers say. Still answer only from what you see in the pictures.\n"
+    "Answer only from what you see in the pictures.\n"
     "Return ONLY this JSON:\n"
     '{"left": "yes|no|unsure", "right": "yes|no|unsure", "behind": "yes|no|unsure",\n'
     ' "left_evidence": "at most 12 words", "right_evidence": "at most 12 words", '
@@ -165,6 +175,25 @@ class HatchSeen:
 
 
 @dataclass(frozen=True, slots=True)
+class WallInkSeen:
+    """Code's own judgment (#1202): wall ink seen beside each row end, positive only.
+
+    `True` at an end means a hatch running up the end, a solid grey or black band, or a tall wall
+    line was seen there in the vendor's black or grey ink. `False` means none was seen, which says
+    nothing about the end: walls are often not drawn.
+    """
+
+    left: bool
+    right: bool
+    why_left: str = ""
+    why_right: str = ""
+
+    @property
+    def both_ends(self) -> bool:
+        return self.left and self.right
+
+
+@dataclass(frozen=True, slots=True)
 class WallOutcome:
     """A sealed layout, or why the person decides."""
 
@@ -176,37 +205,10 @@ class WallOutcome:
     right: Side | None
     behind: Side | None
     source: str | None = None
-    """`vendor-drawing-clues`, `drawing-and-readers`, or `readers`; never human confirmation."""
-
-
-@dataclass(frozen=True, slots=True)
-class CodeWallClues:
-    """Positive vendor-drawing evidence at either end; absence is unknown, never an open wall."""
-
-    left: bool | None = None
-    right: bool | None = None
-
-    @property
-    def has_evidence(self) -> bool:
-        return self.left is True or self.right is True
-
-
-_NO_CODE_WALL_CLUES: Final = CodeWallClues()
-
-
-def code_wall_outcome(clues: CodeWallClues, *, row_ambiguity: str | None) -> WallOutcome | None:
-    """Code may settle both affirmative wall ends; it never infers an open end from absence."""
-    if row_ambiguity is not None or clues.left is not True or clues.right is not True:
-        return None
-    return WallOutcome(
-        BACK_LEFT_RIGHT,
-        None,
-        None,
-        Side.YES,
-        Side.YES,
-        None,
-        source="vendor-drawing-clues",
-    )
+    """Who set it: `AUTOMATIC_WALL_SOURCE` (code's ink at both ends and both AIs, the one layout a
+    check uses without a click) or `READERS_WALL_SOURCE` (the readers agreed; a proposal for the
+    reviewer). Never a human confirmation. Runs before #1202 also stored `vendor-drawing-clues`
+    and `drawing-and-readers`; a check no longer uses either without a click."""
 
 
 def _maker(model_id: str) -> str:
@@ -223,15 +225,21 @@ def _agreed(first: Side, second: Side) -> Side | None:
 def seal_walls(
     answers: Sequence[WallAnswer],
     *,
-    hatch: HatchSeen | None,
+    ink: WallInkSeen | None,
     row_ambiguity: str | None,
-    code_clues: CodeWallClues = _NO_CODE_WALL_CLUES,
+    stone_meets_walls: bool = False,
     allow_claude_pair: bool = False,
 ) -> WallOutcome:
     """The row's wall layout when two makers agree and nothing objects; otherwise why not.
 
-    `answers` holds the readers that answered (an abstention is absent). `hatch` is code's hatch
-    check at the two ends, `None` when it could not run (which objects to nothing).
+    `answers` holds the readers that answered (an abstention is absent). `ink` is code's wall-ink
+    check at the two ends, `None` when it could not run (which objects to nothing and makes
+    nothing automatic). `stone_meets_walls` is `True` only when both readers answered the counter
+    question and neither, nor code, says the stone stops at panels or runs into wall pockets.
+
+    Only `back_left_right` with code's ink at both ends, both AIs' "yes" at both ends and
+    `stone_meets_walls` is automatic (`AUTOMATIC_WALL_SOURCE`); every other sealed layout is the
+    readers' proposal (`READERS_WALL_SOURCE`), which the reviewer confirms.
     """
     if len(answers) > 2:
         raise ValueError("a row's walls are asked of exactly two readers")
@@ -245,11 +253,6 @@ def seal_walls(
     def held(code: str, reason: str) -> WallOutcome:
         return WallOutcome(None, code, reason, left, right, behind)
 
-    if row_ambiguity is None:
-        code_outcome = code_wall_outcome(code_clues, row_ambiguity=None)
-        if code_outcome is not None:
-            return code_outcome
-
     if len(answers) == 2:
         makers = {_maker(answer.model_id) for answer in answers}
         claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
@@ -262,33 +265,32 @@ def seal_walls(
         return held("one-reader-missing", "only one reader answered about the walls")
     if row_ambiguity is not None:
         return held("row-ambiguous", f"not sure this row is the countertop: {row_ambiguity}")
-    if hatch is not None:
-        for side, seen in (("left", hatch.left), ("right", hatch.right)):
+    if ink is not None:
+        for side, seen in (("left", ink.left), ("right", ink.right)):
             if seen and any(getattr(answer, side) is Side.NO for answer in answers):
+                # The code kept from #992's hatch check, so stored runs and screens read the same.
                 return held(
                     "hatch-contradiction",
-                    f"code sees a wall hatch at the {side} end, but a reader says no wall there",
+                    f"code sees wall ink at the {side} end, but a reader says no wall there",
                 )
-    if code_clues.left is True and any(answer.left is Side.NO for answer in answers):
-        return held("code-reader-conflict", "vendor drawing clues show a wall at the left end")
-    if code_clues.right is True and any(answer.right is Side.NO for answer in answers):
-        return held("code-reader-conflict", "vendor drawing clues show a wall at the right end")
-    resolved_left = Side.YES if code_clues.left is True else left
-    resolved_right = Side.YES if code_clues.right is True else right
-    source = "drawing-and-readers" if code_clues.has_evidence else "readers"
-    if resolved_left is Side.YES and resolved_right is Side.YES:
+    if left is Side.YES and right is Side.YES:
+        automatic = ink is not None and ink.both_ends and stone_meets_walls
         return WallOutcome(
-            BACK_LEFT_RIGHT, None, None, resolved_left, resolved_right, behind, source
+            BACK_LEFT_RIGHT,
+            None,
+            None,
+            left,
+            right,
+            behind,
+            AUTOMATIC_WALL_SOURCE if automatic else READERS_WALL_SOURCE,
         )
-    if resolved_left is Side.YES and right is Side.NO:
-        return WallOutcome(BACK_AND_LEFT, None, None, resolved_left, resolved_right, behind, source)
-    if left is Side.NO and resolved_right is Side.YES:
-        return WallOutcome(
-            BACK_AND_RIGHT, None, None, resolved_left, resolved_right, behind, source
-        )
+    if left is Side.YES and right is Side.NO:
+        return WallOutcome(BACK_AND_LEFT, None, None, left, right, behind, READERS_WALL_SOURCE)
+    if left is Side.NO and right is Side.YES:
+        return WallOutcome(BACK_AND_RIGHT, None, None, left, right, behind, READERS_WALL_SOURCE)
     if left is Side.NO and right is Side.NO:
         if behind is Side.YES and all(answer.view == "plan" for answer in answers):
-            return WallOutcome(BACK_ONLY, None, None, left, right, behind, "readers")
+            return WallOutcome(BACK_ONLY, None, None, left, right, behind, READERS_WALL_SOURCE)
         return held(
             "back-wall-unknown",
             "no wall at either end, and the drawing does not show whether there is a back wall",
@@ -329,6 +331,53 @@ class WallSettings:
     """A hatch: this many parallel strokes in one 5-degree bin, or two bins about 90 degrees apart
     with `hatch_cross_count` each, spread over this much height."""
     hatch_cross_slack_degrees: int
+    hatch_through_pt: Decimal
+    hatch_through_fraction: Decimal
+    """A hatch that runs on into the row is a band passing the end (a plan's back wall), not a wall
+    at it: the same strokes are counted this far inside the row, past `hatch_inside_pt`, and a
+    count of at least this fraction of the hatch's own refuses it (#1202)."""
+    band_max_lightness: Decimal
+    band_min_width_pt: Decimal
+    band_max_width_pt: Decimal
+    band_height_fraction: Decimal
+    """A solid wall band: a path filled in black or grey no lighter than this (0 black, 1 white),
+    at least this wide, taller than it is wide, standing beside the end (within `hatch_reach_pt`
+    outside, `hatch_inside_pt` inside, never reaching further into the row), over at least this
+    fraction of the drawing's height (#1202). No wider than `band_max_width_pt` (the widest real wall
+    band measured is 18 pt; a grey tall cabinet or fridge is far wider), holding nothing drawn but
+    hatch, and rising `tall_rise_pt` above the cabinets beside the end (a shaded filler is not)."""
+    tall_rise_pt: Decimal
+    tall_casework_fraction: Decimal
+    tall_casework_gap_pt: Decimal
+    tall_floor_fraction: Decimal
+    tall_frame_fraction: Decimal
+    tall_line_min_pt: Decimal
+    tall_inside_pt: Decimal
+    tall_band_slack_pt: Decimal
+    vertical_slack_pt: Decimal
+    join_slack_pt: Decimal
+    inner_margin_pt: Decimal
+    mark_max_pt: Decimal
+    mark_reach_pt: Decimal
+    number_reach_pt: Decimal
+    wall_body_min_pt: Decimal
+    wall_body_max_pt: Decimal
+    """A tall wall line: a vertical stroke (off upright by at most `vertical_slack_pt`, at least
+    `tall_line_min_pt` long) within `hatch_reach_pt` outside the end or `tall_inside_pt` inside it,
+    whose top rises at least `tall_rise_pt` above the cabinets beside the end (the ink starting
+    `tall_casework_gap_pt` inside the end, over `tall_casework_fraction` of the row's width, whose
+    top is within `tall_band_slack_pt` of the drawing's height) and
+    whose bottom reaches the floor (within `tall_floor_fraction` of the drawing's height). A stroke
+    as tall as `tall_frame_fraction` of the pasted drawing is its frame, not a wall (#1202).
+
+    Since the #1202 review only a wall **drawn in section** counts: a second upright line
+    `wall_body_min_pt` to `wall_body_max_pt` further out (away from the row), as tall, with nothing
+    drawn between ("inside" is `inner_margin_pt` in from the sides). A single tall line may be the
+    elevation's outline, a frame round the row, an end panel, a cabinet edge or a grid line, so it
+    never counts. Never a dimension or extension line either: one crossed by a tick or arrow (a
+    short stroke of at most `mark_max_pt` within `mark_reach_pt` of it) or with a number within
+    `number_reach_pt`; nor a face whose line closes (with a line meeting its top within
+    `join_slack_pt`) a box further out with things drawn in it, a tall cabinet or fridge."""
     picture_max_side_px: int
     """A picture is shrunk until its longer side is at most this."""
 
@@ -346,7 +395,8 @@ class WallSettings:
         return ";".join(f"{field.name}={getattr(self, field.name)}" for field in fields(self))
 
 
-#: E3's values (2026-10-07, `research/E3/build.py`), measured on both client sets.
+#: E3's values (2026-10-07, `research/E3/build.py`), measured on both client sets; the hatch's
+#: band test, the solid band and the tall line from the walls research (2026-10-13, #1202).
 E3_WALL_SETTINGS = WallSettings(
     frame_slack_pt=Decimal(2),
     extent_gap_pt=Decimal(22),
@@ -364,6 +414,28 @@ E3_WALL_SETTINGS = WallSettings(
     hatch_cross_count=8,
     hatch_span_pt=Decimal(40),
     hatch_cross_slack_degrees=10,
+    hatch_through_pt=Decimal(30),
+    hatch_through_fraction=Decimal("0.5"),
+    band_max_lightness=Decimal("0.9"),
+    band_min_width_pt=Decimal("1.5"),
+    band_max_width_pt=Decimal(24),
+    band_height_fraction=Decimal("0.4"),
+    tall_rise_pt=Decimal(40),
+    tall_casework_fraction=Decimal("0.15"),
+    tall_casework_gap_pt=Decimal(2),
+    tall_floor_fraction=Decimal("0.25"),
+    tall_frame_fraction=Decimal("0.9"),
+    tall_line_min_pt=Decimal(20),
+    tall_inside_pt=Decimal("1.5"),
+    tall_band_slack_pt=Decimal(5),
+    vertical_slack_pt=Decimal("0.5"),
+    join_slack_pt=Decimal("1.5"),
+    inner_margin_pt=Decimal("1.5"),
+    mark_max_pt=Decimal(12),
+    mark_reach_pt=Decimal(3),
+    number_reach_pt=Decimal(10),
+    wall_body_min_pt=Decimal(2),
+    wall_body_max_pt=Decimal(40),
     picture_max_side_px=1600,
 )
 
@@ -405,25 +477,49 @@ class _Stroke:
     x: Decimal
     y: Decimal
     bin: int
+    box: Box
 
 
-def _strokes(ink: PageInk, settings: WallSettings) -> list[_Stroke]:
+def _segments(ink: PageInk) -> list[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]]:
+    """Every straight piece of the drawing's ink: its lines, and each side of its paths."""
     segments: list[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]] = [
         ((line.x0, line.y0), (line.x1, line.y1)) for line in ink.lines
     ]
     for curve in ink.curves:
         segments.extend(zip(curve.points, curve.points[1:], strict=False))
+        if curve.closed and len(curve.points) > 2:
+            segments.append((curve.points[-1], curve.points[0]))
+    return segments
+
+
+def _strokes(ink: PageInk, settings: WallSettings) -> list[_Stroke]:
     low = settings.hatch_stroke_min_pt * settings.hatch_stroke_min_pt
     high = settings.hatch_stroke_max_pt * settings.hatch_stroke_max_pt
     out: list[_Stroke] = []
-    for (ax, ay), (bx, by) in segments:
+    for (ax, ay), (bx, by) in _segments(ink):
         dx, dy = bx - ax, by - ay
         if abs(dx) < settings.hatch_axis_min_pt or abs(dy) < settings.hatch_axis_min_pt:
             continue
         if not low <= dx * dx + dy * dy <= high:
             continue
-        out.append(_Stroke((ax + bx) / 2, (ay + by) / 2, _bin(dx, dy)))
+        out.append(
+            _Stroke(
+                (ax + bx) / 2,
+                (ay + by) / 2,
+                _bin(dx, dy),
+                Box(min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)),
+            )
+        )
     return out
+
+
+def _end_window(
+    x_end: Decimal, side: Literal["left", "right"], settings: WallSettings
+) -> tuple[Decimal, Decimal]:
+    """Beside the end: `hatch_reach_pt` outside it, `hatch_inside_pt` inside it."""
+    if side == "left":
+        return x_end - settings.hatch_reach_pt, x_end + settings.hatch_inside_pt
+    return x_end - settings.hatch_inside_pt, x_end + settings.hatch_reach_pt
 
 
 def hatch_at(
@@ -435,15 +531,25 @@ def hatch_at(
     y_high: Decimal,
     settings: WallSettings,
 ) -> tuple[bool, str]:
-    """Whether a wall's hatching stands beside the row end at `x_end`, and in plain words why."""
-    if side == "left":
-        x_low, x_high = x_end - settings.hatch_reach_pt, x_end + settings.hatch_inside_pt
-    else:
-        x_low, x_high = x_end - settings.hatch_inside_pt, x_end + settings.hatch_reach_pt
+    """Whether a wall's hatching stands beside the row end at `x_end`, and in plain words why.
+
+    Many parallel strokes (or a cross-hatch) beside the end, over the drawing's height, that also
+    form a band running **up** the end (#1202): taller than wide, and not running on into the row.
+    A plan's back wall drawn across the end window is a band lying across it, not a wall at it.
+    """
+    x_low, x_high = _end_window(x_end, side, settings)
+    through = settings.hatch_through_pt
     bins: dict[int, list[_Stroke]] = {}
+    inside: dict[int, int] = {}
     for stroke in _strokes(ink, settings):
-        if x_low <= stroke.x <= x_high and y_low <= stroke.y <= y_high:
+        if not y_low <= stroke.y <= y_high:
+            continue
+        if x_low <= stroke.x <= x_high:
             bins.setdefault(stroke.bin, []).append(stroke)
+        elif (side == "left" and x_high < stroke.x <= x_high + through) or (
+            side == "right" and x_low - through <= stroke.x < x_low
+        ):
+            inside[stroke.bin] = inside.get(stroke.bin, 0) + 1
     if not bins:
         return False, "no slanted strokes beside the end"
     ranked = sorted(bins.items(), key=lambda item: (-len(item[1]), item[0]))
@@ -452,9 +558,13 @@ def hatch_at(
         return max(stroke.y for stroke in strokes) - min(stroke.y for stroke in strokes)
 
     first_bin, first = ranked[0]
+    family: list[_Stroke] | None = None
+    family_bins: tuple[int, ...] = ()
+    why = ""
     if len(first) >= settings.hatch_parallel_count and span(first) >= settings.hatch_span_pt:
-        return True, f"{len(first)} parallel strokes at {first_bin} degrees"
-    if len(ranked) > 1:
+        family, family_bins = first, (first_bin,)
+        why = f"{len(first)} parallel strokes at {first_bin} degrees"
+    elif len(ranked) > 1:
         second_bin, second = ranked[1]
         apart = abs(first_bin - second_bin)
         if (
@@ -463,20 +573,346 @@ def hatch_at(
             and abs(apart - 90) <= settings.hatch_cross_slack_degrees
             and span([*first, *second]) >= settings.hatch_span_pt
         ):
-            return True, f"a cross-hatch of {len(first)} and {len(second)} strokes"
-    return False, f"at most {len(first)} parallel strokes"
+            family, family_bins = [*first, *second], (first_bin, second_bin)
+            why = f"a cross-hatch of {len(first)} and {len(second)} strokes"
+    if family is None:
+        return False, f"at most {len(first)} parallel strokes"
+    width = max(stroke.box.x1 for stroke in family) - min(stroke.box.x0 for stroke in family)
+    height = max(stroke.box.bottom for stroke in family) - min(stroke.box.top for stroke in family)
+    if height < width:
+        return False, f"{why}, but lying across the end, not up it"
+    running_on = sum(inside.get(item, 0) for item in family_bins)
+    if running_on >= settings.hatch_through_fraction * len(family):
+        return False, f"{why}, but the hatch runs on into the row: a band passing the end"
+    return True, why
 
 
-@dataclass(frozen=True, slots=True)
-class WallPictures:
-    """Where the two pictures are cut, in page points (pdfplumber's frame), and the hatch's band."""
+def _casework_top(
+    shapes: Sequence[Box],
+    *,
+    x_end: Decimal,
+    side: Literal["left", "right"],
+    row_width: Decimal,
+    y_low: Decimal,
+    y_high: Decimal,
+    settings: WallSettings,
+) -> Decimal | None:
+    """The top of the cabinets drawn just inside the row end, or `None` when nothing is drawn."""
+    if side == "left":
+        cab_low = x_end + settings.tall_casework_gap_pt
+        cab_high = x_end + settings.tall_casework_fraction * row_width
+    else:
+        cab_low = x_end - settings.tall_casework_fraction * row_width
+        cab_high = x_end - settings.tall_casework_gap_pt
+    slack = settings.vertical_slack_pt
+    band = settings.tall_band_slack_pt
+    tops = [
+        box.top
+        for box in shapes
+        if box.x0 >= cab_low - slack
+        and box.x1 <= cab_high + slack
+        and y_low - band <= box.top <= y_high + band
+        and box.width * 2 < row_width
+    ]
+    return min(tops) if tops else None
 
-    row: Box
-    view: Box
-    hatch: HatchSeen
+
+def _strictly_inside(box: Box, outer: Box, margin: Decimal) -> bool:
+    return (
+        box.x0 > outer.x0 + margin
+        and box.x1 < outer.x1 - margin
+        and box.top > outer.top + margin
+        and box.bottom < outer.bottom - margin
+    )
 
 
-def _ink_boxes(ink: PageInk) -> list[Box]:
+def band_at(
+    ink: PageInk,
+    *,
+    x_end: Decimal,
+    side: Literal["left", "right"],
+    row_width: Decimal,
+    y_low: Decimal,
+    y_high: Decimal,
+    settings: WallSettings,
+) -> tuple[bool, str]:
+    """Whether a solid grey or black band stands beside the row end, and in plain words why (#1202).
+
+    A path filled in black or grey, taller than wide and no wider than a wall band, standing beside
+    the end and never reaching into the row, over a good part of the drawing's height and rising
+    above the cabinets beside the end, with nothing drawn on it but hatch. A white or near-white
+    fill is paper; a grey tall cabinet or fridge is wider and has its doors drawn on it; a shaded
+    filler stops at the cabinets' height.
+    """
+    height = y_high - y_low
+    if height <= 0:
+        return False, "no drawing height beside the end"
+    x_low, x_high = _end_window(x_end, side, settings)
+    shapes = _shape_boxes(ink)
+    casework_top = _casework_top(
+        shapes,
+        x_end=x_end,
+        side=side,
+        row_width=row_width,
+        y_low=y_low,
+        y_high=y_high,
+        settings=settings,
+    )
+    for curve in ink.curves:
+        lightness = curve.fill_lightness
+        if lightness is None or lightness > settings.band_max_lightness:
+            continue
+        box = curve.box
+        if not settings.band_min_width_pt <= box.width <= settings.band_max_width_pt:
+            continue
+        if box.height < box.width:
+            continue
+        beside = x_low <= box.x1 <= x_high if side == "left" else x_low <= box.x0 <= x_high
+        if not beside:
+            continue
+        overlap = min(box.bottom, y_high) - max(box.top, y_low)
+        if overlap < settings.band_height_fraction * height:
+            continue
+        if casework_top is None or box.top > casework_top - settings.tall_rise_pt:
+            continue
+        if _holds_drawing(ink, box, settings):
+            continue
+        return True, "a solid grey or black band beside the end"
+    return False, "no solid band beside the end"
+
+
+def _holds_drawing(ink: PageInk, box: Box, settings: WallSettings) -> bool:
+    """Whether anything but hatch is drawn inside `box`: an upright or level stroke, a path, a
+    character. A wall band is plain or hatched; a cabinet or fridge has its doors drawn on it."""
+    margin = settings.inner_margin_pt
+    for line in ink.lines:
+        stroke = Box(
+            min(line.x0, line.x1),
+            min(line.y0, line.y1),
+            max(line.x0, line.x1),
+            max(line.y0, line.y1),
+        )
+        if not _strictly_inside(stroke, box, margin):
+            continue
+        slanted = (
+            abs(line.x1 - line.x0) >= settings.hatch_axis_min_pt
+            and abs(line.y1 - line.y0) >= settings.hatch_axis_min_pt
+        )
+        if not slanted:
+            return True
+    for curve in ink.curves:
+        if _strictly_inside(curve.box, box, margin) and len(curve.points) > 2:
+            return True
+    return any(_strictly_inside(char.box, box, margin) for char in ink.characters)
+
+
+def _vertical_strokes(
+    ink: PageInk, settings: WallSettings
+) -> list[tuple[Decimal, Decimal, Decimal]]:
+    """`(x, top, bottom)` of every upright straight piece of ink at least `tall_line_min_pt` long."""
+    out: list[tuple[Decimal, Decimal, Decimal]] = []
+    for (ax, ay), (bx, by) in _segments(ink):
+        if abs(ax - bx) > settings.vertical_slack_pt:
+            continue
+        top, bottom = min(ay, by), max(ay, by)
+        if bottom - top < settings.tall_line_min_pt:
+            continue
+        out.append(((ax + bx) / 2, top, bottom))
+    return out
+
+
+def _marked(
+    ink: PageInk,
+    segments: Sequence[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]],
+    x: Decimal,
+    top: Decimal,
+    bottom: Decimal,
+    settings: WallSettings,
+) -> bool:
+    """Whether an upright line carries a dimension's marks: a short tick or arrow stroke crossing
+    or touching it, or a number beside it. Dimension and extension lines do; a wall does not."""
+    reach = settings.mark_reach_pt
+    longest = settings.mark_max_pt * settings.mark_max_pt
+    for (ax, ay), (bx, by) in segments:
+        dx, dy = bx - ax, by - ay
+        if abs(dx) < settings.hatch_axis_min_pt:
+            continue  # upright: the line itself, or another line beside it
+        if dx * dx + dy * dy > longest:
+            continue
+        if (
+            abs(dy) >= settings.hatch_axis_min_pt
+            and min(ax, bx) - reach <= x <= max(ax, bx) + reach
+            and top - reach <= min(ay, by)
+            and max(ay, by) <= bottom + reach
+        ):
+            return True  # a slanted tick or an arrow's side
+    for curve in ink.curves:
+        box = curve.box
+        if (
+            curve.closed
+            and curve.fill_lightness is not None
+            and box.width <= settings.mark_max_pt
+            and box.height <= settings.mark_max_pt
+            and box.x0 - reach <= x <= box.x1 + reach
+            and top - reach <= box.top
+            and box.bottom <= bottom + reach
+        ):
+            return True  # a filled arrowhead or tick
+    near = settings.number_reach_pt
+    return any(
+        char.text.isdigit()
+        and char.box.x0 - near <= x <= char.box.x1 + near
+        and top <= (char.box.top + char.box.bottom) / 2 <= bottom
+        for char in ink.characters
+    )
+
+
+def _boxes_on(
+    ink: PageInk,
+    segments: Sequence[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]],
+    x: Decimal,
+    top: Decimal,
+    bottom: Decimal,
+    settings: WallSettings,
+) -> list[Box]:
+    """The boxes an upright line is a side of: a drawn rectangle with this side, or the box a
+    level line meeting the line's top closes with it (from the line to that line's far end)."""
+    join = settings.join_slack_pt
+    boxes: list[Box] = []
+    for curve in ink.curves:
+        box = curve.box
+        if not curve.closed or box.height < (bottom - top) / 2:
+            continue
+        if (abs(box.x0 - x) <= join or abs(box.x1 - x) <= join) and (
+            box.top - join <= top and bottom <= box.bottom + join
+        ):
+            boxes.append(box)
+    for (ax, ay), (bx, by) in segments:
+        if abs(ay - by) > settings.vertical_slack_pt or abs(ay - top) > join:
+            continue
+        low, high = min(ax, bx), max(ax, bx)
+        if not low - join <= x <= high + join:
+            continue
+        for far in (low, high):
+            if abs(far - x) > join:
+                boxes.append(Box(min(x, far), top, max(x, far), bottom))
+    return boxes
+
+
+def tall_line_at(
+    ink: PageInk,
+    *,
+    x_end: Decimal,
+    side: Literal["left", "right"],
+    row_width: Decimal,
+    y_low: Decimal,
+    y_high: Decimal,
+    frame_height: Decimal,
+    settings: WallSettings,
+) -> tuple[bool, str]:
+    """Whether a tall wall drawn in section stands at the row end, and in plain words why (#1202).
+
+    An upright line just outside the end (or on it) that rises well above the cabinets beside the
+    end and comes down to the floor, with the wall's outer face a wall's thickness further out and
+    nothing drawn between: a wall drawn as a tall empty box. `y_high` is the floor side of the
+    drawing. Never the pasted drawing's own frame, a single tall line (an outline, a frame, an end
+    panel, a cabinet edge, a grid line), a dimension or extension line (ticks, arrows or a number
+    on it), nor the edge of a tall cabinet or fridge further out with things drawn in it.
+    """
+    height = y_high - y_low
+    if height <= 0:
+        return False, "no drawing height beside the end"
+    if side == "left":
+        x_low, x_high = x_end - settings.hatch_reach_pt, x_end + settings.tall_inside_pt
+    else:
+        x_low, x_high = x_end - settings.tall_inside_pt, x_end + settings.hatch_reach_pt
+    shapes = _shape_boxes(ink)
+    casework_top = _casework_top(
+        shapes,
+        x_end=x_end,
+        side=side,
+        row_width=row_width,
+        y_low=y_low,
+        y_high=y_high,
+        settings=settings,
+    )
+    if casework_top is None:
+        return False, "nothing drawn beside the end to measure a wall line against"
+    floor_reach = y_high - settings.tall_floor_fraction * height
+    frame = settings.tall_frame_fraction * frame_height
+    segments = _segments(ink)
+    verticals = _vertical_strokes(ink, settings)
+    why = "no tall wall line at the end"
+    for x, top, bottom in verticals:
+        if not x_low <= x <= x_high or bottom < floor_reach or bottom - top >= frame:
+            continue
+        if top > casework_top - settings.tall_rise_pt:
+            continue
+        if _marked(ink, segments, x, top, bottom, settings):
+            why = "a tall line at the end is a dimension or extension line"
+            continue
+        body = _wall_body(shapes, ink, verticals, x, top, bottom, side, settings)
+        if body is None:
+            why = "a single tall line at the end, not a wall drawn in section"
+            continue
+        # The wall's own faces may close a room outline across the row (a ceiling line); what
+        # must not happen is a box further out than the wall's thickness with things drawn in it:
+        # a tall cabinet or a fridge beside the end whose edge only looks like a wall face.
+        beyond = [
+            box
+            for box in _boxes_on(ink, segments, x, top, bottom, settings)
+            if (
+                box.x0 < x - body - settings.join_slack_pt
+                if side == "left"
+                else box.x1 > x + body + settings.join_slack_pt
+            )
+        ]
+        if any(_holds_any(shapes, ink, box, settings) for box in beyond):
+            why = "a tall line at the end is a side of a box with things drawn in it"
+            continue
+        return True, "a wall drawn in section rising above the cabinets"
+    return False, why
+
+
+def _wall_body(
+    shapes: Sequence[Box],
+    ink: PageInk,
+    verticals: Sequence[tuple[Decimal, Decimal, Decimal]],
+    x: Decimal,
+    top: Decimal,
+    bottom: Decimal,
+    side: Literal["left", "right"],
+    settings: WallSettings,
+) -> Decimal | None:
+    """The wall's thickness when the line is the inner face of a wall drawn in section: a second
+    upright line further out (away from the row), a wall's thickness away, as tall, with nothing
+    drawn between. `None` otherwise."""
+    length = bottom - top
+    for other_x, other_top, other_bottom in verticals:
+        gap = x - other_x if side == "left" else other_x - x
+        if not settings.wall_body_min_pt <= gap <= settings.wall_body_max_pt:
+            continue
+        overlap = min(bottom, other_bottom) - max(top, other_top)
+        if overlap * 5 < length * 4:
+            continue
+        strip = Box(
+            min(x, other_x), max(top, other_top), max(x, other_x), min(bottom, other_bottom)
+        )
+        if not _holds_any(shapes, ink, strip, settings):
+            return gap
+    return None
+
+
+def _holds_any(shapes: Sequence[Box], ink: PageInk, box: Box, settings: WallSettings) -> bool:
+    """Whether anything at all is drawn inside `box` (an empty wall box holds nothing)."""
+    margin = settings.inner_margin_pt
+    return any(_strictly_inside(shape, box, margin) for shape in shapes) or any(
+        _strictly_inside(char.box, box, margin) for char in ink.characters
+    )
+
+
+def _shape_boxes(ink: PageInk) -> list[Box]:
+    """The boxes of the drawing's lines and paths (no characters): what the cabinets are drawn by."""
     boxes = [
         Box(
             min(line.x0, line.x1),
@@ -487,6 +923,22 @@ def _ink_boxes(ink: PageInk) -> list[Box]:
         for line in ink.lines
     ]
     boxes.extend(curve.box for curve in ink.curves)
+    return boxes
+
+
+@dataclass(frozen=True, slots=True)
+class WallPictures:
+    """Where the two pictures are cut, in page points (pdfplumber's frame), the hatch check, and
+    code's wall-ink judgment at each end (#1202)."""
+
+    row: Box
+    view: Box
+    hatch: HatchSeen
+    ink: WallInkSeen
+
+
+def _ink_boxes(ink: PageInk) -> list[Box]:
+    boxes = _shape_boxes(ink)
     boxes.extend(char.box for char in ink.characters)
     return boxes
 
@@ -523,7 +975,8 @@ def wall_pictures(
     row: CountertopRowCandidate, ink: PageInk, *, settings: WallSettings
 ) -> WallPictures:
     """The row picture (its ends and the drawing beside them), the vendor view holding the row, and
-    code's hatch check at both ends — all from the drawing's own ink, never a model's choice."""
+    code's hatch check and wall-ink judgment at both ends — all from the drawing's own ink, never a
+    model's choice."""
     slack = settings.frame_slack_pt
     xs0, xs1, y = row.x0, row.x1, row.y
     frame = next(
@@ -567,8 +1020,40 @@ def wall_pictures(
     right = hatch_at(
         ink, x_end=xs1, side="right", y_low=hatch_low, y_high=hatch_high, settings=settings
     )
+    seen: dict[str, tuple[bool, str]] = {}
+    ends: tuple[tuple[Literal["left", "right"], Decimal, tuple[bool, str]], ...] = (
+        ("left", xs0, left),
+        ("right", xs1, right),
+    )
+    for side, x_end, hatch in ends:
+        if hatch[0]:
+            seen[side] = (True, f"hatch: {hatch[1]}")
+            continue
+        band = band_at(
+            ink,
+            x_end=x_end,
+            side=side,
+            row_width=width,
+            y_low=hatch_low,
+            y_high=hatch_high,
+            settings=settings,
+        )
+        if band[0]:
+            seen[side] = band
+            continue
+        seen[side] = tall_line_at(
+            ink,
+            x_end=x_end,
+            side=side,
+            row_width=width,
+            y_low=hatch_low,
+            y_high=hatch_high,
+            frame_height=frame.height,
+            settings=settings,
+        )
     return WallPictures(
         row=row_box,
         view=frame,
         hatch=HatchSeen(left[0], right[0], left[1], right[1]),
+        ink=WallInkSeen(seen["left"][0], seen["right"][0], seen["left"][1], seen["right"][1]),
     )

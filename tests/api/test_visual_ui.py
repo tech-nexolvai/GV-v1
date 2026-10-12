@@ -72,7 +72,7 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     _save_widths(session, project_id, package_id, anchors[0], 40)
     findings = _run_current_checks(session, package_id, tmp_path)
@@ -92,7 +92,11 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
     assert item["expected_total"]["display"] == '22"'
     assert item["field_cut_per_end"]["display"] == '1"'
     assert item["field_cut_count"] == 2
-    assert item["wall_layout"]["source"] == "drawing clues"
+    # #1202: code's wall ink at both ends with both AIs, said in the results line.
+    assert item["wall_layout"]["source"] == "code ink and both AIs"
+    assert item["wall_layout"]["line"] == (
+        "walls at both ends — seen on the drawing at both ends and confirmed by both AIs"
+    )
     revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
     readiness = approval_readiness(session, revision.id)
     assert item["needs_decision"] == (finding.id in readiness.blocking_finding_ids)
@@ -100,7 +104,7 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
 
 def test_drawing_clue_pass_uses_the_recorded_zero_delta(session: Session, tmp_path: Path) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues", widths_add_up=True
+        session, unsealed_all=True, wall_source="readers", walls_confirmed=True, widths_add_up=True
     )
     _save_widths(session, project_id, package_id, anchors[0], 22)
     findings = _run_current_checks(session, package_id, tmp_path)
@@ -122,7 +126,7 @@ def test_between_panels_pass_requires_row_confirmation_and_has_no_end_cut(
         session,
         unsealed_all=True,
         check_hold_page=0,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         overall_override=20,
     )
     principal = Principal(
@@ -193,6 +197,8 @@ def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
         "carried_from_revision": None,
         "carried_by": None,
         "carried_given_at": None,
+        # Which walls were used and who decided (#1202).
+        "line": "wall at the left end — chosen by reviewer",
     }
     assert item["field_cut_count"] == 1
     assert item["expected_total"]["display"] == '21"'
@@ -223,7 +229,7 @@ def test_project_boundary_hides_summary_and_usage(session: Session) -> None:
 
 def test_summary_counts_match_existing_findings_summary(session: Session, tmp_path: Path) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     _save_all_row_widths(session, project_id, package_id, anchors[0])
     _run_current_checks(session, package_id, tmp_path)
@@ -344,12 +350,14 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
         event.remove(session.bind, "before_cursor_execute", count_statements)
     assert response.status_code == 200
     assert len(response.json()["items"]) == 20
-    assert statements <= 12
+    # 14 since #1202: the field cut a run would use now is asked once (a second statement only
+    # when no stored setting holds it and the rulebook's default is read); same for any row count.
+    assert statements <= 14
 
 
 def test_held_countertop_has_no_recomputed_total_or_delta(session: Session, tmp_path: Path) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, wall_source="vendor-drawing-clues", held_page=0
+        session, wall_source="code-ink-and-both-ais", held_page=0
     )
     _run_current_checks(session, package_id, tmp_path)
     response = _client(session, project_id).get(

@@ -158,7 +158,7 @@ def _results(session: Session, package_id: UUID) -> CountertopResultsOut:
 def _decided_rows(session: Session) -> tuple[UUID, UUID]:
     """Two checked rows (pages 1 and 2) with their widths saved, so they need no input."""
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     for anchor in anchors.values():
         _save_all_row_widths(session, project_id, package_id, anchor)
@@ -491,7 +491,7 @@ def test_a_second_countertop_row_on_a_read_page_is_listed_not_checked_and_never_
     project_id, package_id, anchors = _package_rows(
         session,
         unsealed_all=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=lambda page_index, _offset, _slot: (
             ["row-also:opus-5-5:3", "row-also:sonnet-5-5:3", "row-also:sonnet-5-5:4"]
             if page_index == 0

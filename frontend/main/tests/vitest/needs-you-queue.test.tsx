@@ -36,6 +36,19 @@ function slot(id: string, overrides: Partial<SlotReaderRow> = {}): SlotReaderRow
   };
 }
 
+/** Every wall case's recorded result for a synthetic row: pieces 94", vendor wrote 95". */
+const CASES = {
+  cases: [
+    { layout: 'back_left_right', words: 'walls at both ends', field_cut_count: 2, field_cut_total: x('2', '2"'), expected_total: x('96', '96"'), outcome: 'FAIL' as const },
+    { layout: 'back_only', words: 'back wall only', field_cut_count: 0, field_cut_total: x('0', '0"'), expected_total: x('94', '94"'), outcome: 'FAIL' as const },
+    { layout: 'island', words: 'island', field_cut_count: 0, field_cut_total: x('0', '0"'), expected_total: x('94', '94"'), outcome: 'FAIL' as const },
+    { layout: 'back_and_left', words: 'wall at the left end', field_cut_count: 1, field_cut_total: x('1', '1"'), expected_total: x('95', '95"'), outcome: 'PASS' as const },
+  ],
+  vendor_wrote: x('95', '95"'),
+  pieces_add_up_to: x('94', '94"'),
+  field_cut_per_end: x('1', '1"'),
+  unavailable_reason: null,
+};
 const WALLS = row('walls', 2);
 const PANELS = row('panels', 5, { hold: { code: 'stone-short-of-ends', reason: 'Synthetic: stone between panels.' } });
 const DONE = row('done', 3, { outcome: 'PASS', needs_decision: false });
@@ -50,7 +63,7 @@ const BLOCKING = new Set(['f-walls', 'f-panels', 'f-fail', 'f-sink']);
 const BASE_SLOTS = [
   slot('walls'),
   slot('panels', { wall_source: 'between-panels', wall_proposal: 'back_only', wall_reason: 'Synthetic: the panels take the field cut.' }),
-  slot('fail', { wall_source: 'vendor-drawing-clues', wall_proposal: 'back_left_right' }),
+  slot('fail', { wall_source: 'code-ink-and-both-ais', wall_proposal: 'back_left_right' }),
 ];
 
 const live = (overrides: Partial<LiveData> = {}): LiveData => ({
@@ -115,9 +128,20 @@ describe('needs-you queue: rules', () => {
   it('asks the wall question only where the server allows it and nobody has answered', () => {
     expect(wallQuestion(BASE_SLOTS[0])).toMatchObject({ choices: ['back_left_right', 'back_only', 'island'], proposal: null, betweenPanels: false });
     expect(wallQuestion(BASE_SLOTS[1])).toMatchObject({ betweenPanels: true });
-    expect(wallQuestion(BASE_SLOTS[2])).toBeNull(); // walls found in the vendor's drawing
+    // Walls set by code's ink at both ends and both AIs can always be corrected (#1202 review).
+    expect(wallQuestion(BASE_SLOTS[2])).toMatchObject({ automatic: true, proposal: 'back_left_right' });
     expect(wallQuestion(slot('x', { wall_config: 'back_only' }))).toBeNull();
     expect(wallQuestion(slot('x', { wall_confirmation_allowed: false }))).toBeNull();
+  });
+
+  it('asks about walls an older run took from drawing clues alone, and never when they do not matter (#1202)', () => {
+    // Code alone no longer settles the walls: the older run's layout is a proposal to answer.
+    expect(wallQuestion(slot('x', { wall_source: 'vendor-drawing-clues', wall_proposal: 'back_left_right' }))).toMatchObject({ proposal: 'back_left_right' });
+    // Only "walls at both ends" is automatic; the same source on another layout is still asked.
+    expect(wallQuestion(slot('x', { wall_source: 'code-ink-and-both-ais', wall_proposal: 'back_only' }))).toMatchObject({ automatic: false });
+    // The same result for every wall case: nothing to ask.
+    expect(wallQuestion(slot('x', { walls_needed: false }))).toBeNull();
+    expect(wallQuestion(slot('x', { field_cut_in_force: '1"', wall_cases: CASES }))).toMatchObject({ fieldCut: '1"', cases: CASES });
   });
 });
 
@@ -239,10 +263,47 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(props.onWallSaved).toHaveBeenCalled();
     expect(await screen.findByText('Wall answer saved. Run the checks to see the result.', undefined, { timeout: 5000 })).toBeTruthy();
     expect(document.querySelector('[data-slot="queue-progress"]')?.textContent).toContain('1 of 4');
-    // A decision now would be asked again after the run, and the queue says so on the next item.
+    // A decision now would be asked again after the run, and the queue says so on the next item
+    // with nothing else to answer (the FAIL row's automatic walls are offered for correction, #1202).
+    key('j');
     key('j');
     key('j');
     expect(document.querySelector('[data-slot="queue-run-first"]')?.textContent).toMatch(/1 answer waits for a check run\. That run replaces these results/);
+  });
+
+  it('each wall choice shows what it needs and its result, still with nothing pre-selected (#1202)', async () => {
+    const user = userEvent.setup();
+    slotRows = [slot('walls', { wall_cases: CASES, field_cut_in_force: '1"' }), ...BASE_SLOTS.slice(1)];
+    setup();
+    const walls = await screen.findByRole('radiogroup', { name: 'Wall layout' }, { timeout: 5000 });
+    const radios = within(walls).getAllByRole('radio');
+    expect(radios.every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
+    const both = within(walls).getByRole('radio', { name: /Back wall and both ends/ });
+    expect(both.textContent).toContain('should be 96"');
+    expect(both.textContent).toContain('Needs correction');
+    expect(both.querySelector('[data-outcome-icon="FAIL"]')).not.toBeNull();
+    const island = within(walls).getByRole('radio', { name: /Island/ });
+    expect(island.textContent).toContain('should be 94"');
+    // The rule's "i" sits by the question, reachable by keyboard, with this row's own example.
+    const question = document.querySelector('[data-slot="queue-walls"]') as HTMLElement;
+    const info = within(question).getByRole('button', { name: "About GV's field-cut rule" });
+    info.focus();
+    await user.keyboard('{Enter}');
+    const rule = await screen.findByText(/GV's field-cut rule: where the stone meets a wall, it is made 1" longer/, undefined, { timeout: 5000 });
+    expect(rule).toBeTruthy();
+    // The project's field cut now, labelled as the current value (#1202 review).
+    expect(screen.getByText('1" is this project\'s field cut now (it can be changed per project).')).toBeTruthy();
+    expect(document.querySelector('[data-slot="wall-rule-example"]')?.textContent).toBe(
+      'Pieces add up to 94". Both ends → should be 96"; one end → 95"; no end walls → 94". Vendor wrote 95".',
+    );
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('says why the choices carry no result when the check recorded none (#1202)', async () => {
+    slotRows = [slot('walls', { wall_cases: { cases: [], unavailable_reason: 'Run the checks to see each choice\'s result.' } }), ...BASE_SLOTS.slice(1)];
+    setup();
+    expect(await screen.findByText("Run the checks to see each choice's result.", undefined, { timeout: 5000 })).toBeTruthy();
+    expect(document.querySelector('[data-slot="wall-choice-result"]')).toBeNull();
   });
 
   it('the between-panels item is one click for "no field cut", never called "back wall only" (#1138)', async () => {

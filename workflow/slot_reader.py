@@ -119,12 +119,11 @@ from extraction.slot_reader.veto import (
 from extraction.slot_reader.walls import (
     E3_WALL_SETTINGS,
     WALL_PROMPT_ID,
-    CodeWallClues,
     HatchSeen,
     WallAnswer,
+    WallInkSeen,
     WallOutcome,
     WallSettings,
-    code_wall_outcome,
     seal_walls,
     wall_pictures,
 )
@@ -134,7 +133,10 @@ from vocabulary.semantic_types import ProductType
 from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
+    WALL_INK_FLAG,
+    WALL_INK_WHY_FLAG,
     WALL_READER_FLAG,
+    WALL_WORDS_FLAG,
     WALLS_HELD_FLAG,
     WALLS_SEALED_FLAG,
 )
@@ -431,16 +433,27 @@ class OwnerResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WallWords:
+    """The vendor's words at the row's ends (a filler, a field cut, the word WALL): evidence the
+    reviewer may read, never a decision (#1202: such words stood at free ends five times)."""
+
+    left: bool = False
+    right: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class PageWalls:
-    """The row's wall question (#992): the two pictures shown, both answers, code's hatch check,
-    and the layout they sealed or why the person decides."""
+    """The row's wall question (#992): the two pictures shown, both answers, code's hatch check and
+    wall-ink judgment, the words at the ends, and the layout they sealed or why the person decides.
+    """
 
     row_png: bytes
     view_png: bytes
     row_box_px: tuple[int, int, int, int]
     view_box_px: tuple[int, int, int, int]
     hatch: HatchSeen
-    code_clues: CodeWallClues
+    ink: WallInkSeen
+    words: WallWords
     answers: tuple[WallAnswer, ...]
     outcome: WallOutcome
 
@@ -452,8 +465,8 @@ class WallQuestion:
     row_box_px: tuple[int, int, int, int]
     view_box_px: tuple[int, int, int, int]
     hatch: HatchSeen
-    code_clues: CodeWallClues
-    code_outcome: WallOutcome | None
+    ink: WallInkSeen
+    words: WallWords
 
 
 @dataclass(frozen=True, slots=True)
@@ -915,10 +928,16 @@ def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandid
     return image, candidates
 
 
+type _WallJobPictures = tuple[
+    bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen, WallInkSeen
+]
+
+
 def _wall_job_pictures(
     page: SlotPage, plan: SlotPlan, settings: WallSettings
-) -> tuple[bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen] | None:
-    """The row picture and the vendor view for the wall question, and code's hatch check."""
+) -> _WallJobPictures | None:
+    """The row picture and the vendor view for the wall question, code's hatch check and its
+    wall-ink judgment at both ends (#1202)."""
     row = plan.row
     if row is None:
         return None
@@ -944,7 +963,7 @@ def _wall_job_pictures(
         thickness=thickness + 2,
         max_side=settings.picture_max_side_px,
     )
-    return row_png, view_png, row_px, view_px, pictures.hatch
+    return row_png, view_png, row_px, view_px, pictures.hatch, pictures.ink
 
 
 #: A label run at least this many times as tall as it is wide is drawn sideways (#1051). Measured on
@@ -1364,16 +1383,14 @@ def read_slot_pages(
             else _wall_job_pictures(page, plan, runtime.wall_settings)
         )
         if wall_pictures_for is not None:
-            code_clues = _code_wall_clues(page, plan, wall_pictures_for)
-            code_outcome = code_wall_outcome(code_clues, row_ambiguity=plan.ambiguity)
             walls_asked[page.page_index] = WallQuestion(
                 row_png=wall_pictures_for[0],
                 view_png=wall_pictures_for[1],
                 row_box_px=wall_pictures_for[2],
                 view_box_px=wall_pictures_for[3],
                 hatch=wall_pictures_for[4],
-                code_clues=code_clues,
-                code_outcome=code_outcome,
+                ink=wall_pictures_for[5],
+                words=_code_wall_words(page, plan, wall_pictures_for),
             )
             wall_candidate_ids[page.page_index] = uuid4()
             row_png, view_png = wall_pictures_for[0], wall_pictures_for[1]
@@ -1405,8 +1422,7 @@ def read_slot_pages(
                     )
                     for model in readers
                 )
-            if code_outcome is not None:
-                continue
+            # Both AIs are always asked (#1202): code's wall ink alone never decides the walls.
             wall_packet = (
                 _question_packet(
                     page,
@@ -1650,27 +1666,32 @@ def read_slot_pages(
         asked = walls_asked.get(page.page_index)
         if asked is not None:
             row_png, view_png = asked.row_png, asked.view_png
-            wall_answers = (
-                ()
-                if asked.code_outcome is not None
-                else tuple(
-                    answer
-                    for model in readers
-                    if isinstance(
-                        answer := answers.get((_walls_key(page.page_index), model)), WallAnswer
-                    )
+            wall_answers = tuple(
+                answer
+                for model in readers
+                if isinstance(
+                    answer := answers.get((_walls_key(page.page_index), model)), WallAnswer
                 )
             )
-            code_clues = (
-                _read_wall_clues(slots, asked.code_clues)
-                if runtime.claude_row_reader and asked.code_outcome is None
-                else asked.code_clues
+            words = (
+                _read_wall_words(slots, asked.words) if runtime.claude_row_reader else asked.words
             )
-            wall_outcome = asked.code_outcome or seal_walls(
+            # The third condition for automatic walls (#1202): both AIs said the stone runs to the
+            # walls (`to_walls`, nothing else: an open end, "unsure" or "no stone" is not that),
+            # and code's "wall to wall" line does not say it runs past them. Without the counter
+            # question (not the Claude path) it never holds. And the walls were judged on this
+            # very row: a row read through its equal-share chain must have the same two ends.
+            stone_meets_walls = (
+                runtime.claude_row_reader
+                and stone_runs_to_walls(line_answers)
+                and _stone_end_hold(page, asked_plan, line_answers) is None
+                and same_row_ends(asked_plan.row, plan.row)
+            )
+            wall_outcome = seal_walls(
                 wall_answers,
-                hatch=asked.hatch,
+                ink=asked.ink,
                 row_ambiguity=plan.ambiguity,
-                code_clues=code_clues,
+                stone_meets_walls=stone_meets_walls,
                 allow_claude_pair=runtime.claude_row_reader,
             )
             walls = PageWalls(
@@ -1680,7 +1701,8 @@ def read_slot_pages(
                 view_box_px=asked.view_box_px,
                 answers=wall_answers,
                 hatch=asked.hatch,
-                code_clues=code_clues,
+                ink=asked.ink,
+                words=words,
                 outcome=wall_outcome,
             )
         results.append(
@@ -1727,6 +1749,20 @@ def read_slot_pages(
             effort=runtime.claude_effort if runtime.claude_row_reader else None,
         )
     return tuple(results)
+
+
+def stone_runs_to_walls(answers: Sequence[CounterBreakAnswer]) -> bool:
+    """Whether both AIs answered the counter question and both said exactly `to_walls` (#1202)."""
+    return len(answers) == 2 and all(answer.stone_ends == "to_walls" for answer in answers)
+
+
+def same_row_ends(
+    judged: CountertopRowCandidate | None, final: CountertopRowCandidate | None
+) -> bool:
+    """Whether the row whose walls were judged is the row finally read: the same two ends."""
+    return (
+        judged is not None and final is not None and judged.x0 == final.x0 and judged.x1 == final.x1
+    )
 
 
 def _walls_key(page_index: int) -> str:
@@ -1856,20 +1892,14 @@ def _line_phrase_records(
     return phrases
 
 
-def _code_wall_clues(
-    page: SlotPage,
-    plan: SlotPlan,
-    wall_pictures_for: tuple[
-        bytes, bytes, tuple[int, int, int, int], tuple[int, int, int, int], HatchSeen
-    ],
-) -> CodeWallClues:
-    """Recognise only positive vendor clues at row ends; missing text never means an open end."""
+def _code_wall_words(
+    page: SlotPage, plan: SlotPlan, wall_pictures_for: _WallJobPictures
+) -> WallWords:
+    """The vendor's own words at the row's ends (a filler, a field cut, the word WALL, a "wall to
+    wall" line): evidence for the reviewer only, never a wall decision (#1202)."""
     left = right = False
-    hatch = wall_pictures_for[4]
-    left = hatch.left
-    right = hatch.right
     if page.ink is None or plan.row is None or not plan.slots:
-        return CodeWallClues(left=left or None, right=right or None)
+        return WallWords()
 
     view = wall_pictures_for[3]
     view_left, view_top, view_right, view_bottom = view
@@ -1942,24 +1972,18 @@ def _code_wall_clues(
                         left = True
                     else:
                         right = True
-    return CodeWallClues(left=left or None, right=right or None)
+    return WallWords(left=left, right=right)
 
 
 _WALL_WORD: Final = re.compile(r"\b(?:filler|field\s+cut|wall)\b", re.IGNORECASE)
 
 
-def _read_wall_clues(slots: tuple[OwnerResult, ...], clues: CodeWallClues) -> CodeWallClues:
-    """The client lead's row-end rule again, on the end labels the two readers sealed.
-
-    `_code_wall_clues` reads only the file's own text, and a vendor that draws its words as lines
-    hides every "Filler" from it (proof run 2026-10-08: a filler sum at both ends of a row, sealed
-    by both readers, while the walls went to the person). A sealed reading on vendor ink, after
-    the drawn-length veto, is evidence of the same standing as the file's text. Only positive
-    clues are added: an end without the word stays whatever the drawing already said.
-    """
+def _read_wall_words(slots: tuple[OwnerResult, ...], words: WallWords) -> WallWords:
+    """The same words on the end labels the two readers sealed, for a vendor that draws its words
+    as lines (which `_code_wall_words` cannot read). Evidence only (#1202), like the file's own."""
     if len(slots) < 2:
-        return clues
-    left, right = clues.left, clues.right
+        return words
+    left, right = words.left, words.right
     for owner, side in ((slots[0], "left"), (slots[-1], "right")):
         position = owner.outcome.label_index
         if owner.outcome.state is not LabelState.SEALED or position is None:
@@ -1972,7 +1996,7 @@ def _read_wall_clues(slots: tuple[OwnerResult, ...], clues: CodeWallClues) -> Co
                 left = True
             else:
                 right = True
-    return CodeWallClues(left=left, right=right)
+    return WallWords(left=left, right=right)
 
 
 def _counter_break_row_hold(
@@ -2708,7 +2732,10 @@ def _persist_walls(
             f"behind={answer.behind.value},view={answer.view}"
         )
     flags.append(f"hatch:left={walls.hatch.left},right={walls.hatch.right}")
-    flags.append(f"wall-clue:left={walls.code_clues.left},right={walls.code_clues.right}")
+    # Code's own wall judgment (#1202), and why at each end; the words are evidence only.
+    flags.append(f"{WALL_INK_FLAG}left={walls.ink.left},right={walls.ink.right}")
+    flags.append(f"{WALL_INK_WHY_FLAG}left={walls.ink.why_left};right={walls.ink.why_right}")
+    flags.append(f"{WALL_WORDS_FLAG}left={walls.words.left},right={walls.words.right}")
     if outcome.source is not None:
         flags.append(f"wall-source:{outcome.source}")
     flags.append(_box_flag("view-box", walls.view_box_px))
@@ -2770,10 +2797,7 @@ def _propose_sealed_walls(
     from sqlalchemy.orm import Session
 
     from rules.semantic_types import SemanticType
-    from workflow.layout_proposals import (
-        DRAWING_CLUE_WALL_PROMPT_ID,
-        record_layout_proposal,
-    )
+    from workflow.layout_proposals import record_layout_proposal
 
     assert isinstance(session, Session)
     if not walls or any(result.walls is None for result, _artifact in walls):
@@ -2785,20 +2809,14 @@ def _propose_sealed_walls(
     artifact = walls[0][1]
     if layout is None or artifact is None:
         return
-    code_only = all(
-        result.walls is not None and result.walls.outcome.source == "vendor-drawing-clues"
-        for result, _artifact in walls
-    )
+    # Always the readers' proposal (#1202): code never settles a revision's walls alone, and the
+    # one automatic layout belongs to its own countertop row, never to the revision.
     record_layout_proposal(
         session,
         package_revision_id=package_revision_id,
         discriminator_name=SemanticType.WALL_CONFIG.value,
         proposed_value=layout,
         crop_artifact_id=artifact,
-        model_id=(
-            "deterministic:vendor-drawing-clues"
-            if code_only
-            else f"{reader_ids[0]} + {reader_ids[1]}"
-        ),
-        prompt_id=DRAWING_CLUE_WALL_PROMPT_ID if code_only else WALL_PROMPT_ID,
+        model_id=f"{reader_ids[0]} + {reader_ids[1]}",
+        prompt_id=WALL_PROMPT_ID,
     )

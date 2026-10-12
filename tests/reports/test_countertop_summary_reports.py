@@ -917,3 +917,50 @@ def test_the_drawings_not_read_are_listed_in_the_pdf_and_the_workbook() -> None:
         "the bottom-right drawing",
         not_read[0].reason,
     ]
+
+
+def test_the_signed_pdf_and_workbook_carry_the_field_cut_rule_and_who_set_the_walls() -> None:
+    """#1202: one line under the countertops with the field-cut rule and the project's field cut,
+    and each countertop's results line (which walls were used and who decided)."""
+    results = (
+        _result(
+            "Countertop row A",
+            Outcome.FAIL,
+            printed=Fraction(99),
+            pieces=(Fraction(40), Fraction(54)),
+            expected=None,
+            delta=None,
+            wall=WallLayoutOut(
+                config=None,
+                label=None,
+                source="not needed",
+                line="not needed: wrong for every wall case",
+            ),
+        ),
+    )
+    pdf = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=7),
+                revision_number=1,
+                vendor="Synthetic vendor",
+                findings=(_stored(),),
+                countertop_results=results,
+            )
+        )
+    )
+    rule = (
+        'Field cut: at each end where the stone meets a wall, it is made 1" longer and trimmed on '
+        'site. Walls at both ends: 1" at each end. Wall at one end: 1". No end walls (back wall '
+        "only, island, or the stone stops at side panels): no field cut. 1\" is this project's "
+        "field cut."
+    )
+    assert rule in pdf
+    assert "Walls: not needed: wrong for every wall case" in pdf
+
+    from reports.spreadsheet import COUNTERTOPS_SHEET
+
+    sheet = load_workbook(BytesIO(write_stored_workbook([_stored()], countertop_results=results)))[
+        COUNTERTOPS_SHEET
+    ]
+    assert sheet.cell(row=len(results) + 3, column=1).value == rule

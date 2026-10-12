@@ -310,15 +310,19 @@ export const WALL_SOURCE_WORD: Record<CountertopResult['wall_layout']['source'],
   reviewer: 'reviewer',
   'between panels': 'panels',
   'not established': 'not set',
+  'code ink and both AIs': 'drawing + AIs',
+  'not needed': 'not needed',
 };
 
 /** The same, said in full for a tooltip and screen readers. */
 export const WALL_SOURCE_TITLE: Record<CountertopResult['wall_layout']['source'], string> = {
-  'drawing clues': 'Read from the vendor drawing’s clues',
+  'drawing clues': 'Proposed from the vendor drawing’s clues (an older run): confirm it on the countertop card',
   'both readers': 'Both AI readers agreed',
   reviewer: 'Chosen by a reviewer',
   'between panels': 'Stone between side panels',
   'not established': 'Not established — choose it on the countertop card',
+  'code ink and both AIs': 'Seen on the drawing at both ends and confirmed by both AIs',
+  'not needed': 'Not needed: the width is the same answer for every wall case',
 };
 
 /** "Ana Lima" → "AL"; "reviewer@x" → "RE". */

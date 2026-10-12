@@ -440,8 +440,8 @@ def test_the_statement_count_does_not_grow_with_the_rows(
 
     small_count, large_count = _count(session, small), _count(session, large)
 
-    # The combined sheet's own bound (`tests/api/test_visual_ui.py`, 12) holds.
-    assert small_combined <= 12 and large_combined <= 12
+    # The combined sheet's own bound (`tests/api/test_visual_ui.py`, 14 since #1202) holds.
+    assert small_combined <= 14 and large_combined <= 14
     # Flat in the number of rows, matched or not: 10 rows and 20 rows read the same.
     assert small_count - small_combined == large_count - large_combined
     # The separate file's fixed reads: the index check, the effective matches (two), the matches

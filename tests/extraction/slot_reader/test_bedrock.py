@@ -601,7 +601,7 @@ def test_label_crops_and_wall_questions_share_one_batch_and_each_gets_its_own_an
         Side.UNSURE,
         "plan",
     )
-    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v2"}
+    assert {attempt.prompt_id for attempt in attempts} == {"slot-crop-v1", "slot-walls-v3"}
     assert all(attempt.raw_response_text for attempt in attempts), "raw answers are kept (#985)"
 
 

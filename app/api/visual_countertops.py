@@ -55,6 +55,13 @@ from app.review.no_countertop import (
     reading_answer,
 )
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
+from app.review.wall_cases import (
+    FIELD_CUT_CHANGED,
+    current_field_cut,
+    field_cut_changed,
+    field_cut_text,
+    wall_cases_out,
+)
 from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectComparedOut,
@@ -69,6 +76,7 @@ from app.schemas.visual_ui import (
     PageWithoutCountertopOut,
     ReviewerDecisionOut,
     RowNotCheckedOut,
+    WallCasesOut,
     WallLayoutOut,
 )
 from units.imperial import format_inches
@@ -76,7 +84,16 @@ from verdict.outcomes import Outcome
 from vocabulary.check_holds import CHECK_HOLD_REASONS, with_no_stone_note
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS, not_checked_note
 from vocabulary.reviewer_reasons import reviewer_reason
-from vocabulary.wall_layouts import is_between_panels, wall_layout_words
+from vocabulary.wall_layouts import (
+    AUTOMATIC_WALL_SOURCE,
+    AUTOMATIC_WALLS_LINE,
+    NOT_NEEDED_FAIL_LINE,
+    NOT_NEEDED_PASS_LINE,
+    READERS_WALL_SOURCE,
+    chosen_by_line,
+    is_between_panels,
+    wall_layout_words,
+)
 from workflow.architect_match_records import effective_architect_matches
 from workflow.architect_pairing_contract import EffectivePairing
 
@@ -105,6 +122,7 @@ from workflow.slot_row_scope import (
     slot_rows_and_unchosen_pages,
     unchosen_page,
 )
+from workflow.wall_cases import is_every_wall_case, scale_inputs, stored_wall_cases
 
 router = APIRouter(tags=["visual reviewer"])
 
@@ -151,7 +169,11 @@ def _intermediate(trace: dict[str, Any], name: str) -> Fraction | None:
 
 
 def _scale_inputs(trace: dict[str, Any]) -> tuple[Fraction | None, int | None]:
-    """Read the stored field-cut operands from the serialized scale-operation trace."""
+    """Read the stored field-cut operands from the serialized scale-operation trace.
+
+    The engine writes the inputs as `value, 1 in, multiplier, 2`; the earlier reader expected the
+    other order and so never found them (#1202 found it). `scale_inputs` reads either order.
+    """
     raw = next(
         (
             pair[1]
@@ -160,29 +182,7 @@ def _scale_inputs(trace: dict[str, Any]) -> tuple[Fraction | None, int | None]:
         ),
         None,
     )
-    if not isinstance(raw, str):
-        return None, None
-    value_match = re.search(r"(?:^|, )value, (.*?), result,", raw)
-    count_match = re.search(r"(?:^|, )multiplier, (.*?), value,", raw)
-    try:
-        from units.imperial import parse_imperial
-
-        value = (
-            None
-            if value_match is None
-            else parse_imperial(value_match.group(1).removesuffix(" in"))
-        )
-        count_value = None if count_match is None else parse_imperial(count_match.group(1))
-        return (
-            value,
-            (
-                count_value.numerator
-                if count_value is not None and count_value.denominator == 1
-                else None
-            ),
-        )
-    except (ValueError, TypeError):
-        return None, None
+    return scale_inputs(raw)
 
 
 def _source_and_kind(
@@ -471,6 +471,12 @@ def _row_values(
         )
     expected = _intermediate(trace, "expected_width") if finding is not None else None
     field_per_end, field_count = _scale_inputs(trace) if finding is not None else (None, None)
+    if finding is not None and field_per_end is None:
+        # Checked for every wall case (#1202): the field cut per end the cases used; no one count.
+        field_per_end = next(
+            (case.field_cut_per_end for case in stored_wall_cases(trace) if case.field_cut_per_end),
+            None,
+        )
     return overall, pieces, field_per_end, field_count, expected, (located(None), overall_crop)
 
 
@@ -501,15 +507,51 @@ def _drawn_length_note(row: Any, verdict_inputs: dict[str, VerdictInput]) -> str
     return not_checked_note(positions)
 
 
-def _wall(row: Any, origins: Mapping[UUID, CarriedOrigin] | None = None) -> WallLayoutOut:
+def _wall(
+    row: Any,
+    origins: Mapping[UUID, CarriedOrigin] | None = None,
+    finding: Finding | None = None,
+) -> WallLayoutOut:
+    """The walls the row's result used, who set them, and the results line saying so (#1202)."""
     decision = row.decision
     origin = None if decision is None or origins is None else origins.get(decision.id)
     candidate = row.wall_candidate
     flags = set(() if candidate is None else candidate.ambiguity_flags or ())
     config = None if decision is None else decision.wall_config
     source: Literal[
-        "drawing clues", "both readers", "reviewer", "between panels", "not established"
-    ] = ("reviewer" if config is not None else "not established")
+        "drawing clues",
+        "both readers",
+        "reviewer",
+        "between panels",
+        "not established",
+        "code ink and both AIs",
+        "not needed",
+    ] = (
+        "reviewer" if config is not None else "not established"
+    )
+    between_panels = any(
+        is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
+    )
+    line: str | None = None
+    if config is not None:
+        who = origin.given_by if origin is not None and origin.given_by else decision.confirmed_by
+        line = chosen_by_line(config, who, between_panels=between_panels)
+    elif (
+        finding is not None
+        and is_every_wall_case(finding.trace)
+        and finding.outcome in (Outcome.FAIL.value, Outcome.PASS.value)
+    ):
+        # Wrong (or right) for every wall case: no walls were used, and none are asked for.
+        return WallLayoutOut(
+            config=None,
+            label=None,
+            source="not needed",
+            line=(
+                NOT_NEEDED_FAIL_LINE
+                if finding.outcome == Outcome.FAIL.value
+                else NOT_NEEDED_PASS_LINE
+            ),
+        )
     if config is None:
         sealed = next(
             (
@@ -528,13 +570,20 @@ def _wall(row: Any, origins: Mapping[UUID, CarriedOrigin] | None = None) -> Wall
             ),
             None,
         )
-        if source_flag == "vendor-drawing-clues":
+        held = any(flag.startswith("walls-held:") for flag in flags)
+        if (
+            source_flag == AUTOMATIC_WALL_SOURCE
+            and sealed == "back_left_right"
+            and not held
+            and not between_panels
+        ):
+            source = "code ink and both AIs"
+            line = AUTOMATIC_WALLS_LINE
+        elif source_flag == "vendor-drawing-clues":
+            # Before #1202 code alone settled these; now only a proposal for the reviewer.
             source = "drawing clues"
-        elif source_flag == "readers" and sealed is not None:
+        elif source_flag in (READERS_WALL_SOURCE, "drawing-and-readers") and sealed is not None:
             source = "both readers"
-    between_panels = any(
-        is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
-    )
     if between_panels:
         source = "between panels"
     return WallLayoutOut(
@@ -543,6 +592,7 @@ def _wall(row: Any, origins: Mapping[UUID, CarriedOrigin] | None = None) -> Wall
             None if config is None else wall_layout_words(config, between_panels=between_panels)
         ),
         source=source,
+        line=line,
         carried_from_revision=(
             None if origin is None or source != "reviewer" else origin.revision_number
         ),
@@ -957,6 +1007,10 @@ def _countertop_results_for_revision(
     need_ids = set(readiness.blocking_finding_ids)
     # Wall answers carried from an earlier revision say so (#1180).
     wall_origins = wall_answer_origins(session, (row.decision for row in rows))
+    # The field cut the newest results used, for the field-cut explanation (#1202): read from the
+    # results already loaded, so the statement count does not change.
+    current = current_field_cut(session, revision.id) if rows else None
+    in_force = field_cut_text(current)
     items: list[CountertopResultOut] = []
     for row in rows:
         finding = finding_by_row.get(row.anchor.id)
@@ -1053,7 +1107,25 @@ def _countertop_results_for_revision(
                 field_cut_count=field_count,
                 expected_total=_exact(expected),
                 delta=_exact(delta),
-                wall_layout=_wall(row, wall_origins),
+                wall_layout=_wall(row, wall_origins, finding),
+                wall_cases=(
+                    WallCasesOut(unavailable_reason=FIELD_CUT_CHANGED)
+                    if finding is not None
+                    and is_every_wall_case(finding.trace)
+                    and field_cut_changed(finding, current)
+                    else (
+                        wall_cases_out(
+                            finding.trace,
+                            between_panels=any(
+                                is_between_panels(candidate.ambiguity_flags or ())
+                                for candidate in row.candidates
+                            ),
+                        )
+                        if finding is not None and is_every_wall_case(finding.trace)
+                        else WallCasesOut()
+                    )
+                ),
+                field_cut_in_force=in_force,
                 agreement=AgreementFactsOut(
                     both_readers_agreed_on_row=any(
                         flag.startswith("row-choice:")
@@ -1064,7 +1136,9 @@ def _countertop_results_for_revision(
                     )
                     or None,
                     values_agreed=values_agreed,
-                    code_clue_used=any(flag.startswith("wall-clue:") for flag in wall_flags),
+                    code_clue_used=any(
+                        flag.startswith(("wall-clue:", "wall-ink:")) for flag in wall_flags
+                    ),
                 ),
                 hold=hold,
                 drawn_length_note=drawn_length_note,

@@ -49,6 +49,24 @@ assert.deepEqual(
   { measurements: { 'piece_widths:0': '21 in' } },
   'typing a width must not confirm the reader half of a mixed-source wall layout',
 );
+// #1202: only code's wall ink at both ends with both AIs needs no control; an older run's
+// code-alone layout is now a proposal like any other; walls that change nothing are not asked.
+assert.equal(
+  shouldOfferRowWallControl({ ...row, wall_source: 'code-ink-and-both-ais' }),
+  true,
+  'walls set by code ink and both AIs can always be corrected by the reviewer',
+);
+assert.equal(
+  shouldOfferRowWallControl({ ...row, wall_source: 'vendor-drawing-clues' }),
+  true,
+  'an older run\'s code-alone walls now need the reviewer',
+);
+assert.equal(
+  shouldOfferRowWallControl({ ...row, walls_needed: false }),
+  false,
+  'a width wrong for every wall case asks no wall question',
+);
+assert.match(readFileSync('src/components/measure/SlotReaderRows.tsx', 'utf8'), /WallChoiceResult/, 'each wall choice shows its recorded result');
 const component = readFileSync('src/components/measure/SlotReaderRows.tsx', 'utf8');
 assert.match(component, /slotReaderReviewPayload/, 'the component must send only explicit reviewer choices');
 assert.match(component, /shouldOfferRowWallControl/, 'mixed-source rows must show the wall control');

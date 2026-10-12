@@ -22,6 +22,7 @@ from vocabulary.check_holds import (
     with_no_stone_note,
 )
 from vocabulary.reviewer_reasons import reviewer_reason
+from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE, READERS_WALL_SOURCE
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,15 +803,21 @@ def effective_row_wall(
     held: bool,
     reviewer_confirmed: str | None,
 ) -> tuple[str | None, str | None]:
-    """Drawing clues may decide; reader-only proposals need confirmation on this exact row."""
+    """The row's walls, from two judgments or the reviewer; never from one judgment (#1202).
+
+    The reviewer's choice for this exact row wins. Otherwise only `back_left_right` set by code's
+    wall ink at both ends together with both AIs (`AUTOMATIC_WALL_SOURCE`) is used without a click.
+    A layout the readers agreed, and one an older run took from the vendor's drawing clues alone
+    (`vendor-drawing-clues`, before #1202), is a proposal the reviewer confirms.
+    """
     if reviewer_confirmed is not None:
         return reviewer_confirmed, None
     if held:
         return None, "The wall layout is held for reviewer input."
     if layout is None:
         return None, "Choose the wall layout for this countertop row."
-    if source == "vendor-drawing-clues":
+    if source == AUTOMATIC_WALL_SOURCE and layout == "back_left_right":
         return layout, None
-    if source == "readers":
+    if source in {READERS_WALL_SOURCE, "drawing-and-readers", "vendor-drawing-clues"}:
         return None, "Confirm the proposed wall layout for this countertop row."
     return None, "The wall layout has no approved source for this row."

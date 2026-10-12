@@ -56,7 +56,7 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 def _approved(session: Session, tmp_path: Path) -> tuple[Any, PackageRevision, Approval]:
     """Two checked countertop rows whose walls came from the drawing, signed off."""
     _project, package_id, anchors = _package_rows(
-        session, widths_add_up=True, wall_source="vendor-drawing-clues"
+        session, widths_add_up=True, wall_source="code-ink-and-both-ais"
     )
     _run_current_checks(session, package_id, tmp_path)
     revision = session.scalars(

@@ -36,7 +36,8 @@ export function decisionPayload(id: string, outcome: Outcome, action: SimpleRevi
 
 export function wallSourceLabel(source: string | null | undefined): string {
   const labels: Record<string, string> = {
-    'vendor-drawing-clues': 'From vendor drawing clues',
+    'code-ink-and-both-ais': 'Seen on the drawing at both ends and confirmed by both AIs',
+    'vendor-drawing-clues': 'From vendor drawing clues (older run) — needs your confirmation',
     'drawing-and-readers': 'Drawing clues with a suggested wall end — needs your confirmation',
     readers: 'Suggested wall layout — needs your confirmation',
     'between-panels': 'Stone between side panels — no end field cut proposed; needs your confirmation',

@@ -306,9 +306,12 @@ def test_key_replay_never_borrows_product_wall_answer_as_human_truth(
     assert not report.zero_false_pass
 
 
+@pytest.mark.parametrize("row_answer", [True, False])
 def test_product_projection_reads_exact_saved_row_and_settings(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, row_answer: bool
 ) -> None:
+    """With no row answer for the page there are no walls (#1202): a revision-wide layout the
+    readers sealed is only a proposal and is no longer used."""
     run_id = uuid4()
     revision_id = uuid4()
     proposal_id = uuid4()
@@ -392,19 +395,18 @@ def test_product_projection_reads_exact_saved_row_and_settings(
     monkeypatch.setattr(
         product,
         "slot_reader_wall_for_page",
-        lambda *_args: SimpleNamespace(
-            candidate_id=None,
-            selected=True,
-            layout="back_only",
-            source="vendor-drawing-clues",
-            held=False,
-            row_held=False,
+        lambda *_args: (
+            SimpleNamespace(
+                candidate_id=None,
+                selected=True,
+                layout="back_left_right",
+                source="code-ink-and-both-ais",
+                held=False,
+                row_held=False,
+            )
+            if row_answer
+            else None
         ),
-    )
-    monkeypatch.setattr(
-        product,
-        "reader_sealed_wall_config",
-        lambda *_args: pytest.fail("a page-owned answer must not use revision-wide reader walls"),
     )
     monkeypatch.setattr(product, "countertop_scopes", lambda *_args: None)
     monkeypatch.setattr(product, "_field_cut", lambda *_args: Fraction(1))
@@ -422,5 +424,5 @@ def test_product_projection_reads_exact_saved_row_and_settings(
     assert audit.wall_attempts == 2
     assert case.proposed is not None
     assert case.proposed.pieces == (Fraction(8),)
-    assert case.proposed.wall_layout == "back_only"
+    assert case.proposed.wall_layout == ("back_left_right" if row_answer else None)
     assert case.proposed.field_cut == Fraction(1)
