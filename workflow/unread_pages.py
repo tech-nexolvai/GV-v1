@@ -18,15 +18,26 @@ is listed with the pages with no countertop and needs a reviewer's answer before
 * `no-row-found` — a drawing is read as the vendor's (or the page prints no headings at all), but
   code found no row of dimensions on it that could be a countertop.
 * `unreadable` — the page or its drawings could not be read.
+* `blank-page` — code proved from the PDF that nothing is drawn on the page (#1195,
+  `extraction/blank_page.py`): no pasted drawing, no picture, no ink beyond the page frame and its
+  typed title. The proof's facts are stored with the record (`blank-proof:` flags). It is still
+  listed, but needs no reviewer answer before sign-off.
 
-Pure apart from `persist_unread_pages`. Source: issue #1193. Verification:
+A `no-drawing` page code could not prove blank carries `no-row-ink-found` and says so: something is
+drawn or pictured on it (a scanned or flattened sheet) that code cannot read (#1195 review).
+
+A page with a drawing whose role code could not tell (an unknown label, or none of its own) also
+carries `no-row-unnamed-drawing`: it may hold the vendor's drawing, so the screen's "Confirm these
+pages" action leaves it unticked (#1195).
+
+Pure apart from `persist_unread_pages`. Source: issues #1193, #1195. Verification:
 tests/workflow/test_unread_pages.py.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Final
 from uuid import UUID, uuid4
@@ -37,16 +48,28 @@ from app.models import ViewRole
 from app.models.document import Page
 from app.models.drawing import REFERENCE_ROLE
 from app.models.evidence import ObservationCandidate
+from extraction.blank_page import BLANK_PAGE_RULE, BlankPageFacts, prove_blank_pages
 from extraction.panels import PanelLayout, PanelRoleProposal
-from workflow.slot_row_scope import NO_ROW_CODES, NO_ROW_FLAG
+from workflow.slot_row_scope import (
+    BLANK_PROOF_FLAG,
+    INK_FOUND_FLAG,
+    NO_ROW_CODES,
+    NO_ROW_FLAG,
+    UNNAMED_DRAWING_FLAG,
+)
 from workflow.view_roles import CODE_CONFIRMERS
 
 __all__ = [
+    "BLANK_PAGE",
+    "INK_FOUND_REASON",
     "ConfirmedRole",
     "UnreadPage",
+    "blank_proof_flags",
+    "has_unnamed_drawing",
     "persist_unread_pages",
     "unread_page",
     "unread_page_reason",
+    "with_blank_proofs",
 ]
 
 #: The reason column's width (`ObservationCandidate.review_reason`).
@@ -65,10 +88,30 @@ NO_DRAWING: Final = (
     ),
 )
 
+#: A page with no pasted drawing that code could not prove blank (#1195 review): something is drawn
+#: or pictured on it (a scanned or flattened sheet, an underline), which code cannot read.
+INK_FOUND_REASON: Final = (
+    "Something is drawn on this page but no drawing is pasted, so code could not read it. Nothing "
+    "on it was read or checked: look at the page before confirming it."
+)
+
+BLANK_PAGE: Final = (
+    "blank-page",
+    (
+        "Title or divider page: nothing drawn. Code checked the PDF: no pasted drawing, no "
+        "picture and no lines beyond the page frame and its typed title, so there is no "
+        "countertop to check."
+    ),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UnreadPage:
-    """One page code read no countertop row on, with its `no-row:` code and reason."""
+    """One page code read no countertop row on, with its `no-row:` code and reason.
+
+    `blank_proof` holds what code checked when it proved the page blank (#1195); `unnamed_drawing`
+    says a drawing on it has no role code could tell (#1195); `ink_found` that no drawing is pasted
+    on it but code could not prove it blank (#1195 review)."""
 
     page_id: UUID
     page_index: int
@@ -77,12 +120,19 @@ class UnreadPage:
     height_pt: Decimal
     code: str
     reason: str
+    blank_proof: BlankPageFacts | None = None
+    unnamed_drawing: bool = False
+    ink_found: bool = False
 
     def __post_init__(self) -> None:
         if self.code not in NO_ROW_CODES:
             raise ValueError(f"unknown no-row code {self.code!r}")
         if not self.reason.strip():
             raise ValueError("an unread page needs its reason")
+        if (self.code == BLANK_PAGE[0]) != (
+            self.blank_proof is not None and self.blank_proof.blank
+        ):
+            raise ValueError("a blank page, and only a blank page, carries its full proof")
 
 
 def _quoted(text: str | None) -> str:
@@ -221,6 +271,57 @@ def unread_page_reason(
     )
 
 
+def has_unnamed_drawing(layout: PanelLayout | None, confirmed: Mapping[int, ConfirmedRole]) -> bool:
+    """Whether a drawing on a page that prints headings has no role code could tell (#1195): its
+    label is not one we know, or it has none of its own. Such a drawing may be the vendor's."""
+    if layout is None or not layout.labelled:
+        return False
+    return any(
+        proposal.role is None and proposal.annotation_index not in confirmed
+        for proposal in layout.proposals
+        if not proposal.nested
+    )
+
+
+def blank_proof_flags(facts: BlankPageFacts) -> list[str]:
+    """The proof as stored on the page's record: one `blank-proof:<fact>=<count>` per fact."""
+    return [
+        f"{BLANK_PROOF_FLAG}{name}={value}"
+        for name, value in (
+            ("rule", BLANK_PAGE_RULE),
+            ("stamps", facts.stamps),
+            ("other-annotations", facts.other_annotations),
+            ("images", facts.images),
+            ("drawn-paths", facts.drawn_paths),
+            ("frames", facts.frames),
+            ("white-paint", facts.white_paint),
+            ("typed-texts", facts.typed_texts),
+            ("typed-characters", facts.typed_characters),
+        )
+    ]
+
+
+def with_blank_proofs(data: bytes, pages: Sequence[UnreadPage]) -> list[UnreadPage]:
+    """The pages, each one code proves blank from the PDF's bytes recorded as `blank-page` with its
+    proof (#1195). A page code could not read stays as it is. A `no-drawing` page that is not
+    proven blank has something drawn or pictured on it that code cannot read (a scanned or
+    flattened sheet, say): it says so and is marked doubtful (#1195 review). Any other page stays
+    as it is."""
+    asked = [page.page_index for page in pages if page.code != UNREADABLE[0]]
+    facts = prove_blank_pages(data, asked) if asked else {}
+    out: list[UnreadPage] = []
+    for page in pages:
+        proof = facts.get(page.page_index) if page.code != UNREADABLE[0] else None
+        if proof is not None and proof.blank:
+            code, reason = BLANK_PAGE
+            out.append(replace(page, code=code, reason=reason, blank_proof=proof))
+        elif page.code == NO_DRAWING[0]:
+            out.append(replace(page, reason=INK_FOUND_REASON, ink_found=True))
+        else:
+            out.append(page)
+    return out
+
+
 def persist_unread_pages(
     session: Session, *, extraction_run_id: UUID, pages: Sequence[UnreadPage], dpi: int
 ) -> int:
@@ -247,6 +348,9 @@ def persist_unread_pages(
                 ambiguity_flags=[
                     "slot-reader-row-choice",
                     f"{NO_ROW_FLAG}{page.code}",
+                    *(() if page.blank_proof is None else blank_proof_flags(page.blank_proof)),
+                    *((UNNAMED_DRAWING_FLAG,) if page.unnamed_drawing else ()),
+                    *((INK_FOUND_FLAG,) if page.ink_found else ()),
                 ],
                 review_reason=_fit(page.reason),
             )
@@ -255,7 +359,9 @@ def persist_unread_pages(
     return len(pages)
 
 
-def unread_page(page: Page, code_and_reason: tuple[str, str]) -> UnreadPage:
+def unread_page(
+    page: Page, code_and_reason: tuple[str, str], *, unnamed_drawing: bool = False
+) -> UnreadPage:
     """The page as recorded: its identity, size and code's reason."""
     code, reason = code_and_reason
     return UnreadPage(
@@ -266,4 +372,5 @@ def unread_page(page: Page, code_and_reason: tuple[str, str]) -> UnreadPage:
         height_pt=Decimal(page.height_pt),
         code=code,
         reason=reason,
+        unnamed_drawing=unnamed_drawing,
     )

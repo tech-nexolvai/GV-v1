@@ -412,9 +412,11 @@ from workflow.unread_pages import (
     UNREADABLE,
     ConfirmedRole,
     UnreadPage,
+    has_unnamed_drawing,
     persist_unread_pages,
     unread_page,
     unread_page_reason,
+    with_blank_proofs,
 )
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
@@ -2415,6 +2417,7 @@ class DatabaseStages:
                 # reader when no slot row exists. That would bypass its row-selection abstention
                 # and run outside the slot batch's spend cap; the page is recorded with code's
                 # reason instead, and listed for the reviewer (#1193).
+                confirmed_roles = _confirmed_panel_roles(session, page.id)
                 unread.append(
                     unread_page(
                         page,
@@ -2423,7 +2426,7 @@ class DatabaseStages:
                             if slot_page == "unreadable"
                             else unread_page_reason(
                                 layouts.get(page.id),
-                                _confirmed_panel_roles(session, page.id),
+                                confirmed_roles,
                                 has_drawings_elsewhere=any(
                                     layout is not None
                                     and any(not drawing.nested for drawing in layout.proposals)
@@ -2432,6 +2435,7 @@ class DatabaseStages:
                                 ),
                             )
                         ),
+                        unnamed_drawing=has_unnamed_drawing(layouts.get(page.id), confirmed_roles),
                     )
                 )
                 continue
@@ -2488,6 +2492,9 @@ class DatabaseStages:
                     ink=ink,
                 )
             )
+        # A page code proves blank from the PDF (a title or divider page: nothing drawn) is still
+        # listed, with its proof, but needs no reviewer answer (#1195).
+        unread = with_blank_proofs(data, unread)
         count = 0
         if slot_pages or unread:
             count += self._read_slots(

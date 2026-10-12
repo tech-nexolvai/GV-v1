@@ -28,6 +28,15 @@ is "older": it gets the same two buttons, with a reason saying why it is asked, 
 answered, and never gets a "needs you" result of its own, so a real no-countertop page is signed as
 "confirmed no countertop", not as a "not checkable" countertop.
 
+**Pages code proved blank (#1195).** A title or divider page code proved from the PDF has nothing
+drawn on it (`no-row:blank-page` with its `blank-proof:` facts, `extraction/blank_page.py`) stays
+listed but needs no answer: it never blocks sign-off and never asks the signer about a carried
+answer. A reviewer may still say "There is a countertop" on it, which makes it blocking as above.
+
+**Many pages at once (#1195).** "Confirm these N pages" records one answer per page, each exactly
+like a single answer (who, when, the optional note), with the batch's id on each, so the audit trail
+has one event per page and one for the batch.
+
 **Sign-off.** Readiness (`app/review/approval.py`) refuses while a listed or older page has no
 answer, and while a page that is blocking (a reviewer said there is a countertop, or the AIs
 disagreed) has no result on the live check run: such a page shows only "Not checked", and signing
@@ -49,6 +58,7 @@ from sqlalchemy import ColumnElement, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.lifecycle.carry_forward import known_content
+from app.lifecycle.closed import CLOSED_STATES
 from app.models import (
     Document,
     DocumentVersion,
@@ -101,6 +111,8 @@ class PageAnswer:
     revision_number: int
     from_revision: int | None
     """The revision it was given on, when that is an earlier revision than the one shown."""
+    note: str | None = None
+    """The reviewer's optional note (#1195)."""
 
 
 def reviewer_says_countertop(answer: PageAnswer, *, found_by_code: bool = False) -> str:
@@ -207,6 +219,7 @@ def _answers(
                         answered_at=answer.created_at,
                         revision_number=answer_number,
                         from_revision=answer_number if answer_number < number else None,
+                        note=answer.note,
                     )
                     break
     return found
@@ -263,8 +276,13 @@ def blocking_pages(
     can get no result, so a missing one is not asked for.
     """
     pages = tuple(pages)
+    # A page code proved blank (#1195) is listed but needs no answer.
     unconfirmed = sorted(
-        {page.page_number for page in pages if page.listed and answers.get(page.record.id) is None}
+        {
+            page.page_number
+            for page in pages
+            if page.needs_answer and answers.get(page.record.id) is None
+        }
     )
     unchecked = (
         sorted(
@@ -287,7 +305,7 @@ def blocking_pages(
             ),
         )
         for page in pages
-        if page.listed
+        if page.needs_answer
         and (answer := answers.get(page.record.id)) is not None
         and answer.answer == "no_countertop"
         and answer.from_revision is not None
@@ -368,23 +386,31 @@ def pages_blocking_sign_off(
         )
     if not by_revision:
         return result
-    revisions = {
-        revision_id: (package_id, number, product)
-        for revision_id, package_id, number, product in session.execute(
-            select(
-                PackageRevision.id,
-                PackageRevision.package_id,
-                PackageRevision.revision_number,
-                Package.product_type,
-            )
-            .join(Package, Package.id == PackageRevision.package_id)
-            .where(PackageRevision.id.in_(by_revision))
+    revisions: dict[UUID, tuple[UUID, int, str | None]] = {}
+    closed: set[UUID] = set()
+    for revision_id, package_id, number, product, state in session.execute(
+        select(
+            PackageRevision.id,
+            PackageRevision.package_id,
+            PackageRevision.revision_number,
+            Package.product_type,
+            PackageRevision.state,
         )
-    }
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(PackageRevision.id.in_(by_revision))
+    ):
+        revisions[revision_id] = (package_id, number, product)
+        if state in CLOSED_STATES:
+            # A closed revision keeps a blank-page proof under the rule it was made with.
+            closed.add(revision_id)
     pages_of: dict[UUID, tuple[UnchosenRowPage, ...]] = {}
     for revision_id, pages in by_revision.items():
         owned = reviewer_owned_pages(session, revision_id)
-        pages_of[revision_id] = tuple(page for page in pages if page.page_number - 1 not in owned)
+        pages_of[revision_id] = tuple(
+            replace(page, closed=revision_id in closed)
+            for page in pages
+            if page.page_number - 1 not in owned
+        )
     answers = _answers(
         session,
         {

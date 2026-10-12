@@ -1018,6 +1018,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm that each named listed page has no countertop, in one action
+         * @description "Confirm these N pages" (#1195): "Confirm: no countertop here" on every page named.
+         *
+         *     The same permission, lock and record as the single answer (`answer_no_countertop_page`): each
+         *     page gets its own answer row (who, when, the optional note) and its own audit event; the rows
+         *     share a batch id, which has an audit event of its own.
+         *
+         *     **All or nothing.** The request names each page and the reading record the screen showed for it.
+         *     A record that was never a listed page of this revision is refused with 422. If any named page is
+         *     no longer listed as the screen showed it (read again, answered "There is a countertop", or no
+         *     longer listed), nothing is recorded and the request is refused with 409: the screen reloads.
+         *     A page already confirmed records nothing new (its first person and time stand); when every named
+         *     page was already confirmed the answer is 200, else 201. Pages not named keep waiting.
+         */
+        post: operations["confirm_no_countertop_pages_api_v1_projects__project_id__packages__package_id__no_countertop_pages_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/{record_id}/answer": {
         parameters: {
             query?: never;
@@ -2878,6 +2909,58 @@ export interface components {
             version: string;
         };
         /**
+         * BlankPageProofOut
+         * @description What code checked on the PDF to prove a listed page has nothing drawn on it (#1195), and
+         *     what it found: a title or divider page. Each count is of what the page holds.
+         */
+        BlankPageProofOut: {
+            /**
+             * Drawn Paths
+             * @description Lines and shapes beyond the page frame and white paint: always 0.
+             */
+            drawn_paths: number;
+            /**
+             * Frames
+             * @description Page-frame rectangles along the page edges (allowed).
+             */
+            frames: number;
+            /**
+             * Images
+             * @description Pictures: always 0 on a proven blank page.
+             */
+            images: number;
+            /**
+             * Other Annotations
+             * @description Markup other than typed text boxes: always 0 on a proven blank page.
+             */
+            other_annotations: number;
+            /**
+             * Rule
+             * @description The version of the blank-page rule the proof was made under.
+             */
+            rule: number;
+            /**
+             * Stamps
+             * @description Pasted drawings: always 0 on a proven blank page.
+             */
+            stamps: number;
+            /**
+             * Typed Characters
+             * @description Their characters, at most a title's worth.
+             */
+            typed_characters: number;
+            /**
+             * Typed Texts
+             * @description Pieces of typed text (the title).
+             */
+            typed_texts: number;
+            /**
+             * White Paint
+             * @description Paths painted only in white, which leave no mark.
+             */
+            white_paint: number;
+        };
+        /**
          * CabinetInput
          * @description One cabinet in the ordered run the reviewer is checking.
          */
@@ -4522,6 +4605,11 @@ export interface components {
              * @enum {string}
              */
             answer: "no_countertop" | "countertop";
+            /**
+             * Note
+             * @description An optional note kept with the answer (#1195).
+             */
+            note?: string | null;
         };
         /**
          * NoCountertopConfirmationOut
@@ -4540,6 +4628,41 @@ export interface components {
              * @description When the confirmation was given on an earlier revision's identical page (the same page content and the same reading answer): that revision's number. Null when it was given on this revision.
              */
             from_revision?: number | null;
+            /**
+             * Note
+             * @description The reviewer's optional note with the confirmation (#1195).
+             */
+            note?: string | null;
+        };
+        /**
+         * NoCountertopPageIn
+         * @description One page the reviewer confirms in "Confirm these N pages" (#1195): its number and the
+         *     reading record the screen showed for it, so a page read again since is refused, not guessed.
+         */
+        NoCountertopPageIn: {
+            /**
+             * Expected Record Id
+             * Format: uuid
+             * @description The page's `record_id` as the screen showed it (`pages_without_countertop`).
+             */
+            expected_record_id: string;
+            /** Page Number */
+            page_number: number;
+        };
+        /**
+         * NoCountertopPagesIn
+         * @description "Confirm these N pages" (#1195): "Confirm: no countertop here" on each page named, exactly
+         *     as if each were clicked on its own, with one optional note for all of them. Pages left out
+         *     (unticked) are not answered and keep waiting.
+         */
+        NoCountertopPagesIn: {
+            /**
+             * Note
+             * @description An optional note kept with each page's answer.
+             */
+            note?: string | null;
+            /** Pages */
+            pages: components["schemas"]["NoCountertopPageIn"][];
         };
         /**
          * OpaqueTraceOut
@@ -4866,8 +4989,20 @@ export interface components {
          *     `row-choice-split`, instead of being listed here.
          */
         PageWithoutCountertopOut: {
+            /** @description When code proved from the PDF that nothing is drawn on this page (a title or divider page, #1195): what it checked and found. Null otherwise. */
+            blank_page?: components["schemas"]["BlankPageProofOut"] | null;
             /** @description The reviewer's confirmation in force; null while the page is unconfirmed. */
             confirmation?: components["schemas"]["NoCountertopConfirmationOut"] | null;
+            /**
+             * Doubtful
+             * @description True when there is a reason to doubt this page has no countertop (#1195): an older reading, a vendor drawing code found no row on, a page code could not read, or a drawing whose role code could not tell. "Confirm these pages" leaves it unticked until the reviewer ticks it.
+             */
+            doubtful?: boolean;
+            /**
+             * Needs Answer
+             * @description Whether sign-off waits for a reviewer's answer on this page (#1191). False only for a page code proved blank (`blank_page`, #1195): still listed, no answer needed.
+             */
+            needs_answer?: boolean;
             /**
              * Older Reading
              * @description True for a reading from before the AIs said what their "no line" meant (#1191): it is not known to have no countertop until a reviewer confirms it, so until then it needs the reviewer. Its `reason` says why, with the AIs' own words.
@@ -8504,6 +8639,42 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_no_countertop_pages_api_v1_projects__project_id__packages__package_id__no_countertop_pages_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoCountertopPagesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountertopResultsOut"];
                 };
             };
             /** @description Validation Error */

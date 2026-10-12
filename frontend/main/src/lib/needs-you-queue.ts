@@ -83,7 +83,8 @@ export function buildQueue(
   // Pages listed with no countertop that nobody has answered (#1191): they block sign-off too, so
   // the queue walks them last, by page. An older reading is one of them.
   const listed: QueueItem[] = pages
-    .filter((page) => !page.confirmation && page.record_id)
+    // A page code proved blank (a title or divider page, #1195) needs no answer: not an item.
+    .filter((page) => !page.confirmation && page.record_id && page.needs_answer !== false)
     .sort((a, b) => a.page_number - b.page_number)
     .map((page) => ({ kind: 'page', key: `page:${page.record_id}`, recordId: page.record_id!, page: page.page_number, label: `Page ${page.page_number}` }));
   return [...countertops, ...architect, ...checks, ...listed];

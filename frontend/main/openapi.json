@@ -1905,6 +1905,69 @@
         "title": "AwaitingToleranceOut",
         "type": "object"
       },
+      "BlankPageProofOut": {
+        "description": "What code checked on the PDF to prove a listed page has nothing drawn on it (#1195), and\nwhat it found: a title or divider page. Each count is of what the page holds.",
+        "properties": {
+          "drawn_paths": {
+            "description": "Lines and shapes beyond the page frame and white paint: always 0.",
+            "title": "Drawn Paths",
+            "type": "integer"
+          },
+          "frames": {
+            "description": "Page-frame rectangles along the page edges (allowed).",
+            "title": "Frames",
+            "type": "integer"
+          },
+          "images": {
+            "description": "Pictures: always 0 on a proven blank page.",
+            "title": "Images",
+            "type": "integer"
+          },
+          "other_annotations": {
+            "description": "Markup other than typed text boxes: always 0 on a proven blank page.",
+            "title": "Other Annotations",
+            "type": "integer"
+          },
+          "rule": {
+            "description": "The version of the blank-page rule the proof was made under.",
+            "title": "Rule",
+            "type": "integer"
+          },
+          "stamps": {
+            "description": "Pasted drawings: always 0 on a proven blank page.",
+            "title": "Stamps",
+            "type": "integer"
+          },
+          "typed_characters": {
+            "description": "Their characters, at most a title's worth.",
+            "title": "Typed Characters",
+            "type": "integer"
+          },
+          "typed_texts": {
+            "description": "Pieces of typed text (the title).",
+            "title": "Typed Texts",
+            "type": "integer"
+          },
+          "white_paint": {
+            "description": "Paths painted only in white, which leave no mark.",
+            "title": "White Paint",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule",
+          "stamps",
+          "other_annotations",
+          "images",
+          "drawn_paths",
+          "frames",
+          "white_paint",
+          "typed_texts",
+          "typed_characters"
+        ],
+        "title": "BlankPageProofOut",
+        "type": "object"
+      },
       "CabinetInput": {
         "additionalProperties": false,
         "description": "One cabinet in the ordered run the reviewer is checking.",
@@ -5581,6 +5644,19 @@
             ],
             "title": "Answer",
             "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional note kept with the answer (#1195).",
+            "title": "Note"
           }
         },
         "required": [
@@ -5612,6 +5688,18 @@
             ],
             "description": "When the confirmation was given on an earlier revision's identical page (the same page content and the same reading answer): that revision's number. Null when it was given on this revision.",
             "title": "From Revision"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reviewer's optional note with the confirmation (#1195).",
+            "title": "Note"
           }
         },
         "required": [
@@ -5619,6 +5707,62 @@
           "confirmed_at"
         ],
         "title": "NoCountertopConfirmationOut",
+        "type": "object"
+      },
+      "NoCountertopPageIn": {
+        "additionalProperties": false,
+        "description": "One page the reviewer confirms in \"Confirm these N pages\" (#1195): its number and the\nreading record the screen showed for it, so a page read again since is refused, not guessed.",
+        "properties": {
+          "expected_record_id": {
+            "description": "The page's `record_id` as the screen showed it (`pages_without_countertop`).",
+            "format": "uuid",
+            "title": "Expected Record Id",
+            "type": "string"
+          },
+          "page_number": {
+            "minimum": 1.0,
+            "title": "Page Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page_number",
+          "expected_record_id"
+        ],
+        "title": "NoCountertopPageIn",
+        "type": "object"
+      },
+      "NoCountertopPagesIn": {
+        "additionalProperties": false,
+        "description": "\"Confirm these N pages\" (#1195): \"Confirm: no countertop here\" on each page named, exactly\nas if each were clicked on its own, with one optional note for all of them. Pages left out\n(unticked) are not answered and keep waiting.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional note kept with each page's answer.",
+            "title": "Note"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/NoCountertopPageIn"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pages"
+        ],
+        "title": "NoCountertopPagesIn",
         "type": "object"
       },
       "OpaqueTraceOut": {
@@ -6230,6 +6374,17 @@
       "PageWithoutCountertopOut": {
         "description": "A vendor-file page where every AI said there is no countertop line (#1093), or where code\nfound no countertop row to read at all (#1193): only the architect's or reference drawings, a\ntitle or divider page, a drawing whose heading is not one we know. `reason` says which.\n\nListed, and since #1191 it needs one reviewer click before sign-off: \"Confirm: no countertop\nhere\" (`confirmation`), or \"There is a countertop\", after which the page is an item above, held\n`row-choice-split`, instead of being listed here.",
         "properties": {
+          "blank_page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlankPageProofOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When code proved from the PDF that nothing is drawn on this page (a title or divider page, #1195): what it checked and found. Null otherwise."
+          },
           "confirmation": {
             "anyOf": [
               {
@@ -6240,6 +6395,16 @@
               }
             ],
             "description": "The reviewer's confirmation in force; null while the page is unconfirmed."
+          },
+          "doubtful": {
+            "description": "True when there is a reason to doubt this page has no countertop (#1195): an older reading, a vendor drawing code found no row on, a page code could not read, or a drawing whose role code could not tell. \"Confirm these pages\" leaves it unticked until the reviewer ticks it.",
+            "title": "Doubtful",
+            "type": "boolean"
+          },
+          "needs_answer": {
+            "description": "Whether sign-off waits for a reviewer's answer on this page (#1191). False only for a page code proved blank (`blank_page`, #1195): still listed, no answer needed.",
+            "title": "Needs Answer",
+            "type": "boolean"
           },
           "older_reading": {
             "description": "True for a reading from before the AIs said what their \"no line\" meant (#1191): it is not known to have no countertop until a reviewer confirms it, so until then it needs the reviewer. Its `reason` says why, with the AIs' own words.",
@@ -13668,6 +13833,70 @@
         "summary": "Ask a model which reading fills which field, and check every answer",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/confirm": {
+      "post": {
+        "description": "\"Confirm these N pages\" (#1195): \"Confirm: no countertop here\" on every page named.\n\nThe same permission, lock and record as the single answer (`answer_no_countertop_page`): each\npage gets its own answer row (who, when, the optional note) and its own audit event; the rows\nshare a batch id, which has an audit event of its own.\n\n**All or nothing.** The request names each page and the reading record the screen showed for it.\nA record that was never a listed page of this revision is refused with 422. If any named page is\nno longer listed as the screen showed it (read again, answered \"There is a countertop\", or no\nlonger listed), nothing is recorded and the request is refused with 409: the screen reloads.\nA page already confirmed records nothing new (its first person and time stand); when every named\npage was already confirmed the answer is 200, else 201. Pages not named keep waiting.",
+        "operationId": "confirm_no_countertop_pages_api_v1_projects__project_id__packages__package_id__no_countertop_pages_confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoCountertopPagesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountertopResultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm that each named listed page has no countertop, in one action",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },

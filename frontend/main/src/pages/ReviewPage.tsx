@@ -20,6 +20,7 @@ import {
   getApprovalReadiness,
   getCountertopResults,
   answerNoCountertopPage,
+  confirmNoCountertopPages,
   getSignedExports,
   prepareSignedExports,
   getChangedValues,
@@ -322,6 +323,34 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       setReadiness(await getApprovalReadiness(projectId(), packageId));
     } catch {
       // The answer is saved; readiness reloads with the next refresh.
+      setReadiness(null);
+    }
+  }
+
+  /**
+   * "Confirm these N pages" (#1195): every ticked page is confirmed in one action, each recorded like
+   * a single answer. The updated results come back; readiness is asked again. A refusal (409: the list
+   * changed) is thrown back to the list, which reloads it.
+   */
+  async function confirmNoCountertops(pages: readonly PageWithoutCountertop[], note: string) {
+    const named = pages.flatMap((page) => (page.record_id ? [{ page_number: page.page_number, expected_record_id: page.record_id }] : []));
+    if (named.length === 0) return;
+    const updated = await confirmNoCountertopPages(projectId(), packageId, named, note);
+    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [], drawingsNotRead: updated.drawings_not_read ?? [] });
+    try {
+      setReadiness(await getApprovalReadiness(projectId(), packageId));
+    } catch {
+      setReadiness(null);
+    }
+  }
+
+  /** The list changed under the screen (409): read the results and readiness again (#1195). */
+  async function reloadNoCountertops() {
+    const fresh = await getCountertopResults(projectId(), packageId);
+    setCountertops({ status: 'ready', rows: fresh.items, pagesWithoutCountertop: fresh.pages_without_countertop ?? [], rowsNotChecked: fresh.rows_not_checked ?? [], drawingsNotRead: fresh.drawings_not_read ?? [] });
+    try {
+      setReadiness(await getApprovalReadiness(projectId(), packageId));
+    } catch {
       setReadiness(null);
     }
   }
@@ -1093,6 +1122,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onValuesSaved={valuesSavedInPlace}
             onRunChecks={runChecksBlocked === null ? () => act('run-checks') : undefined}
             onAnswerNoCountertop={answerNoCountertop}
+            onConfirmNoCountertops={confirmNoCountertops}
+            onReloadNoCountertops={reloadNoCountertops}
           />
         </div>
       )}

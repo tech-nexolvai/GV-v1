@@ -297,6 +297,31 @@ class NoCountertopConfirmationOut(BaseModel):
             "given on this revision."
         ),
     )
+    note: str | None = Field(
+        default=None,
+        description="The reviewer's optional note with the confirmation (#1195).",
+    )
+
+
+class BlankPageProofOut(BaseModel):
+    """What code checked on the PDF to prove a listed page has nothing drawn on it (#1195), and
+    what it found: a title or divider page. Each count is of what the page holds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rule: int = Field(description="The version of the blank-page rule the proof was made under.")
+    stamps: int = Field(description="Pasted drawings: always 0 on a proven blank page.")
+    other_annotations: int = Field(
+        description="Markup other than typed text boxes: always 0 on a proven blank page."
+    )
+    images: int = Field(description="Pictures: always 0 on a proven blank page.")
+    drawn_paths: int = Field(
+        description="Lines and shapes beyond the page frame and white paint: always 0."
+    )
+    frames: int = Field(description="Page-frame rectangles along the page edges (allowed).")
+    white_paint: int = Field(description="Paths painted only in white, which leave no mark.")
+    typed_texts: int = Field(description="Pieces of typed text (the title).")
+    typed_characters: int = Field(description="Their characters, at most a title's worth.")
 
 
 class PageWithoutCountertopOut(BaseModel):
@@ -330,6 +355,31 @@ class PageWithoutCountertopOut(BaseModel):
             'True for a reading from before the AIs said what their "no line" meant (#1191): it '
             "is not known to have no countertop until a reviewer confirms it, so until then it "
             "needs the reviewer. Its `reason` says why, with the AIs' own words."
+        ),
+    )
+    needs_answer: bool = Field(
+        default=True,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Whether sign-off waits for a reviewer's answer on this page (#1191). False only for a "
+            "page code proved blank (`blank_page`, #1195): still listed, no answer needed."
+        ),
+    )
+    blank_page: BlankPageProofOut | None = Field(
+        default=None,
+        description=(
+            "When code proved from the PDF that nothing is drawn on this page (a title or divider "
+            "page, #1195): what it checked and found. Null otherwise."
+        ),
+    )
+    doubtful: bool = Field(
+        default=False,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "True when there is a reason to doubt this page has no countertop (#1195): an older "
+            "reading, a vendor drawing code found no row on, a page code could not read, or a "
+            'drawing whose role code could not tell. "Confirm these pages" leaves it unticked '
+            "until the reviewer ticks it."
         ),
     )
 

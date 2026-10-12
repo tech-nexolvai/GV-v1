@@ -450,7 +450,16 @@ export function ResultsNotesSection() {
         <CountertopTable rows={RESULT_SAMPLES} actions={SAMPLE_ACTIONS} architectNotice />
         <ListedPages
           pagesWithoutCountertop={[
+            {
+              page_number: 1,
+              reason: 'Title or divider page: nothing drawn. Code checked the PDF: no pasted drawing, no picture and no lines beyond the page frame and its typed title, so there is no countertop to check.',
+              record_id: 'sample-1',
+              confirmation: null,
+              needs_answer: false,
+              blank_page: { rule: 1, stamps: 0, other_annotations: 0, images: 0, drawn_paths: 0, frames: 1, white_paint: 1, typed_texts: 2, typed_characters: 20 },
+            },
             { page_number: 15, reason: 'Both AIs saw only tall units on this page.', record_id: 'sample-15', confirmation: null },
+            { page_number: 16, reason: 'Code found no row of dimensions on the vendor\'s drawing that could be a countertop, so nothing on it was read.', record_id: 'sample-16', confirmation: null, doubtful: true },
             {
               page_number: 17,
               reason: 'Both AIs saw a cover sheet.',
@@ -460,6 +469,7 @@ export function ResultsNotesSection() {
           ]}
           rowsNotChecked={[{ page_number: 4, reason: 'An AI named a second countertop line on this page; one line per page is read.' }]}
           onAnswer={async () => {}}
+          onConfirmMany={async () => {}}
         />
         <div className="rounded-xl border bg-card p-4">
           <span className="text-xs text-muted-foreground">Drawing panel, a held result</span>

@@ -1142,6 +1142,9 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
 
 
 NO_COUNTERTOP_ANSWERS = ("no_countertop", "countertop")
+
+#: The longest note a reviewer may keep with an answer on a listed page (#1195).
+NO_COUNTERTOP_NOTE_MAX_LENGTH = 500
 """A reviewer's answer on a page every AI said has no countertop (#1191): "Confirm: no countertop
 here", or "There is a countertop" (the page then needs the reviewer like a split page)."""
 
@@ -1170,10 +1173,20 @@ class NoCountertopAnswer(Base, TimestampedUUID, Immutable):
     reading_answer: Mapped[str] = mapped_column(String(1000))
     answer: Mapped[str] = mapped_column(String(16))
     answered_by: Mapped[str] = mapped_column(String(200))
+    note: Mapped[str | None] = mapped_column(
+        String(NO_COUNTERTOP_NOTE_MAX_LENGTH), nullable=True, default=None
+    )
+    """The reviewer's optional note (#1195)."""
+    batch_id: Mapped[UUID | None] = mapped_column(nullable=True, default=None, index=True)
+    """Set when the answer was given with others in one "Confirm these N pages" action (#1195):
+    the batch's id, also the target of the batch's own audit event."""
 
     __table_args__ = (
         CheckConstraint(
             "answer IN ('no_countertop', 'countertop')", name="no_countertop_answer_value"
+        ),
+        CheckConstraint(
+            "note IS NULL OR note !~ '^[[:space:]]*$'", name="no_countertop_answer_note_not_blank"
         ),
         CheckConstraint("page_number >= 1", name="no_countertop_answer_page_number"),
         CheckConstraint(

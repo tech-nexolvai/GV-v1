@@ -222,6 +222,25 @@ export function answerNoCountertopPage(projectId: string, packageId: string, rec
   );
 }
 
+/** One page named in "Confirm these N pages" (#1195): its number and the record the screen showed. */
+export type NoCountertopPageToConfirm = components['schemas']['NoCountertopPageIn'];
+/**
+ * "Confirm these N pages" (#1195): "Confirm: no countertop here" on each named page, each recorded
+ * like a single click, with one optional note. Sent only on a click. Refused with 409 when the list
+ * changed since it was loaded (nothing is saved; reload), 422 for a page not on the list.
+ */
+export function confirmNoCountertopPages(projectId: string, packageId: string, pages: readonly NoCountertopPageToConfirm[], note?: string) {
+  const trimmed = note?.trim();
+  return request<CountertopResults>(
+    `/projects/${projectId}/packages/${packageId}/no-countertop-pages/confirm`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(trimmed ? { pages, note: trimmed } : { pages }),
+    },
+  );
+}
+
 export function listFindings(
   projectId: string,
   packageId: string,
