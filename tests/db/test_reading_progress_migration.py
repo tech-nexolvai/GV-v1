@@ -31,7 +31,10 @@ def test_the_revision_follows_the_file_names_and_is_the_head() -> None:
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision(REVISION)
     assert found is not None and found.down_revision == BEFORE
-    assert script.get_current_head() == REVISION
+    # On the one line of history to the single head; later migrations may follow it.
+    assert REVISION in {
+        rev.revision for rev in script.walk_revisions("base", script.get_current_head())
+    }
 
 
 def test_the_table_holds_one_known_stage_per_revision_and_honest_page_counts(
