@@ -52,9 +52,11 @@ from evidence.coordinates import StoredPoint
 from extraction.annotations import MarkupNote, VendorStamp
 from vocabulary.panel_headings import (
     HEADING_MIN_FONT_PT,
+    NO_HEADINGS_ON_PAGE,
     HeadingMeaning,
     heading_meaning,
     looks_like_heading,
+    place_words,
 )
 
 __all__ = [
@@ -206,10 +208,12 @@ def _is_barrier(note: MarkupNote) -> bool:
 
 
 def _drawing_between(other: _Box, row: _Row, box: _Box, side: Side) -> bool:
-    """Whether `other` sits between the heading row and the drawing `box`, in the reading order."""
+    """Whether `other`'s middle lies between the heading row and the drawing `box`'s middle, in the
+    reading order, wherever it sits across the page (#1193 review: a heading over the top-left
+    drawing never names the lower-right one). A drawing beside `box` is not between them."""
     if side == "above":
-        return row.bottom < other.middle and other.bottom <= box.middle
-    return other.middle < row.top and other.top >= box.middle
+        return row.bottom < other.middle < box.middle
+    return box.middle < other.middle < row.top
 
 
 def _note_between(label: _Box, row: _Row, box: _Box, side: Side) -> bool:
@@ -228,40 +232,7 @@ def _beside(other: _Box, box: _Box) -> bool:
 
 def _places(boxes: Sequence[_Box]) -> list[str]:
     """Each drawing's place in words, among the page's drawings (nested ones left out)."""
-    if len(boxes) == 1:
-        return ["the drawing"]
-    if len(boxes) == 2:
-        first, second = boxes
-        shared = min(first.bottom, second.bottom) - max(first.top, second.top)
-        smaller = min(first.bottom - first.top, second.bottom - second.top)
-        if shared <= smaller / 2:
-            upper = first.middle <= second.middle
-            return (
-                ["the upper drawing", "the lower drawing"]
-                if upper
-                else ["the lower drawing", "the upper drawing"]
-            )
-        left = first.centre <= second.centre
-        return (
-            ["the left drawing", "the right drawing"]
-            if left
-            else ["the right drawing", "the left drawing"]
-        )
-    words = []
-    for box in boxes:
-        vertical = (
-            "top"
-            if box.middle < Decimal(1) / 3
-            else "bottom" if box.middle > Decimal(2) / 3 else ""
-        )
-        across = (
-            "left"
-            if box.centre < Decimal(1) / 3
-            else "right" if box.centre > Decimal(2) / 3 else ""
-        )
-        where = "-".join(part for part in (vertical, across) if part) or "middle"
-        words.append(f"the {where} drawing")
-    return words
+    return place_words([(box.left, box.top, box.right, box.bottom) for box in boxes])
 
 
 def _quoted(text: str) -> str:
@@ -320,10 +291,7 @@ def read_panels(stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]) -> P
 
     if not headings:
         return PanelLayout(
-            tuple(
-                proposal(stamp, None, "no label naming the drawings is printed on this page")
-                for stamp in stamps
-            ),
+            tuple(proposal(stamp, None, NO_HEADINGS_ON_PAGE) for stamp in stamps),
             printed,
         )
 
@@ -412,7 +380,8 @@ def read_panels(stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]) -> P
         if any(
             other_index != index
             and not other.holds(box)
-            and other.overlaps_across(box)
+            and not box.holds(other)
+            and not _beside(other, box)
             and _drawing_between(other, row, box, side)
             for other_index, other in columns.items()
         ):

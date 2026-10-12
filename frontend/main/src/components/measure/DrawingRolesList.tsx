@@ -5,6 +5,7 @@ import {
   REFERENCE_NOTHING_TO_DO,
   ROLE_LABEL,
   isReference,
+  relabelsReference,
   roleLabel,
   stillToConfirm,
   suggestionLabel,
@@ -84,6 +85,9 @@ export function DrawingRolesList({
                     {view.suggested_from ? `labelled “${view.suggested_from.trim()}”` : 'no label read on the sheet'}
                   </span>
                 </p>
+                {view.role === null && view.reason && (
+                  <p data-part="reason" className="text-xs text-muted-foreground">Why: {view.reason}</p>
+                )}
                 {reference ? (
                   <p data-part="reference" className="text-xs text-muted-foreground">{REFERENCE_NOTHING_TO_DO}</p>
                 ) : fromUpload ? (
@@ -117,7 +121,7 @@ export function DrawingRolesList({
                     variant={choiceVariant(view.role === role)}
                     aria-pressed={view.role === role}
                     disabled={saving === view.view_id || feedback?.[view.view_id]?.kind === 'saving'}
-                    onClick={() => onChoose(view, role, reference)}
+                    onClick={() => onChoose(view, role, relabelsReference(view))}
                   >
                     <ChoiceMark chosen={view.role === role} />
                     {ROLE_LABEL[role]}

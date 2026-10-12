@@ -1615,7 +1615,9 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     # readiness asks once whether a reviewer paired architect dimensions after the checks ran.
     # 14 since #1161: the revision is asked once whether its architect drawings are a separate
     # file, for a row the architect check wrote nothing for; still the same for any number of rows.
-    assert counter[0] <= 14
+    # 15 since #1193: the read pages' drawings are asked for once ("drawings not read"; a second
+    # statement only when a read page has pasted drawings); still the same for any number of rows.
+    assert counter[0] <= 15
 
 
 def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:

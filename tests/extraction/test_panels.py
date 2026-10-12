@@ -523,3 +523,70 @@ def test_a_single_capitals_note_makes_the_page_headed_and_says_so() -> None:
     assert code == "no-vendor-drawing"
     assert "this page prints labels ('VERIFY') but none is one we know" in reason
     assert "the label above the drawing ('VERIFY') is not one we know" in reason
+
+
+# --- #1193 second review: never borrow diagonally ---------------------------------------------------
+
+
+def test_a_heading_over_the_top_left_drawing_never_names_the_lower_right_one() -> None:
+    upper, lower = propose_panel_roles(
+        [_placed(0, "0.08", "0.45", "0.02", "0.48"), _placed(1, "0.55", "0.95", "0.52", "0.98")],
+        [_typed("VENDOR SHOP DRAWING", "0.02", "0.06", left="0.05", right="0.4")],
+    )
+
+    assert (upper.role, lower.role) == ("shop", None)
+    assert "sits between them" in lower.reason
+
+
+def test_a_caption_under_the_lower_right_drawing_never_names_the_upper_left_one() -> None:
+    upper, lower = propose_panel_roles(
+        [_placed(0, "0.05", "0.40", "0.02", "0.48"), _placed(1, "0.50", "0.88", "0.52", "0.98")],
+        [_typed("VENDOR SHOP DRAWING", "0.90", "0.94", left="0.6", right="0.9")],
+    )
+
+    assert (upper.role, lower.role) == (None, "shop")
+
+
+def test_a_third_drawing_below_the_vendor_s_takes_no_heading() -> None:
+    stamps = [
+        _placed(0, "0.05", "0.30", "0.1", "0.9"),
+        _placed(1, "0.37", "0.62", "0.1", "0.9"),
+        _placed(2, "0.68", "0.95", "0.1", "0.9"),
+    ]
+    notes = [
+        _typed("ID SET ELEVATION", "0.01", "0.04", left="0.1", right="0.4"),
+        _typed("VENDOR SHOP DRAWING", "0.32", "0.35", left="0.1", right="0.4"),
+    ]
+
+    assert _roles(stamps, notes) == {0: "arch", 1: "shop", 2: None}
+
+
+def test_one_full_width_heading_over_a_tall_drawing_and_a_short_one_beside_it_is_one_panel() -> (
+    None
+):
+    """**Decided: one panel.** The heading spans both drawings and nothing — no other heading, no
+    note at heading size, no other drawing — stands between it and either. That is how GV heads two
+    views of the same drawing side by side (AI Set 3: the vendor's elevation and its section under
+    one heading, two architect views under one). A drawing that is not the vendor's carries its own
+    heading on GV's sheets, and any label of its own, known or not, takes it out of the panel."""
+    tall = _placed(0, "0.10", "0.90", "0.02", "0.60")
+    short = _placed(1, "0.10", "0.30", "0.62", "0.98")
+    heading = _typed("VENDOR'S SHOP DRAWING ELEVATION", "0.03", "0.07", left="0.02", right="0.98")
+
+    assert _roles([tall, short], [heading]) == {0: "shop", 1: "shop"}
+    # The same short drawing with a note of its own between it and the heading is not borrowed.
+    own = _typed("Detail view", "0.075", "0.095", left="0.65", right="0.95")
+    assert _roles([tall, short], [heading, own]) == {0: "shop", 1: None}
+    # A capitals label of its own at another height makes the layout unclear: no role for either.
+    caps = _typed("DETAIL VIEW", "0.075", "0.095", left="0.65", right="0.95")
+    assert _roles([tall, short], [heading, caps]) == {0: None, 1: None}
+
+
+def test_headings_on_two_levels_over_side_by_side_drawings_decide_nothing() -> None:
+    stamps = [_placed(0, "0.12", "0.9", "0.02", "0.48"), _placed(1, "0.12", "0.9", "0.52", "0.98")]
+    notes = [
+        _typed("VENDOR SHOP DRAWING", "0.02", "0.05", left="0.6", right="0.9"),
+        _typed("ID SET ELEVATION", "0.06", "0.09", left="0.05", right="0.4"),
+    ]
+
+    assert _roles(stamps, notes) == {0: None, 1: None}

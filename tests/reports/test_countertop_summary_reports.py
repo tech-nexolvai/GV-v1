@@ -873,3 +873,47 @@ def test_workbook_lists_a_second_countertop_row_that_was_not_checked() -> None:
         "Second Rows Not Checked"
         not in load_workbook(BytesIO(write_stored_workbook((_stored(),)))).sheetnames
     )
+
+
+def test_the_drawings_not_read_are_listed_in_the_pdf_and_the_workbook() -> None:
+    """#1193 review: a drawing on a read page that was not read is never silent in the signed
+    files; listed with its page, where it is and why."""
+    from app.schemas.visual_ui import DrawingNotReadOut
+
+    not_read = (
+        DrawingNotReadOut(
+            page_number=3,
+            drawing="the bottom-right drawing",
+            reason="The bottom-right drawing was not read for a countertop: synthetic reason.",
+        ),
+    )
+
+    text = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=15),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                countertop_results=(_split_item(),),
+                drawings_not_read=not_read,
+            )
+        )
+    )
+    book = load_workbook(
+        BytesIO(
+            write_stored_workbook(
+                (_stored(),), countertop_results=(_split_item(),), drawings_not_read=not_read
+            )
+        )
+    )
+
+    assert "DRAWINGS NOT READ" in text
+    assert "Page 3: The bottom-right drawing was not read for a countertop" in text
+    sheet = book["Drawings Not Read"]
+    assert [cell.value for cell in sheet[1]] == ["page", "drawing", "reason"]
+    assert [cell.value for cell in sheet[2]] == [
+        "3",
+        "the bottom-right drawing",
+        not_read[0].reason,
+    ]

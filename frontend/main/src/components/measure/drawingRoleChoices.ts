@@ -29,6 +29,15 @@ export function suggestionLabel(role: string | null | undefined): string | null 
   return role === 'reference' ? REFERENCE_LABEL : roleLabel(role);
 }
 
+/**
+ * Whether an answer on this drawing re-labels a reference drawing (#1193 review): its heading names a
+ * brand prototype, whether or not a person already re-labelled it. Sent with every answer on it, so
+ * a re-label can be corrected later; the API refuses an answer on such a drawing without it.
+ */
+export function relabelsReference(view: DrawingView): boolean {
+  return view.suggested_role === 'reference';
+}
+
 /** A drawing nobody confirmed whose heading names a reference drawing: nothing to confirm. */
 export function isReference(view: DrawingView): boolean {
   return view.role === null && view.suggested_role === 'reference';

@@ -45,6 +45,7 @@ __all__ = [
     "CODE_DOCUMENT_CONFIRMER",
     "CONTENT_VIEW_SOURCE",
     "PANEL_SOURCE",
+    "WITHDRAWN_BY_HEADING",
     "RevisionView",
     "confirm_view_role",
     "confirm_view_role_by_code",
@@ -55,6 +56,10 @@ __all__ = [
     "release_contradicted_code_role",
     "revision_views",
 ]
+
+#: The audit event for code's confirmation withdrawn by a fresh read (#1193). Its target is the
+#: suggestion that replaced it: the heading now read and why.
+WITHDRAWN_BY_HEADING = "view_role_confirmation_withdrawn"
 
 #: What made a suggestion. Versioned so a later, different reader writes different rows.
 PANEL_SOURCE = "panel-heading-label/v1"
@@ -326,12 +331,20 @@ def release_contradicted_code_role(
         return False
     view.role = None
     session.flush()
+    # The event names what replaced code's confirmation: the fresh suggestion, whose row holds the
+    # heading now read and its reason (the withdrawn confirmation is the view's latest code row).
+    replacing = session.execute(
+        select(ViewRoleProposal.id)
+        .where(ViewRoleProposal.drawing_view_id == view.id)
+        .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
     emit(
         session,
         category=AuditCategory.EVIDENCE_QUALIFICATION,
         actor=latest.confirmed_by,
-        target_id=latest.id,
-        target_type="view_role_confirmation_withdrawn",
+        target_id=latest.id if replacing is None else replacing,
+        target_type=WITHDRAWN_BY_HEADING,
     )
     session.flush()
     return True

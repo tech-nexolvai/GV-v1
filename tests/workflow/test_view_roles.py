@@ -700,6 +700,14 @@ def test_a_re_read_withdraws_code_s_role_its_heading_contradicts_never_a_person_
         select(AuditEvent).where(AuditEvent.target_type == "view_role_confirmation_withdrawn")
     ).all()
     assert len(withdrawn) == 1
+    # The event names what replaced code's confirmation: the suggestion with the heading read now.
+    replacing = session.get(ViewRoleProposal, withdrawn[0].target_id)
+    assert replacing is not None and replacing.drawing_view_id == lower.id
+    assert (replacing.proposed_role, replacing.heading) == (
+        "shop",
+        "VENDOR'S SHOP DRAWING ELEVATION",
+    )
+    assert "names the vendor's shop drawing" in replacing.reason
     # Code may decide again on the fresh heading; it still never overrides the person.
     assert confirm_view_role_by_code(
         session, view=lower, role=ViewRole.SHOP, reason="synthetic: heading and content agree"
@@ -710,3 +718,33 @@ def test_a_re_read_withdraws_code_s_role_its_heading_contradicts_never_a_person_
         )
         is None
     )
+
+
+def test_reading_the_same_revision_twice_leaves_every_role_where_it_was(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: a second read of an unchanged sheet changes nothing — no new suggestion, no
+    withdrawal, and a code confirmation that agrees with the heading stays."""
+    from tests.workflow.test_markup_route import _SilentOcr
+    from workflow.view_roles import confirm_view_role_by_code
+
+    revision = _extract(session, store, _combined_sheet())
+    lower = next(v for v in _views(session) if _suggestion(session, v).proposed_role == "shop")
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.SHOP, reason="synthetic: heading and content agree"
+    )
+    session.commit()
+    before = session.scalars(select(ViewRoleProposal.id)).all()
+
+    for _ in range(2):
+        DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
+            session, revision.id
+        )
+        session.commit()
+
+    session.refresh(lower)
+    assert lower.role == ViewRole.SHOP.value
+    assert sorted(session.scalars(select(ViewRoleProposal.id)).all()) == sorted(before)
+    assert not session.scalars(
+        select(AuditEvent).where(AuditEvent.target_type == "view_role_confirmation_withdrawn")
+    ).all()

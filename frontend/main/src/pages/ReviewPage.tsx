@@ -273,7 +273,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     getCountertopResults(projectId(), packageId).then(
       (answer) => {
         if (!current) return;
-        setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [] });
+        setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [], drawingsNotRead: answer.drawings_not_read ?? [] });
       },
       (error: unknown) => {
         if (!current) return;
@@ -317,7 +317,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   async function answerNoCountertop(page: PageWithoutCountertop, answer: NoCountertopAnswer) {
     if (!page.record_id) return;
     const updated = await answerNoCountertopPage(projectId(), packageId, page.record_id, answer);
-    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [] });
+    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [], drawingsNotRead: updated.drawings_not_read ?? [] });
     if (answer === 'countertop' && findings.length > 0) setValuesChangedSinceRun(true);
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
@@ -336,7 +336,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     const named = pages.flatMap((page) => (page.record_id ? [{ page_number: page.page_number, expected_record_id: page.record_id }] : []));
     if (named.length === 0) return;
     const updated = await confirmNoCountertopPages(projectId(), packageId, named, note);
-    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [] });
+    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [], drawingsNotRead: updated.drawings_not_read ?? [] });
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
     } catch {
@@ -347,7 +347,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   /** The list changed under the screen (409): read the results and readiness again (#1195). */
   async function reloadNoCountertops() {
     const fresh = await getCountertopResults(projectId(), packageId);
-    setCountertops({ status: 'ready', rows: fresh.items, pagesWithoutCountertop: fresh.pages_without_countertop ?? [], rowsNotChecked: fresh.rows_not_checked ?? [] });
+    setCountertops({ status: 'ready', rows: fresh.items, pagesWithoutCountertop: fresh.pages_without_countertop ?? [], rowsNotChecked: fresh.rows_not_checked ?? [], drawingsNotRead: fresh.drawings_not_read ?? [] });
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
     } catch {
