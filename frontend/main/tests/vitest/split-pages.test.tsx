@@ -148,21 +148,31 @@ describe('Results: a split page', () => {
 });
 
 describe('a split page whose checks have not run yet', { timeout: 15_000 }, () => {
-  it('in the queue it says to run the checks, with no countertop card and no decision form', () => {
+  // #1179 replaces the old item that said "Not checked yet" in the queue: a page with no recorded
+  // result has nothing to decide, so it is not a queue item at all and the queue says to run the
+  // checks. Once checked (with a result), a split page is an item again (#1115, above).
+  it('is not a queue item: the queue says to run the checks, with Run checks as its one action', async () => {
+    const user = userEvent.setup();
     const unchecked = { ...SPLIT, finding_id: null, outcome: null };
+    expect(buildQueue([unchecked], [], new Set())).toEqual([]);
+    expect(bucketOf(unchecked)).toBe('not-checked');
+    const onAct = vi.fn();
     render(
       <NeedsYouQueue
         open opening={1} onOpenChange={vi.fn()} rows={[unchecked]} rowsReady findings={[]} blocking={new Set()}
         projectId="p" packageId="k"
         handlers={{ onAction: vi.fn(async () => ({ saved: true as const })), onCorrect: vi.fn(async () => ({ saved: true as const })), onExcept: vi.fn(async () => ({ saved: true as const })) }}
         next={{ kind: 'run-checks', label: 'Run checks', disabled: false, reason: null }}
-        onAct={vi.fn()} onWallSaved={vi.fn()} onOpenCard={vi.fn()}
+        onAct={onAct} onWallSaved={vi.fn()} onOpenCard={vi.fn()}
       />,
     );
-    const item = document.querySelector<HTMLElement>('[data-slot="queue-item"]')!;
-    expect(item.querySelector('[data-slot="split-unchecked"]')?.textContent).toBe('Not checked yet. Run the checks; then this page needs your decision.');
-    expect(within(item).queryByRole('button', { name: 'Open countertop card' })).toBeNull();
-    expect(item.querySelector('[data-slot="queue-decision"]')).toBeNull();
+    expect(document.querySelector('[data-slot="queue-item"]')).toBeNull();
+    const done = document.querySelector<HTMLElement>('[data-slot="queue-done"]')!;
+    expect(done.textContent).toContain('Nothing to decide yet');
+    expect(done.querySelector('[data-slot="queue-not-checked"]')?.textContent).toBe('1 countertop not checked yet. Run the checks to get a result.');
+    expect(done.textContent).not.toContain('Nothing needs you');
+    await user.click(within(done).getByRole('button', { name: 'Run checks' }));
+    expect(onAct).toHaveBeenCalledWith('run-checks');
   });
 });
 
@@ -179,7 +189,7 @@ describe('Results: pages with no countertop found', () => {
     expect(list.textContent).toContain('Nothing to decide');
     // Not blocking: the counts are the countertops' only.
     expect(kpis([SPLIT, PASSED]).needsYou).toBe(1);
-    expect(screen.getByRole('button', { name: 'Needs you 1: review them one at a time' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '1 countertop needs you: review them one at a time' })).toBeTruthy();
   });
 
   it('is absent when the list is empty or not sent', () => {

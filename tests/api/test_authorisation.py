@@ -721,7 +721,7 @@ def _package(session: Session) -> str:
     session.add(package)
     session.flush()
     session.add(
-        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.RUNNING_CHECKS)
+        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.NEEDS_INPUT)
     )
     session.commit()
     return f"/api/v1/projects/{PROJECT_A}/packages/{package.id}"

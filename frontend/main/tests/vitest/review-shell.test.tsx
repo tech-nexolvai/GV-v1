@@ -223,7 +223,7 @@ describe('app shell', () => {
     render(<Shell openPackage={null} />);
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     expect(await within(sidebar).findByText('Synthetic vendor A')).toBeTruthy();
-    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 need you'));
+    await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('4 items need you')); // with its noun (#1179)
     expect(document.querySelector('[data-status="APPROVED"]')).not.toBeNull();
   });
 

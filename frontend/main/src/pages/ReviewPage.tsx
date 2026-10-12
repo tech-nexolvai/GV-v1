@@ -11,7 +11,7 @@ import { architectFindingIds, viewPicksWaiting } from '@/lib/architect';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Button } from '@/components/ui/button';
-import { MessageSquare } from 'lucide-react';
+import { Loader2, MessageSquare } from 'lucide-react';
 import { canSignOff, decisionPayload } from '../components/output/reviewerResults';
 import { receiveReport, type DownloadState, type ReportFormat } from '../components/output/reportDownload';
 import type { Finding, PackageStatus } from '../data/types';
@@ -35,7 +35,8 @@ import {
   listRules,
 } from '../api/client';
 import type { ReviewSession, ApprovalReadiness, CountertopResult } from '../api/client';
-import { MeasurementPanel } from './MeasurementPanel';
+import { MeasurementPanel, type HeaderRunAnswer } from './MeasurementPanel';
+import type { MeasureStep } from '@/lib/measure-steps';
 import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -48,7 +49,7 @@ import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
 import { SignOffDialog, SignOffPanel, type SignOffScope } from '@/components/review/signoff-panel';
 import { ReportPanel } from '@/components/review/report-panel';
 import { ChangedValuesPanel } from '@/components/output/ChangedValuesPanel';
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { recordReviewDecision } from './recordReviewDecision';
@@ -132,8 +133,20 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   const [countertops, setCountertops] = useState<CountertopsState>({ status: 'loading' });
   const [countertopsVersion, setCountertopsVersion] = useState(0);
   const [measureVisited, setMeasureVisited] = useState(false);
-  // Each header "Run checks" opens the wizard's last step, where its Run checks button is (#1124).
+  // From Measurements, the header's "Run checks" also opens the wizard's last step, where its own
+  // Run checks button and what it says are (#1124).
   const [runChecksRequest, setRunChecksRequest] = useState(0);
+  // The header's "Run checks" runs the checks (#1179): the Measurements panel answers each request
+  // with step 4's own save and request, from whichever tab is showing.
+  const [headerRun, setHeaderRun] = useState<{ id: number; confirmed: string | null } | null>(null);
+  const [headerRunPending, setHeaderRunPending] = useState(false);
+  const [headerRunConfirm, setHeaderRunConfirm] = useState<Extract<HeaderRunAnswer, { kind: 'confirm' }> | null>(null);
+  const [headerRunProblem, setHeaderRunProblem] = useState<{ unsavedRows: number; step: MeasureStep } | { text: string; step: MeasureStep } | null>(null);
+  // A run from the Measurements panel (its step 4, or for the header) is being saved and requested.
+  const [measureRunning, setMeasureRunning] = useState(false);
+  // Whether the reviewer has opened Measurements themselves (the header may mount it hidden).
+  const [measureSeen, setMeasureSeen] = useState(false);
+  const [showStep, setShowStep] = useState<{ id: number; step: MeasureStep } | null>(null);
   const [targetRow, setTargetRow] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<ApprovalReadiness | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -272,6 +285,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   }
 
   function checksQueued() {
+    setHeaderRunPending(false);
+    setHeaderRunProblem(null);
     setValuesChangedSinceRun(false);
     setViewPicksSaved(new Set());
     checksBaseline.current = findings.map(f => f.id).sort().join(',');
@@ -280,7 +295,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
 
   function openRow(rowId: string) {
     lookAtRow(rowId);
-    setTargetRow(rowId); setMeasureVisited(true); setActiveTab('measure');
+    setTargetRow(rowId); setMeasureVisited(true); setMeasureSeen(true); setActiveTab('measure');
   }
 
   /** Remember a countertop the reviewer opened, as the assistant's context (#1129). */
@@ -596,6 +611,13 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   });
   // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
   const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks || isApproved;
+  // No second run (#1179), from the recorded stage as well as this page's own flags: a reload forgets
+  // that this browser asked, but not that the server is checking. The server refuses one too (409).
+  const runChecksBlocked = isApproved
+    ? 'This review is signed off, so its checks do not run again.'
+    : stage.next.kind === 'checking'
+      ? 'Checks are already running. The results update when they have run.'
+      : null;
 
   // What a sign-off covers (#1064), from what the page already loaded: the countertops by who settled
   // them, the other (package-level) results, and the total the server approves (the live run's).
@@ -632,19 +654,60 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   // The Report panel sits on Results after sign-off and says its own receipts there.
   const reportPanelShown = activeTab === 'results' && isApproved;
 
-  /** The header's one action. Each kind runs the same handler the page already had. */
-  function act(kind: NextActionKind) {
-    if (kind === 'run-checks') {
-      // Run checks lives on the Measurements form, which saves the visible values first. Take the
-      // reviewer there rather than queue a run that skips that save.
-      setMeasureVisited(true);
-      setActiveTab('measure');
+  /**
+   * The header's "Run checks" (#1179) runs the checks where the reviewer is: the Measurements panel
+   * (mounted hidden if it was never opened) saves the visible values and asks for the run, exactly as
+   * its step 4 button does. From Measurements it also opens step 4, where that button and what the
+   * save records are. Never while a run from here is starting or checks are already queued.
+   */
+  function runChecksFromHeader() {
+    if (headerRunPending || measureRunning || runChecksBlocked !== null) return;
+    setHeaderRunProblem(null);
+    setHeaderRunConfirm(null);
+    setMeasureVisited(true);
+    setHeaderRunPending(true);
+    setHeaderRun((current) => ({ id: (current?.id ?? 0) + 1, confirmed: null }));
+    if (activeTab === 'measure') {
       setRunChecksRequest((count) => count + 1);
       window.setTimeout(() => {
         const button = document.getElementById('measure-run-checks');
         button?.scrollIntoView({ block: 'center' });
         button?.focus();
       }, 50);
+    }
+  }
+
+  /** The panel's answer to a header run. Queued needs nothing more here: `checksQueued` has run. */
+  function headerRunAnswered(answer: HeaderRunAnswer) {
+    if (answer.id !== headerRun?.id) return;
+    setHeaderRunPending(false);
+    // 'busy': a run or save is already in flight in Measurements and says its own outcome there.
+    if (answer.kind === 'confirm') setHeaderRunConfirm(answer);
+    else if (answer.kind === 'blocked') setHeaderRunProblem({ unsavedRows: answer.unsavedRows, step: answer.step });
+    else if (answer.kind === 'failed') setHeaderRunProblem({ text: answer.error, step: 'settings' });
+  }
+
+  /** Agreed in the dialog: the run goes with what was listed, and is asked again if that changed. */
+  function confirmHeaderRun(signature: string) {
+    setHeaderRunConfirm(null);
+    if (runChecksBlocked !== null || measureRunning) return;
+    setHeaderRunPending(true);
+    setHeaderRun((current) => ({ id: (current?.id ?? 0) + 1, confirmed: signature }));
+  }
+
+  /** Opens Measurements at one step: what the header's run asks the reviewer to look at first. */
+  function openMeasureStep(step: MeasureStep) {
+    setHeaderRunConfirm(null);
+    setMeasureVisited(true);
+    setMeasureSeen(true);
+    setActiveTab('measure');
+    setShowStep((current) => ({ id: (current?.id ?? 0) + 1, step }));
+  }
+
+  /** The header's one action. Each kind runs the same handler the page already had. */
+  function act(kind: NextActionKind) {
+    if (kind === 'run-checks') {
+      runChecksFromHeader();
     } else if (kind === 'review') {
       setActiveTab('results');
       openQueue();
@@ -747,8 +810,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         <NextActionButton
           action={stage.next}
           onAct={act}
-          busyLabel={stage.next.kind === 'sign-off' && isSigningOff ? 'Signing off…' : stage.next.kind === 'prepare-report' && preparingExports ? 'Requesting…' : null}
-          extraDisabled={stage.next.kind === 'sign-off' ? signOffBlocked : stage.next.kind === 'download-report' ? downloadState.status === 'loading' : stage.next.kind === 'prepare-report' ? preparingExports : false}
+          busyLabel={stage.next.kind === 'sign-off' && isSigningOff ? 'Signing off…' : stage.next.kind === 'prepare-report' && preparingExports ? 'Requesting…' : stage.next.kind === 'run-checks' && (headerRunPending || measureRunning) ? 'Starting checks…' : null}
+          extraDisabled={stage.next.kind === 'sign-off' ? signOffBlocked : stage.next.kind === 'download-report' ? downloadState.status === 'loading' : stage.next.kind === 'prepare-report' ? preparingExports : stage.next.kind === 'run-checks' ? headerRunPending || measureRunning : false}
           secondary={secondary}
         />
       </HeaderActions>
@@ -774,6 +837,13 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         error={signOffError}
         onConfirm={() => void confirmSignOff()}
       />
+      <RunChecksDialog
+        ask={headerRunConfirm}
+        reviewFirst={!measureSeen}
+        onConfirm={confirmHeaderRun}
+        onReview={(step) => openMeasureStep(step)}
+        onCancel={() => setHeaderRunConfirm(null)}
+      />
       <RecordIdsDialog
         open={recordIdsOpen}
         onOpenChange={setRecordIdsOpen}
@@ -790,6 +860,30 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       {!reportPanelShown && downloadState.status === 'error' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">The report could not be downloaded: {downloadState.message}</p>}
       {!reportPanelShown && exportsError !== null && <p className="mx-4 mt-2 text-sm sm:mx-6" role="alert">Could not check the signed reports: {exportsError}</p>}
 
+      {/* The header's Run checks, said where the reviewer is (#1179): queued, or why it did not start. */}
+      {waitingForChecks && (
+        <p data-tw data-slot="checks-queued" role="status" className="mx-4 mt-2 flex items-center gap-1.5 font-sans text-sm sm:mx-6">
+          <Loader2 className="size-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          Checks queued. The results update here when they have run.
+        </p>
+      )}
+      {headerRunProblem !== null && (
+        <div data-tw data-slot="run-checks-problem" role="alert" className="mx-4 mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-outcome-review-fg/40 bg-outcome-review-bg px-3 py-2 font-sans text-sm sm:mx-6">
+          <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="shrink-0 text-outcome-review-fg" />
+          <span className="min-w-0 flex-1">
+            The checks were not run.{' '}
+            {'unsavedRows' in headerRunProblem ? (
+              <>
+                <span className="num">{headerRunProblem.unsavedRows}</span> countertop {headerRunProblem.unsavedRows === 1 ? 'row has' : 'rows have'} unsaved changes in Measurements, step 2. Save {headerRunProblem.unsavedRows === 1 ? 'it' : 'them'} with &ldquo;Save this row&rdquo; first.
+              </>
+            ) : headerRunProblem.text}
+          </span>
+          {activeTab !== 'measure' && (
+            <Button size="sm" variant="outline" onClick={() => openMeasureStep(headerRunProblem.step)}>Open Measurements</Button>
+          )}
+        </div>
+      )}
+
       {/* A write that failed, said out loud. The row has already been put back, so without this the
           reviewer would see their tick disappear and have no idea why — and might reasonably assume
           they had mis-clicked rather than that nothing was saved. */}
@@ -804,21 +898,22 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         <Tabs
           value={activeTab}
           onValueChange={(value) => {
-            if (value === 'measure') setMeasureVisited(true);
+            if (value === 'measure') { setMeasureVisited(true); setMeasureSeen(true); }
             setActiveTab(value as 'results' | 'measure');
           }}
         >
           <TabsList>
-            {/* The outcome glyph with the count, never colour alone; in words for a screen reader (#1155). */}
+            {/* The outcome glyph with the count and its noun, never colour alone or a bare number
+                (#1155, #1179): the review's items (countertops and other checks) still blocking sign-off. */}
             <TabsTrigger
               value="results"
-              aria-label={readiness !== null && readiness.blocking_findings > 0 ? `Results ${readiness.blocking_findings} ${readiness.blocking_findings === 1 ? 'needs you' : 'need you'}` : undefined}
+              aria-label={readiness !== null && readiness.blocking_findings > 0 ? `Results ${itemsNeedYou(readiness.blocking_findings)}` : undefined}
             >
               Results
               {readiness !== null && readiness.blocking_findings > 0 && (
                 <span data-slot="results-tab-badge" aria-hidden="true" className="inline-flex items-center gap-1 rounded-full bg-outcome-review-bg px-1.5 text-xs text-outcome-review-fg">
                   <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />
-                  <span className="num">{readiness.blocking_findings}</span>
+                  <span><span className="num">{readiness.blocking_findings}</span> {readiness.blocking_findings === 1 ? 'item needs' : 'items need'} you</span>
                 </span>
               )}
             </TabsTrigger>
@@ -837,7 +932,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
               busy={isSigningOff}
               onSignOff={openSignOff}
               onReview={() => openQueue()}
-              onRunChecks={() => act('run-checks')}
+              // Not offered while checks are queued or running, or after sign-off (#1179).
+              onRunChecks={runChecksBlocked === null ? () => act('run-checks') : undefined}
             />
           )}
           {isApproved && (
@@ -867,6 +963,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onOpenQueue={openQueue}
             onOpenCard={(row) => openRow(row.row_id)}
             onShowArchitectView={showArchitectView}
+            canRunChecks={stage.next.kind === 'run-checks' && runChecksBlocked === null}
           />
         </div>
       )}
@@ -931,6 +1028,11 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onReviewRow={(rowId) => { setResultsFilter('all'); setActiveTab('results'); setTimeout(() => { const row = document.querySelector<HTMLElement>(`[data-slot="countertop-table"] tr[data-row-id="${rowId}"]`); row?.scrollIntoView({ block: 'center' }); row?.focus(); }, 80); }}
             onOpenQueue={() => openQueue()}
             runChecksRequest={runChecksRequest}
+            showStep={showStep}
+            headerRun={headerRun}
+            onHeaderRun={headerRunAnswered}
+            runChecksBlocked={runChecksBlocked}
+            onRunStateChange={setMeasureRunning}
           />
         </div>
       )}
@@ -949,6 +1051,83 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     )}
     </div>
   );
+}
+
+/**
+ * Before the header runs the checks (#1179): the save also confirms AI-filled values or records layout
+ * answers, which step 4 says beside its own button and the header cannot. The dialog lists each one,
+ * so the reviewer sees what they agree to. When they have never opened Measurements, looking first is
+ * the primary action; otherwise Run checks is. Cancel and "Review … first" write nothing.
+ */
+function RunChecksDialog({ ask, reviewFirst, onConfirm, onReview, onCancel }: {
+  ask: Extract<HeaderRunAnswer, { kind: 'confirm' }> | null;
+  reviewFirst: boolean;
+  onConfirm: (signature: string) => void;
+  onReview: (step: MeasureStep) => void;
+  onCancel: () => void;
+}) {
+  const list = ask?.list ?? null;
+  const reviewStep: MeasureStep = list && list.aiValues.length > 0 ? 'values' : 'settings';
+  const review = (
+    <Button variant={reviewFirst ? 'default' : 'outline'} onClick={() => onReview(reviewStep)}>
+      Review {reviewStep === 'values' ? 'the values' : 'the layout'} first
+    </Button>
+  );
+  const run = (
+    <Button variant={reviewFirst ? 'outline' : 'default'} onClick={() => list && onConfirm(list.signature)}>
+      Run checks
+    </Button>
+  );
+  return (
+    <Dialog open={ask !== null} onOpenChange={(open) => !open && onCancel()}>
+      <DialogContent className="font-sans sm:max-w-md" data-slot="run-checks-confirm">
+        <DialogHeader>
+          <DialogTitle>Run the checks?</DialogTitle>
+          <DialogDescription>Running the checks saves the Measurements form first. That also records:</DialogDescription>
+        </DialogHeader>
+        {list && (
+          <div className="flex flex-col gap-3 text-sm">
+            {list.aiValues.length > 0 && (
+              <section aria-label="AI-filled values it confirms as yours" className="flex flex-col gap-1">
+                <h3 className="font-medium">AI-filled values it confirms as yours</h3>
+                <ul className="flex flex-col gap-1" data-part="confirm-ai-values">
+                  {list.aiValues.map((item) => (
+                    <li key={item.key} className="flex flex-wrap items-baseline gap-x-2">
+                      <span>{item.field}</span>
+                      <span className="num font-medium">{item.value}</span>
+                      <span className="text-xs text-muted-foreground">AI proposal{item.unchecked ? ', not checked against the drawing’s lines' : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {list.layout.length > 0 && (
+              <section aria-label="Layout answers it records" className="flex flex-col gap-1">
+                <h3 className="font-medium">Layout answers it records</h3>
+                <ul className="flex flex-col gap-1" data-part="confirm-layout">
+                  {list.layout.map((item) => (
+                    <li key={item.name} className="flex flex-wrap items-baseline gap-x-2">
+                      <span>{item.label}</span>
+                      <span className="font-medium">{item.answer}</span>
+                      {item.proposal && <span className="text-xs text-muted-foreground">proposed from the drawing</span>}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          {reviewFirst ? <>{run}{review}</> : <>{review}{run}</>}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** "15 items need you": the review's blocking count always carries its noun (#1179). */
+function itemsNeedYou(count: number): string {
+  return `${count} ${count === 1 ? 'item needs' : 'items need'} you`;
 }
 
 function ReviewSkeleton() {

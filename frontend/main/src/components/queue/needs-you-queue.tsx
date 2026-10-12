@@ -4,7 +4,7 @@ import { CheckCircle2, ChevronLeft, ChevronRight, History, X } from 'lucide-reac
 import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta, isSplitPage, sharedNotComparedReason } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, isNotChecked, isSplitPage, NO_RESULT_HINT, notCheckedSituation, notCheckedSummary, sharedNotComparedReason } from '@/lib/countertop-results';
 import { targetFromArchitect, targetFromFinding, targetFromRow, type Mark } from '@/lib/drawing-viewer';
 import { architectState, pairedByWords } from '@/lib/architect';
 import {
@@ -347,8 +347,9 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
           </div>
           <div className="order-last flex min-w-48 basis-full items-center gap-3 sm:order-none sm:basis-auto sm:flex-1" data-slot="queue-progress">
             <Progress value={list.length ? (progress.handled / progress.total) * 100 : 100} className="h-2 flex-1" aria-label="Items handled" />
-            <span className="num shrink-0 text-sm">
-              {progress.handled} of {progress.total}
+            {/* The count with its noun (#1179): items that can be decided, never rows not checked yet. */}
+            <span className="shrink-0 text-sm">
+              <span className="num">{progress.handled}</span> of <span className="num">{progress.total}</span> {progress.total === 1 ? 'item' : 'items'}
             </span>
           </div>
           <div className="flex items-center gap-1" data-slot="queue-position">
@@ -401,6 +402,8 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
         ) : list.length === 0 || (allHandled && !browsing) ? (
           <DoneState
             empty={list.length === 0}
+            notChecked={rows.filter(isNotChecked).length}
+            checksHaveRun={findings.length > 0}
             waitingForRun={progress.waitingForRun}
             next={next}
             onAct={(kind) => {
@@ -540,12 +543,16 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
 
+                {/* Rows with no result are not items (#1179); these cover an item whose result went away
+                    in a re-run while the queue was open. A split page has no countertop card. */}
                 {status === 'open' && !finding && split && (
-                  <p data-slot="split-unchecked" className="rounded-lg border border-dashed p-3 text-sm">Not checked yet. Run the checks; then this page needs your decision.</p>
+                  <p data-slot="split-no-result" className="rounded-lg border border-dashed p-3 text-sm">
+                    No result for this page on the last run, so there is nothing to decide here. Its reason is on Results.
+                  </p>
                 )}
                 {status === 'open' && !finding && row && !question && !split && (
                   <div className="flex flex-col items-start gap-2 rounded-lg border border-dashed p-3 text-sm">
-                    <p>Not checked yet. Its missing widths or walls are filled in its countertop card; then run the checks.</p>
+                    <p>{NO_RESULT_HINT}. Its countertop card says why; fill in what it needs there, then run the checks.</p>
                     <Button size="sm" variant="outline" onClick={() => { onOpenChange(false); onOpenCard(row); }}>
                       Open countertop card
                     </Button>
@@ -831,17 +838,32 @@ function HistoryList({ findingId, outcome, projectId, packageId }: { findingId: 
   );
 }
 
-function DoneState({ empty, waitingForRun, next, onAct, onBrowse }: { empty: boolean; waitingForRun: number; next: NextAction; onAct: (kind: NextActionKind) => void; onBrowse: () => void }) {
+/**
+ * The queue with nothing left open. Empty because the checks have not run on some countertops
+ * (#1179), it says that and offers the header's next action (Run checks), never "Nothing needs you".
+ */
+function DoneState({ empty, notChecked, checksHaveRun, waitingForRun, next, onAct, onBrowse }: { empty: boolean; notChecked: number; checksHaveRun: boolean; waitingForRun: number; next: NextAction; onAct: (kind: NextActionKind) => void; onBrowse: () => void }) {
+  const unchecked = empty && notChecked > 0;
+  // Said to match the button below (#1179): "run the checks" only when Run checks is that button.
+  const summary = notCheckedSummary(notChecked, notCheckedSituation(checksHaveRun, next.kind === 'run-checks'));
+  // No second run while one is queued or running, or after sign-off (the header's own guard too).
+  const runBlocked = !['run-checks', 'review', 'sign-off'].includes(next.kind);
   return (
     <div data-slot="queue-done" className="m-auto flex max-w-md flex-col items-center gap-3 p-6 text-center" role="status">
-      <CheckCircle2 className="size-10 text-outcome-pass-fg" aria-hidden="true" />
-      <p className="text-lg font-semibold">{empty ? 'Nothing needs you' : 'All decisions made'}</p>
+      {!unchecked && <CheckCircle2 className="size-10 text-outcome-pass-fg" aria-hidden="true" />}
+      <p className="text-lg font-semibold">{unchecked ? 'Nothing to decide yet' : empty ? 'Nothing needs you' : 'All decisions made'}</p>
+      {unchecked && (
+        <p className="text-sm text-muted-foreground" data-slot="queue-not-checked">
+          <span className="num">{notChecked}</span> {summary.lead}{summary.rest && ` ${summary.rest}`}
+        </p>
+      )}
       {waitingForRun > 0 ? (
         <>
           <p className="text-sm text-muted-foreground">
             <span className="num">{waitingForRun}</span> {waitingForRun === 1 ? 'answer needs' : 'answers need'} a new check run before {waitingForRun === 1 ? 'it shows' : 'they show'} in the results. The run replaces the current results; a decision carries over only where its result comes back unchanged.
           </p>
-          <Button onClick={() => onAct('run-checks')}>Run checks</Button>
+          <Button disabled={runBlocked} onClick={() => onAct('run-checks')}>Run checks</Button>
+          {runBlocked && next.reason && <p className="text-xs text-muted-foreground">{next.reason}</p>}
         </>
       ) : (
         next.kind !== 'review' && (

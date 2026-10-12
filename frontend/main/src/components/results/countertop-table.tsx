@@ -1,11 +1,11 @@
 import { Fragment, useRef, useState } from 'react';
 import { getCoreRowModel, getSortedRowModel, useReactTable, type ColumnDef, type SortingState } from '@tanstack/react-table';
-import { ChevronRight, CircleDashed, FileSearch, LayoutPanelTop, Lock, PencilLine } from 'lucide-react';
+import { ChevronRight, CircleDashed, FileSearch, Hourglass, LayoutPanelTop, Lock, PencilLine } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta, initials, isSplitPage, rowNeedsYou, sortValue } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, initials, isNotChecked, isSplitPage, rowNeedsYou, sortValue, widthNeedsYou } from '@/lib/countertop-results';
 import { architectState, neutralNumbers, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
@@ -58,6 +58,7 @@ export function CountertopTable({
   allRows = rows,
   actions,
   architectNotice = false,
+  notCheckedHint = null,
 }: {
   rows: CountertopResult[];
   /**
@@ -71,6 +72,8 @@ export function CountertopTable({
    * says so once above the table (#1126): no "not compared" line under each row.
    */
   architectNotice?: boolean;
+  /** The line under a "Not checked" row (#1179): what to do, or why the last run made no result. */
+  notCheckedHint?: string | null;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const body = useRef<HTMLTableSectionElement>(null);
@@ -168,7 +171,7 @@ export function CountertopTable({
                         <DrawnLengthNote row={row} clamp />
                       </div>
                     </TableCell>
-                    <TableCell><ResultCell row={row} /></TableCell>
+                    <TableCell><ResultCell row={row} notCheckedHint={notCheckedHint} /></TableCell>
                     <TableCell className="num text-right">{row.printed_overall?.display ?? '—'}</TableCell>
                     <TableCell className="num text-right">{row.expected_total?.display ?? '—'}</TableCell>
                     <TableCell className="text-right"><Delta row={row} /></TableCell>
@@ -200,7 +203,7 @@ export function CountertopTable({
               <div className="flex items-start justify-between gap-2">
                 {/* The page once, in the name (#1155); a label only when it tells two apart. */}
                 <p className="min-w-0 truncate font-medium"><CountertopTitle row={row} rows={allRows} /></p>
-                <ResultCell row={row} />
+                <ResultCell row={row} notCheckedHint={notCheckedHint} />
               </div>
               <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
                 <div><dt className="text-muted-foreground">Printed</dt><dd className="num text-sm">{row.printed_overall?.display ?? '—'}</dd></div>
@@ -242,7 +245,7 @@ export function CountertopTable({
   );
 }
 
-function ResultCell({ row }: { row: CountertopResult }) {
+function ResultCell({ row, notCheckedHint }: { row: CountertopResult; notCheckedHint: string | null }) {
   return (
     <span className="inline-flex flex-col items-start gap-1">
       {row.outcome && !row.needs_decision && (row.outcome === 'REVIEW_REQUIRED' || row.outcome === 'NOT_FOUND') ? (
@@ -254,11 +257,15 @@ function ResultCell({ row }: { row: CountertopResult }) {
       ) : row.outcome ? (
         <OutcomeBadge outcome={row.outcome} />
       ) : (
-        <span className="inline-flex items-center gap-1 rounded-full border border-dashed px-2 py-0.5 font-sans text-xs text-muted-foreground">
-          <CircleDashed className="size-3.5" aria-hidden="true" /> Not checked
-        </span>
+        // No recorded result (#1179): nothing to decide until the checks run, so never "Needs you".
+        <>
+          <span data-slot="not-checked" className="inline-flex items-center gap-1 rounded-full border border-dashed px-2 py-0.5 font-sans text-xs text-muted-foreground">
+            <Hourglass className="size-3.5" aria-hidden="true" /> Not checked
+          </span>
+          {notCheckedHint && <span className="font-sans text-xs whitespace-normal text-muted-foreground">{notCheckedHint}</span>}
+        </>
       )}
-      {row.needs_decision && row.outcome !== 'REVIEW_REQUIRED' && (
+      {widthNeedsYou(row) && row.outcome !== 'REVIEW_REQUIRED' && (
         <span className="inline-flex items-center gap-1 font-sans text-xs font-medium text-outcome-review-fg">
           <OutcomeIcon outcome="REVIEW_REQUIRED" size={13} /> Needs you
         </span>
@@ -282,6 +289,8 @@ function Delta({ row }: { row: CountertopResult }) {
 function DecidedBy({ row }: { row: CountertopResult }) {
   // Still needed means not decided, whatever was recorded before: an evidence-only confirmation,
   // an expired exception or a correction awaiting a new run must never read as a finished decision.
+  // Not checked (#1179): there is no result yet, so nothing to decide or to have decided.
+  if (isNotChecked(row)) return <span className="text-xs text-muted-foreground">—</span>;
   if (row.needs_decision) {
     if (row.reviewer_decision?.action === 'correct') {
       return <span className="text-xs text-outcome-review-fg">Corrected — run checks again</span>;

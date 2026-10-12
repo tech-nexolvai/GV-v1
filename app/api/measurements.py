@@ -76,6 +76,7 @@ from app.models.evidence import (
     EvidenceSupportingCandidate,
     ObservationCandidate,
 )
+from app.models.outbox import OutboxEntry
 from app.models.package_text import TextPhrase
 from app.models.parameter_proposals import ParameterProposal
 from app.models.parameter_value_citations import ParameterValueCitation, ParameterValueCitationRun
@@ -1268,6 +1269,35 @@ def _check_discriminators(session: Session, stated: dict[str, str]) -> None:
             )
 
 
+#: What a second "Run checks" is told while the first is still queued or running (#1179).
+CHECKS_ALREADY_RUNNING: Final = (
+    "Checks are already running for this revision. Wait for their results before running them again."
+)
+
+
+def _refuse_while_checks_run(session: Session, revision: PackageRevision) -> None:
+    """409 while this revision's checks are running, or asked for and not yet handed to the worker.
+
+    **A second request would queue a second run** over the same values, and whichever finished last
+    would replace the other's findings, with any decision made in between. Two screens (the header
+    and Measurements) can ask, and a reload forgets that the browser already asked, so the server
+    says it once for all of them (#1179).
+    """
+    if revision.state == PackageState.RUNNING_CHECKS:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=CHECKS_ALREADY_RUNNING)
+    pending = session.execute(
+        select(OutboxEntry.id)
+        .where(
+            OutboxEntry.workflow == RUN_CHECKS_WORKFLOW,
+            OutboxEntry.dispatched_at.is_(None),
+            OutboxEntry.payload["package_revision_id"].astext == str(revision.id),
+        )
+        .limit(1)
+    ).first()
+    if pending is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=CHECKS_ALREADY_RUNNING)
+
+
 @router.post(
     "/projects/{project_id}/packages/{package_id}/checks",
     status_code=status.HTTP_202_ACCEPTED,
@@ -1294,6 +1324,7 @@ def request_checks(
     separation `DESIGN_PLATFORM.md` §4.2 asks for.
     """
     revision = _revision(session, project_id, package_id)
+    _refuse_while_checks_run(session, revision)
     stated = dict((body.discriminators if body else {}) or {})
     _check_discriminators(session, stated)
     for name, value in stated.items():

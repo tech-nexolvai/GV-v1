@@ -16,8 +16,10 @@ interface Card {
 
 /**
  * The review in five numbers (#1039): a number, one word and an icon each, nothing to read. Each
- * number filters the table below to the rows it counts, except "Needs you", which opens the queue to
- * work through them one at a time (#1050) when there is anything to do and a queue to open.
+ * number filters the table below to the rows it counts, except "Countertops need you", which opens
+ * the queue to work through them one at a time (#1050) when there is anything to do and a queue to
+ * open. It counts only countertops with a recorded result to decide: a row the checks have not run
+ * on is "Not checked" (#1179), counted beside the table, never here.
  *
  * On a phone the five sit in a compact block of two short rows, three then two (#1126), each a number
  * beside its word, so the first countertop is near the top and no word is cut. From the small
@@ -27,7 +29,8 @@ export function KpiCards({ kpis, active, onSelect, onOpenQueue }: { kpis: Kpis; 
   const cards: Card[] = [
     { filter: 'all', span: 'col-span-2', value: kpis.countertops, word: 'Countertops', icon: <LayoutList className="hidden size-4 sm:block" aria-hidden="true" /> },
     { filter: 'automatic', span: 'col-span-2', value: kpis.automatic, word: 'Automatic', icon: <ListChecks className="hidden size-4 sm:block" aria-hidden="true" /> },
-    { filter: 'needs-you', span: 'col-span-2', value: kpis.needsYou, word: 'Needs you', icon: <OutcomeIcon outcome="REVIEW_REQUIRED" size={14} className="shrink-0" />, tone: 'text-outcome-review-fg' },
+    // One blocking count with its noun (#1179): countertops, not the review's items (header, tab).
+    { filter: 'needs-you', span: 'col-span-2', value: kpis.needsYou, word: kpis.needsYou === 1 ? 'Countertop needs you' : 'Countertops need you', icon: <OutcomeIcon outcome="REVIEW_REQUIRED" size={14} className="shrink-0" />, tone: 'text-outcome-review-fg' },
     { filter: 'pass', span: 'col-span-3', value: kpis.pass, word: 'PASS', icon: <OutcomeIcon outcome="PASS" size={14} className="shrink-0" />, tone: 'text-outcome-pass-fg' },
     { filter: 'fail', span: 'col-span-3', value: kpis.fail, word: 'FAIL', icon: <OutcomeIcon outcome="FAIL" size={14} className="shrink-0" />, tone: 'text-outcome-fail-fg' },
   ];
@@ -45,7 +48,7 @@ export function KpiCards({ kpis, active, onSelect, onOpenQueue }: { kpis: Kpis; 
             key={card.filter}
             type="button"
             aria-pressed={opensQueue ? undefined : pressed}
-            aria-label={opensQueue ? `Needs you ${card.value}: review them one at a time` : undefined}
+            aria-label={opensQueue ? `${card.value} ${card.value === 1 ? 'countertop needs' : 'countertops need'} you: review them one at a time` : undefined}
             data-opens-queue={opensQueue || undefined}
             onClick={() => (opensQueue ? onOpenQueue() : onSelect(card.filter))}
             className={cn(

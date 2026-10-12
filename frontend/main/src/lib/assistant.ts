@@ -17,7 +17,7 @@ import type {
 import type { Finding, Outcome } from '@/data/types';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
 import { architectItemKey, buildQueue, type QueueItem } from '@/lib/needs-you-queue';
-import { sortRows } from '@/lib/countertop-results';
+import { sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
 
 /** The records the panel draws from: the same data the Results screen and the queue use. */
@@ -302,8 +302,9 @@ export function resolveEvidence(evidence: readonly AssistantEvidence[], records:
  * The queue item a countertop row stands for: its own item while its width needs a decision, else
  * its architect item while that needs one. Null when neither waits for the reviewer.
  */
-export function rowQueueKey(row: Pick<CountertopResult, 'row_id' | 'needs_decision' | 'architect'>): string | null {
-  if (row.needs_decision) return `row:${row.row_id}`;
+export function rowQueueKey(row: Pick<CountertopResult, 'row_id' | 'needs_decision' | 'finding_id' | 'architect'>): string | null {
+  // A row with no recorded result is "Not checked" (#1179): not a queue item.
+  if (widthNeedsYou(row)) return `row:${row.row_id}`;
   if (row.architect?.needs_decision && row.architect.finding_id) return architectItemKey(row.row_id);
   return null;
 }
@@ -390,8 +391,9 @@ export function starterHint(question: string, records: AssistantRecords): { kind
     if (rows.length !== 1) return { kind: 'why', reason: null };
     const row = rows[0];
     const look = rowOutcome(row);
-    const held = row.needs_decision && look.outcome !== 'FAIL';
-    const waiting = row.needs_decision && look.outcome !== 'REVIEW_REQUIRED';
+    // "Not checked" (#1179) waits for a check run, never for the reviewer.
+    const held = widthNeedsYou(row) && look.outcome !== 'FAIL';
+    const waiting = widthNeedsYou(row) && look.outcome !== 'REVIEW_REQUIRED';
     return { kind: held ? 'held' : 'why', reason: waiting ? `${look.word} · waiting for you` : look.word };
   }
   return { kind: 'ask', reason: null };
