@@ -32,8 +32,10 @@ _TABLE = "no_countertop_answers"
 
 
 def upgrade() -> None:
-    op.add_column(_TABLE, sa.Column("note", sa.String(length=500), nullable=True))
-    op.add_column(_TABLE, sa.Column("batch_id", postgresql.UUID(as_uuid=True), nullable=True))
+    op.add_column("no_countertop_answers", sa.Column("note", sa.String(length=500), nullable=True))
+    op.add_column(
+        "no_countertop_answers", sa.Column("batch_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
     op.create_check_constraint(
         "no_countertop_answer_note_not_blank", _TABLE, "note IS NULL OR note !~ '^[[:space:]]*$'"
     )
