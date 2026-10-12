@@ -698,3 +698,21 @@ def test_a_row_with_one_numbered_label_among_words_stays_a_candidate() -> None:
     rows = _rows(SHEET + chain + labels)
 
     assert any(c.y == Decimal(300) - Decimal(centring_y) for c in rows.candidates)
+
+
+def test_a_filled_grey_or_black_path_keeps_how_light_its_fill_is() -> None:
+    """#1202: a wall drawn as a solid band is a filled path; the adapter keeps its fill's
+    lightness (0 black, 1 white), and an outline only has none."""
+    content = (
+        b"0.7 g 10 10 20 150 re f\n"  # a grey band
+        b"0 g 100 10 20 150 re f\n"  # a black band
+        b"0 G 200 10 20 150 re S\n"  # an outline only
+    )
+    with pdfplumber.open(io.BytesIO(_pdf(content, box=b"[0 0 400 300]"))) as document:
+        ink = ink_from_page(document.pages[0], drawing_boxes=())
+    fills = sorted((curve.box.x0, curve.fill_lightness) for curve in ink.curves if curve.closed)
+    assert fills == [
+        (Decimal(10), Decimal("0.7")),
+        (Decimal(100), Decimal(0)),
+        (Decimal(200), None),
+    ]

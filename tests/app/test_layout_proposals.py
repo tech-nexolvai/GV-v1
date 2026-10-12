@@ -469,7 +469,8 @@ def test_an_ai_only_wall_layout_stays_a_proposal_until_the_reviewer_selects_it(
     assert len(session.execute(select(LayoutConfirmation)).scalars().all()) == 1
 
 
-def test_the_check_request_identifies_a_code_backed_wall_layout(session: Session) -> None:
+def test_an_older_runs_code_backed_wall_layout_is_now_only_a_proposal(session: Session) -> None:
+    """#1202: code alone never settles the walls, an older run's drawing-clue proposal included."""
     _publish_rulebook(session)
     package_id, revision_id, _crop = _package_with_crop(session)
     proposal = _wall_run(
@@ -484,10 +485,8 @@ def test_the_check_request_identifies_a_code_backed_wall_layout(session: Session
 
     payload = _requested(session, package_id)
 
-    assert payload["discriminators"] == {"wall_config": "back_left_right"}
-    assert payload["discriminator_sources"]["wall_config"] == (
-        f"vendor drawing clues (proposal {proposal.id})"
-    )
+    assert payload["discriminators"] == {}
+    assert payload["discriminator_sources"] == {}
 
     from app.api.measurements import _stored_layout_proposal_out
 
@@ -495,7 +494,7 @@ def test_the_check_request_identifies_a_code_backed_wall_layout(session: Session
         session,
         session.get(PackageRevision, revision_id),  # type: ignore[arg-type]
     )["wall_config"]
-    assert proposal_out.requires_confirmation is False
+    assert proposal_out.requires_confirmation is True
 
 
 def test_a_value_the_reviewer_states_always_wins(session: Session) -> None:

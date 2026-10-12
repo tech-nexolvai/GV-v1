@@ -432,6 +432,7 @@ from workflow.view_roles import (
     release_contradicted_code_role,
     revision_views,
 )
+from workflow.wall_cases import wall_free_finding
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -7393,7 +7394,29 @@ class DatabaseStages:
                         ),
                         None,
                     )
-                    if not row_check.eligible:
+                    if row_check.walls_open:
+                        # Every number sealed, only the walls open (#1202): the width check for
+                        # every wall case the rulebook publishes. FAIL or PASS only when every
+                        # case agrees; otherwise the row still waits for its walls, each case's
+                        # result recorded. The engine does all the arithmetic.
+                        finding = wall_free_finding(
+                            width_snapshot,
+                            row_check.operands,
+                            resolved,
+                            discriminators=discriminators,
+                            waiting=row_check.reason
+                            or "This row needs reviewer input before checking.",
+                        )
+                        if (
+                            finding.outcome is Outcome.REVIEW_REQUIRED
+                            and row_check.wall_provenance is not None
+                        ):
+                            finding = replace(
+                                finding, notes=(*finding.notes, row_check.wall_provenance)
+                            )
+                        finding = confirm_unwitnessed_pass(finding, row_check.unwitnessed)
+                        operands = row_check.operands
+                    elif not row_check.eligible:
                         finding = Finding(
                             rule_id="CT-WIDTH-001",
                             outcome=Outcome.REVIEW_REQUIRED,

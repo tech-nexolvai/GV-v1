@@ -348,7 +348,7 @@ def test_a_checked_rows_crop_ids_are_the_recorded_operands_own_observations(
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=_boxes,
     )
     for candidate in session.scalars(

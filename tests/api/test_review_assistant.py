@@ -387,7 +387,7 @@ def test_the_snapshot_is_the_countertop_screens_records_unchanged(  # type: igno
     session = session_factory(postgres_engine)()
     try:
         project_id, package_id, anchors = _package_rows(
-            session, unsealed_all=True, wall_source="vendor-drawing-clues"
+            session, unsealed_all=True, wall_source="code-ink-and-both-ais"
         )
         _save_all_row_widths(session, project_id, package_id, anchors[0])
         _run_current_checks(session, package_id, tmp_path)

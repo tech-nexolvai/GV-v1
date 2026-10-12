@@ -13,7 +13,8 @@ import { ArchitectLine } from '@/components/results/architect-line';
 import { projectId } from '../../api/config';
 import { rowWallSelection, shouldOfferRowWallControl, slotReaderReviewPayload, slotRowCount, unsavedRowCount, type SlotReaderReviewPayload } from './slotReaderReview.js';
 import type { SectionState, StepCount } from '../../lib/measure-steps';
-import { BETWEEN_PANELS_WORDS, wallWords } from '@/lib/needs-you-queue';
+import { AUTOMATIC_WALL_SOURCE, BETWEEN_PANELS_WORDS, wallWords } from '@/lib/needs-you-queue';
+import { WallChoiceResult, WallRuleInfo, WallsLine } from '@/components/results/wall-rule-info';
 import { WallLayoutPicture } from '@/components/results/wall-glyph';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
@@ -163,6 +164,8 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
             {picture && <CountertopStrip row={picture} size="full" showHoldReason={false} className="min-w-0" />}
             {/* Whether it matches the architect (#1085): the same line as in Results. */}
             {picture && <ArchitectLine result={picture.architect} />}
+            {/* Which walls the result used and who decided (#1202), with the field-cut rule's "i". */}
+            {picture && <WallsLine row={picture} />}
             {/* Held: the whole reason, as before, and where it is decided (#1061: the queue too). */}
             {row.held_reason && <Caution className="text-sm">Needs review: {row.held_reason}</Caution>}
             {row.held_reason && (onOpenQueue || onReviewRow) && (
@@ -209,16 +212,22 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                 ))}
               </ul>
             )}
-            {row.wall_source === 'vendor-drawing-clues' && row.wall_proposal && (
+            {row.wall_source === AUTOMATIC_WALL_SOURCE && row.wall_proposal === 'back_left_right' && row.wall_config === null && (
               <Hint>
-                Wall layout from drawing clues: {row.wall_proposal.replaceAll('_', ' ')}. This is the row&apos;s check input.
+                Walls at both ends: seen on the drawing at both ends and confirmed by both AIs. This is the row&apos;s check input.
               </Hint>
+            )}
+            {row.walls_needed === false && row.wall_config === null && (
+              <Hint>Walls not needed: this row&apos;s width gives the same result for every wall case.</Hint>
             )}
             {/* The wall choice as picture buttons (#1061). Choosing is only a draft: the saved answer is
                 selected, a reader proposal never is, and nothing is sent until "Use this wall layout". */}
             {shouldOfferRowWallControl(row) && (
               <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-medium" id={`slot-walls-${row.row_id}`}>Wall layout for this row</span>
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  <span id={`slot-walls-${row.row_id}`}>Wall layout for this row</span>
+                  <WallRuleInfo fieldCut={row.field_cut_in_force ?? row.wall_cases?.field_cut_per_end?.display ?? null} cases={row.wall_cases} />
+                </span>
                 <ToggleGroup
                   type="single"
                   variant="outline"
@@ -230,12 +239,16 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                   className="flex-wrap justify-start"
                 >
                   {row.wall_layout_choices.map((choice) => (
-                    <ToggleGroupItem key={choice} value={choice} className="gap-1.5 px-2.5">
+                    <ToggleGroupItem key={choice} value={choice} className="h-auto min-h-8 flex-wrap gap-x-1.5 gap-y-0.5 px-2.5 py-1">
                       <WallLayoutPicture config={choice} />
                       {row.wall_source === 'between-panels' && choice === 'back_only' ? BETWEEN_PANELS_WORDS : wallWords(choice)}
+                      {/* What this choice gives, as the check recorded it (#1202); nothing is pre-selected. */}
+                      <WallChoiceResult cases={row.wall_cases} layout={choice} />
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
+                {row.wall_cases?.unavailable_reason && <Hint>{row.wall_cases.unavailable_reason}</Hint>}
+                {(row.wall_evidence ?? []).map((line) => <Hint key={line}>{line}</Hint>)}
                 {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers') && row.wall_proposal && row.wall_config === null && (
                   <Hint>Suggested partly or fully by the readers. Choose it for this row before saving it.</Hint>
                 )}

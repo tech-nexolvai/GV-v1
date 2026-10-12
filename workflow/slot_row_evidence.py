@@ -60,7 +60,7 @@ from vocabulary.drawn_length import (
     engine_result_note,
     not_checked_note,
 )
-from vocabulary.wall_layouts import is_between_panels, wall_layout_words
+from vocabulary.wall_layouts import AUTOMATIC_WALLS_LINE, is_between_panels, wall_layout_words
 from workflow.slot_row_scope import (
     SlotRow,
     SlotRowQualification,
@@ -115,6 +115,10 @@ class SlotRowCheck:
     unwitnessed: tuple[int | None, ...] = ()
     """The operands' sealed readings whose drawn length was not checked (no scale): piece slots
     from 0, `None` for the overall (#1107). Reviewer-typed values are never listed."""
+    walls_open: bool = False
+    """The row qualified and every width sealed, and only its walls are not established (#1202):
+    `operands` are filled, `eligible` stays `False`, and the width check is run for every wall
+    case instead (`workflow/wall_cases.py`)."""
 
 
 def unwitnessed_positions(
@@ -364,14 +368,22 @@ def slot_row_check(session: Session, row: SlotRow) -> SlotRowCheck:
     if not qualification.eligible:
         return SlotRowCheck(False, qualification.reason, layout, wall_reason, wall_note, {}, ())
     if layout is None:
+        waiting = wall_note or "Choose this row's wall layout."
+        # Only the walls are missing (#1202): seal the numbers exactly as the check would, so the
+        # width can be worked out for every wall case. A row that does not seal waits as before.
+        sealed_open = _seal_row(session, row, candidates_by_position, proposal_fields, values)
+        if isinstance(sealed_open, str):
+            return SlotRowCheck(False, waiting, None, wall_reason, wall_note, {}, ())
         return SlotRowCheck(
             False,
-            wall_note or "Choose this row's wall layout.",
+            waiting,
             None,
             wall_reason,
             wall_note,
-            {},
-            (),
+            sealed_open[0],
+            sealed_open[1],
+            unwitnessed_positions(candidates_by_position),
+            walls_open=True,
         )
     sealed = _seal_row(session, row, candidates_by_position, proposal_fields, values)
     if isinstance(sealed, str):
@@ -456,14 +468,10 @@ def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:
         )
     )
     provenance = (
-        f"Wall layout: {words} ({value}), confirmed by the reviewer for this row "
-        f"({row.decision.confirmed_by} on {row.decision.created_at.isoformat()})."
+        f"Wall layout: {words} ({value}), chosen by {row.decision.confirmed_by} for this row "
+        f"(confirmed by the reviewer on {row.decision.created_at.isoformat()})."
         if value is not None and row.decision is not None and confirmed is not None
-        else (
-            f"Wall layout: {words} ({value}), established from vendor drawing clues for this row."
-            if value is not None
-            else reason
-        )
+        else (f"Wall layout: {AUTOMATIC_WALLS_LINE} ({value})." if value is not None else reason)
     )
     return value, why, provenance
 

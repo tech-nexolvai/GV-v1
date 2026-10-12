@@ -62,13 +62,29 @@ def test_incomplete_held_or_unqualified_row_never_gets_scope(
     assert result.reason
 
 
-def test_drawing_clue_wall_needs_no_click() -> None:
+def test_only_code_ink_with_both_ais_sets_walls_without_a_click() -> None:
+    """#1202: two judgments, and only for walls at both ends."""
     assert effective_row_wall(
         layout="back_left_right",
-        source="vendor-drawing-clues",
+        source="code-ink-and-both-ais",
         held=False,
         reviewer_confirmed=None,
     ) == ("back_left_right", None)
+    for layout in ("back_and_left", "back_and_right", "back_only", "island"):
+        assert (
+            effective_row_wall(
+                layout=layout, source="code-ink-and-both-ais", held=False, reviewer_confirmed=None
+            )[0]
+            is None
+        )
+
+
+def test_code_alone_from_an_older_run_now_needs_the_reviewer() -> None:
+    """Before #1202 code's drawing clues alone settled a row's walls; now they are a proposal."""
+    for source in ("vendor-drawing-clues", "drawing-and-readers"):
+        assert effective_row_wall(
+            layout="back_left_right", source=source, held=False, reviewer_confirmed=None
+        ) == (None, "Confirm the proposed wall layout for this countertop row.")
 
 
 def test_readers_wall_is_only_a_prefill_until_this_row_is_confirmed() -> None:

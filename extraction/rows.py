@@ -97,6 +97,32 @@ def _is_ink(obj: dict[str, Any]) -> bool:
     return drawing_ink({"non_stroking_color": obj.get("stroking_color")})
 
 
+def _fill_lightness(obj: dict[str, Any]) -> Decimal | None:
+    """How light a filled black or grey path is, 0 (black) to 1 (white); `None` if not filled.
+
+    Only called on a path `_is_ink` already kept, so its fill, when it has one, is black or grey by
+    `drawing_ink`'s rule. One component is grey's own lightness; three are red, green and blue, near
+    equal; four are cyan, magenta, yellow and black, where the ink darkens the paper (#1202).
+    """
+    if not obj.get("fill"):
+        return None
+    colour = obj.get("non_stroking_color")
+    if colour is None:
+        return Decimal(0)  # the default fill, which is black
+    parts = list(colour) if isinstance(colour, (tuple, list)) else [colour]
+    try:
+        values = [_decimal(part) for part in parts]
+    except TypeError:
+        return None
+    if len(values) in (1, 3):
+        lightness = sum(values, Decimal(0)) / len(values)
+    elif len(values) == 4:
+        lightness = 1 - min(Decimal(1), values[3] + sum(values[:3], Decimal(0)) / 3)
+    else:
+        return None
+    return min(Decimal(1), max(Decimal(0), lightness))
+
+
 def ink_from_page(
     page: Any,
     *,
@@ -106,7 +132,7 @@ def ink_from_page(
     """A pdfplumber page's black and grey ink, as the builder takes it.
 
     Lines, rectangles and curves become `InkLine`s and `InkCurve`s; a rectangle is a closed
-    four-point curve. Characters keep their text and box. Anything coloured — by `drawing_ink`'s
+    four-point curve, and a filled one keeps how light its fill is (#1202). Characters keep their text and box. Anything coloured — by `drawing_ink`'s
     rule, which is the GV-mark rule the rest of the product uses — is left out here.
     """
     lines: list[InkLine] = []
@@ -135,6 +161,7 @@ def ink_from_page(
                     (box.x0, box.bottom),
                 ),
                 closed=True,
+                fill_lightness=_fill_lightness(rect),
             )
         )
     for curve in page.curves:
@@ -143,7 +170,11 @@ def ink_from_page(
         pts = _points(curve)
         if not pts:
             continue
-        curves.append(InkCurve(box=_box(curve), points=pts, closed=False))
+        curves.append(
+            InkCurve(
+                box=_box(curve), points=pts, closed=False, fill_lightness=_fill_lightness(curve)
+            )
+        )
     characters = tuple(
         InkCharacter(text=str(char.get("text", "")), box=_box(char))
         for char in page.chars

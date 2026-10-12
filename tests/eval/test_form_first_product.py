@@ -395,8 +395,8 @@ def test_product_projection_reads_exact_saved_row_and_settings(
         lambda *_args: SimpleNamespace(
             candidate_id=None,
             selected=True,
-            layout="back_only",
-            source="vendor-drawing-clues",
+            layout="back_left_right",
+            source="code-ink-and-both-ais",
             held=False,
             row_held=False,
         ),
@@ -422,5 +422,5 @@ def test_product_projection_reads_exact_saved_row_and_settings(
     assert audit.wall_attempts == 2
     assert case.proposed is not None
     assert case.proposed.pieces == (Fraction(8),)
-    assert case.proposed.wall_layout == "back_only"
+    assert case.proposed.wall_layout == "back_left_right"
     assert case.proposed.field_cut == Fraction(1)

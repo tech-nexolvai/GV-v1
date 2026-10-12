@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WallGlyph } from './wall-glyph';
+import { WallsLine } from './wall-rule-info';
 import { CountertopStrip } from './CountertopStrip';
 import { ArchitectDelta, ArchitectLine, ArchitectPairs, ArchitectStatus, ArchitectViewLink, MatchTag } from './architect-line';
 import { ArchitectMatchDetails } from './architect-match-details';
@@ -445,6 +446,8 @@ function ReadDetails({ row }: { row: CountertopResult }) {
         )}
       </div>
       {row.hold && <p className="text-xs text-muted-foreground"><HoldChip hold={row.hold} /> <span className="ml-1">{row.hold.reason}</span></p>}
+      {/* Which walls were used and who decided (#1202), with GV's field-cut rule behind the "i". */}
+      <WallsLine row={row} />
       <DrawnLengthNote row={row} />
       <CountertopStrip row={row} />
     </>

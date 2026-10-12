@@ -138,7 +138,7 @@ def _vendor_row(
                 "wall-reader",
                 "row-rank:1",
                 "walls-sealed:back_only",
-                "wall-source:vendor-drawing-clues",
+                "wall-source:code-ink-and-both-ais",
             ],
         )
     )

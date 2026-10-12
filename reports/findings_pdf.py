@@ -35,10 +35,11 @@ from app.schemas.visual_ui import (
     PageWithoutCountertopOut,
     RowNotCheckedOut,
 )
-from reports.countertop_strip import StripRefused, StripSpan, strip_layout
+from reports.countertop_strip import StripRefused, StripSpan, field_cut_text, strip_layout
 from reports.signed_review import SignedReview, with_review_pdf
 from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line, confirmation_words
 from verdict.outcomes import Outcome
+from vocabulary.wall_layouts import field_cut_footnote
 from workflow.changed_values import ChangedValues
 
 __all__ = ["FINDINGS_PDF_MEDIA_TYPE", "FindingsPdfInput", "write_findings_pdf"]
@@ -649,6 +650,11 @@ class _Document:
         for result in sorted(results, key=lambda item: item.page_number):
             details = [
                 f"Wall layout: {_text(result.wall_layout.label)} ({_wall_source(result)})",
+                *(
+                    (f"Walls: {result.wall_layout.line}",)
+                    if result.wall_layout.line is not None
+                    else ()
+                ),
                 f"Field cut: {_text(None if result.field_cut_per_end is None else result.field_cut_per_end.display)} per end x {_text(result.field_cut_count)}",
                 architect_line(result),
             ]
@@ -746,6 +752,21 @@ class _Document:
                     width=_CONTENT_WIDTH - 16,
                 )
             self.y = card_bottom - 12
+        if results:
+            # The field-cut rule in one line under the countertops (#1202).
+            note_lines = _wrapped(
+                field_cut_footnote(field_cut_text(results)),
+                width=_CONTENT_WIDTH - 16,
+                font=_BODY_FONT,
+                size=7,
+            )
+            if self.y - 9 * len(note_lines) < 48:
+                new_page(continued=True)
+            self.canvas.setFont(_BODY_FONT, 7)
+            for line in note_lines:
+                self.canvas.drawString(_MARGIN + 8, self.y, line)
+                self.y -= 9
+            self.y -= 6
         if empty_pages:
             self._pages_without_countertop(lambda: new_page(continued=True))
         if not_checked:

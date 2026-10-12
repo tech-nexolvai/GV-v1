@@ -1016,6 +1016,14 @@ export type SlotReaderRow = {
   /** The revision a carried wall answer was given on (#1180); null when given on this one. */
   carried_from_revision?: number | null;
   carried_given_at?: string | null;
+  /** Each wall choice's recorded result (#1202); empty with a reason when there is none. */
+  wall_cases?: components['schemas']['WallCasesOut'];
+  /** False when the result is the same for every wall case: no wall answer is asked (#1202). */
+  walls_needed?: boolean;
+  /** The project's field cut per wall end now, e.g. `1"`, for the rule's explanation (#1202). */
+  field_cut_in_force?: string | null;
+  /** What code saw at the row's ends (#1202); the vendor's words there are evidence only. */
+  wall_evidence?: string[];
 };
 
 export function listSlotReaderRows(projectId: string, packageId: string) {

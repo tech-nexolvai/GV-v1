@@ -422,7 +422,7 @@ def test_end_to_end_drawing_clue_row_fails_with_its_own_scope(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     _save_all_row_widths(session, project_id, package_id, anchors[0])
     rows = list_slot_rows(
@@ -435,7 +435,7 @@ def test_end_to_end_drawing_clue_row_fails_with_its_own_scope(
         project_id,
         package_id,
     ).rows
-    assert rows[0].wall_source == "vendor-drawing-clues"
+    assert rows[0].wall_source == "code-ink-and-both-ais"
 
     findings = _run_current_checks(session, package_id, tmp_path)
     first_row = next(
@@ -455,12 +455,10 @@ def test_end_to_end_reader_wall_is_review_until_confirmed_for_that_row(
     _save_all_row_widths(session, project_id, package_id, anchors[0])
     first = _run_current_checks(session, package_id, tmp_path)
     row_finding = next(finding for finding in first if finding.scope_row_candidate_id == anchors[0])
-    assert row_finding.outcome == "REVIEW_REQUIRED"
-    assert (
-        not row_finding.reason
-        or "choose" in row_finding.reason.lower()
-        or "confirm" in row_finding.reason.lower()
-    )
+    # #1202: these widths are wrong whatever the walls, so the walls are not needed for a FAIL.
+    assert row_finding.outcome == "FAIL"
+    assert (row_finding.reason or "").startswith("Wrong whatever the walls")
+    assert row_finding.variant is None
 
     principal = Principal(
         id="anant (synthetic test)",
@@ -485,7 +483,7 @@ def test_end_to_end_reader_wall_is_review_until_confirmed_for_that_row(
 
 def test_end_to_end_held_row_never_runs_arithmetic(session: Session, tmp_path: Path) -> None:
     _project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues", held_page=0
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais", held_page=0
     )
     findings = _run_current_checks(session, package_id, tmp_path)
     held = next(finding for finding in findings if finding.scope_row_candidate_id == anchors[0])
@@ -493,7 +491,10 @@ def test_end_to_end_held_row_never_runs_arithmetic(session: Session, tmp_path: P
     assert "held" in (held.reason or "").lower()
 
 
-@pytest.mark.parametrize("wall_source", ["vendor-drawing-clues", "readers"])
+@pytest.mark.parametrize(
+    "wall_source",
+    ["code-ink-and-both-ais", "readers", "vendor-drawing-clues", "drawing-and-readers"],
+)
 def test_end_to_end_sealed_row_passes_only_with_its_own_qualified_walls(
     session: Session, tmp_path: Path, wall_source: str
 ) -> None:
@@ -512,7 +513,9 @@ def test_end_to_end_sealed_row_passes_only_with_its_own_qualified_walls(
 
     first = _run_current_checks(session, package_id, tmp_path)
     assert {finding.scope_row_candidate_id for finding in first} == set(anchors.values())
-    if wall_source == "vendor-drawing-clues":
+    # #1202: only code's wall ink at both ends with both AIs is automatic; an older run's code-alone
+    # clues, like the readers' proposal, wait for the reviewer's click.
+    if wall_source == "code-ink-and-both-ais":
         assert all(finding.outcome == "PASS" for finding in first)
         assert session.query(SlotRowReviewDecision).count() == 0
     else:
@@ -563,7 +566,7 @@ def test_a_reader_writing_a_typographic_inch_mark_still_supports_the_sealed_widt
     """#1090. One reader wrote the inch mark as `”` (or `″`, or two primes), the other as `"`.
     Outcome: the row is checked exactly as a straight-quote row is, not refused as conflicting."""
     _project_id, package_id, anchors = _package_rows(
-        session, piece_count=2, widths_add_up=True, wall_source="vendor-drawing-clues"
+        session, piece_count=2, widths_add_up=True, wall_source="code-ink-and-both-ais"
     )
     for candidate in session.scalars(
         select(ObservationCandidate).where(
@@ -728,7 +731,7 @@ def test_mismatched_existing_canonical_refuses_row_without_creating_duplicate(
 def test_mismatched_canonical_becomes_row_review_without_crashing_stage(
     session: Session, tmp_path: Path
 ) -> None:
-    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _project_id, package_id, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
     candidates = session.scalars(
@@ -769,7 +772,7 @@ def test_all_piece_width_inputs_cite_their_own_observation_and_parent_confirmati
     session: Session, tmp_path: Path
 ) -> None:
     _project_id, package_id, anchors = _package_rows(
-        session, piece_count=2, wall_source="vendor-drawing-clues"
+        session, piece_count=2, wall_source="code-ink-and-both-ais"
     )
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
@@ -824,7 +827,7 @@ def test_a_row_whose_stone_does_not_end_at_the_walls_is_never_checked(
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         check_hold_page=0,
     )
     candidates = session.scalars(
@@ -854,7 +857,7 @@ def test_a_reader_saying_no_stone_adds_no_hold_and_the_row_still_checks(
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=lambda page, _row, _slot: [_NO_STONE] if page == 0 else [],
     )
     candidates = session.scalars(
@@ -908,7 +911,7 @@ def test_between_panels_requires_its_own_explicit_wall_choice(
     project_id, package_id, anchors = _package_rows(
         session,
         piece_count=2,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         check_hold_all=True,
         overall_override=overall,
     )
@@ -1090,8 +1093,9 @@ def test_a_row_with_one_wall_end_takes_one_field_cut_once_its_reviewer_confirms_
     by_row = {finding.scope_row_candidate_id: finding for finding in second}
     assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
     assert by_row[anchors[0]].variant == "back_and_right"
-    assert "Wall layout: back wall and right end (back_and_right), confirmed by the reviewer" in (
-        " | ".join(by_row[anchors[0]].notes or ())
+    assert (
+        "Wall layout: back wall and right end (back_and_right), chosen by synthetic reviewer"
+        in (" | ".join(by_row[anchors[0]].notes or ()))
     )
     # The other row's reader-only proposal was not confirmed: it still waits.
     assert by_row[anchors[1]].outcome == "REVIEW_REQUIRED"
@@ -1131,7 +1135,7 @@ def _sealed_two_piece_rows(
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=_unwitnessed_on_first_page,
         **options,  # type: ignore[arg-type]
     )
@@ -1213,7 +1217,7 @@ def test_values_the_reviewer_typed_are_not_readings_and_never_need_the_witness(
     project_id, package_id, anchors = _package_rows(
         session,
         unsealed_all=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=lambda _page, _offset, _slot: [NO_WITNESS],
     )
     principal = Principal(
@@ -1271,7 +1275,7 @@ def test_a_reading_with_the_files_own_text_among_its_sources_never_needs_the_cli
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="vendor-drawing-clues",
+        wall_source="code-ink-and-both-ais",
         slot_flags=lambda page, _offset, slot: (
             [NO_WITNESS, "reader-id:pdf-text-layer", "reader-id:amazon.qwen3-vl"]
             if page == 0 and slot != "overall"

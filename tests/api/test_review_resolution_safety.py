@@ -211,7 +211,7 @@ def test_correction_blocks_until_new_live_run_and_new_finding(
 ) -> None:
     from app.models import ObservationCandidate, VerdictInput
 
-    _, package, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _, package, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     for candidate in session.scalars(
         select(ObservationCandidate).where(
             ObservationCandidate.ambiguity_flags.contains(["slot-reader"])

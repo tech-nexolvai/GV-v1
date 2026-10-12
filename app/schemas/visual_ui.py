@@ -70,8 +70,31 @@ class WallLayoutOut(BaseModel):
     config: str | None
     label: str | None
     source: Literal[
-        "drawing clues", "both readers", "reviewer", "between panels", "not established"
-    ]
+        "drawing clues",
+        "both readers",
+        "reviewer",
+        "between panels",
+        "not established",
+        "code ink and both AIs",
+        "not needed",
+    ] = Field(
+        description=(
+            "Who set the walls the result used. `code ink and both AIs` (#1202): code saw wall ink "
+            "at both row ends and both AIs said a wall at both ends; the one automatic layout. "
+            "`not needed`: the width is wrong (or right) for every wall case, so no walls were "
+            "used. `drawing clues` and `both readers` are only on results from before #1202."
+        )
+    )
+    line: str | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "The results line, in plain words: which walls were used and who decided (#1202), "
+            'e.g. "walls at both ends — seen on the drawing at both ends and confirmed by both '
+            'AIs", "back wall and left end — chosen by <reviewer>", "not needed: wrong for every '
+            'wall case". Null while the walls are not established.'
+        ),
+    )
     carried_from_revision: int | None = Field(
         default=None,
         description=(
@@ -83,6 +106,45 @@ class WallLayoutOut(BaseModel):
     carried_given_at: datetime | None = Field(
         default=None, description="When the carried answer was originally given."
     )
+
+
+class WallCaseOut(BaseModel):
+    """One wall case the width check was run for, as the verdict engine recorded it (#1202)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    layout: str
+    words: str = Field(description='The case in the field-cut rule\'s words: "walls at both ends".')
+    field_cut_count: int | None = Field(description="Field cuts this case adds: 2, 1 or 0.")
+    field_cut_total: ExactValueOut | None = Field(
+        description="The field cut this case adds in all, as the engine worked it out."
+    )
+    expected_total: ExactValueOut | None = Field(
+        description="What the overall should be in this case, as the engine worked it out."
+    )
+    outcome: Outcome
+
+
+class WallCasesOut(BaseModel):
+    """The width check for every wall case, from the row's recorded result (#1202).
+
+    Empty `cases` with `unavailable_reason` when there is no such result: a number is not sealed,
+    the row is held, the checks have not run, or a value was saved after the last run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cases: tuple[WallCaseOut, ...] = ()
+    vendor_wrote: ExactValueOut | None = Field(
+        default=None, description="The vendor's printed overall the cases were checked against."
+    )
+    pieces_add_up_to: ExactValueOut | None = Field(
+        default=None, description="The row's pieces added up, as the engine worked it out."
+    )
+    field_cut_per_end: ExactValueOut | None = Field(
+        default=None, description="The project's field cut per wall end the cases used."
+    )
+    unavailable_reason: str | None = None
 
 
 class AgreementFactsOut(BaseModel):
@@ -279,6 +341,23 @@ class CountertopResultOut(BaseModel):
     architect: ArchitectResultOut = Field(
         default_factory=ArchitectResultOut,
         description="Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001).",
+    )
+    wall_cases: WallCasesOut = Field(
+        default_factory=WallCasesOut,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "When the row's walls were not established: the width check for every wall case "
+            "(#1202), from its recorded result. Empty otherwise."
+        ),
+    )
+    field_cut_in_force: str | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            'The field cut per wall end the newest width results used, e.g. `1"` (#1202): the '
+            "project's setting as the last check run read it. For the field-cut explanation; "
+            "null before any check has run."
+        ),
     )
 
 

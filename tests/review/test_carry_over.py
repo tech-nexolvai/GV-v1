@@ -157,7 +157,7 @@ def _decide_everything(session: Session, revision_id: UUID, reviewer: str = "ana
 
 def _two_decided_rows(session: Session, tmp_path: Path) -> tuple[UUID, UUID, dict[int, UUID]]:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     for anchor in anchors.values():
         _save_all_row_widths(session, project_id, package_id, anchor)
@@ -1043,7 +1043,7 @@ def test_a_click_on_a_row_asks_again_only_the_rule_that_reads_it(
 ) -> None:
     """An architect-side click no longer drops the width decision; a wall no longer drops the
     architect's; a typed width is read by both."""
-    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _project_id, package_id, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     revision = _revision_of(session, package_id)
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
@@ -1155,7 +1155,7 @@ def test_a_sealed_value_is_compared_by_value_not_by_its_observation_id(
     session: Session, value: int, carries: bool
 ) -> None:
     """A re-read mints new observation ids: the same value carries, a changed one asks again."""
-    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _project_id, package_id, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     revision = _revision_of(session, package_id)
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
@@ -1289,7 +1289,7 @@ def test_a_reread_of_the_same_rows_carries_unless_a_reading_changed(
     """A re-read mints new row and candidate ids; the rows are named by file, page and rank, and
     compared by what was read on them. Held rows seal no operand, so their readings count."""
     _project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     _run_current_checks(session, package_id, tmp_path)
     revision = _revision_of(session, package_id)
@@ -1318,7 +1318,7 @@ def test_a_reread_finding_another_drawn_row_at_the_same_rank_asks_again(session:
     """Rank and numbers alone do not name a row: the same rank may be another drawn row after a
     re-read. Where the row is drawn is part of its identity."""
     _project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     revision = _revision_of(session, package_id)
     snapshot = _snapshot(session, f"CT-{uuid4().hex[:6]}", walls=True)
@@ -1332,7 +1332,7 @@ def test_a_reread_finding_another_drawn_row_at_the_same_rank_asks_again(session:
 def test_a_reread_drawing_the_row_in_the_same_place_carries(session: Session) -> None:
     """The control for the test above: same rank, same place, same numbers, new ids."""
     _project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     revision = _revision_of(session, package_id)
     snapshot = _snapshot(session, f"CT-{uuid4().hex[:6]}", walls=True)
@@ -1350,7 +1350,7 @@ def test_a_pairing_is_compared_by_which_architect_dimension_it_names(
     """Two 30 in architect dimensions on one page are two pairings: a decision on one never
     carries onto a pairing naming the other, which the reviewer never saw."""
     _project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues"
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais"
     )
     revision = _revision_of(session, package_id)
     anchor = session.get(ObservationCandidate, anchors[0])
@@ -1419,7 +1419,7 @@ def test_a_sealed_value_read_at_another_place_asks_again(
     session: Session, place: int, carries: bool
 ) -> None:
     """The same 40 in read at another place on the page is another observation."""
-    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _project_id, package_id, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     revision = _revision_of(session, package_id)
     anchor = session.get(ObservationCandidate, anchors[0])
     assert anchor is not None
@@ -1453,7 +1453,7 @@ def test_a_sealed_value_read_at_another_place_asks_again(
 
 def test_the_wall_in_force_follows_the_supersede_chain_not_the_clock(session: Session) -> None:
     """The decision in force is the one nothing supersedes, even when its stored time is older."""
-    _project_id, package_id, anchors = _package_rows(session, wall_source="vendor-drawing-clues")
+    _project_id, package_id, anchors = _package_rows(session, wall_source="code-ink-and-both-ais")
     revision = _revision_of(session, package_id)
     width = _snapshot(session, f"CT-W-{uuid4().hex[:6]}", walls=True)
     old = _stored(session, revision, width, row=anchors[0])
@@ -1592,7 +1592,7 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, _anchors = _package_rows(
-        session, unsealed_all=True, wall_source="vendor-drawing-clues", rows_per_page=10
+        session, unsealed_all=True, wall_source="code-ink-and-both-ais", rows_per_page=10
     )
     _run_current_checks(session, package_id, tmp_path)
     revision = _revision_of(session, package_id)
