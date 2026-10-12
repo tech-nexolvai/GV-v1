@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
 from app.models import (
+    REFERENCE_ROLE,
     DrawingView,
     PackageRevisionDocument,
     Page,
@@ -44,6 +45,7 @@ __all__ = [
     "CODE_DOCUMENT_CONFIRMER",
     "CONTENT_VIEW_SOURCE",
     "PANEL_SOURCE",
+    "WITHDRAWN_BY_HEADING",
     "RevisionView",
     "confirm_view_role",
     "confirm_view_role_by_code",
@@ -51,8 +53,13 @@ __all__ = [
     "panel_tag",
     "record_content_view",
     "record_panel_view",
+    "release_contradicted_code_role",
     "revision_views",
 ]
+
+#: The audit event for code's confirmation withdrawn by a fresh read (#1193). Its target is the
+#: suggestion that replaced it: the heading now read and why.
+WITHDRAWN_BY_HEADING = "view_role_confirmation_withdrawn"
 
 #: What made a suggestion. Versioned so a later, different reader writes different rows.
 PANEL_SOURCE = "panel-heading-label/v1"
@@ -161,10 +168,12 @@ def record_panel_view(
     """Find or create the view for one drawing, and file what its label suggests.
 
     **Never sets the role.** A view created here has `role = NULL`, and a view that already has a
-    confirmed role keeps it. A re-read that suggests the same thing again adds nothing.
+    confirmed role keeps it. A re-read that suggests the same thing again adds nothing. The
+    suggestion may be `reference` (a brand prototype, #1193), which no confirmation can be.
     """
-    if proposed_role is not None and proposed_role not in {role.value for role in ViewRole}:
-        raise ValueError(f"proposed_role must be one of {[r.value for r in ViewRole]} or None")
+    allowed = [*(role.value for role in ViewRole), REFERENCE_ROLE]
+    if proposed_role is not None and proposed_role not in allowed:
+        raise ValueError(f"proposed_role must be one of {allowed} or None")
     tag = panel_tag(annotation_index)
     view = session.execute(
         select(DrawingView).where(DrawingView.page_id == page_id, DrawingView.tag == tag)
@@ -244,9 +253,10 @@ def confirm_view_role_by_code(
     views.py`) give the same role. Recorded exactly like a person's confirmation, append-only, with
     `confirmed_by` = `CODE_CONFIRMER` and an audit event naming it, so the record says code decided.
 
-    **A person always wins.** Nothing is written when the view already has any confirmation — a
-    person's, or code's from an earlier read — so code never overrides anyone and never repeats
-    itself; and a person confirming afterwards writes a newer row, which the view then carries.
+    **A person always wins.** Nothing is written when a person ever confirmed the view, or when it
+    carries a role now (code's from an earlier read included), so code never overrides anyone and
+    never repeats itself; a person confirming afterwards writes a newer row, which the view then
+    carries. A code confirmation a later read withdrew (#1193) does not count: code may decide again.
     Returns the new confirmation, or `None` when one already existed.
 
     `confirmed_by` names which code decided: `CODE_CONFIRMER` (heading and content agreeing),
@@ -260,12 +270,17 @@ def confirm_view_role_by_code(
         raise ValueError(f"confirmed_by must be one of {sorted(_CODE_CONFIRMERS)}")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("a code confirmation needs the reason both judgments gave")
-    existing = session.execute(
+    # Code's own earlier confirmation, withdrawn by a later read (`release_contradicted_code_role`),
+    # does not stop it confirming again; a person's, ever, does.
+    by_a_person = session.execute(
         select(ViewRoleConfirmation.id)
-        .where(ViewRoleConfirmation.drawing_view_id == view.id)
+        .where(
+            ViewRoleConfirmation.drawing_view_id == view.id,
+            ViewRoleConfirmation.confirmed_by.not_in(_CODE_CONFIRMERS),
+        )
         .limit(1)
     ).scalar_one_or_none()
-    if existing is not None or view.role is not None:
+    if by_a_person is not None or view.role is not None:
         return None
     confirmation = ViewRoleConfirmation(
         drawing_view_id=view.id, role=role.value, confirmed_by=confirmed_by
@@ -282,6 +297,57 @@ def confirm_view_role_by_code(
     )
     session.flush()
     return confirmation
+
+
+def release_contradicted_code_role(
+    session: Session, *, view: DrawingView, suggested: str | None
+) -> bool:
+    """Withdraw code's confirmation of a view when a fresh read of its heading contradicts it
+    (#1193 review). Returns whether it was withdrawn.
+
+    A revision read before #1193 could have a drawing confirmed by code on a heading it borrowed
+    (the vendor's drawing taking the architect's heading above it). When the heading read now says
+    otherwise, that confirmation no longer stands: the view's role is cleared (the confirmation row
+    stays, append-only, and an audit event names the withdrawal), so the fresh suggestion decides
+    what is read and code may confirm again only if the heading and the content agree again.
+
+    **Only code's, never a person's:** a view whose latest confirmation is a person's (or carried
+    from one) keeps it, whatever the heading says. A confirmation made from the drawings' content
+    on a page with no heading (`CODE_CONTENT_CONFIRMER`) or from the document kind is withdrawn
+    only when the heading now names the other side or a reference drawing; one made from the
+    heading (`CODE_CONFIRMER`) also when the heading now names nothing.
+    """
+    if view.role is None or suggested == view.role:
+        return False
+    latest = session.execute(
+        select(ViewRoleConfirmation)
+        .where(ViewRoleConfirmation.drawing_view_id == view.id)
+        .order_by(ViewRoleConfirmation.created_at.desc(), ViewRoleConfirmation.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if latest is None or latest.confirmed_by not in _CODE_CONFIRMERS:
+        return False
+    if suggested is None and latest.confirmed_by != CODE_CONFIRMER:
+        return False
+    view.role = None
+    session.flush()
+    # The event names what replaced code's confirmation: the fresh suggestion, whose row holds the
+    # heading now read and its reason (the withdrawn confirmation is the view's latest code row).
+    replacing = session.execute(
+        select(ViewRoleProposal.id)
+        .where(ViewRoleProposal.drawing_view_id == view.id)
+        .order_by(ViewRoleProposal.created_at.desc(), ViewRoleProposal.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    emit(
+        session,
+        category=AuditCategory.EVIDENCE_QUALIFICATION,
+        actor=latest.confirmed_by,
+        target_id=latest.id if replacing is None else replacing,
+        target_type=WITHDRAWN_BY_HEADING,
+    )
+    session.flush()
+    return True
 
 
 @dataclass(frozen=True, slots=True)

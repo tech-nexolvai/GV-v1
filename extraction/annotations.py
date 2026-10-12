@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import ctypes
 import io
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -334,6 +335,13 @@ class MarkupNote:
     """`/IT` as the file names it — `LineDimension` on a measurement line (#805) — or `None` when it
     names none, which is the ordinary case for a note."""
 
+    font_size: Decimal | None = None
+    """The text size the note is typed at, in points (`/DA`, else `/DS`, else rich text `/RC`), or
+    `None` when none of them sets one.
+
+    Read, never measured from the box: GV types its sheet headings at 24 pt and its notes at 12 pt
+    or less, so the size is how a heading is told from a note (#1193, `vocabulary/panel_headings`)."""
+
 
 @dataclass(frozen=True, slots=True)
 class OutlinedTextRegion:
@@ -527,6 +535,31 @@ def _text(value: object) -> str | None:
             return value.decode("utf-16-be", "replace")[1:]
         return value.decode("latin-1", "replace")
     return str(value)
+
+
+#: The text size in a default appearance string: the number before `Tf` (`/Helv 24 Tf 0 g`).
+_DA_FONT_SIZE: Final = re.compile(r"(\d+(?:\.\d+)?|\.\d+)\s+Tf\b")
+
+#: The text size in a default style string (`/DS`, `font: Helvetica 24pt`) or rich text (`/RC`,
+#: `style="font-size:24pt"`): a CSS `font` or `font-size` value in points.
+_CSS_FONT_SIZE: Final = re.compile(
+    r"font(?:-size)?\s*:[^;\"'>]*?(\d+(?:\.\d+)?|\.\d+)\s*pt", re.IGNORECASE
+)
+
+
+def _font_size(annotation: dict[str, Any]) -> Decimal | None:
+    """The text size the note is typed at: from `/DA` (`… 24 Tf`), else its default style `/DS`
+    (`font: … 24pt`), else its rich text `/RC` (the largest `font-size` in it). `None` when none
+    says, or the size is 0 (auto-size, which states no size)."""
+    found = _DA_FONT_SIZE.findall(_text(annotation.get("DA")) or "")
+    if found and Decimal(found[-1]) > 0:
+        return Decimal(found[-1])
+    styled = _CSS_FONT_SIZE.findall(_text(annotation.get("DS")) or "")
+    if styled and Decimal(styled[-1]) > 0:
+        return Decimal(styled[-1])
+    rich = [Decimal(size) for size in _CSS_FONT_SIZE.findall(_text(annotation.get("RC")) or "")]
+    sized = [size for size in rich if size > 0]
+    return max(sized) if sized else None
 
 
 #: The four rotations text can be set at. Anything else has no representation here — the same closed
@@ -1281,6 +1314,7 @@ def _read_layers(
                     rotation_degrees=rotation,
                     annotation_index=index,
                     intent=_name(annotation.get("IT")) or None,
+                    font_size=_font_size(annotation),
                 )
                 if layer is DrawingLayer.REVIEWER_MARKUP:
                     markup.append(note)

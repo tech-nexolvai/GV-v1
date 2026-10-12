@@ -529,3 +529,134 @@ def test_rows_not_checked_is_optional_in_the_published_schema() -> None:
 
     assert "rows_not_checked" in published["properties"]
     assert "rows_not_checked" not in published.get("required", [])
+
+
+CODE_WHY = (
+    "No vendor drawing on this page: the label above the lower drawing ('SYNTHETIC HEADING') is "
+    "not one we know; the architect's drawing ('ID SET ELEVATION'). Nothing on it was read."
+)
+
+
+def code_no_row_record(session: Session, revision_id: UUID, *, page_index: int) -> UUID:
+    """Code's "no row to read on this page" record (#1193), written as the extraction stage does."""
+    from workflow.unread_pages import persist_unread_pages, unread_page
+
+    run_id = latest_slot_reader_run(session, revision_id)
+    assert run_id is not None
+    version_id = session.scalars(
+        select(PackageRevisionDocument.document_version_id).where(
+            PackageRevisionDocument.package_revision_id == revision_id
+        )
+    ).one()
+    page = Page(
+        document_version_id=version_id,
+        index=page_index,
+        content_hash=f"{page_index + 300:064x}",
+        width_pt=Decimal(612),
+        height_pt=Decimal(792),
+        rotation=0,
+        has_vector_text=True,
+        media_box=["0", "0", "612", "792"],
+        crop_box=["0", "0", "612", "792"],
+    )
+    session.add(page)
+    session.flush()
+    persist_unread_pages(
+        session,
+        extraction_run_id=run_id,
+        pages=[unread_page(page, ("no-vendor-drawing", CODE_WHY))],
+        dpi=150,
+    )
+    return session.scalars(
+        select(ObservationCandidate.id).where(
+            ObservationCandidate.page_id == page.id,
+            ObservationCandidate.ambiguity_flags.contains(["no-row:no-vendor-drawing"]),
+        )
+    ).one()
+
+
+def test_a_page_code_read_no_row_on_is_listed_with_its_reason_and_waits_for_a_confirmation(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1193: never silent. A page with no vendor drawing to read is listed with code's reason on
+    the API, gets no result of its own, and sign-off waits for the reviewer's answer (#1191)."""
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = code_no_row_record(session, revision.id, page_index=2)
+
+    _run_current_checks(session, package_id, tmp_path)
+    assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
+    results = _results(session, package_id)
+    assert all(item.row_id != record_id for item in results.items)
+    assert [
+        (page.page_number, page.reason, page.record_id, page.older_reading, page.confirmation)
+        for page in results.pages_without_countertop
+    ] == [(3, CODE_WHY, record_id, False, None)]
+    payload = results.model_dump(mode="json")
+    assert payload["pages_without_countertop"][0]["reason"] == CODE_WHY
+
+    _decide(session, revision.id)
+    readiness = approval_readiness(session, revision.id)
+    assert readiness.blocking_findings == 0
+    assert readiness.unconfirmed_no_countertop_pages == (3,)
+    assert not readiness.can_approve
+
+
+def test_a_drawing_not_read_on_a_read_page_is_listed_with_its_place_and_reason(
+    session: Session,
+) -> None:
+    """#1193 review: on a page whose countertop was read, a drawing with no role of its own (its
+    heading names another drawing, or it has none) is listed, never silent and never blocking. A
+    drawing with a role, or on a page with no headings, is not listed."""
+    from app.models import DrawingView, ViewRoleProposal
+    from vocabulary.panel_headings import NO_HEADINGS_ON_PAGE
+
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    pages = {
+        page.index: page
+        for page in session.scalars(
+            select(Page)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+        )
+    }
+
+    def drawing(page: Page, tag: str, left: str, right: str, role: str | None, why: str) -> None:
+        view = DrawingView(
+            page_id=page.id,
+            tag=tag,
+            region={
+                "space": "stored",
+                "points": [[left, "0.1"], [right, "0.1"], [right, "0.9"], [left, "0.9"]],
+            },
+        )
+        session.add(view)
+        session.flush()
+        session.add(
+            ViewRoleProposal(
+                drawing_view_id=view.id,
+                proposed_role=role,
+                heading=None,
+                reason=why,
+                source="test",
+            )
+        )
+        session.flush()
+
+    drawing(pages[0], "panel-1", "0.02", "0.48", "shop", "synthetic: its own vendor heading")
+    drawing(pages[0], "panel-2", "0.52", "0.98", None, "synthetic: no label of its own")
+    drawing(pages[1], "panel-1", "0.1", "0.9", None, NO_HEADINGS_ON_PAGE)
+
+    results = _results(session, package_id)
+
+    assert [(d.page_number, d.drawing, d.reason) for d in results.drawings_not_read] == [
+        (
+            1,
+            "the right drawing",
+            "The right drawing was not read for a countertop: synthetic: no label of its own.",
+        )
+    ]

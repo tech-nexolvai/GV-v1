@@ -37,7 +37,7 @@ function list(pages: PageWithoutCountertop[], onAnswer = vi.fn(async () => {}), 
       <NoCountertopPages pages={pages} onAnswer={onAnswer} />
     </SignedOffContext.Provider>,
   );
-  return { onAnswer, region: screen.getByRole('region', { name: 'Pages with no countertop found' }) };
+  return { onAnswer, region: screen.getByRole('region', { name: 'Pages not checked' }) };
 }
 
 function item(region: HTMLElement, page: number): HTMLElement {

@@ -18,7 +18,7 @@ from app.main import create_app
 from app.models import DrawingView, Package, Project
 from storage.local import LocalStore
 from tests.api.test_v1_loop import _settings
-from tests.workflow.test_view_roles import _combined_sheet, _extract, _upgrade
+from tests.workflow.test_view_roles import _combined_sheet, _extract, _upgrade, reference_sheet
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -164,3 +164,60 @@ def test_a_project_outside_the_callers_is_not_found(session: Session, store: Loc
     )
 
     assert response.status_code == 404
+
+
+def test_a_reference_drawing_is_confirmed_only_when_re_labelled_on_purpose(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: a brand prototype is never checked, so there is nothing to confirm. An answer
+    on it is refused with the reason, unless the reviewer says they mean to re-label it."""
+    from app.api.drawing_views import REFERENCE_REFUSED
+
+    revision = _extract(session, store, reference_sheet())
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    client = _client(session, store, package.project_id)
+    base = f"/api/v1/projects/{package.project_id}/packages/{package.id}/views"
+    listed = client.get(base).json()["views"]
+    reference = next(view for view in listed if view["suggested_role"] == "reference")
+    assert reference["suggested_from"] == "BRAND PROTOTYPE ELEVATION"
+
+    refused = client.post(f"{base}/{reference['view_id']}/role", json={"role": "arch"})
+    assert refused.status_code == 409
+    assert REFERENCE_REFUSED in refused.text
+    stored = session.get(DrawingView, UUID(reference["view_id"]))
+    session.refresh(stored)
+    assert stored is not None and stored.role is None
+
+    relabelled = client.post(
+        f"{base}/{reference['view_id']}/role", json={"role": "shop", "relabel_reference": True}
+    )
+    assert relabelled.status_code == 201, relabelled.text
+    assert relabelled.json()["role"] == "shop"
+
+
+def test_a_re_labelled_reference_drawing_can_be_corrected(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: once re-labelled, the drawing has a role; a later correction is accepted when
+    it says it re-labels the reference drawing (the screen always sends it for one), and refused
+    without it."""
+    from app.api.drawing_views import REFERENCE_REFUSED
+
+    revision = _extract(session, store, reference_sheet())
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    client = _client(session, store, package.project_id)
+    base = f"/api/v1/projects/{package.project_id}/packages/{package.id}/views"
+    reference = next(
+        view for view in client.get(base).json()["views"] if view["suggested_role"] == "reference"
+    )
+    url = f"{base}/{reference['view_id']}/role"
+    assert client.post(url, json={"role": "shop", "relabel_reference": True}).status_code == 201
+
+    without = client.post(url, json={"role": "arch"})
+    corrected = client.post(url, json={"role": "arch", "relabel_reference": True})
+
+    assert without.status_code == 409 and REFERENCE_REFUSED in without.text
+    assert corrected.status_code == 201, corrected.text
+    assert corrected.json()["role"] == "arch"

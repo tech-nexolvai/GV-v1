@@ -28,7 +28,7 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
-import { ListedPages, type AnswerNoCountertop, type RowNotChecked } from './no-countertop-pages';
+import { ListedPages, type AnswerNoCountertop, type DrawingNotRead, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
 import { useSignedOff } from '@/lib/signed-off';
 
@@ -41,10 +41,12 @@ export type CountertopsState =
   | {
       status: 'ready';
       rows: CountertopResult[];
-      /** Pages where both AIs found no countertop line (#1093): each needs one reviewer answer before sign-off (#1191). */
+      /** Pages where both AIs found no countertop line (#1093), or code found no row to read (#1193): each needs one reviewer answer before sign-off (#1191). */
       pagesWithoutCountertop?: readonly PageWithoutCountertop[];
       /** Second countertop lines an AI named on a page (#1108): one line per page is read; listed, never blocking. */
       rowsNotChecked?: readonly RowNotChecked[];
+      /** Drawings on a read page that were not read (#1193 review): listed, never blocking. */
+      drawingsNotRead?: readonly DrawingNotRead[];
     };
 
 // The chips filter the table. Their counts are on the cards above (#1126), so a chip carries a
@@ -175,8 +177,8 @@ export function ResultsDashboard({
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed p-6">
           {(countertops.pagesWithoutCountertop?.length ?? 0) > 0 ? (
             <>
-              <p className="font-medium">No countertop found on any page</p>
-              <p className="text-sm text-muted-foreground">Both AIs found no countertop line on the pages listed below.</p>
+              <p className="font-medium">Pages not checked</p>
+              <p className="text-sm text-muted-foreground">No countertop was checked: each page listed below says why it was not checked.</p>
             </>
           ) : (
             <>
@@ -256,6 +258,7 @@ export function ResultsDashboard({
       <ListedPages
         pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
         rowsNotChecked={countertops.rowsNotChecked ?? []}
+        drawingsNotRead={countertops.drawingsNotRead ?? []}
         onAnswer={signedOff ? undefined : onAnswerNoCountertop}
       />
 

@@ -30,6 +30,7 @@ from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 
 from app.schemas.visual_ui import (
     CountertopResultOut,
+    DrawingNotReadOut,
     ExactValueOut,
     PageWithoutCountertopOut,
     RowNotCheckedOut,
@@ -84,9 +85,13 @@ class FindingsPdfInput:
     read as one that passed. ``None`` — a set from before #994 — draws nothing: every product's
     checks ran, and the cover is exactly what it was."""
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = ()
-    """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093). Listed
-    after the countertops so a page that was not checked can never pass unnoticed."""
+    """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093), or where
+    code found no row to read, with code's reason (#1193). Listed after the countertops so a page
+    that was not checked can never pass unnoticed."""
     rows_not_checked: tuple[RowNotCheckedOut, ...] = ()
+    drawings_not_read: tuple[DrawingNotReadOut, ...] = ()
+    """Drawings on a read page that were not read, each with where it is and why (#1193 review).
+    Listed after the countertops; nothing to decide."""
     """Second countertop rows an AI named on a page whose countertop row was read (#1108). V1 reads
     one row per page, so each is listed after the countertops as not checked."""
 
@@ -121,6 +126,10 @@ class FindingsPdfInput:
             isinstance(row, RowNotCheckedOut) for row in self.rows_not_checked
         ):
             raise TypeError("rows_not_checked must contain RowNotCheckedOut values")
+        if not isinstance(self.drawings_not_read, tuple) or not all(
+            isinstance(drawing, DrawingNotReadOut) for drawing in self.drawings_not_read
+        ):
+            raise TypeError("drawings_not_read must contain DrawingNotReadOut values")
 
 
 def _text(value: object, *, absent: str = NOT_RECORDED) -> str:
@@ -615,7 +624,8 @@ class _Document:
         results = self.source.countertop_results
         empty_pages = self.source.pages_without_countertop
         not_checked = self.source.rows_not_checked
-        if not results and not empty_pages and not not_checked:
+        not_read = self.source.drawings_not_read
+        if not results and not empty_pages and not not_checked and not not_read:
             return
 
         # The section before this one closed its own page, so the first countertop page is the fresh
@@ -748,17 +758,31 @@ class _Document:
                 ),
                 entries=[(row.page_number, row.reason) for row in not_checked],
             )
+        if not_read:
+            self._listed_pages(
+                lambda: new_page(continued=True),
+                title="DRAWINGS NOT READ",
+                note=(
+                    "These drawings sit on pages that were read, but were not read themselves: "
+                    "each says why. Nothing to decide; check them on the drawing."
+                ),
+                entries=[(drawing.page_number, drawing.reason) for drawing in not_read],
+            )
         # Close the last countertop page like the sections before, so FINDINGS starts its own page.
         self._footer()
         self.canvas.showPage()
 
     def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
-        """The pages both AIs found no countertop line on, each with the AI's reason (#1093) and the
-        reviewer's confirmation (#1191)."""
+        """The pages both AIs found no countertop line on, each with the AI's reason (#1093), and the
+        pages code read no row on, with code's reason (#1193); each with the reviewer's
+        confirmation (#1191)."""
         self._listed_pages(
             new_page,
-            title="PAGES WITH NO COUNTERTOP FOUND",
-            note="Both AIs found no countertop line on these pages, so nothing on them was checked.",
+            title="PAGES NOT CHECKED",
+            note=(
+                "Nothing on these pages was checked: the AIs found no countertop line, or code "
+                "found no vendor drawing or row to read. Each page says why."
+            ),
             entries=[
                 (
                     page.page_number,

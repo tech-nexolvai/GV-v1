@@ -300,7 +300,9 @@ class NoCountertopConfirmationOut(BaseModel):
 
 
 class PageWithoutCountertopOut(BaseModel):
-    """A vendor page where every AI said there is no countertop line (#1093).
+    """A vendor-file page where every AI said there is no countertop line (#1093), or where code
+    found no countertop row to read at all (#1193): only the architect's or reference drawings, a
+    title or divider page, a drawing whose heading is not one we know. `reason` says which.
 
     Listed, and since #1191 it needs one reviewer click before sign-off: "Confirm: no countertop
     here" (`confirmation`), or "There is a countertop", after which the page is an item above, held
@@ -343,6 +345,20 @@ class RowNotCheckedOut(BaseModel):
     reason: str
 
 
+class DrawingNotReadOut(BaseModel):
+    """A pasted drawing on a page that was read, which was not read itself (#1193 review): on a
+    page that prints headings it has no role of its own (its label is not one we know, it has none,
+    or its heading names another drawing). Listed, never blocking; the page's countertop that was
+    read is checked as usual."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page_number: int
+    drawing: str
+    """Where it is on the page, in words: "the lower drawing", "the bottom-right drawing"."""
+    reason: str
+
+
 class CountertopResultsOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -353,8 +369,9 @@ class CountertopResultsOut(BaseModel):
         default=(),
         json_schema_extra=optional_in_schema,
         description=(
-            "Vendor pages where both AIs found no countertop line, each with the AI's reason and "
-            "the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A "
+            "Vendor-file pages where both AIs found no countertop line, or code found no countertop "
+            "row to read (#1193), each with its reason and the reviewer's confirmation. Each needs "
+            "one reviewer answer before sign-off (#1191). A "
             "page where the AIs picked different lines, or a reviewer said there is a countertop, "
             "is an item above instead, held `row-choice-split`."
         ),
@@ -366,6 +383,16 @@ class CountertopResultsOut(BaseModel):
             "Second countertop rows an AI named on a vendor page whose countertop row was read. "
             "Only one countertop row per page is read, so these were not checked. Listed only; "
             "nothing to decide."
+        ),
+    )
+    drawings_not_read: tuple[DrawingNotReadOut, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Pasted drawings on pages that were read which were not read themselves, each with "
+            "where it is on the page and why (#1193): on a page that prints headings, a drawing is "
+            "read only when its own heading says it is the vendor's. Listed only; nothing to "
+            "decide, never blocking."
         ),
     )
 

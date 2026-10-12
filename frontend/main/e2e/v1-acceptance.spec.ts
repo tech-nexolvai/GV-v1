@@ -249,7 +249,7 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
     // Pages with no countertop: listed with the AI's reason; each waits for one reviewer answer
     // (#1191), so an unconfirmed page offers both buttons and a confirmed one only "There is a countertop".
     const pages = answer.pages_without_countertop ?? [];
-    const list = page.getByRole('region', { name: 'Pages with no countertop found' });
+    const list = page.getByRole('region', { name: 'Pages not checked' });
     if (pages.length === 0) await expect(list).toHaveCount(0);
     else {
       await expect(list.locator('li')).toHaveCount(pages.length);
@@ -493,7 +493,7 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
     // The queue answered the listed pages (#1191); anything it left is answered on Results.
     const saidCountertop = await test.step('answer the pages with no countertop', async () => {
       const answer = await results();
-      const listed = page.getByRole('region', { name: 'Pages with no countertop found' });
+      const listed = page.getByRole('region', { name: 'Pages not checked' });
       for (const p of answer.pages_without_countertop ?? []) {
         if (p.confirmation) continue;
         const item = listed.locator(`[data-part="no-countertop-page"][data-page="${p.page_number}"]`);

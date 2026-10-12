@@ -1,28 +1,44 @@
-"""Which drawing on a combined sheet is the ID set's and which is the vendor's, read from the sheet's
-own labels (#710).
+"""Which drawing on a combined sheet is whose, read from the heading GV prints for it (#710, #1193).
 
 **A package always has one architectural drawing and one shop drawing to compare.** They arrive in
 one of two ways: two files, one of each, where the upload says which is which; or one combined
-sheet carrying both. On the client's combined sheets each drawing is a stamp, and the sheet labels
-each one in plain text — `ID SET ELEVATION` above the architect's drawing, `VENDOR'S SHOP DRAWING
-ELEVATION` above the vendor's — so the role can be read, not guessed.
+sheet carrying both. On the client's combined sheets each drawing is a stamp, and GV types a heading
+for each one as a text note — `ID SET ELEVATION`, `VENDOR'S SHOP DRAWING`, `BRAND PROTOTYPE
+ELEVATION`… — so the role can be read, not guessed.
 
-**The label is exact text, so no model is asked.** ADR-0020 expected the headings to be drawn as
-outlines a model would have to read. On `AI_Set_2.pdf` they are text notes, the same two on every
-content page, so reading them costs nothing and cannot misread.
+**The heading is read by meaning, never by exact words (#1193).** `vocabulary/panel_headings.py`
+lists what each wording means: the vendor's drawing (`shop`), the architect's (`arch`), or a
+reference drawing (`reference`, a brand prototype: never read for a countertop, never compared).
+No model is asked: the text is a dictionary value in the file.
 
-**A label heads everything below it, down to the next label.** On the client's layout
-`ID SET ELEVATION` sits at the top of the page and `VENDOR'S SHOP DRAWING ELEVATION` halfway down,
-as a divider, with the vendor's drawing under it. So a drawing belongs to the nearest label above
-its middle. Measured on the 13 combined pages of `AI_Set_2.pdf`: every page's two drawings get one
-role each. This reads the sheet's own labelling; it is not a rule that the top drawing is the
-architect's, and a sheet laid out the other way round is read the other way round.
+**What is a heading, and what is a note.** A label is a heading when it means one of the listed
+headings (whole label), or is shaped like one: capitals, no digits, a few words, printed at heading
+size (`looks_like_heading`). A label the file prints smaller than heading size is a note whatever it
+says (GV's headings are 24 pt, its notes 12 pt or less). Where it sits does not decide it: GV often
+pastes a heading inside the margin of its drawing's stamp. The second kind is an *unknown* heading:
+it still heads its drawing, so that drawing gets no role and says why, instead of borrowing a
+heading from another drawing.
+
+**A drawing's own heading is the one of its panel.** Headings on one level of the page (their boxes
+overlap vertically) form a row, and rows cut the page into panels. GV lays a page out one of two
+ways, and the page says which: headings *above* their drawings (AI Set 2: `ID SET ELEVATION` at the
+top, the vendor's heading halfway down as a divider) or captions *below* them (several AI Set 3
+pages, often side by side). In the first, a drawing's own heading is the nearest row above its
+middle; in the second, the nearest row below it. The way that gives every known heading at least
+one drawing is the page's way; when both or neither do, the layout is not clear and no drawing gets
+a role. In a row of several headings side by side, a drawing takes the one over (or under) it; when
+none or several are, it gets none. So a drawing never takes a heading across another heading — an
+unknown heading in between stops it — and a drawing with no heading of its own gets no role.
+
+Measured on the 13 combined pages of `AI_Set_2.pdf`: every drawing gets the same role as before
+#1193. On `AI_Set_3.pdf` (60 pages) the three new wordings, the brand-prototype pages and the
+captions-below pages are read; see the PR for the per-page proof.
 
 **A proposal, never a decision.** What this returns is recorded as a suggestion. Only a person's
-confirmation sets a drawing's role (`workflow/view_roles.py`). A drawing with no label above it, or
-two different labels equally near, gets no suggestion and says why.
+confirmation (or code's, when the heading and the drawing's own content agree, #1052) sets a
+drawing's role (`workflow/view_roles.py`).
 
-Source: issue #710. Verification: tests/extraction/test_panels.py.
+Source: issues #710, #1193. Verification: tests/extraction/test_panels.py.
 """
 
 from __future__ import annotations
@@ -30,99 +46,419 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import Final, Literal
 
 from evidence.coordinates import StoredPoint
 from extraction.annotations import MarkupNote, VendorStamp
+from vocabulary.panel_headings import (
+    HEADING_MIN_FONT_PT,
+    NO_HEADINGS_ON_PAGE,
+    HeadingMeaning,
+    heading_meaning,
+    looks_like_heading,
+    place_words,
+)
 
-__all__ = ["PANEL_HEADINGS", "PanelRoleProposal", "printed_headings", "propose_panel_roles"]
+__all__ = [
+    "PanelLayout",
+    "PanelRoleProposal",
+    "printed_headings",
+    "propose_panel_roles",
+    "read_panels",
+]
 
-#: The labels a combined sheet prints above each drawing, and the role each one names. Matched on
-#: the whole label, ignoring case and spacing: `ID SET ELEVATION NOTES` is not this label.
-PANEL_HEADINGS: Final = {
-    "ID SET ELEVATION": "arch",
-    "VENDOR'S SHOP DRAWING ELEVATION": "shop",
+Side = Literal["above", "below"]
+
+#: What each meaning says about the drawing, in a reviewer's words.
+_NAMES: Final = {
+    HeadingMeaning.ARCH: "the architect's drawing",
+    HeadingMeaning.SHOP: "the vendor's shop drawing",
+    HeadingMeaning.REFERENCE: "a reference drawing (brand prototype), which is never checked",
 }
+
+#: A label quoted in a reason is cut to this many characters, so a reason always fits its column.
+_QUOTED: Final = 60
 
 
 @dataclass(frozen=True, slots=True)
 class PanelRoleProposal:
-    """What the sheet's labels suggest one drawing is, or why they suggest nothing."""
+    """What the sheet's headings suggest one drawing is, or why they suggest nothing."""
 
     annotation_index: int
     role: str | None
-    """`arch`, `shop`, or `None` when no label decides it."""
+    """`arch`, `shop`, `reference`, or `None` when no heading of its own decides it."""
     heading: str | None
-    """The label as the sheet prints it, when one was used."""
+    """This drawing's own heading as the sheet prints it — known or not — when it has one."""
     reason: str
+    known: bool = False
+    """Whether `heading` is one `vocabulary/panel_headings.py` knows."""
+    side: Side | None = None
+    """Where its own heading sits: `above` it, or `below` it as a caption."""
+    place: str = "the drawing"
+    """Which drawing on the page this is, in words: "the lower drawing", "the top-left drawing"."""
+    nested: bool = False
+    """Whether it lies wholly inside another drawing (a mark pasted on a drawing, not a drawing)."""
 
 
-def _label(text: str) -> str:
-    return " ".join(text.replace("’", "'").upper().split())
+@dataclass(frozen=True, slots=True)
+class PanelLayout:
+    """Every drawing's suggestion on one page, and the headings the page prints."""
+
+    proposals: tuple[PanelRoleProposal, ...]
+    headings: tuple[MarkupNote, ...]
+
+    @property
+    def labelled(self) -> bool:
+        """Whether the page prints any heading at all, known or not. On such a page a drawing is
+        read as the vendor's only when its own heading says so (`workflow/stages.py`)."""
+        return bool(self.headings)
 
 
-def printed_headings(notes: Sequence[MarkupNote]) -> tuple[MarkupNote, ...]:
-    """The notes on a page that are one of `PANEL_HEADINGS`, exactly: none on a page that prints
-    no heading at all."""
-    return tuple(note for note in notes if _label(note.text) in PANEL_HEADINGS)
+@dataclass(frozen=True, slots=True)
+class _Box:
+    left: Decimal
+    top: Decimal
+    right: Decimal
+    bottom: Decimal
+
+    @property
+    def middle(self) -> Decimal:
+        return (self.top + self.bottom) / 2
+
+    @property
+    def centre(self) -> Decimal:
+        return (self.left + self.right) / 2
+
+    def holds(self, other: _Box) -> bool:
+        """Whether `other` lies wholly inside this box, edges included."""
+        return (
+            self.left <= other.left
+            and other.right <= self.right
+            and self.top <= other.top
+            and other.bottom <= self.bottom
+        )
+
+    def overlaps_across(self, other: _Box) -> bool:
+        """Whether the two boxes share some width (touching edges do not)."""
+        return min(self.right, other.right) > max(self.left, other.left)
 
 
-def _vertical(points: Sequence[StoredPoint]) -> tuple[Decimal, Decimal]:
+@dataclass(frozen=True, slots=True)
+class _Row:
+    top: Decimal
+    bottom: Decimal
+    labels: tuple[tuple[MarkupNote, _Box], ...]
+
+    @property
+    def known(self) -> bool:
+        return any(heading_meaning(note.text) is not None for note, _box in self.labels)
+
+
+def _box(points: Sequence[StoredPoint]) -> _Box:
+    xs = [point.x for point in points]
     ys = [point.y for point in points]
-    return min(ys), max(ys)
+    return _Box(min(xs), min(ys), max(xs), max(ys))
+
+
+def _is_heading(note: MarkupNote) -> bool:
+    """A known wording is a heading unless the file prints it smaller than heading size; an unknown
+    one must be shaped like a heading (`looks_like_heading`), size included.
+
+    **Not where it sits.** A heading is often pasted inside the margin of the drawing's own stamp
+    (AI Set 3), so lying inside a drawing's box says nothing; GV's notes on a drawing are told apart
+    by their size (12 pt or less, against 24 pt headings) and their words."""
+    if heading_meaning(note.text) is not None:
+        return note.font_size is None or note.font_size >= HEADING_MIN_FONT_PT
+    return looks_like_heading(note.text, note.font_size)
+
+
+def _rows(headings: Sequence[tuple[MarkupNote, _Box]]) -> tuple[_Row, ...]:
+    """Headings on one level of the page (vertical extents overlapping) are one row, top first."""
+    rows: list[_Row] = []
+    for note, box in sorted(headings, key=lambda item: (item[1].top, item[1].left)):
+        if rows and box.top < rows[-1].bottom:
+            last = rows[-1]
+            rows[-1] = _Row(
+                last.top,
+                max(last.bottom, box.bottom),
+                tuple(sorted((*last.labels, (note, box)), key=lambda item: item[1].left)),
+            )
+        else:
+            rows.append(_Row(box.top, box.bottom, ((note, box),)))
+    return tuple(rows)
+
+
+def _row_for(box: _Box, rows: Sequence[_Row], side: Side) -> int | None:
+    """The row that heads a drawing: the nearest whose bottom is above its middle (`above`), or the
+    nearest whose top is below its middle (`below`)."""
+    if side == "above":
+        above = [(row.bottom, index) for index, row in enumerate(rows) if row.bottom <= box.middle]
+        return max(above)[1] if above else None
+    below = [(row.top, index) for index, row in enumerate(rows) if row.top >= box.middle]
+    return min(below)[1] if below else None
+
+
+def _is_barrier(note: MarkupNote) -> bool:
+    """A typed note that is not a heading but could stand where one would: printed at heading size,
+    or with no size the file states (#1193 review). Between a heading and a drawing it is that
+    drawing's own (unknown) label, so the drawing never borrows the heading beyond it."""
+    if note.subtype.lstrip("/") != "FreeText" or not note.text.strip() or _is_heading(note):
+        return False
+    return note.font_size is None or note.font_size >= HEADING_MIN_FONT_PT
+
+
+def _drawing_between(other: _Box, row: _Row, box: _Box, side: Side) -> bool:
+    """Whether `other`'s middle lies between the heading row and the drawing `box`'s middle, in the
+    reading order, wherever it sits across the page (#1193 review: a heading over the top-left
+    drawing never names the lower-right one). A drawing beside `box` is not between them."""
+    if side == "above":
+        return row.bottom < other.middle < box.middle
+    return box.middle < other.middle < row.top
+
+
+def _note_between(label: _Box, row: _Row, box: _Box, side: Side) -> bool:
+    """Whether a note sits between the heading row and the drawing's middle."""
+    if side == "above":
+        return row.bottom <= label.top and label.middle < box.middle
+    return label.bottom <= row.top and label.middle > box.middle
+
+
+def _beside(other: _Box, box: _Box) -> bool:
+    """Side by side: no width in common, and most of the smaller one's height shared."""
+    shared = min(other.bottom, box.bottom) - max(other.top, box.top)
+    smaller = min(other.bottom - other.top, box.bottom - box.top)
+    return not other.overlaps_across(box) and shared > smaller / 2
+
+
+def _places(boxes: Sequence[_Box]) -> list[str]:
+    """Each drawing's place in words, among the page's drawings (nested ones left out)."""
+    return place_words([(box.left, box.top, box.right, box.bottom) for box in boxes])
+
+
+def _quoted(text: str) -> str:
+    label = " ".join(text.split())
+    return repr(label if len(label) <= _QUOTED else label[: _QUOTED - 1] + "…")
+
+
+def read_panels(stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]) -> PanelLayout:
+    """Every drawing's suggestion, in the order the file lists them, and the page's headings.
+
+    Positions are the stored ones, where `y` runs down the page as a reader sees it, so "above"
+    means above on the sheet whatever the page's own rotation.
+    """
+    boxes = {stamp.annotation_index: _box(stamp.extent.points) for stamp in stamps}
+    nested = {
+        stamp.annotation_index
+        for stamp in stamps
+        if any(
+            other.annotation_index != stamp.annotation_index
+            and boxes[other.annotation_index].holds(boxes[stamp.annotation_index])
+            and boxes[other.annotation_index] != boxes[stamp.annotation_index]
+            for other in stamps
+        )
+    }
+    drawings = [
+        boxes[stamp.annotation_index] for stamp in stamps if stamp.annotation_index not in nested
+    ]
+    headings = [(note, _box(note.extent.points)) for note in notes if _is_heading(note)]
+    printed = tuple(note for note, _box_ in headings)
+    places = dict(
+        zip(
+            (stamp.annotation_index for stamp in stamps if stamp.annotation_index not in nested),
+            _places(drawings),
+            strict=True,
+        )
+    )
+
+    def proposal(
+        stamp: VendorStamp,
+        role: str | None,
+        reason: str,
+        heading: MarkupNote | None = None,
+        side: Side | None = None,
+    ) -> PanelRoleProposal:
+        index = stamp.annotation_index
+        return PanelRoleProposal(
+            index,
+            role,
+            None if heading is None else " ".join(heading.text.split()),
+            reason,
+            known=heading is not None and heading_meaning(heading.text) is not None,
+            side=side,
+            place=places.get(index, "a small drawing inside another"),
+            nested=index in nested,
+        )
+
+    if not headings:
+        return PanelLayout(
+            tuple(proposal(stamp, None, NO_HEADINGS_ON_PAGE) for stamp in stamps),
+            printed,
+        )
+
+    rows = _rows(headings)
+    top_level = [stamp for stamp in stamps if stamp.annotation_index not in nested]
+    used: dict[Side, set[int]] = {
+        side: {
+            heads
+            for stamp in top_level
+            if (heads := _row_for(boxes[stamp.annotation_index], rows, side)) is not None
+        }
+        for side in ("above", "below")
+    }
+    # A row of known headings must head a drawing; rows of unknown labels alone are weighed only on
+    # a page that prints no known heading (an unknown label heading nothing is a title, not a
+    # heading).
+    weighed = {index for index, row in enumerate(rows) if row.known} or set(range(len(rows)))
+    fits = [side for side in ("above", "below") if weighed <= used[side]]
+    if len(fits) == 2 and any(
+        _row_for(boxes[stamp.annotation_index], rows, "above")
+        != _row_for(boxes[stamp.annotation_index], rows, "below")
+        for stamp in top_level
+    ):
+        why = (
+            "the labels on this page could head the drawings under them or name the drawings over "
+            "them, so it is not clear which label is this drawing's own"
+        )
+        return PanelLayout(tuple(proposal(stamp, None, why) for stamp in stamps), printed)
+    if not fits:
+        why = (
+            "the labels on this page are neither all above nor all below the drawings they name, "
+            "so it is not clear which label is this drawing's own"
+        )
+        return PanelLayout(tuple(proposal(stamp, None, why) for stamp in stamps), printed)
+    side: Side = "above" if fits[0] == "above" else "below"
+    assigned = {
+        stamp.annotation_index: _row_for(boxes[stamp.annotation_index], rows, side)
+        for stamp in top_level
+    }
+    columns = {stamp.annotation_index: boxes[stamp.annotation_index] for stamp in top_level}
+    barriers = [(note, _box(note.extent.points)) for note in notes if _is_barrier(note)]
+
+    proposals: list[PanelRoleProposal] = []
+    for stamp in stamps:
+        index = stamp.annotation_index
+        box = boxes[index]
+        found = _row_for(box, rows, side)
+        if found is None:
+            proposals.append(
+                proposal(stamp, None, f"no label of its own is printed {side} this drawing")
+            )
+            continue
+        row = rows[found]
+        named = ", ".join(_quoted(note.text) for note, _label in row.labels)
+        # (a) Never across another note: a note at heading size (or of no stated size) between
+        # the heading and this drawing is this drawing's own label, and it is not one we know.
+        blocking = [
+            (note, label)
+            for note, label in barriers
+            if _note_between(label, row, box, side)
+            and (
+                label.overlaps_across(box)
+                or not any(other.overlaps_across(label) for other in columns.values())
+            )
+            and not (box.holds(label) and note.font_size is None)
+        ]
+        if blocking:
+            note = min(
+                blocking,
+                key=lambda item: (
+                    box.top - item[1].bottom if side == "above" else item[1].top - box.bottom
+                ),
+            )[0]
+            proposals.append(
+                proposal(
+                    stamp,
+                    None,
+                    f"the label {side} this drawing ({_quoted(note.text)}) is not one we know",
+                    note,
+                    side,
+                )
+            )
+            continue
+        # (b) Never across another drawing: the heading names the drawing next to it, not one
+        # further on in the same column.
+        if any(
+            other_index != index
+            and not other.holds(box)
+            and not box.holds(other)
+            and not _beside(other, box)
+            and _drawing_between(other, row, box, side)
+            for other_index, other in columns.items()
+        ):
+            proposals.append(
+                proposal(
+                    stamp,
+                    None,
+                    f"no label of its own: the label {side} it ({named}) names another drawing, "
+                    "which sits between them",
+                )
+            )
+            continue
+        labels = row.labels
+        beside = any(
+            other_index != index and assigned.get(other_index) == found and _beside(other, box)
+            for other_index, other in columns.items()
+        )
+        if len(labels) > 1 or beside:
+            # Side by side, a heading names only the drawing it lines up with.
+            over = [(note, label) for note, label in labels if label.overlaps_across(box)]
+            meanings = {heading_meaning(note.text) for note, _label in over}
+            if not over and len(labels) == 1:
+                proposals.append(
+                    proposal(
+                        stamp,
+                        None,
+                        f"no label of its own: the label {side} ({named}) lines up with the "
+                        "drawing beside it",
+                    )
+                )
+                continue
+            if not over or len(meanings) != 1 or (None in meanings and len(over) > 1):
+                proposals.append(
+                    proposal(
+                        stamp,
+                        None,
+                        f"two different labels are equally close {side} this drawing, side by "
+                        "side, and no single one lines up with it",
+                    )
+                )
+                continue
+            labels = (over[0],)
+        note = labels[0][0]
+        meaning = heading_meaning(note.text)
+        if meaning is None:
+            proposals.append(
+                proposal(
+                    stamp,
+                    None,
+                    f"the label {side} this drawing ({_quoted(note.text)}) is not one we know",
+                    note,
+                    side,
+                )
+            )
+            continue
+        proposals.append(
+            proposal(
+                stamp,
+                meaning.value,
+                f"its own label {_quoted(note.text)}, {side} it, names {_NAMES[meaning]}",
+                note,
+                side,
+            )
+        )
+    return PanelLayout(tuple(proposals), printed)
 
 
 def propose_panel_roles(
     stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]
 ) -> tuple[PanelRoleProposal, ...]:
-    """One suggestion per drawing on the page, in the order the file lists them.
+    """One suggestion per drawing on the page, in the order the file lists them (`read_panels`)."""
+    return read_panels(stamps, notes).proposals
 
-    Positions are the stored ones, where `y` runs down the page as a reader sees it, so "above" means
-    above on the sheet whatever the page's own rotation.
-    """
-    headings = [
-        (note, PANEL_HEADINGS[_label(note.text)])
-        for note in notes
-        if _label(note.text) in PANEL_HEADINGS
-    ]
-    proposals: list[PanelRoleProposal] = []
-    for stamp in stamps:
-        top, bottom = _vertical(stamp.extent.points)
-        middle = (top + bottom) / 2
-        above = [
-            (_vertical(note.extent.points)[1], note, role)
-            for note, role in headings
-            if _vertical(note.extent.points)[1] <= middle
-        ]
-        if not above:
-            proposals.append(
-                PanelRoleProposal(
-                    stamp.annotation_index,
-                    None,
-                    None,
-                    "no ID SET or VENDOR'S SHOP DRAWING label is printed above this drawing",
-                )
-            )
-            continue
-        nearest = max(position for position, _note, _role in above)
-        closest = [(note, role) for position, note, role in above if position == nearest]
-        if len({role for _note, role in closest}) > 1:
-            proposals.append(
-                PanelRoleProposal(
-                    stamp.annotation_index,
-                    None,
-                    None,
-                    "two different labels are equally close above this drawing",
-                )
-            )
-            continue
-        note, role = closest[0]
-        proposals.append(
-            PanelRoleProposal(
-                stamp.annotation_index,
-                role,
-                note.text.strip(),
-                f"the label {note.text.strip()!r} is the nearest one above this drawing",
-            )
-        )
-    return tuple(proposals)
+
+def printed_headings(
+    notes: Sequence[MarkupNote], stamps: Sequence[VendorStamp] = ()
+) -> tuple[MarkupNote, ...]:
+    """The notes on a page that are headings, known or not (`read_panels`): none on a page that
+    prints no heading at all."""
+    return read_panels(stamps, notes).headings

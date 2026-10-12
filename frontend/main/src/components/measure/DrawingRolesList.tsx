@@ -1,8 +1,14 @@
+import { useState } from 'react';
+
 import {
   DRAWING_ROLES,
+  REFERENCE_NOTHING_TO_DO,
   ROLE_LABEL,
+  isReference,
+  relabelsReference,
   roleLabel,
   stillToConfirm,
+  suggestionLabel,
   type DrawingRole,
   type DrawingView,
 } from './drawingRoleChoices.js';
@@ -33,9 +39,12 @@ export function DrawingRolesList({
   /** The drawing whose answer is being saved, so its buttons cannot be pressed twice. */
   saving: string | null;
   feedback?: Readonly<Record<string, DecisionFeedback>>;
-  onChoose: (view: DrawingView, role: DrawingRole) => void;
+  /** `relabel`: the reviewer deliberately re-labels a reference drawing (#1193). */
+  onChoose: (view: DrawingView, role: DrawingRole, relabel?: boolean) => void;
 }) {
   const open = stillToConfirm(views);
+  // Reference drawings whose reviewer pressed "Re-label…": only then are the two answers offered.
+  const [relabelling, setRelabelling] = useState<ReadonlySet<string>>(new Set());
   return (
     <StepSection
       id="drawing-roles-title"
@@ -56,8 +65,10 @@ export function DrawingRolesList({
     >
       <ul className="divide-y rounded-xl border bg-card">
         {views.map((view) => {
-          const suggested = roleLabel(view.suggested_role);
+          const suggested = suggestionLabel(view.suggested_role);
           const fromUpload = view.role === null ? roleLabel(view.upload_side) : null;
+          const reference = isReference(view);
+          const answering = !reference || relabelling.has(view.view_id);
           return (
             <li
               key={view.view_id}
@@ -74,7 +85,12 @@ export function DrawingRolesList({
                     {view.suggested_from ? `labelled “${view.suggested_from.trim()}”` : 'no label read on the sheet'}
                   </span>
                 </p>
-                {fromUpload ? (
+                {view.role === null && view.reason && (
+                  <p data-part="reason" className="text-xs text-muted-foreground">Why: {view.reason}</p>
+                )}
+                {reference ? (
+                  <p data-part="reference" className="text-xs text-muted-foreground">{REFERENCE_NOTHING_TO_DO}</p>
+                ) : fromUpload ? (
                   <p className="text-xs text-muted-foreground">from the upload: {fromUpload} (confirm to change it)</p>
                 ) : (
                   view.role === null &&
@@ -86,7 +102,18 @@ export function DrawingRolesList({
                 role="group"
                 aria-label={`Page ${view.page_index + 1}, drawing ${view.tag}`}
               >
-                {DRAWING_ROLES.map((role) => (
+                {!answering && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    title="Use this brand prototype as the architect's or the vendor's drawing anyway"
+                    onClick={() => setRelabelling((current) => new Set(current).add(view.view_id))}
+                  >
+                    Re-label…
+                  </Button>
+                )}
+                {answering && DRAWING_ROLES.map((role) => (
                   <Button
                     key={role}
                     type="button"
@@ -94,7 +121,7 @@ export function DrawingRolesList({
                     variant={choiceVariant(view.role === role)}
                     aria-pressed={view.role === role}
                     disabled={saving === view.view_id || feedback?.[view.view_id]?.kind === 'saving'}
-                    onClick={() => onChoose(view, role)}
+                    onClick={() => onChoose(view, role, relabelsReference(view))}
                   >
                     <ChoiceMark chosen={view.role === role} />
                     {ROLE_LABEL[role]}

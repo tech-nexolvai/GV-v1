@@ -90,6 +90,13 @@ class ViewRole(StrEnum):
 
 VIEW_ROLE_VALUES = ", ".join(f"'{role.value}'" for role in ViewRole)
 
+#: What a sheet's heading may *suggest* a drawing is, beyond the two sides (#1193): a reference
+#: drawing — a brand prototype — which is never read for a countertop and never compared. Only a
+#: suggestion may say it; a confirmed role (`DrawingView.role`) is always one of the two sides.
+REFERENCE_ROLE: Final = "reference"
+
+PROPOSED_ROLE_VALUES = f"{VIEW_ROLE_VALUES}, '{REFERENCE_ROLE}'"
+
 
 class DrawingView(Base, TimestampedUUID):
     """One titled region of a page — an elevation, a plan, a section.
@@ -147,7 +154,8 @@ class ViewRoleProposal(Base, TimestampedUUID, Immutable):
     )
 
     proposed_role: Mapped[str | None] = mapped_column(String(16), default=None)
-    """`arch` or `shop`, or `NULL` when the sheet's labels decide nothing."""
+    """`arch` or `shop`, `reference` for a reference drawing (a brand prototype, #1193), or `NULL`
+    when the sheet's headings decide nothing."""
 
     heading: Mapped[str | None] = mapped_column(String(200), default=None)
     """The label as the sheet prints it, when one was used."""
@@ -159,7 +167,7 @@ class ViewRoleProposal(Base, TimestampedUUID, Immutable):
 
     __table_args__ = (
         CheckConstraint(
-            f"proposed_role IS NULL OR proposed_role IN ({VIEW_ROLE_VALUES})",
+            f"proposed_role IS NULL OR proposed_role IN ({PROPOSED_ROLE_VALUES})",
             name="view_role_proposal_role",
         ),
         CheckConstraint("reason !~ '^[[:space:]]*$'", name="view_role_proposal_reason_not_blank"),

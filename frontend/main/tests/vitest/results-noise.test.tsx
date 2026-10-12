@@ -144,7 +144,7 @@ describe('countertop lines not checked (#1108)', () => {
     expect(list.textContent).toContain('Listed only. Nothing to decide.');
     // Next to the existing list, in the same place.
     const both = document.querySelector('[data-slot="listed-pages"]')!;
-    expect(both.contains(screen.getByRole('region', { name: 'Pages with no countertop found' }))).toBe(true);
+    expect(both.contains(screen.getByRole('region', { name: 'Pages not checked' }))).toBe(true);
     expect(both.contains(list)).toBe(true);
   });
 

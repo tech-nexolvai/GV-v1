@@ -78,6 +78,7 @@ from tests.api.test_unchosen_row_pages import (
     _results,
     _revision_of,
     _unchosen_record,
+    code_no_row_record,
 )
 from tests.app.postgres_fixture import alembic_config
 from workflow.slot_row_scope import unchosen_page
@@ -745,7 +746,7 @@ def test_the_confirmation_is_frozen_at_sign_off_and_printed_in_the_signed_files(
             )
         )
     )
-    sheet = book["No Countertop Found"]
+    sheet = book["Pages Not Checked"]
     assert [cell.value for cell in sheet[1]] == ["page", "reason", "confirmed"]
     assert [cell.value for cell in sheet[2]] == [
         "3",
@@ -844,3 +845,90 @@ def test_a_carried_there_is_a_countertop_needs_no_tick_and_gets_a_result_in_the_
     (finding,) = [f for f in _live(session, two.id) if f.scope_row_candidate_id == record_id]
     assert finding.outcome == "REVIEW_REQUIRED"
     assert pages_blocking_sign_off(session, [two.id])[two.id].unchecked == ()
+
+
+def test_there_is_a_countertop_on_a_page_code_read_nothing_on_says_code_found_no_row(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1193: a page code read no row on (no vendor drawing it could read) is answered with the same
+    two buttons; "There is a countertop" makes it a blocking item whose reason says code, not the
+    AIs, found no row."""
+    project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = code_no_row_record(session, revision.id, page_index=2)
+    _run_current_checks(session, package_id, tmp_path)
+    _decide(session, revision.id)
+    revision.state = PackageState.AWAITING_REVIEW.value
+    session.commit()
+
+    answered = _answer(session, project_id, package_id, record_id, "countertop")
+
+    assert answered.pages_without_countertop == ()
+    (item,) = [item for item in answered.items if item.row_id == record_id]
+    assert item.hold is not None and item.hold.code == "row-choice-split"
+    assert "although code found no countertop row to read on it" in item.hold.reason
+    assert "both AIs" not in item.hold.reason
+    _run_current_checks(session, package_id, tmp_path)
+    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert finding.outcome == "REVIEW_REQUIRED" and finding.reason == item.hold.reason
+
+
+def test_a_code_listed_page_s_answer_carries_to_revision_two_only_with_the_same_reason_code(
+    session: Session,
+) -> None:
+    """#1193 review: a page code read no row on, answered on revision 1, keeps its answer on an
+    identical page of revision 2 read for the same reason; a page whose reason changed is asked
+    again."""
+    from workflow.unread_pages import persist_unread_pages, unread_page
+
+    one, two, old_pages, new_pages = _two_revision_pages(
+        session, (("1" * 64, "1" * 64), ("4" * 64, "4" * 64))
+    )
+    run_one = _reread(session, one.id)
+    persist_unread_pages(
+        session,
+        extraction_run_id=run_one,
+        pages=[
+            unread_page(page, ("no-vendor-drawing", "synthetic: no vendor drawing"))
+            for page in old_pages
+        ],
+        dpi=150,
+    )
+    for record in session.scalars(
+        select(ObservationCandidate).where(ObservationCandidate.extraction_run_id == run_one)
+    ):
+        page = session.get(Page, record.page_id)
+        assert page is not None
+        listed = unchosen_page(page.index, record, page.content_hash)
+        session.add(
+            NoCountertopAnswer(
+                package_revision_id=one.id,
+                row_choice_candidate_id=record.id,
+                page_id=page.id,
+                page_number=page.index + 1,
+                page_content_hash=page.content_hash,
+                reading_answer=reading_answer(listed),
+                answer="no_countertop",
+                answered_by=REVIEWER,
+            )
+        )
+    run_two = _reread(session, two.id)
+    persist_unread_pages(
+        session,
+        extraction_run_id=run_two,
+        pages=[
+            unread_page(new_pages[0], ("no-vendor-drawing", "synthetic: no vendor drawing")),
+            unread_page(new_pages[1], ("no-row-found", "synthetic: no row found")),
+        ],
+        dpi=150,
+    )
+    session.commit()
+
+    results = _countertop_results_for_revision(session, two.package_id, two)
+    confirmations = {
+        page.page_number: page.confirmation for page in results.pages_without_countertop
+    }
+    carried = confirmations[1]
+    assert carried is not None and (carried.from_revision, carried.confirmed_by) == (1, REVIEWER)
+    assert confirmations[2] is None  # same page, but code now reads it for another reason
+    assert pages_blocking_sign_off(session, [two.id])[two.id].unconfirmed == (2,)

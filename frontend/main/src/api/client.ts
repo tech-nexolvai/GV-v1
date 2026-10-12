@@ -766,13 +766,15 @@ export function confirmDrawingRole(
   packageId: string,
   viewId: string,
   role: 'arch' | 'shop',
+  /** Only when the reviewer deliberately re-labels a reference drawing (a brand prototype, #1193). */
+  relabelReference = false,
 ) {
   return request<DrawingViewOut>(
     `/projects/${projectId}/packages/${packageId}/views/${viewId}/role`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role }),
+      body: JSON.stringify(relabelReference ? { role, relabel_reference: true } : { role }),
     },
   );
 }

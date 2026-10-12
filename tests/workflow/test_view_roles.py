@@ -340,6 +340,20 @@ def _combined_sheet(*, labelled: bool = True) -> bytes:
     )
 
 
+def reference_sheet() -> bytes:
+    """The architect's drawing headed `ARCH SET` over a brand prototype (#1193)."""
+    first = 5 + 2 + 2
+    return _pdf(
+        annotations=[
+            _free_text("ARCH SET ", rect=b"[10 285 150 298]"),
+            _free_text("BRAND PROTOTYPE ELEVATION ", rect=b"[10 142 220 156]"),
+            _stamp(rect=b"[60 160 350 290]", appearance_object=first),
+            _stamp(rect=b"[60 20 350 140]", appearance_object=first + 1),
+        ],
+        extra_objects=[_appearance(), _appearance()],
+    )
+
+
 @pytest.fixture
 def store() -> Iterator[LocalStore]:
     with tempfile.TemporaryDirectory() as directory:
@@ -562,3 +576,175 @@ def test_slot_reader_receives_architect_role_step_regions_only(session: Session)
         (Decimal("0.1"), Decimal("0.2"), Decimal("0.8"), Decimal("0.6")),
         (Decimal("0.2"), Decimal("0.1"), Decimal("0.4"), Decimal("0.3")),
     }
+
+
+def test_on_a_page_with_headings_only_the_vendor_s_drawing_keeps_its_rows(
+    session: Session,
+) -> None:
+    """#1193: a reference drawing (a brand prototype) is never read for a row, and on a page that
+    prints headings a drawing with no role of its own (its heading unknown, or none) is not read as
+    the vendor's either. A page with no headings keeps its unconfirmed drawings, as before."""
+    revision = _revision(session)
+    version = _document_version(session, revision, document_kind=DocumentKind.SHOP)
+    pages = []
+    for index in range(2):
+        page = Page(
+            document_version_id=version.id,
+            index=index,
+            content_hash=f"{index + 7:064x}",
+            width_pt=Decimal(612),
+            height_pt=Decimal(792),
+            rotation=0,
+            has_vector_text=True,
+            render_failed=False,
+            sheet_number=None,
+            page_type=None,
+            revision_label=None,
+        )
+        session.add(page)
+        pages.append(page)
+    session.flush()
+    labelled, plain = pages
+
+    def view(page: Page, tag: str, top: str, bottom: str, role: str | None = None) -> DrawingView:
+        drawn = DrawingView(
+            page_id=page.id,
+            tag=tag,
+            region={
+                "space": "stored",
+                "points": [["0.1", top], ["0.8", top], ["0.8", bottom], ["0.1", bottom]],
+            },
+            role=role,
+        )
+        session.add(drawn)
+        session.flush()
+        return drawn
+
+    def suggest(drawn: DrawingView, role: str | None, heading: str) -> None:
+        session.add(
+            ViewRoleProposal(
+                drawing_view_id=drawn.id,
+                proposed_role=role,
+                heading=heading,
+                reason="synthetic heading suggestion",
+                source="test",
+            )
+        )
+        session.flush()
+
+    reference = view(labelled, "panel-1", "0.1", "0.3")
+    suggest(reference, "reference", "SYNTHETIC PROTOTYPE")
+    unknown = view(labelled, "panel-2", "0.35", "0.6")
+    suggest(unknown, None, "SYNTHETIC UNKNOWN HEADING")
+    vendor = view(labelled, "panel-3", "0.65", "0.9")
+    suggest(vendor, "shop", "SYNTHETIC SHOP HEADING")
+    confirmed = view(labelled, "panel-4", "0.91", "0.95", role=ViewRole.SHOP.value)
+    suggest(confirmed, "reference", "SYNTHETIC PROTOTYPE")
+    view(plain, "panel-1", "0.1", "0.5")
+
+    result = _architect_candidate_filter_boxes_by_page(
+        session, (labelled.id, plain.id), labelled_pages={labelled.id}
+    )
+
+    assert {(box.top, box.bottom) for box in result[labelled.id]} == {
+        (Decimal("0.1"), Decimal("0.3")),
+        (Decimal("0.35"), Decimal("0.6")),
+    }
+    assert plain.id not in result
+
+
+def test_a_brand_prototype_drawing_is_suggested_as_a_reference_drawing(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193: the suggestion is stored as `reference`, which no confirmation can be."""
+    _extract(session, store, reference_sheet())
+
+    suggested = sorted(
+        (_suggestion(session, view).proposed_role or "", _suggestion(session, view).heading)
+        for view in _views(session)
+    )
+    assert suggested == [("arch", "ARCH SET"), ("reference", "BRAND PROTOTYPE ELEVATION")]
+    assert all(view.role is None for view in _views(session))
+
+
+def test_a_re_read_withdraws_code_s_role_its_heading_contradicts_never_a_person_s(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: a revision read before #1193 may carry code's confirmation made on a borrowed
+    heading. Re-reading the same revision withdraws it where the heading now says otherwise, so
+    the fresh suggestion decides and code may confirm again; a person's confirmation stays."""
+    from tests.workflow.test_markup_route import _SilentOcr
+    from workflow.view_roles import confirm_view_role_by_code
+
+    revision = _extract(session, store, _combined_sheet())
+    by_role = {_suggestion(session, view).proposed_role: view for view in _views(session)}
+    upper, lower = by_role["arch"], by_role["shop"]
+    # As the old read left it: code confirmed the vendor's drawing as the architect's, and a person
+    # said the upper drawing is the vendor's (a person may contradict a heading).
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.ARCH, reason="synthetic: an old borrowed heading"
+    )
+    confirm_view_role(session, view=upper, role=ViewRole.SHOP, actor="reviewer-1")
+    session.commit()
+
+    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
+        session, revision.id
+    )
+    session.commit()
+    session.refresh(lower)
+    session.refresh(upper)
+
+    assert lower.role is None
+    assert upper.role == ViewRole.SHOP.value
+    withdrawn = session.scalars(
+        select(AuditEvent).where(AuditEvent.target_type == "view_role_confirmation_withdrawn")
+    ).all()
+    assert len(withdrawn) == 1
+    # The event names what replaced code's confirmation: the suggestion with the heading read now.
+    replacing = session.get(ViewRoleProposal, withdrawn[0].target_id)
+    assert replacing is not None and replacing.drawing_view_id == lower.id
+    assert (replacing.proposed_role, replacing.heading) == (
+        "shop",
+        "VENDOR'S SHOP DRAWING ELEVATION",
+    )
+    assert "names the vendor's shop drawing" in replacing.reason
+    # Code may decide again on the fresh heading; it still never overrides the person.
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.SHOP, reason="synthetic: heading and content agree"
+    )
+    assert (
+        confirm_view_role_by_code(
+            session, view=upper, role=ViewRole.ARCH, reason="synthetic: heading and content agree"
+        )
+        is None
+    )
+
+
+def test_reading_the_same_revision_twice_leaves_every_role_where_it_was(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: a second read of an unchanged sheet changes nothing — no new suggestion, no
+    withdrawal, and a code confirmation that agrees with the heading stays."""
+    from tests.workflow.test_markup_route import _SilentOcr
+    from workflow.view_roles import confirm_view_role_by_code
+
+    revision = _extract(session, store, _combined_sheet())
+    lower = next(v for v in _views(session) if _suggestion(session, v).proposed_role == "shop")
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.SHOP, reason="synthetic: heading and content agree"
+    )
+    session.commit()
+    before = session.scalars(select(ViewRoleProposal.id)).all()
+
+    for _ in range(2):
+        DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
+            session, revision.id
+        )
+        session.commit()
+
+    session.refresh(lower)
+    assert lower.role == ViewRole.SHOP.value
+    assert sorted(session.scalars(select(ViewRoleProposal.id)).all()) == sorted(before)
+    assert not session.scalars(
+        select(AuditEvent).where(AuditEvent.target_type == "view_role_confirmation_withdrawn")
+    ).all()

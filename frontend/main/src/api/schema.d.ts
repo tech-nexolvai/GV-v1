@@ -3210,6 +3210,11 @@ export interface components {
         /** ConfirmRoleIn */
         ConfirmRoleIn: {
             /**
+             * Relabel Reference
+             * @default false
+             */
+            relabel_reference: boolean;
+            /**
              * Role
              * @enum {string}
              */
@@ -3395,6 +3400,11 @@ export interface components {
         };
         /** CountertopResultsOut */
         CountertopResultsOut: {
+            /**
+             * Drawings Not Read
+             * @description Pasted drawings on pages that were read which were not read themselves, each with where it is on the page and why (#1193): on a page that prints headings, a drawing is read only when its own heading says it is the vendor's. Listed only; nothing to decide, never blocking.
+             */
+            drawings_not_read?: components["schemas"]["DrawingNotReadOut"][];
             /** Items */
             items: components["schemas"]["CountertopResultOut"][];
             /**
@@ -3404,7 +3414,7 @@ export interface components {
             package_id: string;
             /**
              * Pages Without Countertop
-             * @description Vendor pages where both AIs found no countertop line, each with the AI's reason and the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A page where the AIs picked different lines, or a reviewer said there is a countertop, is an item above instead, held `row-choice-split`.
+             * @description Vendor-file pages where both AIs found no countertop line, or code found no countertop row to read (#1193), each with its reason and the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A page where the AIs picked different lines, or a reviewer said there is a countertop, is an item above instead, held `row-choice-split`.
              */
             pages_without_countertop?: components["schemas"]["PageWithoutCountertopOut"][];
             /**
@@ -3608,6 +3618,21 @@ export interface components {
              * @description True when both revisions hold the exact same bytes.
              */
             same_file: boolean;
+        };
+        /**
+         * DrawingNotReadOut
+         * @description A pasted drawing on a page that was read, which was not read itself (#1193 review): on a
+         *     page that prints headings it has no role of its own (its label is not one we know, it has none,
+         *     or its heading names another drawing). Listed, never blocking; the page's countertop that was
+         *     read is checked as usual.
+         */
+        DrawingNotReadOut: {
+            /** Drawing */
+            drawing: string;
+            /** Page Number */
+            page_number: number;
+            /** Reason */
+            reason: string;
         };
         /**
          * DrawingOut
@@ -4832,7 +4857,9 @@ export interface components {
         };
         /**
          * PageWithoutCountertopOut
-         * @description A vendor page where every AI said there is no countertop line (#1093).
+         * @description A vendor-file page where every AI said there is no countertop line (#1093), or where code
+         *     found no countertop row to read at all (#1193): only the architect's or reference drawings, a
+         *     title or divider page, a drawing whose heading is not one we know. `reason` says which.
          *
          *     Listed, and since #1191 it needs one reviewer click before sign-off: "Confirm: no countertop
          *     here" (`confirmation`), or "There is a countertop", after which the page is an item above, held

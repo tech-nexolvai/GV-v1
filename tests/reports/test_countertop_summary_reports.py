@@ -604,9 +604,9 @@ def test_pdf_lists_a_split_page_without_a_picture_and_the_pages_with_no_countert
 
     assert "Countertop row on page 3" in text and "REVIEW_REQUIRED" in text
     assert "nothing on it was read or checked" in text
-    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert "PAGES NOT CHECKED" in text
     assert f"Page 4: {NONE_REASON}" in text
-    assert text.index("PAGES WITH NO COUNTERTOP FOUND") < text.index("CT-WIDTH-001")
+    assert text.index("PAGES NOT CHECKED") < text.index("CT-WIDTH-001")
 
 
 def test_pdf_lists_pages_with_no_countertop_even_with_no_countertop_item() -> None:
@@ -675,7 +675,7 @@ def test_workbook_has_the_split_page_and_the_pages_with_no_countertop() -> None:
     assert row["hold_reason"] == SPLIT_REASON
     assert row["decision"] == "dismiss"
 
-    empty = book["No Countertop Found"]
+    empty = book["Pages Not Checked"]
     # The third column is the reviewer's confirmation (#1191); this synthetic page has none.
     assert [cell.value for cell in empty[1]] == ["page", "reason", "confirmed"]
     assert [cell.value for cell in empty[2]][:2] == ["4", NONE_REASON]
@@ -829,7 +829,7 @@ def test_pdf_lists_a_second_countertop_row_that_was_not_checked() -> None:
 
     assert "SECOND COUNTERTOP ROWS NOT CHECKED" in text
     assert "Page 2: An AI found a second countertop on this page" in text
-    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert "PAGES NOT CHECKED" in text
     assert text.index("SECOND COUNTERTOP ROWS NOT CHECKED") < text.index("CT-WIDTH-001")
 
 
@@ -873,3 +873,47 @@ def test_workbook_lists_a_second_countertop_row_that_was_not_checked() -> None:
         "Second Rows Not Checked"
         not in load_workbook(BytesIO(write_stored_workbook((_stored(),)))).sheetnames
     )
+
+
+def test_the_drawings_not_read_are_listed_in_the_pdf_and_the_workbook() -> None:
+    """#1193 review: a drawing on a read page that was not read is never silent in the signed
+    files; listed with its page, where it is and why."""
+    from app.schemas.visual_ui import DrawingNotReadOut
+
+    not_read = (
+        DrawingNotReadOut(
+            page_number=3,
+            drawing="the bottom-right drawing",
+            reason="The bottom-right drawing was not read for a countertop: synthetic reason.",
+        ),
+    )
+
+    text = _pdf_text(
+        write_findings_pdf(
+            FindingsPdfInput(
+                package_revision_id=UUID(int=15),
+                revision_number=1,
+                vendor=None,
+                findings=(_stored(),),
+                countertop_results=(_split_item(),),
+                drawings_not_read=not_read,
+            )
+        )
+    )
+    book = load_workbook(
+        BytesIO(
+            write_stored_workbook(
+                (_stored(),), countertop_results=(_split_item(),), drawings_not_read=not_read
+            )
+        )
+    )
+
+    assert "DRAWINGS NOT READ" in text
+    assert "Page 3: The bottom-right drawing was not read for a countertop" in text
+    sheet = book["Drawings Not Read"]
+    assert [cell.value for cell in sheet[1]] == ["page", "drawing", "reason"]
+    assert [cell.value for cell in sheet[2]] == [
+        "3",
+        "the bottom-right drawing",
+        not_read[0].reason,
+    ]

@@ -59,9 +59,9 @@ export function DrawingRoles({
     };
   }, [packageId, loadAttempt]);
 
-  async function choose(view: DrawingView, role: DrawingRole) {
+  async function choose(view: DrawingView, role: DrawingRole, relabel = false) {
     await saveDecision(view.view_id, signedOff ? refuseClosed : async () => {
-      const updated = await confirmDrawingRole(projectId(), packageId, view.view_id, role);
+      const updated = await confirmDrawingRole(projectId(), packageId, view.view_id, role, relabel);
       setViews((current) =>
         current ? current.map((item) => (item.view_id === updated.view_id ? updated : item)) : current,
       );
@@ -77,7 +77,7 @@ export function DrawingRoles({
   }
   return (
     <>
-      <DrawingRolesList views={views} saving={null} feedback={feedback} onChoose={(view, role) => void choose(view, role)} />
+      <DrawingRolesList views={views} saving={null} feedback={feedback} onChoose={(view, role, relabel) => void choose(view, role, relabel)} />
       {loadError && (
         <LoadError onRetry={() => setLoadAttempt((count) => count + 1)}>
           The drawing roles could not refresh: {loadError}

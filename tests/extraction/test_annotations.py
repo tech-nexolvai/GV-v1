@@ -1130,3 +1130,34 @@ def test_a_line_that_is_not_a_measurement_stays_other_even_with_text() -> None:
 
     assert layers.markup == ()
     assert [note.intent for note in layers.other_layer_notes] == ["LineArrow"]
+
+
+@pytest.mark.parametrize(
+    ("style", "size"),
+    [
+        (b" /DA (/Helv 24 Tf 0 g)", Decimal(24)),
+        (b" /DA (/Helv 0 Tf 0 g) /DS (font: Helvetica 18pt; color:#000000)", Decimal(18)),
+        (b" /DS (font-size:16.5pt)", Decimal("16.5")),
+        (
+            b' /RC (<body><p style="font-size:9pt">a</p><span style="font:bold 24pt Arial">b</span></body>)',
+            Decimal(24),
+        ),
+        (b"", None),
+    ],
+    ids=["DA", "DS-after-auto-size-DA", "DS-font-size", "rich-text", "none"],
+)
+def test_a_note_s_text_size_is_read_from_da_then_ds_then_rich_text(
+    style: bytes, size: Decimal | None
+) -> None:
+    """#1193: the size tells a heading (24 pt) from a note; read, never measured."""
+    note = (
+        b"<< /Type /Annot /Subtype /FreeText /Rect [40 40 120 60] /Contents (SYNTHETIC)"
+        + style
+        + b" >>"
+    )
+
+    (read,) = read_markup_layer(
+        _pdf(annotations=[note]), 0, document_version_id=DOCUMENT, dpi=DPI
+    ).markup
+
+    assert read.font_size == size

@@ -9,6 +9,11 @@ row, both AIs said "none of these lines", and nobody was ever asked. Anant decid
    here"**, or **"There is a countertop"**, which turns the page into a blocking item handled the way
    a split page is (hold `row-choice-split`; the check stage writes its "needs you" result).
 
+**Pages code read no row on (#1193).** A vendor-file page with no countertop row to read at all —
+only the architect's or reference drawings, a title or divider page, a drawing whose heading is not
+one we know — is listed too, with code's reason (`no-row:` records, `workflow/unread_pages.py`), and
+needs the same answer: never silent.
+
 **What counts as the same page.** An answer is a `NoCountertopAnswer` row. It counts on the reading
 record it was given on, and on another reading of an identical page: the same page number, the same
 *known* page content hash (`app/lifecycle/carry_forward.known_content`: a missing hash or the hash of
@@ -58,7 +63,7 @@ from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, Finding
 from vocabulary.semantic_types import ProductType
 from workflow.part_operands import reviewer_owned_pages
-from workflow.slot_row_scope import UnchosenRowPage, unchosen_page
+from workflow.slot_row_scope import NO_ROW_FLAG, UnchosenRowPage, unchosen_page
 
 __all__ = [
     "ANSWER_WORDS",
@@ -98,16 +103,21 @@ class PageAnswer:
     """The revision it was given on, when that is an earlier revision than the one shown."""
 
 
-def reviewer_says_countertop(answer: PageAnswer) -> str:
-    """Why a page every AI said has no countertop now needs the reviewer: who said there is one, and
-    when (#1191). The check stage records it as the page's result reason, so the signed files print
-    it too."""
+def reviewer_says_countertop(answer: PageAnswer, *, found_by_code: bool = False) -> str:
+    """Why a listed page now needs the reviewer: who said there is a countertop, and when (#1191).
+    The check stage records it as the page's result reason, so the signed files print it too.
+    `found_by_code`: code, not the AIs, read no row on the page (#1193)."""
     when = answer.answered_at.strftime("%Y-%m-%d %H:%M UTC")
     carried = "" if answer.from_revision is None else f" on revision {answer.from_revision}"
+    found = (
+        "code found no countertop row to read on it"
+        if found_by_code
+        else "both AIs found no countertop line on it"
+    )
     return (
         f"{answer.answered_by} said on {when}{carried} that this page has a countertop, although "
-        "both AIs found no countertop line on it, so nothing on it was read or checked. The reviewer "
-        "sets up this page's countertop line on the Measurements screen, or decides this page."
+        f"{found}, so nothing on it was read or checked. The reviewer sets up this page's countertop "
+        "line on the Measurements screen, or decides this page."
     )
 
 
@@ -126,15 +136,16 @@ class PagesBlockingSignOff:
 
 
 def reading_answer(page: UnchosenRowPage) -> str:
-    """The reading's own answer on the page, as text: its `row-pick:` and `row-kind:` flags, sorted.
+    """The reading's own answer on the page, as text: its `row-pick:` and `row-kind:` flags, and
+    code's `no-row:` reason code (#1193), sorted.
 
     Two readings with the same text answered the same way (the same models, the same picks and the
-    same kinds of answer)."""
+    same kinds of answer, or code's same reason for reading no row)."""
     return "|".join(
         sorted(
             flag
             for flag in page.record.ambiguity_flags or ()
-            if flag.startswith(("row-pick:", "row-kind:"))
+            if flag.startswith(("row-pick:", "row-kind:", NO_ROW_FLAG))
         )
     )
 
@@ -207,7 +218,11 @@ def apply_answers(
     """The pages with each "There is a countertop" applied: that page is blocking, like a split."""
     return tuple(
         (
-            replace(page, kind="split", reason=reviewer_says_countertop(answer))
+            replace(
+                page,
+                kind="split",
+                reason=reviewer_says_countertop(answer, found_by_code=page.found_by_code),
+            )
             if page.listed
             and (answer := answers.get(page.record.id)) is not None
             and answer.answer == "countertop"
