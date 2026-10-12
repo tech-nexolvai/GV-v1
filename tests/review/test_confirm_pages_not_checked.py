@@ -15,7 +15,9 @@ Synthetic values only.
 from __future__ import annotations
 
 import hashlib
+import io
 from collections.abc import Iterator
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -43,7 +45,7 @@ from app.models import (
 )
 from app.models.document import Page
 from app.review.approval import approval_readiness, approve_package
-from app.review.no_countertop import pages_blocking_sign_off
+from app.review.no_countertop import pages_blocking_sign_off, reading_answer
 from extraction.blank_page import BlankPageFacts
 from reports.spreadsheet import confirmation_words
 from tests.api.test_unchosen_row_pages import (
@@ -64,6 +66,7 @@ from tests.review.test_no_countertop_answers import (
     _review_session,
     _reviewer,
 )
+from workflow.slot_row_scope import unchosen_page
 from workflow.unread_pages import BLANK_PAGE, UnreadPage, persist_unread_pages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -633,3 +636,239 @@ def test_a_confirmation_from_the_batch_carries_to_revision_two_like_a_single_ans
     assert pages.carried == ((1, f"Page 3: no countertop confirmed on revision 1 ({REVIEWER})"),)
     (listed,) = _countertop_results_for_revision(session, package_id, two).pages_without_countertop
     assert listed.confirmation is not None and listed.confirmation.from_revision == 1
+
+
+# --- review fixes (#1195 review) ------------------------------------------------------------------
+
+#: A complete, clean proof under rule 1, as the extraction stage stores it.
+PROOF_FLAGS = (
+    "no-row:blank-page",
+    "blank-proof:rule=1",
+    "blank-proof:stamps=0",
+    "blank-proof:other-annotations=0",
+    "blank-proof:images=0",
+    "blank-proof:drawn-paths=0",
+    "blank-proof:frames=1",
+    "blank-proof:white-paint=1",
+    "blank-proof:typed-texts=2",
+    "blank-proof:typed-characters=24",
+)
+
+
+def _record(*flags: str, reason: str = "synthetic reason") -> ObservationCandidate:
+    """A row-choice record, never stored: enough for the page's own rules."""
+    return ObservationCandidate(
+        ambiguity_flags=["slot-reader-row-choice", *flags], review_reason=reason, raw_text=""
+    )
+
+
+@pytest.mark.parametrize(
+    ("flags", "doubtful"),
+    [
+        (("no-row:no-row-found",), True),  # a vendor drawing code found no row on
+        (("no-row:unreadable",), True),  # a page code could not read
+        (("row-choice:0", "row-pick:opus-5-5:0", "row-pick:sonnet-5-5:0"), True),  # older
+        (("no-row:no-drawing", "no-row-ink-found"), True),  # no pasted drawing, but ink
+        (("no-row:no-vendor-drawing", "no-row-unnamed-drawing"), True),  # an unknown label
+        (("no-row:no-drawing",), False),
+        (("no-row:no-vendor-drawing",), False),  # only the architect's or a brand prototype
+        (("no-row:reference-only",), False),
+        (
+            (
+                "row-choice:0",
+                "row-pick:opus-5-5:0",
+                "row-pick:sonnet-5-5:0",
+                "row-kind:opus-5-5:no_countertop",
+                "row-kind:sonnet-5-5:no_countertop",
+            ),
+            False,
+        ),  # both AIs: no countertop on the sheet
+    ],
+    ids=[
+        "no-row-found",
+        "unreadable",
+        "older-reading",
+        "ink-found",
+        "unnamed-drawing",
+        "no-drawing",
+        "no-vendor-drawing",
+        "reference-only",
+        "ais-no-countertop",
+    ],
+)
+def test_a_page_with_a_reason_to_doubt_starts_unticked_and_still_needs_an_answer(
+    flags: tuple[str, ...], doubtful: bool
+) -> None:
+    """The tick "Confirm these N pages" starts with is `not doubtful` (the screen's rule)."""
+    page = unchosen_page(4, _record(*flags))
+
+    assert page.listed
+    assert page.doubtful is doubtful
+    assert page.needs_answer
+
+
+@pytest.mark.parametrize(
+    "doubt",
+    [("no-row-unnamed-drawing",), ("no-row-ink-found",)],
+    ids=["unnamed-drawing", "ink-found"],
+)
+def test_doubt_wins_over_a_blank_proof(doubt: tuple[str, ...]) -> None:
+    proven = unchosen_page(4, _record(*PROOF_FLAGS))
+    doubted = unchosen_page(4, _record(*PROOF_FLAGS, *doubt))
+    older = replace(proven, kind="older")
+
+    assert (proven.needs_answer, proven.doubtful) == (False, False)
+    assert (doubted.needs_answer, doubted.doubtful) == (True, True)
+    assert (older.needs_answer, older.doubtful) == (True, True)
+
+
+def test_a_closed_revision_keeps_a_proof_made_under_an_earlier_rule(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the blank-page rule changes, an open revision asks again; a signed one keeps the proof
+    it was signed with, so its words never change."""
+    from workflow import slot_row_scope
+
+    project_id, package_id, revision, three = _listed_page(session, tmp_path)
+    blank = _blank_record(session, revision.id, page_index=5)
+    session.commit()
+    _answer(session, project_id, package_id, three, "no_countertop")
+    approve_package(
+        session,
+        principal=_reviewer(project_id),
+        review_session_id=_review_session(session, revision.id),
+    )
+    session.commit()
+
+    # A newer rule (2) replaces rule 1.
+    monkeypatch.setattr(slot_row_scope, "BLANK_PAGE_RULE", 2)
+    monkeypatch.setitem(
+        slot_row_scope.BLANK_PROOF_RULES, 2, dict(slot_row_scope.BLANK_PROOF_RULES[1])
+    )
+
+    record = session.get(ObservationCandidate, blank)
+    assert record is not None
+    assert unchosen_page(5, record).needs_answer  # an open revision re-asks under rule 2
+    assert unchosen_page(5, record, closed=True).needs_answer is False
+    session.refresh(revision)
+    assert revision.state == PackageState.APPROVED.value
+    signed = _countertop_results_for_revision(session, package_id, revision)
+    (divider,) = [page for page in signed.pages_without_countertop if page.page_number == 6]
+    assert divider.needs_answer is False and divider.blank_page is not None
+    assert divider.blank_page.rule == 1
+    assert pages_blocking_sign_off(session, [revision.id])[revision.id].unconfirmed == ()
+
+
+def test_the_signed_files_say_no_answer_needed_once(session: Session, tmp_path: Path) -> None:
+    from pypdf import PdfReader
+
+    from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
+    from reports.spreadsheet import StoredFinding
+
+    _project_id, package_id, revision, _three = _listed_page(session, tmp_path)
+    _blank_record(session, revision.id, page_index=5)
+    session.commit()
+    listed = _results(session, package_id).pages_without_countertop
+    finding = StoredFinding(
+        rule_id="CT-WIDTH-001",
+        outcome="PASS",
+        severity="FLAG",
+        snapshot_id="synthetic-snapshot",
+        engine_version="0.1.0",
+        trace={},
+        reason="Synthetic.",
+    )
+
+    pdf = write_findings_pdf(
+        FindingsPdfInput(
+            package_revision_id=revision.id,
+            revision_number=1,
+            vendor="Synthetic vendor",
+            findings=(finding,),
+            pages_without_countertop=listed,
+        )
+    )
+
+    text = " ".join(
+        " ".join((sheet.extract_text() or "").split()) for sheet in PdfReader(io.BytesIO(pdf)).pages
+    )
+    assert "Title or divider page: nothing drawn." in text
+    assert text.count("No answer needed") == 1
+
+
+def test_a_bulk_confirm_waits_for_a_single_answer_in_flight_and_is_then_refused(
+    session: Session, postgres_engine: Engine, tmp_path: Path
+) -> None:
+    """The bulk action takes the same per-revision lock as a single answer: sent while a "There is
+    a countertop" on the same page is being written, it waits for it, then finds the page no longer
+    listed (409) and records nothing."""
+    import threading
+    import time
+
+    from fastapi import HTTPException, Response
+
+    from app.api.visual_countertops import (
+        NoCountertopPagesIn,
+        _answer_lock_key,
+        confirm_no_countertop_pages,
+    )
+
+    project_id, package_id, revision, records = _three_listed(session, tmp_path)
+    first = session_factory(postgres_engine)()
+    second = session_factory(postgres_engine)()
+    outcome: list[object] = []
+
+    def bulk() -> None:
+        principal = _reviewer(project_id)
+        try:
+            outcome.append(
+                confirm_no_countertop_pages(
+                    principal,
+                    principal,
+                    second,
+                    project_id,
+                    package_id,
+                    NoCountertopPagesIn.model_validate(
+                        _body((3, records[3]), (5, records[5]))  # type: ignore[arg-type]
+                    ),
+                    Response(),
+                )
+            )
+        except HTTPException as error:
+            outcome.append(error)
+        finally:
+            second.rollback()
+
+    try:
+        # A single answer in flight: it holds the lock and has written, not committed yet.
+        first.execute(select(func.pg_advisory_xact_lock(_answer_lock_key(revision.id))))
+        record = first.get(ObservationCandidate, records[3])
+        assert record is not None
+        page = first.get(Page, record.page_id)
+        assert page is not None
+        first.add(
+            NoCountertopAnswer(
+                package_revision_id=revision.id,
+                row_choice_candidate_id=record.id,
+                page_id=record.page_id,
+                page_number=3,
+                page_content_hash=page.content_hash or "",
+                reading_answer=reading_answer(unchosen_page(2, record, page.content_hash)),
+                answer="countertop",
+                answered_by="synthetic-first",
+            )
+        )
+        first.flush()
+        racer = threading.Thread(target=bulk)
+        racer.start()
+        time.sleep(0.5)
+        assert racer.is_alive(), "the bulk action must wait for the lock"
+        first.commit()
+        racer.join(timeout=30)
+    finally:
+        first.close()
+    second.close()
+
+    (result,) = outcome
+    assert isinstance(result, HTTPException) and result.status_code == 409
+    assert [(a.page_number, a.answer) for a in _answers(session)] == [(3, "countertop")]

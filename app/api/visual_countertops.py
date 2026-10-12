@@ -1112,7 +1112,7 @@ def _countertop_results_for_revision(
                 confirmation=_confirmation_out(page_answers.get(page.record.id)),
                 older_reading=page.kind == "older",
                 needs_answer=page.needs_answer,
-                blank_page=_blank_page_out(page),
+                blank_page=None if page.needs_answer else _blank_page_out(page),
                 doubtful=page.doubtful,
             )
             for page in unchosen

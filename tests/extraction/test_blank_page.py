@@ -31,15 +31,17 @@ def _pdf(
     image: bool = False,
     annotations: list[dict[str, object]] | None = None,
     blend: str | None = None,
+    graphics: dict[str, object] | None = None,
+    type3: bool = False,
+    resources_on_parent: bool = False,
 ) -> bytes:
+    """One synthetic page. `graphics`: the entries of the page's `/GS1` graphics state (`blend`
+    sets its `/BM`); `type3`: `/Helv` is a Type3 font; `resources_on_parent`: the resources sit on
+    the `/Pages` node and the page inherits them."""
     pdf = pikepdf.new()
     pdf.add_blank_page(page_size=(400, 300))
     page = pdf.pages[0]
-    font = pdf.make_indirect(
-        pikepdf.Dictionary(
-            Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1, BaseFont="/Helvetica"
-        )
-    )
+    font = _font(pdf, type3=type3)
     xobjects = pikepdf.Dictionary()
     for name, body in (forms or {}).items():
         form = pikepdf.Stream(pdf, body)
@@ -58,11 +60,18 @@ def _pdf(
         picture.BitsPerComponent = 8
         xobjects["/Im1"] = pdf.make_indirect(picture)
     resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(Helv=font), XObject=xobjects)
+    state = dict(graphics or {})
     if blend is not None:
+        state["/BM"] = pikepdf.Name(blend)
+    if state:
         resources.ExtGState = pikepdf.Dictionary(
-            GS1=pikepdf.Dictionary(Type=pikepdf.Name.ExtGState, BM=pikepdf.Name(blend))
+            GS1=pikepdf.Dictionary({"/Type": pikepdf.Name.ExtGState, **state})
         )
-    page.obj.Resources = resources
+    if resources_on_parent:
+        del page.obj["/Resources"]
+        page.obj.Parent.Resources = resources
+    else:
+        page.obj.Resources = resources
     page.obj.Contents = pdf.make_stream(content)
     if annotations:
         page.obj.Annots = pdf.make_indirect(
@@ -73,18 +82,51 @@ def _pdf(
     return out.getvalue()
 
 
+def _font(pdf: pikepdf.Pdf, *, type3: bool = False) -> pikepdf.Object:
+    if type3:
+        glyph = pdf.make_stream(b"500 0 0 0 500 700 d1 0 0 500 700 re f")
+        return pdf.make_indirect(
+            pikepdf.Dictionary(
+                Type=pikepdf.Name.Font,
+                Subtype=pikepdf.Name.Type3,
+                FontBBox=[0, 0, 500, 700],
+                FontMatrix=[0.001, 0, 0, 0.001, 0, 0],
+                CharProcs=pikepdf.Dictionary(box=glyph),
+                Encoding=pikepdf.Dictionary(Differences=[65, pikepdf.Name("/box")]),
+                FirstChar=65,
+                LastChar=65,
+                Widths=[500],
+            )
+        )
+    return pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1, BaseFont="/Helvetica"
+        )
+    )
+
+
 def _annotation(pdf: pikepdf.Pdf, spec: dict[str, object]) -> pikepdf.Dictionary:
-    appearance = pikepdf.Stream(pdf, spec.get("appearance", b"") or b"")  # type: ignore[arg-type]
-    appearance.Type = pikepdf.Name.XObject
-    appearance.Subtype = pikepdf.Name.Form
-    appearance.BBox = [0, 0, 200, 40]
-    return pikepdf.Dictionary(
+    """A synthetic annotation on a [100 200 300 240] rectangle; `spec` may set `"appearance": None`
+    (no `/AP`) and any extra dictionary entries under `"extra"`."""
+    annotation = pikepdf.Dictionary(
         Type=pikepdf.Name.Annot,
         Subtype=pikepdf.Name(str(spec["subtype"])),
         Rect=[100, 200, 300, 240],
         Contents=pikepdf.String(str(spec.get("text", ""))),
-        AP=pikepdf.Dictionary(N=appearance),
     )
+    body = spec.get("appearance", b"")
+    if body is not None:
+        appearance = pikepdf.Stream(pdf, body or b"")  # type: ignore[arg-type]
+        appearance.Type = pikepdf.Name.XObject
+        appearance.Subtype = pikepdf.Name.Form
+        appearance.BBox = [0, 0, 200, 40]
+        appearance.Resources = pikepdf.Dictionary(
+            Font=pikepdf.Dictionary(Helv=_font(pdf, type3=bool(spec.get("type3"))))
+        )
+        annotation.AP = pikepdf.Dictionary(N=appearance)
+    for key, value in dict(spec.get("extra", {}) or {}).items():  # type: ignore[call-overload]
+        annotation[key] = value
+    return annotation
 
 
 #: A typed title box as a PDF editor writes it: a white background rectangle and the text.
@@ -246,3 +288,118 @@ def test_an_xobject_that_is_missing_is_never_blank() -> None:
 
 def test_a_page_that_is_not_in_the_file_is_never_blank() -> None:
     assert not prove_blank_pages(_pdf(b""), [3])[3].blank
+
+
+# --- review fixes (#1195 review) ------------------------------------------------------------------
+
+
+def test_text_in_a_type3_font_is_drawing_so_the_page_is_not_proven_blank() -> None:
+    """A Type3 glyph is a little drawing of its own (its `CharProcs` paint paths), so text set in
+    one is not typed text."""
+    in_page = _facts(_pdf(FRAME + b"BT /Helv 24 Tf 20 20 Td (A) Tj ET\n", type3=True))
+    in_box = _facts(_pdf(FRAME, annotations=[dict(TITLE_ANNOTATION, type3=True)]))
+
+    assert not in_page.blank and in_page.unreadable is not None and "Type3" in in_page.unreadable
+    assert not in_box.blank and in_box.unreadable is not None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"BT /Nowhere 24 Tf 20 20 Td (TITLE) Tj ET\n",  # a font that is not in the resources
+        b"BT 20 20 Td (TITLE) Tj ET\n",  # no font set at all
+    ],
+    ids=["missing-font", "no-font"],
+)
+def test_text_in_a_font_that_cannot_be_found_is_not_proven_blank(content: bytes) -> None:
+    facts = _facts(_pdf(FRAME + content))
+
+    assert not facts.blank and facts.unreadable is not None
+
+
+def test_a_text_box_may_hold_two_rectangles_inside_its_own_box_and_no_more() -> None:
+    two = b"q 1 1 1 rg 0 0 200 40 re f 0 0 0 RG 1 1 198 38 re S Q"
+    three = two + b" 0 0 0 RG 50 10 20 20 re S"
+    outside = b"q 0 0 0 RG -150 -150 400 300 re S Q"  # a box well outside the text box
+
+    assert _facts(_pdf(FRAME, annotations=[dict(TITLE_ANNOTATION, appearance=two)])).blank
+    many = _facts(_pdf(FRAME, annotations=[dict(TITLE_ANNOTATION, appearance=three)]))
+    assert not many.blank and many.drawn_paths == 1
+    beyond = _facts(_pdf(FRAME, annotations=[dict(TITLE_ANNOTATION, appearance=outside)]))
+    assert not beyond.blank and beyond.drawn_paths == 1
+
+
+@pytest.mark.parametrize(
+    "graphics",
+    [
+        {"/SMask": pikepdf.Dictionary(Type=pikepdf.Name.Mask, S=pikepdf.Name.Luminosity)},
+        {"/TR": pikepdf.Name.Identity},
+        {"/TR2": pikepdf.Name.Default},
+        {"/OP": True},
+        {"/op": True},
+        {"/BM": pikepdf.Name.Multiply},
+    ],
+    ids=["soft-mask", "transfer", "transfer-2", "overprint-stroke", "overprint-fill", "multiply"],
+)
+def test_white_paint_under_a_graphics_state_that_may_mark_counts_as_drawn(
+    graphics: dict[str, object],
+) -> None:
+    facts = _facts(_pdf(FRAME + b"q /GS1 gs 1 g 120 120 160 40 re f Q\n", graphics=graphics))
+
+    assert not facts.blank and (facts.drawn_paths, facts.white_paint) == (1, 0)
+
+
+def test_white_paint_under_a_plain_graphics_state_still_leaves_no_mark() -> None:
+    plain = {"/CA": 0.9, "/ca": 1, "/SMask": pikepdf.Name("/None"), "/BM": pikepdf.Name.Normal}
+
+    facts = _facts(_pdf(FRAME + b"q /GS1 gs 1 g 120 120 160 40 re f Q\n", graphics=plain))
+
+    assert facts.blank and facts.white_paint == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "graphics"),
+    [
+        (b"q /GS9 gs 1 g 120 120 160 40 re f Q\n", {"/CA": 1}),  # not among the page's states
+        (b"q /GS1 gs 1 g 120 120 160 40 re f Q\n", None),  # the page has no graphics states
+    ],
+    ids=["missing-state", "no-states"],
+)
+def test_a_graphics_state_that_cannot_be_found_is_not_proven_blank(
+    content: bytes, graphics: dict[str, object] | None
+) -> None:
+    facts = _facts(_pdf(FRAME + content, graphics=graphics))
+
+    assert not facts.blank and facts.unreadable is not None
+
+
+def test_resources_inherited_from_the_page_tree_are_read() -> None:
+    """A page may take its resources from the `/Pages` node above it; they are read there, so a
+    picture or a missing font is still found."""
+    title = FRAME + b"BT /Helv 24 Tf 20 20 Td (TITLE) Tj ET\n"
+    assert _facts(_pdf(title, resources_on_parent=True)).blank
+    picture = _facts(
+        _pdf(FRAME + b"q 100 0 0 100 50 50 cm /Im1 Do Q\n", image=True, resources_on_parent=True)
+    )
+    assert not picture.blank and picture.images == 1
+
+
+@pytest.mark.parametrize(
+    "box",
+    [
+        {**TITLE_ANNOTATION, "appearance": None},  # a text box with no appearance
+        {**TITLE_ANNOTATION, "extra": {"/IT": pikepdf.Name("/FreeTextCallout")}},
+        {**TITLE_ANNOTATION, "extra": {"/CL": pikepdf.Array([100, 200, 50, 50])}},
+    ],
+    ids=["no-appearance", "callout-intent", "callout-line"],
+)
+def test_a_text_box_with_no_appearance_or_a_callout_is_other_markup(box: dict[str, object]) -> None:
+    facts = _facts(_pdf(FRAME, annotations=[box]))
+
+    assert not facts.blank and facts.other_annotations == 1
+
+
+def test_a_text_box_with_no_appearance_still_counts_its_characters() -> None:
+    long_note = {**TITLE_ANNOTATION, "appearance": None, "text": "N" * 300}
+
+    assert _facts(_pdf(FRAME, annotations=[long_note])).typed_characters == 300

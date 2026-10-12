@@ -452,7 +452,7 @@ export function ResultsNotesSection() {
           pagesWithoutCountertop={[
             {
               page_number: 1,
-              reason: 'Title or divider page: nothing drawn. Code checked the PDF: no pasted drawing, no picture and no lines beyond the page frame and its typed title, so there is no countertop to check. No answer needed.',
+              reason: 'Title or divider page: nothing drawn. Code checked the PDF: no pasted drawing, no picture and no lines beyond the page frame and its typed title, so there is no countertop to check.',
               record_id: 'sample-1',
               confirmation: null,
               needs_answer: false,

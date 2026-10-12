@@ -58,6 +58,7 @@ from sqlalchemy import ColumnElement, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.lifecycle.carry_forward import known_content
+from app.lifecycle.closed import CLOSED_STATES
 from app.models import (
     Document,
     DocumentVersion,
@@ -385,23 +386,31 @@ def pages_blocking_sign_off(
         )
     if not by_revision:
         return result
-    revisions = {
-        revision_id: (package_id, number, product)
-        for revision_id, package_id, number, product in session.execute(
-            select(
-                PackageRevision.id,
-                PackageRevision.package_id,
-                PackageRevision.revision_number,
-                Package.product_type,
-            )
-            .join(Package, Package.id == PackageRevision.package_id)
-            .where(PackageRevision.id.in_(by_revision))
+    revisions: dict[UUID, tuple[UUID, int, str | None]] = {}
+    closed: set[UUID] = set()
+    for revision_id, package_id, number, product, state in session.execute(
+        select(
+            PackageRevision.id,
+            PackageRevision.package_id,
+            PackageRevision.revision_number,
+            Package.product_type,
+            PackageRevision.state,
         )
-    }
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(PackageRevision.id.in_(by_revision))
+    ):
+        revisions[revision_id] = (package_id, number, product)
+        if state in CLOSED_STATES:
+            # A closed revision keeps a blank-page proof under the rule it was made with.
+            closed.add(revision_id)
     pages_of: dict[UUID, tuple[UnchosenRowPage, ...]] = {}
     for revision_id, pages in by_revision.items():
         owned = reviewer_owned_pages(session, revision_id)
-        pages_of[revision_id] = tuple(page for page in pages if page.page_number - 1 not in owned)
+        pages_of[revision_id] = tuple(
+            replace(page, closed=revision_id in closed)
+            for page in pages
+            if page.page_number - 1 not in owned
+        )
     answers = _answers(
         session,
         {

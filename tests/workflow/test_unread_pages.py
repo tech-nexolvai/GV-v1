@@ -446,14 +446,19 @@ def test_pages_with_no_vendor_drawing_are_recorded_with_their_reason_not_dropped
     [
         (b"q 0 0 0 RG 6 6 388 288 re S Q", True),  # the page frame only
         (b"q 0 0 0 RG 6 6 388 288 re S Q q 0 0 0 RG 2 w 100 150 m 300 150 l S Q", False),  # a line
+        # A scanned sheet: one picture covering the page, no pasted drawing.
+        (b"q 300 0 0 200 50 50 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \x00 EI Q", False),
     ],
-    ids=["frame-only", "frame-and-a-line"],
+    ids=["frame-only", "frame-and-a-line", "scanned"],
 )
 def test_a_divider_with_anything_drawn_beyond_its_frame_still_needs_an_answer(
     session: Session, store: LocalStore, content: bytes, blank: bool
 ) -> None:
-    """#1195: a divider page is proven blank only when nothing is drawn beyond the page frame; a
-    single drawn line keeps it a `no-drawing` page that needs the reviewer's answer."""
+    """#1195: a divider page is proven blank only when nothing is drawn beyond the page frame. A
+    page with no pasted drawing that is not proven blank (a line, a scanned picture) says something
+    is drawn on it that code could not read, and starts unticked (#1195 review)."""
+    from workflow.unread_pages import INK_FOUND_REASON
+
     data = _combined_file(
         [None, ["ID SET ELEVATION", "VENDOR'S SHOP DRAWING"]], divider_content=content
     )
@@ -470,10 +475,14 @@ def test_a_divider_with_anything_drawn_beyond_its_frame_still_needs_an_answer(
     )
     assert divider.listed and divider.needs_answer is not blank
     assert (divider.blank_proof is not None) is blank
+    assert divider.doubtful is not blank
+    flags = set(divider.record.ambiguity_flags)
     if blank:
         assert divider.blank_proof is not None and divider.blank_proof["frames"] == 1
+        assert "no-row-ink-found" not in flags
     else:
-        assert divider.reason.startswith("No drawing is pasted on this page")
+        assert divider.reason == INK_FOUND_REASON
+        assert {"no-row:no-drawing", "no-row-ink-found"} <= flags
 
 
 def _stages(readers: FakeReaders) -> DatabaseStages:

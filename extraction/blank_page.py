@@ -14,20 +14,26 @@ the reviewer:
 2. **No picture.** No image anywhere: no image XObject, no inline image, in the page's content, in a
    form it draws, or in a text box's appearance.
 3. **No other markup.** No annotation except typed text boxes (`/FreeText`) and their pop-ups
-   (`/Popup`, which draw nothing). A line, a cloud, a pen stroke or a shape annotation is ink.
+   (`/Popup`, which draw nothing). A line, a cloud, a pen stroke or a shape annotation is ink; so is
+   a text box with a callout line (`/CL`, `/IT /FreeTextCallout`) or with no appearance of its own
+   (a viewer draws it however it likes).
 4. **No drawn ink beyond the page frame and the typed title.** In the page's content (and every form
    it draws), each painted path is one of:
    - **the page frame:** one closed, stroked, axis-aligned rectangle (no fill, no curves) that runs
      along the page edges, covering at least 90% of the page's width and height;
    - **white paint:** a path filled, stroked or both only in pure white (gray 1, RGB 1 1 1 or CMYK
-     0 0 0 0), with no unusual blend mode: on white paper it leaves no mark. Flattened text boxes
-     carry one as their background or border.
+     0 0 0 0) under a plain graphics state: on white paper it leaves no mark. Flattened text boxes
+     carry one as their background or border. A blend mode other than Normal, a soft mask, a
+     transfer function or overprint makes white count as drawn; a graphics state that cannot be
+     found makes the page unreadable.
    Anything else painted — a line, even one underlining the title, a stroke that is not the frame,
    a coloured fill, a curve, a shading, a pattern — is drawn ink. A clip (`W n`) paints nothing.
-   Inside a typed text box's appearance, only rectangles (its background and border) and its text
-   are allowed.
+   Inside a typed text box's appearance, only its text and at most two rectangles (its background
+   and border) lying within the box's `/Rect` are allowed.
 5. **Only a title's worth of typed text.** Text drawn with a font (in a `/FreeText` box, or in the
-   page's content, as flattened text boxes do) is typed text, not drawing. At most
+   page's content, as flattened text boxes do) is typed text, not drawing, but only in a font that
+   can be found and is not a Type3 font (a Type3 glyph is a drawing): otherwise the page is not
+   proven blank. At most
    `MAX_TITLE_CHARACTERS` characters in all: a title or a section label, not a page of notes.
    Text converted to outlines is paths, so it is ink (rule 4) and the page needs a click.
 
@@ -37,9 +43,10 @@ nothing: it carries no tick, no number and no extension line, and a countertop r
 lines and their numbers. Requiring the rectangle to run along the page edges (at least 90% of the
 page's width and height) keeps a drawn box anywhere else on the page from passing as a frame.
 
-**Fail-safe.** Any part of the page that cannot be read (a malformed stream, an unknown colour space,
-an unknown XObject, forms nested deeper than `_MAX_FORM_DEPTH`) means "not proven": the page keeps
-needing a reviewer's answer. Dictionary values and content-stream operators only: no rendering, no
+**Fail-safe.** Any part of the page that cannot be read (a malformed stream, an unknown XObject, a
+missing graphics state or font, forms nested deeper than `_MAX_FORM_DEPTH`) means "not proven": the
+page keeps needing a reviewer's answer. Resources and the page box are looked up through the page
+tree, as a viewer inherits them. Dictionary values and content-stream operators only: no rendering, no
 model, $0.
 
 Source: issue #1195. Verification: `tests/extraction/test_blank_page.py`.
@@ -85,6 +92,10 @@ _COLOUR_OPERATORS: Final = frozenset(
 )
 #: Annotations that draw nothing but typed text (and a pop-up's note, which is never drawn).
 _TEXT_ANNOTATIONS: Final = frozenset({"/FreeText", "/Popup"})
+#: A typed text box's own rectangles: its background and its border.
+_TEXT_BOX_RECTANGLES: Final = 2
+#: How far up the page tree an inherited attribute is looked for.
+_MAX_TREE_DEPTH: Final = 32
 
 type Matrix = tuple[float, float, float, float, float, float]
 _IDENTITY: Final[Matrix] = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -145,7 +156,11 @@ class _State:
     fill_space: str = "/DeviceGray"
     stroke_white: bool = False
     stroke_space: str = "/DeviceGray"
-    unusual_blend: bool = False
+    white_may_mark: bool = False
+    """A graphics state was set under which white paint may still leave a mark (a blend mode, a
+    soft mask, a transfer function, overprint): white then counts as drawn."""
+    font: str | None = None
+    """The font set by `Tf`, by its resource name."""
 
     def copy(self, ctm: Matrix | None = None) -> _State:
         return _State(
@@ -154,7 +169,8 @@ class _State:
             self.fill_space,
             self.stroke_white,
             self.stroke_space,
-            self.unusual_blend,
+            self.white_may_mark,
+            self.font,
         )
 
     def set_colour(self, operator: str, operands: Sequence[object]) -> None:
@@ -278,10 +294,64 @@ def _string_length(operand: object) -> int:
     return 0
 
 
+def _within(
+    inner: tuple[float, float, float, float], outer: tuple[float, float, float, float]
+) -> bool:
+    return (
+        inner[0] >= outer[0] - _CORNER_SLACK
+        and inner[1] >= outer[1] - _CORNER_SLACK
+        and inner[2] <= outer[2] + _CORNER_SLACK
+        and inner[3] <= outer[3] + _CORNER_SLACK
+    )
+
+
+def _white_may_mark(resources: pikepdf.Dictionary | None, operands: Sequence[object]) -> bool:
+    """Whether the named graphics state lets white paint leave a mark: a blend mode other than
+    Normal, a soft mask, a transfer function or overprint. A state that cannot be found is not
+    read at all: the page is not proven blank."""
+    states = None if resources is None else resources.get("/ExtGState")
+    if not operands or not isinstance(states, pikepdf.Dictionary):
+        raise _NotReadable("a graphics state used with no graphics states to find it in")
+    graphics = states.get(str(operands[0]))
+    if not isinstance(graphics, pikepdf.Dictionary):
+        raise _NotReadable(f"a graphics state that is not there: {operands[0]}")
+    if "/TR" in graphics or "/TR2" in graphics:
+        return True
+    mask = graphics.get("/SMask")
+    if mask is not None and str(mask) != "/None":
+        return True
+    if any(bool(graphics.get(key)) for key in ("/OP", "/op")):
+        return True
+    blend = graphics.get("/BM")
+    if blend is None:
+        return False
+    if isinstance(blend, pikepdf.Array):
+        return any(str(mode) not in _NORMAL_BLENDS for mode in blend)
+    return str(blend) not in _NORMAL_BLENDS
+
+
+def _check_typed_font(resources: pikepdf.Dictionary | None, font: str | None) -> None:
+    """Text counts as typed only in a font that can be found and is not a Type3 font, whose
+    glyphs are drawings of their own; anything else and the page is not proven blank."""
+    fonts = None if resources is None else resources.get("/Font")
+    found = fonts.get(font) if isinstance(fonts, pikepdf.Dictionary) and font is not None else None
+    if not isinstance(found, pikepdf.Dictionary):
+        raise _NotReadable(f"text in a font that cannot be found: {font}")
+    if str(found.get("/Subtype")) == "/Type3":
+        raise _NotReadable("text in a Type3 font: its glyphs are drawings")
+
+
 class _Walker:
     """Counts what one content stream (and the forms it draws) paints."""
 
-    def __init__(self, page_box: tuple[float, float, float, float] | None, *, text_box: bool):
+    def __init__(
+        self,
+        page_box: tuple[float, float, float, float] | None,
+        *,
+        text_box: tuple[float, float, float, float] | None = None,
+    ):
+        """`text_box`: walking a typed text box's appearance, whose own rectangles (background
+        and border) must lie within this box, the annotation's `/Rect`, in page space."""
         self.page_box = page_box
         self.text_box = text_box
         self.counts = _Counts()
@@ -313,9 +383,9 @@ class _Walker:
             elif operator == "cm":
                 state.ctm = _multiply(tuple(_numbers(operands, 6)), state.ctm)  # type: ignore[arg-type]
             elif operator == "gs":
-                state.unusual_blend = state.unusual_blend or self._unusual_blend(
-                    resources, operands
-                )
+                state.white_may_mark = state.white_may_mark or _white_may_mark(resources, operands)
+            elif operator == "Tf":
+                state.font = str(operands[0]) if operands else None
             elif operator in _COLOUR_OPERATORS:
                 state.set_colour(operator, operands)
             elif operator == "m":
@@ -345,37 +415,26 @@ class _Walker:
             elif operator == "sh":
                 self.counts.drawn_paths += 1
             elif operator in _TEXT_SHOWS:
+                _check_typed_font(resources, state.font)
                 self.counts.typed_texts += 1
                 self.counts.typed_characters += sum(_string_length(o) for o in operands)
             elif operator == "Do":
                 self._draw(operands, resources, state, depth)
 
-    def _unusual_blend(
-        self, resources: pikepdf.Dictionary | None, operands: Sequence[object]
-    ) -> bool:
-        states = None if resources is None else resources.get("/ExtGState")
-        if not operands or not isinstance(states, pikepdf.Dictionary):
-            return False
-        graphics = states.get(str(operands[0]))
-        if not isinstance(graphics, pikepdf.Dictionary):
-            return False
-        blend = graphics.get("/BM")
-        if blend is None:
-            return False
-        if isinstance(blend, pikepdf.Array):
-            return any(str(mode) not in _NORMAL_BLENDS for mode in blend)
-        return str(blend) not in _NORMAL_BLENDS
-
     def _paint(self, operator: str, path: _Path, state: _State) -> None:
         rectangle = _rectangle(path)
-        if self.text_box:
-            # A text box's own background and border: rectangles only.
-            if rectangle is None:
+        if self.text_box is not None:
+            # A text box's own background and border: at most two rectangles, inside its box.
+            if (
+                rectangle is None
+                or self.counts.rectangles >= _TEXT_BOX_RECTANGLES
+                or not _within(rectangle, self.text_box)
+            ):
                 self.counts.drawn_paths += 1
             else:
                 self.counts.rectangles += 1
             return
-        if not state.unusual_blend and (
+        if not state.white_may_mark and (
             (operator in _FILLS and state.fill_white)
             or (operator in _STROKES and state.stroke_white)
             or (operator in _FILL_AND_STROKE and state.fill_white and state.stroke_white)
@@ -439,14 +498,61 @@ class _Walker:
         )
 
 
-def _page_box(page: pikepdf.Page) -> tuple[float, float, float, float] | None:
+def _inherited(page: pikepdf.Page, key: str) -> object | None:
+    """A page attribute, from the page or the nearest `/Pages` node above it (PDF 7.7.3.4)."""
+    node: object = page.obj
+    for _ in range(_MAX_TREE_DEPTH):
+        if not isinstance(node, pikepdf.Dictionary):
+            return None
+        if key in node:
+            return node.get(key)
+        node = node.get("/Parent")
+    return None
+
+
+def _bounds(values: object) -> tuple[float, float, float, float] | None:
     try:
-        box = [float(value) for value in page.mediabox]
+        box = [float(value) for value in values]  # type: ignore[attr-defined]
     except (TypeError, ValueError, pikepdf.PdfError):
         return None
     if len(box) != 4:
         return None
     return min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])
+
+
+def _page_box(page: pikepdf.Page) -> tuple[float, float, float, float] | None:
+    return _bounds(_inherited(page, "/MediaBox"))
+
+
+def _appearance_matrix(stream: pikepdf.Stream, rect: tuple[float, float, float, float]) -> Matrix:
+    """The matrix that places an annotation's appearance on the page (PDF 12.5.5): its `/Matrix`,
+    then the transformed `/BBox` scaled and moved onto the annotation's `/Rect`."""
+    bbox = _bounds(stream.get("/BBox"))
+    if bbox is None:
+        raise _NotReadable("an appearance with no bounding box")
+    raw = stream.get("/Matrix")
+    matrix: Matrix = _IDENTITY if raw is None else tuple(_numbers(raw, 6))  # type: ignore[assignment]
+    corners = [_apply(matrix, x, y) for x in (bbox[0], bbox[2]) for y in (bbox[1], bbox[3])]
+    left, right = min(x for x, _ in corners), max(x for x, _ in corners)
+    bottom, top = min(y for _, y in corners), max(y for _, y in corners)
+    if right - left <= 0 or top - bottom <= 0:
+        raise _NotReadable("an appearance with an empty bounding box")
+    scale_x = (rect[2] - rect[0]) / (right - left)
+    scale_y = (rect[3] - rect[1]) / (top - bottom)
+    onto_rect: Matrix = (
+        scale_x,
+        0.0,
+        0.0,
+        scale_y,
+        rect[0] - left * scale_x,
+        rect[1] - bottom * scale_y,
+    )
+    return _multiply(matrix, onto_rect)
+
+
+def _contents_length(annotation: pikepdf.Dictionary) -> int:
+    contents = annotation.get("/Contents")
+    return len(bytes(contents)) if isinstance(contents, pikepdf.String) else 0
 
 
 def _appearances(annotation: pikepdf.Dictionary) -> list[pikepdf.Stream]:
@@ -465,8 +571,9 @@ def _appearances(annotation: pikepdf.Dictionary) -> list[pikepdf.Stream]:
 def _facts(page: pikepdf.Page) -> BlankPageFacts:
     box = _page_box(page)
     stamps = other = 0
-    content = _Walker(box, text_box=False)
-    boxes = _Walker(box, text_box=True)
+    untyped_characters = 0
+    content = _Walker(box)
+    boxes: list[_Walker] = []
     try:
         annotations = page.obj.get("/Annots")
         for annotation in annotations if isinstance(annotations, pikepdf.Array) else ():
@@ -478,30 +585,47 @@ def _facts(page: pikepdf.Page) -> BlankPageFacts:
             elif subtype not in _TEXT_ANNOTATIONS:
                 other += 1
             elif subtype == "/FreeText":
-                for stream in _appearances(annotation):
+                appearances = _appearances(annotation)
+                callout = "/CL" in annotation or str(annotation.get("/IT")) == "/FreeTextCallout"
+                if callout or not appearances:
+                    # A callout points at something; a box with no appearance draws whatever a
+                    # viewer makes of it. Neither is a plain typed title.
+                    other += 1
+                    untyped_characters += _contents_length(annotation)
+                    continue
+                rect = _bounds(annotation.get("/Rect"))
+                if rect is None:
+                    raise _NotReadable("a text box with no rectangle")
+                for stream in appearances:
+                    walker = _Walker(box, text_box=rect)
                     resources = stream.get("/Resources")
-                    boxes.walk(
+                    walker.walk(
                         stream,
                         resources if isinstance(resources, pikepdf.Dictionary) else None,
-                        _IDENTITY,
+                        _appearance_matrix(stream, rect),
                     )
-        resources = page.obj.get("/Resources")
+                    boxes.append(walker)
+        page_resources = _inherited(page, "/Resources")
         content.walk(
-            page.obj, resources if isinstance(resources, pikepdf.Dictionary) else None, _IDENTITY
+            page.obj,
+            page_resources if isinstance(page_resources, pikepdf.Dictionary) else None,
+            _IDENTITY,
         )
     except _NotReadable as error:
         return BlankPageFacts(stamps=stamps, other_annotations=other, unreadable=str(error))
     except (pikepdf.PdfError, TypeError, ValueError, KeyError) as error:
         return BlankPageFacts(stamps=stamps, other_annotations=other, unreadable=str(error))
+    walkers = [content, *boxes]
     return BlankPageFacts(
         stamps=stamps,
         other_annotations=other,
-        images=content.counts.images + boxes.counts.images,
-        drawn_paths=content.counts.drawn_paths + boxes.counts.drawn_paths,
+        images=sum(walker.counts.images for walker in walkers),
+        drawn_paths=sum(walker.counts.drawn_paths for walker in walkers),
         frames=content.counts.frames,
         white_paint=content.counts.white_paint,
-        typed_texts=content.counts.typed_texts + boxes.counts.typed_texts,
-        typed_characters=content.counts.typed_characters + boxes.counts.typed_characters,
+        typed_texts=sum(walker.counts.typed_texts for walker in walkers),
+        typed_characters=untyped_characters
+        + sum(walker.counts.typed_characters for walker in walkers),
     )
 
 

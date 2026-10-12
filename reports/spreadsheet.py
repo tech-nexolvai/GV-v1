@@ -114,7 +114,7 @@ def confirmation_words(page: PageWithoutCountertopOut) -> str | None:
     signed before confirmations were asked)."""
     confirmed = page.confirmation
     if confirmed is None:
-        if page.blank_page is not None:
+        if page.blank_page is not None and not page.needs_answer:
             return f"No answer needed: page {page.page_number} has nothing drawn (checked by code)"
         return None
     carried = (
