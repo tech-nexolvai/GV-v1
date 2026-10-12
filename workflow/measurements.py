@@ -35,7 +35,7 @@ from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
 from workflow.classifications import classification_operands
 
-__all__ = ["SOURCE", "operands_for", "run_parameters_for"]
+__all__ = ["SOURCE", "operands_for", "run_layer", "run_parameters_for"]
 
 #: The operand source recorded against a reviewer's reading.
 #:
@@ -189,6 +189,17 @@ def run_parameters_for(session: Session, package_revision_id: UUID) -> Parameter
     stored, parameters = _latest_run_set(session, package_revision_id)
     if stored is None or parameters is None:
         return None
+    return run_layer(parameters)
+
+
+def run_layer(parameters: ParameterSet) -> ParameterSet | None:
+    """One stored RUN set as the layer a check run resolves and cites: its measurement keys
+    (`rule:input#n`) left out, `None` when nothing else is in it.
+
+    Shared with `app/review/carry_over.py` (#1177), which must find the values behind the set id a
+    finding cites: that id is this layer's own hash, which no stored row holds when the set also
+    keeps measurements.
+    """
     plain = {name: value for name, value in parameters.parameters.items() if ":" not in name}
     if not plain:
         return None
