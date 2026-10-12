@@ -18,6 +18,7 @@ import type { Finding } from '@/data/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 import { SinkEntryDialog } from '@/components/measure/SinkEntry';
 import {
   overridable,
@@ -54,7 +55,16 @@ export function NeedsValues({
   const [error, setError] = useState<string | null>(null);
   const [savedHere, setSavedHere] = useState(false);
   const [sinkOpen, setSinkOpen] = useState(false);
+  const signedOff = useSignedOff();
   if (inputs.length === 0) return null;
+  // A closed review takes no new values (#1182): say so instead of offering boxes that would be refused.
+  if (signedOff) {
+    return (
+      <p className="text-sm text-muted-foreground" role="note" data-part="signed-off">
+        {SIGNED_OFF_NOTE}
+      </p>
+    );
+  }
 
   const toType = typeable(inputs);
   const sink = sinkNeeded(inputs);

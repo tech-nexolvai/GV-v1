@@ -12,6 +12,7 @@ import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { CountertopRunsList } from './CountertopRunsList.js';
 import { LoadError } from './wizard-ui.js';
+import { refuseClosed, useSignedOff } from '@/lib/signed-off';
 
 /**
  * Loads each confirmed countertop's suggested run and saves a person's decision on one countertop
@@ -26,6 +27,8 @@ export function CountertopRuns({ packageId, refresh, onProgress, onState }: { pa
   const [runs, setRuns] = useState<RunsList | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
+  // Nothing is sent on a closed review (#1182); the person is told why instead.
+  const signedOff = useSignedOff();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
@@ -51,7 +54,7 @@ export function CountertopRuns({ packageId, refresh, onProgress, onState }: { pa
   }, [packageId, refresh, decided, loadAttempt]);
 
   async function save(countertop: RunCountertop, decide: () => Promise<unknown>) {
-    await saveDecision(countertop.countertop_item_id, decide, (item, state) => {
+    await saveDecision(countertop.countertop_item_id, signedOff ? refuseClosed : decide, (item, state) => {
       setFeedback((current) => ({ ...current, [item]: state }));
     }, () => setDecided((count) => count + 1));
   }

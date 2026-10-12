@@ -130,6 +130,26 @@ def _authorise(principal: Principal) -> None:
         raise ApprovalNotAuthorised("a package decision must name the person making it")
 
 
+def _lock_revision(db: Session, review_session_id: UUID) -> None:
+    """Lock the session's revision for update, first, before anything is read (#1182).
+
+    Every write that changes a revision's inputs or decisions holds a shared lock on the revision
+    (`app/api/signed_off.py`). Taking the update lock here, before readiness is read, means such a
+    write either finished before this point (and readiness sees it: an input newer than the last run
+    blocks sign-off) or starts after the sign-off and is refused. Locking the revision before the
+    review session also keeps one lock order everywhere (revision, then session), so a sign-off and a
+    decision recorded at the same moment queue up instead of deadlocking.
+    """
+    revision_id = db.scalar(
+        select(ReviewSession.package_revision_id).where(ReviewSession.id == review_session_id)
+    )
+    if revision_id is None:
+        raise NoSuchReviewSession(f"no review session {review_session_id}")
+    db.execute(
+        select(PackageRevision.id).where(PackageRevision.id == revision_id).with_for_update()
+    )
+
+
 def _review(db: Session, review_session_id: UUID) -> ReviewSession:
     review = db.scalar(
         select(ReviewSession)
@@ -431,6 +451,7 @@ def approve_package(
 ) -> ApprovalDecision:
     """Approve the server-selected finding set after every blocking result was addressed."""
     _authorise(principal)
+    _lock_revision(db, review_session_id)
     review = _review(db, review_session_id)
     findings = _findings(db, review.package_revision_id)
     if not findings:
@@ -483,6 +504,7 @@ def request_changes(
 ) -> ChangeRequestDecision:
     """Request changes for a non-empty, server-validated set of findings."""
     _authorise(principal)
+    _lock_revision(db, review_session_id)
     review = _review(db, review_session_id)
     requested = tuple(sorted(set(finding_ids), key=str))
     if not requested:

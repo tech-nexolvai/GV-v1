@@ -210,7 +210,7 @@ def _package_query(project_id: UUID) -> Select[Any]:
 )
 def create_package(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     body: PackageCreate,

@@ -62,6 +62,7 @@ from sqlalchemy.orm import Session
 
 from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.signed_off import open_revision, open_revision_unlocked
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision, PackageState
 from app.models.document import (
@@ -86,6 +87,7 @@ from app.models.parameters import from_rows, to_rows
 from app.models.runs import ExtractionRun
 from app.review.setting_sizes import refused_size
 from app.review.settings_in_force import settings_in_force
+from app.review.sizes import NOT_ABOVE_ZERO, is_positive_size, typed_negative
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
@@ -94,6 +96,7 @@ from app.schemas.measurements import (
     DiscriminatorOut,
     InForceOut,
     LayoutProposalOut,
+    MeasurementEntry,
     PageProposalIn,
     ParameterEntry,
     ParameterOut,
@@ -1053,6 +1056,7 @@ def setting_passage_crop(
     response_model=ReviewerEntryOut,
     status_code=status.HTTP_201_CREATED,
     summary="Enter reviewer-supplied parameters and measurements",
+    dependencies=[Depends(open_revision)],
 )
 def enter_measurements(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -1119,12 +1123,13 @@ def enter_measurements(
     # order given — that order is the layout left to right, and `CAB-ARCH-VS-SHOP-001` compares two
     # runs position by position, so reordering here would compare the wrong pair of cabinets.
     measurement_keys: set[str] = set()
+    sized = _positive_size_inputs(session) if body.measurements else frozenset()
     for measurement in body.measurements:
         label = f"{measurement.rule_id}.{measurement.name}"
         if measurement.values is not None:
             for index, raw in enumerate(measurement.values):
                 key = f"{measurement.rule_id}:{measurement.name}{LIST_MARKER}{index}"
-                run_values[key] = _parse(raw, field=f"{label}[{index}]")
+                run_values[key] = _parse_size(raw, f"{label}[{index}]", sized, measurement)
                 run_typed[key] = raw
                 measurement_keys.add(key)
         else:
@@ -1134,7 +1139,7 @@ def enter_measurements(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"{label}: neither a value nor values was given.",
                 )
-            run_values[key] = _parse(measurement.value, field=label)
+            run_values[key] = _parse_size(measurement.value, label, sized, measurement)
             run_typed[key] = measurement.value
             measurement_keys.add(key)
 
@@ -1235,6 +1240,38 @@ def enter_measurements(
     )
 
 
+def _positive_size_inputs(session: Session) -> frozenset[tuple[str, str]]:
+    """`(rule id, input name)` for every published input whose value is the size of a real thing."""
+    return frozenset(
+        (rule.id, name)
+        for rule in _published_rules(session)
+        for name, selector in rule.inputs.items()
+        if is_positive_size(selector.semantic_type.value)
+    )
+
+
+def _parse_size(
+    typed: str,
+    label: str,
+    sized: frozenset[tuple[str, str]],
+    measurement: MeasurementEntry,
+) -> Measurement:
+    """`_parse`, and a 422 when a width or length is zero or less (#1182): such a value is a mistake
+    that could make a row pass by accident. A minus sign is caught before parsing, which would
+    otherwise answer with a message about units."""
+    is_size = (measurement.rule_id, measurement.name) in sized
+    if is_size and typed_negative(typed):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"{label}: {NOT_ABOVE_ZERO}"
+        )
+    value = _parse(typed, field=label)
+    if is_size and value.exact <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"{label}: {NOT_ABOVE_ZERO}"
+        )
+    return value
+
+
 def _declared_discriminators(session: Session) -> dict[str, tuple[str, ...]]:
     """Each discriminator the published rulebook declares, with the values it offers."""
     store = snapshot_store(session)
@@ -1317,6 +1354,7 @@ def _refuse_while_checks_run(session: Session, revision: PackageRevision) -> Non
     "/projects/{project_id}/packages/{package_id}/checks",
     status_code=status.HTTP_202_ACCEPTED,
     summary="Ask for the checks to be run against this package",
+    dependencies=[Depends(open_revision)],
 )
 def request_checks(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -1452,6 +1490,7 @@ def _phase_event(name: str, detail: str, *, attempt: int = 1) -> AssignmentEvent
             "model": AssignmentEvent,
         }
     },
+    dependencies=[Depends(open_revision_unlocked)],
 )
 def propose_measurements(
     request: Request,

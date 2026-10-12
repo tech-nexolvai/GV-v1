@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
+from app.api.signed_off import open_revision
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.evidence.sides import ReadingSides
@@ -117,6 +118,7 @@ def list_views(
     response_model=ViewOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say which drawing this is: the architect's or the vendor's",
+    dependencies=[Depends(open_revision)],
 )
 def confirm_role(
     principal: Annotated[Principal, Depends(require_project_access)],

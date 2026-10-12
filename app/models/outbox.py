@@ -68,6 +68,20 @@ class OutboxEntry(Base, TimestampedUUID):
     dispatched_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
     attempts: Mapped[int] = mapped_column(default=0)
 
+    abandoned_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
+    """When the dispatcher stopped trying a row that can never start (#1182), or `NULL`.
+
+    Set only by `workflow.outbox.dispatch_committed`, after a row was refused for a reason no retry
+    can change (see `_permanent` there) as many times as the cap allows. An abandoned row is
+    no longer polled; it is never also dispatched."""
+
+    refused_attempts: Mapped[int] = mapped_column(default=0, server_default="0")
+    """How many attempts were refused for a reason no retry can change (#1182). Separate from
+    `attempts`, so failures of another kind (an engine outage) never count towards giving up."""
+
+    abandoned_reason: Mapped[str | None] = mapped_column(String(1000), default=None)
+    """Why the dispatcher gave up, in the refusal's own words. Set together with `abandoned_at`."""
+
     __table_args__ = (
         CheckConstraint("workflow <> ''", name="outbox_entry_workflow"),
         CheckConstraint("attempts >= 0", name="outbox_entry_attempts"),
@@ -77,6 +91,16 @@ class OutboxEntry(Base, TimestampedUUID):
         CheckConstraint(
             "dispatched_at IS NULL OR attempts > 0", name="outbox_entry_dispatched_needs_attempt"
         ),
+        CheckConstraint(
+            "(abandoned_at IS NULL) = (abandoned_reason IS NULL) "
+            "AND (abandoned_reason IS NULL OR abandoned_reason <> '')",
+            name="outbox_entry_abandoned_with_reason",
+        ),
+        CheckConstraint(
+            "abandoned_at IS NULL OR dispatched_at IS NULL",
+            name="outbox_entry_dispatched_or_abandoned",
+        ),
+        CheckConstraint("refused_attempts >= 0", name="outbox_entry_refused_attempts"),
         # The dispatcher's poll and the stuck-row query are the same shape: undispatched rows,
         # oldest first. One index serves both.
         Index("ix_outbox_entries_dispatched_at_created_at", "dispatched_at", "created_at"),

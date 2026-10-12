@@ -59,6 +59,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.signed_off import ensure_revision_writable
 from app.auth import Action, Principal, require_action, require_project_access
 from app.db.base import utc_now
 from app.db.session import is_unique_violation
@@ -297,7 +298,7 @@ def _ticket(store: ArtifactStore, document_id: UUID, sha256: str) -> PresignedUp
 )
 def register_document(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
@@ -319,6 +320,8 @@ def register_document(
     # drawing begins assembly; extraction is deliberately not queued here because its counterpart is
     # still allowed to arrive.
     revision = _package_revision(session, project_id, package_id, lock=True)
+    # A signed-off review takes no new drawing: a new revision does (#1182).
+    ensure_revision_writable(session, revision.id, lock=False)
     if revision.state == PackageState.CREATED:
         transition(
             session,
@@ -357,7 +360,7 @@ def register_document(
 )
 def request_upload(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
@@ -387,7 +390,7 @@ def request_upload(
 )
 def confirm_upload(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     response: Response,
@@ -424,12 +427,9 @@ def confirm_upload(
         response.status_code = status.HTTP_200_OK
         return existing
 
-    _refuse_same_bytes(
-        session,
-        _package_revision(session, project_id, document.package_id, lock=True).id,
-        body.sha256,
-        other_than=document.id,
-    )
+    locked = _package_revision(session, project_id, document.package_id, lock=True)
+    ensure_revision_writable(session, locked.id, lock=False)
+    _refuse_same_bytes(session, locked.id, body.sha256, other_than=document.id)
 
     key = storage_key(document.id, body.sha256)
     if not store.exists(key):
@@ -550,7 +550,7 @@ def confirm_upload(
 )
 def start_extraction(
     principal: Annotated[Principal, Depends(require_project_access)],
-    _: Annotated[Principal, Depends(require_action(Action.MANAGE_PROJECT))],
+    _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
@@ -564,6 +564,7 @@ def start_extraction(
     them.
     """
     revision = _package_revision(session, project_id, package_id, lock=True)
+    ensure_revision_writable(session, revision.id, lock=False)
     if revision.state != PackageState.UPLOADING:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

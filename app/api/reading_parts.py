@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.api.drawing_views import NOT_FOUND_DETAIL, _revision
+from app.api.signed_off import open_revision
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.db.session import is_unique_violation
@@ -313,6 +314,7 @@ def list_reading_parts(
     response_model=PartLinkOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say which confirmed reading is one part's width",
+    dependencies=[Depends(open_revision)],
 )
 def confirm_reading_part_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],
@@ -347,6 +349,7 @@ def confirm_reading_part_endpoint(
     response_model=PartLinkOut,
     status_code=status.HTTP_201_CREATED,
     summary="Take back the link between one part and its reading",
+    dependencies=[Depends(open_revision)],
 )
 def withdraw_reading_part_endpoint(
     principal: Annotated[Principal, Depends(require_project_access)],

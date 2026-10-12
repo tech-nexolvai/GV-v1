@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 const JUDGED_BY: Record<string, string> = {
   code: 'Only code matched these',
@@ -46,7 +47,10 @@ export function ArchitectPairingPanel({
   const [picking, setPicking] = useState(false);
   const [draft, setDraft] = useState<DraftPair[]>([]);
   const [note, setNote] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [savingNow, setSaving] = useState(false);
+  // Nothing is saved on a closed review (#1182): every button stays off, as while saving.
+  const signedOff = useSignedOff();
+  const saving = savingNow || signedOff;
   const [problem, setProblem] = useState<{ text: string; reload: boolean } | null>(null);
 
   const data: ArchitectPairing | null = pairing.status === 'ready' ? pairing.data : null;
@@ -197,7 +201,7 @@ export function ArchitectPairingPanel({
           </>
         )}
       </div>
-      <p className="text-xs text-muted-foreground">A pairing counts once the checks run again.</p>
+      <p className="text-xs text-muted-foreground">{signedOff ? SIGNED_OFF_NOTE : 'A pairing counts once the checks run again.'}</p>
     </section>
   );
 }

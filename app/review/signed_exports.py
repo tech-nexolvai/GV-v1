@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.visual_countertops import _countertop_results_for_revision
 from app.models.package import Package, PackageRevision
 from app.models.review import (
     Approval,
@@ -31,6 +33,7 @@ from app.models.signed_exports import (
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.carry_over import decision_records
 from app.review.signed_record import ReviewDisposition, SignedReview, SignedReviewFinding
+from app.schemas.visual_ui import CountertopResultsOut
 from workflow.changed_values import ChangedValues, changed_values_for_revision
 from workflow.outbox import enqueue
 
@@ -43,6 +46,28 @@ class SignedExportRefused(ValueError):
     """The stored record cannot safely be published."""
 
 
+#: The version of the frozen countertop section written today. Raise it, and add a step to
+#: `_COUNTERTOP_UPGRADES`, only when the stored shape can no longer be read by the current
+#: `CountertopResultsOut`; `tests/review/test_frozen_countertops_golden.py` fails until you do.
+COUNTERTOP_SECTION_VERSION = 1
+
+
+class FrozenCountertops(BaseModel):
+    """The countertop results as the screen showed them at sign-off (#1182), kept as plain JSON.
+
+    **Plain JSON on purpose, not the screen's own model.** The snapshot is validated strictly every
+    time it is published, retried or downloaded. Had it embedded `CountertopResultsOut`, a later
+    change to that screen model (a new required field, a dropped word in a `Literal`) would make
+    every signed review unreadable at once. Here the snapshot only checks that the section is a JSON
+    object with a version; the object is under the snapshot's sha256 like everything else, and it is
+    turned into the screen model only when the files are drawn (`printable_countertops`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    schema_version: int
+    results: dict[str, Any]
+
+
 class ExportSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     package_revision_id: UUID
@@ -51,6 +76,48 @@ class ExportSnapshot(BaseModel):
     review: SignedReview
     facts: tuple[dict[str, object], ...]
     changed_values: ChangedValues
+    countertop_results: FrozenCountertops | None = None
+    """The countertop results exactly as the screen showed them at sign-off (#1182).
+
+    The signed PDF, workbook and redline print their countertop section from this, never from the
+    live database: before #1182 they rebuilt it at export time, so a wall choice or a pairing saved
+    after the approval (or before a retried export) reached the signed files while their findings
+    page showed the frozen findings. `None` only on a snapshot frozen before #1182; see
+    `frozen_countertop_results`."""
+
+
+def freeze_countertops(results: CountertopResultsOut) -> FrozenCountertops:
+    return FrozenCountertops(
+        schema_version=COUNTERTOP_SECTION_VERSION, results=results.model_dump(mode="json")
+    )
+
+
+#: How to bring an older frozen section up to the current version, one step each. Empty while
+#: there is only version 1.
+_COUNTERTOP_UPGRADES: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {}
+
+
+def printable_countertops(frozen: FrozenCountertops) -> CountertopResultsOut:
+    """The frozen section as the report writers take it, or a refusal naming why it cannot be read.
+
+    A refusal is recorded as a failed publication (and can be retried once the code is fixed); it
+    never touches files already published, which are served as stored.
+    """
+    if not 1 <= frozen.schema_version <= COUNTERTOP_SECTION_VERSION:
+        raise SignedExportRefused(
+            f"the frozen countertop section has version {frozen.schema_version}, which this code "
+            "does not know"
+        )
+    results = dict(frozen.results)
+    for version in range(frozen.schema_version, COUNTERTOP_SECTION_VERSION):
+        results = _COUNTERTOP_UPGRADES[version](results)
+    try:
+        return CountertopResultsOut.model_validate(results)
+    except ValidationError as exc:
+        raise SignedExportRefused(
+            "the frozen countertop section cannot be read by this version of the code; add an "
+            "upgrade step for it"
+        ) from exc
 
 
 def canonical(value: object) -> str:
@@ -213,6 +280,22 @@ def load_snapshot(db: Session, snapshot: ApprovalExportSnapshot) -> ExportSnapsh
     return payload
 
 
+def frozen_countertop_results(db: Session, payload: ExportSnapshot) -> CountertopResultsOut:
+    """The countertop results the signed outputs print: the snapshot's own, frozen at sign-off.
+
+    **A snapshot frozen before #1182 has none.** For it, and only for it, the results are rebuilt
+    from the database, as every export did before. That is safe from #1182 on because nothing about
+    a signed-off revision can change any more (`app/api/signed_off.py`); a change saved after such an
+    old approval and before #1182 would show, exactly as it did then.
+    """
+    if payload.countertop_results is not None:
+        return printable_countertops(payload.countertop_results)
+    revision = db.get(PackageRevision, payload.package_revision_id)
+    if revision is None:
+        raise SignedExportRefused("approved revision is not available")
+    return _countertop_results_for_revision(db, revision.package_id, revision)
+
+
 def publication_status(db: Session, snapshot: ApprovalExportSnapshot) -> PublicationStatus:
     """Where publication of one frozen snapshot stands, from stored rows only.
 
@@ -359,6 +442,10 @@ def _request_signed_exports(
         facts=facts,
         changed_values=changed_values_for_revision(
             db, revision.id, finding_ids=tuple(f.finding_id for f in review_record.findings)
+        ),
+        # Frozen in the approval's own transaction, from the same projection the screen read.
+        countertop_results=freeze_countertops(
+            _countertop_results_for_revision(db, package.id, revision)
         ),
     )
     encoded = canonical(payload.model_dump(mode="json"))

@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 
 type Sink = NonNullable<ProjectSink['sink']>;
 
@@ -151,6 +152,7 @@ export function SinkEntryCard({ packageId, onSaved }: { packageId?: string | nul
   const [version, setVersion] = useState(0);
   const [editing, setEditing] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const signedOff = useSignedOff();
   const current = useAsync(() => getProjectSink(projectId()), [version]);
   const inUse = useAsync(() => (packageId ? getSinkInUse(projectId(), packageId) : Promise.resolve(null)), [packageId, version]);
   const sink = current.status === 'ready' ? current.data.sink : null;
@@ -175,11 +177,16 @@ export function SinkEntryCard({ packageId, onSaved }: { packageId?: string | nul
             <p className="text-sm">No sink entered for this job yet.</p>
           )}
           {justSaved && <p role="status" className="text-sm">Saved. Run checks to update the sink results.</p>}
-          <div>
-            <Button size="sm" variant="outline" onClick={() => { setJustSaved(false); setEditing(true); }}>
-              {sink ? 'Change the sink' : 'Enter the sink'}
-            </Button>
-          </div>
+          {signedOff ? (
+            // A closed review changes nothing (#1182); the sink is changed from an open review.
+            <p className="text-sm text-muted-foreground" role="note" data-part="signed-off">{SIGNED_OFF_NOTE}</p>
+          ) : (
+            <div>
+              <Button size="sm" variant="outline" onClick={() => { setJustSaved(false); setEditing(true); }}>
+                {sink ? 'Change the sink' : 'Enter the sink'}
+              </Button>
+            </div>
+          )}
         </>
       )}
       {editing && (

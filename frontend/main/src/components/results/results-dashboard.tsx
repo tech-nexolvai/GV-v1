@@ -30,6 +30,7 @@ import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
 import { ListedPages, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
+import { useSignedOff } from '@/lib/signed-off';
 
 // The chart library is fetched only when a review has results to draw.
 const OutcomeChart = lazy(() => import('./outcome-chart'));
@@ -108,6 +109,7 @@ export function ResultsDashboard({
   onValuesSaved?: () => void;
   onRunChecks?: () => void;
 }) {
+  const signedOff = useSignedOff();
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
   const rules = useAsync(() => listRules(), []);
@@ -138,7 +140,7 @@ export function ResultsDashboard({
   // shown on its row, so neither is listed again under "Other checks".
   const countertopIds = new Set([...rows.map((r) => r.finding_id).filter(Boolean), ...architectFindingIds(rows)]);
   const others = findings.filter((f) => !countertopIds.has(f.id));
-  const blocking = blockingIds ?? new Set<string>();
+  const blocking = signedOff ? new Set<string>() : (blockingIds ?? new Set<string>());
   // Said once above the table when every countertop shares it (#1126); per row otherwise.
   const sharedReason = sharedNotComparedReason(rows);
   // Rows with no result (#1179): what they say depends on whether checks have run (findings exist).
@@ -148,18 +150,19 @@ export function ResultsDashboard({
   const actions: RowActions = {
     onShowDrawing,
     onOpenCard,
-    canDecide: (row) => row.needs_decision && row.finding_id !== null && byId.has(row.finding_id),
+    // Nothing is decided on a signed-off review (#1182): the server refuses it.
+    canDecide: (row) => !signedOff && row.needs_decision && row.finding_id !== null && byId.has(row.finding_id),
     onDecide: (row) => {
       const finding = row.finding_id ? byId.get(row.finding_id) : undefined;
       // A split page (#1093): checked, or not checkable; nothing was read, so nothing to correct.
       if (finding) setDeciding({ finding, title: row.label, allowProblem: !isSplitPage(row) });
     },
     architectFinding: (row) => (row.architect?.finding_id ? byId.get(row.architect.finding_id) : undefined),
-    onDecideArchitect: (row) => {
+    onDecideArchitect: signedOff ? undefined : (row) => {
       const finding = row.architect?.finding_id ? byId.get(row.architect.finding_id) : undefined;
       if (finding) setDeciding({ finding, title: `${row.label}: matches the architect?` });
     },
-    onPairArchitect: onOpenQueue ? (row) => onOpenQueue(architectItemKey(row.row_id)) : undefined,
+    onPairArchitect: onOpenQueue && !signedOff ? (row) => onOpenQueue(architectItemKey(row.row_id)) : undefined,
     onShowArchitectView,
   };
 

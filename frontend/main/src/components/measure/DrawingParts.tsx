@@ -18,6 +18,7 @@ import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
 import { PartPicture } from './PartPicture.js';
 import { Button } from '@/components/ui/button';
 import { Hint, LoadError } from './wizard-ui.js';
+import { refuseClosed, useSignedOff } from '@/lib/signed-off';
 
 /**
  * Loads a package's suggested parts and saves a person's decision on each, one at a time (#882).
@@ -47,6 +48,8 @@ export function DrawingParts({
   const [drawings, setDrawings] = useState<PartDrawing[] | null>(null);
   const [feedback, setFeedback] = useState<Record<string, DecisionFeedback>>({});
   const [saveDecision] = useState(createDecisionSaver);
+  // Nothing is sent on a closed review (#1182); the person is told why instead.
+  const signedOff = useSignedOff();
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [decided, setDecided] = useState(0);
@@ -92,7 +95,7 @@ export function DrawingParts({
   }, [packageId, refresh, decided, picturePoll, loadAttempt]);
 
   async function save(key: string, decide: () => Promise<unknown>) {
-    await saveDecision(key, decide, (item, state) => {
+    await saveDecision(key, signedOff ? refuseClosed : decide, (item, state) => {
       setFeedback((current) => ({ ...current, [item]: state }));
     }, () => {
       setDecided((count) => count + 1);

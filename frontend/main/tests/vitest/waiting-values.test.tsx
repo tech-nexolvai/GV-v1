@@ -10,6 +10,7 @@ import { SinkEntryCard } from '@/components/measure/SinkEntry';
 import { InForceNote } from '@/components/measure/InForceNote';
 import { drawingNeeded, saveState, savedSinceResult, typeable, type MissingInput } from '@/lib/waiting-values';
 import { enterMeasurements, getProjectSink, getSinkInUse, saveProjectSink } from '@/api/client';
+import { SIGNED_OFF_NOTE, SignedOffContext } from '@/lib/signed-off';
 
 vi.mock('@/api/config', () => ({ projectId: () => 'project-1' }));
 vi.mock('@/api/client', async (original) => ({
@@ -311,5 +312,23 @@ describe('company defaults and the changed values (#1181)', () => {
     expect(screen.getByText(line)).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'GV defaults used' })).toBeTruthy();
     expect(screen.getByText(used)).toBeTruthy();
+  });
+});
+
+describe('after sign-off (#1182)', () => {
+  it('the Needs line offers no box and the sink card no change; each says the review is signed off', async () => {
+    render(
+      <SignedOffContext.Provider value={true}>
+        <NeedsValues finding={waiting([overhang, sinkWidth])} packageId="package-1" onSaved={vi.fn()} onRunChecks={vi.fn()} />
+        <SinkEntryCard packageId="package-1" />
+      </SignedOffContext.Provider>,
+    );
+    expect(await screen.findByText('No sink entered for this job yet.')).toBeTruthy();
+    expect(screen.queryByLabelText('Countertop overhang')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /sink/i })).toBeNull();
+    expect(screen.getAllByText(SIGNED_OFF_NOTE)).toHaveLength(2);
+    expect(enterMeasurements).not.toHaveBeenCalled();
+    expect(saveProjectSink).not.toHaveBeenCalled();
   });
 });

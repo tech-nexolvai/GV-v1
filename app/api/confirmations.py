@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.signed_off import open_revision
 from app.auth import Action, Principal, authenticate, require_action, require_project_access
 from app.evidence.confirm import ConfirmationRefused, RefusalReason, confirm_candidate_type
 from app.evidence.crop_marks import current_crop_marks
@@ -416,6 +417,7 @@ def list_semantic_types(
     response_model=ConfirmedOut,
     status_code=status.HTTP_201_CREATED,
     summary="Say what an extracted reading is, so the rules can use it",
+    dependencies=[Depends(open_revision)],
 )
 def confirm_candidate(
     principal: Annotated[Principal, Depends(require_project_access)],

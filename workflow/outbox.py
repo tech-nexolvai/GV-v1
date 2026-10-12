@@ -39,8 +39,11 @@ model calls and half-written evidence is not a shrug.
 - It does not bound how late delivery is. A dispatcher that is not running delivers nothing, and the
   rows simply accumulate. That is why `stuck_entries()` exists — an outbox nobody is draining must be
   loud, because "silently stuck" is the exact failure this design was chosen to replace.
-- It does not retry with backoff or give up. `attempts` counts hand-offs tried; deciding when enough
-  is enough belongs to whatever runs the dispatcher loop, and there is no such loop yet.
+- It does not retry with backoff. `attempts` counts hand-offs tried. It gives up on a row only for a
+  refusal no retry can change (`_permanent`: the lifecycle table has no such move), and only
+  after `max_refused_attempts` of those refusals (`refused_attempts`, counted apart from other
+  failures), recording `abandoned_at` and the reason (`abandoned_entries()` lists them)
+  (#1182). Every other failure is retried on the next poll, as before.
 
 Source: `docs/DESIGN_PLATFORM.md` §6.1; backend proposal §9.2–§9.4; `AGENTS.md` §6.
 Verification: `tests/workflow/test_outbox.py`.
@@ -62,13 +65,44 @@ from app.models.outbox import OutboxEntry
 from app.telemetry.tracing import carrier, incoming_context, traced
 
 __all__ = [
+    "MAX_REFUSED_ATTEMPTS",
     "OutboxDispatchError",
     "OutboxEntry",
     "WorkflowStarter",
+    "abandoned_entries",
     "dispatch_committed",
     "enqueue",
     "stuck_entries",
 ]
+
+
+#: How many permanent refusals a row may get before the dispatcher gives up on it; other failures
+#: are not counted. More than one, because a revision may still be on its way to a state the work
+#: can start from (a check run asked for while the reading is finishing); at the default two-second
+#: poll this is about forty seconds.
+MAX_REFUSED_ATTEMPTS = 20
+
+
+def _permanent(failure: BaseException) -> bool:
+    """Whether `failure`, or anything it was raised from, is a refusal no retry can change.
+
+    That is `IllegalTransition`: the lifecycle table has no move from the revision's state to the one
+    the work needs (a check run asked for after sign-off: `APPROVED` never moves to
+    `RUNNING_CHECKS`). Before #1182 such a row was retried on every poll for ever (116 attempts in
+    five minutes in the 2026-10-11 audit). `EntryConditionUnmet` is deliberately not one: it means
+    "not yet", and a later poll may succeed.
+    """
+    # Imported here: `app.lifecycle` imports this module.
+    from app.lifecycle.states import IllegalTransition
+
+    seen: set[int] = set()
+    current: BaseException | None = failure
+    while current is not None and id(current) not in seen:
+        if isinstance(current, IllegalTransition):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class WorkflowStarter(Protocol):
@@ -175,7 +209,11 @@ def enqueue(session: Session, *, workflow: str, payload: Mapping[str, object]) -
 
 
 def dispatch_committed(
-    factory: sessionmaker[Session], start: WorkflowStarter, *, limit: int = 100
+    factory: sessionmaker[Session],
+    start: WorkflowStarter,
+    *,
+    limit: int = 100,
+    max_refused_attempts: int = MAX_REFUSED_ATTEMPTS,
 ) -> int:
     """Start the workflows for rows that are already committed, and return how many went out.
 
@@ -198,17 +236,24 @@ def dispatch_committed(
     keeps its incremented `attempts`, stays undispatched, and the poll moves on to the next row so
     one bad payload cannot block the queue behind it. The failures are then raised as
     `OutboxDispatchError` once the successes are safely committed.
+
+    **A row refused for good is given up, not retried for ever (#1182).** When the starter's failure
+    is permanent (`_permanent`) and the row has now been refused that way `max_refused_attempts`
+    times (`refused_attempts`; other failures, like an engine outage, never count), the row gets `abandoned_at` and the refusal's words in `abandoned_reason`, and is never polled again.
+    It is still reported in this pass's `OutboxDispatchError`, so the giving up is loud once.
     """
 
     if limit < 1:
         raise ValueError("limit must be at least 1")
+    if max_refused_attempts < 1:
+        raise ValueError("max_refused_attempts must be at least 1")
 
     dispatched = 0
     failures: list[tuple[UUID, Exception]] = []
     with unit_of_work(factory) as session:
         entries = session.scalars(
             select(OutboxEntry)
-            .where(OutboxEntry.dispatched_at.is_(None))
+            .where(OutboxEntry.dispatched_at.is_(None), OutboxEntry.abandoned_at.is_(None))
             # `created_at` is assigned in Python and two rows can share a microsecond; the id
             # settles the tie so the order is total and the poll is reproducible.
             .order_by(OutboxEntry.created_at, OutboxEntry.id)
@@ -236,6 +281,14 @@ def dispatch_committed(
                     )
             except Exception as failure:  # noqa: BLE001 - re-raised below, after the commit
                 failures.append((entry.id, failure))
+                if _permanent(failure):
+                    entry.refused_attempts += 1
+                    if entry.refused_attempts >= max_refused_attempts:
+                        entry.abandoned_at = utc_now()
+                        entry.abandoned_reason = (
+                            f"given up after {entry.refused_attempts} refusals: "
+                            f"{type(failure).__name__}: {failure}"
+                        )[:1000]
                 continue
             entry.dispatched_at = utc_now()
             dispatched += 1
@@ -265,8 +318,25 @@ def stuck_entries(session: Session, older_than: timedelta) -> list[OutboxEntry]:
         select(OutboxEntry)
         .where(
             OutboxEntry.dispatched_at.is_(None),
+            # A row given up with its reason recorded is no longer waiting for anything (#1182).
+            OutboxEntry.abandoned_at.is_(None),
             OutboxEntry.created_at <= utc_now() - older_than,
         )
         .order_by(OutboxEntry.created_at, OutboxEntry.id)
+    ).all()
+    return list(rows)
+
+
+def abandoned_entries(session: Session) -> list[OutboxEntry]:
+    """Rows the dispatcher gave up on (#1182), oldest first, each with its `abandoned_reason`.
+
+    Not in `stuck_entries`, because nothing will ever move them: they are answered, with a reason.
+    They are still work somebody asked for that did not happen, so this is the list an operator
+    reads next to the stuck one.
+    """
+    rows: Sequence[OutboxEntry] = session.scalars(
+        select(OutboxEntry)
+        .where(OutboxEntry.abandoned_at.is_not(None))
+        .order_by(OutboxEntry.abandoned_at, OutboxEntry.id)
     ).all()
     return list(rows)

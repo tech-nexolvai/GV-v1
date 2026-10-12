@@ -376,9 +376,12 @@ def _run_checks(
     revision = session.get(PackageRevision, package_revision_id)  # type: ignore[arg-type]
     if revision is None:
         return {"implemented": True, "ran": False, "reason": "no such package revision"}
+    workflow_run_id = UUID(idempotency_key)
+    dropped = _drop_closed_revision(session, revision, workflow_run_id, WorkflowRun)
+    if dropped is not None:
+        return dropped
     _resume_from_reviewer_input(session, revision)
     stages = _stages(discriminators=discriminators, discriminator_sources=discriminator_sources)
-    workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
     # **Named by the row that asked, so asking twice runs twice.** Without it the key is the stage
     # and the revision, so a reviewer who supplied a missing value and pressed Run checks again was
@@ -415,6 +418,49 @@ def _run_checks(
             reason="reviewer-confirmed readings were checked and handoff artifacts generated",
         )
     return {"checks": dict(outcome.payload), "outputs": dict(output.payload)}
+
+
+def _drop_closed_revision(
+    session: object, revision: object, workflow_run_id: UUID, workflow_run_type: object
+) -> Mapping[str, object] | None:
+    """Drop a check run queued for a closed revision, with the reason recorded (#1182).
+
+    A signed-off, sent-back, replaced or cancelled revision never runs its checks again: the
+    lifecycle table has no move from any of them to `RUNNING_CHECKS`. Before #1182 such a run was
+    tried, refused and retried on every poll for ever. Now it is dropped once: a `task_runs` row with
+    the outcome `dropped: <state>` records it under the run's own workflow id, and the outbox row is
+    marked delivered because the request was answered. The API refuses to queue one since #1182, so
+    this is for a request queued before the sign-off (or before the fix).
+    """
+    from sqlalchemy import select
+
+    from app.lifecycle.closed import closed_reason
+    from app.models import PackageRevision, TaskRun
+
+    if not isinstance(revision, PackageRevision):
+        raise TypeError("revision must be a PackageRevision")
+    reason = closed_reason(revision.state)
+    if reason is None:
+        return None
+    _ensure_workflow_run(session, revision.id, workflow_run_id, workflow_run_type)
+    key = f"run_checks:{workflow_run_id}:dropped"
+    if (
+        session.scalar(  # type: ignore[attr-defined]
+            select(TaskRun.id).where(TaskRun.idempotency_key == key)
+        )
+        is None
+    ):
+        session.add(  # type: ignore[attr-defined]
+            TaskRun(
+                workflow_run_id=workflow_run_id,
+                idempotency_key=key,
+                task_type="run_checks",
+                attempt=1,
+                outcome=f"dropped: {revision.state}",
+            )
+        )
+        session.flush()  # type: ignore[attr-defined]
+    return {"implemented": True, "ran": False, "reason": f"dropped: {reason}"}
 
 
 def _resume_from_reviewer_input(session: object, revision: object) -> None:

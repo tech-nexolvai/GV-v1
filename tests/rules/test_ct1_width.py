@@ -569,3 +569,43 @@ def test_field_cut_has_a_company_standard_of_exactly_one_inch() -> None:
     assert isinstance(field_cut.default.value, Fraction)
     assert field_cut.note is not None
     assert field_cut.note.startswith("company standard 1 in")
+
+
+# ---------------------------------------------------------------------------
+# A piece of zero or less never reaches a PASS (#1182)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pieces", "overall"),
+    [
+        ((Fraction(0), Fraction(21), Fraction(18)), Fraction(39)),  # the audit's W13
+        ((Fraction(-1), Fraction(22), Fraction(18)), Fraction(39)),  # the audit's W14
+        ((Fraction(21), Fraction(18), Fraction(0)), Fraction(39)),  # zero at the other end
+    ],
+    ids=["zero-piece", "negative-piece", "zero-last-piece"],
+)
+@pytest.mark.parametrize("wall_config", ["island", "back_left_right"])
+def test_a_zero_or_negative_piece_goes_to_the_reviewer_never_a_pass(
+    pieces: tuple[Fraction, ...], overall: Fraction, wall_config: str
+) -> None:
+    """Input: a row whose numbers add up only because one piece is 0 or -1 (both walls take the
+    field cuts into the overall). Output: REVIEW_REQUIRED naming the piece. It was PASS before
+    #1182."""
+    cuts = 2 if wall_config == "back_left_right" else 0
+    finding = _run(_pieces_only(overall + cuts, pieces), wall_config)
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED
+    assert "never zero or less" in (finding.reason or "")
+
+
+def test_a_zero_filler_beside_the_cabinets_goes_to_the_reviewer() -> None:
+    operands = {
+        "countertop_width": _operand("countertop_width", _inch(Fraction(39), "39")),
+        "cabinet_widths": _operand("cabinet_widths", _inches((Fraction(21), Fraction(18)))),
+        "filler_widths": _operand("filler_widths", _inches((Fraction(0),))),
+    }
+
+    finding = _run(operands, "island")
+
+    assert finding.outcome is Outcome.REVIEW_REQUIRED

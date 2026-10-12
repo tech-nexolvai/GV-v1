@@ -53,6 +53,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { recordReviewDecision } from './recordReviewDecision';
+import { isClosedState, SignedOffContext } from '@/lib/signed-off';
 import './ReviewPage.css';
 
 // The drawing viewer (#1045) is fetched the first time a reviewer opens a drawing.
@@ -801,6 +802,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
 
   return (
     // The review and the docked assistant side by side (#1129); on a phone the assistant covers it.
+    // After sign-off every control that writes is turned off (#1182); the server refuses them too.
+    <SignedOffContext.Provider value={isApproved || isClosedState(liveState)}>
     <div className="@container/review flex h-full min-h-0 w-full min-w-0">
     <div className="review-page min-w-0 flex-1">
       <HeaderTitleExtra>
@@ -1074,6 +1077,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       />
     )}
     </div>
+    </SignedOffContext.Provider>
   );
 }
 

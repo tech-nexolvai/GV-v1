@@ -17,10 +17,13 @@ import { BETWEEN_PANELS_WORDS, wallWords } from '@/lib/needs-you-queue';
 import { WallLayoutPicture } from '@/components/results/wall-glyph';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Button } from '@/components/ui/button';
+import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
+import { WIDTH_NOT_ABOVE_ZERO, widthNotAboveZero } from '@/lib/widths';
 import { Caution, Hint, INPUT_CLASS, LoadError, StepSection } from './wizard-ui.js';
 
 /** One reviewer decision per slot-reader row; no value or wall choice is revision-wide. */
 export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached, onReviewRow, onOpenQueue, onProgress, onUnsaved, onState }: { packageId: string; refresh: number; targetRow?: string | null; onTargetReached?: () => void; onReviewRow?: (rowId: string) => void; /** Opens the "Needs you" queue (#1050), where a held row is decided. */ onOpenQueue?: () => void; /** Its count for the Measurements step bar (#1061). */ onProgress?: (count: StepCount | null) => void; /** How many rows hold changes "Save this row" has not sent (#1061). */ onUnsaved?: (count: number) => void; /** For the step's "nothing here" line (#1124). */ onState?: (state: SectionState) => void }) {
+  const signedOff = useSignedOff();
   const [rows, setRows] = useState<SlotReaderRow[]>([]);
   const [wallDrafts, setWallDrafts] = useState<Record<string, string>>({});
   const [valueDrafts, setValueDrafts] = useState<Record<string, Record<string, string>>>({});
@@ -74,7 +77,12 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
 
   async function save(row: SlotReaderRow, wallConfirmation?: SlotReaderReviewPayload) {
     const payload = wallConfirmation ?? slotReaderReviewPayload(row, wallDrafts[row.row_id], valueDrafts[row.row_id]);
-    if (!payload.wall_config && !payload.measurements) return;
+    if (signedOff || (!payload.wall_config && !payload.measurements)) return;
+    // A width of zero or less could make the row add up by accident (#1182); the server refuses it too.
+    if (Object.values(payload.measurements ?? {}).some(widthNotAboveZero)) {
+      setFeedback((current) => ({ ...current, [row.row_id]: WIDTH_NOT_ABOVE_ZERO }));
+      return;
+    }
 
     setSaving(row.row_id);
     setFeedback((current) => ({ ...current, [row.row_id]: '' }));
@@ -131,7 +139,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
         const selectedWall = rowWallSelection(wallDrafts[row.row_id], row.wall_config);
         const hasTypedDraft = Object.values(valueDrafts[row.row_id] ?? {}).some((value) => value.trim() !== '');
         const payload = slotReaderReviewPayload(row, wallDrafts[row.row_id], valueDrafts[row.row_id]);
-        const canSave = !row.held_reason && saving !== row.row_id && (
+        const canSave = !signedOff && !row.held_reason && saving !== row.row_id && (
           hasTypedDraft || payload.wall_config !== undefined
         );
         const picture = pictures.get(row.row_id);
@@ -183,7 +191,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                           className={`${INPUT_CLASS} num`}
                           placeholder="Enter the value with its unit"
                           value={valueDrafts[row.row_id]?.[item.key] ?? ''}
-                          disabled={Boolean(row.held_reason) || saving === row.row_id}
+                          disabled={signedOff || Boolean(row.held_reason) || saving === row.row_id}
                           onChange={(event) => setValueDrafts((current) => ({
                             ...current,
                             [row.row_id]: { ...current[row.row_id], [item.key]: event.target.value },
@@ -216,7 +224,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                   variant="outline"
                   size="sm"
                   value={selectedWall}
-                  disabled={!row.wall_confirmation_allowed || saving === row.row_id}
+                  disabled={signedOff || !row.wall_confirmation_allowed || saving === row.row_id}
                   onValueChange={(next) => setWallDrafts((current) => ({ ...current, [row.row_id]: next }))}
                   aria-labelledby={`slot-walls-${row.row_id}`}
                   className="flex-wrap justify-start"
@@ -240,7 +248,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                 size="sm"
                 variant="outline"
                 className="self-start"
-                disabled={!row.wall_confirmation_allowed || saving === row.row_id}
+                disabled={signedOff || !row.wall_confirmation_allowed || saving === row.row_id}
                 onClick={() => void save(row, { wall_config: selectedWall })}
               >
                 Use this wall layout for this row
@@ -254,7 +262,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={!row.wall_confirmation_allowed || saving === row.row_id}
+                    disabled={signedOff || !row.wall_confirmation_allowed || saving === row.row_id}
                     onClick={() => void save(row, { wall_config: row.wall_proposal! })}
                   >
                     Use this wall layout for this row
@@ -266,6 +274,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                 {saving === row.row_id ? 'Saving…' : 'Save this row'}
               </Button>
               {row.confirmed_by && <span className="text-xs text-muted-foreground">Last saved by {row.confirmed_by}</span>}
+              {signedOff && <span className="text-xs text-muted-foreground" role="note">{SIGNED_OFF_NOTE}</span>}
               {feedback[row.row_id] && <span className="text-xs text-muted-foreground" role="status">{feedback[row.row_id]}</span>}
             </div>
           </article>
