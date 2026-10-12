@@ -72,6 +72,17 @@ class WallLayoutOut(BaseModel):
     source: Literal[
         "drawing clues", "both readers", "reviewer", "between panels", "not established"
     ]
+    carried_from_revision: int | None = Field(
+        default=None,
+        description=(
+            "When the reviewer's wall answer was carried from an earlier revision of an identical "
+            "row (#1180): the revision it was given on. Null when it was given on this revision."
+        ),
+    )
+    carried_by: str | None = Field(default=None, description="Who gave the carried answer.")
+    carried_given_at: datetime | None = Field(
+        default=None, description="When the carried answer was originally given."
+    )
 
 
 class AgreementFactsOut(BaseModel):

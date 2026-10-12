@@ -189,6 +189,10 @@ def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
         "config": "back_and_left",
         "label": "back wall and left end",
         "source": "reviewer",
+        # Given on this revision, so nothing was carried from an earlier one (#1180).
+        "carried_from_revision": None,
+        "carried_by": None,
+        "carried_given_at": None,
     }
     assert item["field_cut_count"] == 1
     assert item["expected_total"]["display"] == '21"'

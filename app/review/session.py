@@ -78,6 +78,7 @@ __all__ = [
     "grant_exception",
     "open_session",
     "record_action",
+    "refuse_if_superseded",
 ]
 
 # `ReviewActionKind` is re-exported rather than redefined. `#200` already put the four verbs in
@@ -194,6 +195,21 @@ def _is_superseded(db: Session, revision: PackageRevision) -> bool:
     return successor is not None
 
 
+def refuse_if_superseded(db: Session, package_revision_id: UUID) -> None:
+    """Refuse a write to a revision a newer one replaced (#1180): it is read-only, kept as it was.
+
+    Raised as `RevisionSuperseded`, which the API answers with a plain 409. Asked by every write a
+    review sitting makes, because a sitting opened before the new revision started still names the
+    old one.
+    """
+    revision = db.get(PackageRevision, package_revision_id)
+    if revision is not None and _is_superseded(db, revision):
+        raise RevisionSuperseded(
+            f"revision {revision.revision_number} has been replaced by a newer revision, so it is "
+            "read-only. Record this on the newest revision instead."
+        )
+
+
 def open_session(db: Session, *, package_revision_id: UUID, reviewer: str) -> ReviewSession:
     """Start a sitting over one package revision. Refuses if that revision has been replaced.
 
@@ -305,6 +321,8 @@ def record_action(
             f"review session {review_session_id} has ended, so nothing more can be recorded in it. "
             "Open a new session: an action added to a closed sitting would misdate what happened."
         )
+
+    refuse_if_superseded(db, review_session.package_revision_id)
 
     finding = db.get(Finding, finding_id)
     if finding is None:

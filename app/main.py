@@ -28,13 +28,14 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated, Final
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import StringConstraints, TypeAdapter, ValidationError
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
 from app.api.guards import assert_no_verdict_fields
+from app.api.stale_revision import refuse_stale_revision
 from app.auth import authenticate
 from app.auth.development import principal_from_environment
 from app.config import Settings
@@ -113,6 +114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "reviewer signs off."
         ),
         version="0.1.0",
+        # A write from a screen showing an older revision of a review is refused (#1180).
+        dependencies=[Depends(refuse_stale_revision)],
     )
     app.state.settings = resolved
     install_error_handlers(app)
@@ -154,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         review,
         review_assistant,
         reviewer_chat,
+        revisions,
         rules,
         slot_rows,
         usage,
@@ -163,6 +167,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(packages.router, prefix=API_PREFIX)
     app.include_router(documents.router, prefix=API_PREFIX)
+    # Revisions of a review (#1180): start the next one, list them, what changed.
+    app.include_router(revisions.router, prefix=API_PREFIX)
     # Reviewer-entered values and the request to check them. Ordinary control-plane
     # writes: it enqueues rather than running anything, because it may not import the
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.

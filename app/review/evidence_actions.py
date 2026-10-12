@@ -28,6 +28,7 @@ from app.models.evidence import (
 from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
 from app.models.verdicts import Finding, FindingEvidence
 from app.review.ledger import record_correction
+from app.review.session import refuse_if_superseded
 from evidence.canonical import CorroborationLane, EvidenceStatus
 
 
@@ -172,6 +173,10 @@ def _decide(
 ) -> EvidenceDecision:
     # Authorization precedes every lookup so an unauthorized caller learns nothing about ids.
     _authorise(principal)
+    # A revision a newer one replaced is read-only (#1180), whatever the request names.
+    sitting = db.get(ReviewSession, review_session_id)
+    if sitting is not None:
+        refuse_if_superseded(db, sitting.package_revision_id)
     review_session, finding, original = _context(
         db,
         review_session_id=review_session_id,

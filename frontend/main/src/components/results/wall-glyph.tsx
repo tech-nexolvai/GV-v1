@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils';
 import { wallsOf, WALL_SOURCE_TITLE, WALL_SOURCE_WORD } from '@/lib/countertop-results';
+import { carriedWords } from '@/lib/revisions';
 import type { CountertopResult } from '@/api/client';
 
 /**
@@ -22,6 +23,7 @@ export function WallGlyph({
   labelled?: boolean;
 }) {
   const walls = wallsOf(layout.config);
+  const carried = layout.source === 'reviewer' ? carriedWords(layout.carried_from_revision, layout.carried_by) : null;
   if (walls === null) {
     return (
       <span data-slot="wall-glyph" data-walls="not-set" title={WALL_SOURCE_TITLE[layout.source]} className={cn('inline-flex items-center gap-1 text-xs text-muted-foreground', className)}>
@@ -37,6 +39,10 @@ export function WallGlyph({
         {WALL_SOURCE_WORD[layout.source]}
         <span className="sr-only"> ({WALL_SOURCE_TITLE[layout.source]})</span>
       </span>
+      {carried && (
+        // A wall answer carried from an earlier revision says so, with who gave it (#1180).
+        <span data-slot="wall-carried" className="text-xs text-muted-foreground">{carried}</span>
+      )}
     </span>
   );
 }

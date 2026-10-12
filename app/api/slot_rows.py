@@ -28,6 +28,7 @@ from app.api.signed_off import open_revision
 from app.audit.events import AuditCategory, emit
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
+from app.lifecycle.carry_forward import wall_answer_origins
 from app.models import ObservationCandidate, SlotRowReviewDecision
 from app.review.row_location import RowLocation, architect_locations, row_location
 from app.review.sizes import NOT_ABOVE_ZERO, typed_negative
@@ -85,6 +86,16 @@ class SlotRowOut(BaseModel):
     confirmed_by: str | None
     decided_at: datetime | None
     wall_config: str | None
+    carried_from_revision: int | None = Field(
+        default=None,
+        description=(
+            "When this row's wall answer was carried from an identical row of an earlier revision "
+            "(#1180): the revision it was given on. `confirmed_by` is then who gave it."
+        ),
+    )
+    carried_given_at: datetime | None = Field(
+        default=None, description="When the carried answer was originally given."
+    )
 
 
 class SlotRowsOut(BaseModel):
@@ -201,6 +212,7 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
             f"confirm '{BETWEEN_PANELS_WORDS}'."
         )
 
+    origin = wall_answer_origins(session, (decision,)).get(decision.id) if decision else None
     return SlotRowOut(
         row_id=row.anchor.id,
         page_number=row.page_number,
@@ -217,6 +229,8 @@ def _row_out(session: Session, row: SlotRow, layouts: tuple[str, ...]) -> SlotRo
         decision_id=None if decision is None else decision.id,
         confirmed_by=None if decision is None else decision.confirmed_by,
         decided_at=None if decision is None else decision.created_at,
+        carried_from_revision=None if origin is None else origin.revision_number,
+        carried_given_at=None if origin is None else origin.given_at,
         wall_config=None if decision is None else decision.wall_config,
     )
 

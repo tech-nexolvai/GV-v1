@@ -595,6 +595,16 @@ class SlotRowReviewDecision(Base, TimestampedUUID, Immutable):
     wall_config: Mapped[str | None] = mapped_column(String(32), default=None)
     measurements: Mapped[dict[str, object]] = mapped_column(JSONB)
     confirmed_by: Mapped[str] = mapped_column(String(200))
+    carried_from_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "slot_row_review_decisions.id",
+            ondelete="RESTRICT",
+            name="fk_slot_row_review_carried_from",
+        ),
+        default=None,
+    )
+    """The earlier revision's decision this one was carried from (#1180), or `None` when a person
+    gave it on this row. `confirmed_by` is then the person who gave the original."""
 
     __table_args__ = (
         CheckConstraint(

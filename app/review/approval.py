@@ -24,8 +24,13 @@ from uuid import UUID
 from sqlalchemy import Subquery, func, select, union_all
 from sqlalchemy.orm import Session
 
+from app.audit.events import AuditCategory, emit
 from app.auth.roles import Action, Principal
 from app.db.base import utc_now
+from app.lifecycle.carry_forward import (
+    CARRIED_CONFIRMATION_TARGET,
+    carried_answers_driving_results,
+)
 from app.lifecycle.states import transition
 from app.models.document import PackageRevisionDocument, Page
 from app.models.drawing import (
@@ -89,6 +94,11 @@ class NoSuchReviewSession(ApprovalRefused):
 
 class NoFindingsToApprove(ApprovalRefused):
     """The revision has no finding rows, so approval would turn silence into PASS."""
+
+
+class CarriedAnswersUnconfirmed(ApprovalRefused):
+    """A result rests on an answer carried from an earlier revision nobody confirmed still applies
+    (#1180). The signer confirms it once, with the sign-off."""
 
 
 class UnaddressedReviewRequired(ApprovalRefused):
@@ -447,9 +457,17 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
 
 
 def approve_package(
-    db: Session, *, principal: Principal, review_session_id: UUID
+    db: Session,
+    *,
+    principal: Principal,
+    review_session_id: UUID,
+    carried_answers_confirmed: bool = False,
 ) -> ApprovalDecision:
-    """Approve the server-selected finding set after every blocking result was addressed."""
+    """Approve the server-selected finding set after every blocking result was addressed.
+
+    When a result rests on an answer carried from an earlier revision (#1180), the signer must say
+    those answers still apply (`carried_answers_confirmed`); the confirmation is audited against
+    the approval, and the signed record names it."""
     _authorise(principal)
     _lock_revision(db, review_session_id)
     review = _review(db, review_session_id)
@@ -469,6 +487,14 @@ def approve_package(
         db, [review.package_revision_id]
     ):
         raise UnaddressedReviewRequired(INPUTS_CHANGED_NEEDS_RERUN)
+    carried = carried_answers_driving_results(db, review.package_revision_id)
+    if carried and not carried_answers_confirmed:
+        numbers = ", ".join(str(n) for n in sorted({number for number, _ in carried}))
+        raise CarriedAnswersUnconfirmed(
+            f"Answers carried from revision {numbers} must be confirmed before sign-off: "
+            + "; ".join(text for _, text in carried)
+            + ". Confirm they still apply to these drawings, then sign off."
+        )
 
     approval = Approval(package_revision_id=review.package_revision_id, approved_by=principal.id)
     event = transition(
@@ -489,6 +515,17 @@ def approve_package(
     )
     complete_session(db, review_session_id=review.id)
     db.flush()
+    if carried:
+        # The signer said the carried answers still apply: audited against this approval, and read
+        # into the signed record when it is frozen just below.
+        emit(
+            db,
+            category=AuditCategory.REVIEW_ACTION,
+            actor=principal.id,
+            target_id=approval.id,
+            target_type=CARRIED_CONFIRMATION_TARGET,
+        )
+        db.flush()
     from app.review.signed_exports import request_signed_exports
 
     request_signed_exports(db, approval.id)

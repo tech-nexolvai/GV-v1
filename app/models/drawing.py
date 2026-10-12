@@ -184,6 +184,17 @@ class ViewRoleConfirmation(Base, TimestampedUUID, Immutable):
 
     confirmed_by: Mapped[str] = mapped_column(String(200))
 
+    carried_from_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "view_role_confirmations.id",
+            ondelete="RESTRICT",
+            name="fk_view_role_confirmation_carried_from",
+        ),
+        default=None,
+    )
+    """The earlier revision's confirmation this one was carried from (#1180), on a byte-identical
+    page of a re-issued drawing; `None` when it was given on this view."""
+
     __table_args__ = (
         CheckConstraint(f"role IN ({VIEW_ROLE_VALUES})", name="view_role_confirmation_role"),
         CheckConstraint(

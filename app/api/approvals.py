@@ -21,8 +21,8 @@ import hashlib
 from typing import Annotated, Final, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -30,6 +30,7 @@ from app.api.dependencies import get_artifact_store, get_session
 from app.api.review import _session_is_in_project
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models.package import Package, PackageRevision, PackageState
+from app.models.review import Approval
 from app.models.signed_exports import ApprovalExportBundle, ApprovalExportSnapshot
 from app.models.verdicts import OutputArtifact, OutputArtifactKind
 from app.review.approval import (
@@ -62,6 +63,20 @@ class ApprovalOut(BaseModel):
     state: str
 
 
+class ApproveIn(BaseModel):
+    """What the signer says with the sign-off. Optional: an empty request is the same as false."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    carried_answers_confirmed: bool = Field(
+        default=False,
+        description=(
+            "The signer confirms that answers carried from an earlier revision (#1180) still apply "
+            "to these drawings. Required only when a result rests on one."
+        ),
+    )
+
+
 class ApprovalReadinessOut(BaseModel):
     revision_id: UUID
     can_approve: bool
@@ -91,14 +106,20 @@ def get_approval_readiness(
     )
 
 
-def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
-    """This package's current revision, or 404 in the same words for absent and forbidden."""
-    revision = session.execute(
+def _revision(
+    session: Session, project_id: UUID, package_id: UUID, revision_number: int | None = None
+) -> PackageRevision:
+    """This package's current revision — or, given its number, an earlier one (#1180) — or 404 in
+    the same words for absent and forbidden."""
+    chosen = (
         select(PackageRevision)
         .join(Package, Package.id == PackageRevision.package_id)
         .where(Package.id == package_id, Package.project_id == project_id)
-        .order_by(PackageRevision.revision_number.desc())
-        .limit(1)
+    )
+    if revision_number is not None:
+        chosen = chosen.where(PackageRevision.revision_number == revision_number)
+    revision = session.execute(
+        chosen.order_by(PackageRevision.revision_number.desc()).limit(1)
     ).scalar_one_or_none()
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
@@ -118,8 +139,12 @@ def approve(
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     review_session_id: UUID,
+    body: ApproveIn | None = None,
 ) -> ApprovalOut:
     """Approve every finding of the revision this sitting is reviewing.
+
+    When a result rests on an answer carried from an earlier revision (#1180), send
+    `carried_answers_confirmed: true` to say those answers still apply; otherwise `409` lists them.
 
     The finding set is chosen by the server, not sent by the caller. A client naming the findings it
     approves is a client that can approve a subset and leave the rest looking reviewed — and the
@@ -134,7 +159,10 @@ def approve(
 
     try:
         decision = approve_package(
-            session, principal=principal, review_session_id=review_session_id
+            session,
+            principal=principal,
+            review_session_id=review_session_id,
+            carried_answers_confirmed=body is not None and body.carried_answers_confirmed,
         )
         session.commit()
     except ApprovalNotAuthorised as refusal:
@@ -158,6 +186,31 @@ def approve(
     )
 
 
+def _signed_off(session: Session, revision: PackageRevision) -> bool:
+    """Whether this revision was signed off: an `Approval` row exists for it (#1180).
+
+    Read from the approval rather than the state, because a signed-off revision a newer one replaced
+    is `SUPERSEDED`, and its signed files must stay downloadable as they were.
+    """
+    return (
+        session.scalar(
+            select(Approval.id).where(Approval.package_revision_id == revision.id).limit(1)
+        )
+        is not None
+    )
+
+
+#: `?revision=N` on the signed-file routes (#1180): an earlier revision's signed files.
+RevisionQuery = Annotated[
+    int | None,
+    Query(
+        alias="revision",
+        ge=1,
+        description="An earlier revision's number, for its signed files. Default: the newest.",
+    ),
+]
+
+
 def _download_artifact(
     _access: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
@@ -165,6 +218,7 @@ def _download_artifact(
     project_id: UUID,
     package_id: UUID,
     *,
+    revision_number: int | None = None,
     kind: OutputArtifactKind,
     extension: str,
     label: str,
@@ -180,9 +234,9 @@ def _download_artifact(
     produce a file that could differ from the one the approval covers, and the approval is the record
     of what was agreed.
     """
-    revision = _revision(session, project_id, package_id)
+    revision = _revision(session, project_id, package_id, revision_number)
 
-    if PackageState(revision.state) is not PackageState.APPROVED:
+    if not _signed_off(session, revision):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -342,10 +396,11 @@ def export_status(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    revision_number: RevisionQuery = None,
 ) -> SignedExportRequestOut:
     """Read availability only; downloading or inspecting never generates files."""
-    revision = _revision(session, project_id, package_id)
-    if revision.state != PackageState.APPROVED.value:
+    revision = _revision(session, project_id, package_id, revision_number)
+    if not _signed_off(session, revision):
         raise HTTPException(status_code=409, detail="this package has not been signed off")
     try:
         signed = sign_off(session, revision.id)
@@ -407,6 +462,7 @@ def download_report(
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     package_id: UUID,
+    revision_number: RevisionQuery = None,
 ) -> Response:
     """The signed-off workbook: the tabular audit handoff."""
     return _download_artifact(
@@ -415,6 +471,7 @@ def download_report(
         store,
         project_id,
         package_id,
+        revision_number=revision_number,
         kind=OutputArtifactKind.FINDINGS_WORKBOOK,
         extension="xlsx",
         label="findings workbook",
@@ -432,6 +489,7 @@ def download_pdf_report(
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     package_id: UUID,
+    revision_number: RevisionQuery = None,
 ) -> Response:
     """The branded signed-off PDF: the readable reviewer handoff."""
     return _download_artifact(
@@ -440,6 +498,7 @@ def download_pdf_report(
         store,
         project_id,
         package_id,
+        revision_number=revision_number,
         kind=OutputArtifactKind.FINDINGS_PDF,
         extension="pdf",
         label="findings PDF",
@@ -457,6 +516,7 @@ def download_redline(
     store: Annotated[ArtifactStore, Depends(get_artifact_store)],
     project_id: UUID,
     package_id: UUID,
+    revision_number: RevisionQuery = None,
 ) -> Response:
     """The signed-off redline, available only for typed findings with real stored locations."""
     return _download_artifact(
@@ -465,6 +525,7 @@ def download_redline(
         store,
         project_id,
         package_id,
+        revision_number=revision_number,
         kind=OutputArtifactKind.REDLINE,
         extension="pdf",
         label="evidence-grounded redline",

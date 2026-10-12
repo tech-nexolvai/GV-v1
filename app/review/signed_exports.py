@@ -14,6 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.visual_countertops import _countertop_results_for_revision
+from app.audit.events import AuditEvent
+from app.lifecycle.carry_forward import CARRIED_CONFIRMATION_TARGET
 from app.models.package import Package, PackageRevision
 from app.models.review import (
     Approval,
@@ -406,10 +408,28 @@ def _request_signed_exports(
         own = [action for action in actions if action.finding_id == finding_id]
         return [carried[finding_id], *own] if finding_id in carried else own
 
+    # The signer's confirmation that answers carried from an earlier revision still apply (#1180).
+    confirmed = db.scalar(
+        select(AuditEvent)
+        .where(
+            AuditEvent.target_id == approval.id,
+            AuditEvent.target_type == CARRIED_CONFIRMATION_TARGET,
+        )
+        .order_by(AuditEvent.created_at)
+        .limit(1)
+    )
     review_record = SignedReview(
         approval_id=approval.id,
         approved_by=approval.approved_by,
         approved_at=approval.created_at,
+        carried_answers_confirmation=(
+            None
+            if confirmed is None
+            else (
+                "Answers carried from an earlier revision were confirmed to still apply by "
+                f"{confirmed.actor} on {confirmed.created_at.isoformat()}."
+            )
+        ),
         findings=tuple(
             SignedReviewFinding(
                 finding_id=finding.id,

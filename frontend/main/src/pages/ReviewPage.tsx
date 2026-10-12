@@ -54,6 +54,12 @@ import { PackageStatusBadge } from '@/components/ui/package-status-badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { recordReviewDecision } from './recordReviewDecision';
 import { isClosedState, SignedOffContext } from '@/lib/signed-off';
+import { listRevisions, setScreenRevision } from '../api/client';
+import { RevisionSwitcher } from '@/components/revisions/revision-switcher';
+import { NewRevisionDialog } from '@/components/revisions/new-revision-dialog';
+import { EarlierRevisionView } from '@/components/revisions/earlier-revision-view';
+import { WhatChangedPanel } from '@/components/revisions/what-changed-panel';
+import { carriedWallsDrivingResults, productWord } from '@/lib/revisions';
 import './ReviewPage.css';
 
 // The drawing viewer (#1045) is fetched the first time a reviewer opens a drawing.
@@ -82,6 +88,11 @@ interface ReviewPageProps {
 export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeedYouChange, onPackageChanged }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
+  // Revisions of this review (#1180): which one is on screen (null = the newest), and the dialog.
+  const [reloadKey, setReloadKey] = useState(0);
+  const [viewedRevision, setViewedRevision] = useState<number | null>(null);
+  const [newRevisionOpen, setNewRevisionOpen] = useState(false);
+  const revisions = useAsync(() => listRevisions(projectId(), packageId), [packageId, reloadKey]);
 
   const remote = useAsync(async () => {
     const project = projectId();
@@ -103,7 +114,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     // `mine` defaults to true): the name the sign-off confirmation shows (#1064).
     const me = sessions.items[0]?.reviewer ?? null;
     return { detail, found, session: open ?? null, readiness, me };
-  }, [packageId]);
+    // `reloadKey` (#1180): a new revision reloads the review onto it.
+  }, [packageId, reloadKey]);
   const [resultsVersion, setResultsVersion] = useState(0);
   const changedValues = useAsync(
     () => getChangedValues(projectId(), packageId),
@@ -187,6 +199,11 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   // The header shows the vendor, which is what a reviewer calls a document set.
   const loadedVendor = remote.status === 'ready' ? remote.data.detail.vendor ?? 'Untitled document set' : null;
   const loadedRevision = remote.status === 'ready' ? remote.data.detail.current_revision_number : null;
+  // Every write from this screen names the revision it shows, so a stale screen is refused (#1180).
+  useEffect(() => {
+    setScreenRevision(packageId, loadedRevision);
+    return () => setScreenRevision(packageId, null);
+  }, [packageId, loadedRevision]);
   useEffect(() => {
     if (loadedVendor !== null) onTitleChange?.(loadedVendor, loadedRevision);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -527,7 +544,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
    * the server check is what makes that a rule rather than a hint.
    */
   /** Returns null once the approval is recorded, or why nothing was signed (#1064: the dialog says it). */
-  async function handleSignOff(): Promise<string | null> {
+  async function handleSignOff(carriedConfirmed = false): Promise<string | null> {
     if (!canSignOff(readiness) || isSigningOff || isApproved) {
       return readiness?.reason ?? 'the review is not ready to sign off right now.';
     }
@@ -535,7 +552,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     setIsSigningOff(true);
     try {
       const current = await ensureSession();
-      await approvePackage(projectId(), current.id);
+      await approvePackage(projectId(), current.id, carriedConfirmed);
       setApproved(true); // The approval was acknowledged, even if a subsequent read fails.
       onPackageChanged?.();
       // Re-read rather than assume: approval completes the sitting server-side, and the package
@@ -587,7 +604,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `gv-review-${packageId}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
+      link.download = `gv-review-${packageId}${loadedRevision !== null ? `-r${loadedRevision}` : ''}${format === 'redline' ? '-redline' : ''}.${format === 'workbook' ? 'xlsx' : 'pdf'}`;
       link.click();
       URL.revokeObjectURL(url);
       });
@@ -662,8 +679,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   }
 
   /** The dialog closes only once the approval is recorded; otherwise it says why nothing was signed. */
-  async function confirmSignOff() {
-    const failure = await handleSignOff();
+  async function confirmSignOff(carriedConfirmed = false) {
+    const failure = await handleSignOff(carriedConfirmed);
     if (failure !== null) {
       setSignOffError(failure);
       return;
@@ -796,9 +813,55 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     ...(isApproved && stage.next.kind !== 'download-report'
       ? [{ id: 'report-status', label: 'Check report status', onSelect: () => setExportsVersion((n) => n + 1) }]
       : []),
+    // #1180: the vendor resubmitted. Only for who may upload; refused in words by the server while
+    // reading or checking runs. A started revision whose drawing never arrived is offered to finish.
+    ...(revisions.status === 'ready' && revisions.data.can_start_revision
+      ? [
+          revisions.data.unfinished_revision !== null
+            ? { id: 'new-revision', label: `Finish uploading revision ${revisions.data.unfinished_revision}…`, onSelect: () => setNewRevisionOpen(true) }
+            : { id: 'new-revision', label: 'New revision…', disabled: PROCESSING_STATES.has(pkg.status), onSelect: () => setNewRevisionOpen(true) },
+        ]
+      : []),
     { id: 'project-values', label: 'Project values', onSelect: () => setProjectValuesOpen(true) },
     { id: 'record-ids', label: 'Record IDs', onSelect: () => setRecordIdsOpen(true) },
   ];
+
+  // Revisions (#1180): the switcher, and an earlier revision shown read-only in place of the review.
+  const revisionItems = revisions.status === 'ready' ? revisions.data.items : [];
+  const newestRevision = revisions.status === 'ready' ? revisions.data.current_revision_number : (pkg.revision ?? 1);
+  const shownRevision = viewedRevision ?? newestRevision;
+  const switcher = (
+    <RevisionSwitcher revisions={revisionItems} viewing={shownRevision} onView={(n) => setViewedRevision(n === newestRevision ? null : n)} />
+  );
+  const earlierRevision = viewedRevision !== null ? revisionItems.find((item) => item.revision_number === viewedRevision && item.read_only) : undefined;
+  const newRevisionDialog = (
+    <NewRevisionDialog
+      open={newRevisionOpen}
+      onOpenChange={setNewRevisionOpen}
+      projectId={projectId()}
+      packageId={packageId}
+      vendor={pkg.vendor}
+      product={remote.status === 'ready' ? productWord(remote.data.detail.product_type) : '—'}
+      currentRevision={newestRevision}
+      unfinished={revisions.status === 'ready' && revisions.data.unfinished_revision !== null}
+      onStarted={() => { setViewedRevision(null); setReloadKey((n) => n + 1); onPackageChanged?.(); }}
+    />
+  );
+  if (earlierRevision) {
+    return (
+      <div className="review-page flex min-w-0 flex-1 flex-col">
+        <HeaderTitleExtra>{switcher}</HeaderTitleExtra>
+        <div data-tw className="border-b px-4 py-2 lg:hidden">{switcher}</div>
+        <EarlierRevisionView
+          projectId={projectId()}
+          packageId={packageId}
+          revision={earlierRevision}
+          newest={newestRevision}
+          onBack={() => setViewedRevision(null)}
+        />
+      </div>
+    );
+  }
 
   return (
     // The review and the docked assistant side by side (#1129); on a phone the assistant covers it.
@@ -808,7 +871,10 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     <div className="review-page min-w-0 flex-1">
       <HeaderTitleExtra>
         <PackageStatusBadge status={pkg.status} />
+        {switcher}
       </HeaderTitleExtra>
+      {newRevisionDialog}
+      {revisionItems.length > 1 && <div data-tw className="border-b px-4 py-2 lg:hidden">{switcher}</div>}
       <HeaderActions>
         <Button
           ref={assistantButton}
@@ -858,7 +924,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         ready={canSignOff(readiness) && !waitingForChecks && !isApproved}
         busy={isSigningOff}
         error={signOffError}
-        onConfirm={() => void confirmSignOff()}
+        onConfirm={(carriedConfirmed) => void confirmSignOff(carriedConfirmed)}
+        carried={countertops.status === 'ready' ? carriedWallsDrivingResults(countertops.rows) : []}
       />
       <RunChecksDialog
         ask={headerRunConfirm}
@@ -970,6 +1037,11 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
               onCheck={() => setExportsVersion((n) => n + 1)}
               onDownload={(format) => void handleDownload(format)}
             />
+          )}
+          {newestRevision >= 2 && (
+            <div data-tw className="px-4 pt-4 sm:px-6">
+              <WhatChangedPanel projectId={projectId()} packageId={packageId} reloadKey={countertopsVersion + reloadKey} />
+            </div>
           )}
           <ResultsDashboard
             countertops={countertops}

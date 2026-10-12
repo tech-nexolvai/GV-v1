@@ -330,6 +330,20 @@
         "title": "ApprovalReadinessOut",
         "type": "object"
       },
+      "ApproveIn": {
+        "additionalProperties": false,
+        "description": "What the signer says with the sign-off. Optional: an empty request is the same as false.",
+        "properties": {
+          "carried_answers_confirmed": {
+            "default": false,
+            "description": "The signer confirms that answers carried from an earlier revision (#1180) still apply to these drawings. Required only when a result rests on one.",
+            "title": "Carried Answers Confirmed",
+            "type": "boolean"
+          }
+        },
+        "title": "ApproveIn",
+        "type": "object"
+      },
       "ArchitectAiPickOut": {
         "description": "What one AI answered when asked which of the architect's views shows the countertop.",
         "properties": {
@@ -2782,6 +2796,58 @@
         "title": "ConfirmedReadingOut",
         "type": "object"
       },
+      "CountertopChangeOut": {
+        "description": "One countertop row, by page and row label, before and after.",
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopSideOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "change": {
+            "enum": [
+              "same",
+              "changed",
+              "new",
+              "gone"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "page_number",
+          "label",
+          "change",
+          "before",
+          "after"
+        ],
+        "title": "CountertopChangeOut",
+        "type": "object"
+      },
       "CountertopOut": {
         "description": "One confirmed countertop and its run.",
         "properties": {
@@ -3165,6 +3231,65 @@
         "title": "CountertopResultsOut",
         "type": "object"
       },
+      "CountertopSideOut": {
+        "description": "One countertop row's stored result on one side.",
+        "properties": {
+          "delta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_total": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_decision": {
+            "title": "Needs Decision",
+            "type": "boolean"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The stored result of the last check run; null when no check has run on it."
+          },
+          "printed_overall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "needs_decision",
+          "printed_overall",
+          "expected_total",
+          "delta"
+        ],
+        "title": "CountertopSideOut",
+        "type": "object"
+      },
       "DecideEvidence": {
         "additionalProperties": false,
         "description": "Confirm or correct one observation behind one finding.\n\n**`correct` carries the corrected value; `confirm` must not.** A confirmation that accepted a\nvalue would be indistinguishable from a correction that happened to agree, and the correction\nrate (`D5.4`) counts the difference. The pairing is validated here rather than trusted.\n\nThe value is **as typed**, with its unit, exactly as `MeasurementEntry` takes a reviewer's\nreading. The server parses it \u2014 `25.5\"` and `25 1/2\"` are the same value, and the reviewer\nshould not have to know which spelling this accepts.",
@@ -3423,6 +3548,70 @@
           "created_at"
         ],
         "title": "DocumentVersionOut",
+        "type": "object"
+      },
+      "DrawingChangeOut": {
+        "description": "One drawing compared between the two revisions.",
+        "properties": {
+          "compared": {
+            "description": "False when either side has not been read yet, so its pages are not known. The pages are then not compared rather than guessed.",
+            "title": "Compared",
+            "type": "boolean"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/PageChangeOut"
+            },
+            "title": "Pages",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the pages were not compared.",
+            "title": "Reason"
+          },
+          "same_file": {
+            "description": "True when both revisions hold the exact same bytes.",
+            "title": "Same File",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "document_id",
+          "file_name",
+          "same_file",
+          "compared",
+          "pages"
+        ],
+        "title": "DrawingChangeOut",
         "type": "object"
       },
       "DrawingOut": {
@@ -5672,6 +5861,30 @@
         "title": "PackageReadingTimeOut",
         "type": "object"
       },
+      "PackageState": {
+        "description": "Persisted package lifecycle states fixed by ``DESIGN_PLATFORM.md`` section 5.",
+        "enum": [
+          "CREATED",
+          "UPLOADING",
+          "UPLOADED",
+          "INGESTING",
+          "EXTRACTING",
+          "MATCHING",
+          "VALIDATING_EVIDENCE",
+          "RUNNING_CHECKS",
+          "GENERATING_OUTPUTS",
+          "AWAITING_REVIEW",
+          "APPROVED",
+          "CHANGES_REQUESTED",
+          "FAILED_RETRYABLE",
+          "FAILED_PERMANENT",
+          "NEEDS_INPUT",
+          "CANCELLED",
+          "SUPERSEDED"
+        ],
+        "title": "PackageState",
+        "type": "string"
+      },
       "PackageSummaryItemOut": {
         "properties": {
           "approved": {
@@ -5815,6 +6028,69 @@
           "q"
         ],
         "title": "PackageSummaryPageOut",
+        "type": "object"
+      },
+      "PageChangeOut": {
+        "description": "One page of one drawing, compared between the two revisions by its content hash.",
+        "properties": {
+          "before_page_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the same page was in the earlier revision, when it was paired with one.",
+            "title": "Before Page Number"
+          },
+          "change": {
+            "description": "`moved`: the same page bytes at another page number. Pages are paired by their content first, then by sheet number, then by position.",
+            "enum": [
+              "added",
+              "removed",
+              "changed",
+              "moved",
+              "unchanged"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_number": {
+            "description": "The page's number in the newer revision (or the earlier, if removed).",
+            "title": "Page Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "document_id",
+          "file_name",
+          "page_number",
+          "change"
+        ],
+        "title": "PageChangeOut",
         "type": "object"
       },
       "PagePicturesQueuedOut": {
@@ -7598,6 +7874,442 @@
         "title": "ReviewerEntryOut",
         "type": "object"
       },
+      "RevisionComparisonOut": {
+        "description": "What changed between two revisions of a review.",
+        "properties": {
+          "after_revision_number": {
+            "title": "After Revision Number",
+            "type": "integer"
+          },
+          "before_revision_number": {
+            "title": "Before Revision Number",
+            "type": "integer"
+          },
+          "countertops": {
+            "items": {
+              "$ref": "#/components/schemas/CountertopChangeOut"
+            },
+            "title": "Countertops",
+            "type": "array"
+          },
+          "countertops_checked": {
+            "description": "False while the newer revision has no check results yet: the countertop list then shows only the earlier results.",
+            "title": "Countertops Checked",
+            "type": "boolean"
+          },
+          "countertops_read": {
+            "description": "False while the newer revision has no countertop rows yet (not read). The countertop list is then empty rather than reporting every row as gone.",
+            "title": "Countertops Read",
+            "type": "boolean"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/DrawingChangeOut"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "pages_added": {
+            "title": "Pages Added",
+            "type": "integer"
+          },
+          "pages_changed": {
+            "title": "Pages Changed",
+            "type": "integer"
+          },
+          "pages_removed": {
+            "title": "Pages Removed",
+            "type": "integer"
+          },
+          "pages_unchanged": {
+            "title": "Pages Unchanged",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "package_id",
+          "before_revision_number",
+          "after_revision_number",
+          "drawings",
+          "pages_added",
+          "pages_removed",
+          "pages_changed",
+          "pages_unchanged",
+          "countertops",
+          "countertops_read",
+          "countertops_checked"
+        ],
+        "title": "RevisionComparisonOut",
+        "type": "object"
+      },
+      "RevisionDrawing": {
+        "description": "One drawing a revision holds.",
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "same_as_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earlier revision number holding these exact bytes for this drawing, when it was carried forward or uploaded again unchanged; null for a new file.",
+            "title": "Same As Revision"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "document_id",
+          "document_version_id",
+          "sha256",
+          "file_name",
+          "page_count",
+          "same_as_revision"
+        ],
+        "title": "RevisionDrawing",
+        "type": "object"
+      },
+      "RevisionFile": {
+        "additionalProperties": false,
+        "description": "One re-issued drawing, declared by its bytes' hash before it is uploaded.",
+        "properties": {
+          "sha256": {
+            "description": "The SHA-256 of the file, lowercase hex. Hash it locally first, as for any upload.",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256"
+        ],
+        "title": "RevisionFile",
+        "type": "object"
+      },
+      "RevisionOut": {
+        "description": "One revision of a review.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current": {
+            "description": "True for the newest revision, the one the review works on.",
+            "title": "Current",
+            "type": "boolean"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionDrawing"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "read_only": {
+            "description": "True for an earlier revision: it was replaced by a newer one, and nothing more can be recorded on it. It stays visible as it was.",
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "revision_number": {
+            "title": "Revision Number",
+            "type": "integer"
+          },
+          "signed_off_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it was signed off, if it was.",
+            "title": "Signed Off At"
+          },
+          "signed_off_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signed Off By"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PackageState"
+          },
+          "superseded_by_revision_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Revision Number"
+          },
+          "supersedes_revision_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Revision Number"
+          }
+        },
+        "required": [
+          "revision_id",
+          "revision_number",
+          "state",
+          "created_at",
+          "current",
+          "read_only",
+          "supersedes_revision_number",
+          "superseded_by_revision_number",
+          "signed_off_at",
+          "signed_off_by",
+          "drawings"
+        ],
+        "title": "RevisionOut",
+        "type": "object"
+      },
+      "RevisionStart": {
+        "additionalProperties": false,
+        "description": "Start the next revision of a review: the vendor's new shop drawing, and optionally a new\narchitect's drawing. A drawing not given is reused from the previous revision unchanged.",
+        "properties": {
+          "architectural": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionFile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A new architect's drawing. Leave it out to keep the previous one."
+          },
+          "expected_revision": {
+            "description": "The newest revision the screen shows. If someone else started a revision since, the request is refused (409) rather than starting a second one. Send the newest revision's own number to finish uploading a revision that was started but not read yet.",
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why this revision was started, in the reviewer's words. Optional.",
+            "title": "Note"
+          },
+          "shop": {
+            "$ref": "#/components/schemas/RevisionFile",
+            "description": "The re-issued shop drawing. Required."
+          }
+        },
+        "required": [
+          "expected_revision",
+          "shop"
+        ],
+        "title": "RevisionStart",
+        "type": "object"
+      },
+      "RevisionStarted": {
+        "description": "The new revision, and what to upload into it.",
+        "properties": {
+          "carried_values": {
+            "description": "How many of the job's own values (for example a sink's cut-sheet size) were carried from the previous revision. Values read off the drawing are not carried: the drawing changed.",
+            "title": "Carried Values",
+            "type": "integer"
+          },
+          "next_step": {
+            "description": "What the reviewer does next, in plain words.",
+            "title": "Next Step",
+            "type": "string"
+          },
+          "resumed": {
+            "default": false,
+            "description": "True when this finished uploading a revision that was started earlier but never read, instead of starting another one.",
+            "title": "Resumed",
+            "type": "boolean"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/RevisionOut"
+          },
+          "uploads": {
+            "items": {
+              "$ref": "#/components/schemas/RevisionUpload"
+            },
+            "title": "Uploads",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "uploads",
+          "carried_values",
+          "next_step"
+        ],
+        "title": "RevisionStarted",
+        "type": "object"
+      },
+      "RevisionUpload": {
+        "description": "What to do for one drawing of the new revision.",
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "architectural",
+              "shop"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "description": "`upload`: send the bytes to `ticket`, then confirm them at `/documents/{document_id}/confirm` as for any upload. `already_stored`: these exact bytes were uploaded before for this drawing; the revision already uses them, nothing to send. `unchanged`: the same file as the previous revision; it is reused.",
+            "enum": [
+              "upload",
+              "already_stored",
+              "unchanged"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "ticket": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PresignedUpload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when `status` is `upload`."
+          }
+        },
+        "required": [
+          "kind",
+          "document_id",
+          "status"
+        ],
+        "title": "RevisionUpload",
+        "type": "object"
+      },
+      "RevisionsOut": {
+        "properties": {
+          "can_start_revision": {
+            "description": "Whether the caller may start (or finish uploading) a revision: the upload permission.",
+            "title": "Can Start Revision",
+            "type": "boolean"
+          },
+          "current_revision_number": {
+            "title": "Current Revision Number",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/RevisionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "unfinished_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest revision's number when it was started but its re-issued drawing was not uploaded and read yet; null otherwise. The screen offers to finish it.",
+            "title": "Unfinished Revision"
+          }
+        },
+        "required": [
+          "package_id",
+          "current_revision_number",
+          "can_start_revision",
+          "unfinished_revision",
+          "items"
+        ],
+        "title": "RevisionsOut",
+        "type": "object"
+      },
       "RowLocation": {
         "properties": {
           "coordinate_space": {
@@ -8186,6 +8898,18 @@
       "SavedValueOut": {
         "description": "One value a reviewer saved, exactly as stored, with who saved it and when (#1074).\n\n`numerator`/`denominator` are the stored number itself, as decimal strings. `text` is that same\nnumber written the way the form takes it (`25 1/2\"`), and reads back to exactly these two numbers\nwhen sent again: a millimetre value comes back as the inches it was converted to (`984 mm` is\n`38 94/127\"`), because the characters first typed are not stored \u2014 only the number is.",
         "properties": {
+          "carried_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When this job value was carried from an earlier revision of the review (#1180): the revision it was typed on. Null when it was saved on this revision.",
+            "title": "Carried From Revision"
+          },
           "denominator": {
             "title": "Denominator",
             "type": "string"
@@ -8567,6 +9291,31 @@
       },
       "SlotRowOut": {
         "properties": {
+          "carried_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When this row's wall answer was carried from an identical row of an earlier revision (#1180): the revision it was given on. `confirmed_by` is then who gave it.",
+            "title": "Carried From Revision"
+          },
+          "carried_given_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the carried answer was originally given.",
+            "title": "Carried Given At"
+          },
           "confirmed_by": {
             "anyOf": [
               {
@@ -9782,6 +10531,28 @@
             ],
             "title": "Role"
           },
+          "role_carried_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Carried From Revision"
+          },
+          "role_confirmed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Confirmed By"
+          },
           "suggested_from": {
             "anyOf": [
               {
@@ -9855,6 +10626,43 @@
       },
       "WallLayoutOut": {
         "properties": {
+          "carried_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who gave the carried answer.",
+            "title": "Carried By"
+          },
+          "carried_from_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the reviewer's wall answer was carried from an earlier revision of an identical row (#1180): the revision it was given on. Null when it was given on this revision.",
+            "title": "Carried From Revision"
+          },
+          "carried_given_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the carried answer was originally given.",
+            "title": "Carried Given At"
+          },
           "config": {
             "anyOf": [
               {
@@ -11581,6 +12389,25 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "An earlier revision's number, to read its results as they were (#1180). Default: the newest revision.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number, to read its results as they were (#1180). Default: the newest revision.",
+              "title": "Revision"
             }
           }
         ],
@@ -13512,6 +14339,25 @@
               "title": "Package Id",
               "type": "string"
             }
+          },
+          {
+            "description": "An earlier revision's number, for its signed files. Default: the newest.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number, for its signed files. Default: the newest.",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -13559,6 +14405,25 @@
               "title": "Package Id",
               "type": "string"
             }
+          },
+          {
+            "description": "An earlier revision's number, for its signed files. Default: the newest.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number, for its signed files. Default: the newest.",
+              "title": "Revision"
+            }
           }
         ],
         "responses": {
@@ -13605,6 +14470,25 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "An earlier revision's number, for its signed files. Default: the newest.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number, for its signed files. Default: the newest.",
+              "title": "Revision"
             }
           }
         ],
@@ -13764,6 +14648,214 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/revisions": {
+      "get": {
+        "description": "Each revision's number, state, when it was started, whether it was signed off and by whom,\nand the drawings it holds (\"same file as revision N\" when one was carried forward).",
+        "operationId": "list_revisions_api_v1_projects__project_id__packages__package_id__revisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Every revision of a review, oldest first",
+        "tags": [
+          "revisions"
+        ]
+      },
+      "post": {
+        "description": "Open revision N+1 and get upload tickets for the re-issued drawing(s).\n\nEvery drawing of revision N is carried into N+1 at the version it had; a drawing you send\nreplaces its carried version once confirmed. Revision N becomes read-only. Then: PUT each\n`upload` ticket, confirm it at `/documents/{document_id}/confirm`, and `POST .../extract`.\n\n`409` while the current revision is still being uploaded, read or checked, or is closed; when one\nfile would be both drawings; or when the review holds several drawings of one kind. `422` when\nthe shop file is the same bytes as the current one.",
+        "operationId": "start_next_revision_api_v1_projects__project_id__packages__package_id__revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionStarted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start the next revision of a review with the vendor's re-issued drawing",
+        "tags": [
+          "revisions"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/revisions/compare": {
+      "get": {
+        "description": "Pages added, removed and changed (by each page's content hash), and every countertop row's\nstored result before and after. Read only; nothing is recomputed.",
+        "operationId": "compare_revisions_api_v1_projects__project_id__packages__package_id__revisions_compare_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The earlier revision; default the one before `after`.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The earlier revision; default the one before `after`.",
+              "title": "Before"
+            }
+          },
+          {
+            "description": "The later revision; default the newest.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The later revision; default the newest.",
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionComparisonOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What changed between two revisions of a review",
+        "tags": [
+          "revisions"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/signed-exports": {
       "get": {
         "description": "Read availability only; downloading or inspecting never generates files.",
@@ -13787,6 +14879,25 @@
               "format": "uuid",
               "title": "Package Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "An earlier revision's number, for its signed files. Default: the newest.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number, for its signed files. Default: the newest.",
+              "title": "Revision"
             }
           }
         ],
@@ -14702,7 +15813,7 @@
     },
     "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve": {
       "post": {
-        "description": "Approve every finding of the revision this sitting is reviewing.\n\nThe finding set is chosen by the server, not sent by the caller. A client naming the findings it\napproves is a client that can approve a subset and leave the rest looking reviewed \u2014 and the\napproval is the record GV stands behind when a vendor disputes a dimension.\n\nRefuses while any `REVIEW_REQUIRED` finding is unaddressed. That is not a formality: an abstention\nnobody acted on is a check that did not happen, and approving around it would put a package's name\nto a question nobody answered.",
+        "description": "Approve every finding of the revision this sitting is reviewing.\n\nWhen a result rests on an answer carried from an earlier revision (#1180), send\n`carried_answers_confirmed: true` to say those answers still apply; otherwise `409` lists them.\n\nThe finding set is chosen by the server, not sent by the caller. A client naming the findings it\napproves is a client that can approve a subset and leave the rest looking reviewed \u2014 and the\napproval is the record GV stands behind when a vendor disputes a dimension.\n\nRefuses while any `REVIEW_REQUIRED` finding is unaddressed. That is not a formality: an abstention\nnobody acted on is a check that did not happen, and approving around it would put a package's name\nto a question nobody answered.",
         "operationId": "approve_api_v1_projects__project_id__review_sessions__review_session_id__approve_post",
         "parameters": [
           {
@@ -14726,6 +15837,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApproveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "content": {

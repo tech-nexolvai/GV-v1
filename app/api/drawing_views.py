@@ -23,7 +23,8 @@ from app.api.signed_off import open_revision
 from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.evidence.sides import ReadingSides
-from app.models import DrawingView, Package, PackageRevision, Page, ViewRole
+from app.lifecycle.carry_forward import role_origins
+from app.models import DrawingView, Package, PackageRevision, Page, ViewRole, ViewRoleConfirmation
 from vocabulary.semantic_types import DocumentRole
 from workflow.view_roles import RevisionView, confirm_view_role, revision_views
 
@@ -56,6 +57,11 @@ class ViewOut(BaseModel):
     """`arch` or `shop` when nobody has confirmed this drawing and the upload decides its readings'
     side anyway: the package has both an architectural and a shop document, and this page holds this
     one drawing (#795). Null otherwise — including once a reviewer has confirmed it."""
+    role_carried_from_revision: int | None = None
+    """When the role was carried from a byte-identical page of an earlier revision (#1180): the
+    revision a person confirmed it on. Null when it was confirmed on this revision."""
+    role_confirmed_by: str | None = None
+    """Who confirmed the role (for a carried one, the person who confirmed it originally)."""
 
 
 class ViewsOut(BaseModel):
@@ -83,6 +89,13 @@ def _out(entry: RevisionView, sides: ReadingSides, session: Session) -> ViewOut:
     view, page_index, proposal = entry.view, entry.page_index, entry.proposal
     page = session.get(Page, view.page_id)
     upload = None if view.role is not None or page is None else sides.unconfirmed_side(page)
+    latest = session.scalars(
+        select(ViewRoleConfirmation)
+        .where(ViewRoleConfirmation.drawing_view_id == view.id)
+        .order_by(ViewRoleConfirmation.created_at.desc(), ViewRoleConfirmation.id.desc())
+        .limit(1)
+    ).first()
+    origin = None if latest is None else role_origins(session, (latest,)).get(latest.id)
     return ViewOut(
         view_id=view.id,
         page_index=page_index,
@@ -92,6 +105,8 @@ def _out(entry: RevisionView, sides: ReadingSides, session: Session) -> ViewOut:
         suggested_from=None if proposal is None else proposal.heading,
         reason=None if proposal is None else proposal.reason,
         upload_side=None if upload is None else _UPLOAD_SIDE[upload],
+        role_carried_from_revision=None if origin is None else origin.revision_number,
+        role_confirmed_by=None if latest is None else latest.confirmed_by,
     )
 
 

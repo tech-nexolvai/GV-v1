@@ -48,7 +48,7 @@ Verification: `tests/api/test_measurements.py`, `tests/api/test_setting_citation
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -693,7 +693,7 @@ def _stored_layout_proposal_out(
     }
 
 
-def _saved_value(row: StoredParameterValue) -> SavedValueOut:
+def _saved_value(row: StoredParameterValue, carried_from: int | None = None) -> SavedValueOut:
     """One stored value as the form takes it: the exact pair, and text that reads back to it."""
     exact = row.exact_value
     return SavedValueOut(
@@ -705,7 +705,35 @@ def _saved_value(row: StoredParameterValue) -> SavedValueOut:
         text=f'{format_inches(exact)}"' if row.unit == Unit.INCH.value else None,
         set_by=row.set_by,
         set_at=row.set_at,
+        carried_from_revision=carried_from,
     )
+
+
+def _carried_from(session: Session, revision: PackageRevision) -> Callable[[datetime], int | None]:
+    """Which earlier revision a run value was typed on (#1180), from when it was set.
+
+    A value typed on this revision is set after the revision started; one set before was carried
+    from the revision that was current then. No query for a first revision.
+    """
+    if revision.supersedes_id is None:
+        return lambda _set_at: None
+    earlier = list(
+        session.execute(
+            select(PackageRevision.revision_number, PackageRevision.created_at)
+            .where(
+                PackageRevision.package_id == revision.package_id,
+                PackageRevision.revision_number < revision.revision_number,
+            )
+            .order_by(PackageRevision.revision_number)
+        )
+    )
+
+    def number(set_at: datetime) -> int | None:
+        if not earlier or set_at >= revision.created_at:
+            return None
+        return max((n for n, started in earlier if started <= set_at), default=earlier[0][0])
+
+    return number
 
 
 def _saved_entries(
@@ -805,11 +833,12 @@ def _saved_entries(
             ).where(ParameterValueCitation.parameter_value_id.in_([row.id for _, row in chosen]))
         )
     }
+    carried_from = _carried_from(session, revision)
     parameters = tuple(
         SavedParameterOut(
             name=row.name,
             layer=layer,
-            value=_saved_value(row),
+            value=_saved_value(row, carried_from(row.set_at) if layer == "run" else None),
             source=row.provenance,
             reference=row.source_reference,
             citation=citations.get(row.id),

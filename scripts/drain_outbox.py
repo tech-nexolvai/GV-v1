@@ -558,6 +558,21 @@ def _propose_measurements(session: object, package_revision_id: UUID) -> Mapping
         return {"ran": False, "reason": f"the proposal step failed: {error}"}
 
 
+def _carry_forward(session: object, package_revision_id: UUID) -> Mapping[str, object]:
+    """Carry a person's answers from the revision this one superseded (#1180), in a savepoint.
+
+    Reported, never raised: a carry that fails leaves the reviewer to answer again, which is the
+    safe direction, and must not lose the drawings that were just read.
+    """
+    from app.lifecycle.carry_forward import carry_after_reading
+
+    try:
+        with session.begin_nested():  # type: ignore[attr-defined]
+            return carry_after_reading(session, package_revision_id).as_payload()  # type: ignore[arg-type]
+    except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
+        return {"ran": False, "reason": f"carrying answers forward failed: {type(error).__name__}"}
+
+
 def _extract_package(
     session: object,
     package_revision_id: UUID,
@@ -622,6 +637,13 @@ def _extract_package(
                     workflow_run_id=workflow_run_id,
                     stages=stages,  # type: ignore[arg-type]
                 )
+            if stage == "extract_pages":
+                # **A later revision takes the reviewer's answers on what did not change** (#1180):
+                # wall answers on identical rows and drawing roles on identical pages, before
+                # matching reads the roles. Inside the stage's transaction, so the reading and its
+                # carried answers commit together; idempotent, so a redelivery that finds the stage
+                # done carries nothing twice. It cannot fail the reading: a failure means asking again.
+                results["carry_forward"] = _carry_forward(session, package_revision_id)
             if stage != final:
                 # The stage boundary. The last stage stays open: the hand-over below lands with it.
                 session.commit()  # type: ignore[attr-defined]

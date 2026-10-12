@@ -143,6 +143,10 @@ for _dependency in (open_revision, open_revision_unlocked, open_session_revision
 EXEMPT_WRITES: Final[dict[tuple[str, str], str]] = {
     (
         "POST",
+        "/api/v1/projects/{project_id}/packages/{package_id}/revisions",
+    ): "starting a new revision is the way to change a closed review (#1180)",
+    (
+        "POST",
         "/api/v1/projects/{project_id}/review-sessions/{review_session_id}/approve",
     ): "approval is the sign-off itself; it requires AWAITING_REVIEW already",
     (

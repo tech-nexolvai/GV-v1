@@ -80,6 +80,9 @@ class SignedReview(BaseModel):
     approved_by: str
     approved_at: AwareDatetime
     findings: tuple[SignedReviewFinding, ...]
+    carried_answers_confirmation: str | None = None
+    """When results rested on answers carried from an earlier revision (#1180): who confirmed at
+    sign-off that they still apply, and when. Absent from records signed before #1180."""
 
     @model_validator(mode="after")
     def complete_record(self) -> SignedReview:
@@ -95,4 +98,5 @@ class SignedReview(BaseModel):
         return (
             f"Signed off by {self.approved_by} on {self.approved_at.isoformat()}. "
             f"Approval id: {self.approval_id}. {len(self.findings)} findings covered."
+            + (f" {self.carried_answers_confirmation}" if self.carried_answers_confirmation else "")
         )

@@ -57,6 +57,7 @@ __all__ = [
     "TwoVersionsOfOneDocument",
     "VersionFromAnotherPackage",
     "revision_chain",
+    "start_revision",
     "supersede",
     "superseded_by",
 ]
@@ -290,6 +291,72 @@ def supersede(
             "supersedes_id": str(prior.id),
             "revision_number": new_revision.revision_number,
         },
+    )
+    return new_revision
+
+
+def start_revision(
+    session: Session, *, package_id: UUID, actor: str, reason: str | None = None
+) -> PackageRevision:
+    """Open revision N+1 for the re-issued drawings to be uploaded into (#1180). Commits nothing.
+
+    `supersede` needs the new document versions before it runs, and an upload cannot give it them:
+    the bytes go straight to storage and a version exists only once `/confirm` has hashed them. So
+    this is the same supersede with the order the upload flow needs:
+
+    * the new revision is composed of every drawing of the prior one, **at the version it had** —
+      one `package_revision_documents` row each, no new bytes (ADR-0018) — and moves on to
+      `UPLOADING`, the assembly state the existing `/confirm` writes into. A confirmed re-issue then
+      *replaces* its document's carried version (the membership is upserted while the revision is
+      still being assembled) instead of sitting beside it;
+    * the prior revision moves to `SUPERSEDED`, its own document set and records untouched;
+    * **nothing is enqueued.** Reading starts only when the reviewer asks for it (`/extract`), which
+      refuses a revision whose drawings are still exactly the prior one's — the "a supersede that
+      changes nothing" refusal `supersede` makes up front, made at the point it can be known.
+
+    Raises `NothingToSupersede` when the package or its current revision does not exist.
+    """
+    prior = current_revision(session, package_id)
+    _project_of(session, package_id)
+    carried = _documents_of(session, prior.id)
+
+    new_revision = PackageRevision(
+        package_id=package_id,
+        revision_number=prior.revision_number + 1,
+        state=PackageState.CREATED,
+        supersedes_id=prior.id,
+    )
+    session.add(new_revision)
+    session.flush()
+    begin(
+        session,
+        new_revision.id,
+        actor=actor,
+        reason=reason or f"revision {new_revision.revision_number} started",
+    )
+    for document_id, version_id in carried.items():
+        session.add(
+            PackageRevisionDocument(
+                package_revision_id=new_revision.id,
+                package_id=package_id,
+                document_id=document_id,
+                document_version_id=version_id,
+            )
+        )
+    session.flush()
+    transition(
+        session,
+        new_revision.id,
+        PackageState.UPLOADING,
+        actor=actor,
+        reason="reviewer started uploading the re-issued drawings",
+    )
+    transition(
+        session,
+        prior.id,
+        PackageState.SUPERSEDED,
+        actor=actor,
+        reason=reason or f"superseded by revision {new_revision.revision_number}",
     )
     return new_revision
 
