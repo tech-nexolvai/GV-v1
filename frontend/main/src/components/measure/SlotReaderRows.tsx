@@ -273,7 +273,13 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
               <Button type="button" size="sm" variant="secondary" disabled={!canSave} onClick={() => void save(row)}>
                 {saving === row.row_id ? 'Saving…' : 'Save this row'}
               </Button>
-              {row.confirmed_by && <span className="text-xs text-muted-foreground">Last saved by {row.confirmed_by}</span>}
+              {row.confirmed_by && (
+                <span className="text-xs text-muted-foreground">
+                  {row.carried_from_revision != null
+                    ? `From revision ${row.carried_from_revision} · ${row.confirmed_by}`
+                    : `Last saved by ${row.confirmed_by}`}
+                </span>
+              )}
               {signedOff && <span className="text-xs text-muted-foreground" role="note">{SIGNED_OFF_NOTE}</span>}
               {feedback[row.row_id] && <span className="text-xs text-muted-foreground" role="status">{feedback[row.row_id]}</span>}
             </div>

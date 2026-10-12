@@ -409,6 +409,13 @@ class SavedValueOut(BaseModel):
     text: str | None
     set_by: str
     set_at: datetime
+    carried_from_revision: int | None = Field(
+        default=None,
+        description=(
+            "When this job value was carried from an earlier revision of the review (#1180): the "
+            "revision it was typed on. Null when it was saved on this revision."
+        ),
+    )
 
 
 class SavedQuantityOut(BaseModel):

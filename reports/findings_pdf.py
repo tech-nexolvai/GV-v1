@@ -53,6 +53,15 @@ _BODY_FONT: Final = "Courier"
 _BOLD_FONT: Final = "Courier-Bold"
 
 
+def _wall_source(result: CountertopResultOut) -> str:
+    """Who set the wall layout; a reviewer's answer carried from an earlier revision says so (#1180)."""
+    layout = result.wall_layout
+    if layout.source == "reviewer" and layout.carried_from_revision is not None:
+        who = f" · {layout.carried_by}" if layout.carried_by else ""
+        return f"reviewer (revision {layout.carried_from_revision}){who}"
+    return layout.source
+
+
 @dataclass(frozen=True, slots=True)
 class FindingsPdfInput:
     """The immutable stored facts one reviewer report presents.
@@ -629,7 +638,7 @@ class _Document:
         new_page()
         for result in sorted(results, key=lambda item: item.page_number):
             details = [
-                f"Wall layout: {_text(result.wall_layout.label)} ({result.wall_layout.source})",
+                f"Wall layout: {_text(result.wall_layout.label)} ({_wall_source(result)})",
                 f"Field cut: {_text(None if result.field_cut_per_end is None else result.field_cut_per_end.display)} per end x {_text(result.field_cut_count)}",
                 architect_line(result),
             ]

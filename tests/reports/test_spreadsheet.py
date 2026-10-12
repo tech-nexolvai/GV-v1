@@ -204,6 +204,28 @@ def test_summary_is_branded_and_records_only_the_signoff_supplied_to_the_writer(
     assert any(row[:2] == ["APPROVED AT", "2026-09-09T12:00:00Z"] for row in rows)
 
 
+def test_a_signed_summary_names_the_revision_it_signed() -> None:
+    """#1180: a review has revisions, so the signed workbook says which one was signed off."""
+    signed = WorkbookSignoff(
+        approved_by="reviewer@example.com", approved_at="2026-09-09T12:00:00Z", revision_number=2
+    )
+    rows = _sheet(write_stored_workbook([_stored()], signoff=signed), SUMMARY_SHEET)
+    unnamed = _sheet(
+        write_stored_workbook(
+            [_stored()],
+            signoff=WorkbookSignoff(
+                approved_by="reviewer@example.com", approved_at="2026-09-09T12:00:00Z"
+            ),
+        ),
+        SUMMARY_SHEET,
+    )
+
+    assert any(row[:2] == ["REVISION", "2"] for row in rows)
+    assert not any(row[:1] == ["REVISION"] for row in unnamed)
+    with pytest.raises(ValueError):
+        WorkbookSignoff(approved_by="r", approved_at="t", revision_number=0)
+
+
 def test_unsigned_summary_does_not_claim_a_reviewer_approved_it() -> None:
     rows = _sheet(write_stored_workbook([_stored()]), SUMMARY_SHEET)
 

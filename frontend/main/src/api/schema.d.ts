@@ -1391,6 +1391,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every revision of a review, oldest first
+         * @description Each revision's number, state, when it was started, whether it was signed off and by whom,
+         *     and the drawings it holds ("same file as revision N" when one was carried forward).
+         */
+        get: operations["list_revisions_api_v1_projects__project_id__packages__package_id__revisions_get"];
+        put?: never;
+        /**
+         * Start the next revision of a review with the vendor's re-issued drawing
+         * @description Open revision N+1 and get upload tickets for the re-issued drawing(s).
+         *
+         *     Every drawing of revision N is carried into N+1 at the version it had; a drawing you send
+         *     replaces its carried version once confirmed. Revision N becomes read-only. Then: PUT each
+         *     `upload` ticket, confirm it at `/documents/{document_id}/confirm`, and `POST .../extract`.
+         *
+         *     `409` while the current revision is still being uploaded, read or checked, or is closed; when one
+         *     file would be both drawings; or when the review holds several drawings of one kind. `422` when
+         *     the shop file is the same bytes as the current one.
+         */
+        post: operations["start_next_revision_api_v1_projects__project_id__packages__package_id__revisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/revisions/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What changed between two revisions of a review
+         * @description Pages added, removed and changed (by each page's content hash), and every countertop row's
+         *     stored result before and after. Read only; nothing is recomputed.
+         */
+        get: operations["compare_revisions_api_v1_projects__project_id__packages__package_id__revisions_compare_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/signed-exports": {
         parameters: {
             query?: never;
@@ -1642,6 +1696,9 @@ export interface paths {
         /**
          * Sign off a package, so its review can leave the building
          * @description Approve every finding of the revision this sitting is reviewing.
+         *
+         *     When a result rests on an answer carried from an earlier revision (#1180), send
+         *     `carried_answers_confirmed: true` to say those answers still apply; otherwise `409` lists them.
          *
          *     The finding set is chosen by the server, not sent by the caller. A client naming the findings it
          *     approves is a client that can approve a subset and leave the rest looking reviewed — and the
@@ -2208,6 +2265,18 @@ export interface components {
              * Format: uuid
              */
             revision_id: string;
+        };
+        /**
+         * ApproveIn
+         * @description What the signer says with the sign-off. Optional: an empty request is the same as false.
+         */
+        ApproveIn: {
+            /**
+             * Carried Answers Confirmed
+             * @description The signer confirms that answers carried from an earlier revision (#1180) still apply to these drawings. Required only when a result rests on one.
+             * @default false
+             */
+            carried_answers_confirmed: boolean;
         };
         /**
          * ArchitectAiPickOut
@@ -3185,6 +3254,23 @@ export interface components {
             value: string;
         };
         /**
+         * CountertopChangeOut
+         * @description One countertop row, by page and row label, before and after.
+         */
+        CountertopChangeOut: {
+            after: components["schemas"]["CountertopSideOut"] | null;
+            before: components["schemas"]["CountertopSideOut"] | null;
+            /**
+             * Change
+             * @enum {string}
+             */
+            change: "same" | "changed" | "new" | "gone";
+            /** Label */
+            label: string;
+            /** Page Number */
+            page_number: number;
+        };
+        /**
          * CountertopOut
          * @description One confirmed countertop and its run.
          */
@@ -3291,6 +3377,19 @@ export interface components {
              * @description Second countertop rows an AI named on a vendor page whose countertop row was read. Only one countertop row per page is read, so these were not checked. Listed only; nothing to decide.
              */
             rows_not_checked?: components["schemas"]["RowNotCheckedOut"][];
+        };
+        /**
+         * CountertopSideOut
+         * @description One countertop row's stored result on one side.
+         */
+        CountertopSideOut: {
+            delta: components["schemas"]["ExactValueOut"] | null;
+            expected_total: components["schemas"]["ExactValueOut"] | null;
+            /** Needs Decision */
+            needs_decision: boolean;
+            /** @description The stored result of the last check run; null when no check has run on it. */
+            outcome: components["schemas"]["Outcome"] | null;
+            printed_overall: components["schemas"]["ExactValueOut"] | null;
         };
         /**
          * DecideEvidence
@@ -3437,6 +3536,38 @@ export interface components {
             source_artifact_id: string;
             /** Storage Key */
             storage_key: string;
+        };
+        /**
+         * DrawingChangeOut
+         * @description One drawing compared between the two revisions.
+         */
+        DrawingChangeOut: {
+            /**
+             * Compared
+             * @description False when either side has not been read yet, so its pages are not known. The pages are then not compared rather than guessed.
+             */
+            compared: boolean;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** File Name */
+            file_name: string | null;
+            /** Kind */
+            kind: string;
+            /** Pages */
+            pages: components["schemas"]["PageChangeOut"][];
+            /**
+             * Reason
+             * @description Why the pages were not compared.
+             */
+            reason?: string | null;
+            /**
+             * Same File
+             * @description True when both revisions hold the exact same bytes.
+             */
+            same_file: boolean;
         };
         /**
          * DrawingOut
@@ -4521,6 +4652,12 @@ export interface components {
              */
             run_id: string;
         };
+        /**
+         * PackageState
+         * @description Persisted package lifecycle states fixed by ``DESIGN_PLATFORM.md`` section 5.
+         * @enum {string}
+         */
+        PackageState: "CREATED" | "UPLOADING" | "UPLOADED" | "INGESTING" | "EXTRACTING" | "MATCHING" | "VALIDATING_EVIDENCE" | "RUNNING_CHECKS" | "GENERATING_OUTPUTS" | "AWAITING_REVIEW" | "APPROVED" | "CHANGES_REQUESTED" | "FAILED_RETRYABLE" | "FAILED_PERMANENT" | "NEEDS_INPUT" | "CANCELLED" | "SUPERSEDED";
         /** PackageSummaryItemOut */
         PackageSummaryItemOut: {
             /** Approved */
@@ -4578,6 +4715,37 @@ export interface components {
              * @enum {string}
              */
             sort: "updated" | "vendor" | "needs_decision";
+        };
+        /**
+         * PageChangeOut
+         * @description One page of one drawing, compared between the two revisions by its content hash.
+         */
+        PageChangeOut: {
+            /**
+             * Before Page Number
+             * @description Where the same page was in the earlier revision, when it was paired with one.
+             */
+            before_page_number?: number | null;
+            /**
+             * Change
+             * @description `moved`: the same page bytes at another page number. Pages are paired by their content first, then by sheet number, then by position.
+             * @enum {string}
+             */
+            change: "added" | "removed" | "changed" | "moved" | "unchanged";
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** File Name */
+            file_name: string | null;
+            /** Kind */
+            kind: string;
+            /**
+             * Page Number
+             * @description The page's number in the newer revision (or the earlier, if removed).
+             */
+            page_number: number;
         };
         /** PagePicturesQueuedOut */
         PagePicturesQueuedOut: {
@@ -5505,6 +5673,220 @@ export interface components {
             /** Parameters */
             parameters: components["schemas"]["StoredValue"][];
         };
+        /**
+         * RevisionComparisonOut
+         * @description What changed between two revisions of a review.
+         */
+        RevisionComparisonOut: {
+            /** After Revision Number */
+            after_revision_number: number;
+            /** Before Revision Number */
+            before_revision_number: number;
+            /** Countertops */
+            countertops: components["schemas"]["CountertopChangeOut"][];
+            /**
+             * Countertops Checked
+             * @description False while the newer revision has no check results yet: the countertop list then shows only the earlier results.
+             */
+            countertops_checked: boolean;
+            /**
+             * Countertops Read
+             * @description False while the newer revision has no countertop rows yet (not read). The countertop list is then empty rather than reporting every row as gone.
+             */
+            countertops_read: boolean;
+            /** Drawings */
+            drawings: components["schemas"]["DrawingChangeOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /** Pages Added */
+            pages_added: number;
+            /** Pages Changed */
+            pages_changed: number;
+            /** Pages Removed */
+            pages_removed: number;
+            /** Pages Unchanged */
+            pages_unchanged: number;
+        };
+        /**
+         * RevisionDrawing
+         * @description One drawing a revision holds.
+         */
+        RevisionDrawing: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string | null;
+            /** Kind */
+            kind: string;
+            /** Page Count */
+            page_count: number | null;
+            /**
+             * Same As Revision
+             * @description The earlier revision number holding these exact bytes for this drawing, when it was carried forward or uploaded again unchanged; null for a new file.
+             */
+            same_as_revision: number | null;
+            /** Sha256 */
+            sha256: string;
+        };
+        /**
+         * RevisionFile
+         * @description One re-issued drawing, declared by its bytes' hash before it is uploaded.
+         */
+        RevisionFile: {
+            /**
+             * Sha256
+             * @description The SHA-256 of the file, lowercase hex. Hash it locally first, as for any upload.
+             */
+            sha256: string;
+        };
+        /**
+         * RevisionOut
+         * @description One revision of a review.
+         */
+        RevisionOut: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Current
+             * @description True for the newest revision, the one the review works on.
+             */
+            current: boolean;
+            /** Drawings */
+            drawings: components["schemas"]["RevisionDrawing"][];
+            /**
+             * Read Only
+             * @description True for an earlier revision: it was replaced by a newer one, and nothing more can be recorded on it. It stays visible as it was.
+             */
+            read_only: boolean;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Revision Number */
+            revision_number: number;
+            /**
+             * Signed Off At
+             * @description When it was signed off, if it was.
+             */
+            signed_off_at: string | null;
+            /** Signed Off By */
+            signed_off_by: string | null;
+            state: components["schemas"]["PackageState"];
+            /** Superseded By Revision Number */
+            superseded_by_revision_number: number | null;
+            /** Supersedes Revision Number */
+            supersedes_revision_number: number | null;
+        };
+        /**
+         * RevisionStart
+         * @description Start the next revision of a review: the vendor's new shop drawing, and optionally a new
+         *     architect's drawing. A drawing not given is reused from the previous revision unchanged.
+         */
+        RevisionStart: {
+            /** @description A new architect's drawing. Leave it out to keep the previous one. */
+            architectural?: components["schemas"]["RevisionFile"] | null;
+            /**
+             * Expected Revision
+             * @description The newest revision the screen shows. If someone else started a revision since, the request is refused (409) rather than starting a second one. Send the newest revision's own number to finish uploading a revision that was started but not read yet.
+             */
+            expected_revision: number;
+            /**
+             * Note
+             * @description Why this revision was started, in the reviewer's words. Optional.
+             */
+            note?: string | null;
+            /** @description The re-issued shop drawing. Required. */
+            shop: components["schemas"]["RevisionFile"];
+        };
+        /**
+         * RevisionStarted
+         * @description The new revision, and what to upload into it.
+         */
+        RevisionStarted: {
+            /**
+             * Carried Values
+             * @description How many of the job's own values (for example a sink's cut-sheet size) were carried from the previous revision. Values read off the drawing are not carried: the drawing changed.
+             */
+            carried_values: number;
+            /**
+             * Next Step
+             * @description What the reviewer does next, in plain words.
+             */
+            next_step: string;
+            /**
+             * Resumed
+             * @description True when this finished uploading a revision that was started earlier but never read, instead of starting another one.
+             * @default false
+             */
+            resumed: boolean;
+            revision: components["schemas"]["RevisionOut"];
+            /** Uploads */
+            uploads: components["schemas"]["RevisionUpload"][];
+        };
+        /**
+         * RevisionUpload
+         * @description What to do for one drawing of the new revision.
+         */
+        RevisionUpload: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "architectural" | "shop";
+            /**
+             * Status
+             * @description `upload`: send the bytes to `ticket`, then confirm them at `/documents/{document_id}/confirm` as for any upload. `already_stored`: these exact bytes were uploaded before for this drawing; the revision already uses them, nothing to send. `unchanged`: the same file as the previous revision; it is reused.
+             * @enum {string}
+             */
+            status: "upload" | "already_stored" | "unchanged";
+            /** @description Only when `status` is `upload`. */
+            ticket?: components["schemas"]["PresignedUpload"] | null;
+        };
+        /** RevisionsOut */
+        RevisionsOut: {
+            /**
+             * Can Start Revision
+             * @description Whether the caller may start (or finish uploading) a revision: the upload permission.
+             */
+            can_start_revision: boolean;
+            /** Current Revision Number */
+            current_revision_number: number;
+            /**
+             * Items
+             * @description Oldest first.
+             */
+            items: components["schemas"]["RevisionOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Unfinished Revision
+             * @description The newest revision's number when it was started but its re-issued drawing was not uploaded and read yet; null otherwise. The screen offers to finish it.
+             */
+            unfinished_revision: number | null;
+        };
         /** RowLocation */
         RowLocation: {
             /**
@@ -5800,6 +6182,11 @@ export interface components {
          *     `38 94/127"`), because the characters first typed are not stored — only the number is.
          */
         SavedValueOut: {
+            /**
+             * Carried From Revision
+             * @description When this job value was carried from an earlier revision of the review (#1180): the revision it was typed on. Null when it was saved on this revision.
+             */
+            carried_from_revision?: number | null;
             /** Denominator */
             denominator: string;
             /** Numerator */
@@ -5966,6 +6353,16 @@ export interface components {
         };
         /** SlotRowOut */
         SlotRowOut: {
+            /**
+             * Carried From Revision
+             * @description When this row's wall answer was carried from an identical row of an earlier revision (#1180): the revision it was given on. `confirmed_by` is then who gave it.
+             */
+            carried_from_revision?: number | null;
+            /**
+             * Carried Given At
+             * @description When the carried answer was originally given.
+             */
+            carried_given_at?: string | null;
             /** Confirmed By */
             confirmed_by: string | null;
             /** Decided At */
@@ -6463,6 +6860,10 @@ export interface components {
             reason: string | null;
             /** Role */
             role: string | null;
+            /** Role Carried From Revision */
+            role_carried_from_revision?: number | null;
+            /** Role Confirmed By */
+            role_confirmed_by?: string | null;
             /** Suggested From */
             suggested_from: string | null;
             /** Suggested Role */
@@ -6484,6 +6885,21 @@ export interface components {
         };
         /** WallLayoutOut */
         WallLayoutOut: {
+            /**
+             * Carried By
+             * @description Who gave the carried answer.
+             */
+            carried_by?: string | null;
+            /**
+             * Carried From Revision
+             * @description When the reviewer's wall answer was carried from an earlier revision of an identical row (#1180): the revision it was given on. Null when it was given on this revision.
+             */
+            carried_from_revision?: number | null;
+            /**
+             * Carried Given At
+             * @description When the carried answer was originally given.
+             */
+            carried_given_at?: string | null;
             /** Config */
             config: string | null;
             /** Label */
@@ -7406,7 +7822,10 @@ export interface operations {
     };
     countertop_results_api_v1_projects__project_id__packages__package_id__countertop_results_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description An earlier revision's number, to read its results as they were (#1180). Default: the newest revision. */
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -8398,7 +8817,10 @@ export interface operations {
     };
     download_redline_api_v1_projects__project_id__packages__package_id__redline_pdf_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description An earlier revision's number, for its signed files. Default: the newest. */
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -8428,7 +8850,10 @@ export interface operations {
     };
     download_report_api_v1_projects__project_id__packages__package_id__report_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description An earlier revision's number, for its signed files. Default: the newest. */
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -8458,7 +8883,10 @@ export interface operations {
     };
     download_pdf_report_api_v1_projects__project_id__packages__package_id__report_pdf_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description An earlier revision's number, for its signed files. Default: the newest. */
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -8556,9 +8984,117 @@ export interface operations {
             };
         };
     };
-    export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get: {
+    list_revisions_api_v1_projects__project_id__packages__package_id__revisions_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_next_revision_api_v1_projects__project_id__packages__package_id__revisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevisionStart"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionStarted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    compare_revisions_api_v1_projects__project_id__packages__package_id__revisions_compare_get: {
+        parameters: {
+            query?: {
+                /** @description The earlier revision; default the one before `after`. */
+                before?: number | null;
+                /** @description The later revision; default the newest. */
+                after?: number | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionComparisonOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_status_api_v1_projects__project_id__packages__package_id__signed_exports_get: {
+        parameters: {
+            query?: {
+                /** @description An earlier revision's number, for its signed files. Default: the newest. */
+                revision?: number | null;
+            };
             header?: never;
             path: {
                 project_id: string;
@@ -9079,7 +9615,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ApproveIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {

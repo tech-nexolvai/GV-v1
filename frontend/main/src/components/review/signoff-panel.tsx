@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { CheckCircle2, CircleAlert, Loader2, RefreshCw, Signature } from 'lucide-react';
 
 import type { ApprovalReadiness } from '@/api/client';
@@ -12,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { SignOffSummary } from '@/lib/countertop-results';
+import type { CarriedWall } from '@/lib/revisions';
 
 /** What is being signed, in counts the page already has. */
 export interface SignOffScope {
@@ -193,6 +195,7 @@ export function SignOffDialog({
   busy,
   error,
   onConfirm,
+  carried = [],
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -205,10 +208,16 @@ export function SignOffDialog({
   busy: boolean;
   /** Why the last attempt did not sign, shown here so it is not hidden behind the dialog. */
   error: string | null;
-  onConfirm: () => void;
+  /** `carriedConfirmed`: the signer ticked that the carried answers still apply (sent to the server). */
+  onConfirm: (carriedConfirmed: boolean) => void;
+  /** Wall answers carried from an earlier revision that a result rests on (#1180): one explicit
+   * confirmation, for the whole list, before signing. */
+  carried?: readonly CarriedWall[];
 }) {
+  const [stillApply, setStillApply] = useState(false);
+  const needsCarriedCheck = carried.length > 0;
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!busy) { setStillApply(false); onOpenChange(next); } }}>
       <DialogContent data-slot="signoff-dialog" className="font-sans sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Sign off this review?</DialogTitle>
@@ -234,6 +243,22 @@ export function SignOffDialog({
           <li>The signed files are prepared next: findings PDF, workbook and drawing redline.</li>
           <li><strong>This cannot be undone.</strong> Changes after sign-off need a new revision of the drawings.</li>
         </ul>
+        {needsCarriedCheck && (
+          <section aria-label="Answers carried from an earlier revision" data-part="carried-answers" className="flex flex-col gap-2 rounded-md border p-3 text-sm">
+            <p className="font-medium">Answers carried from an earlier revision: confirm they still apply</p>
+            <ul className="flex list-disc flex-col gap-1 pl-5">
+              {carried.map((item) => (
+                <li key={item.rowId}>
+                  {item.label}: wall answer {item.words.charAt(0).toLowerCase() + item.words.slice(1)}
+                </li>
+              ))}
+            </ul>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="size-4" checked={stillApply} onChange={(event) => setStillApply(event.target.checked)} />
+              These answers still apply to this revision
+            </label>
+          </section>
+        )}
         {error !== null && (
           <p className="text-sm text-destructive" role="alert" data-part="signoff-error">Nothing was signed: {error}</p>
         )}
@@ -241,7 +266,7 @@ export function SignOffDialog({
           <DialogClose asChild>
             <Button type="button" variant="outline" disabled={busy}>Keep reviewing</Button>
           </DialogClose>
-          <Button type="button" onClick={onConfirm} disabled={busy || !ready}>
+          <Button type="button" onClick={() => onConfirm(needsCarriedCheck && stillApply)} disabled={busy || !ready || (needsCarriedCheck && !stillApply)}>
             {busy ? <><Loader2 className="animate-spin" aria-hidden="true" /> Signing off…</> : 'Sign off'}
           </Button>
         </DialogFooter>

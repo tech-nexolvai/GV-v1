@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from fractions import Fraction
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.evidence.sides import ReadingSides, has_separate_architect_file
+from app.lifecycle.carry_forward import CarriedOrigin, wall_answer_origins
 from app.models import (
     CanonicalObservation,
     CheckRun,
@@ -479,8 +481,9 @@ def _drawn_length_note(row: Any, verdict_inputs: dict[str, VerdictInput]) -> str
     return not_checked_note(positions)
 
 
-def _wall(row: Any) -> WallLayoutOut:
+def _wall(row: Any, origins: Mapping[UUID, CarriedOrigin] | None = None) -> WallLayoutOut:
     decision = row.decision
+    origin = None if decision is None or origins is None else origins.get(decision.id)
     candidate = row.wall_candidate
     flags = set(() if candidate is None else candidate.ambiguity_flags or ())
     config = None if decision is None else decision.wall_config
@@ -520,6 +523,11 @@ def _wall(row: Any) -> WallLayoutOut:
             None if config is None else wall_layout_words(config, between_panels=between_panels)
         ),
         source=source,
+        carried_from_revision=(
+            None if origin is None or source != "reviewer" else origin.revision_number
+        ),
+        carried_by=None if origin is None or source != "reviewer" else origin.given_by,
+        carried_given_at=None if origin is None or source != "reviewer" else origin.given_at,
     )
 
 
@@ -724,14 +732,25 @@ def countertop_results(
     session: Annotated[Session, Depends(get_session)],
     project_id: UUID,
     package_id: UUID,
+    revision_number: Annotated[
+        int | None,
+        Query(
+            alias="revision",
+            ge=1,
+            description=(
+                "An earlier revision's number, to read its results as they were (#1180). "
+                "Default: the newest revision."
+            ),
+        ),
+    ] = None,
 ) -> CountertopResultsOut:
     del principal
+    chosen = select(PackageRevision).join(Package, Package.id == PackageRevision.package_id)
+    chosen = chosen.where(Package.id == package_id, Package.project_id == project_id)
+    if revision_number is not None:
+        chosen = chosen.where(PackageRevision.revision_number == revision_number)
     revision = session.execute(
-        select(PackageRevision)
-        .join(Package, Package.id == PackageRevision.package_id)
-        .where(Package.id == package_id, Package.project_id == project_id)
-        .order_by(PackageRevision.revision_number.desc())
-        .limit(1)
+        chosen.order_by(PackageRevision.revision_number.desc()).limit(1)
     ).scalar_one_or_none()
     if revision is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -905,6 +924,8 @@ def _countertop_results_for_revision(
     readiness, records = readiness_and_decisions(session, revision.id)
     decisions = records.decisions
     need_ids = set(readiness.blocking_finding_ids)
+    # Wall answers carried from an earlier revision say so (#1180).
+    wall_origins = wall_answer_origins(session, (row.decision for row in rows))
     items: list[CountertopResultOut] = []
     for row in rows:
         finding = finding_by_row.get(row.anchor.id)
@@ -1001,7 +1022,7 @@ def _countertop_results_for_revision(
                 field_cut_count=field_count,
                 expected_total=_exact(expected),
                 delta=_exact(delta),
-                wall_layout=_wall(row),
+                wall_layout=_wall(row, wall_origins),
                 agreement=AgreementFactsOut(
                     both_readers_agreed_on_row=any(
                         flag.startswith("row-choice:")

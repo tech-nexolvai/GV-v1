@@ -419,6 +419,11 @@ def _write_summary(
         ),
         ("APPROVED BY", signoff.approved_by if signoff is not None else "not yet recorded"),
         ("APPROVED AT", signoff.approved_at if signoff is not None else "not yet recorded"),
+        *(
+            (("REVISION", str(signoff.revision_number)),)
+            if signoff is not None and signoff.revision_number is not None
+            else ()
+        ),
         ("WORKBOOK CONTENTS", "Findings and exact stored operands"),
     )
     for row_index, (label, value) in enumerate(summary_rows, start=4):
@@ -696,10 +701,16 @@ class WorkbookSignoff:
 
     approved_by: str
     approved_at: str
+    revision_number: int | None = None
+    """Which revision of the review was signed off (#1180); `None` leaves the row out."""
 
     def __post_init__(self) -> None:
         if not self.approved_by.strip() or not self.approved_at.strip():
             raise ValueError("workbook sign-off requires an approver and recorded time")
+        if self.revision_number is not None and (
+            isinstance(self.revision_number, bool) or self.revision_number < 1
+        ):
+            raise ValueError("a signed revision number counts from 1")
 
 
 def _text(value: object) -> str:

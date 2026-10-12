@@ -133,6 +133,7 @@ def generate_signed_outputs(
         signoff=WorkbookSignoff(
             approved_by=payload.review.approved_by,
             approved_at=payload.review.approved_at.isoformat(),
+            revision_number=payload.revision_number,
         ),
     )
     import hashlib

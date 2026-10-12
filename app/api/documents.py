@@ -217,6 +217,20 @@ def _package_revision(
     return revision
 
 
+def _same_drawings_as(session: Session, revision_id: UUID, other_id: UUID) -> bool:
+    """Whether two revisions hold exactly the same drawing versions (#1180)."""
+    rows = session.execute(
+        select(
+            PackageRevisionDocument.package_revision_id,
+            PackageRevisionDocument.document_id,
+            PackageRevisionDocument.document_version_id,
+        ).where(PackageRevisionDocument.package_revision_id.in_((revision_id, other_id)))
+    ).all()
+    one = {(document, version) for owner, document, version in rows if owner == revision_id}
+    two = {(document, version) for owner, document, version in rows if owner == other_id}
+    return one == two
+
+
 def _document(session: Session, project_id: UUID, document_id: UUID) -> Document:
     """One document, reached only through the project that owns it, or a 404.
 
@@ -605,6 +619,18 @@ def start_extraction(
             detail=(
                 "This package holds the same file twice. A file with both the architect's and the "
                 "vendor's drawings is one combined set: keep one copy, then start AI reading."
+            ),
+        )
+    # A later revision (#1180) starts holding exactly the previous revision's drawings; reading it
+    # before a re-issued drawing is confirmed would re-check an unchanged set under a new number.
+    if revision.supersedes_id is not None and _same_drawings_as(
+        session, revision.id, revision.supersedes_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "This revision still holds exactly the drawings of the revision before it. Upload "
+                "and confirm the vendor's re-issued drawing, then start AI reading."
             ),
         )
 

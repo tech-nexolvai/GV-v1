@@ -38,10 +38,34 @@ export class ApiError extends Error {
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
+/** `?revision=N` for a route that reads an earlier revision (#1180), or nothing. */
+function revisionQuery(revision?: number): string {
+  return revision === undefined ? '' : `?revision=${revision}`;
+}
+
+/**
+ * The revision each open review screen shows (#1180). Every write to that package carries it in
+ * `X-GV-Revision`, so a screen left open on revision 1 after someone started revision 2 is told
+ * "you are looking at revision 1, which is read-only" instead of writing onto revision 2.
+ */
+const screenRevisions = new Map<string, number>();
+
+export function setScreenRevision(packageId: string, revision: number | null): void {
+  if (revision === null) screenRevisions.delete(packageId);
+  else screenRevisions.set(packageId, revision);
+}
+
+function revisionHeader(path: string, method: string | undefined): Record<string, string> {
+  if (!method || method.toUpperCase() === 'GET') return {};
+  const match = /\/packages\/([^/?]+)/.exec(path);
+  const shown = match ? screenRevisions.get(match[1]) : undefined;
+  return shown === undefined ? {} : { 'X-GV-Revision': String(shown) };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
+    headers: { Accept: 'application/json', ...revisionHeader(path, init?.method), ...(init?.headers ?? {}) },
   });
 
   if (!response.ok) {
@@ -172,8 +196,10 @@ export type CountertopResult = CountertopResults['items'][number];
 /** A vendor page where both AIs found no countertop line (#1093): listed, never blocking. */
 export type PageWithoutCountertop = components['schemas']['PageWithoutCountertopOut'];
 export type ExactValue = components['schemas']['ExactValueOut'];
-export function getCountertopResults(projectId: string, packageId: string) {
-  return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results`);
+export function getCountertopResults(projectId: string, packageId: string, revision?: number) {
+  // An earlier revision's results, read as they were (#1180); the newest when no number is given.
+  const suffix = revision === undefined ? '' : `?revision=${revision}`;
+  return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results${suffix}`);
 }
 
 export function listFindings(
@@ -946,6 +972,9 @@ export type SlotReaderRow = {
   confirmed_by: string | null;
   decided_at: string | null;
   wall_config: string | null;
+  /** The revision a carried wall answer was given on (#1180); null when given on this one. */
+  carried_from_revision?: number | null;
+  carried_given_at?: string | null;
 };
 
 export function listSlotReaderRows(projectId: string, packageId: string) {
@@ -1140,10 +1169,15 @@ export type ConfirmedOut =
  * Refused while any REVIEW REQUIRED finding is unaddressed — an abstention nobody acted on is a
  * check that did not happen.
  */
-export function approvePackage(projectId: string, reviewSessionId: string) {
+export function approvePackage(projectId: string, reviewSessionId: string, carriedAnswersConfirmed = false) {
+  // #1180: the signer's confirmation that answers carried from an earlier revision still apply.
   return request<ApprovalOut>(
     `/projects/${projectId}/review-sessions/${reviewSessionId}/approve`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ carried_answers_confirmed: carriedAnswersConfirmed }),
+    },
   );
 }
 
@@ -1152,8 +1186,8 @@ export interface SignedExportStatus {
   status: 'not_requested' | 'preparing' | 'ready' | 'failed';
 }
 
-export function getSignedExports(projectId: string, packageId: string) {
-  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`);
+export function getSignedExports(projectId: string, packageId: string, revision?: number) {
+  return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports${revisionQuery(revision)}`);
 }
 
 export function prepareSignedExports(projectId: string, packageId: string) {
@@ -1170,9 +1204,11 @@ export function prepareSignedExports(projectId: string, packageId: string) {
 export async function downloadReport(
   projectId: string,
   packageId: string,
+  revision?: number,
 ): Promise<Blob> {
+  // An earlier revision's signed file (#1180); the newest revision's when no number is given.
   const response = await fetch(
-    `${BASE}/projects/${projectId}/packages/${packageId}/report`,
+    `${BASE}/projects/${projectId}/packages/${packageId}/report${revisionQuery(revision)}`,
   );
   if (!response.ok) {
     // The same envelope every other route returns, and the same fallback when a proxy or a crash
@@ -1196,9 +1232,11 @@ export async function downloadReport(
 export async function downloadPdfReport(
   projectId: string,
   packageId: string,
+  revision?: number,
 ): Promise<Blob> {
+  // An earlier revision's signed file (#1180); the newest revision's when no number is given.
   const response = await fetch(
-    `${BASE}/projects/${projectId}/packages/${packageId}/report.pdf`,
+    `${BASE}/projects/${projectId}/packages/${packageId}/report.pdf${revisionQuery(revision)}`,
   );
   if (!response.ok) {
     let envelope: ErrorEnvelope;
@@ -1220,9 +1258,11 @@ export async function downloadPdfReport(
 export async function downloadRedline(
   projectId: string,
   packageId: string,
+  revision?: number,
 ): Promise<Blob> {
+  // An earlier revision's signed file (#1180); the newest revision's when no number is given.
   const response = await fetch(
-    `${BASE}/projects/${projectId}/packages/${packageId}/redline.pdf`,
+    `${BASE}/projects/${projectId}/packages/${packageId}/redline.pdf${revisionQuery(revision)}`,
   );
   if (!response.ok) {
     let envelope: ErrorEnvelope;
@@ -1419,4 +1459,38 @@ export async function downloadDocument(
   }
 
   return response.blob();
+}
+
+// ---------------------------------------------------------------------------
+// Revisions of a review (#1180): the vendor's resubmission of the same job.
+// ---------------------------------------------------------------------------
+
+export type RevisionList = Get<'/api/v1/projects/{project_id}/packages/{package_id}/revisions'>;
+export type Revision = RevisionList['items'][number];
+export type RevisionComparison = Get<'/api/v1/projects/{project_id}/packages/{package_id}/revisions/compare'>;
+export type RevisionStarted = Created<'/api/v1/projects/{project_id}/packages/{package_id}/revisions'>;
+export type RevisionStartBody =
+  paths['/api/v1/projects/{project_id}/packages/{package_id}/revisions']['post']['requestBody']['content']['application/json'];
+
+/** Every revision of a review, oldest first. */
+export function listRevisions(projectId: string, packageId: string) {
+  return request<RevisionList>(`/projects/${projectId}/packages/${packageId}/revisions`);
+}
+
+/** What changed between two revisions; by default the one before the newest and the newest. */
+export function compareRevisions(projectId: string, packageId: string, before?: number, after?: number) {
+  const search = new URLSearchParams();
+  if (before !== undefined) search.set('before', String(before));
+  if (after !== undefined) search.set('after', String(after));
+  const suffix = search.toString() ? `?${search}` : '';
+  return request<RevisionComparison>(`/projects/${projectId}/packages/${packageId}/revisions/compare${suffix}`);
+}
+
+/** Open the next revision; the answer says which drawings to upload into it. */
+export function startRevision(projectId: string, packageId: string, body: RevisionStartBody) {
+  return request<RevisionStarted>(`/projects/${projectId}/packages/${packageId}/revisions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
