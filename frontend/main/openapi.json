@@ -3134,7 +3134,7 @@
                 "type": "null"
               }
             ],
-            "description": "The field cut per wall end a check run would use now, e.g. `1\"` (#1202): the project's value, else GV's default, else the rulebook's. For the field-cut explanation; null when none is set.",
+            "description": "The field cut per wall end the newest width results used, e.g. `1\"` (#1202): the project's setting as the last check run read it. For the field-cut explanation; null before any check has run.",
             "title": "Field Cut In Force"
           },
           "field_cut_per_end": {
@@ -9675,7 +9675,7 @@
                 "type": "null"
               }
             ],
-            "description": "The field cut per wall end a check run would use now, e.g. `1\"` (#1202): the project's value, else GV's default, else the rulebook's.",
+            "description": "The field cut per wall end the newest width results used, e.g. `1\"` (#1202): the project's setting as the last check run read it. For the field-cut explanation; null before any check has run.",
             "title": "Field Cut In Force"
           },
           "held_reason": {
