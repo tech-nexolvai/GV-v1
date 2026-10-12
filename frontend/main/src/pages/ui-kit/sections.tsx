@@ -443,14 +443,23 @@ export function ResultsNotesSection() {
     <Section
       id="results-notes"
       title="Results: said once"
-      lead="A reason every countertop shares is one notice above the table. The drawn-length note sits on its own row. Pages and lines that were not checked are listed, never blocking."
+      lead="A reason every countertop shares is one notice above the table. The drawn-length note sits on its own row. Lines that were not checked are listed, never blocking; each page with no countertop is listed and needs a reviewer's confirmation before sign-off."
     >
       <div className="flex flex-col gap-3">
         <ArchitectNotice reason={SAMPLE_NOT_COMPARED} />
         <CountertopTable rows={RESULT_SAMPLES} actions={SAMPLE_ACTIONS} architectNotice />
         <ListedPages
-          pagesWithoutCountertop={[{ page_number: 15, reason: 'Both AIs saw only tall units on this page.' }]}
+          pagesWithoutCountertop={[
+            { page_number: 15, reason: 'Both AIs saw only tall units on this page.', record_id: 'sample-15', confirmation: null },
+            {
+              page_number: 17,
+              reason: 'Both AIs saw a cover sheet.',
+              record_id: 'sample-17',
+              confirmation: { confirmed_by: 'Sample Reviewer', confirmed_at: '2026-10-12T10:00:00Z', from_revision: 1 },
+            },
+          ]}
           rowsNotChecked={[{ page_number: 4, reason: 'An AI named a second countertop line on this page; one line per page is read.' }]}
+          onAnswer={async () => {}}
         />
         <div className="rounded-xl border bg-card p-4">
           <span className="text-xs text-muted-foreground">Drawing panel, a held result</span>

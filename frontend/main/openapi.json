@@ -318,6 +318,22 @@
             "format": "uuid",
             "title": "Revision Id",
             "type": "string"
+          },
+          "unchecked_countertop_pages": {
+            "description": "Page numbers that now need the reviewer (an older reading, or a reviewer said there is a countertop) but have no result on the last check run yet (#1191). Run the checks.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Unchecked Countertop Pages",
+            "type": "array"
+          },
+          "unconfirmed_no_countertop_pages": {
+            "description": "Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Sign-off is refused until each has an answer.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Unconfirmed No Countertop Pages",
+            "type": "array"
           }
         },
         "required": [
@@ -3202,7 +3218,7 @@
             "type": "string"
           },
           "pages_without_countertop": {
-            "description": "Vendor pages where both AIs found no countertop line, each with the AI's reason. Listed only; nothing to decide. A page where the AIs picked different lines is an item above instead, held `row-choice-split`.",
+            "description": "Vendor pages where both AIs found no countertop line, each with the AI's reason and the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A page where the AIs picked different lines, or a reviewer said there is a countertop, is an item above instead, held `row-choice-split`.",
             "items": {
               "$ref": "#/components/schemas/PageWithoutCountertopOut"
             },
@@ -5516,6 +5532,58 @@
         "title": "NeedsDecisionByOutcomeOut",
         "type": "object"
       },
+      "NoCountertopAnswerIn": {
+        "additionalProperties": false,
+        "description": "One reviewer click on a page listed with no countertop (#1191). Nothing is pre-selected.",
+        "properties": {
+          "answer": {
+            "description": "\"no_countertop\": \"Confirm: no countertop here\". \"countertop\": \"There is a countertop\": the page then needs the reviewer like a split page, and its result comes with the next check run.",
+            "enum": [
+              "no_countertop",
+              "countertop"
+            ],
+            "title": "Answer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "title": "NoCountertopAnswerIn",
+        "type": "object"
+      },
+      "NoCountertopConfirmationOut": {
+        "description": "A reviewer's \"Confirm: no countertop here\" on a listed page (#1191): who and when.",
+        "properties": {
+          "confirmed_at": {
+            "format": "date-time",
+            "title": "Confirmed At",
+            "type": "string"
+          },
+          "confirmed_by": {
+            "title": "Confirmed By",
+            "type": "string"
+          },
+          "from_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the confirmation was given on an earlier revision's identical page (the same page content and the same reading answer): that revision's number. Null when it was given on this revision.",
+            "title": "From Revision"
+          }
+        },
+        "required": [
+          "confirmed_by",
+          "confirmed_at"
+        ],
+        "title": "NoCountertopConfirmationOut",
+        "type": "object"
+      },
       "OpaqueTraceOut": {
         "description": "A trace this API does not recognise, handed over intact.\n\n**Not an error and not a silent empty object.** A recompute is compared against what the engine\nrecorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A\nreader gets the content and is told plainly that it was not understood.",
         "properties": {
@@ -6123,8 +6191,24 @@
         "type": "object"
       },
       "PageWithoutCountertopOut": {
-        "description": "A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking.",
+        "description": "A vendor page where every AI said there is no countertop line (#1093).\n\nListed, and since #1191 it needs one reviewer click before sign-off: \"Confirm: no countertop\nhere\" (`confirmation`), or \"There is a countertop\", after which the page is an item above, held\n`row-choice-split`, instead of being listed here.",
         "properties": {
+          "confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoCountertopConfirmationOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reviewer's confirmation in force; null while the page is unconfirmed."
+          },
+          "older_reading": {
+            "description": "True for a reading from before the AIs said what their \"no line\" meant (#1191): it is not known to have no countertop until a reviewer confirms it, so until then it needs the reviewer. Its `reason` says why, with the AIs' own words.",
+            "title": "Older Reading",
+            "type": "boolean"
+          },
           "page_number": {
             "title": "Page Number",
             "type": "integer"
@@ -6132,6 +6216,19 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reading record to answer (`POST \u2026/no-countertop-pages/{record_id}/answer`). Null only in a review signed before #1191.",
+            "title": "Record Id"
           }
         },
         "required": [
@@ -13534,6 +13631,80 @@
         "summary": "Ask a model which reading fills which field, and check every answer",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/{record_id}/answer": {
+      "post": {
+        "description": "Record one reviewer answer on a page every AI said has no countertop (#1191).\n\nThe page must be listed right now on the newest revision (409 otherwise, with a plain sentence).\nThe answer is a new append-only record with who and when; the newest one counts. Answers the\nupdated countertop results, so the screen shows the page confirmed, or as a blocking item.\n\n**One answer at a time per revision.** The newest answer is read under a transaction-scoped\nadvisory lock, so a \"Confirm\" sent at the same moment as a \"There is a countertop\" waits for it,\nfinds the page no longer listed and is refused, instead of silently overriding it. A second\n\"Confirm\" on a page already confirmed records nothing and answers 200 with the first person and\ntime (the answer was already given).",
+        "operationId": "answer_no_countertop_page_api_v1_projects__project_id__packages__package_id__no_countertop_pages__record_id__answer_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoCountertopAnswerIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountertopResultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm that a listed page has no countertop, or say there is one",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },

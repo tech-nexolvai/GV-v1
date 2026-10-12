@@ -372,3 +372,8 @@ export async function recordEach(
   }
   return result;
 }
+
+/** "2 of 3 confirmed": how many pages listed with no countertop a reviewer has confirmed (#1191). */
+export function confirmedCount(pages: readonly { confirmation?: unknown }[]): { confirmed: number; total: number } {
+  return { confirmed: pages.filter((page) => page.confirmation != null).length, total: pages.length };
+}

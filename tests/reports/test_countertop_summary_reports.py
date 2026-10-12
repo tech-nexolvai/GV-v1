@@ -676,8 +676,10 @@ def test_workbook_has_the_split_page_and_the_pages_with_no_countertop() -> None:
     assert row["decision"] == "dismiss"
 
     empty = book["No Countertop Found"]
-    assert [cell.value for cell in empty[1]] == ["page", "reason"]
-    assert [cell.value for cell in empty[2]] == ["4", NONE_REASON]
+    # The third column is the reviewer's confirmation (#1191); this synthetic page has none.
+    assert [cell.value for cell in empty[1]] == ["page", "reason", "confirmed"]
+    assert [cell.value for cell in empty[2]][:2] == ["4", NONE_REASON]
+    assert empty.cell(2, 3).value in (None, "")
 
 
 _FOOTER = re.compile(r"GRANITI \+ NEXOLV - REVIEW FINDINGS PAGE (\d+)")

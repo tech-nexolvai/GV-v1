@@ -193,13 +193,33 @@ export function getApprovalReadiness(projectId: string, packageId: string) {
 /** One row per countertop of the live check run, with its exact numbers (#1035). Read-only. */
 export type CountertopResults = components['schemas']['CountertopResultsOut'];
 export type CountertopResult = CountertopResults['items'][number];
-/** A vendor page where both AIs found no countertop line (#1093): listed, never blocking. */
+/**
+ * A vendor page where both AIs found no countertop line (#1093). Since #1191 it needs one reviewer
+ * answer before sign-off: its `confirmation`, or "There is a countertop" (it then becomes an item).
+ */
 export type PageWithoutCountertop = components['schemas']['PageWithoutCountertopOut'];
 export type ExactValue = components['schemas']['ExactValueOut'];
 export function getCountertopResults(projectId: string, packageId: string, revision?: number) {
   // An earlier revision's results, read as they were (#1180); the newest when no number is given.
   const suffix = revision === undefined ? '' : `?revision=${revision}`;
   return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results${suffix}`);
+}
+
+/** The two buttons on a page listed with no countertop (#1191). */
+export type NoCountertopAnswer = components['schemas']['NoCountertopAnswerIn']['answer'];
+/**
+ * "Confirm: no countertop here" or "There is a countertop" on one listed page (#1191). Sent only on
+ * a click; answers the updated countertop results.
+ */
+export function answerNoCountertopPage(projectId: string, packageId: string, recordId: string, answer: NoCountertopAnswer) {
+  return request<CountertopResults>(
+    `/projects/${projectId}/packages/${packageId}/no-countertop-pages/${recordId}/answer`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer }),
+    },
+  );
 }
 
 export function listFindings(

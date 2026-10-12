@@ -6,7 +6,7 @@
  * `blocking_finding_ids` for the other checks); nothing here decides it. An item's status is read
  * from the live data each time, so it follows the server, not a local guess.
  */
-import type { CountertopResult, SlotReaderRow } from '@/api/client';
+import type { CountertopResult, PageWithoutCountertop, SlotReaderRow } from '@/api/client';
 import type { Finding } from '@/data/types';
 import { sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
@@ -15,7 +15,9 @@ export type QueueItem =
   | { kind: 'countertop'; key: string; rowId: string; findingId: string | null; page: number; label: string }
   /** "Matches the architect?" (#1085): a countertop's architect finding that needs the reviewer. */
   | { kind: 'architect'; key: string; rowId: string; findingId: string; page: number; label: string }
-  | { kind: 'check'; key: string; findingId: string; page: number | null; label: string };
+  | { kind: 'check'; key: string; findingId: string; page: number | null; label: string }
+  /** A page listed with no countertop that waits for the reviewer's one click (#1191). */
+  | { kind: 'page'; key: string; recordId: string; page: number; label: string };
 
 /** The queue key of a row's "Matches the architect?" item, for opening the queue at it. */
 export function architectItemKey(rowId: string): string {
@@ -35,6 +37,7 @@ export function buildQueue(
   rows: readonly CountertopResult[],
   findings: readonly Finding[],
   blocking: ReadonlySet<string> | null,
+  pages: readonly PageWithoutCountertop[] = [],
 ): QueueItem[] {
   const countertops: QueueItem[] = sortRows(rows.filter(widthNeedsYou)).map((row) => ({
     kind: 'countertop',
@@ -77,7 +80,18 @@ export function buildQueue(
       label: finding.scope_label ?? finding.name,
     }))
     .sort((a, b) => (a.page ?? Infinity) - (b.page ?? Infinity) || a.label.localeCompare(b.label));
-  return [...countertops, ...architect, ...checks];
+  // Pages listed with no countertop that nobody has answered (#1191): they block sign-off too, so
+  // the queue walks them last, by page. An older reading is one of them.
+  const listed: QueueItem[] = pages
+    .filter((page) => !page.confirmation && page.record_id)
+    .sort((a, b) => a.page_number - b.page_number)
+    .map((page) => ({ kind: 'page', key: `page:${page.record_id}`, recordId: page.record_id!, page: page.page_number, label: `Page ${page.page_number}` }));
+  return [...countertops, ...architect, ...checks, ...listed];
+}
+
+/** The review's one "needs you" number (#1179, #1191): results still to decide plus pages still to confirm. */
+export function itemsNeedingYou(readiness: { blocking_findings: number; unconfirmed_no_countertop_pages?: readonly number[] | null }): number {
+  return readiness.blocking_findings + (readiness.unconfirmed_no_countertop_pages?.length ?? 0);
 }
 
 /**
@@ -109,6 +123,8 @@ export interface LiveData {
   pairingsSaved?: ReadonlySet<string>;
   /** Rows whose architect view the reviewer chose in this sitting (#1168). Only a new run uses them. */
   viewsPicked?: ReadonlySet<string>;
+  /** Pages listed with no countertop, by record id (#1191). */
+  pages?: ReadonlyMap<string, PageWithoutCountertop>;
 }
 
 /**
@@ -131,6 +147,13 @@ export function inputNewerThanResult(row: CountertopResult, finding: Finding | u
 }
 
 export function itemStatus(item: QueueItem, live: LiveData): ItemStatus {
+  if (item.kind === 'page') {
+    // Confirmed: decided. Not listed any more because a reviewer said there is a countertop: the
+    // page is now a countertop that only a new check run gives a result to (#1191).
+    const page = live.pages?.get(item.recordId);
+    if (page) return page.confirmation ? 'decided' : 'open';
+    return live.rows.has(item.recordId) ? 'waiting-for-run' : 'decided';
+  }
   if (item.kind === 'countertop') {
     const row = live.rows.get(item.rowId);
     if (!row) {
@@ -162,6 +185,7 @@ export function itemStatus(item: QueueItem, live: LiveData): ItemStatus {
 
 /** The finding an item is about right now (a countertop's comes from its current row). */
 export function findingIdOf(item: QueueItem, live: LiveData): string | null {
+  if (item.kind === 'page') return null;
   if (item.kind === 'countertop') return live.rows.get(item.rowId)?.finding_id ?? item.findingId;
   if (item.kind === 'architect') return live.rows.get(item.rowId)?.architect?.finding_id ?? item.findingId;
   return item.findingId;

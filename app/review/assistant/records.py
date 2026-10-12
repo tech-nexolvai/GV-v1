@@ -220,6 +220,9 @@ class FindingRecord(_Frozen):
 class PageNoteRecord(_Frozen):
     page_number: int
     reason: str
+    confirmed_by: str | None = None
+    """On a page listed with no countertop (#1191): who confirmed it; `None` while it still needs a
+    reviewer's confirmation before sign-off (and on every second-row note)."""
 
 
 class ReadinessRecord(_Frozen):
@@ -539,7 +542,11 @@ def build_snapshot(
         countertops=countertop_records,
         other_checks=other_records,
         pages_without_countertop=tuple(
-            PageNoteRecord(page_number=page.page_number, reason=_reason(page.reason) or "")
+            PageNoteRecord(
+                page_number=page.page_number,
+                reason=_reason(page.reason) or "",
+                confirmed_by=None if page.confirmation is None else page.confirmation.confirmed_by,
+            )
             for page in countertops.pages_without_countertop[:MAX_PAGE_NOTES]
         ),
         rows_not_checked=tuple(
@@ -712,7 +719,12 @@ def prompt_records(snapshot: ReviewSnapshot) -> str:
             ],
             "other_checks": [_prompt_finding(item) for item in snapshot.other_checks],
             "pages_without_countertop": [
-                {"page": page.page_number, "reason": page.reason}
+                {
+                    "page": page.page_number,
+                    "reason": page.reason,
+                    # Each needs one reviewer's confirmation before sign-off (#1191).
+                    "confirmed_by": page.confirmed_by,
+                }
                 for page in snapshot.pages_without_countertop
             ],
             "countertop_rows_not_checked": [

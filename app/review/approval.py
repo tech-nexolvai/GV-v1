@@ -48,6 +48,7 @@ from app.models.evidence import (
     CanonicalObservation,
     ItemClassification,
     LayoutConfirmation,
+    NoCountertopAnswer,
     ObservationCandidate,
     SlotRowReviewDecision,
 )
@@ -56,6 +57,12 @@ from app.models.parameters import ParameterSet
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.verdicts import CheckRun, Finding
 from app.review.carry_over import DecisionRecords, decision_holds, decision_records
+from app.review.no_countertop import (
+    PagesBlockingSignOff,
+    pages_blocking_sign_off,
+    unchecked_sentence,
+    unconfirmed_sentence,
+)
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
 from evidence.canonical import EvidenceStatus
@@ -72,6 +79,7 @@ __all__ = [
     "ChangeRequestDecision",
     "DriverFindingRequired",
     "FindingOutsideReview",
+    "NoCountertopPagesUnconfirmed",
     "NoFindingsToApprove",
     "NoSuchReviewSession",
     "UnaddressedReviewRequired",
@@ -103,6 +111,11 @@ class CarriedAnswersUnconfirmed(ApprovalRefused):
 
 class UnaddressedReviewRequired(ApprovalRefused):
     """At least one blocking finding has no valid explicit reviewer action."""
+
+
+class NoCountertopPagesUnconfirmed(ApprovalRefused):
+    """A page listed with no countertop has no reviewer answer yet, or a page that now needs the
+    reviewer has no result on the live check run (#1191)."""
 
 
 class DriverFindingRequired(ApprovalRefused):
@@ -261,6 +274,9 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
     - which architect view a reviewer picked for a countertop, or "none of these" (#1166): the
       pick is read by the next run, so sign-off waits for it;
     - slot-row wall choices and typed widths, on a reading of this revision's documents;
+    - a reviewer's "There is a countertop" on a page listed with no countertop (#1191): the next run
+      makes that page a blocking result. "Confirm: no countertop here" changes no result and is not
+      counted;
     - countertop-run decisions, part decisions and reading-to-part links (`workflow/
       part_operands.py`), and a person's drawing-role confirmation (code's is not reviewer input);
     - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
@@ -318,6 +334,10 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
             ObservationCandidate, ObservationCandidate.id == SlotRowReviewDecision.row_candidate_id
         )
         .join(on_page, on_page.c.page_id == ObservationCandidate.page_id),
+        select(NoCountertopAnswer.package_revision_id, NoCountertopAnswer.created_at).where(
+            NoCountertopAnswer.package_revision_id.in_(ids),
+            NoCountertopAnswer.answer == "countertop",
+        ),
         select(on_view.c.package_revision_id, CountertopRunDecision.created_at)
         .join(DrawingItem, DrawingItem.id == CountertopRunDecision.countertop_item_id)
         .join(on_view, on_view.c.view_id == DrawingItem.drawing_view_id),
@@ -378,6 +398,34 @@ class ApprovalReadiness:
     blocking_findings: int
     blocking_finding_ids: tuple[UUID, ...]
     reason: str | None
+    unconfirmed_no_countertop_pages: tuple[int, ...] = ()
+    """Pages listed with no countertop that no reviewer confirmed yet (#1191): sign-off waits."""
+    unchecked_countertop_pages: tuple[int, ...] = ()
+    """Pages that now need the reviewer but have no result on the live run yet (#1191)."""
+
+
+def _readiness_reason(
+    *,
+    has_findings: bool,
+    blocked: tuple[UUID, ...],
+    pages: PagesBlockingSignOff,
+    inputs_changed: bool,
+    revision: PackageRevision | None,
+) -> str | None:
+    """One plain sentence for the first thing that keeps sign-off from happening, or None."""
+    if not has_findings:
+        return "There are no findings to sign off. Run the checks first."
+    if blocked:
+        return f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
+    if pages.unchecked:
+        return unchecked_sentence(pages.unchecked)
+    if inputs_changed:
+        return INPUTS_CHANGED_NEEDS_RERUN
+    if pages.unconfirmed:
+        return unconfirmed_sentence(pages.unconfirmed)
+    if revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
+        return "The package is not awaiting review."
+    return None
 
 
 def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
@@ -386,27 +434,42 @@ def approval_readiness(db: Session, revision_id: UUID) -> ApprovalReadiness:
 
 
 def readiness_and_decisions(
-    db: Session, revision_id: UUID
+    db: Session, revision_id: UUID, *, pages: PagesBlockingSignOff | None = None
 ) -> tuple[ApprovalReadiness, DecisionRecords]:
     """Readiness plus the decision records it was computed from, for a screen that shows both.
 
     The countertop results read the standing decision of every row from the very records sign-off
-    readiness used, so the two cannot disagree and the decisions are not read twice.
+    readiness used, so the two cannot disagree and the decisions are not read twice. They also pass
+    the pages that block sign-off (#1191), computed from the very pages they list; any other caller
+    leaves `pages` out and they are read here.
     """
     findings = _findings(db, revision_id)
     records = decision_records(db, [finding.id for finding in findings])
     blocked = _unaddressed_from_records(findings, records, when=utc_now())
     revision = db.get(PackageRevision, revision_id)
-    reason = None
-    if not findings:
-        reason = "There are no findings to sign off. Run the checks first."
-    elif blocked:
-        reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
-    elif revision_id in _revisions_with_unchecked_inputs(db, [revision_id]):
-        reason = INPUTS_CHANGED_NEEDS_RERUN
-    elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
-        reason = "The package is not awaiting review."
-    return ApprovalReadiness(revision_id, reason is None, len(blocked), blocked, reason), records
+    if pages is None:
+        pages = pages_blocking_sign_off(db, [revision_id])[revision_id]
+    reason = _readiness_reason(
+        has_findings=bool(findings),
+        blocked=blocked,
+        pages=pages,
+        inputs_changed=bool(findings)
+        and not blocked
+        and revision_id in _revisions_with_unchecked_inputs(db, [revision_id]),
+        revision=revision,
+    )
+    return (
+        ApprovalReadiness(
+            revision_id,
+            reason is None,
+            len(blocked),
+            blocked,
+            reason,
+            pages.unconfirmed,
+            pages.unchecked,
+        ),
+        records,
+    )
 
 
 def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID, ApprovalReadiness]:
@@ -437,21 +500,26 @@ def approval_readiness_many(db: Session, revision_ids: list[UUID]) -> dict[UUID,
     }
     when = utc_now()
     unchecked = _revisions_with_unchecked_inputs(db, revision_ids)
+    pages_by_revision = pages_blocking_sign_off(db, revision_ids)
     result: dict[UUID, ApprovalReadiness] = {}
     for revision_id, findings in findings_by_revision.items():
         blocked = _unaddressed_from_records(tuple(findings), records, when=when)
-        revision = revisions.get(revision_id)
-        reason = None
-        if not findings:
-            reason = "There are no findings to sign off. Run the checks first."
-        elif blocked:
-            reason = f"{len(blocked)} findings still need a valid reviewer decision or a check rerun after correction. Add a note when required."
-        elif revision_id in unchecked:
-            reason = INPUTS_CHANGED_NEEDS_RERUN
-        elif revision is None or revision.state != PackageState.AWAITING_REVIEW.value:
-            reason = "The package is not awaiting review."
+        pages = pages_by_revision.get(revision_id, PagesBlockingSignOff())
+        reason = _readiness_reason(
+            has_findings=bool(findings),
+            blocked=blocked,
+            pages=pages,
+            inputs_changed=revision_id in unchecked,
+            revision=revisions.get(revision_id),
+        )
         result[revision_id] = ApprovalReadiness(
-            revision_id, reason is None, len(blocked), blocked, reason
+            revision_id,
+            reason is None,
+            len(blocked),
+            blocked,
+            reason,
+            pages.unconfirmed,
+            pages.unchecked,
         )
     return result
 
@@ -483,11 +551,20 @@ def approve_package(
         raise UnaddressedReviewRequired(
             f"FAIL, REVIEW REQUIRED and NOT FOUND findings must each be explicitly addressed before approval: {listed}"
         )
+    pages = pages_blocking_sign_off(db, [review.package_revision_id])[review.package_revision_id]
+    if pages.unchecked:
+        raise NoCountertopPagesUnconfirmed(unchecked_sentence(pages.unchecked))
     if review.package_revision_id in _revisions_with_unchecked_inputs(
         db, [review.package_revision_id]
     ):
         raise UnaddressedReviewRequired(INPUTS_CHANGED_NEEDS_RERUN)
-    carried = carried_answers_driving_results(db, review.package_revision_id)
+    if pages.unconfirmed:
+        # A page every AI said has no countertop is signed past only once a reviewer confirmed it.
+        raise NoCountertopPagesUnconfirmed(unconfirmed_sentence(pages.unconfirmed))
+    # Answers carried from an earlier revision (#1180), and confirmations that a page has no
+    # countertop carried from an earlier revision's identical page (#1191): the signer says they
+    # still apply. A carried "There is a countertop" needs nothing: it already forces a decision.
+    carried = (*carried_answers_driving_results(db, review.package_revision_id), *pages.carried)
     if carried and not carried_answers_confirmed:
         numbers = ", ".join(str(n) for n in sorted({number for number, _ in carried}))
         raise CarriedAnswersUnconfirmed(

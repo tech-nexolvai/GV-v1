@@ -36,7 +36,7 @@ from app.schemas.visual_ui import (
 )
 from reports.countertop_strip import StripRefused, StripSpan, strip_layout
 from reports.signed_review import SignedReview, with_review_pdf
-from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line
+from reports.spreadsheet import NOT_RECORDED, StoredFinding, architect_line, confirmation_words
 from verdict.outcomes import Outcome
 from workflow.changed_values import ChangedValues
 
@@ -753,13 +753,19 @@ class _Document:
         self.canvas.showPage()
 
     def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
-        """The pages both AIs found no countertop line on, each with the AI's reason (#1093)."""
+        """The pages both AIs found no countertop line on, each with the AI's reason (#1093) and the
+        reviewer's confirmation (#1191)."""
         self._listed_pages(
             new_page,
             title="PAGES WITH NO COUNTERTOP FOUND",
             note="Both AIs found no countertop line on these pages, so nothing on them was checked.",
             entries=[
-                (page.page_number, page.reason) for page in self.source.pages_without_countertop
+                (
+                    page.page_number,
+                    page.reason
+                    + ("" if (confirmed := confirmation_words(page)) is None else f" {confirmed}."),
+                )
+                for page in self.source.pages_without_countertop
             ],
         )
 

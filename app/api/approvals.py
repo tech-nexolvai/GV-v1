@@ -46,6 +46,7 @@ from app.review.signed_exports import (
     publication_status,
     request_signed_exports,
 )
+from app.schemas.review import optional_in_schema
 from storage.store import ArtifactStore
 
 router = APIRouter(tags=["approvals"])
@@ -83,6 +84,22 @@ class ApprovalReadinessOut(BaseModel):
     blocking_findings: int
     blocking_finding_ids: tuple[UUID, ...]
     reason: str | None
+    unconfirmed_no_countertop_pages: tuple[int, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). "
+            "Sign-off is refused until each has an answer."
+        ),
+    )
+    unchecked_countertop_pages: tuple[int, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Page numbers that now need the reviewer (an older reading, or a reviewer said there "
+            "is a countertop) but have no result on the last check run yet (#1191). Run the checks."
+        ),
+    )
 
 
 @router.get(
@@ -103,6 +120,8 @@ def get_approval_readiness(
         blocking_findings=result.blocking_findings,
         blocking_finding_ids=result.blocking_finding_ids,
         reason=result.reason,
+        unconfirmed_no_countertop_pages=result.unconfirmed_no_countertop_pages,
+        unchecked_countertop_pages=result.unchecked_countertop_pages,
     )
 
 

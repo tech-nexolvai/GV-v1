@@ -1,7 +1,9 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { CheckCircle2, ChevronLeft, ChevronRight, History, X } from 'lucide-react';
 
-import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult } from '@/api/client';
+import { getArchitectPairing, listFindingActions, listRules, listSlotReaderRows, reviewSlotReaderRow, type CountertopResult, type PageWithoutCountertop } from '@/api/client';
+import { pageTarget } from '@/lib/assistant';
+import { THERE_IS_A_COUNTERTOP_TIP, type AnswerNoCountertop } from '@/components/results/no-countertop-pages';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
 import { decisionWords, formatDelta, isNotChecked, isSplitPage, NO_RESULT_HINT, notCheckedSituation, notCheckedSummary, sharedNotComparedReason } from '@/lib/countertop-results';
@@ -77,6 +79,16 @@ export interface QueueProps {
   startAt?: string | null;
   /** A value typed where a waiting check asked for it (#1181): only a new check run uses it. */
   onValuesSaved?: () => void;
+  /**
+   * Pages listed with no countertop that sign-off still waits on (#1191), from readiness. They are
+   * answered on Results, so the queue names them instead of claiming that nothing is left.
+   */
+  unconfirmedNoCountertopPages?: readonly number[];
+  onShowNoCountertopPages?: () => void;
+  /** Pages listed with no countertop (#1191): each unconfirmed one is an item the queue walks. */
+  pagesWithoutCountertop?: readonly PageWithoutCountertop[];
+  /** Records "Confirm: no countertop here" / "There is a countertop" on one of them. */
+  onAnswerNoCountertop?: AnswerNoCountertop;
 }
 
 /**
@@ -118,7 +130,7 @@ function firstOpen(items: readonly QueueItem[], live: LiveData, startAt?: string
   return Math.max(0, items.findIndex((item) => itemStatus(item, live) === 'open'));
 }
 
-function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt, onValuesSaved }: QueueProps) {
+function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, handlers, next, onAct, onOpenChange, onWallSaved, onPairingSaved, onViewPicked, onOpenCard, startAt, onValuesSaved, unconfirmedNoCountertopPages = [], onShowNoCountertopPages, pagesWithoutCountertop = [], onAnswerNoCountertop }: QueueProps) {
   const signedOff = useSignedOff();
   const [wallsSaved, setWallsSaved] = useState<ReadonlySet<string>>(new Set());
   // Architect pairings saved in this sitting (#1085); the server's own record times are added below.
@@ -136,14 +148,15 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
     slots: slots.status === 'ready' ? new Map(slots.data.rows.map((s) => [s.row_id, s])) : null,
     wallsSaved,
     viewsPicked,
+    pages: new Map(pagesWithoutCountertop.filter((page) => page.record_id).map((page) => [page.record_id!, page])),
   };
 
   // The list is taken once the readiness answer is in: without it the package-level checks would
   // be missing, and the queue could say "all done" while the server still blocks sign-off.
-  const [items, setItems] = useState<QueueItem[] | null>(() => (blocking !== null && rowsReady ? buildQueue(rows, findings, blocking) : null));
+  const [items, setItems] = useState<QueueItem[] | null>(() => (blocking !== null && rowsReady ? buildQueue(rows, findings, blocking, pagesWithoutCountertop) : null));
   const [index, setIndex] = useState(() => (items ? firstOpen(items, base, startAt) : 0));
   if (items === null && blocking !== null && rowsReady) {
-    const built = buildQueue(rows, findings, blocking);
+    const built = buildQueue(rows, findings, blocking, pagesWithoutCountertop);
     setItems(built);
     setIndex(firstOpen(built, base, startAt));
   }
@@ -250,7 +263,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
   const unaccounted = unaccountedBlocking(list, live);
   // What a fresh list would add — only that can be loaded; anything else needs the results refreshed.
   const loadable = unaccounted && unaccounted.length > 0 && blocking !== null
-    ? buildQueue(rows, findings, blocking).filter((candidate) => !list.some((item) => item.key === candidate.key)).length
+    ? buildQueue(rows, findings, blocking, pagesWithoutCountertop).filter((candidate) => !list.some((item) => item.key === candidate.key)).length
     : 0;
   const slot = row && slots.status === 'ready' ? slots.data.rows.find((s) => s.row_id === row.row_id) ?? null : null;
   const question = status === 'open' ? wallQuestion(slot) : null;
@@ -277,7 +290,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
 
   /** Start again from the server's current answer (new results arrived while the queue was open). */
   function reload() {
-    const built = buildQueue(rows, findings, blocking);
+    const built = buildQueue(rows, findings, blocking, pagesWithoutCountertop);
     draft.reset();
     setChanging(false);
     setBrowsing(false);
@@ -336,7 +349,17 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
 
   const ruleName = (id: string) => (rules.status === 'ready' ? rules.data.find((r) => r.rule_id === id)?.name : undefined) ?? id;
   // An architect item looks like its architect result on the drawing, never like the width's.
-  const target = row ? targetFromRow(row) : architectRow ? targetFromArchitect(architectRow) : finding ? targetFromFinding(finding) : null;
+  // A page listed with no countertop (#1191) shows its page: nothing on it was outlined.
+  const listedPage = item?.kind === 'page' ? live.pages?.get(item.recordId) ?? null : null;
+  const target = row
+    ? targetFromRow(row)
+    : architectRow
+      ? targetFromArchitect(architectRow)
+      : finding
+        ? targetFromFinding(finding)
+        : item?.kind === 'page'
+          ? pageTarget(item.page, { rows, findings, pagesWithoutCountertop })
+          : null;
   // The offered spans are drawn only while the pairing question is on screen.
   const pairing = pairingAsked && pairMarks && architectRow && pairMarks.rowId === architectRow.row_id ? pairMarks : null;
   const extraMarks = pairing?.marks ?? [];
@@ -410,6 +433,8 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
             notChecked={rows.filter(isNotChecked).length}
             checksHaveRun={findings.length > 0}
             waitingForRun={progress.waitingForRun}
+            unconfirmedPages={unconfirmedNoCountertopPages}
+            onShowPages={onShowNoCountertopPages}
             next={next}
             onAct={(kind) => {
               onOpenChange(false);
@@ -436,7 +461,9 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   {/* A package-level check is named by its rule; its scope ("Package revision") goes below. */}
                   {/* A countertop says its page once, in its name (#1155). */}
                   <h2 className="text-lg font-semibold leading-tight">
-                    {item.kind === 'check' ? (finding ? ruleName(finding.check_id) : item.label) : (
+                    {item.kind === 'page' ? (
+                      <>Page <span className="num">{item.page}</span>: no countertop?</>
+                    ) : item.kind === 'check' ? (finding ? ruleName(finding.check_id) : item.label) : (
                       <>
                         <CountertopTitle row={{ row_id: item.rowId, page_number: item.page, label: item.label }} rows={rows} />
                         {item.kind === 'architect' && ': matches the architect?'}
@@ -515,6 +542,20 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
                 {item.kind === 'check' && finding?.reason && <p className="line-clamp-3 text-sm text-muted-foreground" title={finding.reason}>{finding.reason}</p>}
+                {item.kind === 'page' && (
+                  <PageQuestion
+                    key={item.recordId}
+                    page={listedPage}
+                    status={status}
+                    onAnswer={onAnswerNoCountertop}
+                    onAnswered={() => {
+                      setBrowsing(false);
+                      // The page reloaded the results before resolving; move on to whatever is still open.
+                      const after = nextOpen(list, live, index, index);
+                      if (after !== null) setIndex(after);
+                    }}
+                  />
+                )}
                 {/* A check waiting on a value asks for exactly that value, here (#1181). */}
                 {item.kind === 'check' && finding && status === 'open' && (finding.missing_inputs?.length ?? 0) > 0 && (
                   <NeedsValues
@@ -544,7 +585,7 @@ function QueueBody({ rows, rowsReady, findings, blocking, projectId, packageId, 
                   />
                 )}
 
-                {status !== 'open' && !changing && (
+                {status !== 'open' && !changing && item.kind !== 'page' && (
                   <DecidedSummary
                     status={status}
                     wallSaved={row !== null && wallsSaved.has(row.row_id)}
@@ -862,20 +903,40 @@ function HistoryList({ findingId, outcome, projectId, packageId }: { findingId: 
  * The queue with nothing left open. Empty because the checks have not run on some countertops
  * (#1179), it says that and offers the header's next action (Run checks), never "Nothing needs you".
  */
-function DoneState({ empty, notChecked, checksHaveRun, waitingForRun, next, onAct, onBrowse }: { empty: boolean; notChecked: number; checksHaveRun: boolean; waitingForRun: number; next: NextAction; onAct: (kind: NextActionKind) => void; onBrowse: () => void }) {
+function DoneState({ empty, notChecked, checksHaveRun, waitingForRun, unconfirmedPages = [], onShowPages, next, onAct, onBrowse }: { empty: boolean; notChecked: number; checksHaveRun: boolean; waitingForRun: number; unconfirmedPages?: readonly number[]; onShowPages?: () => void; next: NextAction; onAct: (kind: NextActionKind) => void; onBrowse: () => void }) {
   const unchecked = empty && notChecked > 0;
+  // Never "nothing needs you" while sign-off waits for a page's confirmation (#1191).
+  const pagesWait = unconfirmedPages.length > 0;
   // Said to match the button below (#1179): "run the checks" only when Run checks is that button.
   const summary = notCheckedSummary(notChecked, notCheckedSituation(checksHaveRun, next.kind === 'run-checks'));
   // No second run while one is queued or running, or after sign-off (the header's own guard too).
   const runBlocked = !['run-checks', 'review', 'sign-off'].includes(next.kind);
   return (
     <div data-slot="queue-done" className="m-auto flex max-w-md flex-col items-center gap-3 p-6 text-center" role="status">
-      {!unchecked && <CheckCircle2 className="size-10 text-outcome-pass-fg" aria-hidden="true" />}
-      <p className="text-lg font-semibold">{unchecked ? 'Nothing to decide yet' : empty ? 'Nothing needs you' : 'All decisions made'}</p>
+      {!unchecked && !pagesWait && <CheckCircle2 className="size-10 text-outcome-pass-fg" aria-hidden="true" />}
+      <p className="text-lg font-semibold">
+        {unchecked ? 'Nothing to decide yet' : pagesWait ? 'Pages with no countertop to confirm' : empty ? 'Nothing needs you' : 'All decisions made'}
+      </p>
       {unchecked && (
         <p className="text-sm text-muted-foreground" data-slot="queue-not-checked">
           <span className="num">{notChecked}</span> {summary.lead}{summary.rest && ` ${summary.rest}`}
         </p>
+      )}
+      {/* Sign-off also waits for these pages (#1191); they are answered on Results, not here. */}
+      {unconfirmedPages.length > 0 && (
+        <div data-slot="queue-no-countertop" className="flex flex-col items-center gap-2 text-sm">
+          <p className="inline-flex flex-wrap items-center justify-center gap-1">
+            <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />
+            <span>
+              Sign-off also waits for {unconfirmedPages.length === 1 ? 'a page' : 'pages'} with no countertop to be confirmed:{' '}
+              {unconfirmedPages.map((page, index) => (
+                <span key={page}>{index > 0 && ', '}page <span className="num">{page}</span></span>
+              ))}
+              .
+            </span>
+          </p>
+          {onShowPages && <Button variant="outline" size="sm" onClick={onShowPages}>Show {unconfirmedPages.length === 1 ? 'it' : 'them'}</Button>}
+        </div>
       )}
       {waitingForRun > 0 ? (
         <>
@@ -900,6 +961,59 @@ function DoneState({ empty, notChecked, checksHaveRun, waitingForRun, next, onAc
           Go back through the items
         </Button>
       )}
+    </div>
+  );
+}
+
+/**
+ * A page listed with no countertop, as a queue item (#1191): the readers' reason and the two
+ * answers, nothing pre-selected, sent only on a click. "There is a countertop" makes the page a
+ * countertop that waits for a check run; "Confirm" settles it.
+ */
+function PageQuestion({ page, status, onAnswer, onAnswered }: { page: PageWithoutCountertop | null; status: ItemStatus; onAnswer?: AnswerNoCountertop; onAnswered: () => void }) {
+  const signedOff = useSignedOff();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (status === 'waiting-for-run') {
+    return (
+      <p data-slot="queue-page-countertop" className="rounded-lg border border-dashed p-3 text-sm">
+        You said this page has a countertop. Run the checks: it then needs your decision like any countertop with no line chosen.
+      </p>
+    );
+  }
+  if (!page) return <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">This page is not in the current results.</p>;
+  async function answer(choice: 'no_countertop' | 'countertop') {
+    if (!onAnswer || !page || saving || signedOff) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onAnswer(page, choice);
+      onAnswered();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const off = signedOff || saving || !onAnswer || !page.record_id;
+  return (
+    <div data-slot="queue-page" className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">
+        {page.older_reading && <span className="mr-1.5 rounded border px-1 py-px text-xs font-medium text-foreground">Older reading</span>}
+        {page.reason}
+      </p>
+      {page.confirmation ? (
+        <p className="inline-flex items-center gap-1 text-sm font-medium text-outcome-pass-fg">
+          <CheckCircle2 className="size-4" aria-hidden="true" /> Confirmed: no countertop here · {page.confirmation.confirmed_by}
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" disabled={off} onClick={() => void answer('no_countertop')}>Confirm: no countertop here</Button>
+          <Button type="button" variant="outline" disabled={off} title={THERE_IS_A_COUNTERTOP_TIP} onClick={() => void answer('countertop')}>There is a countertop</Button>
+        </div>
+      )}
+      {signedOff && <p role="note" className="text-xs text-muted-foreground">{SIGNED_OFF_NOTE}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">Not saved: {error}</p>}
     </div>
   );
 }

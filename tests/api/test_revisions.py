@@ -1015,7 +1015,10 @@ def test_the_carry_forward_migration_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision("0089_revision_carry_forward")
     assert found is not None and found.down_revision == "0088_outbox_abandoned"
-    assert script.get_heads() == ["0089_revision_carry_forward"]
+    # #1191 added 0090 on top; 0089 is still in the chain right below it.
+    assert script.get_heads() == ["0090_no_countertop_answers"]
+    above = script.get_revision("0090_no_countertop_answers")
+    assert above is not None and above.down_revision == found.revision
 
 
 # --- carry-forward: the identity is strict ----------------------------------------------------------

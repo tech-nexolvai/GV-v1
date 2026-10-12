@@ -19,6 +19,7 @@ import {
   getPackage,
   getApprovalReadiness,
   getCountertopResults,
+  answerNoCountertopPage,
   getSignedExports,
   prepareSignedExports,
   getChangedValues,
@@ -34,9 +35,10 @@ import {
   downloadReport,
   listRules,
 } from '../api/client';
-import type { ReviewSession, ApprovalReadiness, CountertopResult, PackageDetail } from '../api/client';
+import type { ReviewSession, ApprovalReadiness, CountertopResult, NoCountertopAnswer, PackageDetail, PageWithoutCountertop } from '../api/client';
 import { MeasurementPanel, type HeaderRunAnswer } from './MeasurementPanel';
 import type { MeasureStep } from '@/lib/measure-steps';
+import { itemsNeedingYou } from '@/lib/needs-you-queue';
 import { loadFindings } from '../api/findings';
 import { projectId } from '../api/config';
 import { useAsync } from '../api/useAsync';
@@ -59,7 +61,7 @@ import { RevisionSwitcher } from '@/components/revisions/revision-switcher';
 import { NewRevisionDialog } from '@/components/revisions/new-revision-dialog';
 import { EarlierRevisionView } from '@/components/revisions/earlier-revision-view';
 import { WhatChangedPanel } from '@/components/revisions/what-changed-panel';
-import { carriedWallsDrivingResults, productWord } from '@/lib/revisions';
+import { carriedNoCountertopConfirmations, carriedWallsDrivingResults, productWord } from '@/lib/revisions';
 import './ReviewPage.css';
 
 // The drawing viewer (#1045) is fetched the first time a reviewer opens a drawing.
@@ -210,7 +212,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   }, [loadedVendor, loadedRevision]);
 
   // The sidebar shows this review's live "need you" count, not the one it loaded earlier.
-  const blockingCount = readiness?.blocking_findings ?? null;
+  // Results to decide plus pages to confirm (#1191): one number, "items", wherever it is shown.
+  const blockingCount = readiness ? itemsNeedingYou(readiness) : null;
   useEffect(() => {
     if (blockingCount !== null) onNeedYouChange?.(blockingCount);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -302,6 +305,32 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     } catch (error) {
       setActionError(`Saved results could not be refreshed. Sign-off is disabled until they load: ${error instanceof Error ? error.message : String(error)}`);
     } finally { refreshPending.current = false; setRefreshing(false); }
+  }
+
+  /**
+   * One reviewer answer on a page listed with no countertop (#1191). The answer comes back with the
+   * updated countertop results; readiness is asked again, because sign-off waits for every page.
+   * "There is a countertop" is a check input: the page needs a new check run before it has a result.
+   * A refusal is thrown back to the page's own row, where it is shown.
+   */
+  async function answerNoCountertop(page: PageWithoutCountertop, answer: NoCountertopAnswer) {
+    if (!page.record_id) return;
+    const updated = await answerNoCountertopPage(projectId(), packageId, page.record_id, answer);
+    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [] });
+    if (answer === 'countertop' && findings.length > 0) setValuesChangedSinceRun(true);
+    try {
+      setReadiness(await getApprovalReadiness(projectId(), packageId));
+    } catch {
+      // The answer is saved; readiness reloads with the next refresh.
+      setReadiness(null);
+    }
+  }
+
+  /** Brings the "Pages with no countertop found" list into view on Results (#1191). */
+  function showNoCountertopPages() {
+    setQueueOpen(false);
+    setActiveTab('results');
+    setTimeout(() => document.querySelector<HTMLElement>('[data-slot="no-countertop-pages"]')?.scrollIntoView({ block: 'center' }), 80);
   }
 
   /** A value typed where a waiting check asked for it (#1181): the header asks for a run, and the results reload. */
@@ -644,7 +673,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     findingsTotal: findings.length,
     checksQueued: waitingForChecks,
     valuesChangedSinceRun,
-    readiness: readiness ? { blockingFindings: readiness.blocking_findings, canApprove: readiness.can_approve, reason: readiness.reason } : null,
+    readiness: readiness ? { blockingFindings: itemsNeedingYou(readiness), canApprove: readiness.can_approve, reason: readiness.reason } : null,
     exports: exportsStatus,
   });
   // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
@@ -925,7 +954,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         busy={isSigningOff}
         error={signOffError}
         onConfirm={(carriedConfirmed) => void confirmSignOff(carriedConfirmed)}
-        carried={countertops.status === 'ready' ? carriedWallsDrivingResults(countertops.rows) : []}
+        carried={countertops.status === 'ready' ? [...carriedWallsDrivingResults(countertops.rows), ...carriedNoCountertopConfirmations(countertops.pagesWithoutCountertop ?? [])] : []}
       />
       <RunChecksDialog
         ask={headerRunConfirm}
@@ -997,13 +1026,13 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
                 (#1155, #1179): the review's items (countertops and other checks) still blocking sign-off. */}
             <TabsTrigger
               value="results"
-              aria-label={readiness !== null && readiness.blocking_findings > 0 ? `Results ${itemsNeedYou(readiness.blocking_findings)}` : undefined}
+              aria-label={blockingCount !== null && blockingCount > 0 ? `Results ${itemsNeedYou(blockingCount)}` : undefined}
             >
               Results
-              {readiness !== null && readiness.blocking_findings > 0 && (
+              {blockingCount !== null && blockingCount > 0 && (
                 <span data-slot="results-tab-badge" aria-hidden="true" className="inline-flex items-center gap-1 rounded-full bg-outcome-review-bg px-1.5 text-xs text-outcome-review-fg">
                   <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} />
-                  <span><span className="num">{readiness.blocking_findings}</span> {readiness.blocking_findings === 1 ? 'item needs' : 'items need'} you</span>
+                  <span><span className="num">{blockingCount}</span> {blockingCount === 1 ? 'item needs' : 'items need'} you</span>
                 </span>
               )}
             </TabsTrigger>
@@ -1022,6 +1051,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
               busy={isSigningOff}
               onSignOff={openSignOff}
               onReview={() => openQueue()}
+              onShowNoCountertopPages={showNoCountertopPages}
               // Not offered while checks are queued or running, or after sign-off (#1179).
               onRunChecks={runChecksBlocked === null ? () => act('run-checks') : undefined}
             />
@@ -1062,6 +1092,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             packageId={packageId}
             onValuesSaved={valuesSavedInPlace}
             onRunChecks={runChecksBlocked === null ? () => act('run-checks') : undefined}
+            onAnswerNoCountertop={answerNoCountertop}
           />
         </div>
       )}
@@ -1112,6 +1143,10 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onOpenCard={(row) => openRow(row.row_id)}
             onValuesSaved={valuesSavedInPlace}
             startAt={queueStart}
+            unconfirmedNoCountertopPages={readiness?.unconfirmed_no_countertop_pages ?? []}
+            onShowNoCountertopPages={showNoCountertopPages}
+            pagesWithoutCountertop={countertops.status === 'ready' ? countertops.pagesWithoutCountertop ?? [] : []}
+            onAnswerNoCountertop={answerNoCountertop}
           />
         </Suspense>
       )}

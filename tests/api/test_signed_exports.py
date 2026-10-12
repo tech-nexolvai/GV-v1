@@ -443,7 +443,7 @@ def test_signed_report_lists_a_split_page_and_the_pages_with_no_countertop(
     assert "PAGES WITH NO COUNTERTOP FOUND" in text and f"Page 4: {NONE_REASON}" in text
     book = load_workbook(io.BytesIO(client.get(base + "/report").content))
     assert SPLIT_REASON in [cell.value for row in book["Countertops"] for cell in row]
-    assert [cell.value for cell in book["No Countertop Found"][2]] == ["4", NONE_REASON]
+    assert [cell.value for cell in book["No Countertop Found"][2]][:2] == ["4", NONE_REASON]
 
 
 def test_signed_report_lists_a_second_countertop_row_that_was_not_checked(

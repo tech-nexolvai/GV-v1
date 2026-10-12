@@ -82,6 +82,7 @@ export function SignOffPanel({
   onSignOff,
   onReview,
   onRunChecks,
+  onShowNoCountertopPages,
 }: {
   readiness: ApprovalReadiness | null;
   /** The page's own `canSignOff` (readiness says yes, nothing blocks, no run is pending). */
@@ -92,9 +93,14 @@ export function SignOffPanel({
   onReview: () => void;
   /** Takes the reviewer to Run checks (the Measurements form saves first). */
   onRunChecks?: () => void;
+  /** Brings the "Pages with no countertop found" list into view (#1191). */
+  onShowNoCountertopPages?: () => void;
 }) {
   const blocking = readiness?.blocking_findings ?? 0;
   const picks = scope.viewPicksWaiting ?? 0;
+  // The server's own list of pages it still waits on (#1191); nothing is counted here.
+  const unconfirmed = readiness?.unconfirmed_no_countertop_pages ?? [];
+  const unchecked = readiness?.unchecked_countertop_pages ?? [];
   return (
     <section
       data-tw
@@ -130,6 +136,43 @@ export function SignOffPanel({
           <span className="text-muted-foreground">
             A view was chosen for <span className="num">{picks}</span> {picks === 1 ? 'countertop' : 'countertops'} after the last check run.
           </span>
+          {onRunChecks && <Button type="button" size="sm" variant="outline" onClick={onRunChecks}>Run checks</Button>}
+        </div>
+      )}
+
+      {/* Pages both AIs found no countertop on wait for one reviewer click each (#1191). */}
+      {unconfirmed.length > 0 && (
+        <div data-part="no-countertop-unconfirmed" className="flex flex-wrap items-center gap-2 text-sm" role="status">
+          <span className="inline-flex items-center gap-1 font-medium text-outcome-review-fg">
+            <CircleAlert className="size-3.5" aria-hidden="true" />
+            {unconfirmed.length === 1 ? 'A page with no countertop is' : 'Pages with no countertop are'} not confirmed yet:
+          </span>
+          <span>
+            {unconfirmed.map((page, index) => (
+              <span key={page}>
+                {index > 0 && ', '}page <span className="num">{page}</span>
+              </span>
+            ))}
+          </span>
+          {onShowNoCountertopPages && (
+            <Button type="button" size="sm" variant="outline" onClick={onShowNoCountertopPages}>Show {unconfirmed.length === 1 ? 'it' : 'them'}</Button>
+          )}
+        </div>
+      )}
+
+      {/* Pages that need the reviewer but have no result on the last run yet (#1191). */}
+      {unchecked.length > 0 && (
+        <div data-part="countertop-pages-unchecked" className="flex flex-wrap items-center gap-2 text-sm" role="status">
+          <span className="inline-flex items-center gap-1 font-medium">
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+            <span>
+              {unchecked.map((page, index) => (
+                <span key={page}>{index === 0 ? 'Page' : index === unchecked.length - 1 ? ' and page' : ', page'} <span className="num">{page}</span></span>
+              ))}
+              {unchecked.length === 1 ? ' has' : ' have'} no check result yet. Run the checks before signing off.
+            </span>
+          </span>
+          {/* Offered only when a run may start (#1179): never while one is queued or running. */}
           {onRunChecks && <Button type="button" size="sm" variant="outline" onClick={onRunChecks}>Run checks</Button>}
         </div>
       )}
@@ -249,7 +292,9 @@ export function SignOffDialog({
             <ul className="flex list-disc flex-col gap-1 pl-5">
               {carried.map((item) => (
                 <li key={item.rowId}>
-                  {item.label}: wall answer {item.words.charAt(0).toLowerCase() + item.words.slice(1)}
+                  {item.kind === 'no-countertop'
+                    ? item.words
+                    : <>{item.label}: wall answer {item.words.charAt(0).toLowerCase() + item.words.slice(1)}</>}
                 </li>
               ))}
             </ul>

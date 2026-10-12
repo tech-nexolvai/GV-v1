@@ -2,7 +2,9 @@
 
 Anant decided (2026-10-09): a split page becomes one "needs you" result that blocks sign-off and is
 listed in the signed report; a page where both AIs say "no countertop line" is listed with the AI's
-reason and blocks nothing. Synthetic values only.
+reason. Since #1191 (2026-10-12, option c) a listed page needs one reviewer confirmation before
+sign-off (`tests/review/test_no_countertop_answers.py`), and an older reading that does not say what
+its "no line" meant is blocking. Synthetic values only.
 """
 
 from __future__ import annotations
@@ -214,7 +216,13 @@ def test_a_split_page_is_one_blocking_item_until_decided_and_the_decision_carrie
     assert not item.needs_decision
 
 
-def test_a_both_none_page_is_listed_and_blocks_nothing(session: Session, tmp_path: Path) -> None:
+def test_an_older_both_none_page_without_kinds_waits_for_the_reviewer_with_no_result(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1191: a reading from before #1108 says both AIs picked 0, but not what that 0 meant. It used
+    to be listed as "no countertop" and pass silently; now it is an "older" page that blocks sign-off
+    until a reviewer answers it with the two buttons. It gets no "needs you" result of its own, so a
+    real no-countertop page is never signed as a "not checkable" countertop (review finding 9)."""
     _project_id, package_id = _decided_rows(session)
     revision = _revision_of(session, package_id)
     record_id = _unchosen_record(
@@ -223,14 +231,18 @@ def test_a_both_none_page_is_listed_and_blocks_nothing(session: Session, tmp_pat
 
     _run_current_checks(session, package_id, tmp_path)
     assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
-    _decide(session, revision.id)
-    assert approval_readiness(session, revision.id).blocking_findings == 0
 
     results = _results(session, package_id)
     assert all(item.row_id != record_id for item in results.items)
-    assert [(page.page_number, page.reason) for page in results.pages_without_countertop] == [
-        (3, NONE_WHY)
-    ]
+    (listed,) = results.pages_without_countertop
+    assert (listed.record_id, listed.older_reading, listed.confirmation) == (record_id, True, None)
+    assert "This reading is older" in listed.reason and NONE_WHY in listed.reason
+
+    _decide(session, revision.id)
+    readiness = approval_readiness(session, revision.id)
+    assert readiness.blocking_findings == 0
+    assert readiness.unconfirmed_no_countertop_pages == (3,)
+    assert not readiness.can_approve
 
 
 def test_a_split_page_blocks_even_when_no_row_was_chosen_anywhere(
@@ -264,10 +276,12 @@ def test_a_split_page_blocks_even_when_no_row_was_chosen_anywhere(
     assert [item.row_id for item in _results(session, package_id).items] == [record_id]
 
 
-def test_a_record_without_picks_is_classified_from_its_code_authored_reason(
+def test_a_record_without_picks_is_never_listed_as_settled(
     session: Session, tmp_path: Path
 ) -> None:
-    """Records written before #1093 carry no `row-pick:` flags."""
+    """Records written before #1093 carry no `row-pick:` flags. A code-authored reason is a
+    disagreement (split, a result); the AI's own "no row" says no kind either, so since #1191 it is
+    an "older" page that waits for the reviewer's answer."""
     from workflow.slot_row_scope import unchosen_row_pages
 
     _project_id, package_id = _decided_rows(session)
@@ -282,15 +296,24 @@ def test_a_record_without_picks_is_classified_from_its_code_authored_reason(
     )
     none_id = _unchosen_record(session, revision.id, page_index=4, flags=(), reason=NONE_WHY)
 
-    kinds = {page.record.id: page.kind for page in unchosen_row_pages(session, revision.id)}
-    assert kinds == {split_id: "split", missing_id: "split", none_id: "none"}
+    pages = {page.record.id: page for page in unchosen_row_pages(session, revision.id)}
+    assert {record: page.kind for record, page in pages.items()} == {
+        split_id: "split",
+        missing_id: "split",
+        none_id: "older",
+    }
+    # The disagreement keeps its own words; the older "no row" says why it is asked now.
+    assert "did not agree" in pages[split_id].reason
+    assert "This reading is older" in pages[none_id].reason and NONE_WHY in pages[none_id].reason
 
     _run_current_checks(session, package_id, tmp_path)
     scoped = {f.scope_row_candidate_id for f in _live(session, revision.id)}
     assert {split_id, missing_id} <= scoped
     assert none_id not in scoped
     results = _results(session, package_id)
-    assert [page.page_number for page in results.pages_without_countertop] == [5]
+    assert [
+        (page.page_number, page.older_reading) for page in results.pages_without_countertop
+    ] == [(5, True)]
 
 
 def test_a_reviewer_owned_page_gets_no_split_result(session: Session, tmp_path: Path) -> None:
@@ -361,8 +384,8 @@ NOT_BOXED_WHY = (
             NONE_PICKS + NO_COUNTERTOP_KINDS + ("row-kind:sonnet-5-5:not_among_boxes",),
             "split",
         ),
-        # Records without `row-kind:` flags classify exactly as before (#1093).
-        (NONE_PICKS, "none"),
+        # Records without `row-kind:` flags never say what an all-0 answer meant: "older" (#1191).
+        (NONE_PICKS, "older"),
         (SPLIT_PICKS, "split"),
     ],
 )
@@ -435,9 +458,11 @@ def test_an_unsure_reader_makes_one_blocking_item(session: Session, tmp_path: Pa
     assert _results(session, package_id).pages_without_countertop == ()
 
 
-def test_both_no_countertop_kinds_are_listed_and_block_nothing(
+def test_both_no_countertop_kinds_are_listed_with_no_result_and_wait_for_a_confirmation(
     session: Session, tmp_path: Path
 ) -> None:
+    """The page is listed, not a result (#1108); since #1191 sign-off waits for the reviewer to
+    confirm it, which `tests/review/test_no_countertop_answers.py` covers end to end."""
     _project_id, package_id = _decided_rows(session)
     revision = _revision_of(session, package_id)
     record_id = _unchosen_record(
@@ -447,11 +472,15 @@ def test_both_no_countertop_kinds_are_listed_and_block_nothing(
     _run_current_checks(session, package_id, tmp_path)
     assert all(f.scope_row_candidate_id != record_id for f in _live(session, revision.id))
     _decide(session, revision.id)
-    assert approval_readiness(session, revision.id).blocking_findings == 0
+    readiness = approval_readiness(session, revision.id)
+    assert readiness.blocking_findings == 0
+    assert readiness.unconfirmed_no_countertop_pages == (3,)
+    assert not readiness.can_approve
     results = _results(session, package_id)
-    assert [(page.page_number, page.reason) for page in results.pages_without_countertop] == [
-        (3, NONE_WHY)
-    ]
+    assert [
+        (page.page_number, page.reason, page.record_id, page.confirmation)
+        for page in results.pages_without_countertop
+    ] == [(3, NONE_WHY, record_id, None)]
 
 
 def test_a_second_countertop_row_on_a_read_page_is_listed_not_checked_and_never_blocks(

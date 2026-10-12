@@ -102,7 +102,25 @@ PROJECT_VALUES_SHEET: Final = "Project Values"
 COUNTERTOPS_SHEET: Final = "Countertops"
 #: Vendor pages where both AIs found no countertop line (#1093): listed, with the AI's reason.
 PAGES_WITHOUT_COUNTERTOP_SHEET: Final = "No Countertop Found"
-PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason")
+PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason", "confirmed")
+
+
+def confirmation_words(page: PageWithoutCountertopOut) -> str | None:
+    """ "Confirmed no countertop: page 3 — person, time" (#1191), with the earlier revision it was
+    given on when it was carried; `None` for a page with no confirmation (only in a review signed
+    before confirmations were asked)."""
+    confirmed = page.confirmation
+    if confirmed is None:
+        return None
+    carried = (
+        "" if confirmed.from_revision is None else f" (from revision {confirmed.from_revision})"
+    )
+    return (
+        f"Confirmed no countertop: page {page.page_number} \u2014 {confirmed.confirmed_by}, "
+        f"{confirmed.confirmed_at.isoformat()}{carried}"
+    )
+
+
 #: Second countertop rows an AI named on a page whose row was read (#1108): listed, not checked.
 ROWS_NOT_CHECKED_SHEET: Final = "Second Rows Not Checked"
 ROWS_NOT_CHECKED_COLUMNS: Final = ("page", "reason")
@@ -986,7 +1004,7 @@ def write_stored_workbook(
             PAGES_WITHOUT_COUNTERTOP_SHEET,
             PAGES_WITHOUT_COUNTERTOP_COLUMNS,
             [
-                (page.page_number, page.reason)
+                (page.page_number, page.reason, confirmation_words(page) or "")
                 for page in sorted(pages_without_countertop, key=lambda item: item.page_number)
             ],
         )

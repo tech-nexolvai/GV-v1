@@ -1139,3 +1139,44 @@ class ArchitectViewMatchRecord(Base, TimestampedUUID, Immutable):
             postgresql_where=text("supersedes_id IS NOT NULL"),
         ),
     )
+
+
+NO_COUNTERTOP_ANSWERS = ("no_countertop", "countertop")
+"""A reviewer's answer on a page every AI said has no countertop (#1191): "Confirm: no countertop
+here", or "There is a countertop" (the page then needs the reviewer like a split page)."""
+
+
+class NoCountertopAnswer(Base, TimestampedUUID, Immutable):
+    """A reviewer's one click on a page listed as having no countertop (#1191).
+
+    Anchored to the reader's row-choice record it answers, and to that page's identity on any other
+    reading: the page number, the page's content hash and the reading's own answer (its `row-pick:`
+    and `row-kind:` flags, as text). The answer counts on the same record, or on another reading of
+    an identical page (same number, same known hash, same reading answer) of this revision or a later
+    one of the same package. Never edited: a change of mind is a new row, and the newest one counts.
+    """
+
+    __tablename__ = "no_countertop_answers"
+
+    package_revision_id: Mapped[UUID] = mapped_column(
+        ForeignKey("package_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    row_choice_candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"))
+    page_number: Mapped[int] = mapped_column(Integer)
+    page_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    reading_answer: Mapped[str] = mapped_column(String(1000))
+    answer: Mapped[str] = mapped_column(String(16))
+    answered_by: Mapped[str] = mapped_column(String(200))
+
+    __table_args__ = (
+        CheckConstraint(
+            "answer IN ('no_countertop', 'countertop')", name="no_countertop_answer_value"
+        ),
+        CheckConstraint("page_number >= 1", name="no_countertop_answer_page_number"),
+        CheckConstraint(
+            "answered_by !~ '^[[:space:]]*$'", name="no_countertop_answer_actor_not_blank"
+        ),
+    )
