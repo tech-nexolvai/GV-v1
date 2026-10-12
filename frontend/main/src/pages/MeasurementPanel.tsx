@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -60,6 +60,7 @@ import {
   isCategorical,
 } from './classificationFields';
 import { layoutChoiceDefaults } from './layoutChoices';
+import { wallWords } from '@/lib/needs-you-queue';
 import { settingMissingASource, type SettingSource } from '../components/measure/settingSources';
 import { SettingCitation } from '../components/measure/SettingCitation';
 import { CompanySettingsInUse } from '../components/measure/CompanySettingsInUse';
@@ -199,6 +200,64 @@ const REQUIRED_INPUTS_POLL_MS = 5000;
 /** Run checks ignores clicks this soon after a step change: they were meant for the step's Next. */
 const RUN_CHECKS_SETTLE_MS = 300;
 
+/**
+ * How the panel answered a Run checks asked for by the review header (#1179):
+ * - `confirm`: the save would also record AI-filled values or layout answers; ask the reviewer first.
+ * - `blocked`: a step 4 guard stopped it (something in flight, or unsaved countertop rows); `step` is
+ *   where to fix it.
+ * - `failed`: the save or the request was refused, in the server's own words.
+ * - `queued`: the checks were requested (`onChecksQueued` has run too).
+ */
+export type HeaderRunAnswer =
+  | { id: number; kind: 'confirm'; list: RunConfirmList }
+  | { id: number; kind: 'blocked'; unsavedRows: number; step: MeasureStep }
+  | { id: number; kind: 'busy' }
+  | { id: number; kind: 'failed'; error: string }
+  | { id: number; kind: 'queued'; acceptedId: string };
+
+/**
+ * What saving before a run records beyond what the reviewer typed (#1179), field by field: the AI
+ * proposals it confirms as theirs, and the layout answers it sends. `signature` is what the header
+ * sends back once agreed; if the list changed meanwhile, the panel asks again.
+ */
+export interface RunConfirmList {
+  aiValues: { key: string; field: string; value: string; unchecked: boolean }[];
+  layout: { name: string; label: string; answer: string; proposal: boolean }[];
+  signature: string;
+}
+
+/** The list a header run asks about, from the form as it stands (a pure function of its state). */
+function confirmList(
+  needed: Needed,
+  aiFilled: Record<string, string[]>,
+  singles: Record<string, string>,
+  runs: Record<string, string[]>,
+  choices: Record<string, string>,
+): RunConfirmList {
+  const unverified = new Set((needed.proposed_readings ?? []).filter((field) => !field.placement_verified).map((field) => field.field_key));
+  const aiValues = needed.quantities
+    .filter((quantity) => quantity.key in aiFilled)
+    .map((quantity) => ({
+      key: quantity.key,
+      field: fieldLabel(quantity),
+      value: quantity.many ? (runs[quantity.key] ?? []).filter((value) => value.trim()).join(', ') : (singles[quantity.key] ?? '').trim(),
+      unchecked: unverified.has(quantity.key),
+    }));
+  const layout = Object.entries(choices)
+    .filter(([, answer]) => answer !== '')
+    .map(([name, answer]) => {
+      const proposal = needed.discriminators.find((discriminator) => discriminator.name === name)?.proposal ?? null;
+      return {
+        name,
+        label: sentence(name.replace(/_/g, ' ')),
+        answer: name === 'wall_config' ? wallWords(answer) : answer.replace(/_/g, ' '),
+        // The drawing's or the readers' answer, not one the reviewer chose or confirmed.
+        proposal: proposal !== null && proposal.value === answer && !proposal.confirmed,
+      };
+    });
+  return { aiValues, layout, signature: JSON.stringify({ ai: aiValues.map((v) => [v.key, v.value]), layout: layout.map((l) => [l.name, l.answer]) }) };
+}
+
 /** Which sheet a measurement is read from, in the words a reviewer uses. */
 const SOURCE_LABEL: Record<string, string> = {
   SHOP: 'shop drawing',
@@ -330,6 +389,11 @@ export function MeasurementPanel({
   onReviewRow,
   onOpenQueue,
   runChecksRequest,
+  showStep,
+  headerRun,
+  onHeaderRun,
+  runChecksBlocked,
+  onRunStateChange,
 }: {
   packageId?: string;
   onChoosePackage?: () => void;
@@ -346,6 +410,24 @@ export function MeasurementPanel({
    * each new request opens that step, where `#measure-run-checks` is.
    */
   runChecksRequest?: number;
+  /** Opens one step (#1179): where the header sends the reviewer when a run from it could not start. */
+  showStep?: { id: number; step: MeasureStep } | null;
+  /**
+   * A check run asked for by the review header (#1179), answered through `onHeaderRun`. Each new `id`
+   * is one request. It runs exactly what this step 4's Run checks runs (save the visible values, then
+   * `POST …/checks`), from whichever tab is showing, once the form has loaded. `confirmed` says the
+   * reviewer has already agreed to what the save records (AI-filled values, layout answers), which
+   * step 4 says beside its button and the header cannot.
+   */
+  headerRun?: { id: number; confirmed: string | null } | null;
+  onHeaderRun?: (answer: HeaderRunAnswer) => void;
+  /**
+   * Why no run may start now, from the review's recorded stage (#1179): checks already queued or
+   * running, or the review signed off. Step 4's button is off and says it; a header request is not run.
+   */
+  runChecksBlocked?: string | null;
+  /** A run from this panel (step 4 or the header) is being saved and requested, until it is queued. */
+  onRunStateChange?: (running: boolean) => void;
 }) {
   const [needed, setNeeded] = useState<Needed | null>(null);
   const [selectedPageNumber, setSelectedPageNumber] = useState(1);
@@ -463,6 +545,12 @@ export function MeasurementPanel({
     setSeenRunRequest(runChecksRequest ?? 0);
     if (runChecksRequest) setStep('settings');
   }
+  const [seenShowStep, setSeenShowStep] = useState(0);
+  if (showStep && showStep.id !== seenShowStep) {
+    setSeenShowStep(showStep.id);
+    setStep(showStep.step);
+  }
+
 
   useEffect(() => {
     let cancelled = false;
@@ -715,19 +803,6 @@ export function MeasurementPanel({
     return () => window.clearInterval(timer);
   }, [needed?.still_reading]);
 
-  if (!selectedPackageId) {
-    return (
-      <div data-tw data-slot="measure-wizard" className="flex h-full min-h-0 flex-1 flex-col items-start gap-3 overflow-y-auto bg-background p-4 font-sans text-foreground sm:p-6">
-        <h2 className="text-xl font-semibold tracking-tight">Choose a review first</h2>
-        <p className="text-sm text-muted-foreground">Measurements belong to one uploaded drawing pair: open it from Documents.</p>
-        {onChoosePackage && (
-          <Button type="button" onClick={onChoosePackage}>
-            Open documents
-          </Button>
-        )}
-      </div>
-    );
-  }
 
   const markManyEdited = (key: string) => {
     const next = new Set(reviewerEditedManyRef.current).add(key);
@@ -886,8 +961,9 @@ export function MeasurementPanel({
     return confirmed;
   }
 
-  async function saveVisibleValues(): Promise<boolean> {
-    if (!packageId || !needed) return false;
+  /** Saves the form as it stands. Null once saved; otherwise what went wrong, also shown in the bar. */
+  async function saveVisibleValues(): Promise<string | null> {
+    if (!packageId || !needed) return 'The measurements are still loading.';
     // A setting typed from the passage the app found takes its source from that passage (#866).
     const unsourced = settingMissingASource(
       needed.parameters.filter((p) => !p.blocked && !citingPointer(p, declinedCitations)),
@@ -895,8 +971,9 @@ export function MeasurementPanel({
       sourceChoices,
     );
     if (unsourced) {
-      setError(`Say where ${unsourced} came from before saving.`);
-      return false;
+      const message = `Say where ${unsourced} came from before saving.`;
+      setError(message);
+      return message;
     }
     // **What the server holds now, not when the form opened (#1183).** A value someone else saved
     // since then stops the save until the reviewer chooses: skipping an "unchanged" box would let the
@@ -914,7 +991,7 @@ export function MeasurementPanel({
       if (changed.length > 0) {
         setSavedConflicts(changed);
         setPendingSnapshot(current);
-        return false;
+        return 'Someone else saved different values while this form was open. Choose which to keep above, then save again.';
       }
     }
     try {
@@ -993,12 +1070,13 @@ export function MeasurementPanel({
         // The reload below reads it again.
       }
       setSavedReload((count) => count + 1);
-      return true;
+      return null;
     } catch (caught) {
       // The server's own message, verbatim. It names the field and says what to do about it; a
       // rewritten "invalid input" would lose both.
-      setError(caught instanceof ApiError ? caught.message : String(caught));
-      return false;
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      return message;
     }
   }
 
@@ -1144,7 +1222,7 @@ export function MeasurementPanel({
     setError(null);
     setAccepted(null);
     try {
-      if (await saveVisibleValues()) onValuesSaved?.();
+      if ((await saveVisibleValues()) === null) onValuesSaved?.();
     } finally {
       setBusy(false);
     }
@@ -1154,21 +1232,86 @@ export function MeasurementPanel({
     if (!packageId || !needed) return;
     // A click this soon after a step change was aimed at the button that was there before (Next).
     if (Date.now() - stepChangedAtRef.current < RUN_CHECKS_SETTLE_MS) return;
+    await runChecks();
+  }
+
+  /** Step 4's Run checks, also run for the review header (#1179): save, then queue the checks. */
+  async function runChecks(): Promise<{ acceptedId: string } | { error: string }> {
+    if (!packageId || !needed) return { error: 'The measurements are still loading.' };
+    if (runChecksBlocked) return { error: runChecksBlocked };
     setBusy(true);
     setError(null);
     setAccepted(null);
+    onRunStateChange?.(true);
     try {
       // A run must evaluate the values the reviewer can see, including any just-confirmed AI
       // proposals.  If parsing or storage fails, do not enqueue a stale or empty measurement set.
-      if (!(await saveVisibleValues())) return;
+      const saveError = await saveVisibleValues();
+      if (saveError !== null) return { error: saveError };
       const response = await requestChecks(projectId(), packageId, choices);
       setAccepted(response.accepted_id);
       onChecksQueued?.();
+      return { acceptedId: response.accepted_id };
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : String(caught));
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setError(message);
+      return { error: message };
     } finally {
       setBusy(false);
+      onRunStateChange?.(false);
     }
+  }
+
+  // The header's Run checks (#1179): answered once per request, as soon as the form is loaded (the
+  // header may have mounted this panel just now, hidden). The guards are step 4's: nothing in flight,
+  // no countertop row holding unsaved changes; then the same save and the same request.
+  const answeredHeaderRun = useRef(0);
+  const answerHeaderRun = useEffectEvent((request: { id: number; confirmed: string | null }) => {
+    if (request.id <= answeredHeaderRun.current) return;
+    const id = request.id;
+    if (!needed || !packageId) {
+      if (loadError) {
+        answeredHeaderRun.current = id;
+        onHeaderRun?.({ id, kind: 'failed', error: `The measurements could not be loaded: ${loadError}` });
+      }
+      return;
+    }
+    answeredHeaderRun.current = id;
+    // A run or save already in flight here: it says its own outcome, so nothing more is said.
+    if (busy || runChecksBlocked) {
+      onHeaderRun?.({ id, kind: 'busy' });
+      return;
+    }
+    if (unsavedRows > 0) {
+      onHeaderRun?.({ id, kind: 'blocked', unsavedRows, step: 'runs' });
+      return;
+    }
+    const list = confirmList(needed, aiFilled, singles, runs, choices);
+    // Asked again when what the save would record changed since the reviewer agreed (a refresh).
+    if ((list.aiValues.length > 0 || list.layout.length > 0) && request.confirmed !== list.signature) {
+      onHeaderRun?.({ id, kind: 'confirm', list });
+      return;
+    }
+    void runChecks().then((result) =>
+      onHeaderRun?.('acceptedId' in result ? { id, kind: 'queued', acceptedId: result.acceptedId } : { id, kind: 'failed', error: result.error }),
+    );
+  });
+  useEffect(() => {
+    if (headerRun) answerHeaderRun(headerRun);
+  }, [headerRun, needed, packageId, loadError]);
+
+  if (!selectedPackageId) {
+    return (
+      <div data-tw data-slot="measure-wizard" className="flex h-full min-h-0 flex-1 flex-col items-start gap-3 overflow-y-auto bg-background p-4 font-sans text-foreground sm:p-6">
+        <h2 className="text-xl font-semibold tracking-tight">Choose a review first</h2>
+        <p className="text-sm text-muted-foreground">Measurements belong to one uploaded drawing pair: open it from Documents.</p>
+        {onChoosePackage && (
+          <Button type="button" onClick={onChoosePackage}>
+            Open documents
+          </Button>
+        )}
+      </div>
+    );
   }
 
   if (loadError && !needed) {
@@ -1275,6 +1418,15 @@ export function MeasurementPanel({
       .map((field) => field.field_key),
   );
   const reviewSummary = reviewCounts(needed.quantities.map(reviewOf));
+
+  /**
+   * Step 3 with nothing to propose (#1179): the drawings were read when step 2 shows countertop rows,
+   * so what is missing is the project values (no reading, and no default for a measured value). "Nothing
+   * was read" is said only once those sections have loaded and found nothing; while they load, nothing.
+   */
+  const countertopsRead = sectionStates.rows === 'shown' || sectionStates.runs === 'shown';
+  const nothingRead = !countertopsRead && sectionStates.rows === 'empty' && (sectionStates.runs ?? 'empty') === 'empty';
+  const missingValueNames = needed.quantities.filter((quantity) => !hasValue(quantity)).map(fieldLabel);
 
   /** Whether a proposal has been asked for at all. What decides who owns the panel's space. */
   const attempted = proposing || proposalSteps.length > 0 || proposal !== null || proposalError !== null;
@@ -1793,11 +1945,15 @@ export function MeasurementPanel({
                   </div>
                   {/* **Two situations, not one sentence covering both**: a finished package and a drawing
                       nothing was read from want completely different things done about them. */}
-                  {candidates.length === 0 && (
-                    <Hint>
-                      {confirmedCount > 0
-                        ? 'Nothing left to propose: every reading off these drawings already has a meaning.'
-                        : 'Nothing was read off these drawings. Check on Documents that both finished uploading and were read.'}
+                  {candidates.length === 0 && (confirmedCount > 0 || countertopsRead || nothingRead) && (
+                    <Hint role="status">
+                      <span data-slot="values-hint">
+                        {confirmedCount > 0
+                          ? 'Nothing left to propose: every reading off these drawings already has a meaning.'
+                          : countertopsRead
+                            ? <MissingValues names={missingValueNames} />
+                            : 'Nothing was read off these drawings. Check on Documents that both finished uploading and were read.'}
+                      </span>
                     </Hint>
                   )}
                 </div>
@@ -2288,6 +2444,9 @@ export function MeasurementPanel({
               </button>
             </p>
           )}
+          {runChecksBlocked && !nextStep && (
+            <p id="measure-run-blocked" className="text-sm text-muted-foreground" role="status" data-part="run-blocked">{runChecksBlocked}</p>
+          )}
           <div className="flex items-center gap-2">
             {previousStep && (
               <Button type="button" variant="ghost" onClick={() => goToStep(previousStep)}>
@@ -2306,7 +2465,7 @@ export function MeasurementPanel({
                 Next <ChevronRight aria-hidden="true" />
               </Button>
             ) : (
-              <Button key="run-checks" type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy}>
+              <Button key="run-checks" type="button" id="measure-run-checks" onClick={onRunChecks} disabled={busy || Boolean(runChecksBlocked)} aria-describedby={runChecksBlocked ? 'measure-run-blocked' : undefined}>
                 <Play aria-hidden="true" /> Run checks
               </Button>
             )}
@@ -2314,6 +2473,25 @@ export function MeasurementPanel({
         </footer>
       </div>
     </div>
+  );
+}
+
+/**
+ * What step 3 says when the countertops were read but no project value was (#1179): which values
+ * have neither a value nor a default, and the one thing to do. Never "nothing was read".
+ */
+function MissingValues({ names }: { names: readonly string[] }) {
+  if (names.length === 0) {
+    return <>The countertops were read; no project values were. Every field here already has a value.</>;
+  }
+  const shown = names.slice(0, 4);
+  const more = names.length - shown.length;
+  const list = more > 0 ? `${shown.join(', ')} and ${more} more` : shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown.at(-1)}` : shown[0];
+  return (
+    <>
+      The countertops were read; no project values were. <span className="num">{names.length}</span>{' '}
+      {names.length === 1 ? 'value has' : 'values have'} no value and no default: {list}. Type {names.length === 1 ? 'it' : 'them'} in below.
+    </>
   );
 }
 

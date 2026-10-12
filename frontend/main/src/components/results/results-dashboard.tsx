@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import { Hourglass, RefreshCw, Search } from 'lucide-react';
 
 import { listRules, type CountertopResult, type PageWithoutCountertop } from '@/api/client';
 import { useAsync } from '@/api/useAsync';
@@ -11,6 +11,9 @@ import {
   isSplitPage,
   kpis as computeKpis,
   matchesFilter,
+  notCheckedHint,
+  notCheckedSituation,
+  notCheckedSummary,
   sharedNotComparedReason,
   sortRows,
   type Filter,
@@ -44,13 +47,15 @@ export type CountertopsState =
     };
 
 // The chips filter the table. Their counts are on the cards above (#1126), so a chip carries a
-// number only when no card shows it: "Held".
-const CHIPS: { value: Filter; word: string; counted?: boolean }[] = [
+// number only when no card shows it: "Held", and "Not checked" (#1179), which is offered only while
+// some countertop has no result yet.
+const CHIPS: { value: Filter; word: string; counted?: 'held' | 'notChecked' }[] = [
   { value: 'all', word: 'All' },
   { value: 'needs-you', word: 'Needs you' },
+  { value: 'not-checked', word: 'Not checked', counted: 'notChecked' },
   { value: 'fail', word: 'FAIL' },
   { value: 'pass', word: 'PASS' },
-  { value: 'held', word: 'Held', counted: true },
+  { value: 'held', word: 'Held', counted: 'held' },
 ];
 
 /**
@@ -72,6 +77,7 @@ export function ResultsDashboard({
   onOpenCard,
   onOpenQueue,
   onShowArchitectView,
+  canRunChecks = false,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -92,6 +98,8 @@ export function ResultsDashboard({
   onOpenQueue?: (startAt?: string) => void;
   /** The architect's page beside the vendor's, framing the row's matched view (#1168). */
   onShowArchitectView?: (row: CountertopResult) => void;
+  /** Run checks is the review's next action (#1179): only then do unchecked rows say to run them. */
+  canRunChecks?: boolean;
 }) {
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
@@ -126,6 +134,9 @@ export function ResultsDashboard({
   const blocking = blockingIds ?? new Set<string>();
   // Said once above the table when every countertop shares it (#1126); per row otherwise.
   const sharedReason = sharedNotComparedReason(rows);
+  // Rows with no result (#1179): what they say depends on whether checks have run (findings exist).
+  const situation = notCheckedSituation(findings.length > 0, canRunChecks);
+  const summary = notCheckedSummary(counts.notChecked, situation);
 
   const actions: RowActions = {
     onShowDrawing,
@@ -183,12 +194,14 @@ export function ResultsDashboard({
               aria-label="Show"
               className="flex-wrap"
             >
-              {CHIPS.concat(filter === 'automatic' ? [{ value: 'automatic', word: 'Automatic' }] : []).map((chip) => (
-                <ToggleGroupItem key={chip.value} value={chip.value} className="gap-1.5 px-2.5">
-                  {chip.word}
-                  {chip.counted && <span className="num text-xs text-muted-foreground">{counts.held}</span>}
-                </ToggleGroupItem>
-              ))}
+              {CHIPS.filter((chip) => chip.value !== 'not-checked' || counts.notChecked > 0 || filter === 'not-checked')
+                .concat(filter === 'automatic' ? [{ value: 'automatic', word: 'Automatic' }] : [])
+                .map((chip) => (
+                  <ToggleGroupItem key={chip.value} value={chip.value} className="gap-1.5 px-2.5">
+                    {chip.word}
+                    {chip.counted && <span className="num text-xs text-muted-foreground">{counts[chip.counted]}</span>}
+                  </ToggleGroupItem>
+                ))}
             </ToggleGroup>
             <div className="ml-auto flex w-full items-center gap-1 sm:w-auto">
               <div className="relative flex-1 sm:w-56 sm:flex-none">
@@ -201,14 +214,28 @@ export function ResultsDashboard({
             </div>
           </div>
 
+          {/* Rows the checks have not run on (#1179): said once, with its noun, apart from "Needs you". */}
+          {counts.notChecked > 0 && (
+            <p data-slot="not-checked-notice" role="status" className="flex items-start gap-1.5 rounded-xl border border-dashed px-3 py-2 text-sm">
+              <Hourglass className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span>
+                <span className="num">{counts.notChecked}</span> {summary.lead}{summary.rest && ` ${summary.rest}`}
+              </span>
+            </p>
+          )}
+
           {sharedReason !== null && <ArchitectNotice reason={sharedReason} />}
 
           {visible.length === 0 ? (
             <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-              {query ? `Nothing matches “${search.trim()}”.` : filter === 'needs-you' ? 'Nothing needs you here.' : 'No countertops in this group.'}
+              {query
+                ? `Nothing matches “${search.trim()}”.`
+                : filter === 'needs-you'
+                  ? counts.notChecked > 0 && situation === 'run-checks' ? `Nothing to decide yet. ${notCheckedHint(situation)}.` : 'Nothing needs you here.'
+                  : 'No countertops in this group.'}
             </p>
           ) : (
-            <CountertopTable rows={visible} allRows={rows} actions={actions} architectNotice={sharedReason !== null} />
+            <CountertopTable rows={visible} allRows={rows} actions={actions} architectNotice={sharedReason !== null} notCheckedHint={notCheckedHint(situation)} />
           )}
         </>
       )}

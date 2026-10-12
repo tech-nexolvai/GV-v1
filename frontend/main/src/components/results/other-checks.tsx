@@ -79,7 +79,8 @@ export function OtherChecks({
             <span className="flex items-center gap-2">
               Other checks
               <span className="num rounded-full bg-muted px-1.5 text-xs">{findings.length}</span>
-              {waiting > 0 && <span className="text-xs text-outcome-review-fg"><span className="num">{waiting}</span> need you</span>}
+              {/* Its noun with it (#1179): these are checks, apart from the countertops and the review's items. */}
+              {waiting > 0 && <span className="text-xs text-outcome-review-fg"><span className="num">{waiting}</span> {waiting === 1 ? 'check needs' : 'checks need'} you</span>}
             </span>
           </AccordionTrigger>
           <AccordionContent className="flex flex-col gap-3">

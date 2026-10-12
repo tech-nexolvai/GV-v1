@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import pathlib
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from decimal import Decimal
 from io import BytesIO
 from typing import Any
@@ -430,7 +431,13 @@ def _requested(session: Session, package_id: UUID, body: dict[str, Any] | None =
     assert response.status_code == 202, response.text
     accepted = UUID(response.json()["accepted_id"])
     entry = session.execute(select(OutboxEntry).where(OutboxEntry.id == accepted)).scalar_one()
-    return entry.payload
+    payload = entry.payload
+    # The worker takes each run before the next is asked for: a run still queued refuses a second
+    # request with 409 (#1179).
+    entry.attempts = 1
+    entry.dispatched_at = datetime.now(UTC)
+    session.commit()
+    return payload
 
 
 def test_an_ai_only_wall_layout_stays_a_proposal_until_the_reviewer_selects_it(

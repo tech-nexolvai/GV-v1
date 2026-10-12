@@ -153,7 +153,8 @@ describe('countertop lines not checked (#1108)', () => {
     dashboard(rows, { rowsNotChecked: NOT_CHECKED });
     const before = kpis(rows);
     const cards = document.querySelector('[data-slot="kpi-cards"]')!;
-    expect(cards.textContent).toMatch(new RegExp(`Needs you\\s*${before.needsYou}`));
+    // The card says what it counts (#1179).
+    expect(cards.textContent).toMatch(new RegExp(`Countertops? needs? you\\s*${before.needsYou}`));
     expect(cards.textContent).toMatch(new RegExp(`Countertops\\s*${before.countertops}`));
   });
 
@@ -227,7 +228,10 @@ describe('counts once (#1126)', () => {
     dashboard(rows);
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
     const shown = [...legend.querySelectorAll('li')].filter((li) => [...li.querySelectorAll('span.num')].some((n) => !n.classList.contains('sr-only'))).map((li) => li.textContent);
-    expect(shown).toEqual(['Needs your decision1', 'Not checkable1']);
+    // "Needs your decision" keeps its number for a screen reader only: the "Countertops need you" card
+    // is the one count of countertops waiting for the reviewer (#1179).
+    expect(shown).toEqual(['Not checkable1']);
+    expect(legend.textContent).toMatch(/Needs your decision\s*1/);
     // Every count is still there for a screen reader, since the ring is hidden from it.
     expect(legend.textContent).toMatch(/FAIL\s*1/);
     expect(legend.textContent).toMatch(/PASS\s*1/);
@@ -243,6 +247,8 @@ describe('counts once (#1126)', () => {
     const ring = document.querySelector('[data-slot="outcome-chart"] [data-slot="chart"]')!;
     expect(ring.classList.contains('hidden')).toBe(true);
     expect(ring.classList.contains('sm:flex')).toBe(true);
-    expect(legend.querySelector('[data-slot="fail-needs-you"]')?.textContent).toBe('1 needs you');
+    // On screen the words only; the number with its noun for a screen reader (#1179).
+    expect(legend.querySelector('[data-slot="fail-needs-you"]')?.textContent).toBe('1 FAIL needs you');
+    expect(legend.querySelector('[data-slot="fail-needs-you"] .sr-only')?.textContent).toBe('1 FAIL ');
   }, 15_000);
 });

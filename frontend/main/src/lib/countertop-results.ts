@@ -8,15 +8,20 @@
  * **A reviewer's decision is never shown as the check's result.** A row's bucket is what the record
  * says: still needs someone → "needs-you"; otherwise the recorded outcome (PASS, FAIL, or "not
  * checkable" when the automatic check could not decide). Who decided is a separate column.
+ *
+ * **"Not checked" is not "Needs you" (#1179).** A row with no recorded result (`finding_id: null`:
+ * the checks have not run on it) has nothing a reviewer can decide. The API still marks it
+ * `needs_decision`, but it is not a finding, so it is counted on its own as "not checked" and never
+ * as needing the reviewer, and it is never a queue item. Running the checks is what it needs.
  */
 import type { CountertopResult, ExactValue } from '@/api/client';
 import type { Finding } from '@/data/types';
 import { architectState } from './architect';
 
-export type Bucket = 'needs-you' | 'fail' | 'pass' | 'not-checkable';
-export type Filter = 'all' | 'needs-you' | 'fail' | 'pass' | 'held' | 'automatic';
+export type Bucket = 'needs-you' | 'not-checked' | 'fail' | 'pass' | 'not-checkable';
+export type Filter = 'all' | 'needs-you' | 'not-checked' | 'fail' | 'pass' | 'held' | 'automatic';
 
-type RowFacts = Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect'>;
+type RowFacts = Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect' | 'finding_id'>;
 
 /** The hold the API puts on a page the two AIs picked different countertop lines on (#1093). */
 export const ROW_CHOICE_SPLIT = 'row-choice-split';
@@ -30,12 +35,29 @@ export function isSplitPage(row: Pick<CountertopResult, 'hold'>): boolean {
 }
 
 /**
+ * No recorded result for the countertop (#1179): the checks have not run on it yet. The API's own
+ * answer (`finding_id: null`), never inferred from anything else. Nothing on it can be decided.
+ */
+export function isNotChecked(row: Pick<CountertopResult, 'finding_id'>): boolean {
+  return row.finding_id === null;
+}
+
+/**
+ * The width result needs the reviewer: a recorded result the server still counts as needing a
+ * decision. A row with no result is "not checked" (#1179), not this. A split page with a result
+ * (#1115) is one of these: it is decided like any held row.
+ */
+export function widthNeedsYou(row: Pick<CountertopResult, 'needs_decision' | 'finding_id'>): boolean {
+  return row.needs_decision && row.finding_id !== null;
+}
+
+/**
  * A countertop has two checks (#1085): its own width, and whether it matches the architect. It needs
- * the reviewer when either does; it is FAIL when either recorded a FAIL; it is PASS only when every
- * recorded result passed (an architect line that compared nothing adds no result).
+ * the reviewer when either recorded result does; it is FAIL when either recorded a FAIL; it is PASS
+ * only when every recorded result passed (an architect line that compared nothing adds no result).
  */
 export function rowNeedsYou(row: RowFacts): boolean {
-  return row.needs_decision || Boolean(row.architect?.needs_decision);
+  return widthNeedsYou(row) || Boolean(row.architect?.needs_decision && row.architect.finding_id);
 }
 
 export function rowHasFail(row: RowFacts): boolean {
@@ -49,15 +71,17 @@ export function rowAllPass(row: RowFacts): boolean {
 
 export function bucketOf(row: RowFacts): Bucket {
   if (rowNeedsYou(row)) return 'needs-you';
+  if (isNotChecked(row)) return 'not-checked';
   if (rowHasFail(row)) return 'fail';
   if (rowAllPass(row)) return 'pass';
   return 'not-checkable';
 }
 
-const BUCKET_ORDER: Record<Bucket, number> = { 'needs-you': 0, fail: 1, pass: 2, 'not-checkable': 3 };
+// Not checked sits right after "Needs you": it is work still to do (run the checks), not a result.
+const BUCKET_ORDER: Record<Bucket, number> = { 'needs-you': 0, 'not-checked': 1, fail: 2, pass: 3, 'not-checkable': 4 };
 
-/** Needs you → FAIL → PASS → not checkable, then page, then label. Returns a new array. */
-export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect' | 'page_number' | 'label'>>(rows: readonly T[]): T[] {
+/** Needs you → not checked → FAIL → PASS → not checkable, then page, then label. Returns a new array. */
+export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'outcome' | 'architect' | 'finding_id' | 'page_number' | 'label'>>(rows: readonly T[]): T[] {
   return [...rows].sort(
     (a, b) =>
       BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] ||
@@ -75,22 +99,58 @@ export function sortRows<T extends Pick<CountertopResult, 'needs_decision' | 'ou
 export function resultBucket(row: RowFacts): Bucket {
   if (rowHasFail(row)) return 'fail';
   if (rowAllPass(row)) return 'pass';
-  return rowNeedsYou(row) ? 'needs-you' : 'not-checkable';
+  if (rowNeedsYou(row)) return 'needs-you';
+  return isNotChecked(row) ? 'not-checked' : 'not-checkable';
 }
 
 /** The donut's words: its undecided slice holds only rows without a PASS or FAIL. */
 export const RESULT_LABEL: Record<Bucket, string> = {
   'needs-you': 'Needs your decision',
+  'not-checked': 'Not checked',
   fail: 'FAIL',
   pass: 'PASS',
   'not-checkable': 'Not checkable',
 };
+
+/** What a "Not checked" row says (#1179): there is nothing to decide until the checks run. */
+export const NOT_CHECKED_HINT = 'Run the checks to get a result';
+/** What a row with no result says once checks have run: the last run made none for it. */
+export const NO_RESULT_HINT = 'No result for this countertop on the last run';
+
+/**
+ * Why rows have no result, from recorded facts only (#1179):
+ * - `no-result`: checks have run (the review holds findings) and made none for this row; its
+ *   countertop card says why (for example a page left for the reviewer to measure).
+ * - `run-checks`: no run yet, and Run checks is the next action, so that is what to do.
+ * - `waiting`: no run yet and Run checks is not available (still reading, or checks running).
+ */
+export type NotCheckedSituation = 'no-result' | 'run-checks' | 'waiting';
+
+export function notCheckedSituation(checksHaveRun: boolean, canRunChecks: boolean): NotCheckedSituation {
+  if (checksHaveRun) return 'no-result';
+  return canRunChecks ? 'run-checks' : 'waiting';
+}
+
+/** The line under a row's "Not checked", or none. */
+export function notCheckedHint(situation: NotCheckedSituation): string | null {
+  if (situation === 'no-result') return NO_RESULT_HINT;
+  return situation === 'run-checks' ? NOT_CHECKED_HINT : null;
+}
+
+/** The one line above the table, with its number and noun. */
+export function notCheckedSummary(count: number, situation: NotCheckedSituation): { lead: string; rest: string } {
+  const noun = count === 1 ? 'countertop' : 'countertops';
+  if (situation === 'no-result') return { lead: `${noun} with no result from the last run.`, rest: `Open ${count === 1 ? 'its' : 'their'} countertop card to see why.` };
+  if (situation === 'run-checks') return { lead: `${noun} not checked yet.`, rest: `${NOT_CHECKED_HINT}.` };
+  return { lead: `${noun} not checked yet.`, rest: '' };
+}
 
 export function matchesFilter(row: CountertopResult, filter: Filter): boolean {
   if (filter === 'all') return true;
   if (filter === 'held') return row.hold !== null;
   if (filter === 'automatic') return row.outcome === 'PASS' || row.outcome === 'FAIL';
   if (filter === 'needs-you') return rowNeedsYou(row);
+  if (filter === 'not-checked') return isNotChecked(row);
   return resultBucket(row) === filter;
 }
 
@@ -98,7 +158,10 @@ export interface Kpis {
   countertops: number;
   /** Decided by the checks themselves: a recorded PASS or FAIL. */
   automatic: number;
+  /** Countertops with a recorded result that still needs the reviewer. Never an unchecked row. */
   needsYou: number;
+  /** Countertops with no recorded result yet (#1179): the checks have not run on them. */
+  notChecked: number;
   pass: number;
   fail: number;
   held: number;
@@ -109,15 +172,21 @@ export function kpis(rows: readonly CountertopResult[]): Kpis {
     countertops: rows.length,
     automatic: rows.filter((r) => r.outcome === 'PASS' || r.outcome === 'FAIL').length,
     needsYou: rows.filter(rowNeedsYou).length,
+    notChecked: rows.filter(isNotChecked).length,
     pass: rows.filter(rowAllPass).length,
     fail: rows.filter(rowHasFail).length,
     held: rows.filter((r) => r.hold !== null).length,
   };
 }
 
+/** "9 countertops", "1 countertop": a count never stands without its noun (#1179). */
+export function countertopsWord(count: number): string {
+  return count === 1 ? 'countertop' : 'countertops';
+}
+
 /** The donut's slices, by recorded result; they add up to the number of countertops. */
 export function bucketCounts(rows: readonly CountertopResult[]): Record<Bucket, number> {
-  const counts: Record<Bucket, number> = { 'needs-you': 0, fail: 0, pass: 0, 'not-checkable': 0 };
+  const counts: Record<Bucket, number> = { 'needs-you': 0, 'not-checked': 0, fail: 0, pass: 0, 'not-checkable': 0 };
   for (const row of rows) counts[resultBucket(row)] += 1;
   return counts;
 }
@@ -147,7 +216,7 @@ export interface SignOffSummary {
 export function signOffSummary(rows: readonly CountertopResult[]): SignOffSummary {
   const summary: SignOffSummary = { byChecks: 0, byYou: 0, notCheckable: 0, needYou: 0, noResult: 0 };
   for (const row of rows) {
-    if (row.finding_id === null) summary.noResult += 1;
+    if (isNotChecked(row)) summary.noResult += 1;
     else if (row.needs_decision) summary.needYou += 1;
     else if (row.reviewer_decision === null) summary.byChecks += 1;
     else if (decisionWords(row.reviewer_decision.action, row.outcome) === 'Not checkable') summary.notCheckable += 1;

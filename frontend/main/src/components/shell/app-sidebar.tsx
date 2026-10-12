@@ -203,7 +203,7 @@ export function AppSidebar({
                           {count !== undefined && count > 0 && (
                             <span data-slot="need-you" className="inline-flex items-center gap-1 text-xs text-outcome-review-fg">
                               <OutcomeIcon outcome="REVIEW_REQUIRED" size={12} className="shrink-0" />
-                              {active ? 'Needs you' : <span><span className="num">{count}</span> need you</span>}
+                              {active ? 'Needs you' : <span><span className="num">{count}</span> {count === 1 ? 'item needs' : 'items need'} you</span>}
                             </span>
                           )}
                           {pkg.current_revision_number > 1 && (

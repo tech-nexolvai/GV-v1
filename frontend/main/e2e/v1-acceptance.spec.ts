@@ -96,7 +96,8 @@ function resultWords(item: Item): string[] {
   if (item.outcome && !item.needs_decision && (item.outcome === 'REVIEW_REQUIRED' || item.outcome === 'NOT_FOUND')) words.push('Not checkable');
   else if (item.outcome) words.push(WORDS[item.outcome] ?? item.outcome);
   else words.push('Not checked');
-  if (item.needs_decision && item.outcome !== 'REVIEW_REQUIRED') words.push('Needs you');
+  // A row with no result is "Not checked", never "Needs you" (#1179): the same rule as `widthNeedsYou`.
+  if (item.needs_decision && item.finding_id !== null && item.outcome !== 'REVIEW_REQUIRED') words.push('Needs you');
   return words;
 }
 
@@ -107,7 +108,9 @@ function differenceWords(delta: Exact): string {
   return display;
 }
 
-const needsYou = (i: Item) => i.needs_decision || Boolean(i.architect?.needs_decision);
+// The screen's rules (#1179, `lib/countertop-results.ts`): only a recorded result can need the reviewer.
+const hasNoResult = (i: Item) => i.finding_id === null;
+const needsYou = (i: Item) => (i.needs_decision && i.finding_id !== null) || Boolean(i.architect?.needs_decision && i.architect.finding_id);
 const hasFail = (i: Item) => i.outcome === 'FAIL' || i.architect?.outcome === 'FAIL';
 const allPass = (i: Item) => i.outcome === 'PASS' && (i.architect?.outcome ?? 'PASS') === 'PASS';
 
@@ -199,22 +202,41 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
     const cards = page.locator('[data-slot="kpi-cards"] button');
     const card = (word: string) => cards.filter({ has: page.getByText(word, { exact: true }) }).locator('.num');
     await expect(card('Countertops'), `${when}: countertops card`).toHaveText(String(answer.items.length));
-    await expect(card('Needs you'), `${when}: needs-you card`).toHaveText(String(answer.items.filter(needsYou).length));
+    // The card names what it counts (#1179): "Countertops need you", or "Countertop needs you" for one.
+    const needYouCard = cards.filter({ has: page.getByText(/^Countertops? needs? you$/) }).locator('.num');
+    await expect(needYouCard, `${when}: needs-you card`).toHaveText(String(answer.items.filter(needsYou).length));
     await expect(card('FAIL'), `${when}: FAIL card`).toHaveText(String(answer.items.filter(hasFail).length));
     await expect(card('PASS'), `${when}: PASS card`).toHaveText(String(answer.items.filter(allPass).length));
     const legend = page.getByRole('list', { name: 'Countertop outcomes' });
-    const slices = { 'Needs your decision': 0, FAIL: 0, PASS: 0, 'Not checkable': 0 };
+    const slices = { 'Needs your decision': 0, 'Not checked': 0, FAIL: 0, PASS: 0, 'Not checkable': 0 };
     for (const i of answer.items) {
       if (hasFail(i)) slices.FAIL += 1;
       else if (allPass(i)) slices.PASS += 1;
       else if (needsYou(i)) slices['Needs your decision'] += 1;
+      else if (hasNoResult(i)) slices['Not checked'] += 1;
       else slices['Not checkable'] += 1;
     }
-    // Each slice's count is in the legend (visible only for "Not checkable"; the rest for screen
-    // readers, since the cards show them, #1126).
+    // Each slice's count is in the legend (visible only for "Not checked" and "Not checkable"; the
+    // rest for screen readers, since the cards show them, #1126, #1179). "Not checked" is listed
+    // only when there is any.
     for (const [word, count] of Object.entries(slices)) {
+      if (word === 'Not checked' && count === 0) {
+        await expect(legend.locator('li[data-bucket="not-checked"]'), `${when}: no "Not checked" slice`).toHaveCount(0);
+        continue;
+      }
       const slice = legend.locator('li').filter({ has: page.getByText(word, { exact: true }) }).locator('span.num').first();
       await expect(slice, `${when}: donut ${word}`).toHaveText(String(count));
+    }
+    // Rows with no result (#1179): a "Not checked" chip with its count and one line above the table.
+    const unchecked = slices['Not checked'];
+    const chip = page.getByRole('radio', { name: /^Not checked/ });
+    const uncheckedLine = page.locator('[data-slot="not-checked-notice"]');
+    if (unchecked === 0) {
+      await expect(chip, `${when}: no "Not checked" chip`).toHaveCount(0);
+      await expect(uncheckedLine, `${when}: no "Not checked" line`).toHaveCount(0);
+    } else {
+      await expect(chip, `${when}: "Not checked" chip`).toContainText(String(unchecked));
+      await expect(uncheckedLine.locator('.num'), `${when}: "Not checked" line`).toHaveText(String(unchecked));
     }
     // Pages with no countertop: listed with the AI's reason, nothing to click.
     const pages = answer.pages_without_countertop ?? [];
@@ -429,9 +451,18 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
         return;
       }
       const old = await results();
-      // The header takes the reviewer to Measurements; the run starts from its own "Run checks".
+      // The header runs the checks itself (#1179): the same save and request as Measurements step 4's
+      // `#measure-run-checks`. When the save would also confirm AI-filled values or record layout
+      // answers, it asks first; this walk agrees, as pressing step 4's button would.
       await run.click();
-      await page.locator('#measure-run-checks').click();
+      // Either the run starts ("Checking…") or the dialog asks first; whichever comes, never a guess.
+      const confirm = page.getByRole('dialog', { name: 'Run the checks?' });
+      const checking = header.getByRole('button', { name: /Checking/ });
+      await expect(confirm.or(checking), 'the header run starts or asks first').toBeVisible({ timeout: 60_000 });
+      if (await confirm.isVisible()) {
+        notes.push(`the header asked first: ${(await confirm.locator('li').allInnerTexts()).join(' | ')}`);
+        await confirm.getByRole('button', { name: 'Run checks' }).click();
+      }
       await waitForChecks();
       await page.getByRole('tab', { name: /Results/ }).click();
       const answer = await screenMatchesApi('after the re-run');

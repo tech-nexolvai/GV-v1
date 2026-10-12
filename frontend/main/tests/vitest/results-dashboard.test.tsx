@@ -78,14 +78,17 @@ function setup(overrides: Partial<Parameters<typeof ResultsDashboard>[0]> = {}) 
 }
 
 const tableRows = () => [...document.querySelectorAll<HTMLTableRowElement>('[data-slot="countertop-table"] tr[data-row-id]')];
+const tableRow = (id: string) => tableRows().find((row) => row.dataset.rowId === id)!;
 
 describe('countertop results: pure rules', () => {
+  // #1179: held-p5 has no recorded result (finding_id null), so it is "Not checked", not "Needs you"
+  // (it was counted as needing you before), even though the API marks it needs_decision.
   it('KPI counts come straight from the rows', () => {
-    expect(kpis(ROWS)).toEqual({ countertops: 5, automatic: 2, needsYou: 2, pass: 1, fail: 1, held: 2 });
+    expect(kpis(ROWS)).toEqual({ countertops: 5, automatic: 2, needsYou: 1, notChecked: 1, pass: 1, fail: 1, held: 2 });
   });
 
-  it('sorts Needs you → FAIL → PASS → not checkable, then by page', () => {
-    expect(sortRows(ROWS).map((r) => r.row_id)).toEqual(['held-p5', 'need-p9', 'fail-p2', 'pass-p4', 'dec-p3']);
+  it('sorts Needs you → not checked → FAIL → PASS → not checkable, then by page (#1179)', () => {
+    expect(sortRows(ROWS).map((r) => r.row_id)).toEqual(['need-p9', 'held-p5', 'fail-p2', 'pass-p4', 'dec-p3']);
   });
 
   it('a reviewer decision never turns a row into PASS', () => {
@@ -95,6 +98,8 @@ describe('countertop results: pure rules', () => {
   it('opens on "Needs you" when anything needs you, otherwise all', () => {
     expect(defaultFilter(ROWS)).toBe('needs-you');
     expect(defaultFilter(ROWS.filter((r) => !r.needs_decision))).toBe('all');
+    // Only unchecked rows: nothing can be decided yet, so the table opens on all of them (#1179).
+    expect(defaultFilter(ROWS.filter((r) => r.finding_id === null))).toBe('all');
   });
 
   it('formats exact differences with a true minus, a plus on overruns, and a dash when there is none', () => {
@@ -131,27 +136,29 @@ describe('results dashboard', () => {
     const cards = document.querySelector('[data-slot="kpi-cards"]') as HTMLElement;
     expect(cards.textContent).toMatch(/Countertops\s*5/);
     expect(cards.textContent).toMatch(/Automatic\s*2/);
-    expect(cards.textContent).toMatch(/Needs you\s*2/);
+    // With its noun (#1179); the unchecked held-p5 is not counted.
+    expect(cards.textContent).toMatch(/Countertop needs you\s*1/);
     expect(cards.textContent).toMatch(/PASS\s*1/);
     expect(cards.textContent).toMatch(/FAIL\s*1/);
     // The legend is inside the lazily loaded chart; on a cold CI runner fetching the chart library
     // can take longer than the default one-second wait.
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
-    expect(legend.textContent).toMatch(/Needs your decision\s*2/);
+    expect(legend.textContent).toMatch(/Needs your decision\s*1/);
+    expect(legend.textContent).toMatch(/Not checked\s*1/);
     expect(legend.textContent).toMatch(/Not checkable\s*1/);
   }, 15_000);
 
-  it('starts on what needs you, in order', () => {
+  it('starts on what needs you, in order; an unchecked row is not in it (#1179)', () => {
     setup();
-    expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['held-p5', 'need-p9']);
+    expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['need-p9']);
   });
 
   it('a FAIL that still needs a decision is a FAIL everywhere, and also needs you (#1056)', async () => {
     const user = userEvent.setup();
     const failNeedsYou = { ...ROWS[1], row_id: 'fail-open-p12', page_number: 12, label: 'Countertop row on page 12', finding_id: 'f-open', needs_decision: true };
     const rows = [...ROWS, failNeedsYou];
-    expect(kpis(rows)).toMatchObject({ fail: 2, needsYou: 3 });
-    expect(bucketCounts(rows)).toEqual({ 'needs-you': 2, fail: 2, pass: 1, 'not-checkable': 1 });
+    expect(kpis(rows)).toMatchObject({ fail: 2, needsYou: 2, notChecked: 1 });
+    expect(bucketCounts(rows)).toEqual({ 'needs-you': 1, 'not-checked': 1, fail: 2, pass: 1, 'not-checkable': 1 });
     expect(Object.values(bucketCounts(rows)).reduce((a, b) => a + b, 0)).toBe(rows.length);
     expect(matchesFilter(failNeedsYou, 'fail')).toBe(true);
     expect(matchesFilter(failNeedsYou, 'needs-you')).toBe(true);
@@ -159,7 +166,8 @@ describe('results dashboard', () => {
     rerender(<ResultsDashboard {...props} countertops={{ status: 'ready', rows }} filter="fail" />);
     expect(tableRows().map((r) => r.dataset.rowId).sort()).toEqual(['fail-open-p12', 'fail-p2']);
     const legend = await screen.findByRole('list', { name: 'Countertop outcomes' }, { timeout: 10_000 });
-    expect(legend.textContent).toMatch(/FAIL\s*2\s*1 needs you/);
+    // The number is the card's (#1179): on screen only the words, in full for a screen reader.
+    expect(legend.textContent).toMatch(/FAIL\s*2\s*1 FAIL needs you/);
     await user.click(screen.getByRole('radio', { name: 'All' }));
     expect(props.onFilterChange).toHaveBeenCalledWith('all');
   }, 15_000);
@@ -174,7 +182,7 @@ describe('results dashboard', () => {
     await user.click(screen.getByRole('radio', { name: 'All' }));
     expect(props.onFilterChange).toHaveBeenCalledWith('all');
     rerender(<ResultsDashboard {...props} filter="held" />);
-    expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['held-p5', 'need-p9']);
+    expect(tableRows().map((r) => r.dataset.rowId)).toEqual(['need-p9', 'held-p5']);
   });
 
   it('shows exact numbers and a coloured difference with its glyph', () => {
@@ -188,8 +196,8 @@ describe('results dashboard', () => {
   });
 
   it('only a row with a recorded finding offers Decide; an unchecked one points to its card', () => {
-    setup();
-    const [held, need] = tableRows();
+    setup({ filter: 'all' });
+    const [held, need] = [tableRow('held-p5'), tableRow('need-p9')];
     expect(within(held).queryByRole('button', { name: 'Decide' })).toBeNull();
     expect(within(held).getByRole('button', { name: 'Open countertop card' })).toBeTruthy();
     expect(within(need).getByRole('button', { name: 'Decide' })).toBeTruthy();
@@ -198,7 +206,7 @@ describe('results dashboard', () => {
   it('Decide needs a note for an abstention, and calls the same handler with it', async () => {
     const user = userEvent.setup();
     const { handlers } = setup();
-    await user.click(within(tableRows()[1]).getByRole('button', { name: 'Decide' }));
+    await user.click(within(tableRow('need-p9')).getByRole('button', { name: 'Decide' }));
     const dialog = await screen.findByRole('dialog', { name: /Decide: Countertop row on page 9/ });
     await user.click(within(dialog).getByRole('radio', { name: 'Checked: OK' }));
     const save = within(dialog).getByRole('button', { name: 'Record decision' });
@@ -213,13 +221,13 @@ describe('results dashboard', () => {
   it('Cancel forgets the draft: reopening Decide starts empty (#1050 review)', async () => {
     const user = userEvent.setup();
     setup();
-    await user.click(within(tableRows()[1]).getByRole('button', { name: 'Decide' }));
+    await user.click(within(tableRow('need-p9')).getByRole('button', { name: 'Decide' }));
     let dialog = await screen.findByRole('dialog', { name: /Decide: Countertop row on page 9/ });
     await user.click(within(dialog).getByRole('radio', { name: 'Checked: OK' }));
     await user.type(within(dialog).getByLabelText(/What did you check/), 'TEST half written');
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await user.click(within(tableRows()[1]).getByRole('button', { name: 'Decide' }));
+    await user.click(within(tableRow('need-p9')).getByRole('button', { name: 'Decide' }));
     dialog = await screen.findByRole('dialog', { name: /Decide: Countertop row on page 9/ });
     expect(within(dialog).getAllByRole('radio').every((r) => r.getAttribute('aria-checked') === 'false')).toBe(true);
     expect(within(dialog).queryByLabelText(/What did you check/)).toBeNull();
@@ -260,7 +268,9 @@ describe('results dashboard', () => {
 
   it('keyboard: ↓ moves to the next row, Enter opens its details, D opens Decide', async () => {
     const user = userEvent.setup();
-    setup();
+    // Two rows that need you (#1179: the unchecked held-p5 no longer does), so ↓ has somewhere to go.
+    const needP1 = { ...ROWS[2], row_id: 'need-p1', page_number: 1, label: 'Countertop row on page 1', finding_id: 'f-need-1' };
+    setup({ countertops: { status: 'ready', rows: [...ROWS, needP1] }, findings: [...FINDINGS, finding('f-need-1', 'REVIEW_REQUIRED')] });
     const [first, second] = tableRows();
     first.focus();
     await user.keyboard('{ArrowDown}');

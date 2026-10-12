@@ -8,6 +8,7 @@ them.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -80,7 +81,7 @@ def _package(session: Session) -> UUID:
     session.add(package)
     session.flush()
     session.add(
-        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.RUNNING_CHECKS)
+        PackageRevision(package_id=package.id, revision_number=1, state=PackageState.NEEDS_INPUT)
     )
     session.commit()
     return package.id
@@ -349,6 +350,58 @@ def test_asking_for_checks_enqueues_and_runs_nothing(session: Session) -> None:
     entries = list(session.execute(select(OutboxEntry)).scalars())
     assert [entry.workflow for entry in entries] == ["run_checks"]
     assert list(session.execute(select(Finding)).scalars()) == [], "the endpoint ran the checks"
+
+
+def test_a_second_run_is_refused_while_the_first_is_queued(session: Session) -> None:
+    """**409 while a run is asked for and not yet handed to the worker (#1179).**
+
+    A second request would queue a second run over the same values; whichever finished last would
+    replace the other's findings. Only one outbox row is written.
+    """
+    package = _package(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/checks"
+
+    assert _client(session).post(url).status_code == 202
+    second = _client(session).post(url)
+
+    assert second.status_code == 409, second.text
+    assert second.json()["message"] == (
+        "Checks are already running for this revision. Wait for their results before running them "
+        "again."
+    )
+    entries = list(session.execute(select(OutboxEntry)).scalars())
+    assert [entry.workflow for entry in entries] == ["run_checks"]
+
+
+def test_a_run_is_refused_while_the_revision_is_running_checks(session: Session) -> None:
+    """The worker has the job (its row is delivered) and the revision says RUNNING_CHECKS: 409."""
+    package = _package(session)
+    revision = _revision_of(session, package)
+    revision.state = PackageState.RUNNING_CHECKS
+    session.commit()
+
+    response = _client(session).post(f"/api/v1/projects/{PROJECT}/packages/{package}/checks")
+
+    assert response.status_code == 409, response.text
+    assert list(session.execute(select(OutboxEntry)).scalars()) == []
+
+
+def test_a_new_run_is_accepted_once_the_last_was_handed_over_and_finished(session: Session) -> None:
+    """A delivered row of a finished run blocks nothing; another revision's queued row neither."""
+    package = _package(session)
+    url = f"/api/v1/projects/{PROJECT}/packages/{package}/checks"
+    assert _client(session).post(url).status_code == 202
+    entry = session.execute(select(OutboxEntry)).scalar_one()
+    entry.attempts = 1
+    entry.dispatched_at = datetime.now(UTC)
+    other = _package(session)
+    assert (
+        _client(session).post(f"/api/v1/projects/{PROJECT}/packages/{other}/checks").status_code
+        == 202
+    )
+    session.commit()
+
+    assert _client(session).post(url).status_code == 202
 
 
 def test_a_package_in_another_project_is_not_found(session: Session) -> None:

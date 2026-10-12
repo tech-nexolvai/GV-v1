@@ -177,7 +177,7 @@ describe('Results with the architect check', () => {
     expect(within(b as HTMLElement).getByText('Needs correction')).toBeTruthy();
     expect(b.textContent).toContain('Automatic');
     // One other check, not two: the architect's FAIL is on its countertop.
-    expect(within(screen.getByRole('region', { name: 'Other checks' })).getByRole('button', { name: /Other checks/ }).textContent).toBe('Other checks11 need you'); // 1 check, 1 needs you
+    expect(within(screen.getByRole('region', { name: 'Other checks' })).getByRole('button', { name: /Other checks/ }).textContent).toBe('Other checks11 check needs you'); // 1 check, 1 needs you: with its noun (#1179)
   });
 
   it('a pairing to confirm opens the queue at that countertop', async () => {

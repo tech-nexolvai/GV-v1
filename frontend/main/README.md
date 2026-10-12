@@ -99,9 +99,22 @@ Every number comes from `GET …/countertop-results` (#1035), and none is comput
 `lib/countertop-results.ts` holds the pure rules: buckets, sort order, filters, the difference's sign
 and words, and `recordEach` for the bulk action.
 
-A row's bucket is what the record says (needs you, then PASS / FAIL / not checkable); a reviewer's
-choice appears only under "Decided by". Decisions go through the review page's existing handlers.
-The Decide dialog uses the same note rule as the finding card (`actionNeedsNote`).
+A row's bucket is what the record says (needs you, not checked, then FAIL / PASS / not checkable); a
+reviewer's choice appears only under "Decided by". Decisions go through the review page's existing
+handlers. The Decide dialog uses the same note rule as the finding card (`actionNeedsNote`).
+
+**"Not checked" is not "Needs you" (#1179).** A row with no recorded result (`finding_id: null`: the
+checks have not run on it) has nothing to decide, although the API marks it `needs_decision`. It shows
+"Not checked" with an hourglass (not the dashed circle of "Not checkable") and, under it, "Run the
+checks to get a result" only when Run checks is the next action, or "No result for this countertop on
+the last run" once checks have run (its countertop card says why). It is counted on its own (a line above the table, a "Not
+checked" chip and donut slice), and is never counted as needing the reviewer or listed in the queue.
+A split page with a result is still a queue item (#1115).
+
+**One blocking count per screen, with its noun (#1179).** The header and the Results tab say the
+review's items ("15 items need you": countertops and other checks, from readiness); the card says
+countertops ("9 countertops need you"); "Other checks" says checks. The donut shows no second
+"needs you" number.
 
 **The countertop picture** (`components/results/CountertopStrip.tsx`, layout in
 `lib/countertop-strip.ts`, #1043) draws one countertop result from the shared spec (vault: "V1 backend -
@@ -128,7 +141,9 @@ worker to render anything.
 
 **The "Needs you" queue** (`components/queue/`, rules in `lib/needs-you-queue.ts`, #1050) walks through
 everything still blocking sign-off, one item at a time: countertops by page, then the package-level
-checks. It opens from the header's "Review N items" and the "Needs you" card.
+checks. It opens from the header's "Review N items" and the "Countertops need you" card. Only what can
+be decided is an item: with nothing to decide because the checks have not run, it says so and offers
+Run checks (#1179).
 - **What blocks** is the server's answer (`countertop-results.needs_decision` and readiness); the queue
   only walks through it.
 - **The decision** is the same form as the Results "Decide" dialog (`results/decision-form.tsx` +
@@ -158,8 +173,19 @@ How it works:
   - They record the values and settings (steps 3–4) from any step; steps 1–2 save through their own buttons.
   - The bar says what saving also records (AI-filled values it confirms, layout answers) and warns about
     countertop rows with unsaved changes.
-  - `#measure-run-checks` is where the header's "Run checks" lands, and "Open countertop card" switches
-    to step 2.
+  - **The header's "Run checks" runs the checks (#1179)** from any tab: the panel (mounted hidden if
+    it was never opened) does exactly what `#measure-run-checks` does (save the visible values, then
+    `POST …/checks`), and the page shows the queued state and polls as before. It does not start while
+    a save or run is in flight or a countertop row has unsaved changes, and it asks first ("Run the
+    checks?") when the save would confirm AI-filled values or record layout answers, listing each field
+    and value ("AI proposal") and each layout answer ("proposed from the drawing"); "Review … first" is
+    the primary action until the reviewer has opened Measurements. What they agreed to goes with the
+    request, and a list that changed meanwhile is asked again. A refusal is said on the current tab with "Open Measurements". From
+    Measurements it also opens step 4. "Open countertop card" switches to step 2.
+  - **One run at a time:** while the recorded stage is checking, or once signed off, the header, the
+    queue's and the Sign off panel's Run checks and step 4's button are all off and say why. The server
+    refuses a second request too (`409`, "Checks are already running…") while the revision is
+    `RUNNING_CHECKS` or a `run_checks` outbox row for it is not yet delivered.
 - **Behaviour and API calls are unchanged.** Only layout and wording moved: paragraphs now sit behind
   "?" (`components/ui/info-tip.tsx`), the wall choice is picture buttons, and fields are
   two-column rows.

@@ -8,7 +8,7 @@
  */
 import type { CountertopResult, SlotReaderRow } from '@/api/client';
 import type { Finding } from '@/data/types';
-import { sortRows } from '@/lib/countertop-results';
+import { sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
 
 export type QueueItem =
@@ -26,13 +26,17 @@ export function architectItemKey(rowId: string): string {
  * Countertops first, in the results table's order (`sortRows`: they all need you, so by page, then
  * label), then the package-level checks (by page, then name). The list is taken once the readiness
  * answer is in and kept, so a decided item stays where it was and the reviewer can go back to it.
+ *
+ * Only what can be decided is an item (#1179): a countertop with no recorded result yet ("Not
+ * checked", `finding_id: null`) has nothing to decide until the checks run, so it is left out. A
+ * split page with a result is an item like any held row (#1115).
  */
 export function buildQueue(
   rows: readonly CountertopResult[],
   findings: readonly Finding[],
   blocking: ReadonlySet<string> | null,
 ): QueueItem[] {
-  const countertops: QueueItem[] = sortRows(rows.filter((row) => row.needs_decision)).map((row) => ({
+  const countertops: QueueItem[] = sortRows(rows.filter(widthNeedsYou)).map((row) => ({
     kind: 'countertop',
     key: `row:${row.row_id}`,
     rowId: row.row_id,
