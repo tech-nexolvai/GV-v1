@@ -55,6 +55,8 @@ from typing import Final
 
 import pikepdf
 
+from vocabulary.blank_page import BLANK_PAGE_RULE, MAX_TITLE_CHARACTERS
+
 __all__ = [
     "BLANK_PAGE_RULE",
     "MAX_TITLE_CHARACTERS",
@@ -62,11 +64,6 @@ __all__ = [
     "prove_blank_pages",
 ]
 
-#: The rule's version, stored with every proof so a later change of rule can tell old proofs apart.
-BLANK_PAGE_RULE: Final = 1
-
-#: The most typed characters a title or divider page holds: a title, not a page of notes.
-MAX_TITLE_CHARACTERS: Final = 200
 
 #: How much of the page's width and height the frame rectangle must cover.
 _FRAME_COVER: Final = 0.9

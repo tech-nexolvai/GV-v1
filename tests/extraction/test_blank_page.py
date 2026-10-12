@@ -88,7 +88,7 @@ def _annotation(pdf: pikepdf.Pdf, spec: dict[str, object]) -> pikepdf.Dictionary
 
 
 #: A typed title box as a PDF editor writes it: a white background rectangle and the text.
-TITLE_ANNOTATION = {
+TITLE_ANNOTATION: dict[str, object] = {
     "subtype": "/FreeText",
     "text": "SYNTHETIC SECTION 1",
     "appearance": b"q 1 1 1 rg 0 0 200 40 re f BT /Helv 18 Tf 4 12 Td (SYNTHETIC SECTION 1) Tj ET Q",

@@ -15,20 +15,23 @@ Synthetic values only.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
+from alembic import command
 from app.api.visual_countertops import (
     NO_COUNTERTOP_BATCH_TARGET,
     _countertop_results_for_revision,
 )
 from app.audit.events import AuditEvent
 from app.auth import Principal, Role
+from app.db.session import session_factory
 from app.models import (
     DocumentVersion,
     NoCountertopAnswer,
@@ -49,6 +52,7 @@ from tests.api.test_unchosen_row_pages import (
     _unchosen_record,
     code_no_row_record,
 )
+from tests.app.postgres_fixture import alembic_config
 from tests.review.test_no_countertop_answers import (
     LISTED,
     REVIEWER,
@@ -56,7 +60,6 @@ from tests.review.test_no_countertop_answers import (
     _client,
     _listed_page,
     _record_on,
-    session,
     _reread,
     _review_session,
     _reviewer,
@@ -71,6 +74,18 @@ NOTE = "TEST ONLY synthetic note: section dividers checked by eye"
 
 
 # --- helpers --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def session(postgres_engine: Engine) -> Iterator[Session]:
+    config = alembic_config()
+    config.attributes["database_url"] = postgres_engine.url.render_as_string(hide_password=False)
+    command.upgrade(config, "head")
+    opened = session_factory(postgres_engine)()
+    try:
+        yield opened
+    finally:
+        opened.close()
 
 
 def _new_page(session: Session, revision_id: UUID, page_index: int) -> Page:

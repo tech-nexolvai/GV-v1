@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, aliased
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from extraction.blank_page import BLANK_PAGE_RULE, MAX_TITLE_CHARACTERS
+from vocabulary.blank_page import BLANK_PAGE_RULE, MAX_TITLE_CHARACTERS
 from vocabulary.check_holds import (
     CHECK_HOLD_REASONS,
     STONE_SHORT_OF_ENDS,
