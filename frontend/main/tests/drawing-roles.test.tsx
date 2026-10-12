@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { DrawingRolesList } from '../src/components/measure/DrawingRolesList.js';
-import { roleLabel, stillToConfirm, suggestionLabel, type DrawingView } from '../src/components/measure/drawingRoleChoices.js';
+import { relabelsReference, roleLabel, stillToConfirm, suggestionLabel, type DrawingView } from '../src/components/measure/drawingRoleChoices.js';
 
 // Two drawings on one sheet, as `GET …/views` lists them: neither confirmed, both suggested by the
 // heading the sheet prints above them (#710).
@@ -95,6 +95,11 @@ assert.equal(
   1,
 );
 assert.equal(roleLabel('reference'), null);
+// A re-labelled brand prototype still sends the re-label flag, so the re-label can be corrected.
+assert.equal(relabelsReference({ ...unconfirmed[0], suggested_role: 'reference', role: 'shop' }), true);
+assert.equal(relabelsReference(unconfirmed[1]), false);
+// An unconfirmed drawing shows why its label suggests what it does (or nothing).
+assert.match(html, /Why: the heading above it/);
 assert.equal(suggestionLabel('shop'), "Vendor's drawing");
 
 console.log('drawing-roles: ok');

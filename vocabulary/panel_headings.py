@@ -48,10 +48,13 @@ from typing import Final
 
 __all__ = [
     "HEADING_MIN_FONT_PT",
+    "NO_HEADINGS_ON_PAGE",
+    "Box",
     "HeadingMeaning",
     "heading_meaning",
     "looks_like_heading",
     "normalise_label",
+    "place_words",
 ]
 
 
@@ -146,3 +149,47 @@ def looks_like_heading(text: str, font_size: Decimal | None) -> bool:
         and len(label.split()) <= _MAX_HEADING_WORDS
         and sum(character.isalpha() for character in label) >= 3
     )
+
+
+#: The reason a drawing on a page that prints no heading at all carries (`extraction/panels.py`):
+#: there, an unconfirmed drawing is read as before. Any other reason with no role is a drawing on a
+#: headed page that is not read as the vendor's (`app/api/visual_countertops.py`, "drawings not
+#: read").
+NO_HEADINGS_ON_PAGE: Final = "no label naming the drawings is printed on this page"
+
+Box = tuple[Decimal, Decimal, Decimal, Decimal]
+"""A drawing's box in stored page space: left, top, right, bottom (`y` runs down the page)."""
+
+
+def place_words(boxes: list[Box]) -> list[str]:
+    """Each drawing's place on the page in words, among the page's drawings: "the drawing", "the
+    upper drawing", "the right drawing", "the top-left drawing". One rule for the reasons code
+    writes (`extraction/panels.py`) and the lists the reviewer reads (`app/api`)."""
+    if len(boxes) == 1:
+        return ["the drawing"]
+    if len(boxes) == 2:
+        (l1, t1, r1, b1), (l2, t2, r2, b2) = boxes
+        shared = min(b1, b2) - max(t1, t2)
+        smaller = min(b1 - t1, b2 - t2)
+        if shared <= smaller / 2:
+            upper = (t1 + b1) <= (t2 + b2)
+            return (
+                ["the upper drawing", "the lower drawing"]
+                if upper
+                else ["the lower drawing", "the upper drawing"]
+            )
+        left = (l1 + r1) <= (l2 + r2)
+        return (
+            ["the left drawing", "the right drawing"]
+            if left
+            else ["the right drawing", "the left drawing"]
+        )
+    words = []
+    third, two_thirds = Decimal(1) / 3, Decimal(2) / 3
+    for x0, y0, x1, y1 in boxes:
+        middle, centre = (y0 + y1) / 2, (x0 + x1) / 2
+        vertical = "top" if middle < third else "bottom" if middle > two_thirds else ""
+        across = "left" if centre < third else "right" if centre > two_thirds else ""
+        where = "-".join(part for part in (vertical, across) if part) or "middle"
+        words.append(f"the {where} drawing")
+    return words

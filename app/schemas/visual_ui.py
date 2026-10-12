@@ -345,6 +345,20 @@ class RowNotCheckedOut(BaseModel):
     reason: str
 
 
+class DrawingNotReadOut(BaseModel):
+    """A pasted drawing on a page that was read, which was not read itself (#1193 review): on a
+    page that prints headings it has no role of its own (its label is not one we know, it has none,
+    or its heading names another drawing). Listed, never blocking; the page's countertop that was
+    read is checked as usual."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page_number: int
+    drawing: str
+    """Where it is on the page, in words: "the lower drawing", "the bottom-right drawing"."""
+    reason: str
+
+
 class CountertopResultsOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -369,6 +383,16 @@ class CountertopResultsOut(BaseModel):
             "Second countertop rows an AI named on a vendor page whose countertop row was read. "
             "Only one countertop row per page is read, so these were not checked. Listed only; "
             "nothing to decide."
+        ),
+    )
+    drawings_not_read: tuple[DrawingNotReadOut, ...] = Field(
+        default=(),
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Pasted drawings on pages that were read which were not read themselves, each with "
+            "where it is on the page and why (#1193): on a page that prints headings, a drawing is "
+            "read only when its own heading says it is the vendor's. Listed only; nothing to "
+            "decide, never blocking."
         ),
     )
 

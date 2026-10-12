@@ -12,6 +12,9 @@ import { cn } from '@/lib/utils';
 /** A second countertop line an AI named on a page whose countertop was read (#1108). */
 export type RowNotChecked = NonNullable<CountertopResults['rows_not_checked']>[number];
 
+/** A drawing on a read page that was not read itself (#1193 review). */
+export type DrawingNotRead = NonNullable<CountertopResults['drawings_not_read']>[number];
+
 /** Records one reviewer answer on a listed page; rejects with the server's words when refused. */
 export type AnswerNoCountertop = (page: PageWithoutCountertop, answer: NoCountertopAnswer) => Promise<void>;
 
@@ -148,23 +151,42 @@ export function RowsNotChecked({ rows }: { rows: readonly RowNotChecked[] }) {
   );
 }
 
-/** Both lists, side by side on a wide screen and stacked on a phone; nothing when both are empty. */
+/**
+ * Drawings not read (#1193 review): a drawing on a page that was read, which was not read itself —
+ * on a page with headings it has no role of its own. Listed with where it is and why, never
+ * blocking; the signed report lists them too.
+ */
+export function DrawingsNotRead({ drawings }: { drawings: readonly DrawingNotRead[] }) {
+  if (drawings.length === 0) return null;
+  return (
+    <ListedOnly
+      slot="drawings-not-read"
+      title="Drawings not read"
+      items={drawings.map((drawing, index) => ({ key: `drawing-${drawing.page_number}-${index}`, page: drawing.page_number, reason: drawing.reason }))}
+    />
+  );
+}
+
+/** The lists, side by side on a wide screen and stacked on a phone; nothing when all are empty. */
 export function ListedPages({
   pagesWithoutCountertop,
   rowsNotChecked,
+  drawingsNotRead = [],
   onAnswer,
 }: {
   pagesWithoutCountertop: readonly PageWithoutCountertop[];
   rowsNotChecked: readonly RowNotChecked[];
+  drawingsNotRead?: readonly DrawingNotRead[];
   /** Records a reviewer's answer on a page with no countertop (#1191); without it the buttons are off. */
   onAnswer?: AnswerNoCountertop;
 }) {
-  if (pagesWithoutCountertop.length === 0 && rowsNotChecked.length === 0) return null;
-  const both = pagesWithoutCountertop.length > 0 && rowsNotChecked.length > 0;
+  const shown = [pagesWithoutCountertop.length, rowsNotChecked.length, drawingsNotRead.length].filter((count) => count > 0).length;
+  if (shown === 0) return null;
   return (
-    <div data-slot="listed-pages" className={cn('grid items-start gap-3', both && 'lg:grid-cols-2')}>
+    <div data-slot="listed-pages" className={cn('grid items-start gap-3', shown > 1 && 'lg:grid-cols-2')}>
       <NoCountertopPages pages={pagesWithoutCountertop} onAnswer={onAnswer} />
       <RowsNotChecked rows={rowsNotChecked} />
+      <DrawingsNotRead drawings={drawingsNotRead} />
     </div>
   );
 }

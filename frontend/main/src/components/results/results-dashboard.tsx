@@ -28,7 +28,7 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
-import { ListedPages, type AnswerNoCountertop, type RowNotChecked } from './no-countertop-pages';
+import { ListedPages, type AnswerNoCountertop, type DrawingNotRead, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
 import { useSignedOff } from '@/lib/signed-off';
 
@@ -45,6 +45,8 @@ export type CountertopsState =
       pagesWithoutCountertop?: readonly PageWithoutCountertop[];
       /** Second countertop lines an AI named on a page (#1108): one line per page is read; listed, never blocking. */
       rowsNotChecked?: readonly RowNotChecked[];
+      /** Drawings on a read page that were not read (#1193 review): listed, never blocking. */
+      drawingsNotRead?: readonly DrawingNotRead[];
     };
 
 // The chips filter the table. Their counts are on the cards above (#1126), so a chip carries a
@@ -256,6 +258,7 @@ export function ResultsDashboard({
       <ListedPages
         pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
         rowsNotChecked={countertops.rowsNotChecked ?? []}
+        drawingsNotRead={countertops.drawingsNotRead ?? []}
         onAnswer={signedOff ? undefined : onAnswerNoCountertop}
       />
 

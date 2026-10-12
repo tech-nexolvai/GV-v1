@@ -64,6 +64,7 @@ from openpyxl.utils import get_column_letter  # type: ignore[import-untyped]
 
 from app.schemas.visual_ui import (
     CountertopResultOut,
+    DrawingNotReadOut,
     ExactValueOut,
     PageWithoutCountertopOut,
     RowNotCheckedOut,
@@ -125,6 +126,9 @@ def confirmation_words(page: PageWithoutCountertopOut) -> str | None:
 #: Second countertop rows an AI named on a page whose row was read (#1108): listed, not checked.
 ROWS_NOT_CHECKED_SHEET: Final = "Second Rows Not Checked"
 ROWS_NOT_CHECKED_COLUMNS: Final = ("page", "reason")
+#: Drawings on a read page that were not read (#1193 review): listed, never blocking.
+DRAWINGS_NOT_READ_SHEET: Final = "Drawings Not Read"
+DRAWINGS_NOT_READ_COLUMNS: Final = ("page", "drawing", "reason")
 COUNTERTOP_COLUMNS: Final = (
     "page",
     "label",
@@ -922,6 +926,7 @@ def write_stored_workbook(
     countertop_results: Sequence[CountertopResultOut] = (),
     pages_without_countertop: Sequence[PageWithoutCountertopOut] = (),
     rows_not_checked: Sequence[RowNotCheckedOut] = (),
+    drawings_not_read: Sequence[DrawingNotReadOut] = (),
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -947,6 +952,10 @@ def write_stored_workbook(
         isinstance(row, RowNotCheckedOut) for row in rows_not_checked
     ):
         raise TypeError("rows_not_checked must contain only RowNotCheckedOut values")
+    if isinstance(drawings_not_read, str) or not all(
+        isinstance(drawing, DrawingNotReadOut) for drawing in drawings_not_read
+    ):
+        raise TypeError("drawings_not_read must contain only DrawingNotReadOut values")
 
     workbook = Workbook()
     workbook.remove(workbook.active)
@@ -1017,6 +1026,16 @@ def write_stored_workbook(
             [
                 (row.page_number, row.reason)
                 for row in sorted(rows_not_checked, key=lambda item: item.page_number)
+            ],
+        )
+    if drawings_not_read:
+        _write_sheet(
+            workbook,
+            DRAWINGS_NOT_READ_SHEET,
+            DRAWINGS_NOT_READ_COLUMNS,
+            [
+                (drawing.page_number, drawing.drawing, drawing.reason)
+                for drawing in sorted(drawings_not_read, key=lambda item: item.page_number)
             ],
         )
 

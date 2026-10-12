@@ -43,6 +43,7 @@ from app.review.architect_view_match import (
     match_out,
     separate_file_views,
 )
+from app.review.drawings_not_read import drawings_not_read
 from app.review.no_countertop import (
     PageAnswer,
     answered_pages,
@@ -1110,6 +1111,12 @@ def _countertop_results_for_revision(
             if not page.split
         ),
         rows_not_checked=_rows_not_checked(rows, owned),
+        drawings_not_read=drawings_not_read(
+            session,
+            revision.id,
+            {row.page_number for row in rows}
+            | {page.page_number for page in unchosen if not page.found_by_code},
+        ),
     )
 
 

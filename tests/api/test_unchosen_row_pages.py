@@ -600,3 +600,63 @@ def test_a_page_code_read_no_row_on_is_listed_with_its_reason_and_waits_for_a_co
     assert readiness.blocking_findings == 0
     assert readiness.unconfirmed_no_countertop_pages == (3,)
     assert not readiness.can_approve
+
+
+def test_a_drawing_not_read_on_a_read_page_is_listed_with_its_place_and_reason(
+    session: Session,
+) -> None:
+    """#1193 review: on a page whose countertop was read, a drawing with no role of its own (its
+    heading names another drawing, or it has none) is listed, never silent and never blocking. A
+    drawing with a role, or on a page with no headings, is not listed."""
+    from app.models import DrawingView, ViewRoleProposal
+    from vocabulary.panel_headings import NO_HEADINGS_ON_PAGE
+
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    pages = {
+        page.index: page
+        for page in session.scalars(
+            select(Page)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision.id)
+        )
+    }
+
+    def drawing(page: Page, tag: str, left: str, right: str, role: str | None, why: str) -> None:
+        view = DrawingView(
+            page_id=page.id,
+            tag=tag,
+            region={
+                "space": "stored",
+                "points": [[left, "0.1"], [right, "0.1"], [right, "0.9"], [left, "0.9"]],
+            },
+        )
+        session.add(view)
+        session.flush()
+        session.add(
+            ViewRoleProposal(
+                drawing_view_id=view.id,
+                proposed_role=role,
+                heading=None,
+                reason=why,
+                source="test",
+            )
+        )
+        session.flush()
+
+    drawing(pages[0], "panel-1", "0.02", "0.48", "shop", "synthetic: its own vendor heading")
+    drawing(pages[0], "panel-2", "0.52", "0.98", None, "synthetic: no label of its own")
+    drawing(pages[1], "panel-1", "0.1", "0.9", None, NO_HEADINGS_ON_PAGE)
+
+    results = _results(session, package_id)
+
+    assert [(d.page_number, d.drawing, d.reason) for d in results.drawings_not_read] == [
+        (
+            1,
+            "the right drawing",
+            "The right drawing was not read for a countertop: synthetic: no label of its own.",
+        )
+    ]

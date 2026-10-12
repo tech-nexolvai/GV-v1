@@ -210,6 +210,27 @@ describe('Results: pages with no countertop found', () => {
   });
 });
 
+describe('Results: drawings not read (#1193 review)', () => {
+  it('lists each drawing on a read page that was not read, with where it is and why; nothing to decide', () => {
+    dashboard({
+      drawingsNotRead: [
+        { page_number: 3, drawing: 'the bottom-right drawing', reason: 'The bottom-right drawing was not read for a countertop: synthetic: no label of its own.' },
+      ],
+    });
+    const list = screen.getByRole('region', { name: 'Drawings not read' });
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Page 3The bottom-right drawing was not read for a countertop: synthetic: no label of its own.',
+    ]);
+    expect(list.textContent).toContain('Nothing to decide');
+    expect(within(list).queryByRole('button')).toBeNull();
+  });
+
+  it('is absent when the API sent none', () => {
+    dashboard();
+    expect(screen.queryByRole('region', { name: 'Drawings not read' })).toBeNull();
+  });
+});
+
 // The page picture and the finding chain, as the viewer asks for them.
 const calls: string[] = [];
 const png = () => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), { status: 200, headers: { 'Content-Type': 'image/png' } });

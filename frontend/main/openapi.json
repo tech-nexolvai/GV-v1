@@ -3210,6 +3210,14 @@
       },
       "CountertopResultsOut": {
         "properties": {
+          "drawings_not_read": {
+            "description": "Pasted drawings on pages that were read which were not read themselves, each with where it is on the page and why (#1193): on a page that prints headings, a drawing is read only when its own heading says it is the vendor's. Listed only; nothing to decide, never blocking.",
+            "items": {
+              "$ref": "#/components/schemas/DrawingNotReadOut"
+            },
+            "title": "Drawings Not Read",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/CountertopResultOut"
@@ -3633,6 +3641,30 @@
           "pages"
         ],
         "title": "DrawingChangeOut",
+        "type": "object"
+      },
+      "DrawingNotReadOut": {
+        "description": "A pasted drawing on a page that was read, which was not read itself (#1193 review): on a\npage that prints headings it has no role of its own (its label is not one we know, it has none,\nor its heading names another drawing). Listed, never blocking; the page's countertop that was\nread is checked as usual.",
+        "properties": {
+          "drawing": {
+            "title": "Drawing",
+            "type": "string"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page_number",
+          "drawing",
+          "reason"
+        ],
+        "title": "DrawingNotReadOut",
         "type": "object"
       },
       "DrawingOut": {

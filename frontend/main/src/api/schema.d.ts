@@ -3400,6 +3400,11 @@ export interface components {
         };
         /** CountertopResultsOut */
         CountertopResultsOut: {
+            /**
+             * Drawings Not Read
+             * @description Pasted drawings on pages that were read which were not read themselves, each with where it is on the page and why (#1193): on a page that prints headings, a drawing is read only when its own heading says it is the vendor's. Listed only; nothing to decide, never blocking.
+             */
+            drawings_not_read?: components["schemas"]["DrawingNotReadOut"][];
             /** Items */
             items: components["schemas"]["CountertopResultOut"][];
             /**
@@ -3613,6 +3618,21 @@ export interface components {
              * @description True when both revisions hold the exact same bytes.
              */
             same_file: boolean;
+        };
+        /**
+         * DrawingNotReadOut
+         * @description A pasted drawing on a page that was read, which was not read itself (#1193 review): on a
+         *     page that prints headings it has no role of its own (its label is not one we know, it has none,
+         *     or its heading names another drawing). Listed, never blocking; the page's countertop that was
+         *     read is checked as usual.
+         */
+        DrawingNotReadOut: {
+            /** Drawing */
+            drawing: string;
+            /** Page Number */
+            page_number: number;
+            /** Reason */
+            reason: string;
         };
         /**
          * DrawingOut
