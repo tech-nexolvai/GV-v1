@@ -10,6 +10,7 @@
 import type { CountertopResult, getFindingChain } from '@/api/client';
 import type { Finding, Outcome } from '@/data/types';
 import { OUTCOME_LABELS } from '@/data/outcomeLabels';
+import { mixedQuantity } from '@/lib/fractions';
 import { drawingPoints } from '@/components/output/reviewerResults';
 import { bucketOf, sortRows } from '@/lib/countertop-results';
 import { viewHeading, viewLinkWords, viewOf } from '@/lib/architect';
@@ -311,8 +312,7 @@ export function readingsOf(chain: Pick<Chain, 'operands' | 'trace'>, row?: Pick<
   return (chain.operands ?? []).flatMap((operand) => {
     const evidence = operand.evidence;
     if (!evidence) return [];
-    const exact = traced.get(operand.name)
-      ?? (operand.denominator === '1' ? `${operand.numerator} ${operand.unit}` : `${operand.numerator}/${operand.denominator} ${operand.unit}`);
+    const exact = traced.get(operand.name) ?? mixedQuantity(operand);
     return [{
       name: operand.name,
       label: readingLabel(operand.name, row),
