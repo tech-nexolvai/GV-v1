@@ -591,6 +591,14 @@ class _Document:
                     line(value)
             else:
                 line("None")
+            # Values typed for this job that set no GV standard aside: a sink, an overhang (#1181).
+            line("VALUES ENTERED FOR THIS JOB", heading=True)
+            for text in [value.line() for value in summary.entered] or ["None"]:
+                line(text)
+            # A GV default that stood in because the job set none (#1181).
+            line("GV DEFAULTS USED", heading=True)
+            for text in [value.line() for value in summary.defaults_used] or ["None"]:
+                line(text)
         self._footer()
         self.canvas.showPage()
 

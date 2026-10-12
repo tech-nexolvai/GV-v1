@@ -149,6 +149,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         packages,
         packages_summary,
         page_pictures,
+        project_sink,
         reading_parts,
         review,
         review_assistant,
@@ -167,6 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.
     app.include_router(measurements.router, prefix=API_PREFIX)
     app.include_router(company_settings.router, prefix=API_PREFIX)
+    app.include_router(project_sink.router, prefix=API_PREFIX)
     app.include_router(confirmations.router, prefix=API_PREFIX)
     # Which drawing on a combined sheet is which: listed with a suggestion, set only by a reviewer
     # (#710).

@@ -17,6 +17,14 @@ design, the ones with no default. A company value for one of those would apply t
 does not set.
 Run scope is left out too: a sink's cut-sheet size is true for one review.
 
+**And, since #1181, four company defaults for per-project settings** (Anant, 2026-10-11, replacing
+the 2026-10-02 line above for these four): the countertop overhang, the backsplash thickness, the
+cabinet side panel thickness and the cabinet depth. On every real set the checks reading them waited,
+so GV may set the number it usually works to once. **Empty until GV sets them:** the rulebook gives
+none, nothing is filled in for GV, and a check with neither a company default nor a project value
+still says it is waiting. A value typed for a project wins over the company default, and the changed
+values report then lists it against the default it set aside. Listed as `kind: project_default`.
+
 **How a save is stored.** As a new version of the company (GLOBAL) layer that carries forward every
 earlier company value it does not set — the rule #799 gave the project layer — so saving the cabinet
 depth never removes the side thickness. Provenance `COMPANY_STANDARD`, with the person who saved it.
@@ -32,7 +40,7 @@ Source: issue #812 (#798 Step 1). Verification: tests/api/test_company_settings.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -47,14 +55,23 @@ from app.auth import Action, Principal, require_action, require_role
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import declared_defaults, from_rows
+from app.review.setting_sizes import refused_size
+from app.schemas.review import optional_in_schema
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, is_rulebook_default
 from rules.schema import ParameterScope, Rule
 from units.imperial import format_inches
+from vocabulary.setting_names import setting_name
 
 router = APIRouter(tags=["company settings"])
 
 #: The scopes a company standard may be recorded for. RUN is one review's, never the company's.
 _COMPANY_SCOPES = (ParameterScope.GLOBAL, ParameterScope.PROJECT)
+
+#: Per-project settings GV may give a company default for (#1181). The rulebook gives them none, so
+#: each is empty until an admin saves one here; a project's own value always wins over it.
+PROJECT_DEFAULTS: Final = frozenset(
+    {"countertop_overhang", "backsplash_thickness", "cabinet_side_thickness", "cabinet_depth"}
+)
 
 
 class CompanySettingOut(BaseModel):
@@ -80,6 +97,14 @@ class CompanySettingOut(BaseModel):
         ),
     )
     in_use_from: Literal["company", "rulebook"] | None = None
+    kind: Literal["standard", "project_default"] = Field(
+        default="standard",
+        json_schema_extra=optional_in_schema,
+        description=(
+            "`standard`: one of GV's standards. `project_default`: a per-project setting GV may "
+            "give a default for (#1181); a project's own value wins over it."
+        ),
+    )
 
 
 class CompanySettingsOut(BaseModel):
@@ -125,12 +150,14 @@ def _company_set(session: Session) -> tuple[int | None, dict[str, ParameterValue
 
 
 def _declared(rules: list[Rule]) -> dict[str, tuple[ParameterScope, list[str]]]:
-    """Every company standard the rules declare — a default, at company or project scope — with the
-    checks that use it."""
+    """Every company standard the rules declare — a default, at company or project scope — and the
+    per-project settings GV may give a default (#1181), with the checks that use each."""
     declared: dict[str, tuple[ParameterScope, list[str]]] = {}
     for rule in rules:
         for name, parameter in rule.parameters.items():
-            if parameter.scope not in _COMPANY_SCOPES or parameter.default is None:
+            if parameter.scope not in _COMPANY_SCOPES:
+                continue
+            if parameter.default is None and name not in PROJECT_DEFAULTS:
                 continue
             _scope, users = declared.setdefault(name, (parameter.scope, []))
             users.append(rule.id)
@@ -168,6 +195,7 @@ def _settings(session: Session) -> CompanySettingsOut:
                     if in_use is None
                     else "rulebook" if is_rulebook_default(in_use) else "company"
                 ),
+                kind="project_default" if name in PROJECT_DEFAULTS else "standard",
             )
         )
     return CompanySettingsOut(settings=settings, version=version)
@@ -214,6 +242,10 @@ def save_company_settings(
                 ),
             )
         values[entry.name] = _parse(entry.value, field=entry.name)
+        # A default cabinet depth or side panel of zero is a mistake, never a value (#1181).
+        too_small = refused_size(entry.name, values[entry.name], label=setting_name(entry.name))
+        if too_small is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=too_small)
         typed[entry.name] = entry.value
 
     version, _stored = _store(

@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { bulkEligible, decisionWords } from '@/lib/countertop-results';
 import { CarriedOver } from './carried-over';
+import { NeedsValues } from './needs-values';
 
 export interface BulkResult {
   saved: number;
@@ -36,6 +37,9 @@ export function OtherChecks({
   blocking,
   onDecide,
   onBulkDismiss,
+  packageId,
+  onValuesSaved,
+  onRunChecks,
 }: {
   findings: Finding[];
   /** Rule id → its human name from the rulebook; the id is shown when a name is not known. */
@@ -43,6 +47,10 @@ export function OtherChecks({
   blocking: ReadonlySet<string>;
   onDecide: (finding: Finding) => void;
   onBulkDismiss: (ids: string[], note: string) => Promise<BulkResult>;
+  /** With these, a check waiting on a value asks for it in place (#1181). */
+  packageId?: string;
+  onValuesSaved?: () => void;
+  onRunChecks?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState('');
@@ -115,6 +123,11 @@ export function OtherChecks({
                   ) : blocking.has(finding.id) ? (
                     <Button size="sm" variant="ghost" onClick={() => onDecide(finding)}>Decide</Button>
                   ) : null}
+                  {packageId && blocking.has(finding.id) && (finding.missing_inputs?.length ?? 0) > 0 && (
+                    <div className="basis-full">
+                      <NeedsValues finding={finding} packageId={packageId} onSaved={() => onValuesSaved?.()} onRunChecks={onRunChecks} />
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

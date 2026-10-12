@@ -126,6 +126,11 @@ export function CompanySettingsList({
                     {settingLabel(setting.name)}
                   </label>{' '}
                   <code className="text-xs text-muted-foreground">{setting.name}</code>
+                  {setting.kind === 'project_default' && (
+                    <span className="block text-xs text-muted-foreground" data-part="project-default">
+                      Project default: a value typed for a project wins.
+                    </span>
+                  )}
                 </th>
                 <td className="px-3 py-2">
                   {/* One line (#1155): the value, where it comes from, "?" for the story behind it, the box. */}

@@ -49,7 +49,7 @@ Verification: `tests/api/test_measurements.py`, `tests/api/test_setting_citation
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Annotated, Final, Literal
@@ -84,12 +84,15 @@ from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import from_rows, to_rows
 from app.models.runs import ExtractionRun
+from app.review.setting_sizes import refused_size
+from app.review.settings_in_force import settings_in_force
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
     CheckRequest,
     ConfirmedReadingOut,
     DiscriminatorOut,
+    InForceOut,
     LayoutProposalOut,
     PageProposalIn,
     ParameterEntry,
@@ -120,6 +123,7 @@ from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
+from vocabulary.setting_names import setting_name
 from workflow.assignment_bedrock import (
     AssignmentProgress,
     configured_assignment_model,
@@ -859,6 +863,8 @@ def read_required_inputs(
     layout_proposals = _stored_layout_proposal_out(session, revision)
     found = _setting_pointers(session, revision)
     saved_measurements, saved_parameters = _saved_entries(session, project_id, revision, needs)
+    # What a run would use now for each setting: GV's default, the sink card, a typed value (#1181).
+    in_force = settings_in_force(session, project_id, revision.id, rules)
 
     # The Confirm screen is the human gate.  Once a reviewer has confirmed both what the drawing
     # says and what it means, asking them to type that exact value again is pure transcription risk.
@@ -964,6 +970,11 @@ def read_required_inputs(
                 ),
                 # A blocked setting is one nobody may supply, so it is offered no passage either.
                 found=None if parameter.blocked else found.get(parameter.name),
+                in_force=(
+                    InForceOut(**asdict(in_force[parameter.name]))
+                    if parameter.name in in_force
+                    else None
+                ),
             )
             for parameter in needs.parameters
         ),
@@ -1077,6 +1088,10 @@ def enter_measurements(
     run_citations: dict[str, _CitedPassage] = {}
     for entry in body.parameters:
         parsed = _parse(entry.value, field=entry.name)
+        # A cabinet depth, a side panel or a sink size of zero is a mistake, never a value (#1181).
+        too_small = refused_size(entry.name, parsed, label=setting_name(entry.name))
+        if too_small is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=too_small)
         # A value typed from a passage is held to it before anything is stored, and a mismatch
         # refuses the whole request (#866). An entry with no citation is recorded as it always was.
         source: tuple[Provenance, str | None]

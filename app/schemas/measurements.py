@@ -292,6 +292,21 @@ class SettingPointerOut(BaseModel):
     has_crop: bool
 
 
+class InForceOut(BaseModel):
+    """The value a run for this package would use for a setting now, and where it comes from (#1181).
+
+    `origin`: `rulebook` (the rule author's default), `gv_default` (GV's company value),
+    `sink_card` (the project's sink entry), `project` (a value typed for this job) or `package` (a
+    value typed for this package only, which wins over the rest).
+    """
+
+    text: str
+    origin: Literal["rulebook", "gv_default", "sink_card", "project", "package"]
+    set_by: str | None = None
+    set_at: datetime | None = None
+    source: str | None = None
+
+
 class ParameterOut(BaseModel):
     """One setting the reviewer supplies or confirms."""
 
@@ -310,6 +325,9 @@ class ParameterOut(BaseModel):
     #: Where the architect's drawing states this setting, while a pointer to it still holds (#866).
     #: `None` when nothing was found, which is every setting until something proposes one.
     found: SettingPointerOut | None = None
+    #: What a run would use now, so the form shows GV's default or the sink card's size instead of a
+    #: blank (#1181). Null when nothing supplies it: the check waits, and nothing is zero.
+    in_force: InForceOut | None = None
 
 
 class LayoutProposalOut(BaseModel):

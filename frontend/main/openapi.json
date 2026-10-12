@@ -2211,6 +2211,20 @@
             "title": "Company Standards Displaced",
             "type": "array"
           },
+          "defaults_used": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Defaults Used",
+            "type": "array"
+          },
+          "entered": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entered",
+            "type": "array"
+          },
           "message": {
             "anyOf": [
               {
@@ -2413,6 +2427,15 @@
               }
             ],
             "title": "In Use From"
+          },
+          "kind": {
+            "description": "`standard`: one of GV's standards. `project_default`: a per-project setting GV may give a default for (#1181); a project's own value wins over it.",
+            "enum": [
+              "standard",
+              "project_default"
+            ],
+            "title": "Kind",
+            "type": "string"
           },
           "name": {
             "title": "Name",
@@ -4365,6 +4388,13 @@
             "title": "Id",
             "type": "string"
           },
+          "missing_inputs": {
+            "items": {
+              "$ref": "#/components/schemas/MissingInputOut"
+            },
+            "title": "Missing Inputs",
+            "type": "array"
+          },
           "notes": {
             "anyOf": [
               {
@@ -4694,6 +4724,66 @@
           "reason"
         ],
         "title": "HoldOut",
+        "type": "object"
+      },
+      "InForceOut": {
+        "description": "The value a run for this package would use for a setting now, and where it comes from (#1181).\n\n`origin`: `rulebook` (the rule author's default), `gv_default` (GV's company value),\n`sink_card` (the project's sink entry), `project` (a value typed for this job) or `package` (a\nvalue typed for this package only, which wins over the rest).",
+        "properties": {
+          "origin": {
+            "enum": [
+              "rulebook",
+              "gv_default",
+              "sink_card",
+              "project",
+              "package"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At"
+          },
+          "set_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set By"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "origin"
+        ],
+        "title": "InForceOut",
         "type": "object"
       },
       "LayoutProposalOut": {
@@ -5034,6 +5124,72 @@
           "name"
         ],
         "title": "MeasurementEntry",
+        "type": "object"
+      },
+      "MissingInputOut": {
+        "description": "One value a waiting check could not run without, as a field a reviewer can fill (#1181).\n\nWorked out from the rule and the values the run had, not from the reason's prose: every input\nand setting the rule declares that the run did not have. A setting the rulebook gives a default\nis never missing, and a missing one is never treated as zero.",
+        "properties": {
+          "askable": {
+            "description": "Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied.",
+            "title": "Askable",
+            "type": "boolean"
+          },
+          "key": {
+            "description": "The setting's name (`countertop_overhang`) or the drawing quantity (`SHOP:CT007`).",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "saved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SavedInputOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "description": "`project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here.",
+            "enum": [
+              "project",
+              "sink",
+              "drawing"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "sources": {
+            "description": "For a `project` setting, the sources it may be recorded with; empty otherwise.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "unit": {
+            "const": "in",
+            "title": "Unit",
+            "type": "string"
+          },
+          "where_to_find": {
+            "title": "Where To Find",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "unit",
+          "where_to_find",
+          "scope",
+          "askable"
+        ],
+        "title": "MissingInputOut",
         "type": "object"
       },
       "ModelSpendOut": {
@@ -5798,6 +5954,16 @@
               }
             ]
           },
+          "in_force": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InForceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -6203,6 +6369,26 @@
           "published_checks"
         ],
         "title": "ProductTypeChoice",
+        "type": "object"
+      },
+      "ProjectSinkOut": {
+        "properties": {
+          "sink": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SinkEntryOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until a sink is entered for the project."
+          }
+        },
+        "required": [
+          "sink"
+        ],
+        "title": "ProjectSinkOut",
         "type": "object"
       },
       "ProposedFieldOut": {
@@ -7760,6 +7946,55 @@
         "title": "RunsOut",
         "type": "object"
       },
+      "SavedInputOut": {
+        "description": "A value for a waiting input that is on record now, typed after the result was recorded.\n\nThe result still says \"waiting\": only a new check run uses it. This is what lets the screen say\nso instead of asking again.",
+        "properties": {
+          "layer": {
+            "description": "`company` for GV's default, `project` for this job, `run` for this package.",
+            "enum": [
+              "company",
+              "project",
+              "run"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where it came from, `G.C / Client: <note>`; null for a reading.",
+            "title": "Source"
+          },
+          "text": {
+            "description": "The exact value as a drawing writes it, `1 1/2\"`.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "set_by",
+          "set_at",
+          "layer"
+        ],
+        "title": "SavedInputOut",
+        "type": "object"
+      },
       "SavedParameterOut": {
         "description": "The setting value in force for one parameter, as saved, with where it came from (#1074).",
         "properties": {
@@ -8017,6 +8252,222 @@
           "status"
         ],
         "title": "SignedExportRequestOut",
+        "type": "object"
+      },
+      "SinkEntryIn": {
+        "properties": {
+          "inside_depth": {
+            "title": "Inside Depth",
+            "type": "string"
+          },
+          "inside_width": {
+            "description": "With its unit: `16 1/2\"`, `419 mm`.",
+            "title": "Inside Width",
+            "type": "string"
+          },
+          "model_name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Model Name",
+            "type": "string"
+          },
+          "source_note": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Note"
+          }
+        },
+        "required": [
+          "model_name",
+          "inside_width",
+          "inside_depth"
+        ],
+        "title": "SinkEntryIn",
+        "type": "object"
+      },
+      "SinkEntryOut": {
+        "properties": {
+          "inside_depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SinkValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inside_width": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SinkValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The project's inside width now; null only if it was never saved."
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "source_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Note"
+          }
+        },
+        "required": [
+          "model_name",
+          "source_note",
+          "set_by",
+          "set_at",
+          "inside_width",
+          "inside_depth"
+        ],
+        "title": "SinkEntryOut",
+        "type": "object"
+      },
+      "SinkInUseOut": {
+        "description": "The sink a package's checks use now (#1181).",
+        "properties": {
+          "inside_depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SinkSizeInUseOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inside_width": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SinkSizeInUseOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sink card's name, when at least one size comes from it.",
+            "title": "Model Name"
+          }
+        },
+        "required": [
+          "model_name",
+          "inside_width",
+          "inside_depth"
+        ],
+        "title": "SinkInUseOut",
+        "type": "object"
+      },
+      "SinkSizeInUseOut": {
+        "description": "One sink size a package's checks use now, and where it comes from.",
+        "properties": {
+          "origin": {
+            "description": "`sink_card`: the project's sink. `package`: typed for this package only.",
+            "enum": [
+              "sink_card",
+              "package"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At"
+          },
+          "set_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set By"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "origin",
+          "set_by",
+          "set_at"
+        ],
+        "title": "SinkSizeInUseOut",
+        "type": "object"
+      },
+      "SinkValueOut": {
+        "description": "One of the sink's numbers as the project holds it now, and who set it.",
+        "properties": {
+          "set_at": {
+            "format": "date-time",
+            "title": "Set At",
+            "type": "string"
+          },
+          "set_by": {
+            "title": "Set By",
+            "type": "string"
+          },
+          "text": {
+            "description": "Exact, as a drawing writes it: `16 1/2\"`.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "set_by",
+          "set_at"
+        ],
+        "title": "SinkValueOut",
         "type": "object"
       },
       "SlotRowOut": {
@@ -13324,6 +13775,59 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/packages/{package_id}/sink-in-use": {
+      "get": {
+        "operationId": "read_sink_in_use_api_v1_projects__project_id__packages__package_id__sink_in_use_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SinkInUseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The sink size this package's checks use now, and where each number comes from",
+        "tags": [
+          "project sink"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows": {
       "get": {
         "operationId": "list_slot_rows_api_v1_projects__project_id__packages__package_id__slot_rows_get",
@@ -14334,6 +14838,100 @@
         "summary": "Accept one specific deviation, until a date",
         "tags": [
           "review"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/sink": {
+      "get": {
+        "operationId": "read_project_sink_api_v1_projects__project_id__sink_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The sink this project's sink checks use",
+        "tags": [
+          "project sink"
+        ]
+      },
+      "post": {
+        "operationId": "save_project_sink_api_v1_projects__project_id__sink_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SinkEntryIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSinkOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enter the project's sink; every sink check reads it once the checks run again",
+        "tags": [
+          "project sink"
         ]
       }
     },

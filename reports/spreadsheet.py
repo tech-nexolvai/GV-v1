@@ -945,10 +945,18 @@ def write_stored_workbook(
                 for value in changed_values.company_standards_displaced
             )
             rows.extend(("Required value not set", value) for value in changed_values.outstanding)
+            rows.extend(
+                ("Value entered for this job", value.line()) for value in changed_values.entered
+            )
+            rows.extend(("GV default used", value.line()) for value in changed_values.defaults_used)
             if not changed_values.company_standards_displaced:
                 rows.append(("Changed company standards", "None"))
             if not changed_values.outstanding:
                 rows.append(("Required values not set", "None"))
+            if not changed_values.entered:
+                rows.append(("Values entered for this job", "None"))
+            if not changed_values.defaults_used:
+                rows.append(("GV defaults used", "None"))
         _write_sheet(workbook, PROJECT_VALUES_SHEET, ("Section", "Recorded value"), rows)
     _write_sheet(
         workbook, FINDINGS_SHEET, FINDING_COLUMNS, [_stored_finding_row(f) for f in findings]

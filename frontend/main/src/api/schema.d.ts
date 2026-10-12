@@ -1419,6 +1419,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/sink-in-use": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The sink size this package's checks use now, and where each number comes from */
+        get: operations["read_sink_in_use_api_v1_projects__project_id__packages__package_id__sink_in_use_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/slot-rows": {
         parameters: {
             query?: never;
@@ -1719,6 +1736,24 @@ export interface paths {
          *     The approver is the caller. Never a field.
          */
         post: operations["grant_review_exception_api_v1_projects__project_id__review_sessions__review_session_id__exceptions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/sink": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The sink this project's sink checks use */
+        get: operations["read_project_sink_api_v1_projects__project_id__sink_get"];
+        put?: never;
+        /** Enter the project's sink; every sink check reads it once the checks run again */
+        post: operations["save_project_sink_api_v1_projects__project_id__sink_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2889,6 +2924,10 @@ export interface components {
         ChangedValuesOut: {
             /** Company Standards Displaced */
             company_standards_displaced: string[];
+            /** Defaults Used */
+            defaults_used?: string[];
+            /** Entered */
+            entered?: string[];
             /** Message */
             message: string | null;
             /** Outstanding */
@@ -2976,6 +3015,12 @@ export interface components {
             in_use?: string | null;
             /** In Use From */
             in_use_from?: ("company" | "rulebook") | null;
+            /**
+             * Kind
+             * @description `standard`: one of GV's standards. `project_default`: a per-project setting GV may give a default for (#1181); a project's own value wins over it.
+             * @enum {string}
+             */
+            kind?: "standard" | "project_default";
             /** Name */
             name: string;
             /**
@@ -3838,6 +3883,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Missing Inputs */
+            missing_inputs?: components["schemas"]["MissingInputOut"][];
             /** Notes */
             notes?: string[] | null;
             outcome: components["schemas"]["Outcome"];
@@ -3971,6 +4018,29 @@ export interface components {
             code: string;
             /** Reason */
             reason: string;
+        };
+        /**
+         * InForceOut
+         * @description The value a run for this package would use for a setting now, and where it comes from (#1181).
+         *
+         *     `origin`: `rulebook` (the rule author's default), `gv_default` (GV's company value),
+         *     `sink_card` (the project's sink entry), `project` (a value typed for this job) or `package` (a
+         *     value typed for this package only, which wins over the rest).
+         */
+        InForceOut: {
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "rulebook" | "gv_default" | "sink_card" | "project" | "package";
+            /** Set At */
+            set_at?: string | null;
+            /** Set By */
+            set_by?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Text */
+            text: string;
         };
         /**
          * LayoutProposalOut
@@ -4134,6 +4204,47 @@ export interface components {
              * @description The values as typed, in layout order, for an input the rulebook declares as many — a run of cabinet widths, the fillers either side. Order is kept, because CAB-ARCH-VS-SHOP-001 compares two runs position by position.
              */
             values?: string[] | null;
+        };
+        /**
+         * MissingInputOut
+         * @description One value a waiting check could not run without, as a field a reviewer can fill (#1181).
+         *
+         *     Worked out from the rule and the values the run had, not from the reason's prose: every input
+         *     and setting the rule declares that the run did not have. A setting the rulebook gives a default
+         *     is never missing, and a missing one is never treated as zero.
+         */
+        MissingInputOut: {
+            /**
+             * Askable
+             * @description Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied.
+             */
+            askable: boolean;
+            /**
+             * Key
+             * @description The setting's name (`countertop_overhang`) or the drawing quantity (`SHOP:CT007`).
+             */
+            key: string;
+            /** Label */
+            label: string;
+            saved?: components["schemas"]["SavedInputOut"] | null;
+            /**
+             * Scope
+             * @description `project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here.
+             * @enum {string}
+             */
+            scope: "project" | "sink" | "drawing";
+            /**
+             * Sources
+             * @description For a `project` setting, the sources it may be recorded with; empty otherwise.
+             */
+            sources?: string[];
+            /**
+             * Unit
+             * @constant
+             */
+            unit: "in";
+            /** Where To Find */
+            where_to_find: string;
         };
         /**
          * ModelSpendOut
@@ -4539,6 +4650,7 @@ export interface components {
             /** Declared Default */
             declared_default: string | null;
             found?: components["schemas"]["SettingPointerOut"] | null;
+            in_force?: components["schemas"]["InForceOut"] | null;
             /** Name */
             name: string;
             /** Rule Ids */
@@ -4737,6 +4849,11 @@ export interface components {
             /** Published Checks */
             published_checks: number;
             value: components["schemas"]["ProductType"];
+        };
+        /** ProjectSinkOut */
+        ProjectSinkOut: {
+            /** @description Null until a sink is entered for the project. */
+            sink: components["schemas"]["SinkEntryOut"] | null;
         };
         /**
          * ProposedFieldOut
@@ -5542,6 +5659,38 @@ export interface components {
             why_not: string | null;
         };
         /**
+         * SavedInputOut
+         * @description A value for a waiting input that is on record now, typed after the result was recorded.
+         *
+         *     The result still says "waiting": only a new check run uses it. This is what lets the screen say
+         *     so instead of asking again.
+         */
+        SavedInputOut: {
+            /**
+             * Layer
+             * @description `company` for GV's default, `project` for this job, `run` for this package.
+             * @enum {string}
+             */
+            layer: "company" | "project" | "run";
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /**
+             * Source
+             * @description Where it came from, `G.C / Client: <note>`; null for a reading.
+             */
+            source?: string | null;
+            /**
+             * Text
+             * @description The exact value as a drawing writes it, `1 1/2"`.
+             */
+            text: string;
+        };
+        /**
          * SavedParameterOut
          * @description The setting value in force for one parameter, as saved, with where it came from (#1074).
          */
@@ -5677,6 +5826,86 @@ export interface components {
              * @enum {string}
              */
             status: "not_requested" | "preparing" | "ready" | "failed";
+        };
+        /** SinkEntryIn */
+        SinkEntryIn: {
+            /** Inside Depth */
+            inside_depth: string;
+            /**
+             * Inside Width
+             * @description With its unit: `16 1/2"`, `419 mm`.
+             */
+            inside_width: string;
+            /** Model Name */
+            model_name: string;
+            /** Source Note */
+            source_note?: string | null;
+        };
+        /** SinkEntryOut */
+        SinkEntryOut: {
+            inside_depth: components["schemas"]["SinkValueOut"] | null;
+            /** @description The project's inside width now; null only if it was never saved. */
+            inside_width: components["schemas"]["SinkValueOut"] | null;
+            /** Model Name */
+            model_name: string;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /** Source Note */
+            source_note: string | null;
+        };
+        /**
+         * SinkInUseOut
+         * @description The sink a package's checks use now (#1181).
+         */
+        SinkInUseOut: {
+            inside_depth: components["schemas"]["SinkSizeInUseOut"] | null;
+            inside_width: components["schemas"]["SinkSizeInUseOut"] | null;
+            /**
+             * Model Name
+             * @description The sink card's name, when at least one size comes from it.
+             */
+            model_name: string | null;
+        };
+        /**
+         * SinkSizeInUseOut
+         * @description One sink size a package's checks use now, and where it comes from.
+         */
+        SinkSizeInUseOut: {
+            /**
+             * Origin
+             * @description `sink_card`: the project's sink. `package`: typed for this package only.
+             * @enum {string}
+             */
+            origin: "sink_card" | "package";
+            /** Set At */
+            set_at: string | null;
+            /** Set By */
+            set_by: string | null;
+            /** Text */
+            text: string;
+        };
+        /**
+         * SinkValueOut
+         * @description One of the sink's numbers as the project holds it now, and who set it.
+         */
+        SinkValueOut: {
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /**
+             * Text
+             * @description Exact, as a drawing writes it: `16 1/2"`.
+             */
+            text: string;
         };
         /** SlotRowOut */
         SlotRowOut: {
@@ -8334,6 +8563,38 @@ export interface operations {
             };
         };
     };
+    read_sink_in_use_api_v1_projects__project_id__packages__package_id__sink_in_use_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SinkInUseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_slot_rows_api_v1_projects__project_id__packages__package_id__slot_rows_get: {
         parameters: {
             query?: never;
@@ -8874,6 +9135,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReviewExceptionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_project_sink_api_v1_projects__project_id__sink_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSinkOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_project_sink_api_v1_projects__project_id__sink_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SinkEntryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSinkOut"];
                 };
             };
             /** @description Validation Error */

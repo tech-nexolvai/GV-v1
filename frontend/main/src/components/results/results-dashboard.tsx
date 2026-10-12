@@ -78,6 +78,9 @@ export function ResultsDashboard({
   onOpenQueue,
   onShowArchitectView,
   canRunChecks = false,
+  packageId,
+  onValuesSaved,
+  onRunChecks,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -100,6 +103,10 @@ export function ResultsDashboard({
   onShowArchitectView?: (row: CountertopResult) => void;
   /** Run checks is the review's next action (#1179): only then do unchecked rows say to run them. */
   canRunChecks?: boolean;
+  /** For a check waiting on a value: ask for it in place, then the review's "Run checks" (#1181). */
+  packageId?: string;
+  onValuesSaved?: () => void;
+  onRunChecks?: () => void;
 }) {
   const [search, setSearch] = useState('');
   // Human names for the rule ids, for the "other checks" list. A missing rulebook only costs names.
@@ -248,6 +255,9 @@ export function ResultsDashboard({
         blocking={blocking}
         onDecide={(finding) => setDeciding({ finding, title: finding.scope_label ?? finding.name })}
         onBulkDismiss={onBulkDismiss}
+        packageId={packageId}
+        onValuesSaved={onValuesSaved}
+        onRunChecks={onRunChecks}
       />
 
       <DecideDialog

@@ -284,6 +284,12 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     } finally { refreshPending.current = false; setRefreshing(false); }
   }
 
+  /** A value typed where a waiting check asked for it (#1181): the header asks for a run, and the results reload. */
+  function valuesSavedInPlace() {
+    setValuesChangedSinceRun(true);
+    void refreshResults();
+  }
+
   function checksQueued() {
     setHeaderRunPending(false);
     setHeaderRunProblem(null);
@@ -964,6 +970,9 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onOpenCard={(row) => openRow(row.row_id)}
             onShowArchitectView={showArchitectView}
             canRunChecks={stage.next.kind === 'run-checks' && runChecksBlocked === null}
+            packageId={packageId}
+            onValuesSaved={valuesSavedInPlace}
+            onRunChecks={runChecksBlocked === null ? () => act('run-checks') : undefined}
           />
         </div>
       )}
@@ -1012,6 +1021,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
               setCountertopsVersion((n) => n + 1);
             }}
             onOpenCard={(row) => openRow(row.row_id)}
+            onValuesSaved={valuesSavedInPlace}
             startAt={queueStart}
           />
         </Suspense>
