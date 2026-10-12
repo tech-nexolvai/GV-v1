@@ -300,7 +300,9 @@ class NoCountertopConfirmationOut(BaseModel):
 
 
 class PageWithoutCountertopOut(BaseModel):
-    """A vendor page where every AI said there is no countertop line (#1093).
+    """A vendor-file page where every AI said there is no countertop line (#1093), or where code
+    found no countertop row to read at all (#1193): only the architect's or reference drawings, a
+    title or divider page, a drawing whose heading is not one we know. `reason` says which.
 
     Listed, and since #1191 it needs one reviewer click before sign-off: "Confirm: no countertop
     here" (`confirmation`), or "There is a countertop", after which the page is an item above, held
@@ -353,8 +355,9 @@ class CountertopResultsOut(BaseModel):
         default=(),
         json_schema_extra=optional_in_schema,
         description=(
-            "Vendor pages where both AIs found no countertop line, each with the AI's reason and "
-            "the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A "
+            "Vendor-file pages where both AIs found no countertop line, or code found no countertop "
+            "row to read (#1193), each with its reason and the reviewer's confirmation. Each needs "
+            "one reviewer answer before sign-off (#1191). A "
             "page where the AIs picked different lines, or a reviewer said there is a countertop, "
             "is an item above instead, held `row-choice-split`."
         ),

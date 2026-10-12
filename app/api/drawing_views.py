@@ -49,7 +49,8 @@ class ViewOut(BaseModel):
     role: str | None
     """`arch`, `shop`, or null until a reviewer confirms. Set only by a reviewer's confirmation."""
     suggested_role: str | None
-    """`arch`, `shop`, or null when the sheet's labels decide nothing."""
+    """`arch`, `shop`, `reference` (a brand prototype, never checked: #1193), or null when the
+    sheet's headings decide nothing."""
     suggested_from: str | None
     """The label the sheet prints above this drawing, when one was used."""
     reason: str | None

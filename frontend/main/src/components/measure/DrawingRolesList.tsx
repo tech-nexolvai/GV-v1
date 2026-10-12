@@ -3,6 +3,7 @@ import {
   ROLE_LABEL,
   roleLabel,
   stillToConfirm,
+  suggestionLabel,
   type DrawingRole,
   type DrawingView,
 } from './drawingRoleChoices.js';
@@ -56,7 +57,7 @@ export function DrawingRolesList({
     >
       <ul className="divide-y rounded-xl border bg-card">
         {views.map((view) => {
-          const suggested = roleLabel(view.suggested_role);
+          const suggested = suggestionLabel(view.suggested_role);
           const fromUpload = view.role === null ? roleLabel(view.upload_side) : null;
           return (
             <li

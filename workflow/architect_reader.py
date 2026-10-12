@@ -164,7 +164,11 @@ def _view(session: Session, page: Page, view: ArchitectView) -> DrawingView | No
         page_id=page.id,
         annotation_index=view.annotation_index,
         stored_points=view.stored_points,
-        proposed_role=None if judgment.heading_role is None else judgment.heading_role.value,
+        proposed_role=(
+            judgment.heading_suggestion
+            if judgment.heading_suggestion is not None
+            else None if judgment.heading_role is None else judgment.heading_role.value
+        ),
         heading=judgment.heading,
         reason=judgment.heading_reason,
     )

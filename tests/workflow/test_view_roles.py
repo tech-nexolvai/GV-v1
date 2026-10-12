@@ -562,3 +562,103 @@ def test_slot_reader_receives_architect_role_step_regions_only(session: Session)
         (Decimal("0.1"), Decimal("0.2"), Decimal("0.8"), Decimal("0.6")),
         (Decimal("0.2"), Decimal("0.1"), Decimal("0.4"), Decimal("0.3")),
     }
+
+
+def test_on_a_page_with_headings_only_the_vendor_s_drawing_keeps_its_rows(
+    session: Session,
+) -> None:
+    """#1193: a reference drawing (a brand prototype) is never read for a row, and on a page that
+    prints headings a drawing with no role of its own (its heading unknown, or none) is not read as
+    the vendor's either. A page with no headings keeps its unconfirmed drawings, as before."""
+    revision = _revision(session)
+    version = _document_version(session, revision, document_kind=DocumentKind.SHOP)
+    pages = []
+    for index in range(2):
+        page = Page(
+            document_version_id=version.id,
+            index=index,
+            content_hash=f"{index + 7:064x}",
+            width_pt=Decimal(612),
+            height_pt=Decimal(792),
+            rotation=0,
+            has_vector_text=True,
+            render_failed=False,
+            sheet_number=None,
+            page_type=None,
+            revision_label=None,
+        )
+        session.add(page)
+        pages.append(page)
+    session.flush()
+    labelled, plain = pages
+
+    def view(page: Page, tag: str, top: str, bottom: str, role: str | None = None) -> DrawingView:
+        drawn = DrawingView(
+            page_id=page.id,
+            tag=tag,
+            region={
+                "space": "stored",
+                "points": [["0.1", top], ["0.8", top], ["0.8", bottom], ["0.1", bottom]],
+            },
+            role=role,
+        )
+        session.add(drawn)
+        session.flush()
+        return drawn
+
+    def suggest(drawn: DrawingView, role: str | None, heading: str) -> None:
+        session.add(
+            ViewRoleProposal(
+                drawing_view_id=drawn.id,
+                proposed_role=role,
+                heading=heading,
+                reason="synthetic heading suggestion",
+                source="test",
+            )
+        )
+        session.flush()
+
+    reference = view(labelled, "panel-1", "0.1", "0.3")
+    suggest(reference, "reference", "SYNTHETIC PROTOTYPE")
+    unknown = view(labelled, "panel-2", "0.35", "0.6")
+    suggest(unknown, None, "SYNTHETIC UNKNOWN HEADING")
+    vendor = view(labelled, "panel-3", "0.65", "0.9")
+    suggest(vendor, "shop", "SYNTHETIC SHOP HEADING")
+    confirmed = view(labelled, "panel-4", "0.91", "0.95", role=ViewRole.SHOP.value)
+    suggest(confirmed, "reference", "SYNTHETIC PROTOTYPE")
+    view(plain, "panel-1", "0.1", "0.5")
+
+    result = _architect_candidate_filter_boxes_by_page(
+        session, (labelled.id, plain.id), labelled_pages={labelled.id}
+    )
+
+    assert {(box.top, box.bottom) for box in result[labelled.id]} == {
+        (Decimal("0.1"), Decimal("0.3")),
+        (Decimal("0.35"), Decimal("0.6")),
+    }
+    assert plain.id not in result
+
+
+def test_a_brand_prototype_drawing_is_suggested_as_a_reference_drawing(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193: the suggestion is stored as `reference`, which no confirmation can be."""
+    first = 5 + 2 + 2
+    sheet = _pdf(
+        annotations=[
+            _free_text("ARCH SET ", rect=b"[10 285 150 298]"),
+            _free_text("BRAND PROTOTYPE ELEVATION ", rect=b"[10 142 220 156]"),
+            _stamp(rect=b"[60 160 350 290]", appearance_object=first),
+            _stamp(rect=b"[60 20 350 140]", appearance_object=first + 1),
+        ],
+        extra_objects=[_appearance(), _appearance()],
+    )
+
+    _extract(session, store, sheet)
+
+    suggested = sorted(
+        (_suggestion(session, view).proposed_role or "", _suggestion(session, view).heading)
+        for view in _views(session)
+    )
+    assert suggested == [("arch", "ARCH SET"), ("reference", "BRAND PROTOTYPE ELEVATION")]
+    assert all(view.role is None for view in _views(session))

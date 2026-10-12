@@ -37,6 +37,7 @@ from app.models.evidence import (
 )
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.semantic_types import SemanticType
+from workflow.slot_row_scope import found_by_code
 
 __all__ = [
     "DISCRIMINATOR_FROM_READERS",
@@ -216,7 +217,11 @@ class SlotReaderWall:
 def _latest_slot_reader_candidates(
     session: Session, package_revision_id: UUID
 ) -> tuple[tuple[int, ObservationCandidate], ...]:
-    """Candidates from the newest slot-reader extraction, scoped to this revision only."""
+    """Candidates from the newest slot-reader extraction, scoped to this revision only.
+
+    Code's own "no row to read on this page" records (`no-row:`, #1193) are not the readers'
+    row decisions and are left out: a page code read nothing on is as it was before they existed.
+    """
     latest_run = session.execute(
         select(ExtractionRun.id)
         .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
@@ -243,6 +248,7 @@ def _latest_slot_reader_candidates(
             flag == "slot-reader" or flag == "slot-reader-row-choice" or flag == WALL_READER_FLAG
             for flag in (candidate.ambiguity_flags or [])
         )
+        and not found_by_code(candidate)
     )
 
 

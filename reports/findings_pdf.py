@@ -84,8 +84,9 @@ class FindingsPdfInput:
     read as one that passed. ``None`` — a set from before #994 — draws nothing: every product's
     checks ran, and the cover is exactly what it was."""
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = ()
-    """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093). Listed
-    after the countertops so a page that was not checked can never pass unnoticed."""
+    """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093), or where
+    code found no row to read, with code's reason (#1193). Listed after the countertops so a page
+    that was not checked can never pass unnoticed."""
     rows_not_checked: tuple[RowNotCheckedOut, ...] = ()
     """Second countertop rows an AI named on a page whose countertop row was read (#1108). V1 reads
     one row per page, so each is listed after the countertops as not checked."""
@@ -753,12 +754,16 @@ class _Document:
         self.canvas.showPage()
 
     def _pages_without_countertop(self, new_page: Callable[[], None]) -> None:
-        """The pages both AIs found no countertop line on, each with the AI's reason (#1093) and the
-        reviewer's confirmation (#1191)."""
+        """The pages both AIs found no countertop line on, each with the AI's reason (#1093), and the
+        pages code read no row on, with code's reason (#1193); each with the reviewer's
+        confirmation (#1191)."""
         self._listed_pages(
             new_page,
             title="PAGES WITH NO COUNTERTOP FOUND",
-            note="Both AIs found no countertop line on these pages, so nothing on them was checked.",
+            note=(
+                "Nothing on these pages was checked: the AIs found no countertop line, or code "
+                "found no vendor drawing or row to read. Each page says why."
+            ),
             entries=[
                 (
                     page.page_number,

@@ -1310,7 +1310,7 @@ def _read_pasted(
         if drafted is not None:
             pending.append((len(views), *drafted))
         views.append(view)
-    if not printed_headings(layers.markup):
+    if not printed_headings(layers.markup, layers.vendor_stamps):
         # A page printing no heading at all: both roles from the content of both drawings, only
         # when that is clear on both sides (`views.decide_without_headings`).
         drawn = {

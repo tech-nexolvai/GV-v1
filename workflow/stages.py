@@ -39,7 +39,7 @@ import os
 import re
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -47,7 +47,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from functools import cache, partial
 from io import BytesIO
-from typing import TYPE_CHECKING, Final, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
@@ -240,7 +240,7 @@ from extraction.models.validation import (
     stacked_layout_refusal,
 )
 from extraction.ocr import OcrEngine, OcrItem, RapidOcrEngine, could_be_a_reading, read_page
-from extraction.panels import propose_panel_roles
+from extraction.panels import PanelLayout, propose_panel_roles, read_panels
 from extraction.rasterise import VISION_CROP_DPI, PageTooLarge, render_page, render_region
 from extraction.reader import (
     MissingSpace,
@@ -401,6 +401,13 @@ from workflow.slot_reader import (
 from workflow.slot_row_evidence import confirm_unwitnessed_pass, slot_row_check
 from workflow.slot_row_scope import SlotRow, slot_rows_and_unchosen_pages
 from workflow.timing import TimingRecorder
+from workflow.unread_pages import (
+    UNREADABLE,
+    UnreadPage,
+    persist_unread_pages,
+    unread_page,
+    unread_page_reason,
+)
 from workflow.vendor_page_pictures import (
     PNG as VENDOR_PAGE_PNG,
 )
@@ -1616,13 +1623,20 @@ class _PartPictures:
 
 
 def _architect_candidate_filter_boxes_by_page(
-    session: Session, page_ids: Sequence[UUID]
+    session: Session, page_ids: Sequence[UUID], labelled_pages: Collection[UUID] = ()
 ) -> dict[UUID, tuple[StoredBox, ...]]:
-    """Return architect role-step regions, in the slot reader's stored frame.
+    """Return the regions of drawings that are not the vendor's, in the slot reader's stored frame.
 
     A confirmed role is authoritative. If role is still unknown, the latest role-step proposal is
     used only as a negative candidate filter: a proposed architect view can remove rows, never
-    make any row more likely to be selected. A malformed architect region fails closed for the page.
+    make any row more likely to be selected. A malformed region fails closed for the page.
+
+    **Not the vendor's (#1193):** the architect's drawing; a reference drawing (a brand prototype,
+    whose heading suggests `reference`: never read for a countertop); and, on a page that prints
+    headings (`labelled_pages`), a drawing with no role at all — its own heading is not one we
+    know, or it has none — because there a drawing is read as the vendor's only when its own
+    heading says so, never by borrowing another's. A page that prints no heading keeps every
+    unconfirmed drawing, as before.
     """
     if not page_ids:
         return {}
@@ -1648,10 +1662,8 @@ def _architect_candidate_filter_boxes_by_page(
         if view_id in seen_views:
             continue
         seen_views.add(view_id)
-        is_architect = confirmed_role == ViewRole.ARCH.value or (
-            confirmed_role is None and latest_proposal == ViewRole.ARCH.value
-        )
-        if not is_architect:
+        role = confirmed_role if confirmed_role is not None else latest_proposal
+        if role == ViewRole.SHOP.value or (role is None and page_id not in labelled_pages):
             continue
         box: StoredBox
         try:
@@ -2344,16 +2356,33 @@ class DatabaseStages:
         )
         images: list[FormPageImage] = []
         slot_pages: list[SlotPage] = []
+        # Each page's headings and drawings (#1193): which pages print headings, so a drawing there
+        # is read as the vendor's only by its own heading; and why a page gets no row, if it does.
+        layouts = (
+            {page.id: self._panel_layout(data, page, version_id) for page in pages}
+            if self._slot_reader is not None
+            else {}
+        )
         architect_boxes = _architect_candidate_filter_boxes_by_page(
-            session, tuple(page.id for page in pages)
+            session,
+            tuple(page.id for page in pages),
+            labelled_pages={
+                page_id for page_id, layout in layouts.items() if layout and layout.labelled
+            },
+        )
+        # **Never silent (#1193).** On Claude's grounded path a page with no row to read is not
+        # given to any reader; it is recorded with code's reason and listed for the reviewer.
+        unread: list[UnreadPage] = []
+        record_unread = self._slot_reader is not None and not _whole_page_fallback_enabled(
+            self._slot_reader
         )
         for prepared, page in enumerate(pages):
             self._progress("preparing", pages_done=prepared, pages_total=len(pages))
             rendered = self._vendor_render(data, page, version_id)
-            if rendered is None:
-                continue
-            transform = page_transform(page, rendered.dpi)
-            if transform is None:
+            transform = None if rendered is None else page_transform(page, rendered.dpi)
+            if rendered is None or transform is None:
+                if record_unread:
+                    unread.append(unread_page(page, UNREADABLE))
                 continue
             ink = self._page_ink(data, page, rendered.dpi)
             slot_page = self._slot_page(
@@ -2364,7 +2393,7 @@ class DatabaseStages:
                 ink,
                 architect_boxes=architect_boxes.get(page.id, ()),
             )
-            if slot_page is not None:
+            if isinstance(slot_page, SlotPage):
                 # A page with a row candidate is read slot by slot (#987); the whole-page reader
                 # stays for the pages where code finds no row.
                 slot_pages.append(slot_page)
@@ -2372,7 +2401,27 @@ class DatabaseStages:
             if not _whole_page_fallback_enabled(self._slot_reader):
                 # Claude's grounded path must not fall back to the unrelated whole-page form
                 # reader when no slot row exists. That would bypass its row-selection abstention
-                # and run outside the slot batch's spend cap; leave the page for the reviewer.
+                # and run outside the slot batch's spend cap; the page is recorded with code's
+                # reason instead, and listed for the reviewer (#1193).
+                unread.append(
+                    unread_page(
+                        page,
+                        (
+                            UNREADABLE
+                            if slot_page == "unreadable"
+                            else unread_page_reason(
+                                layouts.get(page.id),
+                                _confirmed_panel_roles(session, page.id),
+                                has_drawings_elsewhere=any(
+                                    layout is not None
+                                    and any(not drawing.nested for drawing in layout.proposals)
+                                    for other, layout in layouts.items()
+                                    if other != page.id
+                                ),
+                            )
+                        ),
+                    )
+                )
                 continue
             markup = self._picture_markup(data, page, rendered.dpi)
 
@@ -2428,7 +2477,7 @@ class DatabaseStages:
                 )
             )
         count = 0
-        if slot_pages:
+        if slot_pages or unread:
             count += self._read_slots(
                 session,
                 package_revision_id=package_revision_id,
@@ -2436,6 +2485,7 @@ class DatabaseStages:
                 task_run_id=task_run_id,
                 product=product,
                 data=data,
+                unread=unread,
             )
         if not images:
             return count
@@ -2615,12 +2665,13 @@ class DatabaseStages:
         ink: PageInk | None,
         *,
         architect_boxes: Sequence[StoredBox] = (),
-    ) -> SlotPage | None:
-        """The page as the slot reader takes it, or `None` where it has no row candidate (or the
-        slot reader is off, or the page's rows cannot be read) — the whole-page reader's pages."""
+    ) -> SlotPage | Literal["off", "unreadable", "no-rows"]:
+        """The page as the slot reader takes it, or why not: the slot reader is `off`, the page's
+        rows are `unreadable`, or it has `no-rows` (no row candidate) — the whole-page reader's
+        pages, or on Claude's path the pages recorded with code's reason (#1193)."""
         runtime = self._slot_reader
         if runtime is None:
-            return None
+            return "off"
         try:
             rows = page_rows_and_ink(
                 data,
@@ -2630,12 +2681,12 @@ class DatabaseStages:
                 architect_boxes=architect_boxes,
             )
         except UnreadablePdf:
-            return None
+            return "unreadable"
         if not rows.candidates.rows.candidates:
-            return None
+            return "no-rows"
         transform = page_transform(page, rendered.dpi)
         if transform is None:
-            return None
+            return "unreadable"
         return SlotPage(
             page_index=page.index,
             page_id=page.id,
@@ -2655,8 +2706,13 @@ class DatabaseStages:
         task_run_id: UUID,
         product: ProductType | None = None,
         data: bytes | None = None,
+        unread: Sequence[UnreadPage] = (),
     ) -> int:
         """Read the slot pages (#987) and persist candidates and candidate-only proposals.
+
+        `unread` are the pages code found no row to read on (#1193): recorded in the same run, each
+        with code's reason, so they are listed with the pages with no countertop. With no slot page
+        at all, the readers have nothing to be asked and the run holds only those records.
 
         `product` is the drawing set's product (#994): each crop reader is told it, and the run's
         config hash and every proposal's prompt id record it.
@@ -2746,6 +2802,7 @@ class DatabaseStages:
             store=self._store,
             prompt_id=runtime.prompt_id,
         )
+        persist_unread_pages(session, extraction_run_id=run.id, pages=unread, dpi=self._dpi)
         # The matches first, so a pairing made against a matched view names its match record
         # (#1167).
         if matcher is not None:
@@ -4019,6 +4076,17 @@ class DatabaseStages:
                 None if layers is None else (*layers.markup, *layers.other_layer_notes)
             ),
         )
+
+    def _panel_layout(self, data: bytes, page: Page, version_id: UUID) -> PanelLayout | None:
+        """The page's headings and drawings (`extraction/panels.read_panels`, #1193), or `None` when
+        its annotations cannot be read. Dictionary values only: no rendering, no model."""
+        try:
+            layers = read_markup_layer(
+                data, page.index, document_version_id=version_id, dpi=self._dpi
+            )
+        except UnreadablePdf:
+            return None
+        return read_panels(layers.vendor_stamps, layers.markup)
 
     def _vendor_render(self, data: bytes, page: Page, version_id: UUID) -> RenderedPage | None:
         """The page as the vision readers are shown it, or `None` where it cannot be rendered."""
@@ -8015,7 +8083,13 @@ def _image_polygon(polygon: Polygon, rendered: RenderedPage) -> list[list[int]]:
 
 def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dict[str, int]:
     """One view per drawing on the page, each with what its label suggests, counted (#710)."""
-    counts = {"views": 0, "suggested_arch": 0, "suggested_shop": 0, "no_suggestion": 0}
+    counts = {
+        "views": 0,
+        "suggested_arch": 0,
+        "suggested_shop": 0,
+        "suggested_reference": 0,
+        "no_suggestion": 0,
+    }
     for proposal, stamp in zip(
         propose_panel_roles(layers.vendor_stamps, layers.markup), layers.vendor_stamps, strict=True
     ):
@@ -8031,6 +8105,21 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
         counts["views"] += 1
         counts[f"suggested_{proposal.role}" if proposal.role else "no_suggestion"] += 1
     return counts
+
+
+def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, str | None]:
+    """The confirmed role of each pasted drawing on a page, by its stamp's annotation index: a
+    person's or code's confirmation outranks what its heading suggests (#1193)."""
+    roles: dict[int, str | None] = {}
+    for tag, role in session.execute(
+        select(DrawingView.tag, DrawingView.role).where(
+            DrawingView.page_id == page_id, DrawingView.role.is_not(None)
+        )
+    ).all():
+        number = tag.removeprefix("panel-")
+        if tag.startswith("panel-") and number.isdigit():
+            roles[int(number)] = role
+    return roles
 
 
 def _view_role(session: Session, view: DrawingView) -> str | None:

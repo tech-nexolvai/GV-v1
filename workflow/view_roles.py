@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
 from app.models import (
+    REFERENCE_ROLE,
     DrawingView,
     PackageRevisionDocument,
     Page,
@@ -161,10 +162,12 @@ def record_panel_view(
     """Find or create the view for one drawing, and file what its label suggests.
 
     **Never sets the role.** A view created here has `role = NULL`, and a view that already has a
-    confirmed role keeps it. A re-read that suggests the same thing again adds nothing.
+    confirmed role keeps it. A re-read that suggests the same thing again adds nothing. The
+    suggestion may be `reference` (a brand prototype, #1193), which no confirmation can be.
     """
-    if proposed_role is not None and proposed_role not in {role.value for role in ViewRole}:
-        raise ValueError(f"proposed_role must be one of {[r.value for r in ViewRole]} or None")
+    allowed = [*(role.value for role in ViewRole), REFERENCE_ROLE]
+    if proposed_role is not None and proposed_role not in allowed:
+        raise ValueError(f"proposed_role must be one of {allowed} or None")
     tag = panel_tag(annotation_index)
     view = session.execute(
         select(DrawingView).where(DrawingView.page_id == page_id, DrawingView.tag == tag)

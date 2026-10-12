@@ -66,6 +66,18 @@ class SlotRow:
 #: The hold code the countertop results give a page whose row the readers did not agree on (#1093).
 ROW_CHOICE_SPLIT: Final = "row-choice-split"
 
+#: A vendor-file page on which code found no countertop row to read at all (#1193) — only the
+#: architect's or reference drawings, a title or divider page, a drawing whose heading is not one we
+#: know, no row of dimensions — is recorded as a row-choice record carrying `no-row:<code>` and
+#: code's plain reason (`workflow/unread_pages.py`). It is listed with the pages with no countertop,
+#: like a page every AI said has none, and needs the same reviewer answer (#1191): never silent.
+NO_ROW_FLAG: Final = "no-row:"
+
+#: Why code read no row on a page, by `no-row:` code.
+NO_ROW_CODES: Final = frozenset(
+    {"no-drawing", "no-vendor-drawing", "reference-only", "no-row-found", "unreadable"}
+)
+
 #: How the reader ends a reason it wrote itself for a page whose row it did not choose
 #: (`workflow/slot_reader.py:_agreed_row`), and its default when no reader answer was kept.
 _CODE_AUTHORED_ENDING: Final = "; the reviewer chooses"
@@ -80,7 +92,8 @@ class UnchosenRowPage:
 
     `kind` is "split" when the readers did not name the same existing row (or one gave no answer):
     nothing was read, and the page must reach the reviewer as a blocking item. It is "none" only
-    when every reader said the page has no countertop row; such a page is listed, not blocking.
+    when every reader said the page has no countertop row, or when code found no row to read on it
+    at all (`NO_ROW_FLAG`, #1193); such a page is listed, not blocking.
     Since #1108 a reader also says what kind of answer it gave (`row-kind:` flags): "none" then
     needs every reader to have said `no_countertop`; `not_among_boxes` (a countertop no numbered
     box measures) or `unsure` from any reader is "split" too, with its own reason.
@@ -118,6 +131,16 @@ class UnchosenRowPage:
     @property
     def label(self) -> str:
         return f"Countertop row on page {self.page_number}"
+
+    @property
+    def found_by_code(self) -> bool:
+        """Whether code, not the AIs, found no row to read on this page (#1193): no AI was asked."""
+        return found_by_code(self.record)
+
+
+def found_by_code(record: ObservationCandidate) -> bool:
+    """Whether a row-choice record is code's "no row to read on this page" (#1193)."""
+    return any(flag.startswith(NO_ROW_FLAG) for flag in record.ambiguity_flags or ())
 
 
 def _row_picks(flags: frozenset[str]) -> tuple[tuple[str, int | None], ...] | None:
@@ -177,7 +200,12 @@ def _classify(flags: frozenset[str], stored_reason: str | None) -> tuple[
     tuple[tuple[str, int | None], ...],
     tuple[tuple[str, str], ...],
 ]:
-    """Split unless every reader said "no countertop row"; never the other way round on doubt."""
+    """Split unless every reader said "no countertop row"; never the other way round on doubt.
+
+    A record of code's (`no-row:`, #1193) is listed: no reader was asked, code read no row on the
+    page, and its reason says why. It needs a reviewer's answer like any listed page."""
+    if any(flag.startswith(NO_ROW_FLAG) for flag in flags):
+        return "none", (), ()
     picks = _row_picks(flags)
     kinds = _row_kinds(flags)
     if picks is None or kinds is None:

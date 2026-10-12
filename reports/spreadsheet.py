@@ -100,7 +100,8 @@ OPERANDS_SHEET: Final = "Operands"
 SUMMARY_SHEET: Final = "Review Summary"
 PROJECT_VALUES_SHEET: Final = "Project Values"
 COUNTERTOPS_SHEET: Final = "Countertops"
-#: Vendor pages where both AIs found no countertop line (#1093): listed, with the AI's reason.
+#: Vendor pages where both AIs found no countertop line (#1093), or code found no row to read
+#: (#1193): listed, with the reason.
 PAGES_WITHOUT_COUNTERTOP_SHEET: Final = "No Countertop Found"
 PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason", "confirmed")
 

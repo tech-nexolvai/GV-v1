@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import ctypes
 import io
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -334,6 +335,12 @@ class MarkupNote:
     """`/IT` as the file names it — `LineDimension` on a measurement line (#805) — or `None` when it
     names none, which is the ordinary case for a note."""
 
+    font_size: Decimal | None = None
+    """The text size the note's `/DA` sets (`… 24 Tf`), in points, or `None` when it sets none.
+
+    Read, never measured from the box: GV types its sheet headings at 24 pt and its notes at 12 pt
+    or less, so the size is how a heading is told from a note (#1193, `vocabulary/panel_headings`)."""
+
 
 @dataclass(frozen=True, slots=True)
 class OutlinedTextRegion:
@@ -527,6 +534,23 @@ def _text(value: object) -> str | None:
             return value.decode("utf-16-be", "replace")[1:]
         return value.decode("latin-1", "replace")
     return str(value)
+
+
+#: The text size in a default appearance string: the number before `Tf` (`/Helv 24 Tf 0 g`).
+_DA_FONT_SIZE: Final = re.compile(r"(\d+(?:\.\d+)?|\.\d+)\s+Tf\b")
+
+
+def _font_size(value: object) -> Decimal | None:
+    """The size a `/DA` string sets, or `None` when it is absent, sets none, or sets 0 (auto-size,
+    which states no size)."""
+    text = _text(value)
+    if text is None:
+        return None
+    found = _DA_FONT_SIZE.findall(text)
+    if not found:
+        return None
+    size = Decimal(found[-1])
+    return size if size > 0 else None
 
 
 #: The four rotations text can be set at. Anything else has no representation here — the same closed
@@ -1281,6 +1305,7 @@ def _read_layers(
                     rotation_degrees=rotation,
                     annotation_index=index,
                     intent=_name(annotation.get("IT")) or None,
+                    font_size=_font_size(annotation.get("DA")),
                 )
                 if layer is DrawingLayer.REVIEWER_MARKUP:
                     markup.append(note)

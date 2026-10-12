@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { DrawingRolesList } from '../src/components/measure/DrawingRolesList.js';
-import { roleLabel, stillToConfirm, type DrawingView } from '../src/components/measure/drawingRoleChoices.js';
+import { roleLabel, stillToConfirm, suggestionLabel, type DrawingView } from '../src/components/measure/drawingRoleChoices.js';
 
 // Two drawings on one sheet, as `GET …/views` lists them: neither confirmed, both suggested by the
 // heading the sheet prints above them (#710).
@@ -74,5 +74,19 @@ assert.doesNotMatch(fromUpload, /the label suggests/);
 
 assert.equal(roleLabel('arch'), "Architect's drawing");
 assert.equal(roleLabel(null), null);
+
+// #1193: a brand prototype's heading suggests a reference drawing. It is shown as one, and it is
+// never one of the two answers a person gives.
+const reference = renderToStaticMarkup(
+  <DrawingRolesList
+    views={[{ ...unconfirmed[0], suggested_role: 'reference', suggested_from: 'BRAND PROTOTYPE ELEVATION' }]}
+    saving={null}
+    onChoose={() => undefined}
+  />,
+);
+assert.match(reference, /the label suggests: a reference drawing \(brand prototype\), never checked/);
+assert.doesNotMatch(reference, /Reference<\/button>/);
+assert.equal(roleLabel('reference'), null);
+assert.equal(suggestionLabel('shop'), "Vendor's drawing");
 
 console.log('drawing-roles: ok');

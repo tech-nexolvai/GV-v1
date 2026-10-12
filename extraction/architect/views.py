@@ -133,6 +133,10 @@ class ViewJudgment:
     by_document_kind: bool = False
     """The role was decided on the architect's own drawing set (a separate ARCHITECTURAL upload) by
     the document's kind and the drawing's content agreeing (#1163, ADR-0020 decision 3)."""
+    heading_suggestion: str | None = None
+    """What the drawing's own heading suggests, as recorded beside the view: `arch`, `shop`,
+    `reference` (a brand prototype, #1193: never a side, so `heading_role` stays `None`), or `None`.
+    """
 
 
 def count_labels(
@@ -232,10 +236,22 @@ def judge_content(counts: LabelCounts) -> ContentJudgment:
     return ContentJudgment(None, f"its own text does not say ({tally}, no scale)", counts, lean)
 
 
+def _side(role: str | None) -> Role | None:
+    """A heading's suggestion as a side of the comparison: a reference drawing (#1193) is none."""
+    return None if role is None or role not in {side.value for side in Role} else Role(role)
+
+
 def judge_view(proposal: PanelRoleProposal, content: ContentJudgment) -> ViewJudgment:
-    """Both judgments for one drawing, and the role only when they agree."""
-    heading_role = None if proposal.role is None else Role(proposal.role)
-    if heading_role is None:
+    """Both judgments for one drawing, and the role only when they agree. A heading naming a
+    reference drawing (a brand prototype, #1193) is never a side: no role, whatever the content."""
+    heading_role = _side(proposal.role)
+    if proposal.role is not None and heading_role is None:
+        agreed = None
+        reason = (
+            f"the heading {proposal.heading!r} names a reference drawing, never the architect's or "
+            "the vendor's, so it is never compared"
+        )
+    elif heading_role is None:
         agreed, reason = None, f"the heading says nothing: {proposal.reason}"
     elif content.role is None:
         agreed, reason = None, f"the drawing's content says nothing: {content.reason}"
@@ -258,6 +274,7 @@ def judge_view(proposal: PanelRoleProposal, content: ContentJudgment) -> ViewJud
         content=content,
         agreed=agreed,
         reason=reason,
+        heading_suggestion=proposal.role,
     )
 
 
@@ -275,8 +292,9 @@ def judge_by_document(
     when the content says so too. A printed heading, where the drawing has one (`proposal`), may
     only stop it: a heading saying the vendor's drawing on the architect's file decides nothing.
     """
-    heading_role = None if proposal is None or proposal.role is None else Role(proposal.role)
+    heading_role = None if proposal is None else _side(proposal.role)
     heading = None if proposal is None else proposal.heading
+    reference = proposal is not None and proposal.role is not None and heading_role is None
     heading_reason = (
         "drawn on the page itself: no heading is pasted with it"
         if proposal is None
@@ -287,6 +305,11 @@ def judge_by_document(
         reason = (
             f"the file was uploaded as the architect's drawings but the heading {heading!r} says the "
             "vendor's"
+        )
+    elif reference:
+        reason = (
+            f"the file was uploaded as the architect's drawings but the heading {heading!r} names a "
+            "reference drawing, which is never compared"
         )
     elif content.role is None:
         reason = (
@@ -313,6 +336,7 @@ def judge_by_document(
         agreed=agreed,
         reason=reason,
         by_document_kind=agreed is not None,
+        heading_suggestion=None if proposal is None else proposal.role,
     )
 
 

@@ -41,7 +41,7 @@ export type CountertopsState =
   | {
       status: 'ready';
       rows: CountertopResult[];
-      /** Pages where both AIs found no countertop line (#1093): each needs one reviewer answer before sign-off (#1191). */
+      /** Pages where both AIs found no countertop line (#1093), or code found no row to read (#1193): each needs one reviewer answer before sign-off (#1191). */
       pagesWithoutCountertop?: readonly PageWithoutCountertop[];
       /** Second countertop lines an AI named on a page (#1108): one line per page is read; listed, never blocking. */
       rowsNotChecked?: readonly RowNotChecked[];
@@ -176,7 +176,7 @@ export function ResultsDashboard({
           {(countertops.pagesWithoutCountertop?.length ?? 0) > 0 ? (
             <>
               <p className="font-medium">No countertop found on any page</p>
-              <p className="text-sm text-muted-foreground">Both AIs found no countertop line on the pages listed below.</p>
+              <p className="text-sm text-muted-foreground">Nothing was found to check on the pages listed below; each says why.</p>
             </>
           ) : (
             <>

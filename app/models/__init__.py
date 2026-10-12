@@ -26,6 +26,7 @@ from app.models.document import (
     SourceArtifact,
 )
 from app.models.drawing import (
+    REFERENCE_ROLE,
     Alias,
     CountertopRun,
     CountertopRunDecision,
@@ -130,6 +131,7 @@ from app.models.verdicts import (
 )
 
 __all__ = [
+    "REFERENCE_ROLE",
     "AgentNodeInvocationClaim",
     "AgentNodeInvocationState",
     "AiSpendHistory",

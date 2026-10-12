@@ -99,6 +99,23 @@ def test_a_silent_or_contrary_judgment_decides_nothing(
     assert said in view.reason
 
 
+@pytest.mark.parametrize(
+    "counts",
+    [_counts(feet=3, architectural=ARCH_SCALE), _counts(ratio=RATIO, vendor=4)],
+)
+def test_a_reference_heading_is_never_a_side_whatever_the_content(counts: LabelCounts) -> None:
+    """#1193: a brand prototype's heading suggests `reference`; it is never the architect's or the
+    vendor's, so code never confirms it either way, and the suggestion is kept as `reference`."""
+    proposal = PanelRoleProposal(3, "reference", "BRAND PROTOTYPE ELEVATION", "a reference")
+
+    view = judge_view(proposal, judge_content(counts))
+    on_architect_file = judge_by_document(3, judge_content(counts), proposal=proposal)
+
+    assert (view.agreed, view.heading_role, view.heading_suggestion) == (None, None, "reference")
+    assert "reference drawing" in view.reason
+    assert on_architect_file.agreed is None and "reference drawing" in on_architect_file.reason
+
+
 # --- A page with no headings: both drawings' content decides (#1052 fix) --------------------------
 
 AGREEMENT = Decimal("0.04")
