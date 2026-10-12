@@ -101,7 +101,13 @@ function StepItem({ step, position, total }: { step: ReviewStep; position: numbe
           <span className="block h-full w-1/2 animate-pulse rounded-full bg-foreground/60 motion-reduce:animate-none" />
         </span>
       )}
-      {active && step.note && <span className="hidden max-w-56 truncate text-xs font-normal text-muted-foreground xl:inline">{step.note}</span>}
+      {/* The Reading step says what the reader is doing and on which page (#1178): "Reading · … · page k of N". */}
+      {active && step.note && step.id === 'reading' && (
+        <span data-slot="reading-progress" className="hidden max-w-80 truncate text-xs font-normal text-muted-foreground sm:inline">
+          · {step.note}
+        </span>
+      )}
+      {active && step.note && step.id !== 'reading' && <span className="hidden max-w-56 truncate text-xs font-normal text-muted-foreground xl:inline">{step.note}</span>}
       <span className="sr-only">
         {`Step ${position} of ${total}: ${step.label}, ${STATE_WORDS[step.state]}${countWords(step)}${step.note ? `. ${step.note}` : ''}`}
       </span>

@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Final, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
@@ -104,6 +104,7 @@ from app.runs.invocations import (
     record as record_model_invocation,
 )
 from app.runs.rates import call_cost_micros, rates_from_environment
+from app.runs.reading_progress import side_engine
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
 from app.verdicts.rulebook import snapshot_store
@@ -173,7 +174,6 @@ from extraction.architect.reader import (
 )
 from extraction.architect.sheet_index import read_pages_phrases
 from extraction.form_reader.bedrock import AttemptUsage
-from extraction.form_reader.runner import ThreadSafeAttemptRecorder
 from extraction.fraction_parts import (
     FRACTION_PARTS_EXTRACTOR,
     FRACTION_PARTS_VERSION,
@@ -382,6 +382,12 @@ from workflow.reader_pictures import (
 )
 from workflow.reader_reuse import StoredReaderAnswers
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
+from workflow.reading_watch import (
+    CallLedger,
+    PageBatchProgress,
+    ProgressReporter,
+    ledger_spend_filter,
+)
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.slot_reader import (
@@ -1993,6 +1999,7 @@ class DatabaseStages:
                 "documents": 0,
             }
 
+        self._watch(session, package_revision_id, "ingest")
         records = _document_records_for(session, package_revision_id)
         verified = 0
         unreadable: list[str] = []
@@ -2067,6 +2074,7 @@ class DatabaseStages:
             # only when something called this directly, and a candidate with no run could not say
             # what read it.
             return ()
+        self._watch(session, package_revision_id, "pages")
 
         run = open_extraction_run(
             session,
@@ -2081,14 +2089,7 @@ class DatabaseStages:
         # **The drawing set's AI spend so far** (#757): every call this task's runs have recorded,
         # so a stage run again after a failure carries on from what was already spent.
         with session.no_autoflush:
-            spent, unpriced = session.execute(
-                select(
-                    func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
-                    func.count().filter(ModelInvocation.cost_micros.is_(None)),
-                )
-                .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
-                .where(ExtractionRun.task_run_id == task_run.id)
-            ).one()
+            spent, unpriced = stage_spend_so_far(session, task_run)
         self._meter = _SpendMeter(
             cap_micros=self._ai_budget_micros,
             spent_micros=int(spent or 0),
@@ -2160,6 +2161,7 @@ class DatabaseStages:
         self._architect_pages = {}
         self._architect_view_crops = {}
         if self._architect_reader is not None:
+            self._progress("architect")
             # Before the readers that use the drawings' roles, so a role code confirms here is the
             # one the slot reader's architect filter reads.
             architect = self._read_architect_drawings(
@@ -2227,7 +2229,8 @@ class DatabaseStages:
             )
             readings: list[tuple[Page, ArchitectPage]] = []
             unreadable: list[tuple[Page, str]] = []
-            for page in pages:
+            for done, page in enumerate(pages):
+                self._progress("architect", pages_done=done, pages_total=len(pages))
                 try:
                     readings.append(
                         (
@@ -2343,7 +2346,8 @@ class DatabaseStages:
         architect_boxes = _architect_candidate_filter_boxes_by_page(
             session, tuple(page.id for page in pages)
         )
-        for page in pages:
+        for prepared, page in enumerate(pages):
+            self._progress("preparing", pages_done=prepared, pages_total=len(pages))
             rendered = self._vendor_render(data, page, version_id)
             if rendered is None:
                 continue
@@ -2434,7 +2438,10 @@ class DatabaseStages:
             )
         if not images:
             return count
-        recorder = ThreadSafeAttemptRecorder()
+        self._progress("whole_pages", pages_total=len(images))
+        recorder = self._call_ledger(
+            session, task_run_id, reader_version="form-reader-v5-gv-mark-v1-ink-v1"
+        )
         readings = read_form_pages(
             images,
             reader_ids=runtime.reader_ids,
@@ -2458,7 +2465,10 @@ class DatabaseStages:
             ),
             dpi=self._dpi,
         )
-        self._record_reader_attempts(session, run.id, recorder.snapshot())
+        self._progress("saving")
+        self._record_reader_attempts(
+            session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
+        )
         count += persist_form_proposals(
             session,
             package_revision_id=package_revision_id,
@@ -2470,59 +2480,130 @@ class DatabaseStages:
         session.flush()
         return count
 
-    def _record_reader_attempts(
-        self, session: Session, run_id: UUID, attempts: Sequence[AttemptUsage]
-    ) -> None:
-        """Meter and record every form-reader or slot-reader call against its extraction run."""
+    def _reader_invocation(
+        self, run_id: UUID, attempt: AttemptUsage, *, ledger_id: UUID | None = None
+    ) -> InvocationRecord:
+        """The ledger row for one form-reader or slot-reader attempt, priced from the readers' rates.
+
+        With `ledger_id` (#1178) the call is already in the call ledger, written the moment it
+        returned: this row is its twin under the stage's own run, naming the ledger row the way a
+        reused stored answer names the call it reused — no tokens, no cost, no time — so the call is
+        counted once and the run's evidence stays complete.
+        """
         runtime = self._form_reader
         assert runtime is not None
-        from extraction.models.invocations import InvocationRecord
+        input_tokens = attempt.input_tokens or 0
+        output_tokens = attempt.output_tokens or 0
+        latency_ms = attempt.latency_ms
+        packet = None if attempt.question_packet is None else dict(attempt.question_packet)
+        cost: int | None
+        reused_from = attempt.reused_from if ledger_id is None else str(ledger_id)
+        if reused_from is not None:
+            # A reused stored answer (#1112) or a call the ledger already holds (#1178): no tokens,
+            # nothing spent here. The packet names the call that was made; its own hash stays the
+            # question's.
+            if packet is None:
+                if attempt.reused_from is not None:
+                    raise ValueError("a reused answer must carry its question packet")
+                packet = {}
+            packet[REUSED_FROM_KEY] = reused_from
+            input_tokens = output_tokens = 0
+            cost = 0
+            if ledger_id is not None:
+                latency_ms = 0
+        else:
+            cost = call_cost_micros(runtime.rates, attempt.model_id, input_tokens, output_tokens)
+        return InvocationRecord(
+            extraction_run_id=run_id,
+            model_id=attempt.model_id,
+            prompt_id=attempt.prompt_id,
+            template_id=attempt.template_id,
+            crop_artifact_id=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_micros=cost,
+            latency_ms=latency_ms,
+            outcome=(
+                "rejected" if attempt.malformed else "failed" if attempt.failure_kind else "ok"
+            ),
+            rejection_reason=("malformed_form_answer" if attempt.malformed else None),
+            private_raw_response=attempt.raw_response_text,
+            reader_page_index=attempt.page_index,
+            reader_attempt_number=attempt.attempt_number,
+            reader_question_packet=packet,
+        )
 
-        for attempt in attempts:
-            input_tokens = attempt.input_tokens or 0
-            output_tokens = attempt.output_tokens or 0
+    def _record_reader_attempts(
+        self,
+        session: Session,
+        run_id: UUID,
+        attempts: Sequence[AttemptUsage],
+        *,
+        ledgered: Mapping[int, UUID] | None = None,
+    ) -> None:
+        """Meter and record every form-reader or slot-reader call against its extraction run.
+
+        `ledgered` (#1178) names, by position in `attempts`, the calls the call ledger already
+        committed; each gets its twin here instead of a second paid row, and is still metered at its
+        real price, because this run did pay for it.
+        """
+        runtime = self._form_reader
+        assert runtime is not None
+        ledger = ledgered or {}
+        for position, attempt in enumerate(attempts):
             if self._meter is None:
                 raise RuntimeError("form reader cannot run before the drawing-set spend meter")
-            packet = None if attempt.question_packet is None else dict(attempt.question_packet)
-            cost: int | None
-            if attempt.reused_from is not None:
-                # A reused stored answer (#1112): no call, no tokens, nothing spent or metered. The
-                # packet names the call that was made; its own hash stays the question's.
-                if packet is None:
-                    raise ValueError("a reused answer must carry its question packet")
-                packet[REUSED_FROM_KEY] = attempt.reused_from
-                input_tokens = output_tokens = 0
-                cost = 0
-            else:
-                cost = call_cost_micros(
-                    runtime.rates, attempt.model_id, input_tokens, output_tokens
+            ledger_id = ledger.get(position)
+            if attempt.reused_from is None:
+                self._meter.add(
+                    call_cost_micros(
+                        runtime.rates,
+                        attempt.model_id,
+                        attempt.input_tokens or 0,
+                        attempt.output_tokens or 0,
+                    )
                 )
-                self._meter.add(cost)
             record_model_invocation(
                 session,
-                InvocationRecord(
-                    extraction_run_id=run_id,
-                    model_id=attempt.model_id,
-                    prompt_id=attempt.prompt_id,
-                    template_id=attempt.template_id,
-                    crop_artifact_id=None,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost_micros=cost,
-                    latency_ms=attempt.latency_ms,
-                    outcome=(
-                        "rejected"
-                        if attempt.malformed
-                        else "failed" if attempt.failure_kind else "ok"
-                    ),
-                    rejection_reason=("malformed_form_answer" if attempt.malformed else None),
-                    private_raw_response=attempt.raw_response_text,
-                    reader_page_index=attempt.page_index,
-                    reader_attempt_number=attempt.attempt_number,
-                    reader_question_packet=packet,
-                ),
+                self._reader_invocation(run_id, attempt, ledger_id=ledger_id),
                 flush=False,
             )
+
+    def _watch(self, session: Session, package_revision_id: UUID, stage: str) -> None:
+        """Start telling the reviewer where this revision's reading is (#1178)."""
+        self._reporter = ProgressReporter(side_engine(session), package_revision_id)
+        self._watch_session = session
+        self._reporter.stage(stage)
+
+    def _progress(
+        self, stage: str, *, pages_done: int | None = None, pages_total: int | None = None
+    ) -> None:
+        """One progress line, in its own transaction; nothing when no stage is being watched."""
+        reporter: ProgressReporter | None = getattr(self, "_reporter", None)
+        if reporter is not None:
+            reporter.stage(stage, pages_done=pages_done, pages_total=pages_total)
+
+    def _batch_progress(self) -> PageBatchProgress | None:
+        reporter: ProgressReporter | None = getattr(self, "_reporter", None)
+        return None if reporter is None else PageBatchProgress(reporter)
+
+    def _call_ledger(
+        self, session: Session, task_run_id: UUID, *, reader_version: str
+    ) -> CallLedger:
+        """The attempt recorder for one reader batch: every paid call ledgered as it returns (#1178).
+
+        Ledgered only when the stage's workflow run is committed and the session is bound to an
+        engine; otherwise it buffers exactly like `ThreadSafeAttemptRecorder` and the stage writes
+        every call, as before.
+        """
+        task_run = session.get(TaskRun, task_run_id)
+        return CallLedger(
+            side_engine(session),
+            workflow_run_id=None if task_run is None else task_run.workflow_run_id,
+            stage_key=None if task_run is None else task_run.idempotency_key,
+            reader_version=reader_version,
+            to_record=lambda run_id, attempt: self._reader_invocation(run_id, attempt),
+        )
 
     def _slot_page(
         self,
@@ -2598,7 +2679,9 @@ class DatabaseStages:
                     unpriced_calls=self._meter.unpriced_calls,
                 ),
             )
-        recorder = ThreadSafeAttemptRecorder()
+        recorder = self._call_ledger(
+            session, task_run_id, reader_version=f"{SLOT_READER_VERSION}-ink-v1"
+        )
         # The architect pairing (#1053) runs only beside the architect reader, on the pages it read.
         matcher = (
             self._architect_matcher(
@@ -2639,7 +2722,9 @@ class DatabaseStages:
             # #1112: a question identical to one already answered for this document version takes
             # the stored answer; `GV_READER_REUSE_ANSWERS=false` asks everything again.
             stored_answers=StoredReaderAnswers(session) if runtime.reuse_answers else None,
+            progress=self._batch_progress(),
         )
+        self._progress("saving")
         run = open_extraction_run(
             session,
             task_run_id=task_run_id,
@@ -2648,7 +2733,9 @@ class DatabaseStages:
             config_hash=runtime.run_label(self._dpi),
             dpi=self._dpi,
         )
-        self._record_reader_attempts(session, run.id, recorder.snapshot())
+        self._record_reader_attempts(
+            session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
+        )
         count = persist_slot_readings(
             session,
             package_revision_id=package_revision_id,
@@ -2837,7 +2924,8 @@ class DatabaseStages:
                 )
 
         results: list[PageResult] = []
-        for page in pages:
+        for done, page in enumerate(pages):
+            self._progress("pages", pages_done=done, pages_total=len(pages))
             page_started_at = datetime.now(UTC)
             page_started_ns = time.perf_counter_ns()
             written = 0
@@ -6075,6 +6163,7 @@ class DatabaseStages:
         queries this reads keep to `live_part_item_ids`. With none, it returns an honest zero with
         the reason, naming how many drawings were found and how many roles are confirmed.
         """
+        self._watch(session, package_revision_id, "match")
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:
@@ -6187,6 +6276,7 @@ class DatabaseStages:
         read. Rendering at `self._dpi`, the dpi the candidates were read at, is what makes that true,
         and `stored_polygon` refuses rather than guesses when a point falls outside the page.
         """
+        self._watch(session, package_revision_id, "validate")
         if self._store is None:
             return {
                 "implemented": True,
@@ -8968,6 +9058,31 @@ def _matchable_items(
                 )
             )
     return items
+
+
+def stage_spend_so_far(session: Session, task_run: TaskRun) -> tuple[int, int]:
+    """What the stage's model calls have cost so far, in micros, and how many had no price.
+
+    Every call recorded under this claim's own runs, **and** every call the call ledger committed
+    for any attempt of the same stage (#1178): an attempt that failed rolled its own runs back, but
+    its paid calls stayed in the ledger, so a retry starts from what was really spent and the
+    drawing-set cap still holds across attempts. A twin row (no cost) adds nothing.
+    """
+    spent, unpriced = session.execute(
+        select(
+            func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
+            func.count().filter(ModelInvocation.cost_micros.is_(None)),
+        )
+        .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .where(
+            or_(
+                ExtractionRun.task_run_id == task_run.id,
+                ledger_spend_filter(task_run.idempotency_key),
+            )
+        )
+    ).one()
+    return int(spent or 0), int(unpriced or 0)
 
 
 def _task_run_for(session: Session, package_revision_id: UUID, stage: str) -> TaskRun | None:

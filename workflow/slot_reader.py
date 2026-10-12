@@ -39,6 +39,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -143,6 +144,7 @@ if TYPE_CHECKING:
     from workflow.architect_match_contract import RowMatch
     from workflow.architect_pairing import ArchitectPairing, PairingOutcome
     from workflow.reader_reuse import StoredAnswerSource
+    from workflow.reading_watch import BatchProgress
 
 __all__ = [
     "FRACTION_BAR_ENV",
@@ -708,8 +710,7 @@ def _row_question_packet(
         if page.transform is None:
             raise ValueError("a persisted reader packet requires the published PageTransform")
         storage_key = (
-            f"reader-questions/{page.document_version_id}/pages/{page.page_index}/"
-            f"rows-{digest}.png"
+            f"reader-questions/{page.document_version_id}/pages/{page.page_index}/rows-{digest}.png"
         )
         saved = store.put(storage_key, BytesIO(numbered_view_png), content_type="image/png")
         if saved.sha256 != digest:
@@ -996,6 +997,35 @@ def _hard_guarded(label: PlannedLabel, ink: InkAt | None) -> bool:
     )
 
 
+def _watched(
+    progress: BatchProgress | None, batch: str, items: Sequence[CropJob]
+) -> Callable[[CropJob], None] | None:
+    """The batch's progress hook, made harmless (#1178): a hook that raises is logged and dropped.
+
+    Watching a reading must never change an answer or fail a stage, so neither telling the hook
+    about the batch nor telling it about an answer may raise into the reader.
+    """
+    if progress is None:
+        return None
+    try:
+        hook = progress.batch(batch, items)
+    except Exception as error:  # noqa: BLE001 - watching never changes a reading
+        logging.getLogger("gv.slot_reader").warning(
+            "progress hook failed: %s", type(error).__name__
+        )
+        return None
+
+    def answered(job: CropJob) -> None:
+        try:
+            hook(job)
+        except Exception as error:  # noqa: BLE001 - watching never changes a reading
+            logging.getLogger("gv.slot_reader").warning(
+                "progress hook failed: %s", type(error).__name__
+            )
+
+    return answered
+
+
 def read_slot_pages(
     pages: Sequence[SlotPage],
     *,
@@ -1005,6 +1035,7 @@ def read_slot_pages(
     store: ArtifactStore | None = None,
     architect: ArchitectPairing | None = None,
     stored_answers: StoredAnswerSource | None = None,
+    progress: BatchProgress | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -1032,6 +1063,10 @@ def read_slot_pages(
     answered for this document version (same model, prompt id, pictures and packet) takes that stored
     answer instead, with no call, no cost and no place in the pacer or the spend guard; only the
     rest are asked. Used only when `runtime.reuse_answers` is on and questions carry packets.
+
+    `progress` (#1178), when given, is told each batch's questions before they are asked
+    (`rows`, `dimensions`, `chains`, `architect_pairing`) and each question as it is answered, so
+    the worker can say "page k of N". It only watches: no answer, hold or seal depends on it.
     """
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
@@ -1087,6 +1122,7 @@ def read_slot_pages(
 
     def run_jobs(
         items: Sequence[CropJob],
+        batch: str = "architect_pairing",
     ) -> dict[
         tuple[str, str],
         ReaderAnswer
@@ -1107,6 +1143,7 @@ def read_slot_pages(
             | ArchMatchAnswer
             | None,
         ] = {}
+        answered = _watched(progress, batch, items)
         if stored_answers is not None and runtime.reuse_answers and runtime.question_packets:
             from workflow.reader_reuse import reuse_stored_answers
 
@@ -1119,6 +1156,10 @@ def read_slot_pages(
                 claude_effort=runtime.claude_effort,
             )
             reused.update(found)
+            if answered is not None:
+                for job in items:
+                    if (job.key, job.model_id) in found:
+                        answered(job)
             items = to_ask
             if not items:
                 return reused
@@ -1137,6 +1178,7 @@ def read_slot_pages(
             spend_cap_usd=runtime.spend_cap_usd if shared_spend_guard is None else None,
             pacer=shared_pacer,
             claude_effort=runtime.claude_effort,
+            on_answered=answered,
         )
 
     def label_jobs(
@@ -1249,7 +1291,7 @@ def read_slot_pages(
                     )
         return found
 
-    row_answers = run_jobs(row_jobs) if row_jobs else {}
+    row_answers = run_jobs(row_jobs, "rows") if row_jobs else {}
     planned: list[
         tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, RowHold | None]
     ] = []
@@ -1392,7 +1434,7 @@ def read_slot_pages(
                 for model in readers
             )
 
-    answers = run_jobs(jobs)
+    answers = run_jobs(jobs, "dimensions")
 
     label_answers: dict[tuple[str, str], ReaderAnswer | None] = {
         key: answer for key, answer in answers.items() if isinstance(answer, ReaderAnswer)
@@ -1456,7 +1498,7 @@ def read_slot_pages(
     if chain_jobs:
         label_answers.update(
             (key, answer)
-            for key, answer in run_jobs(chain_jobs).items()
+            for key, answer in run_jobs(chain_jobs, "chains").items()
             if isinstance(answer, ReaderAnswer)
         )
     results: list[PageSlotResult] = []

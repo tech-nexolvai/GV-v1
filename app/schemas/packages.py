@@ -77,6 +77,55 @@ class ProductTypeChoice(BaseModel):
     """How many published rules check this product — what choosing it will run."""
 
 
+class ReadingProgressOut(BaseModel):
+    """Where the reading of the current revision is, while it runs (#1178).
+
+    Present only while the revision is being read (`UPLOADED` to `VALIDATING_EVIDENCE`, or a retry
+    after `FAILED_RETRYABLE` that has written progress since the failure). Everything
+    here is recorded, never estimated: a page count is given only where the running part walks the
+    pages, and the calls and cost are the model calls the ledger already holds for this reading.
+    """
+
+    stage: str = Field(
+        description=(
+            "Which part of the reading is running, as a code: waiting, ingest, pages, architect, "
+            "preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, "
+            "validate or form."
+        )
+    )
+    label: str = Field(description="The same part in plain words, for the screen.")
+    pages_done: int | None = Field(
+        description="Pages this part has finished, or null where it does not go page by page."
+    )
+    pages_total: int | None = Field(
+        description="Pages this part works on, or null where that is not known."
+    )
+    calls: int = Field(
+        description=(
+            "Model calls recorded for this revision so far, counted as the Usage page counts them "
+            "(reused stored answers are not calls)."
+        )
+    )
+    cost_usd: str = Field(
+        description="What those calls cost so far, in US dollars, exact to the millionth."
+    )
+    unpriced_calls: int = Field(
+        description="Calls with no published price; when above 0, `cost_usd` leaves them out."
+    )
+    updated_at: datetime | None = Field(
+        description=(
+            "When the worker last said where it is; null before its first line. A time far in the "
+            "past while reading means the worker has stopped saying anything (it may have stopped)."
+        )
+    )
+    retrying: bool = Field(
+        description=(
+            "True while a failed reading is being tried again: the package still says "
+            "FAILED_RETRYABLE until the retried stage finishes, and this line is the retry's."
+        )
+    )
+
+
 class PackageOut(BaseModel):
     """One package, and the revision documents currently attach to.
 
@@ -99,6 +148,9 @@ class PackageOut(BaseModel):
     state: str
     """The current revision's lifecycle state, e.g. `CREATED`. Moving a package through the states is
     the state machine's job (#209, C3.1); this only reports where it is."""
+    reading: ReadingProgressOut | None = None
+    """Where the reading is while it runs (#1178). Filled by `GET .../packages/{id}` only, and only
+    while the revision is being read; `null` otherwise and on the package list."""
 
 
 class ExtractionRequestOut(BaseModel):

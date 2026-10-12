@@ -4461,6 +4461,7 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
+            reading?: components["schemas"]["ReadingProgressOut"] | null;
             /** State */
             state: string;
             /** Vendor */
@@ -5050,6 +5051,62 @@ export interface components {
             drawings: components["schemas"]["LinkDrawingOut"][];
             /** Why Not */
             why_not: string | null;
+        };
+        /**
+         * ReadingProgressOut
+         * @description Where the reading of the current revision is, while it runs (#1178).
+         *
+         *     Present only while the revision is being read (`UPLOADED` to `VALIDATING_EVIDENCE`, or a retry
+         *     after `FAILED_RETRYABLE` that has written progress since the failure). Everything
+         *     here is recorded, never estimated: a page count is given only where the running part walks the
+         *     pages, and the calls and cost are the model calls the ledger already holds for this reading.
+         */
+        ReadingProgressOut: {
+            /**
+             * Calls
+             * @description Model calls recorded for this revision so far, counted as the Usage page counts them (reused stored answers are not calls).
+             */
+            calls: number;
+            /**
+             * Cost Usd
+             * @description What those calls cost so far, in US dollars, exact to the millionth.
+             */
+            cost_usd: string;
+            /**
+             * Label
+             * @description The same part in plain words, for the screen.
+             */
+            label: string;
+            /**
+             * Pages Done
+             * @description Pages this part has finished, or null where it does not go page by page.
+             */
+            pages_done: number | null;
+            /**
+             * Pages Total
+             * @description Pages this part works on, or null where that is not known.
+             */
+            pages_total: number | null;
+            /**
+             * Retrying
+             * @description True while a failed reading is being tried again: the package still says FAILED_RETRYABLE until the retried stage finishes, and this line is the retry's.
+             */
+            retrying: boolean;
+            /**
+             * Stage
+             * @description Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate or form.
+             */
+            stage: string;
+            /**
+             * Unpriced Calls
+             * @description Calls with no published price; when above 0, `cost_usd` leaves them out.
+             */
+            unpriced_calls: number;
+            /**
+             * Updated At
+             * @description When the worker last said where it is; null before its first line. A time far in the past while reading means the worker has stopped saying anything (it may have stopped).
+             */
+            updated_at: string | null;
         };
         /**
          * ReadingTimeOut

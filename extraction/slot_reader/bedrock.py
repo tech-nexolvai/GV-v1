@@ -27,6 +27,7 @@ Source: issues #987, #992, #1051 · Verification: `tests/extraction/slot_reader/
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1984,6 +1985,7 @@ def read_crops_parallel(
     spend_guard: BatchSpendGuard | None = None,
     pacer: ModelPacer | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+    on_answered: Callable[[CropJob], None] | None = None,
 ) -> dict[
     tuple[str, str],
     ReaderAnswer
@@ -1995,6 +1997,10 @@ def read_crops_parallel(
     | None,
 ]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
+
+    `on_answered` (#1178), when given, is told each job as its answer (or abstention) arrives, on
+    the calling thread, so the worker can say how many pages are done. It sees nothing of the answer
+    and changes nothing about it.
 
     A Claude job whose picture the API would resize is not sent: it abstains, and its attempt is
     recorded with that failure and no tokens (#1051).
@@ -2102,8 +2108,15 @@ def read_crops_parallel(
         | None,
     ] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
-        futures = [executor.submit(invoke, job) for job in jobs]
+        futures = {executor.submit(invoke, job): job for job in jobs}
         for future in as_completed(futures):
             key, answer = future.result()
             answers[key] = answer
+            if on_answered is not None:
+                try:
+                    on_answered(futures[future])
+                except Exception as error:  # noqa: BLE001 - watching never changes an answer
+                    logging.getLogger("gv.slot_reader").warning(
+                        "progress hook failed: %s", type(error).__name__
+                    )
     return answers

@@ -5551,6 +5551,16 @@
             "title": "Project Id",
             "type": "string"
           },
+          "reading": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadingProgressOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -6772,6 +6782,91 @@
           "drawings"
         ],
         "title": "ReadingPartsOut",
+        "type": "object"
+      },
+      "ReadingProgressOut": {
+        "description": "Where the reading of the current revision is, while it runs (#1178).\n\nPresent only while the revision is being read (`UPLOADED` to `VALIDATING_EVIDENCE`, or a retry\nafter `FAILED_RETRYABLE` that has written progress since the failure). Everything\nhere is recorded, never estimated: a page count is given only where the running part walks the\npages, and the calls and cost are the model calls the ledger already holds for this reading.",
+        "properties": {
+          "calls": {
+            "description": "Model calls recorded for this revision so far, counted as the Usage page counts them (reused stored answers are not calls).",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "description": "What those calls cost so far, in US dollars, exact to the millionth.",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "label": {
+            "description": "The same part in plain words, for the screen.",
+            "title": "Label",
+            "type": "string"
+          },
+          "pages_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pages this part has finished, or null where it does not go page by page.",
+            "title": "Pages Done"
+          },
+          "pages_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pages this part works on, or null where that is not known.",
+            "title": "Pages Total"
+          },
+          "retrying": {
+            "description": "True while a failed reading is being tried again: the package still says FAILED_RETRYABLE until the retried stage finishes, and this line is the retry's.",
+            "title": "Retrying",
+            "type": "boolean"
+          },
+          "stage": {
+            "description": "Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate or form.",
+            "title": "Stage",
+            "type": "string"
+          },
+          "unpriced_calls": {
+            "description": "Calls with no published price; when above 0, `cost_usd` leaves them out.",
+            "title": "Unpriced Calls",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the worker last said where it is; null before its first line. A time far in the past while reading means the worker has stopped saying anything (it may have stopped).",
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "stage",
+          "label",
+          "pages_done",
+          "pages_total",
+          "calls",
+          "cost_usd",
+          "unpriced_calls",
+          "updated_at",
+          "retrying"
+        ],
+        "title": "ReadingProgressOut",
         "type": "object"
       },
       "ReadingTimeOut": {

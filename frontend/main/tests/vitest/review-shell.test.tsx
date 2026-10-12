@@ -85,6 +85,26 @@ describe('review stepper', () => {
     expect(reading?.textContent).toContain('extracting');
     expect(reading?.textContent).not.toMatch(/page \d+ of \d+/i);
   });
+
+  it('reading shows the worker\'s stage and page progress when the API reports them (#1178)', () => {
+    const reading = { label: 'AI readers reading the dimensions', pagesDone: 4, pagesTotal: 17, calls: 42, costUsd: '0.613000', unpricedCalls: 0 };
+    render(<Stepper {...base} state="EXTRACTING" findingsTotal={0} readiness={null} reading={reading} />);
+    const step = document.querySelector('[data-step="reading"]') as HTMLElement;
+    expect(step.getAttribute('data-state')).toBe('current');
+    const line = step.querySelector('[data-slot="reading-progress"]');
+    expect(line?.textContent).toBe('· AI readers reading the dimensions · page 5 of 17');
+    expect(step.textContent).toContain('Step 2 of 6: Reading, current step. AI readers reading the dimensions · page 5 of 17');
+  });
+
+  it('reading progress: a finished part says page N of N, an uncounted part only its pages, a part with no pages only its words', () => {
+    const facts = (pagesDone: number | null, pagesTotal: number | null) => ({
+      ...base, state: 'EXTRACTING', findingsTotal: 0, readiness: null,
+      reading: { label: 'reading each page\'s text and lines', pagesDone, pagesTotal, calls: 0, costUsd: '0.000000', unpricedCalls: 0 },
+    });
+    expect(reviewStage(facts(17, 17)).steps[1].note).toBe("reading each page's text and lines · page 17 of 17");
+    expect(reviewStage(facts(null, 9)).steps[1].note).toBe("reading each page's text and lines · 9 pages");
+    expect(reviewStage(facts(null, null)).steps[1].note).toBe("reading each page's text and lines");
+  });
 });
 
 describe('next action', () => {

@@ -11,6 +11,8 @@
  * the drawing either — it only says which step of the workflow the recorded facts put the review in.
  */
 
+import { costText } from '@/lib/usage';
+
 export type StepId = 'upload' | 'reading' | 'checks' | 'decisions' | 'signoff' | 'report';
 export type StepState = 'done' | 'current' | 'blocked' | 'upcoming';
 
@@ -46,6 +48,35 @@ export interface NextAction {
   reason: string | null;
 }
 
+/**
+ * Where the reading is while it runs (#1178), as `GET …/packages/{id}` reports it (`reading`).
+ * Every field is recorded by the worker; none is estimated here.
+ */
+export interface ReadingProgress {
+  /** The part of the reading that is running, in plain words. */
+  label: string;
+  /** Pages this part has finished; null where it does not go page by page. */
+  pagesDone: number | null;
+  /** Pages this part works on; null where that is not known. */
+  pagesTotal: number | null;
+  /** Model calls the reading has made so far. */
+  calls: number;
+  /** What those calls cost so far, in US dollars (exact decimal text from the API). */
+  costUsd: string;
+  /** Calls with no published price, left out of `costUsd`. */
+  unpricedCalls: number;
+  /** When the worker last wrote a progress line (ISO time); null before its first. */
+  updatedAt?: string | null;
+  /** A failed reading is being tried again (the package still says FAILED_RETRYABLE). */
+  retrying?: boolean;
+}
+
+/**
+ * How long without a new progress line before the screen says so (#1178 review). One reader call may
+ * take up to three minutes, so a quieter stretch than that is normal; five minutes is not.
+ */
+export const STALE_PROGRESS_MINUTES = 5;
+
 export interface ReviewFacts {
   /** The package's recorded lifecycle state (`PackageOut.state`). */
   state: string;
@@ -53,6 +84,10 @@ export interface ReviewFacts {
   stillReading?: boolean | null;
   /** `required-inputs.revision_state`, the pipeline's own stage name while reading. */
   readingStage?: string | null;
+  /** The worker's own progress line while reading (#1178); preferred over `readingStage`. */
+  reading?: ReadingProgress | null;
+  /** The time now, in ms, for "no progress for N minutes"; leave out to never say it. */
+  nowMs?: number;
   /** Findings recorded by the live check run; null when not loaded. */
   findingsTotal: number | null;
   /** Checks were queued from this screen and their results have not arrived yet. */
@@ -93,7 +128,8 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
   const retrying = state === 'FAILED_RETRYABLE';
 
   const uploadDone = !UPLOADING.has(state);
-  const reading = READING.has(state) || facts.stillReading === true;
+  const retryingReading = retrying && facts.reading?.retrying === true;
+  const reading = READING.has(state) || facts.stillReading === true || retryingReading;
   const readingDone = uploadDone && !reading;
   const checking = CHECKING.has(state) || facts.checksQueued === true;
   const hasRun = (facts.findingsTotal ?? 0) > 0;
@@ -119,7 +155,7 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
     if (id === 'checks') step.count = facts.findingsTotal !== null && facts.findingsTotal > 0 ? facts.findingsTotal : null;
     if (id === 'decisions' && checksDone && !approved) step.count = blocking;
     if (id === current) {
-      if (id === 'reading' && facts.readingStage) step.note = stageWords(facts.readingStage);
+      if (id === 'reading') step.note = readingNote(facts);
       if (id === 'checks' && checking) step.note = 'Running';
       if (id === 'checks' && !checking && hasRun && facts.valuesChangedSinceRun) step.note = 'Values changed since the last run';
       if (id === 'signoff' && readiness && !readiness.canApprove) {
@@ -134,7 +170,8 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
         step.state = 'blocked';
         step.note = 'Processing failed';
       }
-      if (retrying) step.note = 'Processing hit a problem and will retry';
+      // While the retry is visibly reading, the Reading step says so instead (#1178 review).
+      if (retrying && !retryingReading) step.note = 'Processing hit a problem and will retry';
     }
     return step;
   });
@@ -157,7 +194,7 @@ function nextAction(
     case 'upload':
       return { kind: 'wait-upload', label: 'Waiting for upload', disabled: true, reason: 'The drawings have not finished uploading.' };
     case 'reading':
-      return { kind: 'wait-reading', label: 'Reading…', disabled: true, reason: facts.readingStage ? `AI reading: ${stageWords(facts.readingStage)}` : 'The AI is reading the drawings.' };
+      return { kind: 'wait-reading', label: 'Reading…', disabled: true, reason: readingReason(facts) };
     case 'checks':
       return checking
         ? { kind: 'checking', label: 'Checking…', disabled: true, reason: 'Checks are running. Results refresh when they finish.' }
@@ -180,6 +217,48 @@ function nextAction(
     case null:
       return { kind: 'download-report', label: 'Download report', disabled: false, reason: null };
   }
+}
+
+/**
+ * "page k of N" for a part that goes page by page: k is the page being worked on (one past those
+ * done), so the last page reads "page N of N"; with the count unknown, only "N pages"; else nothing.
+ */
+export function pageWords(reading: Pick<ReadingProgress, 'pagesDone' | 'pagesTotal'>): string | null {
+  const { pagesDone, pagesTotal } = reading;
+  if (pagesTotal === null || pagesTotal <= 0) return null;
+  if (pagesDone === null) return `${pagesTotal} ${pagesTotal === 1 ? 'page' : 'pages'}`;
+  return `page ${Math.min(pagesDone + 1, pagesTotal)} of ${pagesTotal}`;
+}
+
+/** The Reading step's line: the part that is running and, where known, the page. */
+function readingNote(facts: ReviewFacts): string | null {
+  const reading = facts.reading;
+  if (reading) {
+    return [reading.retrying ? 'Retrying' : null, reading.label, pageWords(reading), quietWords(reading, facts.nowMs)]
+      .filter(Boolean)
+      .join(' · ');
+  }
+  return facts.readingStage ? stageWords(facts.readingStage) : null;
+}
+
+/** "no progress for N minutes" once the worker has been quiet too long (e.g. it was stopped); else null. */
+export function quietWords(reading: Pick<ReadingProgress, 'updatedAt'>, nowMs: number | undefined): string | null {
+  if (nowMs === undefined || !reading.updatedAt) return null;
+  const last = Date.parse(reading.updatedAt);
+  if (!Number.isFinite(last)) return null;
+  const minutes = Math.floor((nowMs - last) / 60_000);
+  if (minutes < STALE_PROGRESS_MINUTES) return null;
+  return `no progress for ${minutes} minutes`;
+}
+
+/** The header's reason while reading: the same line, plus the calls and cost so far. */
+function readingReason(facts: ReviewFacts): string {
+  const note = readingNote(facts);
+  if (!note) return 'The AI is reading the drawings.';
+  const reading = facts.reading;
+  if (!reading || reading.calls === 0) return `AI reading: ${note}.`;
+  const spent = costText(reading.costUsd, reading.calls, reading.unpricedCalls);
+  return `AI reading: ${note}. ${reading.calls} AI ${reading.calls === 1 ? 'call' : 'calls'} so far, ${spent}.`;
 }
 
 /** The pipeline's own stage name, in lower-case words ("VALIDATING_EVIDENCE" → "validating evidence"). */
