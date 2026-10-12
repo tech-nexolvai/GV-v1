@@ -11,8 +11,8 @@ never on part of it:
   DRAWING`, `VENDOR SHOP DRAWING`, `SHOP DRAWING`, and the same with `VENDORS`, a plural, or
   `ELEVATION(S)` after; also `VENDOR('S) DRAWING` and `VENDOR('S) ELEVATION`;
 * **the architect's drawing** (`arch`): `ID SET ELEVATION`, `ID SET`, `ARCH SET ELEVATION`, `ARCH
-  SET`, `ARCHITECT'S SET`, `ARCHITECTURAL SET`, and `ID`, `ARCH`, `ARCHITECT'S` or `ARCHITECTURAL`
-  followed by `ELEVATION(S)`;
+  SET`, `ARCHITECT('S) SET`, `ARCHITECTURAL SET`, and `ID`, `ARCH`, `ARCHITECT('S)` or
+  `ARCHITECTURAL` followed by `ELEVATION(S)`; `I.D.` is read as `ID`;
 * **a reference drawing** (`reference`): `BRAND PROTOTYPE ELEVATION`, `BRAND PROTOTYPE`,
   `PROTOTYPE (ELEVATION)`, `BRAND STANDARD(S) (ELEVATION)`. A brand standard is neither the vendor's
   nor the architect's: it is never read for a countertop and never compared.
@@ -21,6 +21,9 @@ Seen on the client's files (2026-10-12): `ID SET ELEVATION`, `VENDOR'S SHOP DRAW
 `VENDOR'S SHOP DRAWING`, `VENDOR SHOP DRAWING`, `ARCH SET ELEVATION`, `ARCH SET`, `BRAND PROTOTYPE
 ELEVATION`, `BRAND PROTOTYPE`. The rest are the same words written the other ways a person writes
 them; nothing wider.
+
+Apostrophes of every kind (curly, modifier-letter U+02BC, full-width U+FF07) are one apostrophe,
+and a hyphen between two words is a space (`ID-SET`, `SHOP-DRAWING`).
 
 **Not a heading.** A note that only contains these words is not one: `ID SET ELEVATION NOTES`,
 `VENDOR TO VERIFY`, `STONE TOP BY VENDOR`, `LED STRIP BY VENDOR`, `SEE SHOP DRAWING`, `SHOP DRAWING
@@ -80,8 +83,8 @@ _PATTERNS: Final[tuple[tuple[HeadingMeaning, re.Pattern[str]], ...]] = (
     (
         HeadingMeaning.ARCH,
         re.compile(
-            rf"(?:ID|ARCH|ARCHITECT'S|ARCHITECTS|ARCHITECTURAL) SET{_ELEVATION}"
-            r"|(?:ID|ARCH|ARCHITECT'S|ARCHITECTS|ARCHITECTURAL) ELEVATIONS?"
+            rf"(?:ID|ARCH|ARCHITECT'S|ARCHITECTS|ARCHITECT|ARCHITECTURAL) SET{_ELEVATION}"
+            r"|(?:ID|ARCH|ARCHITECT'S|ARCHITECTS|ARCHITECT|ARCHITECTURAL) ELEVATIONS?"
         ),
     ),
     (
@@ -90,7 +93,15 @@ _PATTERNS: Final[tuple[tuple[HeadingMeaning, re.Pattern[str]], ...]] = (
     ),
 )
 
-_APOSTROPHES: Final = str.maketrans({"’": "'", "‘": "'", "`": "'", "′": "'"})
+#: Every apostrophe a typed label may carry: curly, backtick, prime, modifier letter (U+02BC) and
+#: full-width (U+FF07).
+_APOSTROPHES: Final = str.maketrans(
+    {"’": "'", "‘": "'", "`": "'", "′": "'", "\u02bc": "'", "\uff07": "'"}
+)
+
+#: `I.D.` and `I.D` are `ID`; a hyphen between words is a space (`ID-SET`, `SHOP-DRAWING`).
+_INITIALS: Final = re.compile(r"\bI\.\s?D\b\.?")
+_HYPHEN: Final = re.compile(r"(?<=[A-Z])-(?=[A-Z])")
 
 #: Capitals, spaces and the punctuation a heading uses; no digits. Starts and ends with a letter (a
 #: closing bracket may end it).
@@ -103,9 +114,16 @@ def normalise_label(text: str) -> str:
     return " ".join(text.translate(_APOSTROPHES).upper().split())
 
 
+def _matched(text: str) -> str:
+    """The label as the headings are matched: `normalise_label`, with `I.D.` read as `ID` and a
+    hyphen between two words as a space."""
+    label = _HYPHEN.sub(" ", _INITIALS.sub("ID", normalise_label(text)))
+    return " ".join(label.split())
+
+
 def heading_meaning(text: str) -> HeadingMeaning | None:
     """What the whole label names, or `None` when it is not one of the headings above."""
-    label = normalise_label(text)
+    label = _matched(text)
     for meaning, pattern in _PATTERNS:
         if pattern.fullmatch(label):
             return meaning

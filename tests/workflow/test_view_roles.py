@@ -340,6 +340,20 @@ def _combined_sheet(*, labelled: bool = True) -> bytes:
     )
 
 
+def reference_sheet() -> bytes:
+    """The architect's drawing headed `ARCH SET` over a brand prototype (#1193)."""
+    first = 5 + 2 + 2
+    return _pdf(
+        annotations=[
+            _free_text("ARCH SET ", rect=b"[10 285 150 298]"),
+            _free_text("BRAND PROTOTYPE ELEVATION ", rect=b"[10 142 220 156]"),
+            _stamp(rect=b"[60 160 350 290]", appearance_object=first),
+            _stamp(rect=b"[60 20 350 140]", appearance_object=first + 1),
+        ],
+        extra_objects=[_appearance(), _appearance()],
+    )
+
+
 @pytest.fixture
 def store() -> Iterator[LocalStore]:
     with tempfile.TemporaryDirectory() as directory:
@@ -643,18 +657,7 @@ def test_a_brand_prototype_drawing_is_suggested_as_a_reference_drawing(
     session: Session, store: LocalStore
 ) -> None:
     """#1193: the suggestion is stored as `reference`, which no confirmation can be."""
-    first = 5 + 2 + 2
-    sheet = _pdf(
-        annotations=[
-            _free_text("ARCH SET ", rect=b"[10 285 150 298]"),
-            _free_text("BRAND PROTOTYPE ELEVATION ", rect=b"[10 142 220 156]"),
-            _stamp(rect=b"[60 160 350 290]", appearance_object=first),
-            _stamp(rect=b"[60 20 350 140]", appearance_object=first + 1),
-        ],
-        extra_objects=[_appearance(), _appearance()],
-    )
-
-    _extract(session, store, sheet)
+    _extract(session, store, reference_sheet())
 
     suggested = sorted(
         (_suggestion(session, view).proposed_role or "", _suggestion(session, view).heading)
@@ -662,3 +665,48 @@ def test_a_brand_prototype_drawing_is_suggested_as_a_reference_drawing(
     )
     assert suggested == [("arch", "ARCH SET"), ("reference", "BRAND PROTOTYPE ELEVATION")]
     assert all(view.role is None for view in _views(session))
+
+
+def test_a_re_read_withdraws_code_s_role_its_heading_contradicts_never_a_person_s(
+    session: Session, store: LocalStore
+) -> None:
+    """#1193 review: a revision read before #1193 may carry code's confirmation made on a borrowed
+    heading. Re-reading the same revision withdraws it where the heading now says otherwise, so
+    the fresh suggestion decides and code may confirm again; a person's confirmation stays."""
+    from tests.workflow.test_markup_route import _SilentOcr
+    from workflow.view_roles import confirm_view_role_by_code
+
+    revision = _extract(session, store, _combined_sheet())
+    by_role = {_suggestion(session, view).proposed_role: view for view in _views(session)}
+    upper, lower = by_role["arch"], by_role["shop"]
+    # As the old read left it: code confirmed the vendor's drawing as the architect's, and a person
+    # said the upper drawing is the vendor's (a person may contradict a heading).
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.ARCH, reason="synthetic: an old borrowed heading"
+    )
+    confirm_view_role(session, view=upper, role=ViewRole.SHOP, actor="reviewer-1")
+    session.commit()
+
+    DatabaseStages(store, dpi=150, ocr_engine=_SilentOcr(), missing_space=MISSING_SPACE).extract_pages(  # type: ignore[arg-type]
+        session, revision.id
+    )
+    session.commit()
+    session.refresh(lower)
+    session.refresh(upper)
+
+    assert lower.role is None
+    assert upper.role == ViewRole.SHOP.value
+    withdrawn = session.scalars(
+        select(AuditEvent).where(AuditEvent.target_type == "view_role_confirmation_withdrawn")
+    ).all()
+    assert len(withdrawn) == 1
+    # Code may decide again on the fresh heading; it still never overrides the person.
+    assert confirm_view_role_by_code(
+        session, view=lower, role=ViewRole.SHOP, reason="synthetic: heading and content agree"
+    )
+    assert (
+        confirm_view_role_by_code(
+            session, view=upper, role=ViewRole.ARCH, reason="synthetic: heading and content agree"
+        )
+        is None
+    )

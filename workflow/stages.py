@@ -80,7 +80,14 @@ from app.models.document import (
     PackageRevisionDocument,
     Page,
 )
-from app.models.drawing import DrawingItem, DrawingView, ItemIdentifier, ViewRole, ViewRoleProposal
+from app.models.drawing import (
+    DrawingItem,
+    DrawingView,
+    ItemIdentifier,
+    ViewRole,
+    ViewRoleConfirmation,
+    ViewRoleProposal,
+)
 from app.models.evidence import (
     ArchitectPageNote,
     EvidenceArtifact,
@@ -403,6 +410,7 @@ from workflow.slot_row_scope import SlotRow, slot_rows_and_unchosen_pages
 from workflow.timing import TimingRecorder
 from workflow.unread_pages import (
     UNREADABLE,
+    ConfirmedRole,
     UnreadPage,
     persist_unread_pages,
     unread_page,
@@ -417,7 +425,11 @@ from workflow.vendor_page_pictures import (
 from workflow.vendor_page_pictures import (
     record_page_picture,
 )
-from workflow.view_roles import record_panel_view, revision_views
+from workflow.view_roles import (
+    record_panel_view,
+    release_contradicted_code_role,
+    revision_views,
+)
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -8089,11 +8101,12 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
         "suggested_shop": 0,
         "suggested_reference": 0,
         "no_suggestion": 0,
+        "code_roles_withdrawn": 0,
     }
     for proposal, stamp in zip(
         propose_panel_roles(layers.vendor_stamps, layers.markup), layers.vendor_stamps, strict=True
     ):
-        record_panel_view(
+        view = record_panel_view(
             session,
             page_id=page.id,
             annotation_index=stamp.annotation_index,
@@ -8102,23 +8115,39 @@ def _record_panel_views(session: Session, page: Page, layers: PageLayers) -> dic
             heading=proposal.heading,
             reason=proposal.reason,
         )
+        # A role code confirmed on an earlier read that this read's heading contradicts no longer
+        # stands (#1193); a person's always does.
+        if release_contradicted_code_role(session, view=view, suggested=proposal.role):
+            counts["code_roles_withdrawn"] += 1
         counts["views"] += 1
         counts[f"suggested_{proposal.role}" if proposal.role else "no_suggestion"] += 1
     return counts
 
 
-def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, str | None]:
-    """The confirmed role of each pasted drawing on a page, by its stamp's annotation index: a
-    person's or code's confirmation outranks what its heading suggests (#1193)."""
-    roles: dict[int, str | None] = {}
-    for tag, role in session.execute(
-        select(DrawingView.tag, DrawingView.role).where(
-            DrawingView.page_id == page_id, DrawingView.role.is_not(None)
+def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, ConfirmedRole]:
+    """The confirmed role of each pasted drawing on a page, by its stamp's annotation index, with
+    who confirmed it (a person, or code): a confirmation outranks what its heading suggests
+    (#1193)."""
+    views = {
+        view.id: view
+        for view in session.scalars(
+            select(DrawingView).where(DrawingView.page_id == page_id, DrawingView.role.is_not(None))
         )
+    }
+    if not views:
+        return {}
+    latest: dict[UUID, str] = {}
+    for view_id, confirmed_by in session.execute(
+        select(ViewRoleConfirmation.drawing_view_id, ViewRoleConfirmation.confirmed_by)
+        .where(ViewRoleConfirmation.drawing_view_id.in_(views))
+        .order_by(ViewRoleConfirmation.created_at.desc(), ViewRoleConfirmation.id.desc())
     ).all():
-        number = tag.removeprefix("panel-")
-        if tag.startswith("panel-") and number.isdigit():
-            roles[int(number)] = role
+        latest.setdefault(view_id, confirmed_by)
+    roles: dict[int, ConfirmedRole] = {}
+    for view in views.values():
+        number = view.tag.removeprefix("panel-")
+        if view.tag.startswith("panel-") and number.isdigit() and view.role is not None:
+            roles[int(number)] = ConfirmedRole(view.role, latest.get(view.id, "a reviewer"))
     return roles
 
 

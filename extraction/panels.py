@@ -196,6 +196,36 @@ def _row_for(box: _Box, rows: Sequence[_Row], side: Side) -> int | None:
     return min(below)[1] if below else None
 
 
+def _is_barrier(note: MarkupNote) -> bool:
+    """A typed note that is not a heading but could stand where one would: printed at heading size,
+    or with no size the file states (#1193 review). Between a heading and a drawing it is that
+    drawing's own (unknown) label, so the drawing never borrows the heading beyond it."""
+    if note.subtype.lstrip("/") != "FreeText" or not note.text.strip() or _is_heading(note):
+        return False
+    return note.font_size is None or note.font_size >= HEADING_MIN_FONT_PT
+
+
+def _drawing_between(other: _Box, row: _Row, box: _Box, side: Side) -> bool:
+    """Whether `other` sits between the heading row and the drawing `box`, in the reading order."""
+    if side == "above":
+        return row.bottom < other.middle and other.bottom <= box.middle
+    return other.middle < row.top and other.top >= box.middle
+
+
+def _note_between(label: _Box, row: _Row, box: _Box, side: Side) -> bool:
+    """Whether a note sits between the heading row and the drawing's middle."""
+    if side == "above":
+        return row.bottom <= label.top and label.middle < box.middle
+    return label.bottom <= row.top and label.middle > box.middle
+
+
+def _beside(other: _Box, box: _Box) -> bool:
+    """Side by side: no width in common, and most of the smaller one's height shared."""
+    shared = min(other.bottom, box.bottom) - max(other.top, box.top)
+    smaller = min(other.bottom - other.top, box.bottom - box.top)
+    return not other.overlaps_across(box) and shared > smaller / 2
+
+
 def _places(boxes: Sequence[_Box]) -> list[str]:
     """Each drawing's place in words, among the page's drawings (nested ones left out)."""
     if len(boxes) == 1:
@@ -301,9 +331,9 @@ def read_panels(stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]) -> P
     top_level = [stamp for stamp in stamps if stamp.annotation_index not in nested]
     used: dict[Side, set[int]] = {
         side: {
-            row
+            heads
             for stamp in top_level
-            if (row := _row_for(boxes[stamp.annotation_index], rows, side)) is not None
+            if (heads := _row_for(boxes[stamp.annotation_index], rows, side)) is not None
         }
         for side in ("above", "below")
     }
@@ -329,20 +359,91 @@ def read_panels(stamps: Sequence[VendorStamp], notes: Sequence[MarkupNote]) -> P
         )
         return PanelLayout(tuple(proposal(stamp, None, why) for stamp in stamps), printed)
     side: Side = "above" if fits[0] == "above" else "below"
+    assigned = {
+        stamp.annotation_index: _row_for(boxes[stamp.annotation_index], rows, side)
+        for stamp in top_level
+    }
+    columns = {stamp.annotation_index: boxes[stamp.annotation_index] for stamp in top_level}
+    barriers = [(note, _box(note.extent.points)) for note in notes if _is_barrier(note)]
 
     proposals: list[PanelRoleProposal] = []
     for stamp in stamps:
-        box = boxes[stamp.annotation_index]
+        index = stamp.annotation_index
+        box = boxes[index]
         found = _row_for(box, rows, side)
         if found is None:
             proposals.append(
                 proposal(stamp, None, f"no label of its own is printed {side} this drawing")
             )
             continue
-        labels = rows[found].labels
-        if len(labels) > 1:
+        row = rows[found]
+        named = ", ".join(_quoted(note.text) for note, _label in row.labels)
+        # (a) Never across another note: a note at heading size (or of no stated size) between
+        # the heading and this drawing is this drawing's own label, and it is not one we know.
+        blocking = [
+            (note, label)
+            for note, label in barriers
+            if _note_between(label, row, box, side)
+            and (
+                label.overlaps_across(box)
+                or not any(other.overlaps_across(label) for other in columns.values())
+            )
+            and not (box.holds(label) and note.font_size is None)
+        ]
+        if blocking:
+            note = min(
+                blocking,
+                key=lambda item: (
+                    box.top - item[1].bottom if side == "above" else item[1].top - box.bottom
+                ),
+            )[0]
+            proposals.append(
+                proposal(
+                    stamp,
+                    None,
+                    f"the label {side} this drawing ({_quoted(note.text)}) is not one we know",
+                    note,
+                    side,
+                )
+            )
+            continue
+        # (b) Never across another drawing: the heading names the drawing next to it, not one
+        # further on in the same column.
+        if any(
+            other_index != index
+            and not other.holds(box)
+            and other.overlaps_across(box)
+            and _drawing_between(other, row, box, side)
+            for other_index, other in columns.items()
+        ):
+            proposals.append(
+                proposal(
+                    stamp,
+                    None,
+                    f"no label of its own: the label {side} it ({named}) names another drawing, "
+                    "which sits between them",
+                )
+            )
+            continue
+        labels = row.labels
+        beside = any(
+            other_index != index and assigned.get(other_index) == found and _beside(other, box)
+            for other_index, other in columns.items()
+        )
+        if len(labels) > 1 or beside:
+            # Side by side, a heading names only the drawing it lines up with.
             over = [(note, label) for note, label in labels if label.overlaps_across(box)]
             meanings = {heading_meaning(note.text) for note, _label in over}
+            if not over and len(labels) == 1:
+                proposals.append(
+                    proposal(
+                        stamp,
+                        None,
+                        f"no label of its own: the label {side} ({named}) lines up with the "
+                        "drawing beside it",
+                    )
+                )
+                continue
             if not over or len(meanings) != 1 or (None in meanings and len(over) > 1):
                 proposals.append(
                     proposal(

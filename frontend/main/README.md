@@ -111,7 +111,7 @@ the last run" once checks have run (its countertop card says why). It is counted
 checked" chip and donut slice), and is never counted as needing the reviewer or listed in the queue.
 A split page with a result is still a queue item (#1115).
 
-**Pages with no countertop need one click each (#1191).** "Pages with no countertop found"
+**Pages with no countertop need one click each (#1191).** "Pages not checked"
 (`components/results/no-countertop-pages.tsx`) gives every page two buttons, nothing pre-selected:
 "Confirm: no countertop here" and "There is a countertop" (`POST …/no-countertop-pages/{record_id}/answer`).
 The second turns the page into a split-page item (held `row-choice-split`, a result after the next

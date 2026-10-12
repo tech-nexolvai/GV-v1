@@ -175,8 +175,8 @@ export function ResultsDashboard({
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed p-6">
           {(countertops.pagesWithoutCountertop?.length ?? 0) > 0 ? (
             <>
-              <p className="font-medium">No countertop found on any page</p>
-              <p className="text-sm text-muted-foreground">Nothing was found to check on the pages listed below; each says why.</p>
+              <p className="font-medium">Pages not checked</p>
+              <p className="text-sm text-muted-foreground">No countertop was checked: each page listed below says why it was not checked.</p>
             </>
           ) : (
             <>

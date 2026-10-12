@@ -84,8 +84,16 @@ const reference = renderToStaticMarkup(
     onChoose={() => undefined}
   />,
 );
-assert.match(reference, /the label suggests: a reference drawing \(brand prototype\), never checked/);
-assert.doesNotMatch(reference, /Reference<\/button>/);
+assert.match(reference, /Reference drawing \(brand prototype\): nothing to do/);
+// Nothing to confirm: not counted, and no Architect/Vendor answer until "Re-label…" is pressed.
+assert.match(reference, /All 1 drawing confirmed\./);
+assert.doesNotMatch(reference, /Architect&#x27;s drawing<\/button>/);
+assert.doesNotMatch(reference, /Vendor&#x27;s drawing<\/button>/);
+assert.match(reference, /Re-label…<\/button>/);
+assert.equal(
+  stillToConfirm([{ ...unconfirmed[0], suggested_role: 'reference' }, unconfirmed[1]]),
+  1,
+);
 assert.equal(roleLabel('reference'), null);
 assert.equal(suggestionLabel('shop'), "Vendor's drawing");
 

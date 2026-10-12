@@ -604,9 +604,9 @@ def test_pdf_lists_a_split_page_without_a_picture_and_the_pages_with_no_countert
 
     assert "Countertop row on page 3" in text and "REVIEW_REQUIRED" in text
     assert "nothing on it was read or checked" in text
-    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert "PAGES NOT CHECKED" in text
     assert f"Page 4: {NONE_REASON}" in text
-    assert text.index("PAGES WITH NO COUNTERTOP FOUND") < text.index("CT-WIDTH-001")
+    assert text.index("PAGES NOT CHECKED") < text.index("CT-WIDTH-001")
 
 
 def test_pdf_lists_pages_with_no_countertop_even_with_no_countertop_item() -> None:
@@ -675,7 +675,7 @@ def test_workbook_has_the_split_page_and_the_pages_with_no_countertop() -> None:
     assert row["hold_reason"] == SPLIT_REASON
     assert row["decision"] == "dismiss"
 
-    empty = book["No Countertop Found"]
+    empty = book["Pages Not Checked"]
     # The third column is the reviewer's confirmation (#1191); this synthetic page has none.
     assert [cell.value for cell in empty[1]] == ["page", "reason", "confirmed"]
     assert [cell.value for cell in empty[2]][:2] == ["4", NONE_REASON]
@@ -829,7 +829,7 @@ def test_pdf_lists_a_second_countertop_row_that_was_not_checked() -> None:
 
     assert "SECOND COUNTERTOP ROWS NOT CHECKED" in text
     assert "Page 2: An AI found a second countertop on this page" in text
-    assert "PAGES WITH NO COUNTERTOP FOUND" in text
+    assert "PAGES NOT CHECKED" in text
     assert text.index("SECOND COUNTERTOP ROWS NOT CHECKED") < text.index("CT-WIDTH-001")
 
 

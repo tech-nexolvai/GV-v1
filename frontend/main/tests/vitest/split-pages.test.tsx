@@ -179,7 +179,7 @@ describe('a split page whose checks have not run yet', { timeout: 15_000 }, () =
 describe('Results: pages with no countertop found', () => {
   it('lists each page with the AI\'s reason, and it changes no countertop count', () => {
     dashboard({ pagesWithoutCountertop: NO_COUNTERTOP });
-    const list = screen.getByRole('region', { name: 'Pages with no countertop found' });
+    const list = screen.getByRole('region', { name: 'Pages not checked' });
     const items = within(list).getAllByRole('listitem');
     expect(items.map((li) => li.textContent?.slice(0, li.textContent.indexOf('.') + 1))).toEqual([
       'Page 15Synthetic: both AIs saw only tall units on this page.',
@@ -194,18 +194,18 @@ describe('Results: pages with no countertop found', () => {
 
   it('is absent when the list is empty or not sent', () => {
     dashboard({ pagesWithoutCountertop: [] });
-    expect(screen.queryByRole('region', { name: 'Pages with no countertop found' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Pages not checked' })).toBeNull();
   });
 
   it('is absent when the API sent no list at all', () => {
     dashboard();
-    expect(screen.queryByRole('region', { name: 'Pages with no countertop found' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Pages not checked' })).toBeNull();
   });
 
   it('is shown even when no countertop was found anywhere, and the empty state says so', () => {
     dashboard({ rows: [], pagesWithoutCountertop: NO_COUNTERTOP });
-    expect(screen.getByRole('region', { name: 'Pages with no countertop found' })).toBeTruthy();
-    expect(screen.getByText('No countertop found on any page')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Pages not checked' })).toBeTruthy();
+    expect(screen.getByText(/No countertop was checked/)).toBeTruthy();
     expect(screen.queryByText(/Run checks from Measurements/)).toBeNull();
   });
 });

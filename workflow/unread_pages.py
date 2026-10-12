@@ -39,8 +39,15 @@ from app.models.drawing import REFERENCE_ROLE
 from app.models.evidence import ObservationCandidate
 from extraction.panels import PanelLayout, PanelRoleProposal
 from workflow.slot_row_scope import NO_ROW_CODES, NO_ROW_FLAG
+from workflow.view_roles import CODE_CONFIRMERS
 
-__all__ = ["UnreadPage", "persist_unread_pages", "unread_page", "unread_page_reason"]
+__all__ = [
+    "ConfirmedRole",
+    "UnreadPage",
+    "persist_unread_pages",
+    "unread_page",
+    "unread_page_reason",
+]
 
 #: The reason column's width (`ObservationCandidate.review_reason`).
 _REASON_LIMIT: Final = 300
@@ -96,17 +103,36 @@ def _grouped(kind: str, proposals: Sequence[PanelRoleProposal]) -> str:
     return f"{lead} ({', '.join(labels)})"
 
 
+@dataclass(frozen=True, slots=True)
+class ConfirmedRole:
+    """A drawing's confirmed role and who confirmed it: a person's name, or one of code's names
+    (`workflow/view_roles.CODE_CONFIRMERS`)."""
+
+    role: str
+    confirmed_by: str
+
+    @property
+    def by_code(self) -> bool:
+        return self.confirmed_by in CODE_CONFIRMERS
+
+    def words(self, place: str, side: str) -> str:
+        """ "code decided the lower drawing is the architect's", "a.person confirmed the …"."""
+        if self.by_code:
+            return f"code decided {place} is {side}"
+        return f"{self.confirmed_by} confirmed {place} as {side}"
+
+
 def unread_page_reason(
     layout: PanelLayout | None,
-    confirmed: Mapping[int, str | None],
+    confirmed: Mapping[int, ConfirmedRole],
     *,
     has_drawings_elsewhere: bool,
 ) -> tuple[str, str]:
     """`(no-row code, the reviewer's sentence)` for a page code found no countertop row on.
 
     `layout` is the page's headings and drawings (`extraction/panels.read_panels`), `None` when its
-    annotations could not be read; `confirmed` a person's (or code's) confirmed role by stamp, which
-    outranks the heading's suggestion; `has_drawings_elsewhere` whether another page of the same
+    annotations could not be read; `confirmed` a person's (or code's) confirmed role by stamp, with
+    who confirmed it, which outranks the heading's suggestion; `has_drawings_elsewhere` whether another page of the same
     file carries pasted drawings (then a page with none is a title or divider page).
     """
     if layout is None:
@@ -124,7 +150,8 @@ def unread_page_reason(
         )
 
     def role(proposal: PanelRoleProposal) -> str | None:
-        return confirmed.get(proposal.annotation_index) or proposal.role
+        decided = confirmed.get(proposal.annotation_index)
+        return proposal.role if decided is None else decided.role
 
     vendor = [
         proposal
@@ -151,6 +178,14 @@ def unread_page_reason(
             ),
         )
     parts: list[str] = []
+    if layout.labelled and not any(proposal.known for proposal in layout.proposals):
+        # A page whose only labels are ones we do not know (a capitals note at heading size, say):
+        # it counts as a page with headings, so no drawing on it is read as the vendor's. Say so.
+        labels = ", ".join(dict.fromkeys(_quoted(note.text) for note in layout.headings))
+        parts.append(
+            f"this page prints labels ({labels}) but none is one we know, so no drawing on it is "
+            "read as the vendor's"
+        )
     for proposal in drawings:
         if role(proposal) is not None:
             continue
@@ -163,21 +198,18 @@ def unread_page_reason(
             parts.append(f"{proposal.place} has no label of its own")
         else:
             parts.append(f"it is not clear which label names {proposal.place}")
-    by_reviewer = [
-        proposal
+    decided = [
+        (proposal, decision)
         for proposal in drawings
-        if confirmed.get(proposal.annotation_index) == ViewRole.ARCH.value
+        if (decision := confirmed.get(proposal.annotation_index)) is not None
+        and decision.role == ViewRole.ARCH.value
     ]
-    if by_reviewer:
-        parts.append(
-            "a reviewer confirmed "
-            + ", ".join(proposal.place for proposal in by_reviewer)
-            + " as the architect's"
-        )
+    for proposal, decision in decided:
+        parts.append(decision.words(proposal.place, "the architect's"))
     architect = [
         proposal
         for proposal in drawings
-        if proposal.role == ViewRole.ARCH.value and proposal not in by_reviewer
+        if role(proposal) == ViewRole.ARCH.value and proposal.annotation_index not in confirmed
     ]
     if architect:
         parts.append(_grouped("architect's", architect))

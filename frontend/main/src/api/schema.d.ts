@@ -3210,6 +3210,11 @@ export interface components {
         /** ConfirmRoleIn */
         ConfirmRoleIn: {
             /**
+             * Relabel Reference
+             * @default false
+             */
+            relabel_reference: boolean;
+            /**
              * Role
              * @enum {string}
              */

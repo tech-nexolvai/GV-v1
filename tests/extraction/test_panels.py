@@ -390,3 +390,136 @@ def test_the_vocabulary_knows_each_meaning_and_nothing_wider() -> None:
     assert not looks_like_heading("VENDR SHOP DWG", None)
     assert not looks_like_heading("Vendor shop", HEADING_PT)
     assert not looks_like_heading("1. SECTION TITLE", HEADING_PT)
+
+
+# --- #1193 review: never borrow sideways, across a drawing or across a note -------------------------
+# The reviewer's probe pages (synthetic), kept as tests.
+
+
+def _side_by_side() -> list[VendorStamp]:
+    return [_placed(0, "0.1", "0.9", "0.02", "0.48"), _placed(1, "0.1", "0.9", "0.52", "0.98")]
+
+
+def test_a_single_heading_names_only_the_drawing_it_lines_up_with_side_by_side() -> None:
+    """A heading over the left drawing only: the right one is not the vendor's by borrowing."""
+    left, right = propose_panel_roles(
+        _side_by_side(),
+        [_typed("VENDOR SHOP DRAWING", "0.03", "0.07", left="0.05", right="0.4")],
+    )
+
+    assert (left.role, right.role) == ("shop", None)
+    assert right.heading is None and "lines up with the drawing beside it" in right.reason
+
+
+def test_a_single_caption_names_only_the_drawing_above_it_side_by_side() -> None:
+    left, right = propose_panel_roles(
+        [_placed(0, "0.1", "0.8", "0.02", "0.48"), _placed(1, "0.1", "0.8", "0.52", "0.98")],
+        [_typed("ID SET ELEVATION", "0.82", "0.86", left="0.1", right="0.4")],
+    )
+
+    assert (left.role, right.role) == ("arch", None)
+
+
+def test_a_capitals_comment_under_the_captions_changes_nothing() -> None:
+    stamps = [_placed(0, "0.1", "0.8", "0.02", "0.48"), _placed(1, "0.1", "0.8", "0.52", "0.98")]
+    notes = [
+        _typed("ID SET ELEVATION", "0.82", "0.86", left="0.1", right="0.4"),
+        _typed("VENDOR SHOP DRAWING", "0.82", "0.86", left="0.6", right="0.9"),
+        _typed("SECOND SET OF COMMENTS", "0.87", "0.9", left="0.6", right="0.9"),
+    ]
+
+    assert _roles(stamps, notes) == {0: "arch", 1: "shop"}
+
+
+def test_a_heading_never_names_a_drawing_across_another_drawing() -> None:
+    """One heading over two stacked drawings: it names the one right under it. The one further down
+    has no heading of its own and gets no role."""
+    upper, lower = propose_panel_roles(
+        [_drawing(0, "0.08", "0.40"), _drawing(1, "0.39", "0.95")],
+        [_typed("VENDOR'S SHOP DRAWING ELEVATION", "0.04", "0.075", left="0.3", right="0.7")],
+    )
+
+    assert (upper.role, lower.role) == ("shop", None)
+    assert lower.reason.startswith("no label of its own")
+    assert "sits between them" in lower.reason
+
+
+UPPER_STAMP = ("0.06", "0.42")
+LOWER_STAMP = ("0.49", "0.95")
+
+
+@pytest.mark.parametrize(
+    ("divider", "size"),
+    [
+        ("Architect elevation (ID set)", HEADING_PT),
+        ("ID SET 2 ELEVATION", HEADING_PT),
+        ("ARCHITECTS VIEW", None),
+    ],
+    ids=["lower-case", "with-a-digit", "unknown-without-a-size"],
+)
+def test_a_divider_that_is_not_a_known_heading_stops_the_heading_above(
+    divider: str, size: Decimal | None
+) -> None:
+    """**Never across a note.** A divider written in a way we do not read as a heading is still this
+    drawing's own label: the drawing gets no role, quoting it, never the heading from the top."""
+    upper, lower = propose_panel_roles(
+        [_drawing(0, *UPPER_STAMP), _drawing(1, *LOWER_STAMP)],
+        [
+            _typed("VENDOR'S SHOP DRAWING ELEVATION", "0.01", "0.04"),
+            _typed(divider, "0.43", "0.47", size=size),
+        ],
+    )
+
+    assert upper.role == "shop"
+    assert lower.role is None
+    assert lower.heading == divider and not lower.known
+    assert "is not one we know" in lower.reason
+
+
+@pytest.mark.parametrize(
+    ("divider", "role"),
+    [
+        ("VENDORʼS SHOP DRAWING ELEVATION", "shop"),
+        ("VENDOR＇S SHOP DRAWING", "shop"),
+        ("VENDOR'S SHOP-DRAWING", "shop"),
+        ("I.D. SET ELEVATION", "arch"),
+        ("ID-SET ELEVATION", "arch"),
+        ("ARCHITECT SET", "arch"),
+        ("ARCHITECT ELEVATION", "arch"),
+    ],
+)
+def test_more_ways_of_writing_a_heading_are_read(divider: str, role: str) -> None:
+    upper, lower = propose_panel_roles(
+        [_drawing(0, *UPPER_STAMP), _drawing(1, *LOWER_STAMP)],
+        [_typed("BRAND PROTOTYPE", "0.01", "0.04"), _typed(divider, "0.43", "0.47")],
+    )
+
+    assert (upper.role, lower.role) == ("reference", role)
+
+
+def test_headings_with_no_stated_size_are_still_read() -> None:
+    notes = [
+        _typed("ID SET ELEVATION", "0.01", "0.03", size=None),
+        _typed("VENDOR'S SHOP DRAWING ELEVATION", "0.43", "0.46", size=None),
+    ]
+
+    assert _roles([_drawing(0, "0.03", "0.42"), _drawing(1, "0.47", "0.95")], notes) == {
+        0: "arch",
+        1: "shop",
+    }
+
+
+def test_a_single_capitals_note_makes_the_page_headed_and_says_so() -> None:
+    """A lone `VERIFY` at heading size: the page counts as headed, so its drawing is not read as the
+    vendor's; the drawing is never dropped silently, and the reason names the label."""
+    from workflow.unread_pages import unread_page_reason
+
+    layout = read_panels([_drawing(0, "0.10", "0.90")], [_typed("VERIFY", "0.03", "0.06")])
+
+    assert layout.labelled
+    (only,) = layout.proposals
+    assert only.role is None and only.heading == "VERIFY"
+    code, reason = unread_page_reason(layout, {}, has_drawings_elsewhere=True)
+    assert code == "no-vendor-drawing"
+    assert "this page prints labels ('VERIFY') but none is one we know" in reason
+    assert "the label above the drawing ('VERIFY') is not one we know" in reason

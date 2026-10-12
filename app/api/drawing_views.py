@@ -24,7 +24,15 @@ from app.auth import Principal, require_action, require_project_access
 from app.auth.roles import Action
 from app.evidence.sides import ReadingSides
 from app.lifecycle.carry_forward import role_origins
-from app.models import DrawingView, Package, PackageRevision, Page, ViewRole, ViewRoleConfirmation
+from app.models import (
+    REFERENCE_ROLE,
+    DrawingView,
+    Package,
+    PackageRevision,
+    Page,
+    ViewRole,
+    ViewRoleConfirmation,
+)
 from vocabulary.semantic_types import DocumentRole
 from workflow.view_roles import RevisionView, confirm_view_role, revision_views
 
@@ -69,8 +77,21 @@ class ViewsOut(BaseModel):
     views: list[ViewOut]
 
 
+#: The refusal when a reviewer answers on a drawing whose heading names a reference drawing (a
+#: brand prototype, #1193) without saying they mean to re-label it.
+REFERENCE_REFUSED: Final = (
+    "This drawing's heading names a reference drawing (brand prototype). A reference drawing is "
+    "never checked, so there is nothing to confirm. To use it as the architect's or the vendor's "
+    "drawing anyway, re-label it on purpose (send relabel_reference: true)."
+)
+
+
 class ConfirmRoleIn(BaseModel):
     role: Literal["arch", "shop"]
+    relabel_reference: bool = False
+    """Set only when the reviewer deliberately re-labels a drawing whose heading names a reference
+    drawing (a brand prototype, #1193) as the architect's or the vendor's. Without it, such an
+    answer is refused (409)."""
 
 
 def _revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
@@ -107,7 +128,7 @@ def _out(entry: RevisionView, sides: ReadingSides, session: Session) -> ViewOut:
         reason=None if proposal is None else proposal.reason,
         upload_side=None if upload is None else _UPLOAD_SIDE[upload],
         role_carried_from_revision=None if origin is None else origin.revision_number,
-        role_confirmed_by=None if latest is None else latest.confirmed_by,
+        role_confirmed_by=None if latest is None or view.role is None else latest.confirmed_by,
     )
 
 
@@ -152,6 +173,12 @@ def confirm_role(
     entry = entries.get(view_id)
     if entry is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    if (
+        entry.proposal is not None
+        and entry.proposal.proposed_role == REFERENCE_ROLE
+        and not body.relabel_reference
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=REFERENCE_REFUSED)
     view = session.get(DrawingView, view_id, with_for_update=True)
     assert view is not None
     confirm_view_role(session, view=view, role=ViewRole(body.role), actor=principal.id)

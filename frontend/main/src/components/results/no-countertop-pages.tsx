@@ -67,7 +67,7 @@ export function NoCountertopPages({ pages, onAnswer }: { pages: readonly PageWit
   return (
     <section data-slot="no-countertop-pages" aria-labelledby="no-countertop-pages" className="flex flex-col gap-2 rounded-xl border border-dashed px-4 py-3 font-sans">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h2 id="no-countertop-pages" className="text-sm font-medium">Pages with no countertop found</h2>
+        <h2 id="no-countertop-pages" className="text-sm font-medium">Pages not checked</h2>
         <p
           data-part="confirmed-count"
           className={cn('inline-flex items-center gap-1 text-xs font-medium', tone)}

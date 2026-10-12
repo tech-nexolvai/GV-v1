@@ -326,7 +326,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     }
   }
 
-  /** Brings the "Pages with no countertop found" list into view on Results (#1191). */
+  /** Brings the "Pages not checked" list into view on Results (#1191). */
   function showNoCountertopPages() {
     setQueueOpen(false);
     setActiveTab('results');

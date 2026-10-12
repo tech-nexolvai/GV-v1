@@ -50,7 +50,8 @@ from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.slot_row_scope import unchosen_row_pages
 from workflow.stages import DatabaseStages
-from workflow.unread_pages import unread_page_reason
+from workflow.unread_pages import ConfirmedRole, unread_page_reason
+from workflow.view_roles import CODE_CONFIRMER, CODE_CONTENT_CONFIRMER
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -89,7 +90,9 @@ def _heading(text: str, top: str, bottom: str) -> MarkupNote:
 UPPER, LOWER = _drawing(0, "0.07", "0.42"), _drawing(1, "0.47", "0.95")
 
 
-def _reason(*notes: MarkupNote, confirmed: dict[int, str | None] | None = None) -> tuple[str, str]:
+def _reason(
+    *notes: MarkupNote, confirmed: dict[int, ConfirmedRole] | None = None
+) -> tuple[str, str]:
     return unread_page_reason(
         read_panels([UPPER, LOWER], notes), confirmed or {}, has_drawings_elsewhere=True
     )
@@ -141,15 +144,27 @@ def test_a_vendor_drawing_with_no_row_says_code_found_no_row_on_it() -> None:
     assert "no row of dimensions on the vendor's drawing" in reason
 
 
-def test_a_reviewer_s_confirmation_outranks_the_heading() -> None:
+@pytest.mark.parametrize(
+    ("confirmed_by", "words"),
+    [
+        ("reviewer-1", "reviewer-1 confirmed the lower drawing as the architect's"),
+        (CODE_CONFIRMER, "code decided the lower drawing is the architect's"),
+        (CODE_CONTENT_CONFIRMER, "code decided the lower drawing is the architect's"),
+    ],
+)
+def test_a_confirmation_outranks_the_heading_and_says_who_made_it(
+    confirmed_by: str, words: str
+) -> None:
+    """#1193 review: a code confirmation is never called a reviewer's."""
     code, reason = _reason(
         _heading("ID SET ELEVATION", "0.03", "0.06"),
         _heading("VENDOR'S SHOP DRAWING", "0.43", "0.46"),
-        confirmed={1: "arch"},
+        confirmed={1: ConfirmedRole("arch", confirmed_by)},
     )
 
     assert code == "no-vendor-drawing"
-    assert "a reviewer confirmed the lower drawing as the architect's" in reason
+    assert words in reason
+    assert "reviewer" not in reason or confirmed_by == "reviewer-1"
 
 
 def test_a_page_with_no_drawing_in_a_combined_file_is_a_title_or_divider_page() -> None:
@@ -400,3 +415,89 @@ def test_pages_with_no_vendor_drawing_are_recorded_with_their_reason_not_dropped
         if flag.startswith("no-row:")
     }
     assert flags == {"no-row:no-drawing", "no-row:no-vendor-drawing"}
+
+
+def _stages(readers: FakeReaders) -> DatabaseStages:
+    slot = claude_runtime(readers, question_packets=True)
+    return DatabaseStages(
+        LocalStore(root=Path(tempfile.mkdtemp()), ticket_secret=b"unused"),
+        dpi=150,
+        ocr_engine=_SilentOcr(),  # type: ignore[arg-type]
+        missing_space=MISSING_SPACE,
+        form_reader=replace(slot.form, prompt=BUILT_IN_PROMPT),
+        slot_reader=slot,
+    )
+
+
+def _headed_page_with_two_rows() -> bytes:
+    """One 400 x 600 page: the architect's heading over the upper drawing, the vendor's between the
+    two, and the same drawing (a chain of three pieces and its overall) pasted twice."""
+    from tests.extraction.slot_reader import sheets
+    from tests.extraction.test_annotations import _pdf
+    from tests.extraction.test_rows import _stream
+    from tests.extraction.test_stamp_text import HELVETICA
+
+    appearance = _stream(
+        sheets.lines() + sheets.text_labels() + b"/Ticks Do\n",
+        b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [100 500 400 700] "
+        b"/Matrix [1 0 0 1 -100 -500] /Resources << /Font << /F1 10 0 R >> "
+        b"/XObject << /Ticks 11 0 R >> >>",
+    )
+    nested = _stream(
+        sheets.ticks(), b"<< /Type /XObject /Subtype /Form /FormType 1 /BBox [100 500 400 700]"
+    )
+    return _pdf(
+        annotations=[
+            _free_text("ID SET ELEVATION", b"[10 545 200 565]"),
+            _free_text("VENDOR'S SHOP DRAWING", b"[10 255 260 275]"),
+            _stamp(rect=b"[50 330 350 530]", appearance_object=9),
+            _stamp(rect=b"[50 40 350 240]", appearance_object=9),
+        ],
+        extra_objects=[appearance, HELVETICA, nested],
+        box=b"[0 0 400 600]",
+    )
+
+
+def test_on_a_headed_page_the_vendor_s_drawing_is_read_and_the_architect_s_is_not(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the extraction stage: both drawings have a row of dimensions, and only the one under
+    the vendor's heading reaches the readers (rows 460 pt down the page, never 170 pt)."""
+    data = _headed_page_with_two_rows()
+    revision = _revision(session, store, data, pages=1)
+    session.commit()
+    handed: list[object] = []
+
+    def capture(pages: list[object], **_options: object) -> tuple[()]:
+        handed.extend(pages)
+        return ()
+
+    monkeypatch.setattr("workflow.stages.read_slot_pages", capture)
+    stages = _stages(FakeReaders(lambda _model, _png: '2"'))
+    stages._store = store
+
+    stages.extract_pages(session, revision.id)
+    session.commit()
+
+    (page,) = handed
+    rows = page.rows.candidates.rows.candidates  # type: ignore[attr-defined]
+    assert [row.y for row in rows] == [Decimal(460)]
+    assert unchosen_row_pages(session, revision.id) == ()
+
+
+def test_a_page_that_cannot_be_drawn_is_recorded_as_unreadable(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _combined_file([["ID SET ELEVATION", "VENDOR'S SHOP DRAWING"]])
+    revision = _revision(session, store, data, pages=1)
+    session.commit()
+    monkeypatch.setattr(DatabaseStages, "_vendor_render", lambda *_args: None)
+    stages = _stages(FakeReaders(lambda _model, _png: '2"'))
+    stages._store = store
+
+    stages.extract_pages(session, revision.id)
+    session.commit()
+
+    (page,) = unchosen_row_pages(session, revision.id)
+    assert (page.page_number, page.kind, page.found_by_code) == (1, "none", True)
+    assert page.reason.startswith("Code could not read this page's drawing")

@@ -2643,6 +2643,11 @@
       },
       "ConfirmRoleIn": {
         "properties": {
+          "relabel_reference": {
+            "default": false,
+            "title": "Relabel Reference",
+            "type": "boolean"
+          },
           "role": {
             "enum": [
               "arch",

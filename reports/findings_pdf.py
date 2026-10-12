@@ -759,7 +759,7 @@ class _Document:
         confirmation (#1191)."""
         self._listed_pages(
             new_page,
-            title="PAGES WITH NO COUNTERTOP FOUND",
+            title="PAGES NOT CHECKED",
             note=(
                 "Nothing on these pages was checked: the AIs found no countertop line, or code "
                 "found no vendor drawing or row to read. Each page says why."

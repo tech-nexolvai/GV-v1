@@ -93,7 +93,7 @@ export function SignOffPanel({
   onReview: () => void;
   /** Takes the reviewer to Run checks (the Measurements form saves first). */
   onRunChecks?: () => void;
-  /** Brings the "Pages with no countertop found" list into view (#1191). */
+  /** Brings the "Pages not checked" list into view (#1191). */
   onShowNoCountertopPages?: () => void;
 }) {
   const blocking = readiness?.blocking_findings ?? 0;
