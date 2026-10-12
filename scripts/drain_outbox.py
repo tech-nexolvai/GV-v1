@@ -243,7 +243,9 @@ def _build_package_text(session: object, package_revision_id: UUID) -> Mapping[s
     try:
         with session.begin_nested():  # type: ignore[attr-defined]
             built = build_package_phrases(
-                session, package_revision_id, grouping  # type: ignore[arg-type]
+                session,
+                package_revision_id,
+                grouping,  # type: ignore[arg-type]
             )
     except Exception as error:  # noqa: BLE001 - reported, never fatal to a read drawing
         return {"built": False, "reason": f"the phrase build failed: {type(error).__name__}"}
@@ -517,15 +519,40 @@ def _extract_package(
     *,
     timings: TimingRecorder | None = None,
 ) -> Mapping[str, object]:
-    """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation."""
+    """Run only the pre-verdict stages and leave OCR proposals waiting for human confirmation.
+
+    **Each stage commits as it finishes (#1178).** The reading used to run in one transaction, so
+    for the eight minutes it took the package said `UPLOADED` and nothing it had done was visible.
+    Now `ingest`, `extract_pages` and `match` each commit when they end, and the last stage commits
+    together with the hand-over to the reviewer (the caller's commit). Inside a stage nothing changes:
+    its claim, its state move and its rows still land together or not at all, so a stage either
+    completes or is retried from its start. What is visible while a stage runs is written beside it,
+    in short transactions of its own: the progress line and each paid model call (the call ledger,
+    `workflow/reading_watch.py`).
+
+    **A failure says so, and a retry resumes where it failed.** A stage that raises is rolled back,
+    and the failure is recorded in a transaction of its own (`workflow/review.py:_record_failure`),
+    naming the stage that failed. Redelivering the outbox row then finds every finished stage
+    already claimed (`already_done`, nothing redone, nothing paid twice) and starts again at the
+    stage that failed — where the readers reuse every answer the ledger already holds (#1112). A
+    killed process records nothing; the package stays in the last committed stage's state, and the
+    redelivery resumes from there the same way.
+    """
+    from sqlalchemy.orm import sessionmaker
+
     from app.lifecycle.side_states import enter_needs_input
     from app.models import PackageState, WorkflowRun
-    from workflow.review import run_stage
+    from app.runs.reading_progress import record_progress, side_engine
+    from workflow.review import _record_failure, run_stage
 
     stages = _stages(timings=timings)
     workflow_run_id = UUID(idempotency_key)
     _ensure_workflow_run(session, package_revision_id, workflow_run_id, WorkflowRun)
+    # Committed before any stage, so the call ledger can hang its runs off it (#1178).
+    session.commit()  # type: ignore[attr-defined]
+    failures = sessionmaker(bind=session.get_bind())  # type: ignore[attr-defined]
     results: dict[str, object] = {}
+    final = "validate_evidence"
     for stage, state in (
         ("ingest", PackageState.INGESTING),
         ("extract_pages", PackageState.EXTRACTING),
@@ -539,69 +566,99 @@ def _extract_package(
             if timings is not None
             else nullcontext()
         )
-        with measure:
-            outcome = run_stage(
-                session,
-                stage=stage,
-                state=state,
-                package_revision_id=package_revision_id,
-                workflow_run_id=workflow_run_id,
-                stages=stages,  # type: ignore[arg-type]
+        try:
+            with measure:
+                outcome = run_stage(
+                    session,
+                    stage=stage,
+                    state=state,
+                    package_revision_id=package_revision_id,
+                    workflow_run_id=workflow_run_id,
+                    stages=stages,  # type: ignore[arg-type]
+                )
+            if stage != final:
+                # The stage boundary. The last stage stays open: the hand-over below lands with it.
+                session.commit()  # type: ignore[attr-defined]
+        except Exception as error:
+            session.rollback()  # type: ignore[attr-defined]
+            _record_failure(
+                failures,
+                package_revision_id,
+                actor="local review worker",
+                error=error,
+                stage_state=state,
             )
+            raise
         results[stage] = dict(outcome.payload)
-    # **Index the package's own words, once they are all recorded** (#836). Built from the stored
-    # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
-    # `_build_package_text` reports a failure rather than raising one.
-    measure = (
-        timings.measure("worker.package_text", run_id=str(package_revision_id))
-        if timings is not None
-        else nullcontext()
-    )
-    with measure:
-        package_text = _build_package_text(session, package_revision_id)
-    results["package_text"] = package_text
-    # **Then look in it for the settings the rules still need** (#881), off unless switched on. It
-    # files pointers a person confirms by typing the number blind, never a setting, and it cannot
-    # fail the extraction either.
-    measure = (
-        timings.measure("worker.value_hunter", run_id=str(package_revision_id))
-        if timings is not None
-        else nullcontext()
-    )
-    with measure:
-        results["value_hunter"] = _hunt_values(session, package_revision_id, package_text)
+    # **The hand-over is part of the last stage (#1178 review).** Phrase index, value hunter, the form
+    # proposal and `NEEDS_INPUT` share `validate_evidence`'s transaction, so a failure anywhere here
+    # rolls that stage back too, is recorded against it, and the retry starts again at it. Outside the
+    # handler, a failure here left the package in `MATCHING` with nothing said, redelivered every poll.
+    try:
+        record_progress(side_engine(session), package_revision_id, "form")  # type: ignore[arg-type]
+        # **Index the package's own words, once they are all recorded** (#836). Built from the stored
+        # rows, so it needs nothing extraction did not already write, and it cannot fail the extraction:
+        # `_build_package_text` reports a failure rather than raising one.
+        measure = (
+            timings.measure("worker.package_text", run_id=str(package_revision_id))
+            if timings is not None
+            else nullcontext()
+        )
+        with measure:
+            package_text = _build_package_text(session, package_revision_id)
+        results["package_text"] = package_text
+        # **Then look in it for the settings the rules still need** (#881), off unless switched on. It
+        # files pointers a person confirms by typing the number blind, never a setting, and it cannot
+        # fail the extraction either.
+        measure = (
+            timings.measure("worker.value_hunter", run_id=str(package_revision_id))
+            if timings is not None
+            else nullcontext()
+        )
+        with measure:
+            results["value_hunter"] = _hunt_values(session, package_revision_id, package_text)
 
-    # **Fill the reviewer's form, now, while the facts are in hand.**
-    #
-    # This is the whole point of doing it here rather than behind a button on the form: a reviewer
-    # opening Measure finds it already filled and marked, instead of an empty form and a request to
-    # make. It also costs one model call per upload rather than one per page load.
-    #
-    # It cannot fail the extraction. The drawings were read and the readings are recorded; a
-    # provider that will not answer leaves the form to be filled by hand, which is exactly what a
-    # deployment with no model configured does anyway. `propose_for_revision` catches its own
-    # failures and reports them; this only decides what to print.
-    measure = (
-        timings.measure("worker.fill_with_ai_proposal", run_id=str(package_revision_id))
-        if timings is not None
-        else nullcontext()
-    )
-    with measure:
-        results["propose_measurements"] = _propose_measurements(session, package_revision_id)
+        # **Fill the reviewer's form, now, while the facts are in hand.**
+        #
+        # This is the whole point of doing it here rather than behind a button on the form: a reviewer
+        # opening Measure finds it already filled and marked, instead of an empty form and a request to
+        # make. It also costs one model call per upload rather than one per page load.
+        #
+        # It cannot fail the extraction. The drawings were read and the readings are recorded; a
+        # provider that will not answer leaves the form to be filled by hand, which is exactly what a
+        # deployment with no model configured does anyway. `propose_for_revision` catches its own
+        # failures and reports them; this only decides what to print.
+        measure = (
+            timings.measure("worker.fill_with_ai_proposal", run_id=str(package_revision_id))
+            if timings is not None
+            else nullcontext()
+        )
+        with measure:
+            results["propose_measurements"] = _propose_measurements(session, package_revision_id)
 
-    # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
-    # the next actor is the reviewer: confirm the untyped proposals and supply the values the
-    # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
-    # honest abstention indistinguishable from a worker that is still running.
-    enter_needs_input(
-        session,
-        package_revision_id,
-        actor="local review worker",
-        needed=(
-            "confirm any AI reading proposals, then provide the dimensions the reader abstained on "
-            "before running deterministic checks"
-        ),
-    )
+        # Extraction is deliberately pre-verdict work. Whether it found many readings or none,
+        # the next actor is the reviewer: confirm the untyped proposals and supply the values the
+        # reader abstained on. Leaving a zero-result revision in VALIDATING_EVIDENCE makes that
+        # honest abstention indistinguishable from a worker that is still running.
+        enter_needs_input(
+            session,
+            package_revision_id,
+            actor="local review worker",
+            needed=(
+                "confirm any AI reading proposals, then provide the dimensions the reader abstained on "
+                "before running deterministic checks"
+            ),
+        )
+    except Exception as error:
+        session.rollback()  # type: ignore[attr-defined]
+        _record_failure(
+            failures,
+            package_revision_id,
+            actor="local review worker",
+            error=error,
+            stage_state=PackageState.VALIDATING_EVIDENCE,
+        )
+        raise
     return results
 
 
@@ -613,7 +670,11 @@ def _consume(
     idempotency_key: str,
     timings: TimingRecorder | None = None,
 ) -> Mapping[str, object]:
-    """Do the work one outbox row names, in the caller's session. Commits nothing.
+    """Do the work one outbox row names, in the caller's session.
+
+    Commits nothing, except `extract_package`, which commits at each stage boundary so the reading
+    is visible while it runs (#1178); its last stage and the hand-over are left for the caller's
+    commit, like every other workflow's work.
 
     A workflow with no local consumer is refused, never dropped: the row stays undispatched for
     whichever worker does consume it.

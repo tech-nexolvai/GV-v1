@@ -34,7 +34,7 @@ import {
   downloadReport,
   listRules,
 } from '../api/client';
-import type { ReviewSession, ApprovalReadiness, CountertopResult } from '../api/client';
+import type { ReviewSession, ApprovalReadiness, CountertopResult, PackageDetail } from '../api/client';
 import { MeasurementPanel, type HeaderRunAnswer } from './MeasurementPanel';
 import type { MeasureStep } from '@/lib/measure-steps';
 import { loadFindings } from '../api/findings';
@@ -161,6 +161,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   const [signOffError, setSignOffError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
   const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
+  // Where the reading is while it runs (#1178), re-read with the package on every refresh.
+  const [recordedReading, setRecordedReading] = useState<PackageDetail['reading'] | undefined>(undefined);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
   const downloadPending = useRef(false);
   // #1034: values saved in this session after the last check run (the API records no time for values).
@@ -271,7 +273,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         loadFindings(projectId(), packageId, detail.current_revision_id),
         getApprovalReadiness(projectId(), packageId),
       ]);
-      setFindings(fresh); setRecordedStatus(detail.state as PackageStatus);
+      setFindings(fresh); setRecordedStatus(detail.state as PackageStatus); setRecordedReading(detail.reading ?? null);
       setCountertopsVersion(n => n + 1);
       const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
       const finished = changed && detail.state === 'AWAITING_REVIEW';
@@ -607,8 +609,20 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
     revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
+  const readingLine = recordedReading !== undefined ? recordedReading : (remote.status === 'ready' ? remote.data.detail.reading ?? null : null);
   const stage = reviewStage({
     state: pkg.status,
+    reading: readingLine ? {
+      label: readingLine.label,
+      pagesDone: readingLine.pages_done ?? null,
+      pagesTotal: readingLine.pages_total ?? null,
+      calls: readingLine.calls,
+      costUsd: readingLine.cost_usd,
+      unpricedCalls: readingLine.unpriced_calls,
+      updatedAt: readingLine.updated_at ?? null,
+      retrying: readingLine.retrying,
+    } : null,
+    nowMs: Date.now(),
     findingsTotal: findings.length,
     checksQueued: waitingForChecks,
     valuesChangedSinceRun,

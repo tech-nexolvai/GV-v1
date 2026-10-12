@@ -107,6 +107,7 @@ from app.models.runs import (
     ExtractionRun,
     ModelInvocation,
     ModelInvocationOutcome,
+    ReadingProgress,
     TaskRun,
     WorkflowRun,
 )
@@ -208,6 +209,7 @@ __all__ = [
     "Project",
     "ProjectSink",
     "ReadingPart",
+    "ReadingProgress",
     "ReviewAction",
     "ReviewActionKind",
     "ReviewException",

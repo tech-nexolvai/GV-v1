@@ -43,6 +43,7 @@ from app.db.session import unit_of_work
 from app.lifecycle.side_states import FailureClass, classify, enter_failure
 from app.lifecycle.states import (
     ASSEMBLY_STATES,
+    PROCESSING_STATES,
     TRANSITIONS,
     EntryConditionUnmet,
     transition,
@@ -487,11 +488,33 @@ def _record_failure(
             # fact. So the recording transaction re-states it and then fails from there, which is both
             # legal and true — and it is why a package that dies in ingestion now says so instead of
             # sitting in an assembly state with no explanation.
+            #
+            # **Not only from an assembly state (#1178).** Once each stage commits on its own, a
+            # failure in the second stage rolls back to the first stage's committed state, and
+            # failing from there recorded the *first* stage as the one that failed — so the resume
+            # rule (`resumes_where_it_failed`) sent the retry back to a stage whose claim was already
+            # done, and the stage that really failed could never be re-entered. Re-stating the
+            # failing stage's state whenever the machine allows the step makes the failure name the
+            # stage that failed, which is where a retry must start.
+            #
+            # **And from `FAILED_RETRYABLE`, when the retry failed again (#1178 review).** The retry's
+            # move back into the stage rolled back with it, so the package still says
+            # `FAILED_RETRYABLE`, from which no failure can be entered: a second failure — even a
+            # permanent one — was only a note, and the outbox redelivered the row for ever, re-asking
+            # the questions that had failed. The re-statement is the same legal resume the retry
+            # took (the resume rule still checks it is the stage that failed), and the new failure is
+            # then entered from there.
             revision = session.get(PackageRevision, package_revision_id)
+            current = None if revision is None else PackageState(revision.state)
             if (
-                revision is not None
-                and PackageState(revision.state) in ASSEMBLY_STATES
-                and stage_state in TRANSITIONS[PackageState(revision.state)]
+                current is not None
+                and current is not stage_state
+                and (
+                    current in ASSEMBLY_STATES
+                    or current in PROCESSING_STATES
+                    or current is PackageState.FAILED_RETRYABLE
+                )
+                and stage_state in TRANSITIONS[current]
             ):
                 transition(
                     session,

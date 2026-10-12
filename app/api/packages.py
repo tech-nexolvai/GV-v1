@@ -46,7 +46,14 @@ from app.api.dependencies import get_session
 from app.auth import Action, Principal, Role, require_action, require_project_access, require_role
 from app.lifecycle import begin
 from app.models import Package, PackageRevision, PackageState, Project
-from app.schemas.packages import PackageCreate, PackageOut, PackagePage, ProductTypeChoice
+from app.runs.reading_progress import reading_progress_for
+from app.schemas.packages import (
+    PackageCreate,
+    PackageOut,
+    PackagePage,
+    ProductTypeChoice,
+    ReadingProgressOut,
+)
 from app.verdicts.rulebook import snapshot_store
 from vocabulary.semantic_types import ProductType
 
@@ -368,4 +375,12 @@ def get_package(
     row = session.execute(_package_query(project_id).where(Package.id == package_id)).first()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
-    return PackageOut.model_validate(dict(row._mapping))
+    package = PackageOut.model_validate(dict(row._mapping))
+    # Where the reading is, while it runs (#1178): the stage, the page count where known, and the
+    # calls and cost the ledger already holds. `None` once the revision is no longer being read.
+    snapshot = reading_progress_for(
+        session, package.current_revision_id, PackageState(package.state)
+    )
+    if snapshot is not None:
+        package.reading = ReadingProgressOut.model_validate(snapshot, from_attributes=True)
+    return package

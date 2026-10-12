@@ -10,6 +10,7 @@ Verification: ``tests/db/test_run_models.py``.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final
@@ -24,11 +25,12 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Uuid,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base, Immutable, TimestampedUUID
+from app.db.base import Base, Immutable, TimestampedUUID, UTCDateTime, utc_now
 
 
 class ModelInvocationOutcome(StrEnum):
@@ -355,5 +357,69 @@ class AgentNodeInvocationClaim(Base, TimestampedUUID):
             "(status = 'completed' AND model_invocation_id IS NOT NULL AND candidate_id IS NOT NULL) OR "
             "(status = 'failed' AND model_invocation_id IS NOT NULL AND candidate_id IS NULL)",
             name="claim_result_links",
+        ),
+    )
+
+
+#: The parts of a reading a reviewer can be told about (#1178), in the order they run. The words a
+#: person sees for each live in `app/runs/reading_progress.py`; the database holds only the code.
+READING_STAGES: Final = (
+    "waiting",
+    "ingest",
+    "pages",
+    "architect",
+    "preparing",
+    "rows",
+    "dimensions",
+    "chains",
+    "architect_pairing",
+    "whole_pages",
+    "saving",
+    "match",
+    "validate",
+    "form",
+)
+
+_READING_STAGE_VALUES: Final = ", ".join(f"'{stage}'" for stage in READING_STAGES)
+
+
+class ReadingProgress(Base, TimestampedUUID):
+    """Where the reading of one package revision is, while it runs (#1178). One row per revision.
+
+    **Execution telemetry, not business truth, which is why it is updated in place.** It says only
+    which part of the reading is running and, where the part walks pages, how many are done. Nothing
+    reads it to decide anything: the package's state, the stage claims and the readings themselves
+    stay where they were, written in the stage's own transaction. This row is written in its own short
+    transaction so a reviewer sees it while the stage is still running, and a stage that rolls back
+    leaves it saying how far the attempt got, which is true.
+
+    `pages_done` is known only where the part walks pages one by one or asks questions per page;
+    `pages_total` may be known while `pages_done` is not. Neither is ever a guess.
+    """
+
+    __tablename__ = "reading_progress"
+
+    package_revision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), unique=True)
+    """The revision being read. **Deliberately not a foreign key.** A stage holds a row lock on its
+    revision for as long as it runs (`app/lifecycle/events.py:_next_sequence` takes `FOR UPDATE`
+    to number the state events), and a foreign-key check from another transaction must lock that
+    same row — so every progress line would wait for the stage to finish, which is the one thing it
+    exists not to do (measured: the worker hung on its first progress line). Revisions are never
+    deleted, so nothing is left pointing nowhere; the API reads this row only by a revision it has
+    already found."""
+    stage: Mapped[str] = mapped_column(String(32))
+    pages_done: Mapped[int | None] = mapped_column(Integer(), default=None)
+    pages_total: Mapped[int | None] = mapped_column(Integer(), default=None)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
+
+    __table_args__ = (
+        CheckConstraint(f"stage IN ({_READING_STAGE_VALUES})", name="reading_progress_stage"),
+        CheckConstraint(
+            "pages_total IS NULL OR pages_total >= 0", name="reading_progress_pages_total"
+        ),
+        CheckConstraint(
+            "pages_done IS NULL OR (pages_total IS NOT NULL AND pages_done >= 0 "
+            "AND pages_done <= pages_total)",
+            name="reading_progress_pages_done",
         ),
     )
