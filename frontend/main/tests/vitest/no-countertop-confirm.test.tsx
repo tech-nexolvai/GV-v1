@@ -72,7 +72,7 @@ describe('pages with no countertop need one reviewer click (#1191)', () => {
     const count = region.querySelector('[data-part="confirmed-count"]')!;
     expect(count.textContent).toBe('2 of 3 confirmed');
     expect([...count.querySelectorAll('.num')].map((n) => n.textContent)).toEqual(['2', '3']);
-    expect(confirmedCount([UNCONFIRMED, CONFIRMED, CARRIED])).toEqual({ confirmed: 2, total: 3 });
+    expect(confirmedCount([UNCONFIRMED, CONFIRMED, CARRIED])).toEqual({ confirmed: 2, total: 3, noClickNeeded: 0 });
     const confirmed = item(region, 7).querySelector('[data-part="confirmed"]')!;
     expect(confirmed.textContent).toContain('Confirmed: no countertop here');
     expect(confirmed.textContent).toContain('Synthetic Reviewer');

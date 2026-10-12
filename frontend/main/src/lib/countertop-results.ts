@@ -373,7 +373,34 @@ export async function recordEach(
   return result;
 }
 
-/** "2 of 3 confirmed": how many pages listed with no countertop a reviewer has confirmed (#1191). */
-export function confirmedCount(pages: readonly { confirmation?: unknown }[]): { confirmed: number; total: number } {
-  return { confirmed: pages.filter((page) => page.confirmation != null).length, total: pages.length };
+/**
+ * "2 of 3 confirmed": how many pages listed with no countertop a reviewer has confirmed (#1191),
+ * among the pages that need an answer. A page code proved blank (`needs_answer: false`, #1195) needs
+ * none and is counted apart, as `noClickNeeded`.
+ */
+export function confirmedCount(
+  pages: readonly { confirmation?: unknown; needs_answer?: boolean }[],
+): { confirmed: number; total: number; noClickNeeded: number } {
+  const needing = pages.filter((page) => page.needs_answer !== false);
+  return {
+    confirmed: needing.filter((page) => page.confirmation != null).length,
+    total: needing.length,
+    noClickNeeded: pages.length - needing.length,
+  };
+}
+
+/**
+ * The pages "Confirm these N pages" can answer (#1195): listed, needing an answer, not confirmed yet,
+ * and answerable (a record to answer). Ticked by default unless the server says there is a reason
+ * to doubt the page (`doubtful`).
+ */
+export function waitingPages<T extends { confirmation?: unknown; needs_answer?: boolean; record_id?: string | null }>(
+  pages: readonly T[],
+): T[] {
+  return pages.filter((page) => page.needs_answer !== false && page.confirmation == null && Boolean(page.record_id));
+}
+
+/** The "Confirm these N pages" button's words (#1195): "Confirm this page" / "Confirm these 3 pages". */
+export function confirmManyWords(count: number): string {
+  return count === 1 ? 'Confirm this page' : `Confirm these ${count} pages`;
 }

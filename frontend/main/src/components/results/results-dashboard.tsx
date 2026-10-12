@@ -28,7 +28,7 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
-import { ListedPages, type AnswerNoCountertop, type RowNotChecked } from './no-countertop-pages';
+import { ListedPages, type AnswerNoCountertop, type ConfirmNoCountertopPages, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
 import { useSignedOff } from '@/lib/signed-off';
 
@@ -83,6 +83,8 @@ export function ResultsDashboard({
   onValuesSaved,
   onRunChecks,
   onAnswerNoCountertop,
+  onConfirmNoCountertops,
+  onReloadNoCountertops,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -111,6 +113,10 @@ export function ResultsDashboard({
   onRunChecks?: () => void;
   /** "Confirm: no countertop here" / "There is a countertop" on a listed page (#1191). */
   onAnswerNoCountertop?: AnswerNoCountertop;
+  /** "Confirm these N pages" on the listed pages (#1195). */
+  onConfirmNoCountertops?: ConfirmNoCountertopPages;
+  /** Reloads the listed pages after the server said the list changed (#1195). */
+  onReloadNoCountertops?: () => Promise<void> | void;
 }) {
   const signedOff = useSignedOff();
   const [search, setSearch] = useState('');
@@ -257,6 +263,8 @@ export function ResultsDashboard({
         pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
         rowsNotChecked={countertops.rowsNotChecked ?? []}
         onAnswer={signedOff ? undefined : onAnswerNoCountertop}
+        onConfirmMany={signedOff ? undefined : onConfirmNoCountertops}
+        onReload={onReloadNoCountertops}
       />
 
       <OtherChecks

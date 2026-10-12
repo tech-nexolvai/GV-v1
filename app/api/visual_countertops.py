@@ -8,10 +8,10 @@ from collections.abc import Mapping
 from dataclasses import replace
 from fractions import Fraction
 from typing import Annotated, Any, Final, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
@@ -31,11 +31,13 @@ from app.models import (
     ObservationCandidate,
     Package,
     PackageRevision,
+    PackageRevisionDocument,
+    Page,
     RuleDefinition,
     RuleSnapshot,
     VerdictInput,
 )
-from app.models.evidence import EvidenceArtifactKind
+from app.models.evidence import NO_COUNTERTOP_NOTE_MAX_LENGTH, EvidenceArtifactKind
 from app.review.approval import readiness_and_decisions
 from app.review.architect_view_match import (
     SeparateFileMatches,
@@ -48,6 +50,7 @@ from app.review.no_countertop import (
     answered_pages,
     blocking_pages,
     countertops_checked,
+    pages_words,
     reading_answer,
 )
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
@@ -55,6 +58,7 @@ from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectComparedOut,
     ArchitectResultOut,
+    BlankPageProofOut,
     CountertopPieceOut,
     CountertopResultOut,
     CountertopResultsOut,
@@ -98,6 +102,7 @@ from workflow.slot_row_scope import (
     candidate_is_sealed,
     candidate_value,
     slot_rows_and_unchosen_pages,
+    unchosen_page,
 )
 
 router = APIRouter(tags=["visual reviewer"])
@@ -1105,6 +1110,9 @@ def _countertop_results_for_revision(
                 record_id=page.record.id,
                 confirmation=_confirmation_out(page_answers.get(page.record.id)),
                 older_reading=page.kind == "older",
+                needs_answer=page.needs_answer,
+                blank_page=_blank_page_out(page),
+                doubtful=page.doubtful,
             )
             for page in unchosen
             if not page.split
@@ -1127,7 +1135,32 @@ def _confirmation_out(answer: PageAnswer | None) -> NoCountertopConfirmationOut 
         confirmed_by=answer.answered_by,
         confirmed_at=answer.answered_at,
         from_revision=answer.from_revision,
+        note=answer.note,
     )
+
+
+def _blank_page_out(page: UnchosenRowPage) -> BlankPageProofOut | None:
+    """What code checked to prove the page blank (#1195), or `None` when it did not."""
+    proof = page.blank_proof
+    if proof is None:
+        return None
+    return BlankPageProofOut(
+        rule=proof["rule"],
+        stamps=proof["stamps"],
+        other_annotations=proof["other-annotations"],
+        images=proof["images"],
+        drawn_paths=proof["drawn-paths"],
+        frames=proof["frames"],
+        white_paint=proof["white-paint"],
+        typed_texts=proof["typed-texts"],
+        typed_characters=proof["typed-characters"],
+    )
+
+
+def _note(text: str | None) -> str | None:
+    """A note as stored: trimmed, and none at all when only spaces were typed."""
+    trimmed = (text or "").strip()
+    return trimmed or None
 
 
 class NoCountertopAnswerIn(BaseModel):
@@ -1142,6 +1175,45 @@ class NoCountertopAnswerIn(BaseModel):
             "with the next check run."
         )
     )
+    note: str | None = Field(
+        default=None,
+        max_length=NO_COUNTERTOP_NOTE_MAX_LENGTH,
+        description="An optional note kept with the answer (#1195).",
+    )
+
+
+class NoCountertopPageIn(BaseModel):
+    """One page the reviewer confirms in "Confirm these N pages" (#1195): its number and the
+    reading record the screen showed for it, so a page read again since is refused, not guessed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_number: int = Field(ge=1)
+    expected_record_id: UUID = Field(
+        description="The page's `record_id` as the screen showed it (`pages_without_countertop`)."
+    )
+
+
+class NoCountertopPagesIn(BaseModel):
+    """ "Confirm these N pages" (#1195): "Confirm: no countertop here" on each page named, exactly
+    as if each were clicked on its own, with one optional note for all of them. Pages left out
+    (unticked) are not answered and keep waiting."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pages: list[NoCountertopPageIn] = Field(min_length=1, max_length=500)
+    note: str | None = Field(
+        default=None,
+        max_length=NO_COUNTERTOP_NOTE_MAX_LENGTH,
+        description="An optional note kept with each page's answer.",
+    )
+
+    @model_validator(mode="after")
+    def _each_page_once(self) -> NoCountertopPagesIn:
+        records = [page.expected_record_id for page in self.pages]
+        if len(set(records)) != len(records):
+            raise ValueError("each page may be named only once")
+        return self
 
 
 #: Said when the screen answers a page that is no longer listed (read again, or already answered).
@@ -1149,6 +1221,50 @@ PAGE_NOT_LISTED: Final = (
     "This page is no longer listed with no countertop: it was read again or already answered. "
     "Reload the results."
 )
+
+
+def _pages_not_on_list(numbers: list[int]) -> str:
+    verb = "is" if len(numbers) == 1 else "are"
+    words = pages_words(numbers)
+    return (
+        f"{words[0].upper()}{words[1:]} {verb} not on the list of pages not checked. Only pages "
+        "listed there can be confirmed."
+    )
+
+
+def stale_pages_sentence(numbers: list[int]) -> str:
+    """Said when "Confirm these N pages" names pages the list no longer shows as the screen did."""
+    words = pages_words(numbers)
+    return (
+        f"The list of pages not checked changed since you opened it ({words}: read again or "
+        "already answered). Nothing was saved. Reload the results and confirm again."
+    )
+
+
+def _newest_revision(session: Session, project_id: UUID, package_id: UUID) -> PackageRevision:
+    revision = session.execute(
+        select(PackageRevision)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(Package.id == package_id, Package.project_id == project_id)
+        .order_by(PackageRevision.revision_number.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if revision is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return revision
+
+
+def _listed_now(
+    session: Session, revision: PackageRevision
+) -> tuple[tuple[UnchosenRowPage, ...], dict[UUID, PageAnswer]]:
+    """The revision's pages as listed right now, with the answers in force, read under the
+    revision's answer lock (taken here), so two answers never cross."""
+    session.execute(select(func.pg_advisory_xact_lock(_answer_lock_key(revision.id))))
+    _rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
+    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
+    return answered_pages(
+        session, revision, tuple(page for page in unchosen if page.page_number - 1 not in owned)
+    )
 
 
 @router.post(
@@ -1180,21 +1296,8 @@ def answer_no_countertop_page(
     "Confirm" on a page already confirmed records nothing and answers 200 with the first person and
     time (the answer was already given).
     """
-    revision = session.execute(
-        select(PackageRevision)
-        .join(Package, Package.id == PackageRevision.package_id)
-        .where(Package.id == package_id, Package.project_id == project_id)
-        .order_by(PackageRevision.revision_number.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if revision is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    session.execute(select(func.pg_advisory_xact_lock(_answer_lock_key(revision.id))))
-    _rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
-    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
-    listed_now, in_force = answered_pages(
-        session, revision, tuple(page for page in unchosen if page.page_number - 1 not in owned)
-    )
+    revision = _newest_revision(session, project_id, package_id)
+    listed_now, in_force = _listed_now(session, revision)
     page = next(
         (page for page in listed_now if page.record.id == record_id and not page.split), None
     )
@@ -1215,6 +1318,7 @@ def answer_no_countertop_page(
         reading_answer=reading_answer(page),
         answer=body.answer,
         answered_by=principal.id,
+        note=_note(body.note),
     )
     session.add(answer)
     session.flush()
@@ -1224,6 +1328,119 @@ def answer_no_countertop_page(
         actor=principal.id,
         target_id=answer.id,
         target_type="no_countertop_answer",
+    )
+    session.commit()
+    return _countertop_results_for_revision(session, package_id, revision)
+
+
+#: The audit target type of one "Confirm these N pages" action (#1195); its id is the `batch_id`
+#: on each answer it recorded.
+NO_COUNTERTOP_BATCH_TARGET: Final = "no_countertop_answer_batch"
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/no-countertop-pages/confirm",
+    response_model=CountertopResultsOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Confirm that each named listed page has no countertop, in one action",
+    dependencies=[Depends(open_revision)],
+)
+def confirm_no_countertop_pages(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    body: NoCountertopPagesIn,
+    response: Response,
+) -> CountertopResultsOut:
+    """ "Confirm these N pages" (#1195): "Confirm: no countertop here" on every page named.
+
+    The same permission, lock and record as the single answer (`answer_no_countertop_page`): each
+    page gets its own answer row (who, when, the optional note) and its own audit event; the rows
+    share a batch id, which has an audit event of its own.
+
+    **All or nothing.** The request names each page and the reading record the screen showed for it.
+    A record that was never a listed page of this revision is refused with 422. If any named page is
+    no longer listed as the screen showed it (read again, answered "There is a countertop", or no
+    longer listed), nothing is recorded and the request is refused with 409: the screen reloads.
+    A page already confirmed records nothing new (its first person and time stand); when every named
+    page was already confirmed the answer is 200, else 201. Pages not named keep waiting.
+    """
+    revision = _newest_revision(session, project_id, package_id)
+    listed_now, in_force = _listed_now(session, revision)
+    named = {page.expected_record_id: page.page_number for page in body.pages}
+    # 422: a record the list never held for that page (not a listed reading of this revision).
+    records = {
+        record.id: (page_index + 1, unchosen_page(page_index, record).listed)
+        for record, page_index in session.execute(
+            select(ObservationCandidate, Page.index)
+            .join(Page, Page.id == ObservationCandidate.page_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(
+                ObservationCandidate.id.in_(named),
+                PackageRevisionDocument.package_revision_id == revision.id,
+                ObservationCandidate.ambiguity_flags.contains(["slot-reader-row-choice"]),
+            )
+        ).all()
+    }
+    unknown = sorted(
+        {number for record, number in named.items() if records.get(record) != (number, True)}
+    )
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=_pages_not_on_list(unknown)
+        )
+    # 409: the list changed since the screen loaded it.
+    current = {page.record.id: page for page in listed_now if page.listed}
+    stale = sorted({number for record, number in named.items() if record not in current})
+    if stale:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=stale_pages_sentence(stale)
+        )
+    batch_id = uuid4()
+    note = _note(body.note)
+    recorded = 0
+    for record_id in sorted(named, key=lambda record: (named[record], str(record))):
+        page = current[record_id]
+        standing = in_force.get(record_id)
+        if standing is not None and standing.answer == "no_countertop":
+            continue  # already confirmed: the first person and time stand
+        answer = NoCountertopAnswer(
+            package_revision_id=revision.id,
+            row_choice_candidate_id=record_id,
+            page_id=page.record.page_id,
+            page_number=page.page_number,
+            page_content_hash=page.page_content_hash or "",
+            reading_answer=reading_answer(page),
+            answer="no_countertop",
+            answered_by=principal.id,
+            note=note,
+            batch_id=batch_id,
+        )
+        session.add(answer)
+        session.flush()
+        emit(
+            session,
+            category=AuditCategory.REVIEW_ACTION,
+            actor=principal.id,
+            target_id=answer.id,
+            target_type="no_countertop_answer",
+        )
+        recorded += 1
+    if not recorded:
+        session.rollback()
+        response.status_code = status.HTTP_200_OK
+        return _countertop_results_for_revision(session, package_id, revision)
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=principal.id,
+        target_id=batch_id,
+        target_type=NO_COUNTERTOP_BATCH_TARGET,
     )
     session.commit()
     return _countertop_results_for_revision(session, package_id, revision)
@@ -1259,8 +1476,10 @@ def _rows_not_checked(rows: tuple[SlotRow, ...], owned: set[int]) -> tuple[RowNo
 
 
 __all__ = [
+    "NO_COUNTERTOP_BATCH_TARGET",
     "_countertop_results_for_revision",
     "answer_no_countertop_page",
+    "confirm_no_countertop_pages",
     "countertop_results",
     "router",
 ]

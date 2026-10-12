@@ -108,17 +108,21 @@ PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason", "confirmed")
 
 def confirmation_words(page: PageWithoutCountertopOut) -> str | None:
     """ "Confirmed no countertop: page 3 — person, time" (#1191), with the earlier revision it was
-    given on when it was carried; `None` for a page with no confirmation (only in a review signed
-    before confirmations were asked)."""
+    given on when it was carried and the reviewer's note (#1195); "No answer needed: …" for a page
+    code proved blank (#1195); `None` for any other page with no confirmation (only in a review
+    signed before confirmations were asked)."""
     confirmed = page.confirmation
     if confirmed is None:
+        if page.blank_page is not None:
+            return f"No answer needed: page {page.page_number} has nothing drawn (checked by code)"
         return None
     carried = (
         "" if confirmed.from_revision is None else f" (from revision {confirmed.from_revision})"
     )
+    note = "" if confirmed.note is None else f"; note: {confirmed.note}"
     return (
         f"Confirmed no countertop: page {page.page_number} \u2014 {confirmed.confirmed_by}, "
-        f"{confirmed.confirmed_at.isoformat()}{carried}"
+        f"{confirmed.confirmed_at.isoformat()}{carried}{note}"
     )
 
 

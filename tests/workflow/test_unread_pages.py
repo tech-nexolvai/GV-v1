@@ -229,9 +229,10 @@ def _free_text(text: str, rect: bytes) -> bytes:
     )
 
 
-def _combined_file(pages: list[list[bytes] | None]) -> bytes:
+def _combined_file(pages: list[list[bytes] | None], *, divider_content: bytes = b"") -> bytes:
     """A multi-page combined file: each page is two headings over two pasted drawings (`None`: a
-    divider page with nothing pasted). 400 x 300 pages, like `test_view_roles._combined_sheet`."""
+    divider page with nothing pasted, whose own content is `divider_content`). 400 x 300 pages,
+    like `test_view_roles._combined_sheet`."""
     count = len(pages)
     objects: list[bytes] = [b"<< /Type /Catalog /Pages 2 0 R >>", b""]
     page_numbers: list[int] = []
@@ -244,7 +245,11 @@ def _combined_file(pages: list[list[bytes] | None]) -> bytes:
                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents "
                 + str(content).encode()
                 + b" 0 R >>",
-                b"<< /Length 0 >>\nstream\n\nendstream",
+                b"<< /Length "
+                + str(len(divider_content)).encode()
+                + b" >>\nstream\n"
+                + divider_content
+                + b"\nendstream",
             ]
             continue
         first = page_number + 2
@@ -400,7 +405,8 @@ def test_pages_with_no_vendor_drawing_are_recorded_with_their_reason_not_dropped
         (3, "none", True),
     ]
     divider, references, unknown = (page.reason for page in pages)
-    assert divider.startswith("No drawing is pasted on this page (a title or divider page)")
+    # The divider page has nothing drawn on it at all: code proves it blank from the PDF (#1195).
+    assert divider.startswith("Title or divider page: nothing drawn.")
     assert "the architect's drawing ('ARCH SET ELEVATION')" in references
     assert "the reference drawing ('BRAND PROTOTYPE ELEVATION'), never checked" in references
     assert "the label above the lower drawing ('VENDR SHOP DWG') is not one we know" in unknown
@@ -414,7 +420,60 @@ def test_pages_with_no_vendor_drawing_are_recorded_with_their_reason_not_dropped
         for flag in record.ambiguity_flags
         if flag.startswith("no-row:")
     }
-    assert flags == {"no-row:no-drawing", "no-row:no-vendor-drawing"}
+    assert flags == {"no-row:blank-page", "no-row:no-vendor-drawing"}
+    # #1195: only the blank divider needs no answer; the page whose drawing has a label we do not
+    # know is marked doubtful (it may be the vendor's), the architect's page is not.
+    assert [(page.needs_answer, page.doubtful) for page in pages] == [
+        (False, False),
+        (True, False),
+        (True, True),
+    ]
+    assert pages[0].blank_proof == {
+        "rule": 1,
+        "stamps": 0,
+        "other-annotations": 0,
+        "images": 0,
+        "drawn-paths": 0,
+        "frames": 0,
+        "white-paint": 0,
+        "typed-texts": 0,
+        "typed-characters": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "blank"),
+    [
+        (b"q 0 0 0 RG 6 6 388 288 re S Q", True),  # the page frame only
+        (b"q 0 0 0 RG 6 6 388 288 re S Q q 0 0 0 RG 2 w 100 150 m 300 150 l S Q", False),  # a line
+    ],
+    ids=["frame-only", "frame-and-a-line"],
+)
+def test_a_divider_with_anything_drawn_beyond_its_frame_still_needs_an_answer(
+    session: Session, store: LocalStore, content: bytes, blank: bool
+) -> None:
+    """#1195: a divider page is proven blank only when nothing is drawn beyond the page frame; a
+    single drawn line keeps it a `no-drawing` page that needs the reviewer's answer."""
+    data = _combined_file(
+        [None, ["ID SET ELEVATION", "VENDOR'S SHOP DRAWING"]], divider_content=content
+    )
+    revision = _revision(session, store, data, pages=2)
+    session.commit()
+    stages = _stages(FakeReaders(lambda _model, _png: '2"'))
+    stages._store = store
+
+    stages.extract_pages(session, revision.id)
+    session.commit()
+
+    divider = next(
+        page for page in unchosen_row_pages(session, revision.id) if page.page_number == 1
+    )
+    assert divider.listed and divider.needs_answer is not blank
+    assert (divider.blank_proof is not None) is blank
+    if blank:
+        assert divider.blank_proof is not None and divider.blank_proof["frames"] == 1
+    else:
+        assert divider.reason.startswith("No drawing is pasted on this page")
 
 
 def _stages(readers: FakeReaders) -> DatabaseStages:

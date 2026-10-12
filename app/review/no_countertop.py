@@ -28,6 +28,15 @@ is "older": it gets the same two buttons, with a reason saying why it is asked, 
 answered, and never gets a "needs you" result of its own, so a real no-countertop page is signed as
 "confirmed no countertop", not as a "not checkable" countertop.
 
+**Pages code proved blank (#1195).** A title or divider page code proved from the PDF has nothing
+drawn on it (`no-row:blank-page` with its `blank-proof:` facts, `extraction/blank_page.py`) stays
+listed but needs no answer: it never blocks sign-off and never asks the signer about a carried
+answer. A reviewer may still say "There is a countertop" on it, which makes it blocking as above.
+
+**Many pages at once (#1195).** "Confirm these N pages" records one answer per page, each exactly
+like a single answer (who, when, the optional note), with the batch's id on each, so the audit trail
+has one event per page and one for the batch.
+
 **Sign-off.** Readiness (`app/review/approval.py`) refuses while a listed or older page has no
 answer, and while a page that is blocking (a reviewer said there is a countertop, or the AIs
 disagreed) has no result on the live check run: such a page shows only "Not checked", and signing
@@ -101,6 +110,8 @@ class PageAnswer:
     revision_number: int
     from_revision: int | None
     """The revision it was given on, when that is an earlier revision than the one shown."""
+    note: str | None = None
+    """The reviewer's optional note (#1195)."""
 
 
 def reviewer_says_countertop(answer: PageAnswer, *, found_by_code: bool = False) -> str:
@@ -207,6 +218,7 @@ def _answers(
                         answered_at=answer.created_at,
                         revision_number=answer_number,
                         from_revision=answer_number if answer_number < number else None,
+                        note=answer.note,
                     )
                     break
     return found
@@ -263,8 +275,13 @@ def blocking_pages(
     can get no result, so a missing one is not asked for.
     """
     pages = tuple(pages)
+    # A page code proved blank (#1195) is listed but needs no answer.
     unconfirmed = sorted(
-        {page.page_number for page in pages if page.listed and answers.get(page.record.id) is None}
+        {
+            page.page_number
+            for page in pages
+            if page.needs_answer and answers.get(page.record.id) is None
+        }
     )
     unchecked = (
         sorted(
@@ -287,7 +304,7 @@ def blocking_pages(
             ),
         )
         for page in pages
-        if page.listed
+        if page.needs_answer
         and (answer := answers.get(page.record.id)) is not None
         and answer.answer == "no_countertop"
         and answer.from_revision is not None

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, aliased
 from app.models.document import Document, DocumentVersion, PackageRevisionDocument, Page
 from app.models.evidence import MeasurementProposal, ObservationCandidate, SlotRowReviewDecision
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from extraction.blank_page import BLANK_PAGE_RULE, MAX_TITLE_CHARACTERS
 from vocabulary.check_holds import (
     CHECK_HOLD_REASONS,
     STONE_SHORT_OF_ENDS,
@@ -73,10 +74,45 @@ ROW_CHOICE_SPLIT: Final = "row-choice-split"
 #: like a page every AI said has none, and needs the same reviewer answer (#1191): never silent.
 NO_ROW_FLAG: Final = "no-row:"
 
-#: Why code read no row on a page, by `no-row:` code.
+#: Why code read no row on a page, by `no-row:` code. `blank-page` (#1195): code proved from the PDF
+#: that nothing is drawn on the page (`extraction/blank_page.py`); its facts are stored with it.
 NO_ROW_CODES: Final = frozenset(
-    {"no-drawing", "no-vendor-drawing", "reference-only", "no-row-found", "unreadable"}
+    {
+        "no-drawing",
+        "no-vendor-drawing",
+        "reference-only",
+        "no-row-found",
+        "unreadable",
+        "blank-page",
+    }
 )
+
+#: A listed page's blank-page proof (#1195): `blank-proof:<fact>=<count>`, one flag per fact checked
+#: (`extraction/blank_page.BlankPageFacts`), next to `no-row:blank-page`.
+BLANK_PROOF_FLAG: Final = "blank-proof:"
+
+#: The facts a blank-page proof must state, and the most each may be: a missing, malformed or larger
+#: fact means the page is not proven blank and still needs the reviewer's answer.
+BLANK_PROOF_LIMITS: Final[dict[str, int | None]] = {
+    "rule": None,
+    "stamps": 0,
+    "other-annotations": 0,
+    "images": 0,
+    "drawn-paths": 0,
+    "frames": None,
+    "white-paint": None,
+    "typed-texts": None,
+    "typed-characters": MAX_TITLE_CHARACTERS,
+}
+
+#: Set on a `no-row:` record when a drawing on the page has no role code could tell (an unknown
+#: label, or none of its own, #1193): the page may hold the vendor's drawing, so the "Confirm these
+#: pages" action leaves it unticked until the reviewer has looked (#1195).
+UNNAMED_DRAWING_FLAG: Final = "no-row-unnamed-drawing"
+
+#: `no-row:` codes that leave a doubt: a vendor drawing code found no row on, or a page code could
+#: not read. Unticked in "Confirm these pages" until the reviewer has looked (#1195).
+_DOUBTFUL_CODES: Final = frozenset({"no-row-found", "unreadable"})
 
 #: How the reader ends a reason it wrote itself for a page whose row it did not choose
 #: (`workflow/slot_reader.py:_agreed_row`), and its default when no reader answer was kept.
@@ -137,10 +173,57 @@ class UnchosenRowPage:
         """Whether code, not the AIs, found no row to read on this page (#1193): no AI was asked."""
         return found_by_code(self.record)
 
+    @property
+    def blank_proof(self) -> dict[str, int] | None:
+        """The page's blank-page proof (#1195), fact by fact, when code proved from the PDF that
+        nothing is drawn on it; `None` otherwise (and for any incomplete or contradicting proof)."""
+        return blank_proof(self.record)
+
+    @property
+    def needs_answer(self) -> bool:
+        """Whether the page waits for a reviewer's answer before sign-off (#1191): every listed page
+        except one proven blank (#1195)."""
+        return self.listed and self.blank_proof is None
+
+    @property
+    def doubtful(self) -> bool:
+        """Whether there is a reason to doubt that the page has no countertop (#1195): an older
+        reading, a vendor drawing code found no row on, a page code could not read, or a drawing
+        whose role code could not tell. The "Confirm these pages" action leaves it unticked."""
+        flags = frozenset(self.record.ambiguity_flags or ())
+        return (
+            self.kind == "older"
+            or UNNAMED_DRAWING_FLAG in flags
+            or any(f"{NO_ROW_FLAG}{code}" in flags for code in _DOUBTFUL_CODES)
+        )
+
 
 def found_by_code(record: ObservationCandidate) -> bool:
     """Whether a row-choice record is code's "no row to read on this page" (#1193)."""
     return any(flag.startswith(NO_ROW_FLAG) for flag in record.ambiguity_flags or ())
+
+
+def blank_proof(record: ObservationCandidate) -> dict[str, int] | None:
+    """The record's blank-page proof (#1195) as `{fact: count}`, or `None` unless it is complete,
+    well formed, of the current rule, and every fact is within its limit (`BLANK_PROOF_LIMITS`).
+
+    Fail-safe: anything short of a full proof means the page still needs the reviewer's answer."""
+    flags = record.ambiguity_flags or ()
+    if f"{NO_ROW_FLAG}blank-page" not in flags:
+        return None
+    facts: dict[str, int] = {}
+    for flag in flags:
+        if not flag.startswith(BLANK_PROOF_FLAG):
+            continue
+        name, separator, value = flag.removeprefix(BLANK_PROOF_FLAG).partition("=")
+        if not separator or not value.isdigit() or name not in BLANK_PROOF_LIMITS or name in facts:
+            return None
+        facts[name] = int(value)
+    if set(facts) != set(BLANK_PROOF_LIMITS) or facts["rule"] != BLANK_PAGE_RULE:
+        return None
+    if any(limit is not None and facts[name] > limit for name, limit in BLANK_PROOF_LIMITS.items()):
+        return None
+    return facts
 
 
 def _row_picks(flags: frozenset[str]) -> tuple[tuple[str, int | None], ...] | None:
