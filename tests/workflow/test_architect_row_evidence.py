@@ -96,9 +96,9 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 
 
 def _sealed_rows(session: Session) -> tuple[UUID, dict[int, UUID]]:
-    """Two vendor rows whose widths add up and whose walls come from drawing clues: both PASS."""
+    """Two vendor rows whose widths add up and whose walls the reviewer chose: both PASS."""
     _project_id, package_id, anchors = _package_rows(
-        session, piece_count=2, widths_add_up=True, wall_source="code-ink-and-both-ais"
+        session, piece_count=2, widths_add_up=True, wall_source="readers", walls_confirmed=True
     )
     for candidate in session.scalars(
         select(ObservationCandidate).where(
@@ -1460,7 +1460,8 @@ def _sealed_rows_unwitnessed(session: Session, slot: str) -> tuple[UUID, dict[in
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="code-ink-and-both-ais",
+        wall_source="readers",
+        walls_confirmed=True,
         slot_flags=lambda page, _offset, at: (
             ["no-drawn-length-witness"] if page == 0 and at == slot else []
         ),

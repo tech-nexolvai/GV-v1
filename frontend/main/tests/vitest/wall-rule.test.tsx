@@ -44,7 +44,7 @@ describe('the field-cut rule in plain words (#1202)', () => {
     ]);
     // Without a recorded total the parts are shown, never added up here.
     expect(fieldCutRuleLines('3/4"')[0].adds).toBe('+3/4" + 3/4"');
-    expect(fieldCutValueLine('1"')).toBe('1" is this project\'s field cut (it can be changed per project).');
+    expect(fieldCutValueLine('1"')).toBe('1" is this project\'s field cut now (it can be changed per project).');
     expect(fieldCutRuleSentence(null)).toContain('longer by the field cut');
   });
 
@@ -71,7 +71,7 @@ describe('the field-cut rule in plain words (#1202)', () => {
     expect(await screen.findByText(/it is made 1" longer and trimmed on site to fit/)).toBeTruthy();
     expect(screen.getByRole('rowheader', { name: 'Walls at both ends' })).toBeTruthy();
     expect(screen.getByText('+1" + 1" = +2"')).toBeTruthy();
-    expect(screen.getByText('1" is this project\'s field cut (it can be changed per project).')).toBeTruthy();
+    expect(screen.getByText('1" is this project\'s field cut now (it can be changed per project).')).toBeTruthy();
     expect(document.querySelector('[data-slot="wall-rule-example"]')?.textContent).toContain('Vendor wrote 95".');
   });
 });
@@ -89,7 +89,9 @@ describe('the results line says which walls were used and who decided (#1202)', 
     expect(screen.getByRole('button', { name: "About GV's field-cut rule" })).toBeTruthy();
   });
 
-  it('explains with the field cut the result used, else the one in force now', () => {
+  it('explains with the project\'s field cut now, else the one the result used (#1202 review)', () => {
+    // A changed field cut: the "i" shows the current value, not the result's old one.
+    expect(fieldCutOf(result({ config: null, label: null, source: 'not established' }, { field_cut_per_end: x('1', '1"'), field_cut_in_force: '3/4"' }))).toBe('3/4"');
     expect(fieldCutOf(result({ config: null, label: null, source: 'not established' }, { field_cut_per_end: x('1', '1"') }))).toBe('1"');
     expect(fieldCutOf(result({ config: null, label: null, source: 'not established' }, { wall_cases: CASES }))).toBe('1"');
     expect(fieldCutOf(result({ config: null, label: null, source: 'not established' }, { field_cut_in_force: '3/4"' }))).toBe('3/4"');

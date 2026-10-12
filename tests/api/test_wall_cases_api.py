@@ -21,9 +21,16 @@ from app.api.visual_countertops import _countertop_results_for_revision
 from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.models import ObservationCandidate, PackageRevision
-from app.review.wall_cases import NO_CHECK_RUN, NOT_ALL_SEALED, SAVED_AFTER_RUN, WALLS_ALREADY_USED
+from app.review.wall_cases import (
+    FIELD_CUT_CHANGED,
+    NO_CHECK_RUN,
+    NOT_ALL_SEALED,
+    SAVED_AFTER_RUN,
+    WALLS_ALREADY_USED,
+)
 from tests.api.test_slot_rows import _package_rows, _reader_support, _run_current_checks
 from tests.app.postgres_fixture import alembic_config
+from vocabulary.wall_layouts import VENDOR_WALLS_PASS_REASON
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -143,7 +150,10 @@ def test_automatic_walls_say_who_decided_and_the_choices_say_the_walls_are_used(
     project_id, package_id, anchors = _sealed(session, wall_source="code-ink-and-both-ais")
     findings = _run_current_checks(session, package_id, tmp_path)
     finding = next(item for item in findings if item.scope_row_candidate_id == anchors[0])
-    assert finding.outcome == "PASS", finding.reason
+    # #1202 review: a PASS on walls read from the vendor's drawing waits for one click.
+    assert finding.outcome == "REVIEW_REQUIRED", finding.reason
+    assert finding.reason == VENDOR_WALLS_PASS_REASON
+    assert any(note.startswith("The engine's result") and "PASS" in note for note in finding.notes)
 
     result = _result(session, package_id, anchors[0])
     assert result.wall_layout.source == "code ink and both AIs"
@@ -154,6 +164,88 @@ def test_automatic_walls_say_who_decided_and_the_choices_say_the_walls_are_used(
     assert row.wall_cases.cases == ()
     assert row.wall_cases.unavailable_reason == WALLS_ALREADY_USED
     assert row.wall_reason == "Seen on the drawing at both ends and confirmed by both AIs."
+    # The reviewer can always correct them: the row still offers the wall answer.
+    assert row.wall_confirmation_allowed and row.wall_config is None
+
+
+def test_a_fail_on_automatic_walls_stays_automatic(session: Session, tmp_path: Path) -> None:
+    """A FAIL is a flag the reviewer can dismiss; only a PASS on vendor-read walls waits."""
+    _project_id, package_id, anchors = _sealed(
+        session, wall_source="code-ink-and-both-ais", overall_override=50
+    )
+    findings = _run_current_checks(session, package_id, tmp_path)
+    finding = next(item for item in findings if item.scope_row_candidate_id == anchors[0])
+    assert finding.outcome == "FAIL", finding.reason
+    assert finding.variant == "back_left_right"
+
+
+def test_a_field_cut_changed_since_the_run_hides_the_choices_results(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1202 review: the project's field cut changed after the check ran, so every choice's needed
+    overall is out of date; the "i" shows the value now, labelled as the current one."""
+    from fractions import Fraction
+
+    from app.db.base import utc_now
+    from app.models import Package
+    from app.models.parameters import to_rows
+    from rules.parameters import ParameterLayer, Provenance
+    from rules.parameters import ParameterSet as InMemoryParameterSet
+    from rules.parameters import ParameterValue as InMemoryParameterValue
+    from rules.schema import Quantity
+    from units.measurement import Unit
+
+    project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
+    _run_current_checks(session, package_id, tmp_path)
+    assert _slot_row(session, project_id, package_id, anchors[0]).wall_cases.cases
+
+    package = session.get(Package, package_id)
+    assert package is not None
+    setting = InMemoryParameterSet(
+        project_id=str(package.project_id),
+        layer=ParameterLayer.PROJECT,
+        version=1,
+        parameters={
+            "field_cut": InMemoryParameterValue(
+                value=Quantity(value=Fraction(3, 4), unit=Unit.INCH),
+                provenance=Provenance.MEASURED,
+                set_by="synthetic reviewer",
+                set_at=utc_now(),
+            )
+        },
+    )
+    stored, values = to_rows(setting)
+    session.add(stored)
+    session.add_all(values)
+    session.flush()
+
+    row = _slot_row(session, project_id, package_id, anchors[0])
+    assert row.wall_cases.cases == ()
+    assert row.wall_cases.unavailable_reason == FIELD_CUT_CHANGED
+    assert row.field_cut_in_force == '3/4"'
+    assert row.walls_needed is True
+    result = _result(session, package_id, anchors[0])
+    assert result.wall_cases.cases == ()
+    assert result.wall_cases.unavailable_reason == FIELD_CUT_CHANGED
+    assert result.field_cut_in_force == '3/4"'
+
+
+def test_an_engine_error_on_the_wall_cases_leaves_the_walls_needed_and_says_why(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from verdict.engine import EngineError
+
+    def broken(*_args: object, **_kwargs: object) -> object:
+        raise EngineError("synthetic engine refusal")
+
+    monkeypatch.setattr("workflow.stages.wall_free_finding", broken)
+    _project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
+    findings = _run_current_checks(session, package_id, tmp_path)
+    finding = next(item for item in findings if item.scope_row_candidate_id == anchors[0])
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert "could not be worked out for every wall case: synthetic engine refusal" in (
+        finding.reason or ""
+    )
 
 
 def test_choices_say_why_they_carry_no_result(session: Session, tmp_path: Path) -> None:

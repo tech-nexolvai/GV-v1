@@ -752,7 +752,10 @@ function WallChoices({ question, onSave, onOpenCard }: { question: WallQuestion;
           <p className="text-xs text-muted-foreground">Or choose another layout:</p>
         </>
       )}
-      {!question.betweenPanels && question.proposal && (
+      {!question.betweenPanels && question.automatic && (
+        <p className="text-sm text-muted-foreground">Walls at both ends: seen on the drawing at both ends and confirmed by both AIs. Choose another layout only if that is wrong.</p>
+      )}
+      {!question.betweenPanels && !question.automatic && question.proposal && (
         <p className="text-sm text-muted-foreground">The readers propose: {wallWords(question.proposal).toLowerCase()}. Not confirmed.</p>
       )}
       {/* One per row, or all of them in one row when three or fewer fit; never a ragged 2 + 1 (#1155). */}

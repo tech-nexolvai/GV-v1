@@ -288,7 +288,7 @@ from units.imperial import format_inches
 from units.measurement import Measurement, Unit
 from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation, is_compound
-from verdict.engine import execute
+from verdict.engine import EngineError, execute
 from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
@@ -405,7 +405,11 @@ from workflow.slot_reader import (
     persist_slot_readings,
     read_slot_pages,
 )
-from workflow.slot_row_evidence import confirm_unwitnessed_pass, slot_row_check
+from workflow.slot_row_evidence import (
+    confirm_unwitnessed_pass,
+    confirm_vendor_walls_pass,
+    slot_row_check,
+)
 from workflow.slot_row_scope import SlotRow, slot_rows_and_unchosen_pages
 from workflow.timing import TimingRecorder
 from workflow.unread_pages import (
@@ -7399,14 +7403,31 @@ class DatabaseStages:
                         # every wall case the rulebook publishes. FAIL or PASS only when every
                         # case agrees; otherwise the row still waits for its walls, each case's
                         # result recorded. The engine does all the arithmetic.
-                        finding = wall_free_finding(
-                            width_snapshot,
-                            row_check.operands,
-                            resolved,
-                            discriminators=discriminators,
-                            waiting=row_check.reason
-                            or "This row needs reviewer input before checking.",
+                        waiting = (
+                            row_check.reason or "This row needs reviewer input before checking."
                         )
+                        try:
+                            finding = wall_free_finding(
+                                width_snapshot,
+                                row_check.operands,
+                                resolved,
+                                discriminators=discriminators,
+                                waiting=waiting,
+                            )
+                        except EngineError as error:
+                            # Never silent (#1202 review): the row still needs its walls, and
+                            # why the cases could not be worked out is recorded with it.
+                            finding = Finding(
+                                rule_id="CT-WIDTH-001",
+                                outcome=Outcome.REVIEW_REQUIRED,
+                                severity=width_snapshot.rule.severity,
+                                reason=(
+                                    f"{waiting} The width could not be worked out for every wall "
+                                    f"case: {error}"
+                                ),
+                                snapshot_id=width_snapshot.snapshot_id,
+                                engine_version=ENGINE_VERSION,
+                            )
                         if (
                             finding.outcome is Outcome.REVIEW_REQUIRED
                             and row_check.wall_provenance is not None
@@ -7444,6 +7465,13 @@ class DatabaseStages:
                                 finding,
                                 notes=(*finding.notes, row_check.wall_provenance),
                             )
+                        # A PASS on walls set automatically rests on the vendor's drawing: one
+                        # reviewer click (#1202 review). A FAIL on them stays automatic.
+                        finding = confirm_vendor_walls_pass(
+                            finding,
+                            walls_automatic=row_check.walls_automatic,
+                            unwitnessed=row_check.unwitnessed,
+                        )
                         # A PASS on a reading whose drawn length could not be checked rests on
                         # the two readers' text alone: one reviewer click (#1107).
                         finding = confirm_unwitnessed_pass(finding, row_check.unwitnessed)

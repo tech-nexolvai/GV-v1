@@ -53,8 +53,8 @@ assert.deepEqual(
 // code-alone layout is now a proposal like any other; walls that change nothing are not asked.
 assert.equal(
   shouldOfferRowWallControl({ ...row, wall_source: 'code-ink-and-both-ais' }),
-  false,
-  'walls set by code ink and both AIs are the row\'s input, not a question',
+  true,
+  'walls set by code ink and both AIs can always be corrected by the reviewer',
 );
 assert.equal(
   shouldOfferRowWallControl({ ...row, wall_source: 'vendor-drawing-clues' }),

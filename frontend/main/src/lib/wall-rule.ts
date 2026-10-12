@@ -44,7 +44,7 @@ export function fieldCutRuleLines(fieldCut: string | null, cases?: WallCases | n
 /** '1" is this project's field cut (it can be changed per project).' */
 export function fieldCutValueLine(fieldCut: string | null): string {
   return fieldCut
-    ? `${fieldCut} is this project's field cut (it can be changed per project).`
+    ? `${fieldCut} is this project's field cut now (it can be changed per project).`
     : "The field cut is set per project (1\" is GV's usual value).";
 }
 
@@ -87,7 +87,10 @@ export function choiceResult(cases: WallCases | null | undefined, layout: string
   return { needed: item.expected_total.display, outcome: item.outcome as Outcome };
 }
 
-/** The field cut to explain with: the one the row's result used, else the one a run would use now. */
+/**
+ * The field cut to explain with (#1202 review): the project's value now, as a run would use it, so
+ * the "i" never shows an old value; else the one the row's result used.
+ */
 export function fieldCutOf(row: Pick<CountertopResult, 'field_cut_per_end' | 'wall_cases' | 'field_cut_in_force'>): string | null {
-  return row.field_cut_per_end?.display ?? row.wall_cases?.field_cut_per_end?.display ?? row.field_cut_in_force ?? null;
+  return row.field_cut_in_force ?? row.field_cut_per_end?.display ?? row.wall_cases?.field_cut_per_end?.display ?? null;
 }

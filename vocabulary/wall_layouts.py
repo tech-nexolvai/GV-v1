@@ -32,6 +32,7 @@ __all__ = [
     "NOT_NEEDED_FAIL_LINE",
     "NOT_NEEDED_PASS_LINE",
     "READERS_WALL_SOURCE",
+    "VENDOR_WALLS_PASS_REASON",
     "WALL_CASE_WORDS",
     "WALL_LAYOUT_WORDS",
     "chosen_by_line",
@@ -88,6 +89,13 @@ AUTOMATIC_WALLS_LINE: Final = (
 )
 NOT_NEEDED_FAIL_LINE: Final = "not needed: wrong for every wall case"
 NOT_NEEDED_PASS_LINE: Final = "not needed: right for every wall case"
+
+#: A PASS resting on walls set automatically waits for one click (#1202 review): the walls were
+#: read from the vendor's drawing, and the vendor's drawing can be wrong about walls. A FAIL on
+#: them stays automatic (a flag the reviewer can dismiss).
+VENDOR_WALLS_PASS_REASON: Final = (
+    "Walls at both ends were read from the vendor's drawing (seen by code and both AIs); confirm."
+)
 
 #: The rule itself, in one plain sentence; the company's own rule, set per project.
 FIELD_CUT_RULE: Final = (

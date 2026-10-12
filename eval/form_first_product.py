@@ -46,7 +46,7 @@ from units.normalise import UnitNormalisationError, normalise_to_inches
 from units.notation import canonical_notation
 from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE
 from workflow.changed_values import layered_parameter_sets
-from workflow.layout_proposals import reader_sealed_wall_config, slot_reader_wall_for_page
+from workflow.layout_proposals import slot_reader_wall_for_page
 from workflow.measurements import run_parameters_for
 from workflow.part_operands import countertop_scopes, current_wall_layout
 
@@ -420,10 +420,9 @@ def product_case_for_page(
             and row_wall.source in {"readers", "drawing-and-readers"}
         )
     else:
-        # Preserve the pre-row path only when this page has no slot-reader row answer at all.
-        legacy_layout = reader_sealed_wall_config(session, package_revision_id)
-        wall_layout = None if legacy_layout is None else legacy_layout.value
-        wall_layout_used = legacy_layout is not None and legacy_layout.extraction_run_id == run_id
+        # No row answer for this page: no walls (#1202). A revision-wide layout the readers sealed
+        # is only a proposal, and the check never uses one without the reviewer.
+        wall_layout = None
     wall_candidates = tuple(
         (page_index, candidate)
         for page_index, candidate in session.execute(

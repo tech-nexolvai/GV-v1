@@ -354,9 +354,9 @@ class CountertopResultOut(BaseModel):
         default=None,
         json_schema_extra=optional_in_schema,
         description=(
-            'The field cut per wall end the newest width results used, e.g. `1"` (#1202): the '
-            "project's setting as the last check run read it. For the field-cut explanation; "
-            "null before any check has run."
+            'The field cut per wall end a check run would use now, e.g. `1"` (#1202): the '
+            "run's, else the project's, else GV's default, else the rulebook's. For the field-cut "
+            "explanation, labelled as the current value."
         ),
     )
 

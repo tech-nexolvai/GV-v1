@@ -55,7 +55,13 @@ from app.review.no_countertop import (
     reading_answer,
 )
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
-from app.review.wall_cases import field_cut_in_force, wall_cases_out
+from app.review.wall_cases import (
+    FIELD_CUT_CHANGED,
+    current_field_cut,
+    field_cut_changed,
+    field_cut_text,
+    wall_cases_out,
+)
 from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectComparedOut,
@@ -1003,7 +1009,8 @@ def _countertop_results_for_revision(
     wall_origins = wall_answer_origins(session, (row.decision for row in rows))
     # The field cut the newest results used, for the field-cut explanation (#1202): read from the
     # results already loaded, so the statement count does not change.
-    in_force = field_cut_in_force(finding_by_row.values())
+    current = current_field_cut(session, revision.id) if rows else None
+    in_force = field_cut_text(current)
     items: list[CountertopResultOut] = []
     for row in rows:
         finding = finding_by_row.get(row.anchor.id)
@@ -1102,15 +1109,21 @@ def _countertop_results_for_revision(
                 delta=_exact(delta),
                 wall_layout=_wall(row, wall_origins, finding),
                 wall_cases=(
-                    wall_cases_out(
-                        finding.trace,
-                        between_panels=any(
-                            is_between_panels(candidate.ambiguity_flags or ())
-                            for candidate in row.candidates
-                        ),
+                    WallCasesOut(unavailable_reason=FIELD_CUT_CHANGED)
+                    if finding is not None
+                    and is_every_wall_case(finding.trace)
+                    and field_cut_changed(finding, current)
+                    else (
+                        wall_cases_out(
+                            finding.trace,
+                            between_panels=any(
+                                is_between_panels(candidate.ambiguity_flags or ())
+                                for candidate in row.candidates
+                            ),
+                        )
+                        if finding is not None and is_every_wall_case(finding.trace)
+                        else WallCasesOut()
                     )
-                    if finding is not None and is_every_wall_case(finding.trace)
-                    else WallCasesOut()
                 ),
                 field_cut_in_force=in_force,
                 agreement=AgreementFactsOut(

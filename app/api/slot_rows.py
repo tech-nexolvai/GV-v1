@@ -34,7 +34,9 @@ from app.models.verdicts import Finding
 from app.review.row_location import RowLocation, architect_locations, row_location
 from app.review.sizes import NOT_ABOVE_ZERO, typed_negative
 from app.review.wall_cases import (
-    field_cut_in_force,
+    current_field_cut,
+    field_cut_changed,
+    field_cut_text,
     latest_width_findings,
     unavailable_reason,
     wall_cases_out,
@@ -129,9 +131,9 @@ class SlotRowOut(BaseModel):
     field_cut_in_force: str | None = Field(
         default=None,
         description=(
-            'The field cut per wall end the newest width results used, e.g. `1"` (#1202): the '
-            "project's setting as the last check run read it. For the field-cut explanation; "
-            "null before any check has run."
+            'The field cut per wall end a check run would use now, e.g. `1"` (#1202): the '
+            "run's, else the project's, else GV's default, else the rulebook's. Each choice's "
+            "result is hidden when it differs from the one the recorded result used."
         ),
     )
     wall_evidence: list[str] = Field(
@@ -195,7 +197,7 @@ def _row_out(
     row: SlotRow,
     layouts: tuple[str, ...],
     finding: Finding | None = None,
-    field_cut: str | None = None,
+    field_cut: Fraction | None = None,
 ) -> SlotRowOut:
     proposal_by_candidate = row.proposals
     candidate_by_position: dict[int | None, ObservationCandidate] = {}
@@ -308,10 +310,13 @@ def _row_out(
         and finding.created_at is not None
         and decision.created_at > finding.created_at
     )
-    why_not = unavailable_reason(finding, saved_after=saved_after)
+    # The project's field cut changed since this result: its numbers are out of date (#1202).
+    stale = field_cut_changed(finding, field_cut)
+    why_not = unavailable_reason(finding, saved_after=saved_after, field_cut_changed=stale)
     walls_needed = not (
         finding is not None
         and not saved_after
+        and not stale
         and is_every_wall_case(finding.trace)
         and finding.outcome in (Outcome.PASS.value, Outcome.FAIL.value)
     )
@@ -341,7 +346,7 @@ def _row_out(
             unavailable_reason=why_not,
         ),
         walls_needed=walls_needed,
-        field_cut_in_force=field_cut,
+        field_cut_in_force=field_cut_text(field_cut),
         wall_evidence=_wall_evidence(wall_flags),
     )
 
@@ -375,7 +380,7 @@ def list_slot_rows(
     layouts = published_wall_layouts(session)
     rows = slot_rows(session, revision.id)
     findings = latest_width_findings(session, revision.id, [row.anchor.id for row in rows])
-    field_cut = field_cut_in_force(findings.values())
+    field_cut = current_field_cut(session, revision.id, project_id=project_id) if rows else None
     return SlotRowsOut(
         rows=[
             _row_out(session, row, layouts, findings.get(row.anchor.id), field_cut) for row in rows
@@ -504,7 +509,7 @@ def review_slot_row(
         _current_row(session, revision.id, row_id),
         layouts,
         findings.get(row_id),
-        field_cut_in_force(findings.values()),
+        current_field_cut(session, revision.id, project_id=project_id),
     )
 
 

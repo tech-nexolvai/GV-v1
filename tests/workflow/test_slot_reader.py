@@ -1951,7 +1951,7 @@ def test_a_sealed_wall_layout_is_kept_with_its_pictures_and_proposed(
     ).one()
     assert proposal.discriminator_name == "wall_config"
     assert proposal.proposed_value == "back_left_right"
-    assert proposal.prompt_id == "slot-walls-v2"
+    assert proposal.prompt_id == "slot-walls-v3"
     assert proposal.model_id == f"{KIMI} + {QWEN}"
     sealed = reader_sealed_wall_config(session, revision.id)
     assert sealed is not None and sealed.value == "back_left_right"
@@ -2136,6 +2136,61 @@ def test_code_ink_and_both_ais_but_stone_between_panels_go_to_the_reviewer(
     assert result.walls is not None
     assert result.walls.outcome.source == "readers"
     assert result.check_hold is not None
+
+
+@pytest.mark.parametrize(
+    ("opus", "sonnet"),
+    [
+        ("open_end", "to_walls"),
+        ("open_end", "open_end"),
+        ("unsure", "unsure"),
+        ("no_stone", "to_walls"),
+    ],
+)
+def test_only_both_ais_saying_the_stone_runs_to_the_walls_allows_automatic_walls(
+    monkeypatch: Any, opus: str, sonnet: str
+) -> None:
+    """#1202 review: an open end, "unsure" or "no stone" is not the stone meeting the walls."""
+    _with_wall_ink(monkeypatch, True, True)
+    result, _ = _claude_walls(
+        BOTH_WALLS,
+        lambda model: {
+            "contains_tall_appliance": False,
+            "stone_ends": opus if model == OPUS else sonnet,
+            "why": "synthetic",
+        },
+    )
+
+    assert result.walls is not None
+    assert result.walls.outcome.config == "back_left_right"
+    assert result.walls.outcome.source == "readers", "a proposal the reviewer confirms"
+
+
+def test_the_stone_question_counts_only_two_to_walls_answers() -> None:
+    from types import SimpleNamespace
+
+    from workflow.slot_reader import stone_runs_to_walls
+
+    def said(*values: str) -> list[Any]:
+        return [SimpleNamespace(stone_ends=value) for value in values]
+
+    assert stone_runs_to_walls(said("to_walls", "to_walls"))
+    assert not stone_runs_to_walls(said("to_walls"))
+    assert not stone_runs_to_walls(said("to_walls", "open_end"))
+    assert not stone_runs_to_walls(said("to_walls", "short_of_ends"))
+
+
+def test_automatic_walls_need_the_judged_row_to_be_the_row_read() -> None:
+    """#1202 review: a row read through its equal-share chain keeps automatic walls only when the
+    chain has exactly the same two ends as the row whose walls the AIs and code judged."""
+    from types import SimpleNamespace
+
+    from workflow.slot_reader import same_row_ends
+
+    judged = SimpleNamespace(x0=Decimal(100), x1=Decimal(300))
+    assert same_row_ends(judged, SimpleNamespace(x0=Decimal(100), x1=Decimal(300)))  # type: ignore[arg-type]
+    assert not same_row_ends(judged, SimpleNamespace(x0=Decimal(101), x1=Decimal(300)))  # type: ignore[arg-type]
+    assert not same_row_ends(judged, None)  # type: ignore[arg-type]
 
 
 def test_code_wall_ink_never_decides_alone(monkeypatch: Any) -> None:

@@ -49,8 +49,10 @@ from vocabulary.wall_layouts import NOT_NEEDED_FAIL_LINE, NOT_NEEDED_PASS_LINE
 
 __all__ = [
     "EVERY_WALL_CASE_OPERATION_SUFFIX",
+    "UNREADABLE_CASES",
     "StoredWallCase",
     "is_every_wall_case",
+    "read_wall_cases",
     "scale_inputs",
     "stored_wall_cases",
     "wall_free_finding",
@@ -226,36 +228,60 @@ def is_every_wall_case(trace: Mapping[str, Any] | None) -> bool:
     return isinstance(operation, str) and operation.endswith(EVERY_WALL_CASE_OPERATION_SUFFIX)
 
 
-def stored_wall_cases(trace: Mapping[str, Any] | None) -> tuple[StoredWallCase, ...]:
-    """Every case of a stored every-case trace, in the rule's order; empty for any other trace."""
+#: Why a recorded every-case result shows no cases: it could not be read back exactly.
+UNREADABLE_CASES: Final = (
+    "The recorded result for each wall case could not be read back; run the checks again."
+)
+
+
+def read_wall_cases(
+    trace: Mapping[str, Any] | None,
+) -> tuple[tuple[StoredWallCase, ...], str | None]:
+    """Every case of a stored every-case trace, or none and why (#1202 review: never silent).
+
+    Empty with no reason for any other trace. For an every-case trace, every case it lists must
+    read back with a known outcome, and every decided case with its needed overall; otherwise no
+    case is given and `UNREADABLE_CASES` says so, rather than a partial or guessed list.
+    """
     if trace is None or not is_every_wall_case(trace):
-        return ()
+        return (), None
     entries: dict[str, object] = {}
     order: list[str] = []
     for pair in trace.get("intermediates", ()) or ():
         if not isinstance(pair, (list, tuple)) or len(pair) != 2 or not isinstance(pair[0], str):
-            continue
+            return (), UNREADABLE_CASES
         name, value = pair
         entries[name] = value
         if name.endswith(".outcome"):
             order.append(name.removesuffix(".outcome"))
+    if not order:
+        return (), UNREADABLE_CASES
     cases: list[StoredWallCase] = []
     for layout in order:
         try:
             outcome = Outcome(str(entries[f"{layout}.outcome"]))
         except ValueError:
-            continue
+            return (), UNREADABLE_CASES
         total_raw = entries.get(f"{layout}.field_cut_total")
         per_end, count = scale_inputs(total_raw)
+        expected = _stored_result(entries.get(f"{layout}.expected_width"))
+        if outcome in (Outcome.PASS, Outcome.FAIL) and expected is None:
+            return (), UNREADABLE_CASES
         cases.append(
             StoredWallCase(
                 layout=layout,
                 outcome=outcome,
-                expected=_stored_result(entries.get(f"{layout}.expected_width")),
+                expected=expected,
                 field_cut_count=count,
                 field_cut_per_end=per_end,
                 field_cut_total=_stored_result(total_raw),
                 row_width=_stored_result(entries.get(f"{layout}.row_width")),
             )
         )
-    return tuple(cases)
+    return tuple(cases), None
+
+
+def stored_wall_cases(trace: Mapping[str, Any] | None) -> tuple[StoredWallCase, ...]:
+    """Every case of a stored every-case trace, in the rule's order; empty for any other trace or
+    one that cannot be read back (`read_wall_cases` says why)."""
+    return read_wall_cases(trace)[0]

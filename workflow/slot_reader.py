@@ -1676,13 +1676,16 @@ def read_slot_pages(
             words = (
                 _read_wall_words(slots, asked.words) if runtime.claude_row_reader else asked.words
             )
-            # The third condition for automatic walls (#1202): both AIs answered where the stone
-            # ends, and neither they nor code's "wall to wall" line says it stops at panels or runs
-            # into wall pockets. Without the counter question (not the Claude path) it never holds.
+            # The third condition for automatic walls (#1202): both AIs said the stone runs to the
+            # walls (`to_walls`, nothing else: an open end, "unsure" or "no stone" is not that),
+            # and code's "wall to wall" line does not say it runs past them. Without the counter
+            # question (not the Claude path) it never holds. And the walls were judged on this
+            # very row: a row read through its equal-share chain must have the same two ends.
             stone_meets_walls = (
                 runtime.claude_row_reader
-                and len(line_answers) == 2
+                and stone_runs_to_walls(line_answers)
                 and _stone_end_hold(page, asked_plan, line_answers) is None
+                and same_row_ends(asked_plan.row, plan.row)
             )
             wall_outcome = seal_walls(
                 wall_answers,
@@ -1746,6 +1749,20 @@ def read_slot_pages(
             effort=runtime.claude_effort if runtime.claude_row_reader else None,
         )
     return tuple(results)
+
+
+def stone_runs_to_walls(answers: Sequence[CounterBreakAnswer]) -> bool:
+    """Whether both AIs answered the counter question and both said exactly `to_walls` (#1202)."""
+    return len(answers) == 2 and all(answer.stone_ends == "to_walls" for answer in answers)
+
+
+def same_row_ends(
+    judged: CountertopRowCandidate | None, final: CountertopRowCandidate | None
+) -> bool:
+    """Whether the row whose walls were judged is the row finally read: the same two ends."""
+    return (
+        judged is not None and final is not None and judged.x0 == final.x0 and judged.x1 == final.x1
+    )
 
 
 def _walls_key(page_index: int) -> str:

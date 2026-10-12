@@ -198,6 +198,35 @@ def test_the_stored_trace_gives_every_case_back_exactly() -> None:
     assert cases["island"].expected == 94 and cases["island"].field_cut_count == 0
 
 
+def test_an_every_case_trace_that_cannot_be_read_back_says_so() -> None:
+    """#1202 review: never a silently empty or partial list of cases."""
+    from workflow.wall_cases import UNREADABLE_CASES, read_wall_cases
+
+    finding = wall_free_finding(
+        _snapshot(), _operands(99), _field_cut(), discriminators={}, waiting=WAITING
+    )
+    assert finding.trace is not None
+    stored = calculation_trace(finding.trace, outcome=finding.outcome)
+    assert read_wall_cases(stored)[1] is None
+    broken_outcome = {
+        **stored,
+        "intermediates": [
+            [name, "MAYBE" if name == "island.outcome" else value]
+            for name, value in stored["intermediates"]
+        ],
+    }
+    assert read_wall_cases(broken_outcome) == ((), UNREADABLE_CASES)
+    no_expected = {
+        **stored,
+        "intermediates": [
+            pair for pair in stored["intermediates"] if pair[0] != "back_only.expected_width"
+        ],
+    }
+    assert read_wall_cases(no_expected) == ((), UNREADABLE_CASES)
+    assert read_wall_cases({**stored, "intermediates": []}) == ((), UNREADABLE_CASES)
+    assert stored_wall_cases(broken_outcome) == ()
+
+
 def test_an_ordinary_trace_is_not_read_as_wall_cases() -> None:
     assert stored_wall_cases({"operation": "equals", "intermediates": []}) == ()
     assert stored_wall_cases(None) == ()

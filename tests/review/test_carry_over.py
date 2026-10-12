@@ -1617,7 +1617,9 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     # file, for a row the architect check wrote nothing for; still the same for any number of rows.
     # 15 since #1193: the read pages' drawings are asked for once ("drawings not read"; a second
     # statement only when a read page has pasted drawings); still the same for any number of rows.
-    assert counter[0] <= 15
+    # 17 since #1202: the field cut a run would use now is asked once (and the rulebook's default
+    # only when no stored setting holds it); still the same for any number of rows.
+    assert counter[0] <= 17
 
 
 def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:

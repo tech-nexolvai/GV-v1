@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 
-from extraction.geometry.rows import Box, InkCurve, InkLine, PageInk
+from extraction.geometry.rows import Box, InkCharacter, InkCurve, InkLine, PageInk
 from extraction.slot_reader.walls import (
     BACK_AND_LEFT,
     BACK_AND_RIGHT,
@@ -413,38 +413,77 @@ def _band(x0: int, x1: int, top: int, bottom: int, lightness: str | None) -> Ink
     )
 
 
-def test_a_solid_grey_band_beside_the_end_is_wall_ink() -> None:
-    seen, why = band_at(_ink_with(curves=(_band(84, 100, 100, 190, "0.73"),)), **_hatch(100))  # type: ignore[arg-type]
-    assert seen and "band" in why
-    right, _ = band_at(
-        _ink_with(curves=(_band(300, 316, 100, 190, "0"),)), **_hatch(300, "right")  # type: ignore[arg-type]
+def _line(x0: float, y0: float, x1: float, y1: float) -> InkLine:
+    return InkLine(Decimal(str(x0)), Decimal(str(y0)), Decimal(str(x1)), Decimal(str(y1)))
+
+
+#: The cabinets just inside the row's left end (row end at 100, top of the cabinets at 150), and
+#: just inside its right end (row end at 300).
+LEFT_CABINET = _band(102, 130, 150, 200, None)
+RIGHT_CABINET = _band(270, 298, 150, 200, None)
+
+
+def _band_at(
+    curves: tuple[InkCurve, ...],
+    lines: tuple[InkLine, ...] = (),
+    x_end: int = 100,
+    side: str = "left",
+) -> tuple[bool, str]:
+    return band_at(
+        _ink_with(lines=lines, curves=(LEFT_CABINET, RIGHT_CABINET, *curves)),
+        x_end=Decimal(x_end),
+        side=side,  # type: ignore[arg-type]
+        row_width=Decimal(200),
+        y_low=Decimal(40),
+        y_high=Decimal(200),
+        settings=E3_WALL_SETTINGS,
     )
-    assert right
+
+
+def test_a_solid_grey_band_beside_the_end_is_wall_ink() -> None:
+    seen, why = _band_at((_band(84, 100, 50, 200, "0.73"),))
+    assert seen and "band" in why
+    assert _band_at((_band(300, 316, 50, 200, "0"),), x_end=300, side="right")[0]
+    # Hatch drawn on the band is still a wall band.
+    hatch = tuple(_line(86, 60 + 8 * i, 98, 72 + 8 * i) for i in range(12))
+    assert _band_at((_band(84, 100, 50, 200, "0.73"),), lines=hatch)[0]
 
 
 @pytest.mark.parametrize(
-    "band",
+    ("band", "lines"),
     [
-        _band(84, 100, 100, 190, "1"),  # white: paper, not a wall
-        _band(84, 100, 100, 190, None),  # an outline, not filled
-        _band(84, 100, 100, 120, "0.5"),  # too short for the drawing's height
-        _band(84, 160, 100, 190, "0.5"),  # reaches into the row
-        _band(20, 100, 150, 190, "0.5"),  # wider than tall
-        _band(40, 60, 100, 190, "0.5"),  # well away from the end
+        (_band(84, 100, 50, 200, "1"), ()),  # white: paper, not a wall
+        (_band(84, 100, 50, 200, None), ()),  # an outline, not filled
+        (_band(84, 100, 100, 130, "0.5"), ()),  # too short for the drawing's height
+        (_band(84, 160, 50, 200, "0.5"), ()),  # reaches into the row
+        (_band(20, 100, 150, 190, "0.5"), ()),  # wider than tall
+        (_band(40, 60, 50, 200, "0.5"), ()),  # well away from the end
+        # #1202 review: a grey tall cabinet or fridge beside the end: far wider than a wall band.
+        (_band(30, 100, 50, 200, "0.7"), (_line(60, 60, 60, 190), _line(90, 100, 90, 140))),
+        # ...and a narrow grey tall cabinet: doors and a handle drawn on it.
+        (_band(80, 100, 50, 200, "0.7"), (_line(90, 60, 90, 190), _line(84, 120, 96, 120))),
+        # A shaded filler strip: no higher than the cabinets beside it.
+        (_band(88, 100, 150, 200, "0.6"), ()),
     ],
 )
-def test_other_fills_are_not_a_wall_band(band: InkCurve) -> None:
-    assert not band_at(_ink_with(curves=(band,)), **_hatch(100))[0]  # type: ignore[arg-type]
+def test_other_fills_are_not_a_wall_band(band: InkCurve, lines: tuple[InkLine, ...]) -> None:
+    assert not _band_at((band,), lines=lines)[0]
 
 
-def _cabinet_and_wall(wall_top: int, wall_bottom: int, wall_x: int = 98) -> PageInk:
-    """A cabinet box beside the left end (top at 140) and an upright wall line at the end."""
-    cabinet = _band(102, 130, 140, 200, None)
-    wall = InkLine(Decimal(wall_x), Decimal(wall_top), Decimal(wall_x), Decimal(wall_bottom))
-    return _ink_with(lines=(wall,), curves=(cabinet,))
-
-
-def _tall(ink: PageInk, frame: int = 400) -> tuple[bool, str]:
+def _tall(
+    lines: tuple[InkLine, ...] = (),
+    curves: tuple[InkCurve, ...] = (),
+    frame: int = 400,
+    chars: tuple[InkCharacter, ...] = (),
+) -> tuple[bool, str]:
+    ink = PageInk(
+        width=Decimal(600),
+        height=Decimal(400),
+        lines=lines,
+        curves=(LEFT_CABINET, *curves),
+        characters=chars,
+        drawing_boxes=(),
+    )
     return tall_line_at(
         ink,
         x_end=Decimal(100),
@@ -457,22 +496,106 @@ def _tall(ink: PageInk, frame: int = 400) -> tuple[bool, str]:
     )
 
 
-def test_a_tall_wall_line_rising_above_the_cabinets_is_wall_ink() -> None:
-    seen, why = _tall(_cabinet_and_wall(60, 200))
-    assert seen and "tall wall line" in why
+#: A wall drawn in section at the left end: its inner face at 98, its outer face at 80, as tall,
+#: nothing between, rising from the floor (200) well above the cabinets (top 150).
+WALL_IN_SECTION = (_line(98, 50, 98, 200), _line(80, 50, 80, 200), _line(80, 50, 98, 50))
+
+
+def test_a_wall_drawn_in_section_rising_above_the_cabinets_is_wall_ink() -> None:
+    seen, why = _tall(WALL_IN_SECTION)
+    assert seen and "wall drawn in section" in why
+    # Inside a room outline: a ceiling line from this wall across the row does not matter.
+    seen, _ = _tall((*WALL_IN_SECTION, _line(98, 50, 320, 50), _line(320, 50, 320, 200)))
+    assert seen
 
 
 @pytest.mark.parametrize(
-    ("top", "bottom", "x", "frame"),
+    ("lines", "frame"),
     [
-        (120, 200, 98, 400),  # not 40 points above the cabinets
-        (60, 120, 98, 400),  # does not come down to the floor
-        (60, 200, 40, 400),  # too far outside the end
-        (60, 200, 98, 150),  # as tall as the pasted drawing: its frame
+        ((_line(98, 120, 98, 200), _line(80, 120, 80, 200)), 400),  # not above the cabinets
+        ((_line(98, 50, 98, 120), _line(80, 50, 80, 120)), 400),  # does not reach the floor
+        ((_line(40, 50, 40, 200), _line(22, 50, 22, 200)), 400),  # too far outside the end
+        (WALL_IN_SECTION, 150),  # as tall as the pasted drawing: its frame
+        # Something drawn between the two faces: not an empty wall section.
+        ((*WALL_IN_SECTION, _line(85, 120, 93, 120)), 400),
     ],
 )
-def test_other_upright_lines_are_not_a_wall(top: int, bottom: int, x: int, frame: int) -> None:
-    assert not _tall(_cabinet_and_wall(top, bottom, x), frame)[0]
+def test_other_upright_lines_are_not_a_wall(lines: tuple[InkLine, ...], frame: int) -> None:
+    assert not _tall(lines, frame=frame)[0]
+
+
+def _digit(text: str, x: float, y: float) -> InkCharacter:
+    return InkCharacter(
+        text, Box(Decimal(str(x)), Decimal(str(y)), Decimal(str(x + 4)), Decimal(str(y + 6)))
+    )
+
+
+def test_a_single_tall_line_is_never_a_wall() -> None:
+    """#1202 review: a single tall line may be an outline, a frame, a panel edge or a grid line."""
+    seen, why = _tall((_line(98, 50, 98, 200),))
+    assert not seen and "single tall line" in why
+
+
+def test_the_view_box_round_the_row_is_not_a_wall() -> None:
+    """The elevation's outline box just beyond the row's ends, with the drawing inside it."""
+    box = _band(95, 330, 45, 205, None)
+    assert not _tall(curves=(box,))[0]
+
+
+def test_an_elevation_outline_box_edge_is_not_a_wall_at_the_end() -> None:
+    """Rebuilt from a real candidate row: its left "wall" was the elevation's outline box edge,
+    the other end against a real hatched wall; a corner, not walls at both ends."""
+    outline = (
+        _line(96, 45, 96, 200),
+        _line(96, 45, 330, 45),
+        _line(330, 45, 330, 200),
+        _line(96, 200, 330, 200),
+    )
+    hatch = tuple(_line(330, 60 + 8 * i, 342, 72 + 8 * i) for i in range(16))
+    seen, why = _tall((*outline, *hatch))
+    assert not seen and "single tall line" in why
+
+
+def test_height_dimension_lines_are_not_a_wall() -> None:
+    """Two height dimensions beside the end: ticks at their ends and a number beside them."""
+    ticks = (_line(95, 47, 101, 53), _line(95, 197, 101, 203), _line(77, 47, 83, 53))
+    seen, why = _tall(
+        (_line(98, 50, 98, 200), _line(80, 50, 80, 200), *ticks),
+        chars=(_digit("9", 86, 120), _digit("6", 86, 127)),
+    )
+    assert not seen and "dimension or extension line" in why
+
+
+def test_long_extension_lines_are_not_a_wall() -> None:
+    """Extension lines rising from the floor to a width dimension above, ticked where they meet."""
+    lines = (
+        _line(98, 30, 98, 200),
+        _line(80, 30, 80, 200),
+        _line(60, 34, 330, 34),
+        _line(95, 31, 101, 37),
+        _line(77, 31, 83, 37),
+    )
+    assert not _tall(lines)[0]
+
+
+def test_an_end_panel_drawn_tall_is_not_a_wall() -> None:
+    """A tall end panel at the row's end, part of the run: one outline, no wall beyond it."""
+    panel = _band(100, 104, 50, 200, None)
+    assert not _tall(curves=(panel,))[0]
+
+
+def test_a_tall_cabinet_or_fridge_beside_the_end_is_not_a_wall() -> None:
+    """Its edge and a reveal line look like a wall's two faces; the box they close holds doors."""
+    lines = (
+        _line(98, 50, 98, 200),
+        _line(95, 50, 95, 200),  # a reveal 3 points in
+        _line(40, 50, 98, 50),  # the cabinet's top, from its far side to this edge
+        _line(40, 50, 40, 200),
+        _line(68, 60, 68, 190),  # the doors' meeting line
+        _line(60, 110, 64, 110),  # a handle
+    )
+    seen, why = _tall(lines)
+    assert not seen and "things drawn in it" in why
 
 
 def test_wall_settings_refuse_a_float() -> None:
@@ -499,7 +622,7 @@ def _wall_definition(field: str) -> str:
 def test_the_wall_question_defines_every_field_with_a_yes_and_a_no_example() -> None:
     from extraction.slot_reader.claude_output import WALL_SCHEMA
 
-    assert WALL_PROMPT_ID == "slot-walls-v2"
+    assert WALL_PROMPT_ID == "slot-walls-v3"
     for field in WALL_SCHEMA["properties"]:  # type: ignore[attr-defined]
         assert f'"{field}"' in _wall_definition(f'"{field}"'), field
     for side in ("left", "right", "behind"):
@@ -525,12 +648,14 @@ def test_a_wall_to_wall_dimension_counts_only_where_its_ends_meet_the_runs_ends(
     assert "a run can be shorter than wall to wall" in WALL_PROMPT
 
 
-def test_the_vendors_words_no_longer_decide_a_wall_and_the_question_is_unchanged() -> None:
-    """#1202: words are evidence only and `seal_walls` takes none. The question keeps its id and
-    text (v2), so stored answers still replay; it still tells the reader to answer from the
-    pictures."""
-    assert WALL_PROMPT_ID == "slot-walls-v2"
-    assert "Still answer only from what you see in the pictures." in WALL_PROMPT
+def test_the_question_no_longer_says_words_decide_and_words_never_do() -> None:
+    """#1202 review: v3 drops v2's sentence that code decides the walls from the vendor's words at
+    both ends (no longer true); it still tells the reader to answer from the pictures, and
+    `seal_walls` takes no words at all."""
+    assert WALL_PROMPT_ID == "slot-walls-v3"
+    assert "code decides the walls" not in WALL_PROMPT
+    assert "counts as a wall there" not in WALL_PROMPT
+    assert "Answer only from what you see in the pictures." in WALL_PROMPT
     outcome = seal_walls(both(NO, NO), ink=NO_HATCH, row_ambiguity=None)
     assert outcome.config is None and outcome.code == "back-wall-unknown"
 
@@ -540,10 +665,10 @@ def test_the_wall_marks_are_named_magenta_and_reviewer_colours_are_not_ours() ->
     assert "Red or yellow marks are a reviewer's markup" in WALL_PROMPT
 
 
-def test_both_wall_ids_are_recognised_where_stored_runs_are_replayed() -> None:
+def test_every_wall_id_is_recognised_where_stored_runs_are_replayed() -> None:
     from extraction.slot_reader.walls import WALL_PROMPT_IDS
 
-    assert WALL_PROMPT_IDS == {"slot-walls-v2", "slot-walls-v1"}
+    assert WALL_PROMPT_IDS == {"slot-walls-v3", "slot-walls-v2", "slot-walls-v1"}
     assert WALL_PROMPT_IDS <= READER_AGREEMENT_PROMPT_IDS
 
 

@@ -348,7 +348,8 @@ def test_a_checked_rows_crop_ids_are_the_recorded_operands_own_observations(
         session,
         piece_count=2,
         widths_add_up=True,
-        wall_source="code-ink-and-both-ais",
+        wall_source="readers",
+        walls_confirmed=True,
         slot_flags=_boxes,
     )
     for candidate in session.scalars(
@@ -439,7 +440,9 @@ def test_locations_and_crops_are_read_only_and_do_not_grow_with_rows(
     small = _statements(session, lambda: _results(session, small_project, small_package))
     large = _statements(session, lambda: _results(session, project_id, package_id))
     assert len(_results(session, project_id, package_id)) == 20
-    assert len(large) == len(small) <= 12
+    # 14 since #1202: the field cut a run would use now is asked once (a second statement only
+    # when no stored setting holds it and the rulebook's default is read); same for any row count.
+    assert len(large) == len(small) <= 14
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in small + large)
     assert tables() == before
 

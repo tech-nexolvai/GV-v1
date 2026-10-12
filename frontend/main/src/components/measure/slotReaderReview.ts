@@ -57,6 +57,8 @@ export function shouldOfferRowWallControl(row: SlotReaderRow): boolean {
   // The same for every wall case (#1202): the walls do not change the result, so none is asked.
   if (row.walls_needed === false && row.wall_config === null) return false;
   return (
+    // Walls set automatically can always be corrected (#1202 review).
+    row.wall_source === 'code-ink-and-both-ais' ||
     row.wall_source === 'vendor-drawing-clues' ||
     row.wall_source === 'readers' ||
     row.wall_source === 'drawing-and-readers' ||

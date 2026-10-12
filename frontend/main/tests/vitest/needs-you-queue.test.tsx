@@ -128,7 +128,8 @@ describe('needs-you queue: rules', () => {
   it('asks the wall question only where the server allows it and nobody has answered', () => {
     expect(wallQuestion(BASE_SLOTS[0])).toMatchObject({ choices: ['back_left_right', 'back_only', 'island'], proposal: null, betweenPanels: false });
     expect(wallQuestion(BASE_SLOTS[1])).toMatchObject({ betweenPanels: true });
-    expect(wallQuestion(BASE_SLOTS[2])).toBeNull(); // code's wall ink at both ends and both AIs (#1202)
+    // Walls set by code's ink at both ends and both AIs can always be corrected (#1202 review).
+    expect(wallQuestion(BASE_SLOTS[2])).toMatchObject({ automatic: true, proposal: 'back_left_right' });
     expect(wallQuestion(slot('x', { wall_config: 'back_only' }))).toBeNull();
     expect(wallQuestion(slot('x', { wall_confirmation_allowed: false }))).toBeNull();
   });
@@ -137,7 +138,7 @@ describe('needs-you queue: rules', () => {
     // Code alone no longer settles the walls: the older run's layout is a proposal to answer.
     expect(wallQuestion(slot('x', { wall_source: 'vendor-drawing-clues', wall_proposal: 'back_left_right' }))).toMatchObject({ proposal: 'back_left_right' });
     // Only "walls at both ends" is automatic; the same source on another layout is still asked.
-    expect(wallQuestion(slot('x', { wall_source: 'code-ink-and-both-ais', wall_proposal: 'back_only' }))).not.toBeNull();
+    expect(wallQuestion(slot('x', { wall_source: 'code-ink-and-both-ais', wall_proposal: 'back_only' }))).toMatchObject({ automatic: false });
     // The same result for every wall case: nothing to ask.
     expect(wallQuestion(slot('x', { walls_needed: false }))).toBeNull();
     expect(wallQuestion(slot('x', { field_cut_in_force: '1"', wall_cases: CASES }))).toMatchObject({ fieldCut: '1"', cases: CASES });
@@ -262,7 +263,9 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     expect(props.onWallSaved).toHaveBeenCalled();
     expect(await screen.findByText('Wall answer saved. Run the checks to see the result.', undefined, { timeout: 5000 })).toBeTruthy();
     expect(document.querySelector('[data-slot="queue-progress"]')?.textContent).toContain('1 of 4');
-    // A decision now would be asked again after the run, and the queue says so on the next item.
+    // A decision now would be asked again after the run, and the queue says so on the next item
+    // with nothing else to answer (the FAIL row's automatic walls are offered for correction, #1202).
+    key('j');
     key('j');
     key('j');
     expect(document.querySelector('[data-slot="queue-run-first"]')?.textContent).toMatch(/1 answer waits for a check run\. That run replaces these results/);
@@ -288,6 +291,8 @@ describe('needs-you queue: on screen', { timeout: 15_000 }, () => {
     await user.keyboard('{Enter}');
     const rule = await screen.findByText(/GV's field-cut rule: where the stone meets a wall, it is made 1" longer/, undefined, { timeout: 5000 });
     expect(rule).toBeTruthy();
+    // The project's field cut now, labelled as the current value (#1202 review).
+    expect(screen.getByText('1" is this project\'s field cut now (it can be changed per project).')).toBeTruthy();
     expect(document.querySelector('[data-slot="wall-rule-example"]')?.textContent).toBe(
       'Pieces add up to 94". Both ends → should be 96"; one end → 95"; no end walls → 94". Vendor wrote 95".',
     );

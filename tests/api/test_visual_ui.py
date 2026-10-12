@@ -104,7 +104,7 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
 
 def test_drawing_clue_pass_uses_the_recorded_zero_delta(session: Session, tmp_path: Path) -> None:
     project_id, package_id, anchors = _package_rows(
-        session, unsealed_all=True, wall_source="code-ink-and-both-ais", widths_add_up=True
+        session, unsealed_all=True, wall_source="readers", walls_confirmed=True, widths_add_up=True
     )
     _save_widths(session, project_id, package_id, anchors[0], 22)
     findings = _run_current_checks(session, package_id, tmp_path)
@@ -350,7 +350,9 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
         event.remove(session.bind, "before_cursor_execute", count_statements)
     assert response.status_code == 200
     assert len(response.json()["items"]) == 20
-    assert statements <= 12
+    # 14 since #1202: the field cut a run would use now is asked once (a second statement only
+    # when no stored setting holds it and the rulebook's default is read); same for any row count.
+    assert statements <= 14
 
 
 def test_held_countertop_has_no_recomputed_total_or_delta(session: Session, tmp_path: Path) -> None:

@@ -3453,7 +3453,7 @@ export interface components {
             field_cut_count: number | null;
             /**
              * Field Cut In Force
-             * @description The field cut per wall end the newest width results used, e.g. `1"` (#1202): the project's setting as the last check run read it. For the field-cut explanation; null before any check has run.
+             * @description The field cut per wall end a check run would use now, e.g. `1"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. For the field-cut explanation, labelled as the current value.
              */
             field_cut_in_force?: string | null;
             field_cut_per_end: components["schemas"]["ExactValueOut"] | null;
@@ -6626,7 +6626,7 @@ export interface components {
             decision_id: string | null;
             /**
              * Field Cut In Force
-             * @description The field cut per wall end the newest width results used, e.g. `1"` (#1202): the project's setting as the last check run read it. For the field-cut explanation; null before any check has run.
+             * @description The field cut per wall end a check run would use now, e.g. `1"` (#1202): the run's, else the project's, else GV's default, else the rulebook's. Each choice's result is hidden when it differs from the one the recorded result used.
              */
             field_cut_in_force?: string | null;
             /** Held Reason */
