@@ -347,7 +347,8 @@ def test_revision_one_is_read_only_after_revision_two_starts(
     )
 
     assert refused.status_code == 409
-    assert "read-only" in refused.json()["message"]
+    # #1182's closed-revision guard answers first, in its own words for a replaced revision.
+    assert "A newer revision replaced this one" in refused.json()["message"]
     reopened = client.post(
         f"{_base(package_id)}/review-sessions", json={"package_revision_id": str(one.id)}
     )
@@ -496,8 +497,9 @@ def test_evidence_decisions_and_exceptions_on_revision_one_are_refused(
         },
     )
 
-    assert confirm.status_code == 409 and "read-only" in confirm.json()["message"]
-    assert exception.status_code == 409 and "read-only" in exception.json()["message"]
+    replaced = "A newer revision replaced this one"
+    assert confirm.status_code == 409 and replaced in confirm.json()["message"]
+    assert exception.status_code == 409 and replaced in exception.json()["message"]
     with pytest.raises(RevisionSuperseded):
         correct_evidence(
             session,
@@ -550,12 +552,16 @@ def test_starting_a_revision_needs_the_upload_permission(
     session: Session, store: LocalStore
 ) -> None:
     package_id, _arch, _shop = _read_review(_client(session, store), session, store)
-    reviewer = _client(session, store, roles=frozenset({Role.REVIEWER}))
+    # Starting a revision is starting a review (#1182 START_REVIEW): reviewers and admins only.
+    rule_admin = _client(session, store, roles=frozenset({Role.RULE_ADMIN}))
 
     # A role that may not upload is refused like everything else here: as if nothing were there.
-    assert _start(reviewer, package_id, SHOP_TWO).status_code == 404
+    assert _start(rule_admin, package_id, SHOP_TWO).status_code == 404
     assert _revision(session, package_id, 1).state == PackageState.NEEDS_INPUT
-    assert reviewer.get(f"{_base(package_id)}/revisions").status_code == 200
+    assert rule_admin.get(f"{_base(package_id)}/revisions").status_code == 200
+
+    reviewer = _client(session, store, roles=frozenset({Role.REVIEWER}))
+    assert _start(reviewer, package_id, SHOP_TWO).status_code == 201
 
 
 def test_another_projects_package_is_not_found(session: Session, store: LocalStore) -> None:
@@ -1195,10 +1201,38 @@ def test_the_worker_carries_answers_right_after_reading_the_pages(
     monkeypatch.setattr(worker, "_hunt_values", lambda *_args: {})
     monkeypatch.setattr(worker, "_propose_measurements", lambda *_args: {})
     monkeypatch.setattr(side_states, "enter_needs_input", lambda *_args, **_kwargs: None)
+    from app.runs import reading_progress
 
-    results = worker._extract_package(object(), uuid4(), str(uuid4()))
+    monkeypatch.setattr(reading_progress, "side_engine", lambda *_args: None)
+    monkeypatch.setattr(reading_progress, "record_progress", lambda *_args, **_kwargs: None)
 
-    assert order == ["ingest", "extract_pages", "carry", "match", "validate_evidence"]
+    class StageSession:
+        """Each stage commits as it ends (#1178); the commits are recorded in the same order."""
+
+        def commit(self) -> None:
+            order.append("commit")
+
+        def rollback(self) -> None:
+            order.append("rollback")
+
+        def get_bind(self) -> None:
+            return None
+
+    results = worker._extract_package(StageSession(), uuid4(), str(uuid4()))
+
+    # Carried inside the reading's own transaction: the reading and its carried answers commit
+    # together, so a crash cannot leave a read revision without the answers it should have taken.
+    assert order == [
+        "commit",
+        "ingest",
+        "commit",
+        "extract_pages",
+        "carry",
+        "commit",
+        "match",
+        "commit",
+        "validate_evidence",
+    ]
     assert results["carry_forward"] == {"wall_answers": 0}
 
 
