@@ -103,6 +103,7 @@ from app.models.runs import ExtractionRun
 from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.requirements import needs_note
+from vocabulary.semantic_types import SemanticType
 from workflow.measurements import run_layer
 from workflow.slot_row_scope import effective_row_wall
 
@@ -129,7 +130,7 @@ _DECIDED = frozenset({"PASS", "FAIL"})
 _LAYER_PRECEDENCE = ("run", "project", "global")
 
 #: A rule resolved by this discriminator reads the row's wall layout (CT-WIDTH-001).
-_WALL_DISCRIMINATOR = "wall_config"
+_WALL_DISCRIMINATOR = SemanticType.WALL_CONFIG.value
 
 #: A rule of this check type compares the vendor with the architect, and so reads the row's
 #: architect pairing and matched view (CT-ARCH-WIDTH-001, #1054/#1167).
