@@ -45,7 +45,7 @@ interface Item {
 }
 interface Results {
   items: Item[];
-  pages_without_countertop?: { page_number: number; reason: string }[];
+  pages_without_countertop?: { page_number: number; reason: string; older_reading?: boolean; confirmation?: { confirmed_by: string } | null }[];
   rows_not_checked?: { page_number: number; reason: string }[];
 }
 interface Readiness {
@@ -53,6 +53,7 @@ interface Readiness {
   blocking_findings: number;
   blocking_finding_ids: string[];
   reason: string | null;
+  unconfirmed_no_countertop_pages?: number[];
 }
 interface Expect {
   /** Which set this is, for the notes only. */
@@ -66,6 +67,13 @@ interface Expect {
   after?: Record<string, string[]>;
   /** Recorded only: pages earlier runs listed with no countertop. */
   no_countertop?: number[];
+  /**
+   * How to answer each page listed with no countertop (#1191), from the set's answer key:
+   * "no_countertop" clicks "Confirm: no countertop here", "countertop" clicks "There is a countertop"
+   * (the page then becomes an item, decided after the re-run). A listed page with no plan here is a
+   * difference and is answered "There is a countertop", the safe direction.
+   */
+  no_countertop_answers?: Record<string, 'no_countertop' | 'countertop'>;
 }
 
 const WORDS: Record<string, string> = {
@@ -238,14 +246,21 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       await expect(chip, `${when}: "Not checked" chip`).toContainText(String(unchecked));
       await expect(uncheckedLine.locator('.num'), `${when}: "Not checked" line`).toHaveText(String(unchecked));
     }
-    // Pages with no countertop: listed with the AI's reason, nothing to click.
+    // Pages with no countertop: listed with the AI's reason; each waits for one reviewer answer
+    // (#1191), so an unconfirmed page offers both buttons and a confirmed one only "There is a countertop".
     const pages = answer.pages_without_countertop ?? [];
     const list = page.getByRole('region', { name: 'Pages with no countertop found' });
     if (pages.length === 0) await expect(list).toHaveCount(0);
     else {
       await expect(list.locator('li')).toHaveCount(pages.length);
-      for (const p of pages) await expect(list.locator('li').filter({ hasText: `Page ${p.page_number}` })).toContainText(p.reason.slice(0, 40));
-      await expect(list.locator('button')).toHaveCount(0);
+      for (const p of pages) {
+        const item = list.locator('li').filter({ hasText: `Page ${p.page_number}` });
+        await expect(item).toContainText(p.reason.slice(0, 40));
+        await expect(item.getByRole('button', { name: 'Confirm: no countertop here' })).toHaveCount(p.confirmation ? 0 : 1);
+        await expect(item.getByRole('button', { name: 'There is a countertop' })).toHaveCount(1);
+      }
+      const confirmed = pages.filter((p) => p.confirmation).length;
+      await expect(list.locator('[data-part="confirmed-count"]')).toHaveText(`${confirmed} of ${pages.length} confirmed`);
     }
     // Countertop lines not checked (#1108): listed only when the API sends any, nothing to click.
     const notChecked = answer.rows_not_checked ?? [];
@@ -305,6 +320,25 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
    * The queue moves on by itself after a save. An item is a countertop's width, or whether the
    * countertop matches the architect ("…: matches the architect?"): `act` is told which.
    */
+  /** Pages answered with "There is a countertop" or "Confirm" so far, by page (#1191). */
+  const pageAnswers = new Map<number, 'no_countertop' | 'countertop'>();
+
+  /**
+   * One page listed with no countertop, answered from the answer key (#1191), in whichever container
+   * holds its two buttons (a queue item, or its row on Results). A page with no plan is a difference
+   * and is answered "There is a countertop", the safe direction.
+   */
+  async function answerListedPage(pageNumber: number, container: Locator): Promise<string> {
+    let plan = expectations.no_countertop_answers?.[String(pageNumber)];
+    if (!plan) {
+      differences.push(`p${pageNumber}: listed with no countertop, but the expectations give no answer; answered "There is a countertop"`);
+      plan = 'countertop';
+    }
+    await container.getByRole('button', { name: plan === 'countertop' ? 'There is a countertop' : 'Confirm: no countertop here' }).click();
+    pageAnswers.set(pageNumber, plan);
+    return plan === 'countertop' ? 'there is a countertop' : 'confirmed no countertop';
+  }
+
   async function throughQueue(phase: string, act: (item: Item, panel: Locator, kind: ItemKind) => Promise<string | null>): Promise<Done[]> {
     const done: Done[] = [];
     const answer = await results();
@@ -327,6 +361,22 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       const key = `${title}|${pageText}|${status}`;
       if (seen.has(key)) break; // back at an item already seen: the end of the list
       seen.add(key);
+      // A page listed with no countertop (#1191): answered here from the answer key; the queue then
+      // moves on by itself.
+      const listedPage = title.match(/^Page (\d+): no countertop\?$/);
+      if (listedPage) {
+        const pageNumber = Number(listedPage[1]);
+        if (status === 'open') {
+          const what = await answerListedPage(pageNumber, item);
+          done.push({ rowId: `page-${pageNumber}`, page: pageNumber, kind: 'countertop', what });
+          await snap(`${phase}-p${pageNumber}-no-countertop`);
+          // Saved: the queue moves on (or shows its last screen) once the results reload.
+          await expect(item.locator('h2')).not.toHaveText(title, { timeout: 30_000 }).catch(() => undefined);
+        } else {
+          await page.keyboard.press('j');
+        }
+        continue;
+      }
       const kind: ItemKind = title.endsWith(': matches the architect?') ? 'architect' : 'countertop';
       const name = kind === 'architect' ? title.slice(0, -': matches the architect?'.length) : title;
       // What tells two countertops on one page apart, after "Countertop · page N · " (#1155).
@@ -439,13 +489,45 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       }),
     );
 
+    // 4b. Answer every page listed with no countertop, from the answer key (#1191) ---------------
+    // The queue answered the listed pages (#1191); anything it left is answered on Results.
+    const saidCountertop = await test.step('answer the pages with no countertop', async () => {
+      const answer = await results();
+      const listed = page.getByRole('region', { name: 'Pages with no countertop found' });
+      for (const p of answer.pages_without_countertop ?? []) {
+        if (p.confirmation) continue;
+        const item = listed.locator(`[data-part="no-countertop-page"][data-page="${p.page_number}"]`);
+        const what = await answerListedPage(p.page_number, item);
+        if (pageAnswers.get(p.page_number) === 'countertop') {
+          await expect(item, `p${p.page_number}: no longer listed once it has a countertop`).toHaveCount(0, { timeout: 30_000 });
+        } else {
+          await expect(item.locator('[data-part="confirmed"]'), `p${p.page_number}: confirmed`).toBeVisible({ timeout: 30_000 });
+        }
+        notes.push(`p${p.page_number}${p.older_reading ? ' (older reading)' : ''}: ${what} (on Results)`);
+      }
+      // What the API now says about every page answered, in the queue or here.
+      const after = await results();
+      for (const [n, plan] of pageAnswers) {
+        const listedNow = (after.pages_without_countertop ?? []).find((p) => p.page_number === n);
+        if (plan === 'no_countertop') expect(listedNow?.confirmation, `p${n}: confirmed no countertop`).toBeTruthy();
+        else {
+          expect(listedNow, `p${n}: no longer listed once it has a countertop`).toBeUndefined();
+          expect(after.items.some((i) => i.page_number === n && i.hold?.code === 'row-choice-split'), `p${n}: an item held like a split page`).toBe(true);
+        }
+        notes.push(`answer p${n}: ${plan === 'countertop' ? 'There is a countertop' : 'Confirm: no countertop here'}`);
+      }
+      if (pageAnswers.size) await snap('no-countertop-answered');
+      return [...pageAnswers.values()].filter((plan) => plan === 'countertop').length;
+    });
+
     // 5. Run the checks when the screen says so; decisions on unchanged results carry over -------
     await test.step('run the checks again; unchanged decisions carry over', async () => {
       const walled = before.filter((d) => d.what.startsWith('walls'));
       const dismissed = before.filter((d) => d.what.startsWith('not checkable'));
       const run = header.getByRole('button', { name: 'Run checks' });
-      // A saved wall answer only counts after a run, so the screen must ask for one.
-      if (walled.length) await expect(run, 'the header asks for a check run').toBeVisible({ timeout: 30_000 });
+      // A saved wall answer, or "There is a countertop", only counts after a run, so the screen must
+      // ask for one.
+      if (walled.length || saidCountertop) await expect(run, 'the header asks for a check run').toBeVisible({ timeout: 30_000 });
       if (!(await run.isVisible())) {
         notes.push('the screen asked for no check run (no wall answered), so carry-over was not exercised on this set');
         return;
@@ -519,6 +601,7 @@ test('V1 acceptance walkthrough through the screens', async ({ page }) => {
       }
       const ready = await readiness();
       expect(ready.blocking_findings, `still blocking: ${ready.reason ?? ''}`).toBe(0);
+      expect(ready.unconfirmed_no_countertop_pages ?? [], ready.reason ?? '').toEqual([]);
       expect(ready.can_approve, ready.reason ?? '').toBe(true);
       await page.getByRole('button', { name: 'Refresh results' }).click();
       const final = await screenMatchesApi('before sign-off');

@@ -97,6 +97,7 @@ from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, Tas
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
 from app.review.carry_over import carry_decisions_over, live_finding_ids
+from app.review.no_countertop import answered_pages
 from app.runs.invocations import (
     BedrockConverseInvocationRecorder,
 )
@@ -6884,6 +6885,9 @@ class DatabaseStages:
         slot_row_subjects, unchosen_pages = slot_rows_and_unchosen_pages(
             session, package_revision_id
         )
+        # A reviewer's "There is a countertop" on a page every AI said has none (#1191): that page
+        # becomes one blocking result below, exactly like a split page.
+        unchosen_pages, _page_answers = answered_pages(session, revision, unchosen_pages)
         # The reviewer-owned (manual) run is the source on its page; slot-reader scopes yield there.
         manual_subjects = countertop_subjects or ()
         manually_scoped_pages = {

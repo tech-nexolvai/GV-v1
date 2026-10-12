@@ -28,7 +28,7 @@ import { KpiCards } from './kpi-cards';
 import { CountertopTable, type RowActions } from './countertop-table';
 import { DecideDialog, type DecideHandlers } from './decide-dialog';
 import { OtherChecks, type BulkResult } from './other-checks';
-import { ListedPages, type RowNotChecked } from './no-countertop-pages';
+import { ListedPages, type AnswerNoCountertop, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
 import { useSignedOff } from '@/lib/signed-off';
 
@@ -41,7 +41,7 @@ export type CountertopsState =
   | {
       status: 'ready';
       rows: CountertopResult[];
-      /** Pages where both AIs found no countertop line (#1093): listed, never blocking. */
+      /** Pages where both AIs found no countertop line (#1093): each needs one reviewer answer before sign-off (#1191). */
       pagesWithoutCountertop?: readonly PageWithoutCountertop[];
       /** Second countertop lines an AI named on a page (#1108): one line per page is read; listed, never blocking. */
       rowsNotChecked?: readonly RowNotChecked[];
@@ -82,6 +82,7 @@ export function ResultsDashboard({
   packageId,
   onValuesSaved,
   onRunChecks,
+  onAnswerNoCountertop,
 }: {
   countertops: CountertopsState;
   /** All recorded findings of the live run (for decisions and the "other checks"). */
@@ -108,6 +109,8 @@ export function ResultsDashboard({
   packageId?: string;
   onValuesSaved?: () => void;
   onRunChecks?: () => void;
+  /** "Confirm: no countertop here" / "There is a countertop" on a listed page (#1191). */
+  onAnswerNoCountertop?: AnswerNoCountertop;
 }) {
   const signedOff = useSignedOff();
   const [search, setSearch] = useState('');
@@ -250,7 +253,11 @@ export function ResultsDashboard({
         </>
       )}
 
-      <ListedPages pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []} rowsNotChecked={countertops.rowsNotChecked ?? []} />
+      <ListedPages
+        pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
+        rowsNotChecked={countertops.rowsNotChecked ?? []}
+        onAnswer={signedOff ? undefined : onAnswerNoCountertop}
+      />
 
       <OtherChecks
         findings={others}

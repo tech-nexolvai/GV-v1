@@ -66,7 +66,7 @@ describe('a split page, as data', () => {
     expect(isSplitPage(row('held', 2, { hold: { code: 'stone-short-of-ends', reason: 'Synthetic.' } }))).toBe(false);
     expect(bucketOf(SPLIT)).toBe('needs-you');
     expect(matchesFilter(SPLIT, 'held')).toBe(true);
-    expect(buildQueue([SPLIT, PASSED], FINDINGS, new Set(['f-split'])).map((item) => [item.kind, item.kind === 'check' ? null : item.rowId])).toEqual([['countertop', 'split']]);
+    expect(buildQueue([SPLIT, PASSED], FINDINGS, new Set(['f-split'])).map((item) => [item.kind, item.kind === 'check' || item.kind === 'page' ? null : item.rowId])).toEqual([['countertop', 'split']]);
     // The page, but no box: the server's own page picture (the shop drawing's), with nothing drawn on it.
     expect(targetFromRow(SPLIT)).toMatchObject({ page: 3, documentVersionId: null, outline: null, findingId: 'f-split' });
   });
@@ -177,17 +177,17 @@ describe('a split page whose checks have not run yet', { timeout: 15_000 }, () =
 });
 
 describe('Results: pages with no countertop found', () => {
-  it('lists each page with the AI\'s reason; nothing to click, and it changes no count', () => {
+  it('lists each page with the AI\'s reason, and it changes no countertop count', () => {
     dashboard({ pagesWithoutCountertop: NO_COUNTERTOP });
     const list = screen.getByRole('region', { name: 'Pages with no countertop found' });
     const items = within(list).getAllByRole('listitem');
-    expect(items.map((li) => li.textContent)).toEqual([
+    expect(items.map((li) => li.textContent?.slice(0, li.textContent.indexOf('.') + 1))).toEqual([
       'Page 15Synthetic: both AIs saw only tall units on this page.',
       'Page 17Synthetic: both AIs saw a cover sheet.',
     ]);
-    expect(within(list).queryAllByRole('button')).toHaveLength(0);
-    expect(list.textContent).toContain('Nothing to decide');
-    // Not blocking: the counts are the countertops' only.
+    // Each page waits for one reviewer answer (#1191; tests/vitest/no-countertop-confirm.test.tsx).
+    expect(list.textContent).toContain('0 of 2 confirmed');
+    // Not a countertop: the counts are the countertops' only.
     expect(kpis([SPLIT, PASSED]).needsYou).toBe(1);
     expect(screen.getByRole('button', { name: '1 countertop needs you: review them one at a time' })).toBeTruthy();
   });

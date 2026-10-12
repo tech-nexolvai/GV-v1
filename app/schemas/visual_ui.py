@@ -282,13 +282,54 @@ class CountertopResultOut(BaseModel):
     )
 
 
+class NoCountertopConfirmationOut(BaseModel):
+    """A reviewer's "Confirm: no countertop here" on a listed page (#1191): who and when."""
+
+    model_config = ConfigDict(frozen=True)
+
+    confirmed_by: str
+    confirmed_at: datetime
+    from_revision: int | None = Field(
+        default=None,
+        description=(
+            "When the confirmation was given on an earlier revision's identical page (the same "
+            "page content and the same reading answer): that revision's number. Null when it was "
+            "given on this revision."
+        ),
+    )
+
+
 class PageWithoutCountertopOut(BaseModel):
-    """A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking."""
+    """A vendor page where every AI said there is no countertop line (#1093).
+
+    Listed, and since #1191 it needs one reviewer click before sign-off: "Confirm: no countertop
+    here" (`confirmation`), or "There is a countertop", after which the page is an item above, held
+    `row-choice-split`, instead of being listed here."""
 
     model_config = ConfigDict(frozen=True)
 
     page_number: int
     reason: str
+    record_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The reading record to answer (`POST …/no-countertop-pages/{record_id}/answer`). Null "
+            "only in a review signed before #1191."
+        ),
+    )
+    confirmation: NoCountertopConfirmationOut | None = Field(
+        default=None,
+        description="The reviewer's confirmation in force; null while the page is unconfirmed.",
+    )
+    older_reading: bool = Field(
+        default=False,
+        json_schema_extra=optional_in_schema,
+        description=(
+            'True for a reading from before the AIs said what their "no line" meant (#1191): it '
+            "is not known to have no countertop until a reviewer confirms it, so until then it "
+            "needs the reviewer. Its `reason` says why, with the AIs' own words."
+        ),
+    )
 
 
 class RowNotCheckedOut(BaseModel):
@@ -312,9 +353,10 @@ class CountertopResultsOut(BaseModel):
         default=(),
         json_schema_extra=optional_in_schema,
         description=(
-            "Vendor pages where both AIs found no countertop line, each with the AI's reason. "
-            "Listed only; nothing to decide. A page where the AIs picked different lines is an item "
-            "above instead, held `row-choice-split`."
+            "Vendor pages where both AIs found no countertop line, each with the AI's reason and "
+            "the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A "
+            "page where the AIs picked different lines, or a reviewer said there is a countertop, "
+            "is an item above instead, held `row-choice-split`."
         ),
     )
     rows_not_checked: tuple[RowNotCheckedOut, ...] = Field(

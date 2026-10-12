@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BarChart2, BookOpen, Files, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
 import { getApprovalReadiness, listPackages } from '@/api/client';
+import { itemsNeedingYou } from '@/lib/needs-you-queue';
 import type { PackagePage } from '@/api/client';
 import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
@@ -272,7 +273,7 @@ function useNeedYouCounts(items: readonly PackageItem[], refreshKey: number): Ma
       if (!current) return;
       const next = new Map<string, number>();
       answers.forEach((answer, index) => {
-        if (answer.status === 'fulfilled') next.set(ids[index], answer.value.blocking_findings);
+        if (answer.status === 'fulfilled') next.set(ids[index], itemsNeedingYou(answer.value));
       });
       setCounts(next);
     });

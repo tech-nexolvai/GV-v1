@@ -383,7 +383,15 @@ def _page_value(snapshot: ReviewSnapshot, page: int, field: str, index: int | No
         return (
             None
             if note is None
-            else f"page {page} has no countertop (the readers said: {_quoted(note.reason)})"
+            else (
+                f"page {page} is listed with no countertop (the readers said: "
+                f"{_quoted(note.reason)}); "
+                + (
+                    f"confirmed by {note.confirmed_by}"
+                    if note.confirmed_by
+                    else "it needs a reviewer's confirmation before sign-off"
+                )
+            )
         )
     if field == "second_row":
         note = next((n for n in snapshot.rows_not_checked if n.page_number == page), None)

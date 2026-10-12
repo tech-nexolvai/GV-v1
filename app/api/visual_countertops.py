@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from fractions import Fraction
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.api.dependencies import get_session
+from app.api.signed_off import open_revision
+from app.audit.events import AuditCategory, emit
 from app.auth import Action, Principal, require_action, require_project_access
 from app.evidence.sides import ReadingSides, has_separate_architect_file
 from app.lifecycle.carry_forward import CarriedOrigin, wall_answer_origins
@@ -22,6 +27,7 @@ from app.models import (
     EvidenceArtifact,
     EvidenceSupportingCandidate,
     Finding,
+    NoCountertopAnswer,
     ObservationCandidate,
     Package,
     PackageRevision,
@@ -37,6 +43,13 @@ from app.review.architect_view_match import (
     match_out,
     separate_file_views,
 )
+from app.review.no_countertop import (
+    PageAnswer,
+    answered_pages,
+    blocking_pages,
+    countertops_checked,
+    reading_answer,
+)
 from app.review.row_location import RowLocation, architect_locations, row_and_slot_locations
 from app.schemas.visual_ui import (
     AgreementFactsOut,
@@ -47,6 +60,7 @@ from app.schemas.visual_ui import (
     CountertopResultsOut,
     ExactValueOut,
     HoldOut,
+    NoCountertopConfirmationOut,
     PageWithoutCountertopOut,
     ReviewerDecisionOut,
     RowNotCheckedOut,
@@ -843,6 +857,9 @@ def _countertop_results_for_revision(
         else set()
     )
     unchosen = tuple(page for page in unchosen if page.page_number - 1 not in owned)
+    # A reviewer's answer on a page listed with no countertop (#1191): "There is a countertop" makes
+    # it blocking like a split page; "Confirm: no countertop here" is shown on its listed entry.
+    unchosen, page_answers = answered_pages(session, revision, unchosen)
     findings = session.execute(
         select(Finding, RuleDefinition.rule_id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
@@ -921,7 +938,15 @@ def _countertop_results_for_revision(
     )
     # The decision standing on each result: the reviewer's own latest, or the one it carried over an
     # unchanged re-run (#1073). Read once, with sign-off readiness, so the two cannot disagree.
-    readiness, records = readiness_and_decisions(session, revision.id)
+    pages_blocking = blocking_pages(
+        unchosen, page_answers, {row for row in finding_by_row if row is not None}
+    )
+    if pages_blocking.unchecked and not countertops_checked(
+        session.scalar(select(Package.product_type).where(Package.id == package_id))
+    ):
+        # Another product's package never checks a countertop width, so no result is awaited.
+        pages_blocking = replace(pages_blocking, unchecked=())
+    readiness, records = readiness_and_decisions(session, revision.id, pages=pages_blocking)
     decisions = records.decisions
     need_ids = set(readiness.blocking_finding_ids)
     # Wall answers carried from an earlier revision say so (#1180).
@@ -1074,12 +1099,134 @@ def _countertop_results_for_revision(
         # Stable: rows on one page keep their order; a split page sits among them by page number.
         items=tuple(sorted(items, key=lambda item: item.page_number)),
         pages_without_countertop=tuple(
-            PageWithoutCountertopOut(page_number=page.page_number, reason=page.reason)
+            PageWithoutCountertopOut(
+                page_number=page.page_number,
+                reason=page.reason,
+                record_id=page.record.id,
+                confirmation=_confirmation_out(page_answers.get(page.record.id)),
+                older_reading=page.kind == "older",
+            )
             for page in unchosen
             if not page.split
         ),
         rows_not_checked=_rows_not_checked(rows, owned),
     )
+
+
+def _answer_lock_key(revision_id: UUID) -> int:
+    """A stable signed 64-bit key for PostgreSQL's advisory lock on one revision's page answers."""
+    digest = hashlib.sha256(f"no-countertop-answer:{revision_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def _confirmation_out(answer: PageAnswer | None) -> NoCountertopConfirmationOut | None:
+    """A listed page's confirmation in force; a "There is a countertop" never reaches the list."""
+    if answer is None or answer.answer != "no_countertop":
+        return None
+    return NoCountertopConfirmationOut(
+        confirmed_by=answer.answered_by,
+        confirmed_at=answer.answered_at,
+        from_revision=answer.from_revision,
+    )
+
+
+class NoCountertopAnswerIn(BaseModel):
+    """One reviewer click on a page listed with no countertop (#1191). Nothing is pre-selected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Literal["no_countertop", "countertop"] = Field(
+        description=(
+            '"no_countertop": "Confirm: no countertop here". "countertop": "There is a '
+            'countertop": the page then needs the reviewer like a split page, and its result comes '
+            "with the next check run."
+        )
+    )
+
+
+#: Said when the screen answers a page that is no longer listed (read again, or already answered).
+PAGE_NOT_LISTED: Final = (
+    "This page is no longer listed with no countertop: it was read again or already answered. "
+    "Reload the results."
+)
+
+
+@router.post(
+    "/projects/{project_id}/packages/{package_id}/no-countertop-pages/{record_id}/answer",
+    response_model=CountertopResultsOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Confirm that a listed page has no countertop, or say there is one",
+    dependencies=[Depends(open_revision)],
+)
+def answer_no_countertop_page(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _action: Annotated[Principal, Depends(require_action(Action.CONFIRM_EVIDENCE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    record_id: UUID,
+    body: NoCountertopAnswerIn,
+    response: Response,
+) -> CountertopResultsOut:
+    """Record one reviewer answer on a page every AI said has no countertop (#1191).
+
+    The page must be listed right now on the newest revision (409 otherwise, with a plain sentence).
+    The answer is a new append-only record with who and when; the newest one counts. Answers the
+    updated countertop results, so the screen shows the page confirmed, or as a blocking item.
+
+    **One answer at a time per revision.** The newest answer is read under a transaction-scoped
+    advisory lock, so a "Confirm" sent at the same moment as a "There is a countertop" waits for it,
+    finds the page no longer listed and is refused, instead of silently overriding it. A second
+    "Confirm" on a page already confirmed records nothing and answers 200 with the first person and
+    time (the answer was already given).
+    """
+    revision = session.execute(
+        select(PackageRevision)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(Package.id == package_id, Package.project_id == project_id)
+        .order_by(PackageRevision.revision_number.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if revision is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    session.execute(select(func.pg_advisory_xact_lock(_answer_lock_key(revision.id))))
+    _rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
+    owned = reviewer_owned_pages(session, revision.id) if unchosen else set()
+    listed_now, in_force = answered_pages(
+        session, revision, tuple(page for page in unchosen if page.page_number - 1 not in owned)
+    )
+    page = next(
+        (page for page in listed_now if page.record.id == record_id and not page.split), None
+    )
+    if page is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PAGE_NOT_LISTED)
+    standing = in_force.get(page.record.id)
+    if standing is not None and standing.answer == body.answer:
+        # Already confirmed: nothing new to record; the first person and time stand.
+        session.rollback()
+        response.status_code = status.HTTP_200_OK
+        return _countertop_results_for_revision(session, package_id, revision)
+    answer = NoCountertopAnswer(
+        package_revision_id=revision.id,
+        row_choice_candidate_id=page.record.id,
+        page_id=page.record.page_id,
+        page_number=page.page_number,
+        page_content_hash=page.page_content_hash or "",
+        reading_answer=reading_answer(page),
+        answer=body.answer,
+        answered_by=principal.id,
+    )
+    session.add(answer)
+    session.flush()
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=principal.id,
+        target_id=answer.id,
+        target_type="no_countertop_answer",
+    )
+    session.commit()
+    return _countertop_results_for_revision(session, package_id, revision)
 
 
 def _rows_not_checked(rows: tuple[SlotRow, ...], owned: set[int]) -> tuple[RowNotCheckedOut, ...]:
@@ -1111,4 +1258,9 @@ def _rows_not_checked(rows: tuple[SlotRow, ...], owned: set[int]) -> tuple[RowNo
     )
 
 
-__all__ = ["_countertop_results_for_revision", "countertop_results", "router"]
+__all__ = [
+    "_countertop_results_for_revision",
+    "answer_no_countertop_page",
+    "countertop_results",
+    "router",
+]

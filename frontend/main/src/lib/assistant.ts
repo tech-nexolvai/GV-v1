@@ -20,12 +20,20 @@ import { architectItemKey, buildQueue, type QueueItem } from '@/lib/needs-you-qu
 import { sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { targetFromFinding, targetFromRow, type ViewerTarget } from '@/lib/drawing-viewer';
 
+/** A page listed with no countertop, with the reviewer's confirmation when there is one (#1191). */
+export interface ListedNoCountertopPage {
+  page_number: number;
+  reason: string;
+  confirmation?: { confirmed_by: string } | null;
+}
+
 /** The records the panel draws from: the same data the Results screen and the queue use. */
 export interface AssistantRecords {
   rows: readonly CountertopResult[];
   /** False until the countertop results have loaded; lists then stay out rather than say "none". */
   rowsReady: boolean;
-  pagesWithoutCountertop: readonly { page_number: number; reason: string }[];
+  /** Pages listed with no countertop; each needs a reviewer's confirmation before sign-off (#1191). */
+  pagesWithoutCountertop: readonly ListedNoCountertopPage[];
   rowsNotChecked: readonly { page_number: number; reason: string }[];
   findings: readonly Finding[];
   /** Readiness's blocking finding ids; null while it loads. */
@@ -230,6 +238,10 @@ function blockerOf(item: QueueItem, records: AssistantRecords): Blocker {
     const title = finding ? checkName(finding, records.ruleNames) : item.label;
     return { key: item.key, title, page: null, detail: item.page !== null ? `Page ${item.page}` : 'Whole set', outcome, word: OUTCOME_LABELS[outcome], count: 1 };
   }
+  if (item.kind === 'page') {
+    // A page listed with no countertop, waiting for one click (#1191).
+    return { key: item.key, title: `Page ${item.page}`, page: item.page, detail: 'No countertop found: confirm it, or say there is one', outcome: 'REVIEW_REQUIRED', word: OUTCOME_LABELS.REVIEW_REQUIRED, count: 1 };
+  }
   const row = records.rows.find((r) => r.row_id === item.rowId);
   const title = `Page ${item.page}`;
   if (item.kind === 'architect') {
@@ -265,7 +277,7 @@ export const BLOCKERS_SHOWN = 8;
 export type ResolvedEvidence =
   | { kind: 'countertop'; key: string; row: CountertopResult; finding: Finding | null }
   | { kind: 'blockers'; key: string; items: Blocker[] }
-  | { kind: 'no_countertop_pages'; key: string; items: readonly { page_number: number; reason: string }[] }
+  | { kind: 'no_countertop_pages'; key: string; items: readonly ListedNoCountertopPage[] }
   | { kind: 'rows_not_checked'; key: string; items: readonly { page_number: number; reason: string }[] };
 
 /**
@@ -375,7 +387,14 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 export function starterHint(question: string, records: AssistantRecords): { kind: StarterKind; reason: string | null } {
   const q = question.toLowerCase();
   if (/no countertop/.test(q)) {
-    return { kind: 'none', reason: records.rowsReady ? `${plural(records.pagesWithoutCountertop.length, 'page', 'pages')} listed, not blocking` : null };
+    if (!records.rowsReady) return { kind: 'none', reason: null };
+    const listed = records.pagesWithoutCountertop;
+    const waiting = listed.filter((page) => !page.confirmation).length;
+    // Each listed page needs a reviewer's confirmation before sign-off (#1191).
+    return {
+      kind: 'none',
+      reason: `${plural(listed.length, 'page', 'pages')} listed; ${waiting === 0 ? (listed.length === 0 ? 'nothing to confirm' : 'all confirmed') : `${plural(waiting, 'needs', 'need')} a reviewer's confirmation before sign-off`}`,
+    };
   }
   if (/not checked/.test(q)) {
     return { kind: 'none', reason: records.rowsReady ? `${plural(records.rowsNotChecked.length, 'row', 'rows')} listed, not checked` : null };

@@ -256,7 +256,11 @@ describe('assistant: rules', () => {
   it('gives starters a reason from the records, or none', () => {
     expect(starterHint('Why did page 4 fail?', RECORDS)).toEqual({ kind: 'why', reason: 'Needs correction · waiting for you' });
     expect(starterHint('What is left before sign-off?', RECORDS)).toEqual({ kind: 'left', reason: '3 items need you' });
-    expect(starterHint('Which pages have no countertop?', RECORDS)).toEqual({ kind: 'none', reason: '1 page listed, not blocking' });
+    // Each listed page needs a reviewer's confirmation before sign-off (#1191).
+    expect(starterHint('Which pages have no countertop?', RECORDS)).toEqual({ kind: 'none', reason: "1 page listed; 1 needs a reviewer's confirmation before sign-off" });
+    expect(
+      starterHint('Which pages have no countertop?', { ...RECORDS, pagesWithoutCountertop: [{ page_number: 2, reason: 'Synthetic', confirmation: { confirmed_by: 'Synthetic Reviewer' } }] }),
+    ).toEqual({ kind: 'none', reason: '1 page listed; all confirmed' });
     expect(starterHint('Tell me a joke', RECORDS)).toEqual({ kind: 'ask', reason: null });
   });
 });

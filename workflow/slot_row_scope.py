@@ -84,19 +84,32 @@ class UnchosenRowPage:
     Since #1108 a reader also says what kind of answer it gave (`row-kind:` flags): "none" then
     needs every reader to have said `no_countertop`; `not_among_boxes` (a countertop no numbered
     box measures) or `unsure` from any reader is "split" too, with its own reason.
+    **A record with no kinds is never "none" (#1191).** Before #1108 a 0 from every reader could
+    mean "no countertop on the sheet" or "a countertop no numbered box measures", and the record does
+    not say which. Such a page is "older": it blocks sign-off until a reviewer answers it with the
+    same two buttons as a "none" page ("Confirm: no countertop here" / "There is a countertop"), and
+    its reason says why it is asked (`app/review/no_countertop.py`). The check stage writes no result
+    for it; "There is a countertop" turns it into a "split" page.
     `picks` are each reader's own pick (short model name, row number; 0 for "no row", `None` for no
     answer), empty on a record written before #1093. `kinds` are each reader's kind of answer
     (short model name, kind), empty on a record written before #1108. `reason` is the plain
-    sentence for the reviewer; `stored_reason` is the record's own text.
+    sentence for the reviewer; `stored_reason` is the record's own text. `page_content_hash` is the
+    page's content hash, which identifies the same page on another reading (#1191).
     """
 
     record: ObservationCandidate
     page_number: int
-    kind: Literal["split", "none"]
+    kind: Literal["split", "none", "older"]
     picks: tuple[tuple[str, int | None], ...]
     reason: str
     stored_reason: str | None
     kinds: tuple[tuple[str, str], ...] = ()
+    page_content_hash: str | None = None
+
+    @property
+    def listed(self) -> bool:
+        """Listed with no countertop, waiting for (or holding) a reviewer's answer (#1191)."""
+        return self.kind in ("none", "older")
 
     @property
     def split(self) -> bool:
@@ -159,10 +172,10 @@ def _pick_words(pick: int | None) -> str:
     return "no countertop line" if pick == 0 else f"line {pick}"
 
 
-def _classify(
-    flags: frozenset[str], stored_reason: str | None
-) -> tuple[
-    Literal["split", "none"], tuple[tuple[str, int | None], ...], tuple[tuple[str, str], ...]
+def _classify(flags: frozenset[str], stored_reason: str | None) -> tuple[
+    Literal["split", "none", "older"],
+    tuple[tuple[str, int | None], ...],
+    tuple[tuple[str, str], ...],
 ]:
     """Split unless every reader said "no countertop row"; never the other way round on doubt."""
     picks = _row_picks(flags)
@@ -180,22 +193,14 @@ def _classify(
             and all(kind == "no_countertop" for _, kind in kinds)
         )
         return ("none" if none else "split"), picks, kinds
-    if picks:
-        return ("none" if all(pick == 0 for _, pick in picks) else "split"), picks, ()
-    # A record from before #1093 carries no picks. Its reason tells the two apart: the reader wrote
-    # its own reason, ending "; the reviewer chooses", for a disagreement or a missing answer; a
-    # "both said no row" record keeps the AI's own why. A record that names a row (`row-choice:N`,
-    # N > 0) read nothing on it, so it waits for the reviewer too.
-    choices = {flag.removeprefix("row-choice:") for flag in flags if flag.startswith("row-choice:")}
-    reason = (stored_reason or "").strip()
-    if (
-        choices != {"0"}
-        or not reason
-        or reason.endswith(_CODE_AUTHORED_ENDING)
-        or reason == _CODE_AUTHORED_DEFAULT
-    ):
-        return "split", (), ()
-    return "none", (), ()
+    # #1191: a record without kinds (written before #1108) cannot say what an all-0 answer meant:
+    # "no countertop on the sheet", or "a countertop none of the numbered boxes measures". It fails
+    # safe: "older", blocking until a reviewer answers it. A record from before #1093 carries no
+    # picks either; its "both said no row" (the AI's own reason) is "older" too, while a reason the
+    # reader wrote itself marks a disagreement or a missing answer ("split").
+    if _all_zero_without_kinds(flags, picks, stored_reason):
+        return "older", picks, ()
+    return "split", picks, ()
 
 
 #: How the reason for the reviewer names each kind of row answer (#1108).
@@ -205,6 +210,39 @@ _KIND_WORDS: Final = {
     "not_among_boxes": "a countertop that none of the numbered lines measures",
     "unsure": "not sure which line",
 }
+
+
+def _all_zero_without_kinds(
+    flags: frozenset[str], picks: tuple[tuple[str, int | None], ...], stored_reason: str | None
+) -> bool:
+    """An all-0 answer on a record that says nothing about what its 0 meant (#1191): from before
+    #1108 (every reader picked 0, no `row-kind:`), or from before #1093 (no picks, `row-choice:0`
+    and the AI's own reason; a reason the reader wrote itself, ending "; the reviewer chooses",
+    marks a disagreement or a missing answer instead)."""
+    if any(flag.startswith("row-kind:") for flag in flags):
+        return False
+    if picks:
+        return all(pick == 0 for _, pick in picks)
+    choices = {flag.removeprefix("row-choice:") for flag in flags if flag.startswith("row-choice:")}
+    reason = (stored_reason or "").strip()
+    return (
+        choices == {"0"}
+        and bool(reason)
+        and not reason.endswith(_CODE_AUTHORED_ENDING)
+        and reason != _CODE_AUTHORED_DEFAULT
+    )
+
+
+def _older_reading_reason(stored_reason: str | None) -> str:
+    """Why an older all-0 reading blocks (#1191), with the AI's own words when it kept them."""
+    why = (stored_reason or "").strip()
+    said = f" ({why})" if why else ""
+    return (
+        f"Both AIs answered that none of the numbered lines is this page's countertop line{said}. "
+        "This reading is older and does not say whether that means there is no countertop or a "
+        "countertop none of the lines measures, so nothing on it was read or checked. The reviewer "
+        "confirms there is no countertop here, or says there is one."
+    )
 
 
 def _split_reason(
@@ -252,20 +290,27 @@ def _split_reason(
     )
 
 
-def _unchosen_page(page_index: int, record: ObservationCandidate) -> UnchosenRowPage:
-    kind, picks, kinds = _classify(frozenset(record.ambiguity_flags or ()), record.review_reason)
+def unchosen_page(
+    page_index: int, record: ObservationCandidate, page_content_hash: str | None = None
+) -> UnchosenRowPage:
+    """One reader's row-choice record as the page it describes (#1093, #1108, #1191)."""
+    flags = frozenset(record.ambiguity_flags or ())
+    kind, picks, kinds = _classify(flags, record.review_reason)
+    if kind == "none":
+        reason = record.review_reason or "Both AIs found no countertop line on this page."
+    elif kind == "older":
+        reason = _older_reading_reason(record.review_reason)
+    else:
+        reason = _split_reason(picks, record.review_reason, kinds)
     return UnchosenRowPage(
         record=record,
         page_number=page_index + 1,
         kind=kind,
         picks=picks,
-        reason=(
-            _split_reason(picks, record.review_reason, kinds)
-            if kind == "split"
-            else (record.review_reason or "Both AIs found no countertop line on this page.")
-        ),
+        reason=reason,
         stored_reason=record.review_reason,
         kinds=kinds,
+        page_content_hash=page_content_hash,
     )
 
 
@@ -342,7 +387,7 @@ def slot_rows_and_unchosen_pages(
     if run_id is None:
         return (), ()
     records = session.execute(
-        select(Page.index, ObservationCandidate, Document.kind)
+        select(Page.index, ObservationCandidate, Document.kind, Page.content_hash)
         .join(Page, Page.id == ObservationCandidate.page_id)
         .join(DocumentVersion, DocumentVersion.id == ObservationCandidate.document_version_id)
         .join(Document, Document.id == DocumentVersion.document_id)
@@ -360,11 +405,11 @@ def slot_rows_and_unchosen_pages(
     roles: dict[tuple[int, str], str] = {}
     walls: dict[tuple[UUID, str], ObservationCandidate] = {}
     unchosen: list[UnchosenRowPage] = []
-    for page_index, candidate, role in records:
+    for page_index, candidate, role, content_hash in records:
         flags = set(candidate.ambiguity_flags or [])
         if "slot-reader-row-choice" in flags:
             if role == "shop":
-                unchosen.append(_unchosen_page(page_index, candidate))
+                unchosen.append(unchosen_page(page_index, candidate, content_hash))
             continue
         rank = next(
             (flag.removeprefix("row-rank:") for flag in flags if flag.startswith("row-rank:")), None

@@ -110,6 +110,27 @@ export interface CarriedWall {
   label: string;
   pageNumber: number;
   words: string;
+  /** A wall answer (#1180), or a page's "no countertop" confirmation (#1191). */
+  kind?: 'wall' | 'no-countertop';
+}
+
+/**
+ * Confirmations that a page has no countertop, carried from an earlier revision's identical page
+ * (#1191): the signer says they still apply, like carried wall answers. A carried "There is a
+ * countertop" is not listed: that page already needs a decision.
+ */
+export function carriedNoCountertopConfirmations(
+  pages: readonly { page_number: number; record_id?: string | null; confirmation?: { confirmed_by: string; from_revision?: number | null } | null }[],
+): CarriedWall[] {
+  return pages
+    .filter((page) => page.confirmation?.from_revision != null)
+    .map((page) => ({
+      rowId: `page:${page.record_id ?? page.page_number}`,
+      label: `Page ${page.page_number}`,
+      pageNumber: page.page_number,
+      words: `Page ${page.page_number}: no countertop confirmed on revision ${page.confirmation!.from_revision} (${page.confirmation!.confirmed_by})`,
+      kind: 'no-countertop' as const,
+    }));
 }
 
 /** The countertops whose recorded result rests on a wall answer carried from an earlier revision. */

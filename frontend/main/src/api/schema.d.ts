@@ -1018,6 +1018,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/no-countertop-pages/{record_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm that a listed page has no countertop, or say there is one
+         * @description Record one reviewer answer on a page every AI said has no countertop (#1191).
+         *
+         *     The page must be listed right now on the newest revision (409 otherwise, with a plain sentence).
+         *     The answer is a new append-only record with who and when; the newest one counts. Answers the
+         *     updated countertop results, so the screen shows the page confirmed, or as a blocking item.
+         *
+         *     **One answer at a time per revision.** The newest answer is read under a transaction-scoped
+         *     advisory lock, so a "Confirm" sent at the same moment as a "There is a countertop" waits for it,
+         *     finds the page no longer listed and is refused, instead of silently overriding it. A second
+         *     "Confirm" on a page already confirmed records nothing and answers 200 with the first person and
+         *     time (the answer was already given).
+         */
+        post: operations["answer_no_countertop_page_api_v1_projects__project_id__packages__package_id__no_countertop_pages__record_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures": {
         parameters: {
             query?: never;
@@ -2265,6 +2295,16 @@ export interface components {
              * Format: uuid
              */
             revision_id: string;
+            /**
+             * Unchecked Countertop Pages
+             * @description Page numbers that now need the reviewer (an older reading, or a reviewer said there is a countertop) but have no result on the last check run yet (#1191). Run the checks.
+             */
+            unchecked_countertop_pages?: number[];
+            /**
+             * Unconfirmed No Countertop Pages
+             * @description Page numbers listed with no countertop that no reviewer has confirmed yet (#1191). Sign-off is refused until each has an answer.
+             */
+            unconfirmed_no_countertop_pages?: number[];
         };
         /**
          * ApproveIn
@@ -3364,7 +3404,7 @@ export interface components {
             package_id: string;
             /**
              * Pages Without Countertop
-             * @description Vendor pages where both AIs found no countertop line, each with the AI's reason. Listed only; nothing to decide. A page where the AIs picked different lines is an item above instead, held `row-choice-split`.
+             * @description Vendor pages where both AIs found no countertop line, each with the AI's reason and the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A page where the AIs picked different lines, or a reviewer said there is a countertop, is an item above instead, held `row-choice-split`.
              */
             pages_without_countertop?: components["schemas"]["PageWithoutCountertopOut"][];
             /**
@@ -4447,6 +4487,36 @@ export interface components {
             review: number;
         };
         /**
+         * NoCountertopAnswerIn
+         * @description One reviewer click on a page listed with no countertop (#1191). Nothing is pre-selected.
+         */
+        NoCountertopAnswerIn: {
+            /**
+             * Answer
+             * @description "no_countertop": "Confirm: no countertop here". "countertop": "There is a countertop": the page then needs the reviewer like a split page, and its result comes with the next check run.
+             * @enum {string}
+             */
+            answer: "no_countertop" | "countertop";
+        };
+        /**
+         * NoCountertopConfirmationOut
+         * @description A reviewer's "Confirm: no countertop here" on a listed page (#1191): who and when.
+         */
+        NoCountertopConfirmationOut: {
+            /**
+             * Confirmed At
+             * Format: date-time
+             */
+            confirmed_at: string;
+            /** Confirmed By */
+            confirmed_by: string;
+            /**
+             * From Revision
+             * @description When the confirmation was given on an earlier revision's identical page (the same page content and the same reading answer): that revision's number. Null when it was given on this revision.
+             */
+            from_revision?: number | null;
+        };
+        /**
          * OpaqueTraceOut
          * @description A trace this API does not recognise, handed over intact.
          *
@@ -4762,13 +4832,29 @@ export interface components {
         };
         /**
          * PageWithoutCountertopOut
-         * @description A vendor page where every AI said there is no countertop line (#1093). Listed, not blocking.
+         * @description A vendor page where every AI said there is no countertop line (#1093).
+         *
+         *     Listed, and since #1191 it needs one reviewer click before sign-off: "Confirm: no countertop
+         *     here" (`confirmation`), or "There is a countertop", after which the page is an item above, held
+         *     `row-choice-split`, instead of being listed here.
          */
         PageWithoutCountertopOut: {
+            /** @description The reviewer's confirmation in force; null while the page is unconfirmed. */
+            confirmation?: components["schemas"]["NoCountertopConfirmationOut"] | null;
+            /**
+             * Older Reading
+             * @description True for a reading from before the AIs said what their "no line" meant (#1191): it is not known to have no countertop until a reviewer confirms it, so until then it needs the reviewer. Its `reason` says why, with the AIs' own words.
+             */
+            older_reading?: boolean;
             /** Page Number */
             page_number: number;
             /** Reason */
             reason: string;
+            /**
+             * Record Id
+             * @description The reading record to answer (`POST …/no-countertop-pages/{record_id}/answer`). Null only in a review signed before #1191.
+             */
+            record_id?: string | null;
         };
         /**
          * ParameterEntry
@@ -8391,6 +8477,43 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["AssignmentEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    answer_no_countertop_page_api_v1_projects__project_id__packages__package_id__no_countertop_pages__record_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoCountertopAnswerIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CountertopResultsOut"];
                 };
             };
             /** @description Validation Error */

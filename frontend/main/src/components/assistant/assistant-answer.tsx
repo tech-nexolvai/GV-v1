@@ -186,7 +186,7 @@ function BlockerList({ items, nav }: { items: readonly Blocker[]; nav: Assistant
 /** Longer than this, a listed reason (often the readers' own words) is cut to two lines with "Show more". */
 const LONG_REASON = 110;
 
-function ListedPage({ item, nav }: { item: { page_number: number; reason: string }; nav: AssistantNavigation }) {
+function ListedPage({ item, nav }: { item: { page_number: number; reason: string; status?: string }; nav: AssistantNavigation }) {
   const [expanded, setExpanded] = useState(false);
   const reasonId = useId();
   const long = item.reason.length > LONG_REASON;
@@ -201,6 +201,7 @@ function ListedPage({ item, nav }: { item: { page_number: number; reason: string
         <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         <span className="min-w-0 flex-1">
           Page <span className="num">{item.page_number}</span>
+          {item.status && <span className="ml-2 text-xs text-muted-foreground" data-part="page-status">{item.status}</span>}
         </span>
         <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
@@ -222,7 +223,7 @@ function ListedPage({ item, nav }: { item: { page_number: number; reason: string
   );
 }
 
-function PageList({ items, title, nav }: { items: readonly { page_number: number; reason: string }[]; title: string; nav: AssistantNavigation }) {
+function PageList({ items, title, nav }: { items: readonly { page_number: number; reason: string; status?: string }[]; title: string; nav: AssistantNavigation }) {
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-xs text-muted-foreground">{title}</p>
@@ -429,7 +430,12 @@ export function AnswerView({
             ) : item.kind === 'blockers' ? (
               <BlockerList key={item.key} items={item.items} nav={nav} />
             ) : item.kind === 'no_countertop_pages' ? (
-              <PageList key={item.key} items={item.items} title="Pages with no countertop: listed, nothing to decide" nav={nav} />
+              <PageList
+                key={item.key}
+                items={item.items.map((page) => ({ ...page, status: page.confirmation ? `Confirmed by ${page.confirmation.confirmed_by}` : 'Not confirmed yet' }))}
+                title="Pages with no countertop: listed; each needs a reviewer's confirmation before sign-off"
+                nav={nav}
+              />
             ) : (
               <PageList key={item.key} items={item.items} title="Rows not checked: listed, nothing to decide" nav={nav} />
             ),

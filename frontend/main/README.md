@@ -111,8 +111,22 @@ the last run" once checks have run (its countertop card says why). It is counted
 checked" chip and donut slice), and is never counted as needing the reviewer or listed in the queue.
 A split page with a result is still a queue item (#1115).
 
+**Pages with no countertop need one click each (#1191).** "Pages with no countertop found"
+(`components/results/no-countertop-pages.tsx`) gives every page two buttons, nothing pre-selected:
+"Confirm: no countertop here" and "There is a countertop" (`POST …/no-countertop-pages/{record_id}/answer`).
+The second turns the page into a split-page item (held `row-choice-split`, a result after the next
+check run). The list counts "2 of 3 confirmed" and says who confirmed each page and when ("From revision
+N · person" when it was given on an identical page of an earlier revision; the signer then ticks that
+it still applies). An older reading that does not say what the AIs' "no line" meant is listed first
+with an "Older reading" badge and the same two buttons. "There is a countertop" carries a tooltip:
+it cannot be undone. On a review signed before #1191 an unconfirmed page says "Signed before
+confirmations were asked". The server refuses sign-off
+while any page is unconfirmed; readiness lists them (`unconfirmed_no_countertop_pages`), and the Sign off
+panel and the queue's last screen name them with "Show them". The buttons are off after sign-off.
+
 **One blocking count per screen, with its noun (#1179).** The header and the Results tab say the
-review's items ("15 items need you": countertops and other checks, from readiness); the card says
+review's items ("15 items need you": countertops, other checks and pages with no countertop still to
+confirm (#1191), from readiness; the queue walks all three); the card says
 countertops ("9 countertops need you"); "Other checks" says checks. The donut shows no second
 "needs you" number.
 
