@@ -45,14 +45,35 @@ def _foreign_key(table: str) -> str:
 
 
 def upgrade() -> None:
-    """Add a nullable self-reference on each table. Existing rows stay NULL."""
-    for table in TABLES:
-        op.add_column(
-            table, sa.Column("carried_from_id", postgresql.UUID(as_uuid=True), nullable=True)
-        )
-        op.create_foreign_key(
-            _foreign_key(table), table, table, ["carried_from_id"], ["id"], ondelete="RESTRICT"
-        )
+    """Add a nullable self-reference on each table. Existing rows stay NULL.
+
+    Spelled out per table, not looped: `tests/app/test_migration_matches_models.py` reads each
+    migration as text, and a migration is one fixed historical state.
+    """
+    op.add_column(
+        "slot_row_review_decisions",
+        sa.Column("carried_from_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
+    op.create_foreign_key(
+        _foreign_key("slot_row_review_decisions"),
+        "slot_row_review_decisions",
+        "slot_row_review_decisions",
+        ["carried_from_id"],
+        ["id"],
+        ondelete="RESTRICT",
+    )
+    op.add_column(
+        "view_role_confirmations",
+        sa.Column("carried_from_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
+    op.create_foreign_key(
+        _foreign_key("view_role_confirmations"),
+        "view_role_confirmations",
+        "view_role_confirmations",
+        ["carried_from_id"],
+        ["id"],
+        ondelete="RESTRICT",
+    )
 
 
 def downgrade() -> None:
