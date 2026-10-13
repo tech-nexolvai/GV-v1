@@ -1015,13 +1015,14 @@ def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> No
 # ---------------------------------------------------------------------------------------------
 
 #: SHA-256 of the two wordings the demo-test measured (2026-10-13, Opus 5.5 + Sonnet 5.5 on real
-#: stored questions). Any change to either text, even one character, needs a new prompt id and a
-#: new measurement, so the digest is pinned here.
-SPAN_V5_SHA256 = "3479026b8b06bb15cfcd5ef7475d8bcf4d35945f3239ba555c3768d3918ff1da"
+#: stored questions). The label wording ships with one example number swapped for an invented one
+#: after review (the inch-mark example); nothing else differs. Any other change to either text,
+#: even one character, needs a new prompt id and a new measurement, so the digest is pinned here.
+SPAN_V5_SHA256 = "93d58252d2efcbaade50c6878559e90b7a204dbfeecc5bc067aefdc70b1268f0"
 ROW_V4_SHA256 = "07eaec6ecb52fb36848800869943c1cd24188a3d04a5c6d7924a5c4900513eec"
 
 
-def test_the_shipped_wordings_are_byte_for_byte_the_demo_tested_ones() -> None:
+def test_the_shipped_wordings_are_byte_for_byte_the_pinned_ones() -> None:
     import hashlib
 
     from extraction.slot_reader.bedrock import ROW_PROMPT_ID

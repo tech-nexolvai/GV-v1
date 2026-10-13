@@ -158,7 +158,8 @@ Picture 2 the close-up with two magenta marks at the span's ends. The question s
 between the marks, whose label to copy (the overall's or the piece's), that sums and worded labels
 belong to their span, and how to write a fraction (on one line, `n/d`, one space after the whole
 number); every colour of the reviewer's markup is named. The answer fields and shape are v4's, so a
-v5 answer parses as a v4 one did.
+v5 answer parses as a v4 one did. After review one example number (the inch-mark example) was
+swapped for an invented one; the wording is otherwise the tested one.
 v4 (#1110): `belongs` is "yes", "no" or "unsure". v3 told a reader to answer false when it was
 merely unsure, and two such answers counted as "no label", the trigger of the equal-shares
 read-through (#1086). "No" now means only "this span has no printed label of its own"; unsure is
@@ -494,7 +495,7 @@ CLAUDE_SPAN_PROMPT: Final = (
     # The superscript-and-subscript fraction as some readers wrote it, by code point.
     '22\u2075\u2044\u2081\u2086" or a fraction split over two lines; a stacked fraction is written '
     "the same way. Put an inch mark only where one is printed, in its printed place "
-    '(41 1/2", not 41"1/2").\n'
+    '(37 3/8", not 37"3/8").\n'
     '- "belongs": "yes" if you are sure the label you copy belongs to the marked span. '
     '"no" only if you are sure the marked span has no printed dimension label of its own: every '
     "label near it belongs to a neighbouring span, the overall or a height, or none is printed. "
