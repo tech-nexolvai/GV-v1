@@ -4,15 +4,22 @@ This module asks one narrow question of a rendered page: which one of the rulebo
 layout answers is visible here, or can no reader safely say?  It does not persist the answer, does
 not read dimensions, and does not turn model confidence into authority.
 
+**Every Bedrock call is handed over to be recorded** (#1221). The reader cannot write the record
+itself: this package may not import ``app/``. So it hands each call — its raw response or its error —
+to an ``on_call`` callback that ``workflow/`` supplies, which writes one ``model_invocations`` row.
+The callback is a side effect only: a callback that fails never changes the reading.
+
 Source: issue #654. Verification: ``tests/extraction/test_layout.py``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
+from time import monotonic_ns
 from typing import Any, Protocol, cast
 
 from evidence.coordinates import StoredPoint
@@ -20,6 +27,8 @@ from evidence.crop import RenderedPage, encode_png
 from evidence.polygon import Polygon
 
 TOOL_NAME = "answer_closed_layout_question"
+
+logger = logging.getLogger("gv.extraction.layout")
 
 
 class LayoutStatus(StrEnum):
@@ -259,6 +268,28 @@ def classify_layout(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class LayoutCall:
+    """One Bedrock call the layout reader made, as the recorder needs it (#1221).
+
+    ``response`` is the provider's raw answer (its ``usage`` holds the tokens), or ``None`` when the
+    call raised. ``error`` is why the answer was not used: the provider's exception, or the local
+    check that refused the answer (then ``response`` is set too, and the row is ``rejected``).
+    ``started_ns`` is ``time.monotonic_ns()`` just before the call, for its latency.
+    """
+
+    model_id: str
+    prompt_id: str
+    template_id: str
+    started_ns: int
+    response: Mapping[str, Any] | None
+    error: BaseException | None
+
+
+#: Receives every Bedrock call the reader makes. Supplied by ``workflow/``, which may write rows.
+LayoutCallSink = Callable[[LayoutCall], None]
+
+
 class BedrockClosedQuestionReader:
     """Forced-tool Bedrock reader whose answer field is constrained to rulebook choices."""
 
@@ -266,9 +297,16 @@ class BedrockClosedQuestionReader:
         self,
         config: BedrockClosedQuestionConfig,
         client: BedrockClosedQuestionClient,
+        on_call: LayoutCallSink | None = None,
     ) -> None:
         self._config = config
         self._client = client
+        self._on_call = on_call
+
+    def with_call_recorder(self, on_call: LayoutCallSink) -> BedrockClosedQuestionReader:
+        """The same reader, model and client, handing every call it makes to ``on_call``."""
+
+        return BedrockClosedQuestionReader(self._config, self._client, on_call)
 
     def read(self, rendered: RenderedPage, question: ClosedQuestion) -> LayoutReaderResult:
         """Return Bedrock's structured answer, or abstain with a real crop region."""
@@ -277,22 +315,63 @@ class BedrockClosedQuestionReader:
         if not isinstance(question, ClosedQuestion):
             raise TypeError("question must be a ClosedQuestion")
         fallback = full_page_region(rendered)
+        started_ns: int | None = None
+        response: Mapping[str, Any] | None = None
+        refusal: BaseException | None = None
         try:
-            response = self._client.converse(**self._request(rendered, question))
+            request = self._request(rendered, question)
+            started_ns = monotonic_ns()
+            response = self._client.converse(**request)
             payload = _single_tool_payload(response)
-            return _payload_to_reading(
+            reading, refusal = _payload_to_reading(
                 payload,
                 reader=self._config.reader,
                 rendered=rendered,
                 fallback=fallback,
             )
+            return reading
         except Exception as error:  # noqa: BLE001
+            refusal = error
             reason = str(error).strip() or type(error).__name__
             return LayoutReaderResult(
                 self._config.reader,
                 None,
                 fallback,
                 f"layout reader abstained: {reason}",
+            )
+        except BaseException as interrupted:
+            # An interrupt (Ctrl-C, a shutdown) still ends the read as before, and is handed over
+            # as what ended the call, never as an answered call with no tokens.
+            refusal = interrupted
+            raise
+        finally:
+            # Only a call that was made is handed over: a request that could not be built cost
+            # nothing and was never sent.
+            if started_ns is not None:
+                self._hand_over(started_ns, response, refusal)
+
+    def _hand_over(
+        self,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> None:
+        if self._on_call is None:
+            return
+        try:
+            self._on_call(
+                LayoutCall(
+                    model_id=self._config.model_id,
+                    prompt_id=self._config.prompt_id,
+                    template_id=self._config.template_id,
+                    started_ns=started_ns,
+                    response=response,
+                    error=error,
+                )
+            )
+        except Exception as record_error:  # noqa: BLE001 - recording never changes the reading
+            logger.warning(
+                "layout call not handed over for recording: %s", type(record_error).__name__
             )
 
     def _request(self, rendered: RenderedPage, question: ClosedQuestion) -> dict[str, object]:
@@ -429,7 +508,8 @@ def _payload_to_reading(
     reader: str,
     rendered: RenderedPage,
     fallback: Polygon,
-) -> LayoutReaderResult:
+) -> tuple[LayoutReaderResult, BaseException | None]:
+    """The reading, and the error when its region was refused (the answer is then not used)."""
     if not isinstance(payload, Mapping):
         raise TypeError("layout tool payload must be an object")
     unknown = set(payload) - {"answer", "reason", "region"}
@@ -444,8 +524,11 @@ def _payload_to_reading(
     try:
         region = _region_from_payload(payload.get("region"), rendered)
     except (TypeError, ValueError) as error:
-        return LayoutReaderResult(reader, None, fallback, f"layout region was refused: {error}")
-    return LayoutReaderResult(reader, answer, region, reason)
+        return (
+            LayoutReaderResult(reader, None, fallback, f"layout region was refused: {error}"),
+            error,
+        )
+    return LayoutReaderResult(reader, answer, region, reason), None
 
 
 def _region_from_payload(payload: object, rendered: RenderedPage) -> Polygon:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
@@ -18,6 +19,7 @@ from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
     ClosedQuestion,
+    LayoutCall,
     LayoutReaderResult,
     LayoutStatus,
     classify_layout,
@@ -223,3 +225,150 @@ def test_permitted_answers_come_from_required_inputs_not_a_hardcoded_list() -> N
     assert "back_left_right_peninsula" in question.choices
     assert result.status is LayoutStatus.ANSWERED
     assert result.answer == "back_left_right_peninsula"
+
+
+# ---------------------------------------------------------------------------
+# Every Bedrock call is handed to a recorder (#1221)
+# ---------------------------------------------------------------------------
+
+_LAYOUT_CONFIG = BedrockClosedQuestionConfig(
+    model_id="test-layout-model",
+    prompt_id="layout-discriminator-v1",
+    template_id="closed-question-page-v1",
+)
+_FULL_PAGE = [["0", "0"], ["1", "0"], ["1", "1"], ["0", "1"]]
+
+
+class _RaisingBedrock:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    def converse(self, **kwargs: object) -> Mapping[str, Any]:
+        del kwargs
+        self.calls += 1
+        raise self.error
+
+
+def _read_both_ways(client: Any) -> tuple[LayoutReaderResult, LayoutReaderResult, list[LayoutCall]]:
+    """The same question asked without and with a recorder: the readings must be identical."""
+    calls: list[LayoutCall] = []
+    plain = BedrockClosedQuestionReader(_LAYOUT_CONFIG, client).read(_rendered(), _question())
+    recorded = (
+        BedrockClosedQuestionReader(_LAYOUT_CONFIG, client)
+        .with_call_recorder(calls.append)
+        .read(_rendered(), _question())
+    )
+    return plain, recorded, calls
+
+
+def test_an_answered_layout_call_is_handed_over_once_with_its_raw_response() -> None:
+    """**Outcome: one call record per Bedrock call, carrying the response the tokens come from.**"""
+    response = {
+        **_tool_response({"answer": "island", "reason": "no back wall", "region": _FULL_PAGE}),
+        "usage": {"inputTokens": 1000, "outputTokens": 100},
+    }
+    plain, recorded, calls = _read_both_ways(RecordingBedrock(response))
+
+    assert recorded == plain
+    assert recorded.answer == "island"
+    assert len(calls) == 1
+    call = calls[0]
+    assert (call.model_id, call.prompt_id, call.template_id) == (
+        "test-layout-model",
+        "layout-discriminator-v1",
+        "closed-question-page-v1",
+    )
+    assert call.response == response
+    assert call.error is None
+    assert call.started_ns > 0
+
+
+def test_a_malformed_layout_answer_is_handed_over_with_the_response_and_its_error() -> None:
+    """**Outcome: the reader still abstains, and the call carries both response and error.**
+
+    Both together are what makes the stored row `rejected`: the model answered and paid tokens, and
+    the local code refused the answer.
+    """
+    response = _tool_response({"answer": "island", "reason": "x", "region": _FULL_PAGE, "x": 1})
+    plain, recorded, calls = _read_both_ways(RecordingBedrock(response))
+
+    assert recorded == plain
+    assert recorded.answer is None
+    assert recorded.reason.startswith("layout reader abstained:")
+    assert len(calls) == 1
+    assert calls[0].response == response
+    assert isinstance(calls[0].error, ValueError)
+
+
+def test_a_refused_layout_region_is_handed_over_as_a_rejected_answer() -> None:
+    """**Outcome: the same abstention as before, and the call names why the answer was refused.**"""
+    response = _tool_response(
+        {"answer": "island", "reason": "no back wall", "region": [["0", "0"], ["2", "0"]]}
+    )
+    plain, recorded, calls = _read_both_ways(RecordingBedrock(response))
+
+    assert recorded == plain
+    assert recorded.answer is None
+    assert recorded.reason.startswith("layout region was refused:")
+    assert len(calls) == 1
+    assert calls[0].response == response
+    assert isinstance(calls[0].error, (TypeError, ValueError))
+
+
+def test_a_failed_layout_call_is_handed_over_with_no_response() -> None:
+    """**Outcome: the reader abstains exactly as before; the call carries the error, no response.**"""
+    error = ConnectionError("the network went away")
+    client = _RaisingBedrock(error)
+    plain, recorded, calls = _read_both_ways(client)
+
+    assert recorded == plain
+    assert recorded.answer is None
+    assert recorded.reason == "layout reader abstained: the network went away"
+    assert client.calls == 2
+    assert len(calls) == 1
+    assert calls[0].response is None
+    assert calls[0].error is error
+
+
+def test_a_recorder_that_fails_never_changes_the_layout_reading() -> None:
+    """**Outcome: recording is a side effect.** A broken recorder cannot turn an answer into an
+    abstention, or an abstention into an exception."""
+
+    def broken(call: LayoutCall) -> None:
+        del call
+        raise RuntimeError("the record could not be written")
+
+    response = _tool_response({"answer": "island", "reason": "no back wall", "region": _FULL_PAGE})
+    reader = BedrockClosedQuestionReader(_LAYOUT_CONFIG, RecordingBedrock(response))
+
+    reading = reader.with_call_recorder(broken).read(_rendered(), _question())
+
+    assert reading == reader.read(_rendered(), _question())
+    assert reading.answer == "island"
+
+
+def test_with_call_recorder_leaves_the_original_reader_unrecorded() -> None:
+    calls: list[LayoutCall] = []
+    response = _tool_response({"answer": "island", "reason": "no back wall", "region": _FULL_PAGE})
+    reader = BedrockClosedQuestionReader(_LAYOUT_CONFIG, RecordingBedrock(response))
+
+    reader.with_call_recorder(calls.append)
+    reader.read(_rendered(), _question())
+
+    assert calls == []
+
+
+def test_an_interrupted_layout_call_is_handed_over_as_an_error_and_still_raises() -> None:
+    """**Outcome: Ctrl-C is never recorded as an `ok` call with zero tokens.**"""
+    calls: list[LayoutCall] = []
+    reader = BedrockClosedQuestionReader(
+        _LAYOUT_CONFIG, _RaisingBedrock(KeyboardInterrupt())
+    ).with_call_recorder(calls.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        reader.read(_rendered(), _question())
+
+    assert len(calls) == 1
+    assert calls[0].response is None
+    assert isinstance(calls[0].error, KeyboardInterrupt)

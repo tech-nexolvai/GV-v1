@@ -749,3 +749,168 @@ def test_the_form_says_whether_the_reader_has_finished(
     body = response.json()
     assert body["still_reading"] is waiting, state
     assert body["revision_state"] == state.value
+
+
+# ---------------------------------------------------------------------------
+# #1221: the call is recorded, committed, and counted on the Usage page
+# ---------------------------------------------------------------------------
+
+RECORDED_MODEL = "test-assignment-model"
+
+
+class _FakeBedrock:
+    """A Bedrock client that answers with a fixed tool call or raises, and counts the calls."""
+
+    def __init__(self, input_: dict[str, Any] | None = None, error: Exception | None = None):
+        self.input = input_
+        self.error = error
+        self.calls = 0
+
+    def converse(self, **_: Any) -> dict[str, Any]:
+        from workflow.assignment_bedrock import TOOL_NAME
+
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return {
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1000, "outputTokens": 100},
+            "output": {
+                "message": {"content": [{"toolUse": {"name": TOOL_NAME, "input": self.input}}]}
+            },
+        }
+
+
+def _bedrock_model(client: _FakeBedrock) -> Any:
+    from workflow.assignment_bedrock import BedrockAssignmentModel, _Config
+
+    return BedrockAssignmentModel(
+        config=_Config(
+            model_id=RECORDED_MODEL,
+            region_name="us-east-1",
+            connect_timeout_seconds=1,
+            read_timeout_seconds=2,
+        ),
+        client=client,
+    )
+
+
+@pytest.fixture
+def rates(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "rates.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source": "test prices, authored",
+                "retrieved": "2026-10-14",
+                "currency": "USD",
+                "rates": {
+                    RECORDED_MODEL: {"input_per_1k_tokens": "1", "output_per_1k_tokens": "2"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GV_MODEL_RATES_FILE", str(path))
+
+
+def _committed_rows(engine: Engine) -> list[Any]:
+    from app.models import ModelInvocation
+
+    with session_factory(engine)() as other:
+        return list(other.execute(select(ModelInvocation)).scalars())
+
+
+def test_an_answered_proposal_call_is_committed_and_counted_on_usage(
+    session: Session, postgres_engine: Engine, rates: None
+) -> None:
+    """**Outcome: one committed `ok` row against the revision, and Usage counts it, priced.**
+
+    Read back through a second session: the endpoint's own session never commits on its way out
+    (`get_session`), so a row only it can see would vanish with the request (#1134).
+    """
+    _publish_rulebook(session)
+    package, ids = _package_with_readings(session, readings=(("25 1/2", 51, 2, None, None),))
+    client = _FakeBedrock({"assignments": [{"field_key": "SHOP:CT010", "candidate_ids": ["r1"]}]})
+
+    frames = _stream(session, package, _bedrock_model(client))
+    result = next(frame["result"] for frame in frames if frame["event"] == "result")
+
+    assert result["fields_filled"] == 1
+    assert result["assignments"][0]["values"][0]["candidate_id"] == str(ids["25 1/2"])
+    [row] = _committed_rows(postgres_engine)
+    revision = session.execute(
+        select(PackageRevision).where(PackageRevision.package_id == package)
+    ).scalar_one()
+    assert client.calls == 1
+    assert row.package_revision_id == revision.id
+    assert row.extraction_run_id is None
+    assert row.model_id == RECORDED_MODEL
+    assert (row.input_tokens, row.output_tokens, row.cost_micros) == (1000, 100, 1_200_000)
+    assert row.outcome == "ok"
+
+    usage = _client(session).get(f"/api/v1/projects/{PROJECT}/usage")
+    assert usage.status_code == 200, usage.text
+    totals = usage.json()["totals"]
+    assert totals["calls"] == 1
+    assert totals["failed_calls"] == 0
+    assert (totals["input_tokens"], totals["output_tokens"]) == (1000, 100)
+    assert totals["cost_usd"] == "1.200000"
+
+
+def test_a_failed_proposal_call_is_committed_as_failed_and_the_answer_is_unchanged(
+    session: Session, postgres_engine: Engine, rates: None
+) -> None:
+    """**Outcome: the reviewer sees what they saw before; the paid-for attempt is on Usage.**"""
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("25 1/2", 51, 2, None, None),))
+    error = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "Converse"
+    )
+
+    frames = _stream(session, package, _bedrock_model(_FakeBedrock(error=error)))
+    result = next(frame["result"] for frame in frames if frame["event"] == "result")
+
+    assert result["fields_filled"] == 0
+    assert result["unfilled_reason"] == (
+        "Bedrock throttled the call: the account's request quota for this model was used up"
+    )
+    [row] = _committed_rows(postgres_engine)
+    assert row.outcome == "failed"
+    assert row.rejection_reason == "ClientError: ThrottlingException"
+
+    totals = _client(session).get(f"/api/v1/projects/{PROJECT}/usage").json()["totals"]
+    assert (totals["calls"], totals["failed_calls"]) == (1, 1)
+
+
+def test_a_failed_commit_of_the_call_row_leaves_the_stream_as_it_was(
+    session: Session, postgres_engine: Engine, rates: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**Outcome: the reviewer sees exactly what they saw before #1221; the row is lost, logged.**
+
+    Committing the call's row is the one new write on this path. If the database cannot commit
+    (an infrastructure error), the stream must still end with its result, as it did before.
+    """
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+    from sqlalchemy.exc import OperationalError
+
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("25 1/2", 51, 2, None, None),))
+    error = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "Converse"
+    )
+
+    def broken_commit() -> None:
+        raise OperationalError("COMMIT", {}, Exception("the database went away"))
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    frames = _stream(session, package, _bedrock_model(_FakeBedrock(error=error)))
+    result = next(frame["result"] for frame in frames if frame["event"] == "result")
+
+    assert result["fields_filled"] == 0
+    assert result["unfilled_reason"] == (
+        "Bedrock throttled the call: the account's request quota for this model was used up"
+    )
+    assert _committed_rows(postgres_engine) == []

@@ -56,6 +56,7 @@ from workflow.assignment_bedrock import (
     BedrockAssignmentModel,
     propose_and_guard,
 )
+from workflow.model_call_recorder import ModelCallRecorder
 
 __all__ = [
     "MAX_ASSIGNMENT_READINGS",
@@ -368,8 +369,17 @@ def propose_for_revision(
             "reason": f"{len(context.readings)} readings is more than this step proposes over",
         }
 
+    # One row per call, in the worker's own transaction (#1221): it commits with the proposal and
+    # the hand-over to the reviewer, and rolls back with them.
+    recorder = ModelCallRecorder(session, package_revision_id=package_revision_id)
+    recorded = (
+        model.with_invocation_recorder(recorder)
+        if isinstance(model, BedrockAssignmentModel)
+        else model
+    )
     last: list[AssignmentProgress] = []
-    accepted, unverified = propose_and_guard(context, model, observer=last.append)
+    accepted, unverified = propose_and_guard(context, recorded, observer=last.append)
+    recorder.write_pending()
     proposal_id = record_proposal(
         session,
         package_revision_id=package_revision_id,
