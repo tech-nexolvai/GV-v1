@@ -1286,6 +1286,17 @@ def read_slot_pages(
                     _hard_guarded(label, ink) or not label.has_digit
                 ):
                     continue
+                if (
+                    runtime.claude_row_reader
+                    and label.lane is Lane.GLYPHS
+                    and ink is not None
+                    and ink.ink is not InkClass.VENDOR
+                ):
+                    # Under GV's ink (#1214): `seal_label` holds a glyph label there as
+                    # `reviewer-markup` whatever is read, with no suggestion, so it is not asked.
+                    # Its hold, reason and ink stay as before; only the readers' texts are absent.
+                    # An edge-cut vendor label is still asked.
+                    continue
                 if label.lane is Lane.TEXT:
                     if label.text is None:
                         continue

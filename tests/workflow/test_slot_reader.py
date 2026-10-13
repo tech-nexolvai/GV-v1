@@ -25,7 +25,7 @@ from app.config import Settings
 from evidence.coordinates import PageTransform
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.geometry.rows import MEASURED_SETTINGS, Box, PageRows
-from extraction.ink import read_page_ink
+from extraction.ink import InkClass, read_page_ink
 from extraction.rasterise import render_page
 from extraction.rows import page_rows_and_ink
 from extraction.slot_reader.kinds import PieceKind, propose_kind
@@ -689,6 +689,216 @@ def test_a_label_under_the_reviewers_yellow_box_is_never_read_or_sealed() -> Non
         png for _model, png in readers.requests
     }, "the covered label itself costs no call"
     assert result.mapping.proposals == ()
+
+
+class _SeenJobs:
+    """A progress watcher that keeps every reader question (CropJob) each batch was given."""
+
+    def __init__(self) -> None:
+        self.jobs: dict[str, list[Any]] = {}
+
+    def batch(self, name: str, jobs: Any) -> Callable[[Any], None]:
+        self.jobs.setdefault(name, []).extend(jobs)
+        return lambda _job: None
+
+
+def _claude_read(page: SlotPage, readers: FakeReaders) -> tuple[PageSlotResult, _SeenJobs]:
+    seen = _SeenJobs()
+    attempts: list[AttemptUsage] = []
+    (result,) = read_slot_pages(
+        [page],
+        runtime=runtime(readers, claude_row_reader=True),
+        record_attempt=attempts.append,
+        progress=seen,
+    )
+    assert len(attempts) == (
+        len(readers.requests)
+        + len(readers.wall_requests)
+        + len(readers.row_requests)
+        + len(readers.counter_break_requests)
+    )
+    return result, seen
+
+
+def _span_keys(seen: _SeenJobs) -> list[tuple[str, str]]:
+    return sorted(
+        (job.key, job.model_id) for job in seen.jobs.get("dimensions", []) if job.grounded_claude
+    )
+
+
+def test_claude_path_sends_no_question_for_a_label_under_reviewer_ink() -> None:
+    """#1214: the seal holds a label under GV's ink whatever is read, so it is never asked.
+
+    Its outcome is the one the seal gave when both readers were asked, apart from what only the
+    readers could supply (their texts and the agreed text): same hold, reason, ink, no value and
+    no suggestion. Every vendor-ink label is still asked by both readers.
+    """
+    from extraction.slot_reader.seal import ReaderAnswer, seal_label
+
+    page = slot_page(four_piece_sheet(covered_slot=1))
+    lookup = claude_crops_to_texts(page, FOUR_PIECE_TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '12"'))
+
+    result, seen = _claude_read(page, readers)
+
+    covered = result.slots[1].labels[0]
+    assert page.ink is not None
+    ink = page.ink.at(covered.crop_px)
+    assert ink.ink is not InkClass.VENDOR
+    # No reader job for it, and no request carries its close-up.
+    assert ("p0:slot1:0", OPUS) not in _span_keys(seen)
+    assert ("p0:slot1:0", SONNET) not in _span_keys(seen)
+    assert _crop_png(page.rendered, covered.crop_px) not in {
+        png for _model, png in readers.requests
+    }
+    # Every vendor-ink label is still asked of both readers.
+    assert _span_keys(seen) == sorted(
+        (key, model)
+        for key in ("p0:slot0:0", "p0:slot2:0", "p0:slot3:0", "p0:overall:0")
+        for model in (OPUS, SONNET)
+    )
+    # The outcome the seal gives when both readers were asked (as before #1214), minus only
+    # the readers' own texts.
+    asked = seal_label(
+        covered.label,
+        answers=[
+            ReaderAnswer(
+                model, '12"', readable=True, no_dimension=False, stacked=False, combined=False
+            )
+            for model in (OPUS, SONNET)
+        ],
+        ink=ink,
+        stacked_by_bar=False,
+        allow_stacked=False,
+        row_ambiguity=result.plan.ambiguity,
+        allow_claude_pair=True,
+    )
+    assert asked.reason_code == "reviewer-markup" and asked.reader_texts
+    assert covered.outcome == replace(asked, reader_texts=(), sealed_text=None)
+    assert covered.outcome.state is LabelState.REVIEW
+    assert covered.outcome.value is None and covered.outcome.suggestion is None
+    assert result.slots[1].outcome.reason_code == "reviewer-markup"
+
+
+def test_claude_mixed_row_with_a_covered_label_keeps_its_row_results() -> None:
+    """The row around a label under GV's ink comes out as it did when the label was asked."""
+    page = slot_page(four_piece_sheet(covered_slot=1))
+    lookup = claude_crops_to_texts(page, FOUR_PIECE_TEXTS)
+
+    result, _seen = _claude_read(page, FakeReaders(lambda _model, png: lookup.get(png, '12"')))
+
+    assert result.row_hold is None and result.check_hold is None
+    assert result.vetoed == ()
+    assert [(slot.outcome.state, slot.outcome.reason_code) for slot in result.slots] == [
+        (LabelState.SEALED, None),
+        (LabelState.REVIEW, "reviewer-markup"),
+        (LabelState.SEALED, None),
+        (LabelState.SEALED, None),
+    ]
+    assert result.overall is not None
+    assert result.overall.outcome.state is LabelState.SEALED
+    assert [(p.field_key, p.position, p.slot_index) for p in result.mapping.proposals] == [
+        (PIECE_FIELD, 0, 0),
+        (PIECE_FIELD, 2, 2),
+        (PIECE_FIELD, 3, 3),
+    ]
+    assert result.mapping.held == (
+        (
+            None,
+            (
+                "held back: piece 2 under this overall needs a look first; "
+                "confirm this is the countertop's width"
+            ),
+        ),
+        (1, "covered by reviewer markup"),
+    )
+    # Reviewer ink never names a piece, asked or not.
+    assert [slot.kind.kind if slot.kind else None for slot in result.slots] == [
+        PieceKind.UNKNOWN
+    ] * 4
+    assert result.slots[1].words == ()
+
+
+def test_claude_path_still_asks_a_vendor_label_cut_by_the_edge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only reviewer ink skips the question (#1214): an edge-cut vendor label is asked as before."""
+    import workflow.slot_reader as slot_workflow
+
+    real = slot_workflow._claude_span_plan
+
+    def edge_on_slot_one(page: SlotPage, plan: Any) -> Any:
+        spans = real(page, plan)
+        slots = list(spans.slots)
+        slots[1] = replace(slots[1], labels=(replace(slots[1].labels[0], touches_edge=True),))
+        return replace(spans, slots=tuple(slots))
+
+    monkeypatch.setattr(slot_workflow, "_claude_span_plan", edge_on_slot_one)
+    page = slot_page(four_piece_sheet())
+    lookup = claude_crops_to_texts(page, FOUR_PIECE_TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '12"'))
+
+    result, seen = _claude_read(page, readers)
+
+    assert ("p0:slot1:0", OPUS) in _span_keys(seen)
+    assert ("p0:slot1:0", SONNET) in _span_keys(seen)
+    edge = result.slots[1].labels[0].outcome
+    assert edge.reason_code == "edge" and edge.suggestion is None
+    assert {source for source, _text in edge.reader_texts} == {OPUS, SONNET}
+    assert edge.ink is InkClass.VENDOR
+
+
+def test_claude_path_text_layer_vif_under_reviewer_ink_still_holds_the_row() -> None:
+    """The file's own words still reach the row's hold when the label is not asked (#1214)."""
+    centers = (175.0, 225.0, 275.0, 325.0)
+    drawing = b"".join(
+        sheets.text(x - 7, sheets.CHAIN_Y + 4, '12" VIF' if index == 1 else '12"')
+        for index, x in enumerate(centers)
+    )
+    drawing += sheets.text(243, sheets.OVERALL_Y + 4, '48"')
+    from tests.extraction.test_rows import _slash
+
+    marks = b"".join(_slash(x, sheets.CHAIN_Y) for x in (150, 200, 250, 300, 350))
+    marks += _slash(150, sheets.OVERALL_Y) + _slash(350, sheets.OVERALL_Y)
+    covered = sheets.yellow_box(centers[1] - 7, sheets.CHAIN_Y + 3, 13, 7)
+    page = slot_page(sheets.sheet(drawing + covered, marks))
+    lookup = claude_crops_to_texts(page, FOUR_PIECE_TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '12"'))
+
+    result, seen = _claude_read(page, readers)
+
+    assert ("p0:slot1:0", OPUS) not in _span_keys(seen)
+    assert result.slots[1].outcome.reason_code == "reviewer-markup"
+    assert result.row_hold is not None and result.row_hold.code == "vif"
+    assert result.mapping.proposals == ()
+
+
+def test_non_claude_path_still_skips_an_edge_cut_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The older reader path is unchanged: it never asks a crowded, edge-cut or covered label."""
+    import workflow.slot_reader as slot_workflow
+
+    def edge_on_slot_one(*args: Any, **kwargs: Any) -> Any:
+        plan = plan_slots(*args, **kwargs)
+        slots = list(plan.slots)
+        slots[1] = replace(
+            slots[1],
+            labels=tuple(replace(label, touches_edge=True) for label in slots[1].labels),
+        )
+        return replace(plan, slots=tuple(slots))
+
+    monkeypatch.setattr(slot_workflow, "plan_slots", edge_on_slot_one)
+    page = slot_page(sheets.sheet(sheets.glyph_labels()))
+    lookup = crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '99"'))
+
+    result = read(page, readers)
+
+    middle = result.slots[1]
+    assert middle.outcome.reason_code == "edge"
+    assert middle.labels[0].outcome.reader_texts == ()
+    assert _crop_png(page.rendered, middle.labels[0].crop_px) not in {
+        png for _model, png in readers.requests
+    }
 
 
 def test_glyph_labels_need_two_makers_to_agree() -> None:
