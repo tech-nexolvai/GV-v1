@@ -308,3 +308,63 @@ def test_malformed_or_qualified_feet_and_inches_are_refused(token: str) -> None:
     """Refused, never read as something near: a wrong number is worse than none."""
     with pytest.raises(UnitNormalisationError):
         normalise_to_inches(token)
+
+
+@pytest.mark.parametrize(
+    ("written", "folded"),
+    [
+        ("⅞", "7/8"),
+        ('88½"', '88 1/2"'),
+        ('88 ½"', '88 1/2"'),
+        ('16 3⁄8"', '16 3/8"'),
+        ('½2"', '1/2 2"'),  # never one over twenty-two
+        ('16 3/8"', '16 3/8"'),
+        (r"16\frac{3}{8}", r"16\frac{3}{8}"),  # LaTeX is never rewritten
+        ('10 ¹⁄₂"', '10 ¹/₂"'),  # superscript digits are not folded; only the slash is
+    ],
+)
+def test_fold_fractions_changes_only_the_spelling(written: str, folded: str) -> None:
+    """#1199: `⅞` is `7/8` by Unicode's own decomposition; nothing else is rewritten."""
+    from units.normalise import fold_fractions
+
+    assert fold_fractions(written) == folded
+
+
+@pytest.mark.parametrize(
+    "written",
+    ['16 3/8"', '3/4"', '1/2"', '24 63/64"', '2"', "3'-6 1/2\"", '2.375"', "330 [13]"],
+)
+def test_a_drawn_fraction_is_not_refused(written: str) -> None:
+    from units.normalise import drawn_fraction_refusal
+
+    assert drawn_fraction_refusal(written) is None
+
+
+@pytest.mark.parametrize(
+    ("written", "says"),
+    [
+        ('163/8"', "a space may be missing"),
+        ('5/4"', "not smaller than its bottom"),
+        ('8/8"', "not smaller than its bottom"),
+        ('3/5"', "over 5"),
+        ('16 1/3"', "over 3"),
+        ('1/128"', "over 128"),
+        ('1/0"', "over 0"),
+    ],
+)
+def test_a_fraction_no_drawing_prints_is_refused_with_the_reason(written: str, says: str) -> None:
+    """#1199: the feet-and-inches rule (`_inch_part`), for every fraction a reader wrote."""
+    from units.normalise import drawn_fraction_refusal
+
+    refusal = drawn_fraction_refusal(written)
+    assert refusal is not None and says in refusal
+
+
+def test_the_system_s_own_values_still_round_trip() -> None:
+    """The guard is for text a reader or drawing printed, never in `parse_imperial`: 984 mm is
+    written `38 94/127` and must read back."""
+    from units.imperial import format_inches
+
+    value = normalise_to_inches("984 mm").exact
+    assert parse_imperial(format_inches(value)) == value
+    assert normalise_to_inches(f'{format_inches(value)}"').exact == value

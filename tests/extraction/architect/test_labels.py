@@ -83,6 +83,9 @@ def test_other_qualifiers_are_flags_on_a_usable_number(text: str, qualifier: Qua
         "EQ",  # no number at all
         "3'-1 1/3\"",  # thirds are not drawn
         '11 1/10"',  # neither are tenths, in inches alone either
+        '163/8"',  # a lost space: read as written it is 20 3/8" (#1199)
+        '5/4"',  # an improper fraction is never drawn
+        '16 9/8"',
         "3'-14\"",  # the inch part of feet-and-inches is under a foot
         "36",  # a bare number has no unit
     ],
@@ -100,3 +103,12 @@ def test_split_keeps_the_dimension_as_printed() -> None:
     assert split.dimension == "2' - 1\""
     assert split.qualifiers == frozenset({Qualifier.TYP})
     assert split.other_words == ()
+
+
+def test_a_squeezed_fraction_is_held_with_the_reason() -> None:
+    """#1199: the text layer can lose the space in `16 3/8"`; the reason says so."""
+    reading = read_label('163/8"')
+
+    assert reading.inches is None
+    assert reading.held_reason is not None and "163/8" in reading.held_reason
+    assert read_label('16 3/8"').inches == Fraction(131, 8)

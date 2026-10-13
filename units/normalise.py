@@ -188,19 +188,84 @@ def plain_marks(token: str) -> str:
     reads (`units/notation.py`). Nothing here is arithmetic: no number changes, only how it is
     spelled.
     """
-    written: list[str] = []
-    for character in token:
-        decomposition = unicodedata.decomposition(character)
-        if decomposition.startswith("<fraction>"):
-            parts = unicodedata.normalize("NFKD", character).replace("\u2044", "/")
-            after_a_digit = bool(written) and written[-1][-1:].isdigit()
-            written.append(f" {parts}" if after_a_digit else parts)
-        else:
-            written.append(character)
-    token = "".join(written)
+    token = fold_fractions(token)
     for spelling, plain in _WRITTEN_MARKS:
         token = token.replace(spelling, plain)
-    return token.replace("\u2044", "/").replace("''", '"')
+    return token.replace("''", '"')
+
+
+#: The fraction slash, `\u2044` (U+2044): the slash Unicode writes between a fraction's numerator and its
+#: denominator. It means `/` and nothing else.
+FRACTION_SLASH = "\u2044"
+
+
+def fold_fractions(token: str) -> str:
+    """Unicode's fraction characters and the fraction slash in their plain spelling (#907, #1199).
+
+    `88\u00bd"` is `88 1/2"`, `\u215e` is `7/8`, `3\u20448` is `3/8`. A vulgar fraction is the character whose
+    decomposition Unicode tags `<fraction>`, and that decomposition *is* its numerator, the fraction
+    slash and its denominator, so the digits written in its place are the standard's own and no
+    table here can hold a wrong one. Only the spelling changes, never the value.
+
+    A space goes in front where a digit comes before it (`1\u00bd` is one and a half, never fifteen over
+    two) and after it where a digit follows (`\u00bd2` is never one over twenty-two: it stays two
+    numbers, which no parser reads as one). Nothing else is folded: superscript and subscript digits,
+    LaTeX `\\frac`, a squeezed `163/8` and a fraction split over a line break stay as written.
+    """
+    if not any(
+        character == FRACTION_SLASH or unicodedata.decomposition(character).startswith("<fraction>")
+        for character in token
+    ):
+        return token
+    written: list[str] = []
+    for index, character in enumerate(token):
+        if unicodedata.decomposition(character).startswith("<fraction>"):
+            parts = unicodedata.normalize("NFKD", character).replace(FRACTION_SLASH, "/")
+            if written and written[-1][-1:].isdigit():
+                parts = f" {parts}"
+            if token[index + 1 : index + 2].isdigit():
+                parts = f"{parts} "
+            written.append(parts)
+        elif character == FRACTION_SLASH:
+            written.append("/")
+        else:
+            written.append(character)
+    return "".join(written)
+
+
+#: A written fraction anywhere in a dimension: `3/8` in `16 3/8"`, `163/8` in `163/8"`.
+_WRITTEN_FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+
+
+def drawn_fraction_refusal(token: str) -> str | None:
+    """Why a fraction written in a drawn dimension is not one a drawing prints, or `None`.
+
+    **The rule the inch part of feet-and-inches already keeps** (`_inch_part`), for every fraction
+    a reader or a drawing's text wrote: the bottom is 2, 4, 8, 16, 32 or 64, and the top is smaller
+    than the bottom. A drawing writes nine eighths as `1 1/8`, never `9/8`.
+
+    **Why it matters on the reading path (#1199).** `parse_imperial` reads any `a/b`, as it must for
+    the values arithmetic produces (`format_inches` writes `38 94/127` for 984 mm and reads it back).
+    But a reader that writes `163/8"` has almost certainly lost the space in `16 3/8"`, and read as
+    written it is twenty and three-eighths. Splitting the digits would be a guess (`1615/16` is
+    161 5/16 or 16 15/16), so the label goes to a person, even when both readers wrote it.
+
+    For text a reader or a drawing printed only. Values the system wrote itself are never checked
+    here.
+    """
+    for numerator, denominator in _WRITTEN_FRACTION_RE.findall(token):
+        top, bottom = int(numerator), int(denominator)
+        if not _drawn_denominator(bottom):
+            return (
+                f"the fraction {top}/{bottom} is over {bottom}; a drawing prints fractions over "
+                "2, 4, 8, 16, 32 or 64 only, so a person reads it"
+            )
+        if top >= bottom:
+            return (
+                f"the fraction {top}/{bottom} has a top that is not smaller than its bottom, which "
+                "a drawing never prints; a space may be missing, so a person reads it"
+            )
+    return None
 
 
 def _inch_part(remainder: str, text: str) -> Fraction:

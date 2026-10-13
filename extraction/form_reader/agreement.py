@@ -22,6 +22,7 @@ ReviewReason = Literal[
     "one-reader-missing",
     "combined",
     "stacked",
+    "fraction-not-drawn",
     "unreadable",
     "scope-not-run",
     "reader-topology-differs",
@@ -318,6 +319,8 @@ def _special_reason(left: ParsedDimension, right: ParsedDimension) -> ReviewReas
             return "combined"
         if reason == "stacked":
             return "stacked"
+        if reason == "fraction-not-drawn":
+            return "fraction-not-drawn"
     return None
 
 

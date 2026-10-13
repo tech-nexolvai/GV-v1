@@ -33,7 +33,7 @@ from fractions import Fraction
 from typing import Final
 
 from units.measurement import Measurement, Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
@@ -92,8 +92,13 @@ COUNTER_BREAK: Final = (
 def plain_dimension(text: str, *, allow_explicit_mm: bool = False) -> Measurement | None:
     """The exact value of a plain dimension's text, or `None` where it is not one.
 
-    `None` for text with anything but the characters of a dimension, for a compound, and for text
-    `units/` cannot give a unit — a bare `30` is not assumed to be inches.
+    `None` for text with anything but the characters of a dimension, for a compound, for text
+    `units/` cannot give a unit — a bare `30` is not assumed to be inches — and for a fraction no
+    drawing prints (`163/8"`, `5/4"`, `3/5"`; #1199): read as written, a squeezed `16 3/8"` would be
+    twenty and three-eighths.
+
+    `text` is the agreed text after `seal.normalise_text`, which has already folded `½` into `1/2`,
+    so the character gate below never sees a fraction character.
     """
     if (
         not text
@@ -103,6 +108,8 @@ def plain_dimension(text: str, *, allow_explicit_mm: bool = False) -> Measuremen
         return None
     try:
         notation, _millimetres = canonical_notation(text)
+        if drawn_fraction_refusal(notation) is not None:
+            return None
         value = normalise_to_inches(notation)
     except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
         return None

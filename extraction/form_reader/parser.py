@@ -9,7 +9,7 @@ from typing import Any
 
 from extraction.form_reader.schema import FormDimension, PageFormAnswer
 from units.measurement import Measurement
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 
@@ -33,6 +33,9 @@ def validate_page_answer(payload: Mapping[str, Any], *, page_index: int) -> Page
 def parse_dimension(dimension: FormDimension) -> ParsedDimension:
     """Use only the literal printed text; reject special cases for human review.
 
+    A fraction no drawing prints (`163/8"`, `5/4"`, `3/5"`) is one of them (#1199), even when both
+    readers wrote it: read as written, a squeezed `16 3/8"` would be twenty and three-eighths.
+
     The model's whole/numerator/denominator fields are cross-checks only. They never construct
     the value. A mismatch makes the proposal unreadable, rather than preferring either source.
     """
@@ -44,6 +47,9 @@ def parse_dimension(dimension: FormDimension) -> ParsedDimension:
         return ParsedDimension(None, "stacked")
     try:
         notation, _millimetre_half = canonical_notation(dimension.text)
+        if drawn_fraction_refusal(notation) is not None:
+            # `163/8"` read as written is 20 3/8"; a drawing never prints it (#1199).
+            return ParsedDimension(None, "fraction-not-drawn")
         value = normalise_to_inches(notation)
     except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
         return ParsedDimension(None, "unreadable")
