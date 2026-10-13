@@ -148,11 +148,9 @@ def test_an_empty_reason_is_never_stored(postgres_engine: Engine) -> None:
         _store(postgres_engine, outcome=ModelInvocationOutcome.FAILED, rejection_reason="")
 
 
-def test_the_migration_goes_down_clearing_only_the_new_reasons_and_up_again(
-    postgres_engine: Engine,
-) -> None:
-    """Down clears the reason of every non-rejected row (the old check forbids it) and keeps the
-    row itself; a rejected row's reason and every count stay. Up again accepts new reasons."""
+def test_the_downgrade_refuses_while_a_failed_call_keeps_its_cause(postgres_engine: Engine) -> None:
+    """Refuses rather than rewrites (as `0049` and `0093` do): the table is append-only, so a reason
+    the old check forbids is neither cleared nor deleted. Nothing changes; the revision stays."""
     config = _config(postgres_engine)
     command.upgrade(config, "head")
     failed = _store(
@@ -163,21 +161,33 @@ def test_the_migration_goes_down_clearing_only_the_new_reasons_and_up_again(
         output_tokens=0,
         cost_micros=0,
     )
+
+    with pytest.raises(RuntimeError, match=r"1 model_invocations row\(s\) record why"):
+        command.downgrade(config, BEFORE)
+
+    assert _reason(postgres_engine, failed) == ("failed", "PictureWouldBeResized")
+    with postgres_engine.connect() as connection:
+        version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert version == REVISION
+
+
+def test_the_migration_goes_down_and_up_when_no_row_needs_it(postgres_engine: Engine) -> None:
+    """With only rejected reasons stored, down restores the old check and up the new one."""
+    config = _config(postgres_engine)
+    command.upgrade(config, "head")
     rejected = _store(
         postgres_engine,
         outcome=ModelInvocationOutcome.REJECTED,
         rejection_reason="malformed_form_answer",
     )
+    plain_failure = _store(postgres_engine, outcome=ModelInvocationOutcome.FAILED)
 
     command.downgrade(config, BEFORE)
 
-    assert _reason(postgres_engine, failed) == ("failed", None)
     assert _reason(postgres_engine, rejected) == ("rejected", "malformed_form_answer")
+    assert _reason(postgres_engine, plain_failure) == ("failed", None)
     with pytest.raises(IntegrityError):
         _store(postgres_engine, outcome=ModelInvocationOutcome.FAILED, rejection_reason="Anything")
-    # The table is append-only again once the downgrade has finished.
-    with pytest.raises(IntegrityError, match="append-only"), postgres_engine.begin() as connection:
-        connection.execute(text("UPDATE model_invocations SET latency_ms = latency_ms + 1"))
 
     command.upgrade(config, "head")
 

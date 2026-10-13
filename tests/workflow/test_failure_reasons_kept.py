@@ -257,3 +257,39 @@ def test_a_successful_wording_call_is_stored_as_before(session: Session) -> None
     assert result.mode is CompositionMode.LLM
     [row] = _rows(session, revision_id)
     assert (row.outcome, row.rejection_reason) == ("ok", None)
+
+
+@pytest.mark.parametrize(
+    ("response", "outcome"),
+    [
+        (None, ModelInvocationOutcome.FAILED),
+        (
+            {"stopReason": "tool_use", "usage": {"inputTokens": 9, "outputTokens": 3}},
+            ModelInvocationOutcome.REJECTED,
+        ),
+    ],
+)
+def test_a_nul_byte_in_the_error_does_not_lose_the_row(
+    session: Session, response: Mapping[str, Any] | None, outcome: ModelInvocationOutcome
+) -> None:
+    """Review of #1218: PostgreSQL refuses a NUL in text, so the insert failed and the call's row
+    was lost. Both the failed and the rejected path store the cause with the NUL replaced."""
+    from time import monotonic_ns
+
+    revision_id = _revision_without_run(session)
+
+    row = BedrockConverseInvocationRecorder(session, revision_id).record(
+        model_id="made-up-wording-model",
+        prompt_id=PROMPT_ID,
+        template_id=TEMPLATE_ID,
+        started_ns=monotonic_ns(),
+        response=response,
+        error=ValueError("the stream broke\x00 here \x1b[31mred\x1b[0m \u202eend"),
+    )
+    session.flush()
+
+    assert row.outcome == outcome
+    assert row.rejection_reason is not None
+    assert "\x00" not in row.rejection_reason and "\x1b" not in row.rejection_reason
+    assert "\u202e" not in row.rejection_reason
+    assert row.rejection_reason.startswith("ValueError: the stream broke")

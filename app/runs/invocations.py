@@ -294,7 +294,10 @@ def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) ->
 def _rejection_reason(error: BaseException | None) -> str | None:
     if error is None:
         return None
-    text = f"{error.__class__.__name__}: {error}".strip()
+    # Control and format characters become spaces (review of #1218): a NUL failed the insert and
+    # lost the row; ESC and U+202E rewrite what a terminal shows.
+    printable = import_module("extraction.models.invocations").printable
+    text = str(printable(f"{error.__class__.__name__}: {error}")).strip()
     return text[:500] if text else error.__class__.__name__
 
 

@@ -55,6 +55,7 @@ Design: `docs/DESIGN_AI.md` §4.5 · Verification: `tests/extraction/models/test
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -69,6 +70,7 @@ __all__ = [
     "InvocationRecord",
     "failure_kind_reason",
     "failure_reason",
+    "printable",
 ]
 
 #: The longest cause stored for a call that failed outright (#1215): one short line, never a dump.
@@ -79,16 +81,35 @@ UNNAMED_FAILURE: Final = "unnamed_failure"
 
 _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+#: `user:password@host` written without a scheme.
+_USERINFO = re.compile(r"[^\s:@/]+:[^\s@/]+@\S+")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"|`[^`]*`")
+#: A quote left open after the closed ones are gone: everything from it to the end of the line.
+_UNCLOSED_QUOTE = re.compile(r"['\"`].*$")
 _BEARER = re.compile(r"(?i)\b(bearer|basic)\s+\S+")
 _SECRET_PAIR = re.compile(
     r"(?i)\b([\w-]*(?:secret|token|password|passwd|signature|credential|api[_-]?key|access[_-]?key"
     r"|authorization)[\w-]*)\s*[=:]\s*\S+"
 )
+#: The bare names a password is written after, with a space allowed in place of `=` or `:`.
+_PASSWORD_WORD = re.compile(r"(?i)\b(pass|pwd|password|passwd)(?:\s*[=:]\s*|\s+)\S+")
+#: Well-known key prefixes: OpenAI-style `sk-`, GitHub `ghp_`/`gho_`, Slack `xox`.
+_KEY_PREFIX = re.compile(r"\b(?:sk-|ghp_|gho_|xox)[A-Za-z0-9_-]*")
 _ACCESS_KEY_ID = re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA|AIDA|AROA)[A-Z0-9]{12,}\b")
 #: A long run of key-like characters that contains a digit: a key, a token, a hash, a request id.
 _TOKEN_LIKE = re.compile(r"(?=[A-Za-z0-9+/_=-]*[0-9])[A-Za-z0-9+/_=-]{20,}")
+#: A very long key-like run, digits or not: no ordinary word is this long.
+_LONG_RUN = re.compile(r"[A-Za-z0-9+/_=-]{32,}")
 _SPACES = re.compile(r"\s+")
+
+
+def printable(text: str) -> str:
+    """`text` with every control or format character (Unicode category `C*`) made a space.
+
+    PostgreSQL refuses a NUL in a text column, so one NUL in an error message failed the insert
+    and lost the row it belonged to; ESC sequences and U+202E rewrite what a terminal shows.
+    """
+    return "".join(" " if unicodedata.category(c).startswith("C") else c for c in text)
 
 
 def failure_kind_reason(kind: str | None) -> str:
@@ -104,27 +125,51 @@ def failure_kind_reason(kind: str | None) -> str:
     return UNNAMED_FAILURE
 
 
+def _provider_code(error: BaseException) -> str | None:
+    """The error code of a botocore-shaped error (`response['Error']['Code']`), when it has one."""
+    response = getattr(error, "response", None)
+    if not isinstance(response, Mapping):
+        return None
+    details = response.get("Error")
+    if not isinstance(details, Mapping):
+        return None
+    code = details.get("Code")
+    return code if isinstance(code, str) else ""
+
+
 def failure_reason(error: BaseException) -> str:
     """The stored cause of a call that failed outright: its class and a safe, short message (#1215).
 
-    The message is cut to its first line, and anything that could carry a secret or a client value
-    is replaced: URLs, quoted text (a prompt, a model's answer or a drawing value is quoted when an
-    error repeats it), bearer and `name=value` credentials, access key ids and long key-like runs.
-    The whole is one line of at most `FAILURE_REASON_LIMIT` characters.
+    A provider error (botocore `ClientError` shape) keeps only its class and error code, never its
+    message, which can repeat the request. For any other error the message is cut to its first
+    line, control and format characters become spaces, and anything that could carry a secret or a
+    client value is replaced: URLs and `user:password@host`, quoted text (a prompt, a model's answer
+    or a drawing value is quoted when an error repeats it; an unclosed quote takes the rest of the
+    line), bearer and `name=value` credentials, a password after `pass`/`pwd`/`password`, known key
+    prefixes, access key ids and long key-like runs. The whole is one line of at most
+    `FAILURE_REASON_LIMIT` characters.
     """
     name = type(error).__name__
+    code = _provider_code(error)
+    if code is not None:
+        return f"{name}: {code}" if _CLASS_NAME.fullmatch(code) else name
     try:
         message = str(error)
     except Exception:  # noqa: BLE001 - a broken __str__ must not lose the class name too
         message = ""
-    first = next((line for line in message.splitlines() if line.strip()), "")
+    first = printable(next((line for line in message.splitlines() if line.strip()), ""))
     for pattern, replacement in (
         (_URL, "<url>"),
+        (_USERINFO, "<redacted>"),
         (_QUOTED, "<quoted>"),
+        (_UNCLOSED_QUOTE, "<quoted>"),
         (_BEARER, r"\1 <redacted>"),
         (_SECRET_PAIR, r"\1=<redacted>"),
+        (_PASSWORD_WORD, r"\1=<redacted>"),
+        (_KEY_PREFIX, "<redacted>"),
         (_ACCESS_KEY_ID, "<redacted>"),
         (_TOKEN_LIKE, "<redacted>"),
+        (_LONG_RUN, "<redacted>"),
     ):
         first = pattern.sub(replacement, first)
     first = _SPACES.sub(" ", first).strip()

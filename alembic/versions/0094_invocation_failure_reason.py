@@ -14,18 +14,21 @@ This relaxes the `model_invocation_rejection_reason` check from "only on `reject
 outcome except `ok`", still never empty. The constraint keeps its name. Rows already stored all
 satisfy the new check, so the upgrade cannot fail on existing data.
 
-**The downgrade clears the new reasons, and that is the one place this migration writes rows.** The
-old check cannot be restored while a non-`rejected` row holds a reason, and refusing the downgrade
-would leave a database that cannot go back at all. So the downgrade sets `rejection_reason` to NULL
-on every row whose outcome is not `rejected` (the outcome, tokens, cost and every other column are
-kept), then restores the old check. `model_invocations` is append-only: its `append_only` trigger is
-disabled for that one `UPDATE` only and enabled again in the same transaction. The cleared text was
-diagnostic only; nothing counts or prices from it.
+**The downgrade refuses rather than rewrites**, as `0049` and `0093` do. The old check cannot be
+restored while a non-`rejected` row holds a reason, and `model_invocations` is append-only: clearing
+those reasons would rewrite the audit record of calls that really happened. So the downgrade counts
+them and, if there are any, stops with a `RuntimeError` naming how many and what an operator must
+decide first. With none, it restores the old check.
+
+The orchestrator approved this migration as an exception to the "no migrations" rule of the
+2026-10-13 reading-fixes build, for #1215 only.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
 
@@ -36,7 +39,6 @@ depends_on: str | Sequence[str] | None = None
 
 CONSTRAINT = "model_invocation_rejection_reason"
 TABLE = "model_invocations"
-TRIGGER = "model_invocations_append_only"
 
 #: After this migration: a reason on any outcome except `ok`, never empty.
 REASON_CHECK = "rejection_reason IS NULL OR (outcome <> 'ok' AND rejection_reason <> '')"
@@ -54,12 +56,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Clear the reasons the old check forbids, then restore it (see the module docstring)."""
+    """Restore the old check, refused while a non-`rejected` row names a cause (see the docstring)."""
+    bind = op.get_bind()
+    kept = bind.execute(
+        sa.text(
+            f"SELECT count(*) FROM {TABLE} "
+            "WHERE rejection_reason IS NOT NULL AND outcome <> 'rejected'"
+        )
+    ).scalar_one()
+    if kept:
+        raise RuntimeError(
+            f"{kept} model_invocations row(s) record why a call failed or was never sent (#1215). "
+            "The check this downgrade restores allows a reason only on a rejected row, and this "
+            "table is append-only, so those reasons cannot be cleared or the rows deleted here. "
+            "Decide what to do with those rows first (keep this revision, or move the records "
+            "elsewhere deliberately), then downgrade."
+        )
     op.drop_constraint(CONSTRAINT, TABLE, type_="check")
-    op.execute(f"ALTER TABLE {TABLE} DISABLE TRIGGER {TRIGGER}")
-    op.execute(
-        f"UPDATE {TABLE} SET rejection_reason = NULL "
-        "WHERE rejection_reason IS NOT NULL AND outcome <> 'rejected'"
-    )
-    op.execute(f"ALTER TABLE {TABLE} ENABLE TRIGGER {TRIGGER}")
     op.create_check_constraint(CONSTRAINT, TABLE, REASON_CHECK_BEFORE)
