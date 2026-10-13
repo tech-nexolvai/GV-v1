@@ -50,13 +50,23 @@ READERS = ("read_page_contents", "read_stamp_text", "coloured_text")
 CALLERS = ("scripts", "eval", "workflow", "extraction", "app", "evidence", "retrieval", "reports")
 
 #: The scripts whose stages read a page's text, and so must be built with the reader's setting
-#: (#912). A script that builds stages and runs extraction must be named here.
+#: (#912). A script that builds stages and runs extraction must be named here. The local worker
+#: (`scripts/drain_outbox.py`) builds and runs its stages in `workflow/sutradhar.py` since #1227.
 STAGES_THAT_READ = (
-    "drain_outbox.py",
     "evaluate_goldset.py",
     "fraction_parts_scorecard.py",
     "seed_demo.py",
+    "sutradhar.py",
 )
+
+#: Where the worker's settings are built since #1227: checked with the scripts, as they were when
+#: they lived in `scripts/drain_outbox.py`.
+FACTORY = REPOSITORY / "workflow" / "sutradhar.py"
+
+
+def _sources() -> list[Path]:
+    """The scripts, and the one stage factory every worker uses."""
+    return [*sorted(SCRIPTS.glob("*.py")), FACTORY]
 
 
 def _required(cls: type) -> frozenset[str]:
@@ -102,7 +112,7 @@ def _missing(source: str, cls: type) -> list[tuple[int, list[str]]]:
 def test_every_script_passes_every_required_field(cls: type) -> None:
     gaps = {
         f"{path.name}:{line}": absent
-        for path in sorted(SCRIPTS.glob("*.py"))
+        for path in _sources()
         for line, absent in _missing(path.read_text(), cls)
     }
     assert not gaps, f"{cls.__name__} built without required fields: {gaps}"
@@ -124,9 +134,7 @@ def test_the_guard_sees_a_missing_field() -> None:
 def test_the_guard_finds_calls_to_check() -> None:
     """Not vacuous: the scripts do build each guarded class somewhere."""
     for cls in GUARDED:
-        assert any(
-            _calls(path.read_text(), cls.__name__) for path in SCRIPTS.glob("*.py")
-        ), cls.__name__
+        assert any(_calls(path.read_text(), cls.__name__) for path in _sources()), cls.__name__
 
 
 def test_the_fraction_scorecard_reads_every_setting_it_uses() -> None:
@@ -190,7 +198,7 @@ def test_every_script_whose_stages_read_a_page_builds_them_with_the_setting() ->
     """
     reading = {
         path.name: path.read_text()
-        for path in sorted(SCRIPTS.glob("*.py"))
+        for path in _sources()
         if _calls(path.read_text(), "DatabaseStages")
         and re.search(r"\b(extract_pages|run_all|run_stage)\(", path.read_text())
     }

@@ -26,18 +26,23 @@ make token                   # mints a client token and prints the line to add t
 make migrate                 # brings the application database to head
 ```
 
-**Every time, in three terminals:**
+**Every time, in two terminals:**
 
 ```bash
 make serve                   # the API on :8000
-make worker                  # runs the review stages
-make dispatch                # drains the outbox into the engine
+make worker                  # takes the outbox's work and runs the review stages
 ```
 
-**All three are needed for a package to move, and the failure if one is missing is quiet.** Without the
-dispatcher, the API accepts a package, commits the outbox row and returns success — and nothing ever
-runs it. Without the worker, the engine accepts the workflow and no stage executes. Neither looks like
-an error from the outside, which is why they are three named targets rather than a paragraph.
+**Both are needed for a package to move, and the failure if one is missing is quiet.** Without the
+worker, the API accepts a package, commits the outbox row and returns success — and nothing ever runs
+it. That does not look like an error from the outside, which is why it is a named target rather than a
+paragraph.
+
+**Never run both consumers on one outbox: `make worker` or `make dispatch`, not both.** Each takes the
+outbox's rows with `FOR UPDATE SKIP LOCKED`, so together they compete for the same work, and a row the
+dispatcher hands to the Hatchet engine is one the review worker never runs. `make worker` is the one
+every kit and demo uses. `make dispatch` (with the Hatchet worker) is only for running on the engine
+instead; both build their stages in one place, `workflow/sutradhar.py` (#1227).
 
 Check it is all up:
 
@@ -55,7 +60,7 @@ open http://localhost:8888       # the engine dashboard: workflow runs, and why 
 | Hatchet engine | Compose | 8888, 7070 | Dashboard and gRPC, on the engine's own documented ports |
 | API | host | 8000 | `make serve` |
 | Worker | host | — | `make worker` |
-| Dispatcher | host | — | `make dispatch` |
+| Dispatcher | host | — | `make dispatch`, only instead of `make worker`, never beside it |
 
 Two logical databases on the one PostgreSQL: `gv` for the application, `hatchet` for the engine. They
 are separate because the engine runs its own migrations, and sharing one database would put

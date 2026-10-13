@@ -253,19 +253,13 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         )
         return EXIT_MISCONFIGURED
 
-    from workflow.ai_budget import ai_budget_from_settings
-    from workflow.findings_bedrock import configured_findings_composer
-    from workflow.form_reader import configured_form_reader
     from workflow.hatchet_app import build_worker
-    from workflow.slot_reader import configured_slot_reader
-    from workflow.stages import (
-        DatabaseStages,
-        configured_architect_reader,
-        missing_space_from_environment,
-    )
+    from workflow.stages import missing_space_from_environment
+    from workflow.sutradhar import build_stages
 
+    # Checked first, on its own, so a worker missing it says so before anything else is read (#912).
     try:
-        missing_space = missing_space_from_environment()
+        missing_space_from_environment()
     except ValueError as error:
         logger.error("cannot start the worker: %s", error)
         return EXIT_MISCONFIGURED
@@ -282,24 +276,18 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         )
         return EXIT_MISCONFIGURED
 
-    # **The worker gets the real stages.** It resolved `NoStages()` until now, because nothing was
-    # ever passed — so a deployed worker ran the whole pipeline and recorded that it had implemented
-    # none of it. `DatabaseStages` implements one stage for real and keeps `NoStages`' answer for the
-    # other five, so what is built runs and what is not still says so.
-    worker = build_worker(
-        settings,
-        factory=factory,
-        stages=DatabaseStages(
-            store=LocalStore(Path(storage_root)),
-            findings_composer=configured_findings_composer(settings),
-            missing_space=missing_space,
-            form_reader=(form_reader := configured_form_reader(settings)),
-            slot_reader=configured_slot_reader(settings, form_reader),
-            architect_reader=configured_architect_reader(settings),
-            # What the AI readers may spend on a drawing set, grown by its pages (#1206).
-            ai_budget=ai_budget_from_settings(settings),
-        ),
-    )
+    # **The worker gets the real stages, built as the local worker builds them (#1227).** One factory,
+    # `workflow/sutradhar.py:build_stages`, so every route and setting the deployment states reaches
+    # this worker too; before, it was given 7 of the 19 arguments and read without the rest. Only the
+    # store is its own. A partial reader or picture configuration is refused here as it is there.
+    try:
+        stages = build_stages(store=LocalStore(Path(storage_root)), settings=settings)
+    except ValueError as error:
+        logger.error("cannot start the worker: %s", error)
+        return EXIT_MISCONFIGURED
+    # `register`'s six-stage graph is unchanged (frozen): it cannot hand a revision to a person and
+    # take it back. Never run this worker's dispatcher beside `make worker` on one outbox.
+    worker = build_worker(settings, factory=factory, stages=stages)  # type: ignore[arg-type]
     logger.info("worker starting")
     worker.start()
     logger.info("worker stopped")
