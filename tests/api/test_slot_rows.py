@@ -1543,7 +1543,8 @@ def test_reused_answers_on_record_still_seal(session: Session, reused: tuple[str
 
 def test_a_legacy_reader_record_needs_a_call_by_that_reader_in_the_run(session: Session) -> None:
     """The legacy readers' calls carry no question packet, so each record needs at least an `ok`
-    call by that reader in this run. Input: two records, one reader with no call. Outcome: refused."""
+    call by that reader in this run. Input: two records, one reader with no call. Outcome: refused.
+    """
     _project_id, _package_id, anchors = _package_rows(session)
     candidate = session.get(ObservationCandidate, anchors[0])
     assert candidate is not None
