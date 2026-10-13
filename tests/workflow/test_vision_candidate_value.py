@@ -120,3 +120,16 @@ def test_the_evidence_lane_flags_a_compound_as_not_one_value() -> None:
 
     assert measurement is None
     assert flags == (NOT_A_SINGLE_VALUE_FLAG,)
+
+
+@pytest.mark.parametrize("reading", ['16 35/8"', '16 15/8"', '16 3/5"', '163/8"'])
+def test_a_fraction_no_drawing_prints_is_refused_and_never_valued(reading: str) -> None:
+    """#1199: a whole number with an impossible fraction is refused by the shape check, with the
+    reason, and the value path gives it no value either."""
+    from extraction.models.validation import _reading_refusal
+
+    refusal = _reading_refusal(reading)
+    assert refusal is not None and "fraction" in refusal
+    assert not _shape_check_accepts(reading)
+    assert _vision_candidate_value(reading) == (None, UNPARSED_FLAG)
+    assert _vision_candidate_value('16 3/8"')[0] is not None

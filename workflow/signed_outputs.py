@@ -122,6 +122,7 @@ def generate_signed_outputs(
             pages_without_countertop=countertop_results.pages_without_countertop,
             rows_not_checked=countertop_results.rows_not_checked,
             drawings_not_read=countertop_results.drawings_not_read,
+            reading_note=countertop_results.reading_note,
         )
     )
     workbook = write_stored_workbook(
@@ -130,6 +131,7 @@ def generate_signed_outputs(
         pages_without_countertop=countertop_results.pages_without_countertop,
         rows_not_checked=countertop_results.rows_not_checked,
         drawings_not_read=countertop_results.drawings_not_read,
+        reading_note=countertop_results.reading_note,
         changed_values=payload.changed_values,
         signed_review=payload.review,
         signoff=WorkbookSignoff(

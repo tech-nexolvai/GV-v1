@@ -300,7 +300,7 @@ def test_a_hand_crafted_citation_of_a_vendor_passage_is_refused(
     assert (_stored(session), _citations(session)) == (0, 0)
 
 
-@pytest.mark.parametrize("typed", ['1 1/2"', '1 3/8"', '17/16"'])
+@pytest.mark.parametrize("typed", ['1 1/2"', '1 3/8"', '1 1/16"'])
 def test_a_mismatch_is_refused_and_nothing_is_stored(
     session: Session, store: LocalStore, typed: str
 ) -> None:
@@ -319,6 +319,26 @@ def test_a_mismatch_is_refused_and_nothing_is_stored(
     assert "not the one in the architect's drawing on page 1" in message
     for trace in NUMBER_TRACES:
         assert trace not in message, trace
+    assert (_stored(session), _citations(session)) == (0, 0)
+
+
+def test_a_typed_squeezed_fraction_is_refused_before_any_comparison(
+    session: Session, store: LocalStore
+) -> None:
+    """#1199: `17/16"` (the same number as `1 1/16"`, or a squeezed `1 7/16"`) is a fraction nobody
+    writes. It is refused for that, before the citation is compared, and nothing is stored. The
+    suggestion is made from the typed digits alone, never from the cited passage."""
+    review, proposal_id = _found(session, store)
+
+    response = review.enter(
+        {"name": OVERHANG, "value": '17/16"', "citation": str(proposal_id)},
+        {"name": "cabinet_depth", "value": '24"'},
+    )
+
+    assert response.status_code == 422, response.text
+    message = response.json()["message"]
+    assert "not smaller than its bottom" in message
+    assert "architect's drawing" not in message
     assert (_stored(session), _citations(session)) == (0, 0)
 
 

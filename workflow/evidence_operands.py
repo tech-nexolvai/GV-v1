@@ -35,7 +35,7 @@ It does not establish approved-to-shop pairing. Project parameters and the no-ru
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from fractions import Fraction
@@ -58,7 +58,7 @@ from evidence.canonical import CanonicalObservation as DomainObservation
 from evidence.coordinates import StoredPoint
 from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
-from rules.schema import Cardinality, Rule, Scope
+from rules.schema import Cardinality, InputSelector, Rule, Scope
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
@@ -67,12 +67,16 @@ from workflow.part_operands import part_operands
 
 __all__ = [
     "DRAWINGS_SPANNED",
+    "ENTER_FOR_ORDER",
+    "ENTER_IN_ORDER",
+    "ENTER_IN_WALL_ORDER",
     "IDENTIFIER_PAIRING_WITHHELD",
     "RUN_ORDER_WITHHELD",
     "WITHHELD_FOR_ORDER",
     "EvidenceOperands",
     "evidence_operands",
     "operands_from_evidence",
+    "order_sentences",
     "position_sensitive_inputs",
 ]
 
@@ -119,6 +123,27 @@ WITHHELD_FOR_ORDER: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 
+#: What the run-order check says instead when nobody labelled a reading for it (#1205): the sentence
+#: above explains why labelled readings were not used, which is not true when there were none.
+ENTER_IN_WALL_ORDER: Final = (
+    "This check compares the two runs filler by filler and cabinet by cabinet, in order along the "
+    "wall. Enter both runs on Measurements, in wall order from left to right."
+)
+
+#: The same for the check that pairs cabinets by tag (#1205).
+ENTER_IN_ORDER: Final = (
+    "This check compares each cabinet with the architect's cabinet of the same tag. Enter both "
+    "cabinet lists on Measurements, in the same order."
+)
+
+#: Each position-sensitive operation's sentence when no reading was found to withhold (#1205).
+ENTER_FOR_ORDER: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "cabinet_run_distribution": ENTER_IN_WALL_ORDER,
+        "pairwise_within_tolerance": ENTER_IN_ORDER,
+    }
+)
+
 #: The sources evidence can fill: the roles of the documents an observation is read from. A value a
 #: reviewer types, or a literal, is never an observation, so evidence has nothing to withhold.
 _READ_FROM_DOCUMENTS: Final = frozenset(role.value for role in DocumentRole)
@@ -162,6 +187,36 @@ def position_sensitive_inputs(rule: Rule) -> dict[str, str]:
                 if name in runs:
                     withheld.setdefault(name, WITHHELD_FOR_ORDER[operation])
     return withheld
+
+
+#: The sentence said in place of each withheld sentence when nothing was labelled (#1205).
+_ENTER_INSTEAD: Final[Mapping[str, str]] = MappingProxyType(
+    {WITHHELD_FOR_ORDER[operation]: ENTER_FOR_ORDER[operation] for operation in WITHHELD_FOR_ORDER}
+)
+
+
+def order_sentences(rule: Rule, unfilled: Collection[str], read: Collection[str]) -> list[str]:
+    """What a check that compares runs in order says about the runs it did not get, sorted.
+
+    `unfilled` are the inputs the run did not supply; `read` are those labelled readings existed
+    for (`EvidenceOperands.with_readings`). Per sentence, so per comparing operation: the withheld
+    sentence, word for word as before, when any of its runs had readings that were not used (#794,
+    #833); otherwise the plain "enter it on Measurements" sentence, because a sentence about
+    labelled readings is not true of a check that had none (#1205).
+    """
+    groups: dict[str, set[str]] = {}
+    for name, why in position_sensitive_inputs(rule).items():
+        if name in unfilled:
+            groups.setdefault(why, set()).add(name)
+    return sorted(
+        why if names & set(read) else _ENTER_INSTEAD[why] for why, names in groups.items()
+    )
+
+
+def _need(selector: InputSelector) -> tuple[str, str]:
+    """What an input asks evidence for: the document role and the quantity's semantic type."""
+    source = getattr(selector.source, "value", str(selector.source))
+    return source, getattr(selector.semantic_type, "value", str(selector.semantic_type))
 
 
 def _domain(
@@ -216,6 +271,10 @@ class EvidenceOperands:
     """Inputs reserved to confirmed structure, even when withheld; form values cannot replace them."""
     missing: dict[str, str] = field(default_factory=dict)
     notes: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    with_readings: dict[str, frozenset[str]] = field(default_factory=dict)
+    """The order-compared inputs (`position_sensitive_inputs`) of each rule that labelled readings
+    exist for and were withheld from, keyed by rule id (#1205). An input missing here had none, so
+    the check says where to enter it rather than why readings were not used."""
 
     def merge(
         self, rule_id: str, supplied: Mapping[str, VerdictOperand]
@@ -318,8 +377,13 @@ def evidence_operands(
 
     operands: dict[str, dict[str, VerdictOperand]] = {}
     ambiguous: dict[str, dict[str, str]] = {}
+    with_readings: dict[str, frozenset[str]] = {}
     for rule in rules:
         ordered = position_sensitive_inputs(rule)
+        # Whether anything was labelled for each order-compared run (#1205), before it is withheld.
+        with_readings[rule.id] = frozenset(
+            name for name in ordered if by_need.get(_need(rule.inputs[name]))
+        )
         withheld = _spanning(rule, ordered, by_need)
         if withheld:
             ambiguous[rule.id] = withheld
@@ -410,6 +474,7 @@ def evidence_operands(
         owned=selected.owned,
         missing=selected.missing,
         notes=selected.notes,
+        with_readings=with_readings,
     )
 
 

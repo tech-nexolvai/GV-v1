@@ -2,9 +2,11 @@
  * The "Needs" lines of a check waiting on a value (#1181), kept free of React so they can be tested.
  *
  * The server says exactly what a waiting check could not run without (`missing_inputs`): a setting
- * for this job, the project's sink, or a number drawn on the vendor's drawing. Only the first two may
- * be typed: a drawn number is read, never filled in (GV's rule, Anant 2026-10-12), so its line says
- * the check needs the drawing and has no box. Nothing here decides which values are missing or fills
+ * for this job, the project's sink, a number drawn on the vendor's drawing, or (for the cabinet
+ * checks, #1205) the reviewer's own entry on Measurements: a list of cabinets, each cabinet's type,
+ * the site width. Only the first two may be typed here: a drawn number is read, never filled in
+ * (GV's rule, Anant 2026-10-12), so its line says the check needs the drawing and has no box; an
+ * entry on Measurements says where it is entered, and in what order. Nothing here decides which values are missing or fills
  * one in, and only a new check run uses a value.
  */
 import type { components } from '@/api/schema';
@@ -28,7 +30,7 @@ export function sinkNeeded(inputs: readonly MissingInput[]): MissingInput[] {
 
 /** Drawn numbers nobody read: listed so the reviewer knows why the check waits; never typed. */
 export function drawingNeeded(inputs: readonly MissingInput[]): MissingInput[] {
-  return inputs.filter((input) => !input.askable && input.saved == null);
+  return inputs.filter((input) => input.scope === 'drawing' && input.saved == null);
 }
 
 /** True when a value has been saved since this result was recorded: only a new run uses it. */
@@ -39,6 +41,7 @@ export function savedSinceResult(inputs: readonly MissingInput[]): boolean {
 /** Where a saved value is from, in words: GV's default, the sink card, this job or this package. */
 export function savedFrom(input: MissingInput): string {
   const layer = input.saved?.layer;
+  if (input.scope === 'measurements') return 'entered on Measurements';
   if (layer === 'company') return 'GV default';
   if (layer === 'run') return 'typed for this package';
   return input.scope === 'sink' ? 'from the sink card' : 'this job';

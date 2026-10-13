@@ -188,19 +188,141 @@ def plain_marks(token: str) -> str:
     reads (`units/notation.py`). Nothing here is arithmetic: no number changes, only how it is
     spelled.
     """
-    written: list[str] = []
-    for character in token:
-        decomposition = unicodedata.decomposition(character)
-        if decomposition.startswith("<fraction>"):
-            parts = unicodedata.normalize("NFKD", character).replace("\u2044", "/")
-            after_a_digit = bool(written) and written[-1][-1:].isdigit()
-            written.append(f" {parts}" if after_a_digit else parts)
-        else:
-            written.append(character)
-    token = "".join(written)
+    token = fold_fractions(token)
     for spelling, plain in _WRITTEN_MARKS:
         token = token.replace(spelling, plain)
-    return token.replace("\u2044", "/").replace("''", '"')
+    return token.replace("''", '"')
+
+
+#: The fraction slash, `\u2044` (U+2044): the slash Unicode writes between a fraction's numerator and its
+#: denominator. It means `/` and nothing else.
+FRACTION_SLASH = "\u2044"
+
+
+def fold_fractions(token: str) -> str:
+    """Unicode's fraction characters and the fraction slash in their plain spelling (#907, #1199).
+
+    `88\u00bd"` is `88 1/2"`, `\u215e` is `7/8`, `3\u20448` is `3/8`. A vulgar fraction is the character whose
+    decomposition Unicode tags `<fraction>`, and that decomposition *is* its numerator, the fraction
+    slash and its denominator, so the digits written in its place are the standard's own and no
+    table here can hold a wrong one. Only the spelling changes, never the value.
+
+    A space goes in front where a digit comes before it (`1\u00bd` is one and a half, never fifteen over
+    two) and after it where a digit follows (`\u00bd2` is never one over twenty-two: it stays two
+    numbers, which no parser reads as one). Nothing else is folded: superscript and subscript digits,
+    LaTeX `\\frac`, a squeezed `163/8` and a fraction split over a line break stay as written.
+    """
+    if not any(
+        character == FRACTION_SLASH or unicodedata.decomposition(character).startswith("<fraction>")
+        for character in token
+    ):
+        return token
+    written: list[str] = []
+    for index, character in enumerate(token):
+        if unicodedata.decomposition(character).startswith("<fraction>"):
+            parts = unicodedata.normalize("NFKD", character).replace(FRACTION_SLASH, "/")
+            if written and written[-1][-1:].isdigit():
+                parts = f" {parts}"
+            if token[index + 1 : index + 2].isdigit():
+                parts = f"{parts} "
+            written.append(parts)
+        elif character == FRACTION_SLASH:
+            written.append("/")
+        else:
+            written.append(character)
+    return "".join(written)
+
+
+#: A written fraction in a dimension, with the whole number written before it if there is one:
+#: `16 3/8`, `16-3/8`, `163/8`, `3/8`. ASCII digits only: the parsers read nothing else, so a
+#: full-width `１６３/８` is never a fraction of ours, only text that is not a dimension.
+_WRITTEN_FRACTION_RE = re.compile(
+    r"(?<![0-9/])(?:(?P<whole>[0-9]+)(?:\s+|\s*-\s*))?(?P<top>[0-9]+)\s*/\s*(?P<bottom>[0-9]+)"
+    r"(?![0-9/])",
+    re.ASCII,
+)
+
+
+def _squeezed_split(top: str, bottom: int) -> tuple[str, str] | None:
+    """The first place `top` splits into a whole number and a proper fraction over `bottom`.
+
+    `163` over 8 splits as `16` and `3`; `1615` over 16 as `16` and `15` (161 and 5 is possible
+    too, which is why this is only ever a suggestion to a person, never a value). A part never starts
+    with a zero, and the new top is never zero. `None` where no split gives a proper fraction.
+    """
+    for cut in range(1, len(top)):
+        whole, rest = top[:cut], top[cut:]
+        if rest.startswith("0") or whole.startswith("0"):
+            continue
+        if 0 < int(rest) < bottom:
+            return whole, rest
+    return None
+
+
+def drawn_fraction_refusal(token: str) -> str | None:
+    """Why a fraction written in a drawn dimension is not one a drawing prints, or `None`.
+
+    **The rule the inch part of feet-and-inches already keeps** (`_inch_part`), for every fraction
+    a reader or a drawing's text wrote: the bottom is 2, 4, 8, 16, 32 or 64, and the top is smaller
+    than the bottom. A drawing writes nine eighths as `1 1/8`, never `9/8`.
+
+    **Why it matters on the reading path (#1199).** `parse_imperial` reads any `a/b`, as it must for
+    the values arithmetic produces (`format_inches` writes `38 94/127` for 984 mm and reads it back).
+    But a reader that writes `163/8"` has almost certainly lost the space in `16 3/8"`, and read as
+    written it is twenty and three-eighths. Splitting the digits would be a guess (`1615/16` is
+    161 5/16 or 16 15/16), so the label goes to a person, even when both readers wrote it. The reason
+    mentions a missing space only when the text looks like a squeezed mixed number: no whole number
+    before the fraction, and a top that splits into one.
+
+    For text a reader or a drawing printed only. Values the system wrote itself are never checked
+    here; a value a person typed is checked by `typed_fraction_refusal`.
+    """
+    for found in _WRITTEN_FRACTION_RE.finditer(token):
+        top, bottom = int(found.group("top")), int(found.group("bottom"))
+        if not _drawn_denominator(bottom):
+            return (
+                f"the fraction {top}/{bottom} is over {bottom}; a drawing prints fractions over "
+                "2, 4, 8, 16, 32 or 64 only, so a person reads it"
+            )
+        if top >= bottom:
+            squeezed = found.group("whole") is None and _squeezed_split(found.group("top"), bottom)
+            if squeezed:
+                return (
+                    f"the fraction {top}/{bottom} has a top that is not smaller than its bottom, "
+                    "which a drawing never prints; the space between the whole number and the "
+                    "fraction may be missing, so a person reads it"
+                )
+            return (
+                f"the fraction {top}/{bottom} has a top that is not smaller than its bottom, which "
+                "a drawing never prints, so a person reads it"
+            )
+    return None
+
+
+def typed_fraction_refusal(text: str) -> str | None:
+    """Why a value a person typed has a fraction no one writes, or `None` (#1199).
+
+    Only a top that is not smaller than its bottom is refused: `163/8"` typed was stored as 20 3/8.
+    Where the digits split into a whole number and a proper fraction, the refusal suggests the first
+    split (`did you mean 16 3/8"?`); it is only a suggestion, and the person types the value again.
+
+    **Never the powers-of-two rule.** The system writes its own values back into the form, exactly:
+    984 mm is `38 94/127"` (`format_inches`), and that text must read back unchanged.
+    """
+    for found in _WRITTEN_FRACTION_RE.finditer(plain_marks(text)):
+        top_text, bottom = found.group("top"), int(found.group("bottom"))
+        if bottom == 0 or int(top_text) < bottom:
+            continue
+        refusal = (
+            f"the fraction {int(top_text)}/{bottom} has a top that is not smaller than its bottom, "
+            "which nobody writes"
+        )
+        split = None if found.group("whole") is not None else _squeezed_split(top_text, bottom)
+        if split is not None:
+            whole, rest = split
+            return f'{refusal}; did you mean {whole} {rest}/{bottom}"?'
+        return f'{refusal}; type the whole number and the fraction apart, as 1 1/4"'
+    return None
 
 
 def _inch_part(remainder: str, text: str) -> Fraction:

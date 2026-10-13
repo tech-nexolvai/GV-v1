@@ -10,7 +10,8 @@ it (a note such as `6" STEEL ANGLE` is not a dimension).
 
 **What it never does.** It never rounds, never guesses a unit, and never reads a value out of a
 label it holds: a held label's inches are `None`. Fractions must be over a power of two no larger
-than sixty-four, in every form, or the label is held.
+than sixty-four, and proper (top smaller than bottom), in every form, or the label is held: the
+text layer can lose the space in `16 3/8"`, and `163/8"` read as written is 20 3/8" (#1199).
 
 Source: issue #1052 · Verification: `tests/extraction/architect/test_labels.py`
 """
@@ -24,8 +25,8 @@ from fractions import Fraction
 from typing import Final
 
 from units.normalise import (
-    MAXIMUM_DENOMINATOR,
     UnitNormalisationError,
+    drawn_fraction_refusal,
     normalise_to_inches,
     plain_marks,
 )
@@ -93,7 +94,6 @@ DIMENSION_PATTERN: Final = re.compile(
 
 #: `±` written before a number with no space (`±3'-6"`) is split from it first.
 _PLUS_MINUS_PREFIX: Final = re.compile(r"^(±|\+/-|\+-)(?=\d)")
-_FRACTION: Final = re.compile(r"(\d+)\s*/\s*(\d+)")
 _BRACKETS: Final = str.maketrans({"(": " ", ")": " ", "[": " ", "]": " ", ",": " "})
 
 
@@ -167,21 +167,13 @@ def split_label(text: str) -> SplitLabel:
     )
 
 
-def _drawn_fractions(dimension: str) -> bool:
-    """Whether every written fraction is over a power of two no larger than sixty-four."""
-    for _numerator, denominator in _FRACTION.findall(dimension):
-        bottom = int(denominator)
-        if not (2 <= bottom <= MAXIMUM_DENOMINATOR and bottom & (bottom - 1) == 0):
-            return False
-    return True
-
-
 def read_label(text: str) -> LabelReading:
     """Read one architect's label: split, check, parse exactly, and hold it when it is not firm.
 
     A label is held — its inches `None`, with the reason — when it holds no single dimension, when
     other words are printed with it, when a qualifier says the number is not firm (`VIF`, `±`,
-    `HOLD`), when a fraction is not over a power of two up to 64, or when the parser refuses it.
+    `HOLD`), when a fraction is not over a power of two up to 64 or not proper (#1199), or when the
+    parser refuses it.
     Qualifiers that do not hold a number (`EQ`, `TYP`, `CLR`, `MIN`, `MAX`, `AFF`, `NOM`) stay as
     flags for whoever uses the number.
     """
@@ -193,9 +185,10 @@ def read_label(text: str) -> LabelReading:
             printed = normalise_to_inches(split.dimension).exact
         except UnitNormalisationError as error:
             reason = f"the dimension does not read exactly: {error}"
-        if printed is not None and not _drawn_fractions(plain_marks(split.dimension)):
+        refusal = drawn_fraction_refusal(plain_marks(split.dimension))
+        if printed is not None and refusal is not None:
             printed = None
-            reason = "a fraction is not over a power of two up to 64, as a drawing prints them"
+            reason = refusal
     if not split.dimension:
         reason = "the label holds no single dimension"
     elif split.other_words:

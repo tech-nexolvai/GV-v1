@@ -1329,3 +1329,27 @@ def test_read_form_pages_keeps_an_agreement_whose_box_is_on_the_vendors_ink() ->
 def test_read_form_pages_refuses_ink_read_at_another_dpi_than_the_pictures() -> None:
     with pytest.raises(ValueError, match="dpi"):
         _read_one_page(_page(_page_ink(dpi=300)))
+
+
+@pytest.mark.parametrize("text", ['163/8"', '5/4"', '3/5"', '16 5/4"'])
+def test_a_fraction_no_drawing_prints_never_corroborates(text: str) -> None:
+    """#1199: both readers writing a squeezed `163/8"` is not 20 3/8"; a person reads it."""
+    assert parse_dimension(_dimension(text, whole=None, denominator=None)).value is None
+    assert (
+        parse_dimension(_dimension(text, whole=None, denominator=None)).reason
+        == "fraction-not-drawn"
+    )
+    result = compare_page_answers(
+        _answer(overall=_dimension(text, whole=None, denominator=None, position=0), scope="run"),
+        _answer(overall=_dimension(text, whole=None, denominator=None, position=0), scope="run"),
+        first_maker="us.moonshotai.kimi-k3",
+        second_maker="qwen.qwen3-vl-235b-a22b",
+    )
+    assert result[0].state == "review_required"
+    assert result[0].reason == "fraction-not-drawn"
+    assert result[0].exact_inches is None
+
+
+def test_the_normal_spelling_still_corroborates_in_the_form_reader() -> None:
+    parsed = parse_dimension(_dimension('16 3/8"', whole=None, denominator=None))
+    assert parsed.value is not None and parsed.value.exact == Fraction(131, 8)

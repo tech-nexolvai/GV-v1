@@ -256,7 +256,9 @@ class SlotReaderRuntime:
             f"crop={self.crop_settings.config_hash};"
             f"fraction_bar={self.fraction_bar.config_hash};"
             f"walls={self.wall_settings.config_hash};"
-            "rules=drawn-length-veto,label-expansion,counter-break"
+            # `fraction-fold` (#1199): `½` and `1/2` agree, and a fraction no drawing prints never
+            # seals. Stored answers are reused by question (#1112), so this re-asks nothing.
+            "rules=drawn-length-veto,label-expansion,counter-break,fraction-fold"
             f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=3000' if self.claude_row_reader else ''}"
             + (
                 f";claude=effort:{self.claude_effort},structured-output-v1,"

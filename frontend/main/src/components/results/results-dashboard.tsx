@@ -47,6 +47,10 @@ export type CountertopsState =
       rowsNotChecked?: readonly RowNotChecked[];
       /** Drawings on a read page that were not read (#1193 review): listed, never blocking. */
       drawingsNotRead?: readonly DrawingNotRead[];
+      /** False for a package made for cabinets (#1205): it is asked no countertop question. */
+      countertopsChecked?: boolean;
+      /** The one plain line a cabinet package shows in place of the countertop wording (#1205). */
+      readingNote?: string | null;
     };
 
 // The chips filter the table. Their counts are on the cards above (#1126), so a chip carries a
@@ -177,9 +181,18 @@ export function ResultsDashboard({
     onShowArchitectView,
   };
 
+  // A package whose checks include no countertop (cabinets, #1205): its checks use the values on
+  // Measurements, so countertop rows, pages "with no countertop" and their questions are not this
+  // review's. The server's own line is said once instead.
+  const cabinetOnly = countertops.countertopsChecked === false;
+
   return (
     <section data-tw data-slot="results-dashboard" aria-label="Results" className="flex flex-col gap-4 p-4 font-sans sm:p-6">
-      {rows.length === 0 ? (
+      {cabinetOnly ? (
+        <p data-slot="cabinet-reading-note" role="note" className="rounded-xl border border-dashed p-4 text-sm">
+          {countertops.readingNote ?? "This package's checks use the values entered on Measurements."}
+        </p>
+      ) : rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed p-6">
           {(countertops.pagesWithoutCountertop?.length ?? 0) > 0 ? (
             <>
@@ -261,14 +274,16 @@ export function ResultsDashboard({
         </>
       )}
 
-      <ListedPages
-        pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
-        rowsNotChecked={countertops.rowsNotChecked ?? []}
-        drawingsNotRead={countertops.drawingsNotRead ?? []}
-        onAnswer={signedOff ? undefined : onAnswerNoCountertop}
-        onConfirmMany={signedOff ? undefined : onConfirmNoCountertops}
-        onReload={onReloadNoCountertops}
-      />
+      {!cabinetOnly && (
+        <ListedPages
+          pagesWithoutCountertop={countertops.pagesWithoutCountertop ?? []}
+          rowsNotChecked={countertops.rowsNotChecked ?? []}
+          drawingsNotRead={countertops.drawingsNotRead ?? []}
+          onAnswer={signedOff ? undefined : onAnswerNoCountertop}
+          onConfirmMany={signedOff ? undefined : onConfirmNoCountertops}
+          onReload={onReloadNoCountertops}
+        />
+      )}
 
       <OtherChecks
         findings={others}
@@ -279,6 +294,7 @@ export function ResultsDashboard({
         packageId={packageId}
         onValuesSaved={onValuesSaved}
         onRunChecks={onRunChecks}
+        defaultOpen={cabinetOnly}
       />
 
       <DecideDialog

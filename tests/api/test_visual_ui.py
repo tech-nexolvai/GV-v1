@@ -355,6 +355,37 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
     assert statements <= 14
 
 
+def test_a_cabinet_package_s_results_cost_one_statement_more_at_most(session: Session) -> None:
+    """#1205: the product comes with the revision's own query, and only a cabinet package asks
+    whether its reading was skipped, once, whatever the row count."""
+    from app.models import Package
+
+    project_id, package_id, _ = _package_rows(session, rows_per_page=10)
+    package = session.get(Package, package_id)
+    assert package is not None
+    package.product_type = "cabinet"
+    session.commit()
+    session.expire_all()
+    statements = 0
+
+    def count_statements(*_args: object) -> None:
+        nonlocal statements
+        statements += 1
+
+    event.listen(session.bind, "before_cursor_execute", count_statements)
+    try:
+        response = _client(session, project_id).get(
+            f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
+        )
+    finally:
+        event.remove(session.bind, "before_cursor_execute", count_statements)
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["product_type"], body["countertops_checked"]) == ("cabinet", False)
+    assert body["reading_note"] == "Cabinet checks use the cabinet lists on Measurements."
+    assert statements <= 15
+
+
 def test_held_countertop_has_no_recomputed_total_or_delta(session: Session, tmp_path: Path) -> None:
     project_id, package_id, anchors = _package_rows(
         session, wall_source="code-ink-and-both-ais", held_page=0

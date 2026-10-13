@@ -166,6 +166,12 @@ def test_every_position_sensitive_operation_has_a_sentence_of_its_own() -> None:
     were not used."""
     assert set(WITHHELD_FOR_ORDER) == POSITION_SENSITIVE_OPERATIONS
     assert len(set(WITHHELD_FOR_ORDER.values())) == len(WITHHELD_FOR_ORDER)
+    # And its sentence for when nothing was labelled (#1205), never about labelled readings.
+    from workflow.evidence_operands import ENTER_FOR_ORDER
+
+    assert set(ENTER_FOR_ORDER) == POSITION_SENSITIVE_OPERATIONS
+    assert len(set(ENTER_FOR_ORDER.values())) == len(ENTER_FOR_ORDER)
+    assert not any("labelled" in sentence for sentence in ENTER_FOR_ORDER.values())
 
 
 # ---------------------------------------------------------------------------
@@ -486,3 +492,49 @@ def test_the_same_swap_typed_on_the_form_in_wall_order_fails(
 
     finding = _finding(session, revision, FILLER_RULE)
     assert finding.outcome == Outcome.FAIL.value, finding.reason
+
+
+def test_with_nothing_labelled_neither_cabinet_check_speaks_of_labelled_readings(
+    session: Session, store: LocalStore
+) -> None:
+    """#1205: the withheld sentence explains why *labelled readings* were not used, so it is said
+    only when some were. With none (a cabinet package nobody labelled, the usual case), each check
+    says where its lists are entered instead, and still waits: NOT_FOUND, never PASS."""
+    from workflow.evidence_operands import ENTER_IN_ORDER, ENTER_IN_WALL_ORDER
+
+    revision = _revision(
+        session, store, {"architectural": _run('24"', '36"'), "shop": _run('36"', '24"')}
+    )
+    DatabaseStages(store, missing_space=MISSING_SPACE).extract_pages(session, revision.id)
+    _form(session, revision)
+    _publish_rulebook(session)
+
+    DatabaseStages(store, missing_space=MISSING_SPACE).run_checks(session, revision.id)
+
+    for rule_id, sentence, withheld in (
+        (FILLER_RULE, ENTER_IN_WALL_ORDER, RUN_ORDER_WITHHELD),
+        (RULE, ENTER_IN_ORDER, IDENTIFIER_PAIRING_WITHHELD),
+    ):
+        finding = _finding(session, revision, rule_id)
+        assert finding.outcome == Outcome.NOT_FOUND.value, finding.reason
+        assert finding.reason is not None
+        assert "labelled readings" not in finding.reason
+        assert withheld not in finding.reason
+        assert finding.reason.startswith(sentence), finding.reason
+
+
+def test_the_labelled_readings_sentence_stays_when_readings_were_labelled(
+    session: Session, store: LocalStore
+) -> None:
+    """Where readings existed the sentence is unchanged, word for word, so those results keep
+    their fingerprint and any decision on them carries over (#1073, #1177)."""
+    from workflow.evidence_operands import evidence_operands
+
+    revision = _swapped_run_labelled(session, store)
+
+    found = evidence_operands(session, revision.id, _rules())
+
+    assert found.with_readings[FILLER_RULE] == frozenset(
+        {"architectural_cabinets", "architectural_fillers", "shop_cabinets", "shop_fillers"}
+    )
+    assert found.with_readings[RULE] == frozenset({"architectural_cabinets", "shop_cabinets"})

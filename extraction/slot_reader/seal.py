@@ -4,7 +4,9 @@
 file is sealed by the file's own text and one reader on the crop agreeing character for character;
 a label drawn as paths, by two readers of different makers agreeing on the crop. Agreement is on
 the printed text after only the normalisation a picture cannot carry — curly or prime quote glyphs,
-a line break, a run of spaces. Nothing else is forgiven: `17 5/8"` and `175/8"` are different texts.
+a line break, a run of spaces — and a fraction's spelling: `½` is `1/2` by Unicode's own definition
+(#1199). Nothing else is forgiven: `17 5/8"` and `175/8"` are different texts, and a fraction no
+drawing prints (`175/8"`, `5/4"`, `3/5"`) never seals, even when both sources wrote it.
 
 **The value comes from the sealed text alone** (E2 guard 2), parsed by `units/`. The readers are not
 asked for whole, numerator and denominator at all: in E2 both readers once filed identical wrong
@@ -38,9 +40,10 @@ from typing import Final
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.form_reader.mapping import REVIEWER_MARKUP_REASON
 from extraction.ink import InkAt, InkClass
-from extraction.slot_reader.labels import expand_label, plain_dimension, row_hold
+from extraction.slot_reader.labels import expand_label, odd_fraction, plain_dimension, row_hold
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
+from units.normalise import fold_fractions
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
@@ -76,11 +79,24 @@ _QUOTES: Final = {
     "′": "'",
     "ʹ": "'",
 }
+#: A fraction no drawing prints: its top not smaller than its bottom, or its bottom not 2, 4, 8, 16,
+#: 32 or 64 (#1199). Always the person's, with `labels.odd_fraction`'s reason. Text that is no
+#: plain dimension anyway (`457 / 18"`, a bare `24/36`) stays "not plain".
+_ODD_FRACTION: Final = "fraction-not-drawn"
 _CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
 def normalise_text(text: str) -> str:
-    """Quote glyphs to `"` and `'`, two single quotes to `"`, any whitespace run to one space."""
+    """Quote glyphs to `"` and `'`, two single quotes to `"`, fraction characters and the fraction
+    slash to their spelled form, any whitespace run to one space.
+
+    `88½"` and `88 1/2"` are one text (#1199): Unicode defines `½` as `1⁄2`, so the fold changes the
+    spelling, never the value (`units.normalise.fold_fractions`, the one fold the units code uses).
+    It runs before the comparison and before the plain check, so a reader's `½` is neither "readers
+    differ" nor "not plain". Never folded: LaTeX `\\frac`, a squeezed `163/8`, a fraction split over a
+    line break (the line break becomes a space, never a fraction's slash).
+    """
+    text = fold_fractions(text)
     for glyph, plain in _QUOTES.items():
         text = text.replace(glyph, plain)
     text = text.replace("''", '"')
@@ -323,12 +339,13 @@ def seal_label(
         )
     if soft:
         return review(*soft[0])
-    if (
-        label.lane is Lane.TEXT
-        and not answers
-        and plain_dimension(normalise_text(label.text or ""), allow_explicit_mm=claude_pair) is None
-    ):
-        return review("not-plain", "the label has words or a sum; review the value")
+    if label.lane is Lane.TEXT and not answers:
+        printed = normalise_text(label.text or "")
+        if plain_dimension(printed, allow_explicit_mm=claude_pair) is None:
+            refusal = odd_fraction(printed, allow_explicit_mm=claude_pair)
+            if refusal is not None:
+                return review(_ODD_FRACTION, refusal, keep_suggestion=False)
+            return review("not-plain", "the label has words or a sum; review the value")
     if not answers and held_before_reading is not None:
         return review(
             "not-asked", f"the readers were not asked; this row waits: {held_before_reading}"
@@ -345,6 +362,12 @@ def seal_label(
     hold = row_hold([agreed])
     if hold is not None:
         return review(hold.code, hold.reason, keep_suggestion=False)
+    # A fraction no drawing prints, even written identically by both sources: `163/8"` read as
+    # written is 20 3/8", and splitting the digits would be a guess (#1199). The agreed text is the
+    # spelled-out form (`½` folded to `1/2`); each reader's own text stays in `reader_texts`.
+    refusal = odd_fraction(agreed, allow_explicit_mm=claude_pair)
+    if refusal is not None:
+        return review(_ODD_FRACTION, refusal, keep_suggestion=False)
     if claude_pair and mm_corroborates_inch(agreed) is False:
         return review("mm-inch-disagree", "the label's millimetre and inch halves disagree")
     value = plain_dimension(agreed, allow_explicit_mm=claude_pair)

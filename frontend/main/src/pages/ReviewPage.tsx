@@ -37,7 +37,7 @@ import {
   downloadReport,
   listRules,
 } from '../api/client';
-import type { ReviewSession, ApprovalReadiness, CountertopResult, NoCountertopAnswer, PackageDetail, PageWithoutCountertop } from '../api/client';
+import type { ReviewSession, ApprovalReadiness, CountertopResult, CountertopResults, NoCountertopAnswer, PackageDetail, PageWithoutCountertop } from '../api/client';
 import { MeasurementPanel, type HeaderRunAnswer } from './MeasurementPanel';
 import type { MeasureStep } from '@/lib/measure-steps';
 import { itemsNeedingYou } from '@/lib/needs-you-queue';
@@ -279,7 +279,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     getCountertopResults(projectId(), packageId).then(
       (answer) => {
         if (!current) return;
-        setCountertops({ status: 'ready', rows: answer.items, pagesWithoutCountertop: answer.pages_without_countertop ?? [], rowsNotChecked: answer.rows_not_checked ?? [], drawingsNotRead: answer.drawings_not_read ?? [] });
+        setCountertops(readyCountertops(answer));
       },
       (error: unknown) => {
         if (!current) return;
@@ -325,7 +325,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   async function answerNoCountertop(page: PageWithoutCountertop, answer: NoCountertopAnswer) {
     if (!page.record_id) return;
     const updated = await answerNoCountertopPage(projectId(), packageId, page.record_id, answer);
-    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [], drawingsNotRead: updated.drawings_not_read ?? [] });
+    setCountertops(readyCountertops(updated));
     if (answer === 'countertop' && findings.length > 0) setValuesChangedSinceRun(true);
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
@@ -344,7 +344,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     const named = pages.flatMap((page) => (page.record_id ? [{ page_number: page.page_number, expected_record_id: page.record_id }] : []));
     if (named.length === 0) return;
     const updated = await confirmNoCountertopPages(projectId(), packageId, named, note);
-    setCountertops({ status: 'ready', rows: updated.items, pagesWithoutCountertop: updated.pages_without_countertop ?? [], rowsNotChecked: updated.rows_not_checked ?? [], drawingsNotRead: updated.drawings_not_read ?? [] });
+    setCountertops(readyCountertops(updated));
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
     } catch {
@@ -355,7 +355,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   /** The list changed under the screen (409): read the results and readiness again (#1195). */
   async function reloadNoCountertops() {
     const fresh = await getCountertopResults(projectId(), packageId);
-    setCountertops({ status: 'ready', rows: fresh.items, pagesWithoutCountertop: fresh.pages_without_countertop ?? [], rowsNotChecked: fresh.rows_not_checked ?? [], drawingsNotRead: fresh.drawings_not_read ?? [] });
+    setCountertops(readyCountertops(fresh));
     try {
       setReadiness(await getApprovalReadiness(projectId(), packageId));
     } catch {
@@ -1315,6 +1315,27 @@ function RunChecksDialog({ ask, reviewFirst, onConfirm, onReview, onCancel }: {
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * The results screen's countertop state from the countertop-results API. A package whose checks
+ * include no countertop (`countertops_checked: false`, cabinets, #1205) is asked no countertop
+ * question, so nothing countertop-shaped reaches the dashboard, the "Needs you" queue or the
+ * assistant: only its plain line.
+ */
+function readyCountertops(answer: CountertopResults): Extract<CountertopsState, { status: 'ready' }> {
+  if (answer.countertops_checked === false) {
+    return { status: 'ready', rows: [], countertopsChecked: false, readingNote: answer.reading_note ?? null };
+  }
+  return {
+    status: 'ready',
+    rows: answer.items,
+    pagesWithoutCountertop: answer.pages_without_countertop ?? [],
+    rowsNotChecked: answer.rows_not_checked ?? [],
+    drawingsNotRead: answer.drawings_not_read ?? [],
+    countertopsChecked: true,
+    readingNote: answer.reading_note ?? null,
+  };
 }
 
 /** "15 items need you": the review's blocking count always carries its noun (#1179). */

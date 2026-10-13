@@ -265,3 +265,12 @@ def test_another_routes_bare_number_is_not_this_runs_reading() -> None:
     observed = observe(facts, _progress('10192"'))
 
     assert Fact.READINGS_DISAGREE not in observed
+
+
+@pytest.mark.parametrize("text", ['16 35/8"', '16 15/8"', '16 3/5"', '163/8"'])
+def test_a_fraction_no_drawing_prints_has_no_value(text: str) -> None:
+    """#1199: never 20 3/8" for a squeezed `163/8"`, never a value for an impossible fraction."""
+    from extraction.agent.observations import value_of
+
+    assert value_of(_reading(text)) is None
+    assert value_of(_reading('16 3/8"')) is not None

@@ -50,7 +50,7 @@ from extraction.glyph_shapes import (
     size_ratio,
 )
 from units.measurement import Measurement
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 __all__ = [
@@ -680,13 +680,25 @@ def _compose(glyphs: Sequence[_Glyph]) -> tuple[str | None, str | None]:
 
 
 def _value(text: str) -> Measurement | None:
-    """The exact value of a composed label, by the rule every reader's text is valued by."""
+    """The exact value of a composed label, by the rule every reader's text is valued by.
+
+    `None` for a fraction no drawing prints too (#1199): a stacked `163/8"` composed as written is
+    20 3/8", and the label abstains instead, with the reason (`_odd_fraction`).
+    """
     if is_compound(text):
         return None
+    notation = canonical_notation(text)[0]
+    if drawn_fraction_refusal(notation) is not None:
+        return None
     try:
-        return normalise_to_inches(canonical_notation(text)[0])
+        return normalise_to_inches(notation)
     except UnitNormalisationError:
         return None
+
+
+def _odd_fraction(text: str) -> str | None:
+    """Why a composed label's fraction is one no drawing prints, or `None`."""
+    return None if is_compound(text) else drawn_fraction_refusal(canonical_notation(text)[0])
 
 
 def _attempt(
@@ -759,7 +771,12 @@ def read_label(
         value = _value(upright)
         if value is not None:
             return GlyphReading(upright, value, 0, box, templates.set_hash, upright_stacked)
-        why = f"it reads as {upright!r}, which is not one dimension"
+        odd = _odd_fraction(upright)
+        why = (
+            f"it reads as {upright!r}, which is not one dimension"
+            if odd is None
+            else f"it reads as {upright!r}: {odd}"
+        )
 
     # The drafting convention first; the other way only where the convention fails and it does not.
     conventional, conventional_why, conventional_stacked = _attempt(paths, 90, templates, settings)

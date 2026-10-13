@@ -3,6 +3,7 @@
  *
  * One line per value the server says the check could not run without: what it is, its unit, and
  * where it is found. A setting for this job gets a box; the sink's size opens the job's sink entry; a
+ * cabinet list, a cabinet's type or the site width says it is entered on Measurements (#1205); a
  * number drawn on the vendor's drawing gets no box at all — people confirm readings, they do not fill
  * in measurements (GV's rule, Anant 2026-10-12) — and its line says the check needs the drawing. One
  * source note for the settings, one Save, through the same values endpoint Measurements uses. Nothing
@@ -182,6 +183,27 @@ function NeedsLine({
   const sources = input.sources ?? [];
   const boxed = input.askable && input.scope === 'project' && (input.saved == null || overridable(input));
 
+  // The reviewer's own entry on Measurements (#1205): a list of cabinets, each cabinet's type, the
+  // site width. No box here: it is entered there, where a run keeps its order. Never "the drawing".
+  if (input.scope === 'measurements') {
+    return (
+      <li className="flex flex-col gap-0.5" data-scope={input.scope} data-key={input.key} data-askable="false">
+        {input.saved != null ? (
+          <p>
+            <span className="font-medium">{input.label}:</span> <span className="num">{input.saved.text}</span>{' '}
+            <span className="text-muted-foreground">({savedFrom(input)})</span>
+          </p>
+        ) : (
+          <p>
+            <span className="font-medium">Needs:</span> {input.label}
+            {input.unit && <span className="num text-muted-foreground"> ({input.unit})</span>}
+            <span className="text-muted-foreground"> — {input.where_to_find}</span>
+          </p>
+        )}
+      </li>
+    );
+  }
+
   // A drawn number: said plainly, no box. The check waits for the drawing (or for a reader to read it).
   if (!input.askable) {
     return (
@@ -194,8 +216,8 @@ function NeedsLine({
         ) : (
           <>
             <p>
-              <span className="font-medium">Needs:</span> {input.label} <span className="num text-muted-foreground">({input.unit})</span> from the
-              section drawing (not supplied)
+              <span className="font-medium">Needs:</span> {input.label}{input.unit && <span className="num text-muted-foreground"> ({input.unit})</span>} from the
+              drawing (not supplied)
             </p>
             <p className="text-xs text-muted-foreground">{input.where_to_find} Read off the drawing, never typed here: this check waits until the drawing is supplied.</p>
           </>
@@ -213,8 +235,8 @@ function NeedsLine({
         </p>
       ) : (
         <p>
-          <span className="font-medium">Needs:</span> {boxed ? <label htmlFor={id}>{input.label}</label> : input.label}{' '}
-          <span className="num text-muted-foreground">({input.unit})</span>
+          <span className="font-medium">Needs:</span> {boxed ? <label htmlFor={id}>{input.label}</label> : input.label}
+          {input.unit && <span className="num text-muted-foreground"> ({input.unit})</span>}
           <span className="text-muted-foreground"> — {input.where_to_find}</span>
         </p>
       )}
@@ -228,7 +250,7 @@ function NeedsLine({
           <Input
             id={id}
             className="num h-8 w-32"
-            placeholder={input.unit}
+            placeholder={input.unit ?? undefined}
             aria-label={overridable(input) ? `${input.label} for this job, over GV's default` : undefined}
             value={draft}
             disabled={disabled}
