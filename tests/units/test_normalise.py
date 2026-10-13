@@ -343,7 +343,7 @@ def test_a_drawn_fraction_is_not_refused(written: str) -> None:
 @pytest.mark.parametrize(
     ("written", "says"),
     [
-        ('163/8"', "a space may be missing"),
+        ('163/8"', "may be missing"),
         ('5/4"', "not smaller than its bottom"),
         ('8/8"', "not smaller than its bottom"),
         ('3/5"', "over 5"),
@@ -368,3 +368,87 @@ def test_the_system_s_own_values_still_round_trip() -> None:
     value = normalise_to_inches("984 mm").exact
     assert parse_imperial(format_inches(value)) == value
     assert normalise_to_inches(f'{format_inches(value)}"').exact == value
+
+
+# --- #1199 review fixes: typed values, wording ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("typed", "suggested"),
+    [
+        ('163/8"', '16 3/8"'),
+        ('1615/16"', '16 15/16"'),  # the first possible split; 161 5/16 is possible too
+        ('105/8"', '10 5/8"'),  # a split never leaves a top with a leading zero
+        ("163/8 in", '16 3/8"'),
+    ],
+)
+def test_a_typed_improper_fraction_is_refused_with_a_suggestion(typed: str, suggested: str) -> None:
+    from units.normalise import typed_fraction_refusal
+
+    refusal = typed_fraction_refusal(typed)
+    assert refusal is not None and f"did you mean {suggested}?" in refusal
+
+
+@pytest.mark.parametrize("typed", ['5/4"', '16 9/8"', '8/8"', '160/8"'])
+def test_a_typed_improper_fraction_with_no_split_is_refused_without_a_suggestion(
+    typed: str,
+) -> None:
+    from units.normalise import typed_fraction_refusal
+
+    refusal = typed_fraction_refusal(typed)
+    assert refusal is not None and "did you mean" not in refusal
+
+
+@pytest.mark.parametrize(
+    "typed",
+    ['16 3/8"', '3/4"', '2"', "984 mm", '38 94/127"', '1 1/3"', "3'-6 1/2\"", '-3 1/2"'],
+)
+def test_a_typed_proper_fraction_is_never_refused_whatever_its_bottom(typed: str) -> None:
+    """Typed values keep any proper fraction: `format_inches` writes 984 mm as `38 94/127`."""
+    from units.normalise import typed_fraction_refusal
+
+    assert typed_fraction_refusal(typed) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        Fraction(4920, 127),
+        Fraction(131, 8),
+        Fraction(1, 3),
+        Fraction(7, 2),
+        Fraction(-7, 2),
+        Fraction(12),
+        Fraction(63, 64),
+    ],
+)
+def test_every_value_the_system_writes_round_trips_as_typed_text(value: Fraction) -> None:
+    from units.imperial import format_inches
+    from units.normalise import typed_fraction_refusal
+
+    written = f'{format_inches(value)}"'
+    assert typed_fraction_refusal(written) is None
+    assert parse_imperial(written) == value
+    if value > 0:  # a typed negative is refused before parsing, as it always was
+        assert normalise_to_inches(written).exact == value
+
+
+@pytest.mark.parametrize(
+    ("written", "squeezed"),
+    [('163/8"', True), ('1615/16"', True), ('5/4"', False), ('16 9/8"', False)],
+)
+def test_only_a_squeezed_mixed_number_mentions_a_missing_space(
+    written: str, squeezed: bool
+) -> None:
+    from units.normalise import drawn_fraction_refusal
+
+    refusal = drawn_fraction_refusal(written)
+    assert refusal is not None
+    assert ("space" in refusal) is squeezed
+
+
+def test_full_width_digits_are_not_read_as_a_fraction() -> None:
+    """`１６３/８` is not ASCII; the parsers never read it, so it is no fraction of ours either."""
+    from units.normalise import drawn_fraction_refusal
+
+    assert drawn_fraction_refusal('１６３/８"') is None

@@ -30,7 +30,7 @@ from evidence.candidate import ObservationCandidate
 from evidence.coordinates import ImagePoint
 from extraction.glyph_bands import FractionLayout
 from units.measurement import Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 
 #: Said once, because all four coordinates carry the same contract and four near-identical
@@ -416,6 +416,11 @@ def _reading_refusal(reading: str) -> str | None:
         # way to satisfy a sum — so this is the one magnitude that says the reading failed rather
         # than that the drawing is unusual.
         return f"reading {reading!r} measures zero, which is not a dimension anything drew"
+    # A whole number with a fraction no drawing prints (`16 35/8"`, `16 3/5"`), or a squeezed
+    # `163/8"` that would read as 20 3/8": refused with the reason, never valued (#1199).
+    odd = drawn_fraction_refusal(probed)
+    if odd is not None:
+        return f"reading {reading!r}: {odd}"
     # On the canonical form, not the characters returned: `19 [3/4]` does not look like a bare
     # fraction, but its value is one, and judging the raw text would let a dual token carry a
     # dropped whole number straight past the check that exists to stop it.

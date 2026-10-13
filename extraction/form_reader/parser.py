@@ -47,12 +47,13 @@ def parse_dimension(dimension: FormDimension) -> ParsedDimension:
         return ParsedDimension(None, "stacked")
     try:
         notation, _millimetre_half = canonical_notation(dimension.text)
-        if drawn_fraction_refusal(notation) is not None:
-            # `163/8"` read as written is 20 3/8"; a drawing never prints it (#1199).
-            return ParsedDimension(None, "fraction-not-drawn")
         value = normalise_to_inches(notation)
     except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
         return ParsedDimension(None, "unreadable")
+    if drawn_fraction_refusal(notation) is not None:
+        # `163/8"` read as written is 20 3/8"; a drawing never prints it (#1199). Only a text that
+        # parses gets this reason; anything else is "unreadable", as before.
+        return ParsedDimension(None, "fraction-not-drawn")
 
     exact = value.exact
     expected = _components_match(dimension, exact)

@@ -956,3 +956,25 @@ def test_dismissing_is_not_an_evidence_decision(session: Session) -> None:
     )
 
     assert response.status_code == 422, response.text
+
+
+def test_a_typed_squeezed_correction_is_refused_with_a_suggestion(session: Session) -> None:
+    """#1199: a corrected `163/8"` is never stored as 20 3/8."""
+    project_id, scenario = _correctable(session)
+    session.commit()
+    client = _client(session, project_id)
+
+    response = _decide(
+        client,
+        project_id,
+        str(scenario.review_session_id),
+        {
+            "finding_id": str(scenario.finding_id),
+            "observation_id": str(scenario.observation_id),
+            "action": "correct",
+            "corrected_value": '163/8"',
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert 'did you mean 16 3/8"?' in response.json()["message"]

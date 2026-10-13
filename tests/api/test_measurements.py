@@ -677,3 +677,30 @@ def test_the_form_lists_each_settings_sources_with_what_they_mean(session: Sessi
     assert [source["value"] for source in bound] == ["Company standard", "G.C / Client"]
     assert "never from the vendor's drawing" in bound[1]["guidance"]
     assert [s["value"] for s in by_name["filler_max"]["sources"]] == ["Company standard"]
+
+
+def test_a_typed_squeezed_fraction_is_refused_with_a_suggestion(session: Session) -> None:
+    """#1199: `163/8"` typed was stored as 20 3/8. Refused, and the message offers the split."""
+    package = _package(session)
+
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={"parameters": [{"name": "cabinet_depth", "value": '163/8"'}]},
+    )
+
+    assert response.status_code == 422, response.text
+    assert 'did you mean 16 3/8"?' in response.json()["message"]
+
+
+def test_the_systems_own_written_value_is_accepted_when_typed_back(session: Session) -> None:
+    """984 mm is written `38 94/127"`; the form sends that text back unchanged and it must read."""
+    package = _package(session)
+
+    response = _client(session).post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={"parameters": [{"name": "cabinet_depth", "value": '38 94/127"'}]},
+    )
+
+    assert response.status_code in (200, 201), response.text
+    stored = response.json()["parameters"][0]
+    assert (stored["numerator"], stored["denominator"]) == ("4920", "127")

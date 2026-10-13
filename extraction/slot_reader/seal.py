@@ -40,10 +40,10 @@ from typing import Final
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.form_reader.mapping import REVIEWER_MARKUP_REASON
 from extraction.ink import InkAt, InkClass
-from extraction.slot_reader.labels import expand_label, plain_dimension, row_hold
+from extraction.slot_reader.labels import expand_label, odd_fraction, plain_dimension, row_hold
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
-from units.normalise import drawn_fraction_refusal, fold_fractions
+from units.normalise import fold_fractions
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
@@ -80,7 +80,8 @@ _QUOTES: Final = {
     "ʹ": "'",
 }
 #: A fraction no drawing prints: its top not smaller than its bottom, or its bottom not 2, 4, 8, 16,
-#: 32 or 64 (#1199). Always the person's, with `units.normalise.drawn_fraction_refusal`'s reason.
+#: 32 or 64 (#1199). Always the person's, with `labels.odd_fraction`'s reason. Text that is no
+#: plain dimension anyway (`457 / 18"`, a bare `24/36`) stays "not plain".
 _ODD_FRACTION: Final = "fraction-not-drawn"
 _CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
@@ -341,7 +342,7 @@ def seal_label(
     if label.lane is Lane.TEXT and not answers:
         printed = normalise_text(label.text or "")
         if plain_dimension(printed, allow_explicit_mm=claude_pair) is None:
-            refusal = drawn_fraction_refusal(printed)
+            refusal = odd_fraction(printed, allow_explicit_mm=claude_pair)
             if refusal is not None:
                 return review(_ODD_FRACTION, refusal, keep_suggestion=False)
             return review("not-plain", "the label has words or a sum; review the value")
@@ -362,8 +363,9 @@ def seal_label(
     if hold is not None:
         return review(hold.code, hold.reason, keep_suggestion=False)
     # A fraction no drawing prints, even written identically by both sources: `163/8"` read as
-    # written is 20 3/8", and splitting the digits would be a guess (#1199).
-    refusal = drawn_fraction_refusal(agreed)
+    # written is 20 3/8", and splitting the digits would be a guess (#1199). The agreed text is the
+    # spelled-out form (`½` folded to `1/2`); each reader's own text stays in `reader_texts`.
+    refusal = odd_fraction(agreed, allow_explicit_mm=claude_pair)
     if refusal is not None:
         return review(_ODD_FRACTION, refusal, keep_suggestion=False)
     if claude_pair and mm_corroborates_inch(agreed) is False:

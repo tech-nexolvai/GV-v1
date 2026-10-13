@@ -271,3 +271,40 @@ def test_the_approved_worded_forms_still_expand() -> None:
     shares = _two_makers('96"(6EQ)', '96"(6EQ)')
     assert shares.state is LabelState.SEALED
     assert shares.value is not None and shares.value.exact == Fraction(96)
+
+
+# --- #1199 review fixes -----------------------------------------------------------------------------
+
+
+def test_the_fraction_numerator_one_character_is_held_for_a_person() -> None:
+    """`⅟` is "one over", written before a bottom: `8⅟16"` is never folded into a value."""
+    assert normalise_text('8⅟16"') == '8 1/ 16"'
+    outcome = _claude_pair('8⅟16"', '8⅟16"')
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "not-plain"
+    assert outcome.value is None and outcome.suggestion is None
+
+
+def test_a_hyphen_before_a_fraction_character_is_still_a_different_spelling() -> None:
+    differ = _claude_pair('8-½"', '8 1/2"')
+    assert differ.state is LabelState.REVIEW and differ.reason_code == "readers-differ"
+
+
+@pytest.mark.parametrize("odd", ['１６ ３/８"', '16 3/8"́', '1̲6 3/8"'])
+def test_full_width_digits_and_combining_marks_are_never_forgiven(odd: str) -> None:
+    differ = _claude_pair(odd, '16 3/8"')
+    assert differ.state is LabelState.REVIEW and differ.reason_code == "readers-differ"
+    both = _claude_pair(odd, odd)
+    assert both.state is LabelState.REVIEW and both.reason_code == "not-plain"
+    assert both.value is None and both.suggestion is None
+
+
+@pytest.mark.parametrize("text", ['457 / 18"', "24/36", '3/5 BASE"'])
+def test_text_that_is_not_a_dimension_is_not_called_an_odd_fraction(text: str) -> None:
+    outcome = _claude_pair(text, text)
+    assert outcome.state is LabelState.REVIEW and outcome.reason_code == "not-plain"
+
+
+def test_an_improper_fraction_alone_does_not_mention_a_missing_space() -> None:
+    outcome = _claude_pair('5/4"', '5/4"')
+    assert outcome.reason_code == "fraction-not-drawn"
+    assert outcome.reason is not None and "space" not in outcome.reason

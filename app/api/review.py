@@ -72,7 +72,7 @@ from app.schemas.review import (
     ReviewSessionPage,
 )
 from units.measurement import Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, normalise_to_inches, typed_fraction_refusal
 
 router = APIRouter(tags=["review"])
 
@@ -182,6 +182,12 @@ def _corrected_inches(db: Session, observation_id: UUID, typed: str) -> Fraction
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"corrected_value: {NOT_ABOVE_ZERO}",
+        )
+    # `163/8"` typed would be stored as 20 3/8 (#1199): refused, with the split as a suggestion.
+    odd = typed_fraction_refusal(typed)
+    if odd is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"corrected_value: {odd}"
         )
     try:
         measured = normalise_to_inches(typed)

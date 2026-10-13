@@ -124,7 +124,7 @@ from rules.semantic_types import SemanticType
 from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, normalise_to_inches, typed_fraction_refusal
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
 from vocabulary.setting_names import setting_name
 from workflow.assignment_bedrock import (
@@ -185,7 +185,15 @@ def _parse(value: str, *, field: str) -> Measurement:
     `normalise_to_inches` refuses a token with no unit, and that refusal is inherited on purpose: a
     bare `984` was once stored as 984 inches because tokenisation had removed its `mm` (#483). A
     reviewer who omits the mark is told, rather than having one chosen for them.
+
+    A fraction whose top is not smaller than its bottom is refused too (#1199): `163/8"` was stored
+    as 20 3/8. The message suggests the split (`did you mean 16 3/8"?`); the person types it again.
     """
+    odd = typed_fraction_refusal(value)
+    if odd is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"{field}: {odd}"
+        )
     try:
         return normalise_to_inches(value)
     except UnitNormalisationError as refused:

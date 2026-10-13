@@ -233,8 +233,30 @@ def fold_fractions(token: str) -> str:
     return "".join(written)
 
 
-#: A written fraction anywhere in a dimension: `3/8` in `16 3/8"`, `163/8` in `163/8"`.
-_WRITTEN_FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+#: A written fraction in a dimension, with the whole number written before it if there is one:
+#: `16 3/8`, `16-3/8`, `163/8`, `3/8`. ASCII digits only: the parsers read nothing else, so a
+#: full-width `１６３/８` is never a fraction of ours, only text that is not a dimension.
+_WRITTEN_FRACTION_RE = re.compile(
+    r"(?<![0-9/])(?:(?P<whole>[0-9]+)(?:\s+|\s*-\s*))?(?P<top>[0-9]+)\s*/\s*(?P<bottom>[0-9]+)"
+    r"(?![0-9/])",
+    re.ASCII,
+)
+
+
+def _squeezed_split(top: str, bottom: int) -> tuple[str, str] | None:
+    """The first place `top` splits into a whole number and a proper fraction over `bottom`.
+
+    `163` over 8 splits as `16` and `3`; `1615` over 16 as `16` and `15` (161 and 5 is possible
+    too, which is why this is only ever a suggestion to a person, never a value). A part never starts
+    with a zero, and the new top is never zero. `None` where no split gives a proper fraction.
+    """
+    for cut in range(1, len(top)):
+        whole, rest = top[:cut], top[cut:]
+        if rest.startswith("0") or whole.startswith("0"):
+            continue
+        if 0 < int(rest) < bottom:
+            return whole, rest
+    return None
 
 
 def drawn_fraction_refusal(token: str) -> str | None:
@@ -248,23 +270,58 @@ def drawn_fraction_refusal(token: str) -> str | None:
     the values arithmetic produces (`format_inches` writes `38 94/127` for 984 mm and reads it back).
     But a reader that writes `163/8"` has almost certainly lost the space in `16 3/8"`, and read as
     written it is twenty and three-eighths. Splitting the digits would be a guess (`1615/16` is
-    161 5/16 or 16 15/16), so the label goes to a person, even when both readers wrote it.
+    161 5/16 or 16 15/16), so the label goes to a person, even when both readers wrote it. The reason
+    mentions a missing space only when the text looks like a squeezed mixed number: no whole number
+    before the fraction, and a top that splits into one.
 
     For text a reader or a drawing printed only. Values the system wrote itself are never checked
-    here.
+    here; a value a person typed is checked by `typed_fraction_refusal`.
     """
-    for numerator, denominator in _WRITTEN_FRACTION_RE.findall(token):
-        top, bottom = int(numerator), int(denominator)
+    for found in _WRITTEN_FRACTION_RE.finditer(token):
+        top, bottom = int(found.group("top")), int(found.group("bottom"))
         if not _drawn_denominator(bottom):
             return (
                 f"the fraction {top}/{bottom} is over {bottom}; a drawing prints fractions over "
                 "2, 4, 8, 16, 32 or 64 only, so a person reads it"
             )
         if top >= bottom:
+            squeezed = found.group("whole") is None and _squeezed_split(found.group("top"), bottom)
+            if squeezed:
+                return (
+                    f"the fraction {top}/{bottom} has a top that is not smaller than its bottom, "
+                    "which a drawing never prints; the space between the whole number and the "
+                    "fraction may be missing, so a person reads it"
+                )
             return (
                 f"the fraction {top}/{bottom} has a top that is not smaller than its bottom, which "
-                "a drawing never prints; a space may be missing, so a person reads it"
+                "a drawing never prints, so a person reads it"
             )
+    return None
+
+
+def typed_fraction_refusal(text: str) -> str | None:
+    """Why a value a person typed has a fraction no one writes, or `None` (#1199).
+
+    Only a top that is not smaller than its bottom is refused: `163/8"` typed was stored as 20 3/8.
+    Where the digits split into a whole number and a proper fraction, the refusal suggests the first
+    split (`did you mean 16 3/8"?`); it is only a suggestion, and the person types the value again.
+
+    **Never the powers-of-two rule.** The system writes its own values back into the form, exactly:
+    984 mm is `38 94/127"` (`format_inches`), and that text must read back unchanged.
+    """
+    for found in _WRITTEN_FRACTION_RE.finditer(plain_marks(text)):
+        top_text, bottom = found.group("top"), int(found.group("bottom"))
+        if bottom == 0 or int(top_text) < bottom:
+            continue
+        refusal = (
+            f"the fraction {int(top_text)}/{bottom} has a top that is not smaller than its bottom, "
+            "which nobody writes"
+        )
+        split = None if found.group("whole") is not None else _squeezed_split(top_text, bottom)
+        if split is not None:
+            whole, rest = split
+            return f'{refusal}; did you mean {whole} {rest}/{bottom}"?'
+        return f'{refusal}; type the whole number and the fraction apart, as 1 1/4"'
     return None
 
 

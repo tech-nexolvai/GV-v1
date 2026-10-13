@@ -43,7 +43,7 @@ from app.review.wall_cases import (
 )
 from app.schemas.visual_ui import WallCasesOut
 from units.imperial import format_inches
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, normalise_to_inches, typed_fraction_refusal
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.semantic_types import SemanticType
@@ -444,6 +444,13 @@ def review_slot_row(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"{key.replace('_', ' ').capitalize()}: {NOT_ABOVE_ZERO}",
+            )
+        # `163/8"` typed would be saved as 20 3/8 (#1199): refused, with the split as a suggestion.
+        odd = typed_fraction_refusal(text)
+        if odd is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key.replace('_', ' ').capitalize()}: {odd}",
             )
         try:
             measurement = normalise_to_inches(text)

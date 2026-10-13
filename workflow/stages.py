@@ -286,7 +286,7 @@ from storage.hashing import ArtifactCorrupt, content_key, sha256_stream
 from storage.store import ArtifactStore
 from units.imperial import format_inches
 from units.measurement import Measurement, Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 from verdict.engine import EngineError, execute
 from verdict.finding import Finding
@@ -606,8 +606,12 @@ def _vision_candidate_value(raw_text: str) -> tuple[Measurement | None, str | No
     """
     if is_compound(raw_text):
         return None, NOT_A_SINGLE_VALUE_FLAG
+    notation = canonical_notation(raw_text)[0]
+    # A fraction no drawing prints has no value, as the shape check refuses it (#1199).
+    if drawn_fraction_refusal(notation) is not None:
+        return None, UNPARSED_FLAG
     try:
-        return normalise_to_inches(canonical_notation(raw_text)[0]), None
+        return normalise_to_inches(notation), None
     except UnitNormalisationError:
         return None, UNPARSED_FLAG
 

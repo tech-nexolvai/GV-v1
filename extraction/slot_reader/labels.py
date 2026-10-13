@@ -45,6 +45,7 @@ __all__ = [
     "RowHold",
     "counter_break_hold",
     "expand_label",
+    "odd_fraction",
     "plain_dimension",
     "row_hold",
 ]
@@ -114,6 +115,27 @@ def plain_dimension(text: str, *, allow_explicit_mm: bool = False) -> Measuremen
     except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
         return None
     return Measurement(value.exact, value.unit, text)
+
+
+def odd_fraction(text: str, *, allow_explicit_mm: bool = False) -> str | None:
+    """Why a text that is a plain dimension in every other way has a fraction no drawing prints.
+
+    `163/8"`, `5/4"`, `3/5"`, `16 3/5"`: the reason (`units.normalise.drawn_fraction_refusal`), so
+    the person is told what is wrong (#1199). `None` for text that is no plain dimension anyway —
+    `457 / 18"`, a bare `24/36`, words — which stays "not plain", and for a fraction a drawing prints.
+    """
+    if (
+        not text
+        or (_PLAIN.fullmatch(text) is None and not (allow_explicit_mm and _MM_DUAL.fullmatch(text)))
+        or is_compound(text)
+    ):
+        return None
+    try:
+        notation, _millimetres = canonical_notation(text)
+        normalise_to_inches(notation)
+    except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
+        return None
+    return drawn_fraction_refusal(notation)
 
 
 class Expansion(StrEnum):

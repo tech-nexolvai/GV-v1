@@ -1322,3 +1322,31 @@ def test_a_reading_with_the_files_own_text_among_its_sources_never_needs_the_cli
     }
 
     assert by_row[anchors[0]].outcome == "PASS", by_row[anchors[0]].reason
+
+
+def test_a_typed_squeezed_width_is_refused_with_a_suggestion(session: Session) -> None:
+    """#1199: a typed `163/8"` width is never saved as 20 3/8."""
+    project_id, package_id, anchors = _package_rows(session, unsealed_page=0)
+    principal = Principal(
+        id="anant (synthetic test)",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({project_id}),
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        review_slot_row(
+            principal,
+            principal,
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(
+                wall_config="back_left_right",
+                measurements={"piece_widths:0": '163/8"'},
+            ),
+        )
+
+    assert refused.value.status_code == 422
+    assert 'did you mean 16 3/8"?' in str(refused.value.detail)
+    assert session.query(SlotRowReviewDecision).count() == 0

@@ -29,7 +29,7 @@ from extraction.agent.tools import Refinement
 from extraction.agent.trigger import AmbiguityReason
 from units.dual import DualDimensionParseError, parse_dual
 from units.measurement import Measurement, Unit
-from units.normalise import UnitNormalisationError, normalise_to_inches
+from units.normalise import UnitNormalisationError, drawn_fraction_refusal, normalise_to_inches
 from units.notation import canonical_notation, is_compound
 from units.policy import Consistency, check_dual
 
@@ -127,14 +127,18 @@ def value_of(candidate: ObservationCandidate) -> Measurement | None:
 
     A vision reader returns its text and leaves the value to the pipeline, which parses it through
     `units.notation` (`workflow/stages._vision_candidate_value`). A value the candidate already
-    carries is used as it is. A compound, or text the parser refuses, has none.
+    carries is used as it is. A compound, text the parser refuses, or a fraction no drawing prints
+    (`16 35/8"`, a squeezed `163/8"`; #1199) has none.
     """
     if candidate.parsed_value is not None:
         return candidate.parsed_value
     if is_compound(candidate.raw_text):
         return None
+    notation = canonical_notation(candidate.raw_text)[0]
+    if drawn_fraction_refusal(notation) is not None:
+        return None
     try:
-        return normalise_to_inches(canonical_notation(candidate.raw_text)[0])
+        return normalise_to_inches(notation)
     except UnitNormalisationError:
         return None
 
