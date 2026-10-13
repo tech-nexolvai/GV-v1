@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { reviewStage, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { RAISE_THE_LIMIT_FIRST, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -177,6 +177,17 @@ describe('reviewStage: one step per state', () => {
     expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [] }).next.kind).not.toBe('read-again');
     // While checks run, never offered.
     expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [2], checksQueued: true }).next.kind).toBe('checking');
+  });
+
+  it('budget stop (#1206): when reading the unread pages cannot help yet, the button says why', () => {
+    const unpriced = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [1, 2], budgetLimit: 'unpriced' });
+    expect(unpriced.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: true, reason: UNPRICED_FIRST });
+    expect(UNPRICED_FIRST).toMatch(/fix the model rates first/);
+    for (const limit of ['fixed', 'maximum'] as const) {
+      const raised = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [3], budgetLimit: limit });
+      expect(raised.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: RAISE_THE_LIMIT_FIRST });
+    }
+    expect(RAISE_THE_LIMIT_FIRST).toMatch(/ask an admin to raise the limit/);
   });
 
   it.each(['CANCELLED', 'SUPERSEDED'])('historical (%s): no action', (state) => {

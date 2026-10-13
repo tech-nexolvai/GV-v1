@@ -97,6 +97,7 @@ from app.models.evidence import (
     line_key,
 )
 from app.models.matching import MatchCandidate as MatchCandidateRow
+from app.models.outbox import OutboxEntry
 from app.models.package import Package, PackageRevision, package_product
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.rules import RuleDefinition
@@ -379,11 +380,14 @@ from workflow.form_reader import (
 from workflow.glyph_route import GLYPH_EXTRACTOR, GlyphRoute, read_page_labels
 from workflow.idempotency import stage_idempotency_key
 from workflow.layout_proposals import (
+    DISCRIMINATOR_FROM_REVIEWER,
+    confirmed_discriminators,
     discriminator_note,
     record_layout_proposal,
     slot_reader_has_rows,
 )
 from workflow.measurements import run_parameters_for
+from workflow.outbox import enqueue
 from workflow.part_operands import (
     CountertopScope,
     countertop_scopes,
@@ -429,7 +433,12 @@ from workflow.slot_row_evidence import (
     confirm_vendor_walls_pass,
     slot_row_check,
 )
-from workflow.slot_row_scope import SlotRow, budget_stopped_pages, slot_rows_and_unchosen_pages
+from workflow.slot_row_scope import (
+    SlotRow,
+    budget_stopped_pages,
+    latest_slot_reader_run,
+    slot_rows_and_unchosen_pages,
+)
 from workflow.timing import TimingRecorder
 from workflow.unread_pages import (
     UNREADABLE,
@@ -2914,6 +2923,19 @@ class DatabaseStages:
                 cap_usd=Decimal(self._meter.cap_micros) / 1_000_000,
                 unpriced=self._meter.unpriced_calls > 0,
                 unread=unread,
+                limit=(
+                    "unpriced"
+                    if self._meter.unpriced_calls > 0
+                    else (
+                        "fixed"
+                        if self._ai_budget_fixed_micros is not None
+                        else (
+                            "maximum"
+                            if self._meter.cap_micros >= _micros(self._ai_budget.maximum_usd)
+                            else None
+                        )
+                    )
+                ),
             )
         self._progress("saving")
         run = open_extraction_run(
@@ -2976,6 +2998,11 @@ class DatabaseStages:
         waiting = budget_stopped_pages(session, package_revision_id)
         if not waiting:
             return {"ran": False, "reason": "no page is waiting for the AI budget"}
+        if not self._slot_reader.reuse_answers:
+            # Without stored answers every page would be read and paid for again, under a budget
+            # for the waiting pages only, and earlier pages could come back unread (#1206).
+            return {"ran": False, "reason": READ_UNREAD_NEEDS_REUSE}
+        earlier_run = latest_slot_reader_run(session, package_revision_id)
         self._watch(session, package_revision_id, "pages")
         with session.no_autoflush:
             spent, unpriced = stage_spend_so_far(session, task_run)
@@ -3020,11 +3047,26 @@ class DatabaseStages:
                     task_run_id=task_run.id,
                 )
         session.flush()
+        # The rows of the pages already read are new records in this reading: the reviewer's wall
+        # answers and typed widths on them come along (#1206), by the same row identity a later
+        # revision uses.
+        from app.lifecycle.carry_forward import carry_row_answers_within_revision
+
+        carried = (
+            0
+            if earlier_run is None
+            else carry_row_answers_within_revision(session, package_revision_id, earlier_run)
+        )
+        # A new reading is a new input to the checks (#1206): the checks run again, and sign-off
+        # waits for them (`app/review/approval.py` counts a reading newer than the checks).
+        checks = _queue_checks_after_reading(session, package_revision_id)
         return {
             "ran": True,
             "pages_waiting": list(waiting),
             "ai_budget": self._meter.as_payload(),
             "still_waiting": list(budget_stopped_pages(session, package_revision_id)),
+            "answers_carried": carried,
+            "checks_queued": checks is not None,
         }
 
     def _architect_matcher(
@@ -8303,6 +8345,56 @@ def _reader_outcome(attempt: AttemptUsage) -> str:
     return ModelInvocationOutcome.OK.value
 
 
+#: Why "Read the unread pages" does not run with stored answers switched off (#1206).
+READ_UNREAD_NEEDS_REUSE: Final = (
+    "Reading the unread pages needs stored answers reused (GV_READER_REUSE_ANSWERS): without them "
+    "every page would be read and paid for again. Ask an admin to switch it on, or start a new "
+    "revision."
+)
+
+
+def _queue_checks_after_reading(session: Session, package_revision_id: UUID) -> UUID | None:
+    """Queue the checks again after a new reading of a checked revision (#1206), with the layout
+    answers the reviewer confirmed, as "Run checks" does; `None` when the revision was never
+    checked (its first checks are the reviewer's to start) or a run is already queued."""
+    checked = session.scalar(
+        select(CheckRun.id)
+        .where(
+            CheckRun.package_revision_id == package_revision_id,
+            CheckRun.superseded_at.is_(None),
+        )
+        .limit(1)
+    )
+    if checked is None:
+        return None
+    queued = session.scalar(
+        select(OutboxEntry.id)
+        .where(
+            OutboxEntry.workflow == RUN_CHECKS_AFTER_READING,
+            OutboxEntry.dispatched_at.is_(None),
+            OutboxEntry.abandoned_at.is_(None),
+            OutboxEntry.payload["package_revision_id"].astext == str(package_revision_id),
+        )
+        .limit(1)
+    )
+    if queued is not None:
+        return None
+    confirmed = confirmed_discriminators(session, package_revision_id)
+    return enqueue(
+        session,
+        workflow=RUN_CHECKS_AFTER_READING,
+        payload={
+            "package_revision_id": str(package_revision_id),
+            "discriminators": dict(confirmed),
+            "discriminator_sources": {name: DISCRIMINATOR_FROM_REVIEWER for name in confirmed},
+        },
+    )
+
+
+#: The work that runs the checks (`app/api/measurements.RUN_CHECKS_WORKFLOW`).
+RUN_CHECKS_AFTER_READING: Final = "run_checks"
+
+
 def _stopped_at_budget(
     session: Session,
     results: Sequence[PageSlotResult],
@@ -8312,6 +8404,7 @@ def _stopped_at_budget(
     cap_usd: Decimal,
     unpriced: bool,
     unread: Sequence[UnreadPage],
+    limit: str | None = None,
 ) -> tuple[tuple[PageSlotResult, ...], list[UnreadPage]]:
     """The pages read before the budget was reached kept, and every page whose own reading is
     missing listed as unread with the budget named (#1206).
@@ -8324,7 +8417,8 @@ def _stopped_at_budget(
     no cost). Each listed page needs a reviewer's answer before sign-off, or that reading.
 
     `cap_usd` is the drawing set's budget (its meter), the amount the person can act on; `unpriced`
-    says the reading stopped because a call had no price, not because the money ran out.
+    says the reading stopped because a call had no price, not because the money ran out; `limit`
+    is recorded on each listed page when "Read the unread pages" cannot help on its own.
     """
     left = stop.pages_left()
     ordered = sorted(pages, key=lambda page: page.page_index)
@@ -8351,7 +8445,9 @@ def _stopped_at_budget(
         page_count=max(total, stopped[-1].page_index + 1),
         unpriced=unpriced,
     )
-    listed = [unread_page(rows[page.page_id], reason) for page in stopped]
+    listed = [
+        replace(unread_page(rows[page.page_id], reason), budget_limit=limit) for page in stopped
+    ]
     already = {page.page_id for page in unread}
     return kept, [*unread, *(page for page in listed if page.page_id not in already)]
 

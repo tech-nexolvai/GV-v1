@@ -27,6 +27,7 @@ Verification: `tests/api/test_packages.py`
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -161,6 +162,11 @@ class PackageOut(BaseModel):
     """The page numbers the newest reading left waiting for the AI budget (#1206): listed unread,
     or read and held because a later question was not asked. "Read the unread pages" reads them.
     Filled by `GET .../packages/{id}` only; empty otherwise."""
+    budget_limit: Literal["unpriced", "fixed", "maximum"] | None = None
+    """When "Read the unread pages" cannot help on its own (#1206): `unpriced` (a call had no
+    price; the model rates must be fixed first, and the action is refused), `fixed` (the set's
+    fixed AI budget was reached) or `maximum` (the admin's maximum was reached): an admin raises
+    the limit first. `null` when it can help, or nothing waits."""
 
 
 class ExtractionRequestOut(BaseModel):

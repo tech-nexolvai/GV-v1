@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,9 +40,26 @@ from app.auth import Action, Principal, require_action, require_project_access
 from app.lifecycle.side_states import PLAIN_STOP_REASONS
 from app.models import OutboxEntry, PackageState, PackageStateEvent
 from workflow.outbox import enqueue
-from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW, budget_stopped_pages
+from workflow.slot_row_scope import (
+    READ_UNREAD_PAGES_WORKFLOW,
+    budget_limit,
+    budget_stopped_pages,
+)
 
 router = APIRouter(tags=["packages"])
+
+#: Why "Read the unread pages" is refused after a call with no price (#1206): every later call
+#: would be refused too, until the model rates name the model.
+UNPRICED_FIRST = (
+    "A call had no price, so no more calls can be made: an admin must fix the model rates first."
+)
+
+#: Why it is refused with stored answers switched off (`GV_READER_REUSE_ANSWERS`, #1206): every page
+#: would be read and paid for again, and pages read before could come back unread.
+NEEDS_REUSE = (
+    "Reading the unread pages needs stored answers reused (GV_READER_REUSE_ANSWERS): without "
+    "them every page would be read and paid for again. Ask an admin to switch it on."
+)
 
 #: Where a reading has handed the revision to a person, so "Read the unread pages" may start.
 _READ_STATES = frozenset({PackageState.AWAITING_REVIEW, PackageState.NEEDS_INPUT})
@@ -104,6 +121,7 @@ def _work_waiting(session: Session, revision_id: UUID, workflow: str) -> bool:
     dependencies=[Depends(open_revision)],
 )
 def read_again(
+    request: Request,
     principal: Annotated[Principal, Depends(require_project_access)],
     _: Annotated[Principal, Depends(require_action(Action.START_REVIEW))],
     session: Annotated[Session, Depends(get_session)],
@@ -144,6 +162,13 @@ def read_again(
                     "there is nothing to read again."
                 ),
             )
+        if budget_limit(session, revision.id) == "unpriced":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=UNPRICED_FIRST,
+            )
+        if not request.app.state.settings.reader_reuse_answers:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NEEDS_REUSE)
         if _work_waiting(session, revision.id, READ_UNREAD_PAGES_WORKFLOW):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

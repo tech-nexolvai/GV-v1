@@ -67,6 +67,7 @@ from workflow.view_roles import CODE_CONFIRMERS
 
 __all__ = [
     "BLANK_PAGE",
+    "BUDGET_LIMIT_FLAG",
     "BUDGET_REACHED",
     "INK_FOUND_REASON",
     "ConfirmedRole",
@@ -115,6 +116,10 @@ BLANK_PAGE: Final = (
 
 #: The `no-row:` code of a page left unread because the AI budget was reached (#1206).
 BUDGET_REACHED: Final = "budget-reached"
+
+#: On a `budget-reached` record, why "Read the unread pages" cannot help on its own (#1206):
+#: `budget-limit:unpriced`, `budget-limit:fixed` or `budget-limit:maximum`.
+BUDGET_LIMIT_FLAG: Final = "budget-limit:"
 
 
 def budget_reached(
@@ -167,6 +172,10 @@ class UnreadPage:
     blank_proof: BlankPageFacts | None = None
     unnamed_drawing: bool = False
     ink_found: bool = False
+    budget_limit: str | None = None
+    """On a `budget-reached` page (#1206), when "Read the unread pages" cannot help on its own:
+    `unpriced` (a call had no price; the model rates must be fixed first), `fixed` (the set's fixed
+    amount was reached) or `maximum` (the admin's maximum was reached); an admin raises those."""
 
     def __post_init__(self) -> None:
         if self.code not in NO_ROW_CODES:
@@ -395,6 +404,11 @@ def persist_unread_pages(
                     *(() if page.blank_proof is None else blank_proof_flags(page.blank_proof)),
                     *((UNNAMED_DRAWING_FLAG,) if page.unnamed_drawing else ()),
                     *((INK_FOUND_FLAG,) if page.ink_found else ()),
+                    *(
+                        ()
+                        if page.budget_limit is None
+                        else (f"{BUDGET_LIMIT_FLAG}{page.budget_limit}",)
+                    ),
                 ],
                 review_reason=_fit(page.reason),
             )

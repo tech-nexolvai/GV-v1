@@ -526,3 +526,226 @@ def test_read_the_unread_pages_through_the_package_screen_and_the_worker(
     shown = screen.get(f"/api/v1/projects/{package.project_id}/packages/{package.id}").json()
     assert shown["pages_waiting_for_budget"] == []
     assert [row.page_number for row in slot_rows(session, revision.id)] == [1, 2, 3]
+
+
+# --- #1209 re-review: what "Read the unread pages" must never undo ------------------------------
+
+
+def test_after_reading_the_unread_pages_the_checks_run_again_before_sign_off(
+    session: Session, store: LocalStore
+) -> None:
+    """N1, end to end with real findings: the checks ran while page 3 was unread; reading it is a
+    new input, so sign-off is held ("inputs changed after the last check run") and a check run is
+    queued; once the checks run, page 3 has its result and the hold is gone."""
+    from app.models import CheckRun, Finding, ObservationCandidate, OutboxEntry, Page
+    from app.review.approval import _revisions_with_unchecked_inputs
+    from tests.workflow.test_stages import _publish_rulebook
+
+    def pages_with_results() -> list[int]:
+        return sorted(
+            set(
+                session.scalars(
+                    select(Page.index + 1)
+                    .join(ObservationCandidate, ObservationCandidate.page_id == Page.id)
+                    .join(Finding, Finding.scope_row_candidate_id == ObservationCandidate.id)
+                    .join(CheckRun, CheckRun.id == Finding.check_run_id)
+                    .where(
+                        Finding.package_revision_id == revision.id,
+                        CheckRun.superseded_at.is_(None),
+                    )
+                )
+            )
+        )
+
+    _publish_rulebook(session)
+    rates = PricedRates(OUTPUT_PRICE)
+    revision = _revision(session, store, _file(), pages=PAGES)
+    session.commit()
+    _stages(store, StoppingReaders(refuse_at=None, output_tokens=2000), rates=rates).extract_pages(
+        session, revision.id
+    )
+    session.commit()
+    DatabaseStages(store=store).run_checks(session, revision.id)
+    session.commit()
+    assert pages_with_results() == [1, 2]
+    assert revision.id not in _revisions_with_unchecked_inputs(session, [revision.id])
+
+    result = _stages(
+        store, StoppingReaders(refuse_at=None, output_tokens=2000), rates=rates
+    ).read_unread_pages(session, revision.id)
+    session.commit()
+
+    assert result["checks_queued"] is True
+    queued = session.scalars(select(OutboxEntry).where(OutboxEntry.workflow == "run_checks")).one()
+    assert queued.payload["package_revision_id"] == str(revision.id)
+    assert revision.id in _revisions_with_unchecked_inputs(session, [revision.id])
+
+    DatabaseStages(store=store).run_checks(session, revision.id)
+    session.commit()
+
+    assert pages_with_results() == [1, 2, 3]
+    assert revision.id not in _revisions_with_unchecked_inputs(session, [revision.id])
+
+
+def test_a_wall_answer_and_a_typed_width_on_a_page_already_read_survive(
+    session: Session, store: LocalStore
+) -> None:
+    """N2: "Read the unread pages" writes a new reading of every page, so page 1's row is a new
+    record. The reviewer's wall answer and typed width on it come along, by the row identity a
+    later revision uses, each naming the answer it was copied from."""
+    from app.models import SlotRowReviewDecision
+
+    rates = PricedRates(OUTPUT_PRICE)
+    revision = _revision(session, store, _file(), pages=PAGES)
+    session.commit()
+    _stages(store, StoppingReaders(refuse_at=None, output_tokens=2000), rates=rates).extract_pages(
+        session, revision.id
+    )
+    session.commit()
+    first = slot_rows(session, revision.id)[0]
+    answer = SlotRowReviewDecision(
+        row_candidate_id=first.anchor.id,
+        wall_config="back_left_right",
+        measurements={"piece_widths:0": "21 in"},
+        confirmed_by="synthetic reviewer",
+    )
+    session.add(answer)
+    session.commit()
+
+    result = _stages(
+        store, StoppingReaders(refuse_at=None, output_tokens=2000), rates=rates
+    ).read_unread_pages(session, revision.id)
+    session.commit()
+
+    after = slot_rows(session, revision.id)
+    assert [row.page_number for row in after] == [1, 2, 3]
+    assert after[0].anchor.id != first.anchor.id, "a new reading: a new row record"
+    decision = after[0].decision
+    assert decision is not None
+    assert (decision.wall_config, decision.measurements) == (
+        "back_left_right",
+        {"piece_widths:0": "21 in"},
+    )
+    assert (decision.confirmed_by, decision.carried_from_id) == ("synthetic reviewer", answer.id)
+    assert result["answers_carried"] == 1
+
+
+def test_with_stored_answers_switched_off_the_unread_pages_are_not_read(
+    session: Session, store: LocalStore
+) -> None:
+    """N3: every page would be read again under a budget for the waiting pages only, and pages
+    read before could come back unread. Refused with the reason, and nothing is asked."""
+    from workflow.stages import READ_UNREAD_NEEDS_REUSE
+
+    revision, _readers = _stopped_reading(session, store)
+    again = StoppingReaders(refuse_at=None)
+    stages = _stages(store, again)
+    assert stages._slot_reader is not None
+    stages._slot_reader = replace(stages._slot_reader, reuse_answers=False)
+
+    result = stages.read_unread_pages(session, revision.id)
+
+    assert result == {"ran": False, "reason": READ_UNREAD_NEEDS_REUSE}
+    assert again.sent == 0
+    assert [page.page_number for page in unchosen_row_pages(session, revision.id)] == [2, 3]
+
+
+@pytest.mark.parametrize(
+    ("setup", "limit"),
+    [("unpriced", "unpriced"), ("fixed", "fixed"), ("page budget", None)],
+)
+def test_the_stop_says_when_reading_the_unread_pages_cannot_help_on_its_own(
+    session: Session, store: LocalStore, setup: str, limit: str | None
+) -> None:
+    """N4: after a call with no price, the model rates must be fixed first; after a fixed amount
+    for the set, an admin must raise it first. The stop records which, for the screen."""
+    from workflow.slot_row_scope import budget_limit
+
+    revision = _revision(session, store, _file(), pages=PAGES)
+    session.commit()
+    if setup == "unpriced":
+        _earlier_call(session, revision.id, None)
+    options = {"ai_budget_usd": Decimal(3)} if setup == "fixed" else {}
+
+    _stages(store, StoppingReaders(refuse_at=BEFORE_PAGE_TWO), **options).extract_pages(
+        session, revision.id
+    )
+    session.commit()
+
+    assert budget_limit(session, revision.id) == limit
+
+
+def _awaiting_person(session: Session, revision_id: Any) -> None:
+    from app.lifecycle.side_states import enter_needs_input
+    from app.lifecycle.states import transition
+    from app.models import PackageState
+
+    transition(session, revision_id, PackageState.MATCHING, actor="the worker")
+    transition(session, revision_id, PackageState.VALIDATING_EVIDENCE, actor="the worker")
+    enter_needs_input(session, revision_id, actor="the worker", needed="values to confirm")
+    session.commit()
+
+
+def _screen(session: Session, revision_id: Any, **settings: Any) -> tuple[Any, str]:
+    from fastapi.testclient import TestClient
+
+    from app.api.dependencies import get_session
+    from app.auth import Principal, Role, authenticate
+    from app.config import Settings
+    from app.main import create_app
+    from app.models import Package, PackageRevision
+
+    revision = session.get_one(PackageRevision, revision_id)
+    package = session.get_one(Package, revision.package_id)
+    app = create_app(
+        Settings(database_url="postgresql+psycopg://gv:gv@localhost:5433/gv", **settings)
+    )
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="synthetic reviewer",
+        roles=frozenset({Role.REVIEWER}),
+        projects=frozenset({package.project_id}),
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    client = TestClient(app, raise_server_exceptions=False)
+    return client, f"/api/v1/projects/{package.project_id}/packages/{package.id}"
+
+
+def test_the_screen_refuses_reading_the_unread_pages_with_stored_answers_off(
+    session: Session, store: LocalStore
+) -> None:
+    """N3, through the endpoint: refused with the plain reason, nothing queued."""
+    from app.api.reading_again import NEEDS_REUSE
+    from app.models import OutboxEntry
+
+    revision, _readers = _stopped_reading(session, store)
+    _awaiting_person(session, revision.id)
+    client, package = _screen(session, revision.id, reader_reuse_answers=False)
+
+    answer = client.post(f"{package}/reading-again")
+
+    assert answer.status_code == 409
+    assert answer.json()["message"] == NEEDS_REUSE
+    assert session.scalars(select(OutboxEntry)).all() == []
+
+
+def test_after_a_call_with_no_price_the_screen_says_fix_the_rates_first_and_refuses(
+    session: Session, store: LocalStore
+) -> None:
+    """N4, through the endpoint: the package names the limit, and the action is refused with the
+    reason, because every later call would be refused too until the rates name the model."""
+    from app.api.reading_again import UNPRICED_FIRST
+
+    revision = _revision(session, store, _file(), pages=PAGES)
+    session.commit()
+    _earlier_call(session, revision.id, None)
+    _stages(store, StoppingReaders(refuse_at=None)).extract_pages(session, revision.id)
+    session.commit()
+    _awaiting_person(session, revision.id)
+    client, package = _screen(session, revision.id)
+
+    shown = client.get(package).json()
+    answer = client.post(f"{package}/reading-again")
+
+    assert (shown["pages_waiting_for_budget"], shown["budget_limit"]) == ([1, 2, 3], "unpriced")
+    assert answer.status_code == 409
+    assert answer.json()["message"] == UNPRICED_FIRST

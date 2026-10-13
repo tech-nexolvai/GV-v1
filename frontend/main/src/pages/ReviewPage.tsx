@@ -183,6 +183,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   // Why the reading stopped, when a person must act (#1206), re-read with the package.
   const [recordedStopReason, setRecordedStopReason] = useState<string | null | undefined>(undefined);
   const [recordedPagesWaiting, setRecordedPagesWaiting] = useState<readonly number[] | undefined>(undefined);
+  const [recordedBudgetLimit, setRecordedBudgetLimit] = useState<PackageDetail['budget_limit'] | undefined>(undefined);
   // "Run the reading again" / "Read the unread pages" (#1206), while the request is being sent.
   const [readAgainPending, setReadAgainPending] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
@@ -304,6 +305,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       setFindings(fresh); setRecordedStatus(detail.state as PackageStatus); setRecordedReading(detail.reading ?? null);
       setRecordedStopReason(detail.stop_reason ?? null);
       setRecordedPagesWaiting(detail.pages_waiting_for_budget ?? []);
+      setRecordedBudgetLimit(detail.budget_limit ?? null);
       setCountertopsVersion(n => n + 1);
       const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
       const finished = changed && detail.state === 'AWAITING_REVIEW';
@@ -714,6 +716,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     exports: exportsStatus,
     stopReason: recordedStopReason !== undefined ? recordedStopReason : (remote.status === 'ready' ? remote.data.detail.stop_reason ?? null : null),
     pagesWaitingForBudget: recordedPagesWaiting !== undefined ? recordedPagesWaiting : (remote.status === 'ready' ? remote.data.detail.pages_waiting_for_budget ?? [] : []),
+    budgetLimit: recordedBudgetLimit !== undefined ? recordedBudgetLimit : (remote.status === 'ready' ? remote.data.detail.budget_limit ?? null : null),
   });
   // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
   const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks || isApproved;

@@ -253,6 +253,21 @@ def budget_stopped_pages(session: Session, revision_id: UUID) -> tuple[int, ...]
     )
 
 
+def budget_limit(session: Session, revision_id: UUID) -> str | None:
+    """Why "Read the unread pages" cannot help on its own (#1206), from the newest reading's pages
+    listed for the budget: `unpriced` (fix the model rates first), else `fixed` or `maximum` (an
+    admin raises the limit first); `None` when it can."""
+    _rows, unchosen = slot_rows_and_unchosen_pages(session, revision_id)
+    found = {
+        flag.removeprefix("budget-limit:")
+        for page in unchosen
+        if page.budget_stopped
+        for flag in page.record.ambiguity_flags or ()
+        if flag.startswith("budget-limit:")
+    }
+    return next((limit for limit in ("unpriced", "fixed", "maximum") if limit in found), None)
+
+
 def found_by_code(record: ObservationCandidate) -> bool:
     """Whether a row-choice record is code's "no row to read on this page" (#1193)."""
     return any(flag.startswith(NO_ROW_FLAG) for flag in record.ambiguity_flags or ())
@@ -557,10 +572,13 @@ def unchosen_row_pages(session: Session, revision_id: UUID) -> tuple[UnchosenRow
 
 
 def slot_rows_and_unchosen_pages(
-    session: Session, revision_id: UUID
+    session: Session, revision_id: UUID, *, run_id: UUID | None = None
 ) -> tuple[tuple[SlotRow, ...], tuple[UnchosenRowPage, ...]]:
-    """`slot_rows` and `unchosen_row_pages` from the same one read of the newest run's records."""
-    run_id = latest_slot_reader_run(session, revision_id)
+    """`slot_rows` and `unchosen_row_pages` from the same one read of the newest run's records,
+    or of `run_id`, an earlier reading of this revision (#1206: carrying a reviewer's answers from
+    the reading before "Read the unread pages")."""
+    if run_id is None:
+        run_id = latest_slot_reader_run(session, revision_id)
     if run_id is None:
         return (), ()
     records = session.execute(

@@ -72,7 +72,7 @@ from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.parameters import ParameterLayer
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from workflow.architect_match_records import VENDOR_ROW_Y_SLACK_PT
-from workflow.slot_row_scope import SlotRow, slot_rows
+from workflow.slot_row_scope import SlotRow, slot_rows, slot_rows_and_unchosen_pages
 from workflow.view_roles import CODE_CONFIRMERS, revision_views
 
 __all__ = [
@@ -81,6 +81,7 @@ __all__ = [
     "CarryForwardReport",
     "carried_answers_driving_results",
     "carry_after_reading",
+    "carry_row_answers_within_revision",
     "carry_run_values",
     "role_origins",
     "row_identity",
@@ -295,11 +296,31 @@ def _readers(session: Session, rows: Iterable[SlotRow]) -> dict[UUID, tuple[str,
 
 
 def _carry_wall_answers(session: Session, prior_id: UUID, revision_id: UUID) -> int:
-    earlier = slot_rows(session, prior_id)
+    return _carry_row_answers(
+        session, slot_rows(session, prior_id), slot_rows(session, revision_id)
+    )
+
+
+def carry_row_answers_within_revision(
+    session: Session, revision_id: UUID, earlier_run_id: UUID
+) -> int:
+    """Carry wall answers and typed widths from an earlier reading of this revision to its newest
+    one (#1206): "Read the unread pages" writes a new reading of every page, and the rows of pages
+    already read must keep the reviewer's answers. The same identity as between revisions (page
+    content hash, page number, row rank, piece count, reader version, every value read, the line
+    within `ROW_Y_SLACK_PT`); a row with no single match is asked again. Each copy names the
+    original (`carried_from_id`) and is audited. Returns how many were carried."""
+    earlier, _unchosen = slot_rows_and_unchosen_pages(session, revision_id, run_id=earlier_run_id)
+    return _carry_row_answers(session, earlier, slot_rows(session, revision_id))
+
+
+def _carry_row_answers(
+    session: Session, earlier: Iterable[SlotRow], current: Iterable[SlotRow]
+) -> int:
     answered = [row for row in earlier if row.decision is not None]
     if not answered:
         return 0
-    current = slot_rows(session, revision_id)
+    current = tuple(current)
     hashes = _page_hashes(session, (*answered, *current))
     readers = _readers(session, (*answered, *current))
 

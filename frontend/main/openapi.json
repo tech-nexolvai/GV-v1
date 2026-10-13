@@ -6009,6 +6009,22 @@
       "PackageOut": {
         "description": "One package, and the revision documents currently attach to.\n\n`current_revision_number` is returned rather than left to be inferred. A package has several\nrevisions and a client that assumed \"the latest\" would eventually register a document against a\nsuperseded one (`docs/DESIGN_PLATFORM.md` \u00a75).",
         "properties": {
+          "budget_limit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unpriced",
+                  "fixed",
+                  "maximum"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Limit"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",

@@ -64,7 +64,11 @@ from app.schemas.packages import (
 )
 from app.verdicts.rulebook import snapshot_store
 from vocabulary.semantic_types import ProductType
-from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW, budget_stopped_pages
+from workflow.slot_row_scope import (
+    READ_UNREAD_PAGES_WORKFLOW,
+    budget_limit,
+    budget_stopped_pages,
+)
 
 router = APIRouter(tags=["packages"])
 
@@ -396,6 +400,8 @@ def get_package(
         session, package.current_revision_id, PackageState(package.state)
     )
     package.pages_waiting_for_budget = budget_stopped_pages(session, package.current_revision_id)
+    if package.pages_waiting_for_budget:
+        package.budget_limit = budget_limit(session, package.current_revision_id)  # type: ignore[assignment]
     return package
 
 

@@ -4833,6 +4833,8 @@ export interface components {
          *     superseded one (`docs/DESIGN_PLATFORM.md` §5).
          */
         PackageOut: {
+            /** Budget Limit */
+            budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
              * Created At
              * Format: date-time

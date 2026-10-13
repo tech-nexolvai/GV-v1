@@ -109,7 +109,17 @@ export interface ReviewFacts {
    * #1206); "Read the unread pages" reads them. Empty or absent when none.
    */
   pagesWaitingForBudget?: readonly number[];
+  /**
+   * When "Read the unread pages" cannot help on its own (`PackageOut.budget_limit`, #1206): a call
+   * had no price (the model rates come first), or a fixed amount or the maximum was reached (an
+   * admin raises the limit first).
+   */
+  budgetLimit?: 'unpriced' | 'fixed' | 'maximum' | null;
 }
+
+/** What the screen says when reading the unread pages cannot help yet (#1206). */
+export const UNPRICED_FIRST = 'A call had no price, so no more calls can be made: an admin must fix the model rates first.';
+export const RAISE_THE_LIMIT_FIRST = 'This set reached its AI budget limit: ask an admin to raise the limit first, then read the unread pages.';
 
 export interface ReviewStage {
   steps: ReviewStep[];
@@ -214,6 +224,13 @@ function nextAction(
   if (waiting.length > 0 && (facts.state === 'AWAITING_REVIEW' || facts.state === 'NEEDS_INPUT') && !checking) {
     // The AI budget stopped the reading (#1206): those pages block sign-off until read or answered.
     const pages = `${waiting.length} ${waiting.length === 1 ? 'page waits' : 'pages wait'} for the AI budget`;
+    if (facts.budgetLimit === 'unpriced') {
+      // It cannot help until the rates name the model: the server refuses it too.
+      return { kind: 'read-again', label: 'Read the unread pages', disabled: true, reason: UNPRICED_FIRST };
+    }
+    if (facts.budgetLimit === 'fixed' || facts.budgetLimit === 'maximum') {
+      return { kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: RAISE_THE_LIMIT_FIRST };
+    }
     return { kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: facts.stopReason ?? `${pages} (${waiting.join(', ')}).` };
   }
   if (facts.state === 'FAILED_PERMANENT') {

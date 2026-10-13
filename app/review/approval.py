@@ -55,6 +55,7 @@ from app.models.evidence import (
 from app.models.package import Package, PackageRevision, PackageState, PackageStateEvent
 from app.models.parameters import ParameterSet
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, Finding
 from app.review.carry_over import DecisionRecords, decision_holds, decision_records
 from app.review.no_countertop import (
@@ -279,6 +280,8 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
       counted;
     - countertop-run decisions, part decisions and reading-to-part links (`workflow/
       part_operands.py`), and a person's drawing-role confirmation (code's is not reviewer input);
+    - a new reading of the countertop rows (#1206, "Read the unread pages" on this revision): the
+      checks have not seen what it read;
     - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
       action produced. An evidence confirm/correct writes one too, but it is a decision on its
       finding, already governed by `decision_holds` and the correction rule, so it is not counted
@@ -355,6 +358,15 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
         .where(
             CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value,
             CanonicalObservation.id.not_in(produced_by_action),
+        ),
+        # A reading of the countertop rows newer than the checks (#1206: "Read the unread pages"
+        # reads on the same revision): the checks have not seen it yet.
+        select(WorkflowRun.package_revision_id, ExtractionRun.created_at)
+        .join(TaskRun, TaskRun.workflow_run_id == WorkflowRun.id)
+        .join(ExtractionRun, ExtractionRun.task_run_id == TaskRun.id)
+        .where(
+            WorkflowRun.package_revision_id.in_(ids),
+            ExtractionRun.extractor_version.like("slot-reader%"),
         ),
     )
     return union_all(*branches).subquery()
