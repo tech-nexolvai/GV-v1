@@ -39,6 +39,7 @@ from extraction.slot_reader.runs import E2_CROP_SETTINGS, plan_slots
 from extraction.slot_reader.seal import LabelState
 from tests.extraction.slot_reader import sheets
 from workflow.form_reader import FormReaderRuntime
+from workflow.pariksha_gates import REKHA_READ_THROUGH_KEPT
 from workflow.slot_reader import (
     FRACTION_BAR_ENV,
     PageSlotResult,
@@ -3033,6 +3034,10 @@ def _equal_share_read(
 def test_blank_pieces_are_read_through_the_equal_share_chain_with_the_same_ends() -> None:
     result, readers, blank, chain = _equal_share_read()
 
+    # #1228: nothing is printed on the chosen line's pieces, but the chain may give its widths,
+    # so Rekha's gate records that and does not stop: nothing the reviewer gets is lost.
+    assert result.row_gate is not None and result.row_gate.code == REKHA_READ_THROUGH_KEPT
+    assert not result.row_gate.stopped
     assert result.row_choice_number == 1, "the readers' own choice is kept on record"
     assert result.read_through is blank
     assert result.plan.row is chain
@@ -3057,20 +3062,24 @@ def test_a_share_count_that_is_not_the_blank_piece_count_changes_nothing() -> No
 
 def test_blank_pieces_whose_ends_are_off_the_chains_are_never_read_through_it() -> None:
     off = MEASURED_SETTINGS.overall_end_pt + Decimal("0.5")
-    result, readers, blank, _chain = _equal_share_read(shift=off)
+    result, readers, _blank, _chain = _equal_share_read(shift=off)
 
     assert result.read_through is None
-    assert result.plan.row is blank
-    assert len(readers.requests) == 2 * 2, "the chain is not even read"
+    # #1228: with no chain that could give its widths, a chosen line with nothing printed on any
+    # piece is stopped by Rekha's gate before anything is read on it.
+    assert result.row_gate is not None and result.row_gate.stopped
+    assert result.plan.row is None
+    assert len(readers.requests) == 0, "neither the blank line nor the chain is read"
 
 
 def test_blank_pieces_in_another_pasted_drawing_are_never_read_through_the_chain() -> None:
     # The stamp's drawing ends at 250 points from the top of the page; this row lies below it.
-    result, readers, blank, _chain = _equal_share_read(y=Decimal(280))
+    result, readers, _blank, _chain = _equal_share_read(y=Decimal(280))
 
     assert result.read_through is None
-    assert result.plan.row is blank
-    assert len(readers.requests) == 2 * 2
+    assert result.row_gate is not None and result.row_gate.stopped
+    assert result.plan.row is None
+    assert len(readers.requests) == 0
 
 
 def test_a_chosen_row_with_anything_read_on_it_is_never_read_through_the_chain() -> None:
