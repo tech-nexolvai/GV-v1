@@ -26,14 +26,20 @@ one with a real error in it. `Field` has nowhere to put a formula, and this adap
 the guard refuses: all of them end with the fields empty and a person filling them, which is what
 happens today. The model can improve that; it cannot degrade it.
 
+**Every call is recorded** (#1221). `with_invocation_recorder` attaches a recorder that is handed
+each Bedrock call — its raw response or its error — and the caller writes one `model_invocations`
+row per call once `propose_and_guard` has returned (`workflow/model_call_recorder.py`). The guard's refusal is not the call's: a well-formed
+answer the guard refuses is an `ok` call, and the retry it causes is a second call and a second row.
+
 Source: issue #589 · Verification: `tests/workflow/test_assignment_bedrock.py`
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Any, Final, Literal, cast
+from dataclasses import dataclass, replace
+from time import monotonic_ns
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 from pydantic import Field as PydanticField
@@ -43,6 +49,7 @@ from workflow.assignment import AssignmentContext, ProposedAssignment, can_fill_
 
 __all__ = [
     "PROMPT_ID",
+    "TEMPLATE_ID",
     "AssignmentProgress",
     "BedrockAssignmentModel",
     "FailureKind",
@@ -58,6 +65,8 @@ TOOL_NAME: Final = "assign_readings_to_rule_fields"
 #: v2 (#712): readings are named by short handles, and only readings that could fill a field are
 #: offered. What the model is shown changed, so a proposal filed under it says so.
 PROMPT_ID: Final = "reading-assignment-v2"
+#: The forced-tool request `_request` renders the prompt into, recorded with every call (#1221).
+TEMPLATE_ID: Final = "reading-assignment-tool-v2"
 
 SYSTEM_INSTRUCTION: Final = (
     "You assign measurements that have already been read off a construction drawing to the fields a "
@@ -260,12 +269,33 @@ def _readings_payload(context: AssignmentContext) -> list[dict[str, object]]:
     ]
 
 
+class InvocationRecorder(Protocol):
+    """Writes one record per model call; `workflow.model_call_recorder.ModelCallRecorder` in use."""
+
+    def record(
+        self,
+        *,
+        model_id: str,
+        prompt_id: str,
+        template_id: str,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> object:
+        """Record one call: its raw response, or the error that ended it."""
+
+
 @dataclass(frozen=True, slots=True)
 class BedrockAssignmentModel:
     """One forced-tool call proposing an assignment over one page's facts."""
 
     config: _Config
     client: Any | None = None
+    recorder: InvocationRecorder | None = None
+
+    def with_invocation_recorder(self, recorder: InvocationRecorder) -> BedrockAssignmentModel:
+        """The same model and client, recording every call it makes."""
+        return replace(self, recorder=recorder)
 
     def _client_for_request(self) -> Any:
         if self.client is not None:
@@ -296,7 +326,21 @@ class BedrockAssignmentModel:
             # Nothing to choose between, so nothing to ask. Spending a call to be told so would be
             # a cost with no possible answer.
             return ()
-        response = self._client_for_request().converse(**self._request(context, refused))
+        client = self._client_for_request()
+        request = self._request(context, refused)
+        started_ns = monotonic_ns()
+        response: Mapping[str, Any] | None = None
+        error: BaseException | None = None
+        try:
+            response = client.converse(**request)
+            batch = self._batch(response)
+        except BaseException as raised:
+            # Interrupts too (Ctrl-C, a shutdown): recorded as what ended the call, never as an
+            # answered call with no tokens, and raised exactly as before.
+            error = raised
+            raise
+        finally:
+            self._record_invocation(started_ns=started_ns, response=response, error=error)
         # **Back to the real ids before anything checks them.** A handle the schema did not list
         # cannot be emitted under it; one that arrives anyway is passed through unchanged, so the
         # guard refuses it by name as a reading this run did not produce.
@@ -306,8 +350,43 @@ class BedrockAssignmentModel:
                 field_key=row.field_key,
                 candidate_ids=tuple(handles.get(handle, handle) for handle in row.candidate_ids),
             )
-            for row in self._batch(response).assignments
+            for row in batch.assignments
         )
+
+    def _record_invocation(
+        self,
+        *,
+        started_ns: int,
+        response: Mapping[str, Any] | None,
+        error: BaseException | None,
+    ) -> None:
+        """Hand the call to the recorder, as the findings narration does.
+
+        The recorder in use (`ModelCallRecorder`) only keeps the call in memory here and cannot
+        fail; its caller writes the row after `propose_and_guard` returns. For any other recorder:
+        one that fails on a failed call adds a note to the call's error and lets that error speak;
+        one that fails on an answered call raises, and `propose_and_guard` then fails closed, which
+        would change the answer. So a recorder given here must not raise.
+        """
+        if self.recorder is None:
+            return
+        try:
+            self.recorder.record(
+                model_id=self.config.model_id,
+                prompt_id=PROMPT_ID,
+                template_id=TEMPLATE_ID,
+                started_ns=started_ns,
+                response=response,
+                error=error,
+            )
+        except Exception as record_error:
+            if error is not None:
+                error.add_note(
+                    "the assignment invocation could not be recorded: "
+                    f"{type(record_error).__name__}"
+                )
+                return
+            raise
 
     def _request(self, context: AssignmentContext, refused: str | None = None) -> dict[str, object]:
         import json

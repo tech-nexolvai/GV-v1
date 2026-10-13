@@ -318,19 +318,24 @@ def _reason(outcome: str, error: BaseException | None) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class BedrockConverseInvocationRecorder:
-    """Persist one Bedrock converse call against the package revision it was made for.
+    """Persist one Bedrock converse call against the package revision or extraction run it was for.
 
-    Bedrock returns token usage, not invoice cost. Until a caller supplies an exact rate card, the
-    only honest money value is zero; the model call and tokens are still counted by package ceilings.
+    The cost comes from the deployment's stated price file (`GV_MODEL_RATES_FILE`), or is unknown
+    (`NULL`) when the model has no stated price (#700); never a stand-in zero.
 
     **It needs no extraction run, and that is the point of ADR-0019.** A reviewer chat and a findings
     narration belong to a package revision and a set of findings; they have no extraction run, and
     the version of this that borrowed the package's newest one failed outright on a package that had
     never been extracted (#694).
+
+    **A call made while a page is read belongs to that page's run instead** (#1221): the layout
+    classifier passes `package_revision_id=None` and its `extraction_run_id`, as the vision readers'
+    rows do. Exactly one of the two is set; `InvocationRecord` refuses anything else.
     """
 
     session: Session
-    package_revision_id: UUID
+    package_revision_id: UUID | None
+    extraction_run_id: UUID | None = None
 
     def record(
         self,
@@ -352,8 +357,9 @@ class BedrockConverseInvocationRecorder:
                 # **Its own origin, not a borrowed one.** This used to pass the package's *latest*
                 # extraction run, which made a narration claim provenance it did not have and
                 # raised on a package that had never been extracted — so a reviewer chat on a typed
-                # package failed after the model had been paid (#694, ADR-0019).
-                extraction_run_id=None,
+                # package failed after the model had been paid (#694, ADR-0019). A run is passed
+                # only by a caller that is itself reading a page under that run (#1221).
+                extraction_run_id=self.extraction_run_id,
                 package_revision_id=self.package_revision_id,
                 model_id=model_id,
                 prompt_id=prompt_id,

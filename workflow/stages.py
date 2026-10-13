@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from opentelemetry.trace import Status, StatusCode
-from sqlalchemy import func, inspect, or_, select
+from sqlalchemy import func, inspect, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.documents import storage_key
@@ -219,6 +219,7 @@ from extraction.ink import PageInk, read_page_ink
 from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
+    LayoutCall,
     LayoutClassification,
     LayoutReader,
     LayoutStatus,
@@ -387,6 +388,7 @@ from workflow.layout_proposals import (
     slot_reader_has_rows,
 )
 from workflow.measurements import run_parameters_for
+from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.part_operands import (
     CountertopScope,
@@ -964,6 +966,15 @@ LAYOUT_READERS_ENV = "GV_BEDROCK_LAYOUT_ENABLED"
 LAYOUT_MODEL_ENV = "GV_BEDROCK_LAYOUT_MODEL"
 LAYOUT_PROMPT_ID = "layout-discriminator-v1"
 LAYOUT_TEMPLATE_ID = "closed-question-page-v1"
+
+#: Recorded calls that are not reading spend (#1221), by prompt family: every version of the
+#: layout classifier's prompt and of the reading assignment's. They record every call since #1221,
+#: but they never counted towards the drawing set's AI budget, and phase 1 changes no behaviour:
+#: `stage_spend_so_far` leaves them out until the shared budget (Sutra step 3,
+#: `docs/decisions/SUTRA_HARNESS.md`) decides how they count. A family rather than exact ids, so a
+#: new prompt version cannot start counting by accident. The assignment's rows belong to a package
+#: revision, never to a run, so naming it is a safety net.
+UNMETERED_PROMPT_FAMILIES: Final = ("layout-discriminator-", "reading-assignment-")
 UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
 
 #: How many individual refusals a stage payload carries, before it reports only the count.
@@ -4013,7 +4024,13 @@ class DatabaseStages:
 
         written = 0
         refused: list[str] = []
-        readers = tuple(route.reader for route in self._layout_reader_routes)
+        # Every Bedrock call writes one row under this page's run (#1221), in the stage's own
+        # transaction, as the vision readers' rows are: kept while the readers are asked, written
+        # once `classify_layout` has returned. An injected reader that calls no model writes none.
+        recorder = ModelCallRecorder(session, extraction_run_id=extraction_run_id)
+        readers = tuple(
+            _recorded_layout_reader(route.reader, recorder) for route in self._layout_reader_routes
+        )
         model_id, prompt_id = _layout_proposal_identity(self._layout_reader_routes)
         for discriminator in discriminators:
             classification = classify_layout(
@@ -4021,6 +4038,7 @@ class DatabaseStages:
                 question_from_discriminator(discriminator),
                 readers,
             )
+            recorder.write_pending()
             crop_artifact_id = self._layout_crop_artifact_id(
                 session,
                 rendered=rendered,
@@ -8495,6 +8513,25 @@ def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:
     return required_inputs(rules).discriminators
 
 
+def _recorded_layout_reader(reader: LayoutReader, recorder: ModelCallRecorder) -> LayoutReader:
+    """The Bedrock layout reader with every call it makes recorded; any other reader unchanged."""
+
+    if not isinstance(reader, BedrockClosedQuestionReader):
+        return reader
+
+    def record(call: LayoutCall) -> None:
+        recorder.record(
+            model_id=call.model_id,
+            prompt_id=call.prompt_id,
+            template_id=call.template_id,
+            started_ns=call.started_ns,
+            response=call.response,
+            error=call.error,
+        )
+
+    return reader.with_call_recorder(record)
+
+
 def _layout_proposal_identity(routes: Sequence[_LayoutReaderRoute]) -> tuple[str, str]:
     """The model/prompt identity stored beside a layout proposal."""
 
@@ -9623,7 +9660,8 @@ def stage_spend_so_far(session: Session, task_run: TaskRun) -> tuple[int, int]:
     Every call recorded under this claim's own runs, **and** every call the call ledger committed
     for any attempt of the same stage (#1178): an attempt that failed rolled its own runs back, but
     its paid calls stayed in the ledger, so a retry starts from what was really spent and the
-    drawing-set cap still holds across attempts. A twin row (no cost) adds nothing.
+    drawing-set cap still holds across attempts. A twin row (no cost) adds nothing. The layout
+    classifier's and the assignment's rows are not reading spend (`UNMETERED_PROMPT_FAMILIES`, #1221).
     """
     spent, unpriced = session.execute(
         select(
@@ -9636,6 +9674,16 @@ def stage_spend_so_far(session: Session, task_run: TaskRun) -> tuple[int, int]:
             or_(
                 ExtractionRun.task_run_id == task_run.id,
                 ledger_spend_filter(task_run.idempotency_key),
+            )
+        )
+        .where(
+            not_(
+                or_(
+                    *(
+                        ModelInvocation.prompt_id.startswith(family, autoescape=True)
+                        for family in UNMETERED_PROMPT_FAMILIES
+                    )
+                )
             )
         )
     ).one()

@@ -137,6 +137,9 @@ evidence about the source.
 latency and outcome — including failures and rejections. Without it, a model-derived candidate cannot be
 re-examined, and F5's ceilings and attribution have nothing to read.
 
+Which caller records what today, and the one shared way every caller will ask a model (Sutra), is
+written down in `docs/decisions/SUTRA_HARNESS.md` (#1221).
+
 ---
 
 ## 5. Testing convention
