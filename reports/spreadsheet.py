@@ -106,6 +106,10 @@ COUNTERTOPS_SHEET: Final = "Countertops"
 #: Vendor pages where both AIs found no countertop line (#1093), or code found no row to read
 #: (#1193): listed, with the reason.
 PAGES_WITHOUT_COUNTERTOP_SHEET: Final = "Pages Not Checked"
+#: For a package whose checks include no countertop (cabinets, #1205): the one plain line saying
+#: where its checks take their values from, in place of the countertop sheets.
+READING_NOTE_SHEET: Final = "Cabinet Checks"
+READING_NOTE_COLUMNS: Final = ("note",)
 PAGES_WITHOUT_COUNTERTOP_COLUMNS: Final = ("page", "reason", "confirmed")
 
 
@@ -939,6 +943,7 @@ def write_stored_workbook(
     pages_without_countertop: Sequence[PageWithoutCountertopOut] = (),
     rows_not_checked: Sequence[RowNotCheckedOut] = (),
     drawings_not_read: Sequence[DrawingNotReadOut] = (),
+    reading_note: str | None = None,
 ) -> bytes:
     """The same workbook, built from stored rows instead of engine values.
 
@@ -1018,6 +1023,8 @@ def write_stored_workbook(
         OPERAND_COLUMNS,
         [row for finding in findings for row in _stored_operand_rows(finding)],
     )
+    if reading_note is not None:
+        _write_sheet(workbook, READING_NOTE_SHEET, READING_NOTE_COLUMNS, [(reading_note,)])
     if countertop_results:
         _write_countertops_sheet(workbook, countertop_results)
     if pages_without_countertop:

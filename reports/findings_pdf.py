@@ -85,6 +85,10 @@ class FindingsPdfInput:
     that product's checks were run and the cover says so, so a check that was not run can never be
     read as one that passed. ``None`` — a set from before #994 — draws nothing: every product's
     checks ran, and the cover is exactly what it was."""
+    reading_note: str | None = None
+    """For a package whose checks include no countertop (cabinets, #1205): the one plain line saying
+    where its checks take their values from, printed on the cover in place of any countertop
+    section. ``None`` for a countertop package draws nothing."""
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = ()
     """Vendor pages where both AIs found no countertop line, with the AI's reason (#1093), or where
     code found no row to read, with code's reason (#1193). Listed after the countertops so a page
@@ -111,6 +115,10 @@ class FindingsPdfInput:
             not isinstance(self.product_type, str) or not self.product_type.strip()
         ):
             raise ValueError("product_type must be a non-empty string when supplied")
+        if self.reading_note is not None and (
+            not isinstance(self.reading_note, str) or not self.reading_note.strip()
+        ):
+            raise ValueError("reading_note must be a non-empty string when supplied")
         if not isinstance(self.findings, tuple) or not self.findings:
             raise ValueError("findings must be a non-empty tuple")
         if not all(isinstance(finding, StoredFinding) for finding in self.findings):
@@ -542,6 +550,12 @@ class _Document:
                 _PAGE_HEIGHT - 380,
                 f"DRAWING SET FOR {product} — ONLY {product} CHECKS WERE RUN",
             )
+        if self.source.reading_note is not None:
+            # A cabinet package (#1205): said once, where a reader of the cover looks first.
+            for index, line in enumerate(
+                _wrapped(self.source.reading_note, width=_CONTENT_WIDTH, font=_BODY_FONT, size=8)
+            ):
+                self.canvas.drawString(_MARGIN, _PAGE_HEIGHT - 398 - (index * 12), line)
 
         cards = (("PASS", passed), ("FAIL", failed), ("REVIEW", review))
         card_width = (_CONTENT_WIDTH - 20) / 3

@@ -3289,6 +3289,11 @@
       },
       "CountertopResultsOut": {
         "properties": {
+          "countertops_checked": {
+            "description": "Whether this package's checks include the countertop checks: false for a package made for cabinets (or any product other than countertops). Then no countertop is a question for this review: `items` and the three lists are empty, nothing here blocks sign-off, and the screen, the assistant and the signed files say `reading_note` instead (#1205).",
+            "title": "Countertops Checked",
+            "type": "boolean"
+          },
           "drawings_not_read": {
             "description": "Pasted drawings on pages that were read which were not read themselves, each with where it is on the page and why (#1193): on a page that prints headings, a drawing is read only when its own heading says it is the vendor's. Listed only; nothing to decide, never blocking.",
             "items": {
@@ -3316,6 +3321,30 @@
             },
             "title": "Pages Without Countertop",
             "type": "array"
+          },
+          "product_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the drawing set is for, as chosen at upload (`countertop`, `cabinet`), or null for a package made before the reviewer could say (#994): every check runs for it (#1205).",
+            "title": "Product Type"
+          },
+          "reading_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a package whose checks include no countertop, one plain line saying where its checks take their values from (for cabinets, the cabinet lists on Measurements), and that the AI did not read its drawings when that is on record. Null for a countertop package (#1205).",
+            "title": "Reading Note"
           },
           "revision_id": {
             "format": "uuid",
@@ -5451,7 +5480,7 @@
         "description": "One value a waiting check could not run without, as a field a reviewer can fill (#1181).\n\nWorked out from the rule and the values the run had, not from the reason's prose: every input\nand setting the rule declares that the run did not have. A setting the rulebook gives a default\nis never missing, and a missing one is never treated as zero.",
         "properties": {
           "askable": {
-            "description": "Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied.",
+            "description": "Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied. False for a `measurements` value: it is entered on Measurements, where a run keeps its order.",
             "title": "Askable",
             "type": "boolean"
           },
@@ -5475,11 +5504,12 @@
             ]
           },
           "scope": {
-            "description": "`project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here.",
+            "description": "`project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here. `measurements`: the reviewer's own entry on Measurements \u2014 a list of cabinets in order, each cabinet's type, the site width (#1205); never typed here.",
             "enum": [
               "project",
               "sink",
-              "drawing"
+              "drawing",
+              "measurements"
             ],
             "title": "Scope",
             "type": "string"
@@ -5493,9 +5523,17 @@
             "type": "array"
           },
           "unit": {
-            "const": "in",
-            "title": "Unit",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "in",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`in` for a length; null for a value that is not one (each cabinet's type).",
+            "title": "Unit"
           },
           "where_to_find": {
             "title": "Where To Find",

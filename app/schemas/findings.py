@@ -187,19 +187,24 @@ class MissingInputOut(BaseModel):
         description="The setting's name (`countertop_overhang`) or the drawing quantity (`SHOP:CT007`)."
     )
     label: str
-    unit: Literal["in"]
+    unit: Literal["in"] | None = Field(
+        description="`in` for a length; null for a value that is not one (each cabinet's type)."
+    )
     where_to_find: str
-    scope: Literal["project", "sink", "drawing"] = Field(
+    scope: Literal["project", "sink", "drawing", "measurements"] = Field(
         description=(
             "`project`: a setting for this job, saved as a project value. `sink`: the project's sink "
-            "entry. `drawing`: a dimension on the drawing nobody has read; never typed here."
+            "entry. `drawing`: a dimension on the drawing nobody has read; never typed here. "
+            "`measurements`: the reviewer's own entry on Measurements — a list of cabinets in "
+            "order, each cabinet's type, the site width (#1205); never typed here."
         )
     )
     askable: bool = Field(
         description=(
             "Whether the reviewer may type it here. False for a `drawing` value: people confirm "
             "readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the "
-            "check waits until the drawing is read or supplied."
+            "check waits until the drawing is read or supplied. False for a `measurements` value: "
+            "it is entered on Measurements, where a run keeps its order."
         )
     )
     sources: list[str] = Field(

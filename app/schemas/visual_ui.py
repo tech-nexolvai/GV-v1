@@ -494,6 +494,34 @@ class CountertopResultsOut(BaseModel):
     package_id: UUID
     revision_id: UUID
     items: tuple[CountertopResultOut, ...]
+    product_type: str | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "What the drawing set is for, as chosen at upload (`countertop`, `cabinet`), or null for "
+            "a package made before the reviewer could say (#994): every check runs for it (#1205)."
+        ),
+    )
+    countertops_checked: bool = Field(
+        default=True,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Whether this package's checks include the countertop checks: false for a package made "
+            "for cabinets (or any product other than countertops). Then no countertop is a question "
+            "for this review: `items` and the three lists are empty, nothing here blocks sign-off, "
+            "and the screen, the assistant and the signed files say `reading_note` instead (#1205)."
+        ),
+    )
+    reading_note: str | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "For a package whose checks include no countertop, one plain line saying where its "
+            "checks take their values from (for cabinets, the cabinet lists on Measurements), and "
+            "that the AI did not read its drawings when that is on record. Null for a countertop "
+            "package (#1205)."
+        ),
+    )
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = Field(
         default=(),
         json_schema_extra=optional_in_schema,

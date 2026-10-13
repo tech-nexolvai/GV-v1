@@ -3491,6 +3491,11 @@ export interface components {
         /** CountertopResultsOut */
         CountertopResultsOut: {
             /**
+             * Countertops Checked
+             * @description Whether this package's checks include the countertop checks: false for a package made for cabinets (or any product other than countertops). Then no countertop is a question for this review: `items` and the three lists are empty, nothing here blocks sign-off, and the screen, the assistant and the signed files say `reading_note` instead (#1205).
+             */
+            countertops_checked?: boolean;
+            /**
              * Drawings Not Read
              * @description Pasted drawings on pages that were read which were not read themselves, each with where it is on the page and why (#1193): on a page that prints headings, a drawing is read only when its own heading says it is the vendor's. Listed only; nothing to decide, never blocking.
              */
@@ -3507,6 +3512,16 @@ export interface components {
              * @description Vendor-file pages where both AIs found no countertop line, or code found no countertop row to read (#1193), each with its reason and the reviewer's confirmation. Each needs one reviewer answer before sign-off (#1191). A page where the AIs picked different lines, or a reviewer said there is a countertop, is an item above instead, held `row-choice-split`.
              */
             pages_without_countertop?: components["schemas"]["PageWithoutCountertopOut"][];
+            /**
+             * Product Type
+             * @description What the drawing set is for, as chosen at upload (`countertop`, `cabinet`), or null for a package made before the reviewer could say (#994): every check runs for it (#1205).
+             */
+            product_type?: string | null;
+            /**
+             * Reading Note
+             * @description For a package whose checks include no countertop, one plain line saying where its checks take their values from (for cabinets, the cabinet lists on Measurements), and that the AI did not read its drawings when that is on record. Null for a countertop package (#1205).
+             */
+            reading_note?: string | null;
             /**
              * Revision Id
              * Format: uuid
@@ -4502,7 +4517,7 @@ export interface components {
         MissingInputOut: {
             /**
              * Askable
-             * @description Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied.
+             * @description Whether the reviewer may type it here. False for a `drawing` value: people confirm readings, they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits until the drawing is read or supplied. False for a `measurements` value: it is entered on Measurements, where a run keeps its order.
              */
             askable: boolean;
             /**
@@ -4515,10 +4530,10 @@ export interface components {
             saved?: components["schemas"]["SavedInputOut"] | null;
             /**
              * Scope
-             * @description `project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here.
+             * @description `project`: a setting for this job, saved as a project value. `sink`: the project's sink entry. `drawing`: a dimension on the drawing nobody has read; never typed here. `measurements`: the reviewer's own entry on Measurements — a list of cabinets in order, each cabinet's type, the site width (#1205); never typed here.
              * @enum {string}
              */
-            scope: "project" | "sink" | "drawing";
+            scope: "project" | "sink" | "drawing" | "measurements";
             /**
              * Sources
              * @description For a `project` setting, the sources it may be recorded with; empty otherwise.
@@ -4526,9 +4541,9 @@ export interface components {
             sources?: string[];
             /**
              * Unit
-             * @constant
+             * @description `in` for a length; null for a value that is not one (each cabinet's type).
              */
-            unit: "in";
+            unit: "in" | null;
             /** Where To Find */
             where_to_find: string;
         };

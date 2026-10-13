@@ -27,7 +27,8 @@ export interface BulkResult {
 
 /**
  * The checks that are not countertop rows (#1039) — typically package-level checks waiting on data
- * the drawings do not carry. Collapsed by default. One "Mark not checkable…" asks for a single note,
+ * the drawings do not carry. Collapsed by default, except where they are the whole review (a cabinet
+ * package, #1205). One "Mark not checkable…" asks for a single note,
  * shows exactly which checks it will touch, and records the same dismissal on each (one call per
  * finding, the usual rules); a failure is never swept up in it.
  */
@@ -40,6 +41,7 @@ export function OtherChecks({
   packageId,
   onValuesSaved,
   onRunChecks,
+  defaultOpen = false,
 }: {
   findings: Finding[];
   /** Rule id → its human name from the rulebook; the id is shown when a name is not known. */
@@ -51,6 +53,8 @@ export function OtherChecks({
   packageId?: string;
   onValuesSaved?: () => void;
   onRunChecks?: () => void;
+  /** Opened at first: on a cabinet package these are the review's checks (#1205). */
+  defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState('');
@@ -81,7 +85,7 @@ export function OtherChecks({
   return (
     <TooltipProvider delayDuration={250}>
     <section data-slot="other-checks" aria-label="Other checks">
-      <Accordion type="single" collapsible className="rounded-xl border bg-card px-4">
+      <Accordion type="single" collapsible defaultValue={defaultOpen ? 'other' : undefined} className="rounded-xl border bg-card px-4">
         <AccordionItem value="other" className="border-b-0">
           <AccordionTrigger className="py-3">
             <span className="flex items-center gap-2">

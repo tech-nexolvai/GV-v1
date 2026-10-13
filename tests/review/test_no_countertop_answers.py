@@ -341,8 +341,59 @@ def test_a_package_for_another_product_never_waits_for_a_countertop_result(
     assert not countertops_checked("cabinet") and countertops_checked(None)
     assert pages_blocking_sign_off(session, [revision.id])[revision.id].unchecked == ()
     assert approval_readiness(session, revision.id).unchecked_countertop_pages == ()
-    assert _results(session, package_id).items  # the page is still shown as an item
+    # #1205: a package that checks no countertop lists no countertop item or page at all.
+    assert _results(session, package_id).items == ()
     assert blocking_pages((), {}, set(), countertops_checked=False).unchecked == ()
+
+
+def test_a_cabinet_package_is_never_held_by_a_countertop_page_question(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1205: a cabinet package read before #1205 still lists a page "with no countertop", with no
+    answer. That countertop question never blocks a cabinet review's sign-off, and the results say
+    the package's product and, instead of countertop wording, where the cabinet checks take their
+    values from. A countertop package is unchanged."""
+    from app.models import Package
+    from app.review.cabinet_reading import CABINET_LISTS_LINE
+
+    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
+    before = _results(session, package_id)
+    assert (before.product_type, before.countertops_checked, before.reading_note) == (
+        "countertop",
+        True,
+        None,
+    )
+    assert approval_readiness(session, revision.id).unconfirmed_no_countertop_pages == (3,)
+    package = session.get(Package, package_id)
+    assert package is not None
+    package.product_type = "cabinet"
+    session.commit()
+
+    pages = pages_blocking_sign_off(session, [revision.id])[revision.id]
+    assert (pages.unconfirmed, pages.unchecked, pages.carried) == ((), (), ())
+    readiness = approval_readiness(session, revision.id)
+    assert readiness.unconfirmed_no_countertop_pages == ()
+    assert readiness.can_approve, readiness.reason
+    after = _results(session, package_id)
+    assert (after.product_type, after.countertops_checked, after.reading_note) == (
+        "cabinet",
+        False,
+        CABINET_LISTS_LINE,
+    )
+    # Nothing countertop-shaped reaches any reader of the projection (#1205 review): the screen,
+    # the review assistant and the signed files all take it from here.
+    assert (
+        after.items,
+        after.pages_without_countertop,
+        after.rows_not_checked,
+        after.drawings_not_read,
+    ) == ((), (), (), ())
+    review_id = _review_session(session, revision.id)
+    decision = approve_package(
+        session, principal=_reviewer(project_id), review_session_id=review_id
+    )
+    session.commit()
+    assert decision.approval.package_revision_id == revision.id
 
 
 # --- repeat clicks --------------------------------------------------------------------------------
@@ -932,3 +983,93 @@ def test_a_code_listed_page_s_answer_carries_to_revision_two_only_with_the_same_
     assert carried is not None and (carried.from_revision, carried.confirmed_by) == (1, REVIEWER)
     assert confirmations[2] is None  # same page, but code now reads it for another reason
     assert pages_blocking_sign_off(session, [two.id])[two.id].unconfirmed == (2,)
+
+
+def test_a_cabinet_package_s_assistant_offers_no_countertop_question(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1205 review: "Which pages have no countertop?" is a countertop question; a cabinet review is
+    never offered it, even when its drawings were read before #1205."""
+    from app.api.review_assistant import load_snapshot as assistant_snapshot
+    from app.models import Package
+    from app.review.assistant.starters import NO_COUNTERTOP_PAGES, ROWS_NOT_CHECKED, starters
+
+    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
+    before = assistant_snapshot(session, project_id, package_id, revision)
+    assert NO_COUNTERTOP_PAGES in starters(before), "a countertop package is still offered it"
+    package = session.get(Package, package_id)
+    assert package is not None
+    package.product_type = "cabinet"
+    session.commit()
+
+    after = assistant_snapshot(session, project_id, package_id, revision)
+
+    assert after.pages_without_countertop == () and after.rows_not_checked == ()
+    assert after.countertops == ()
+    assert NO_COUNTERTOP_PAGES not in starters(after)
+    assert ROWS_NOT_CHECKED not in starters(after)
+
+
+def test_a_signed_cabinet_package_prints_the_cabinet_line_and_no_countertop_page(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1205 review: sign off a cabinet package read before #1205, with a page still listed "with no
+    countertop" and never answered. The frozen record holds no countertop page or row, and the
+    signed PDF and workbook print the cabinet line instead of "Pages not checked"."""
+    from pypdf import PdfWriter
+
+    from app.models import OutputArtifact, Package
+    from app.review.cabinet_reading import CABINET_LISTS_LINE
+    from workflow.redline_outputs import RedlineOutput
+    from workflow.signed_outputs import generate_signed_outputs
+
+    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
+    package = session.get(Package, package_id)
+    assert package is not None
+    package.product_type = "cabinet"
+    session.commit()
+    decision = approve_package(
+        session,
+        principal=_reviewer(project_id),
+        review_session_id=_review_session(session, revision.id),
+    )
+    session.commit()
+    snapshot = session.scalars(
+        select(ApprovalExportSnapshot).where(
+            ApprovalExportSnapshot.approval_id == decision.approval.id
+        )
+    ).one()
+    frozen = frozen_countertop_results(session, load_snapshot(session, snapshot))
+    assert (frozen.items, frozen.pages_without_countertop, frozen.rows_not_checked) == ((), (), ())
+    assert (frozen.countertops_checked, frozen.reading_note) == (False, CABINET_LISTS_LINE)
+
+    def redline(_db: Session, the_store: LocalStore, **_given: Any) -> RedlineOutput:
+        """This synthetic package's drawings were never stored; the redline is not what is tested."""
+        page = io.BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.write(page)
+        page.seek(0)
+        return RedlineOutput(
+            the_store.put(f"redline/{uuid4()}.pdf", page, content_type="application/pdf"), None
+        )
+
+    monkeypatch.setattr("workflow.signed_outputs.render_evidence_grounded_redline", redline)
+    store = LocalStore(root=tmp_path / "signed", ticket_secret=b"synthetic-test")
+    bundle = generate_signed_outputs(session, store, decision.approval.id)
+    session.commit()
+
+    pdf = session.get(OutputArtifact, bundle.pdf_id)
+    workbook = session.get(OutputArtifact, bundle.workbook_id)
+    assert pdf is not None and workbook is not None
+    text = " ".join(
+        " ".join((sheet.extract_text() or "").split())
+        for sheet in PdfReader(io.BytesIO(store.get(pdf.storage_key).read())).pages
+    )
+    assert CABINET_LISTS_LINE in text
+    assert "PAGES NOT CHECKED" not in text and NONE_WHY not in text
+    book = load_workbook(io.BytesIO(store.get(workbook.storage_key).read()))
+    assert "Pages Not Checked" not in book.sheetnames
+    assert "Countertops" not in book.sheetnames
+    cells = {cell.value for sheet in book.worksheets for row in sheet.iter_rows() for cell in row}
+    assert CABINET_LISTS_LINE in cells
