@@ -228,8 +228,9 @@ def seal_label(
     """Seal one label's reading, or say why the person decides.
 
     `answers` holds the readers' answers present for this crop: for a text label, the one reader
-    shown the crop (the file's text is the other source); for a glyph label, the two readers. A
-    reader that abstained is simply absent. Two answers from readers of one maker are refused —
+    shown the crop (the file's text is the other source); for a glyph label, the two readers. With
+    `allow_claude_pair` both readers are shown a text label too, and both must answer: the file's
+    text never stands in for one that did not. A reader that abstained is simply absent. Two answers from readers of one maker are refused —
     same-maker agreement never seals (Measurements 2026-10-06: Kimi × 2 agreed on wrong values).
     `ink` is `None` when the page's ink could not be read, which holds a reading back.
 
@@ -353,7 +354,9 @@ def seal_label(
     if not sources:
         # A drawn label no reader answered: never asked, or every reader abstained (#1114).
         return review("not-asked", "no reader read this label")
-    if len(sources) < 2:
+    if len(sources) < 2 or (allow_claude_pair and label.lane is Lane.TEXT and not claude_pair):
+        # With the approved pair, both readers must answer (decided 2026-10-08): the file's own
+        # text is a witness beside them, never the second reader for a missing one.
         return review("one-reader-missing", "only one reader")
     if not all(usable for _, _, usable in sources):
         return review("unreadable", "a reader could not read it clearly")

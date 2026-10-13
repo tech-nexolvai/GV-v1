@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -31,17 +33,20 @@ from app.models import (
     SourceArtifact,
 )
 from app.models.document import DocumentKind, Page
-from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+from app.models.evidence import EvidenceCorroborationLane
+from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
 from app.models.verdicts import CheckRun, Finding, VerdictInput
-from evidence.canonical import Authority, EvidenceStatus
+from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.corroborate import independence_key
+from evidence.gate import GateRefusal, seal
+from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID
 from extraction.slot_reader.labels import plain_dimension
 from rules.semantic_types import SemanticType
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.wall_layouts import VENDOR_WALLS_PASS_REASON
-from workflow.slot_row_evidence import _canonical_for_candidate
+from workflow.slot_row_evidence import _canonical_for_candidate, _domain_observation
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -603,15 +608,77 @@ def test_a_reader_writing_a_typographic_inch_mark_still_supports_the_sealed_widt
     assert all(finding.outcome == "PASS" for finding in findings), [f.reason for f in findings]
 
 
+def _reader_call(
+    session: Session,
+    candidate: ObservationCandidate,
+    model_id: str,
+    text: str,
+    *,
+    outcome: str = "ok",
+    packet: bool = False,
+    asked_about: UUID | None = None,
+    reused_from: UUID | None = None,
+) -> ModelInvocation:
+    """One reader call on record for `candidate`'s run, as `workflow/stages.py` stores it.
+
+    `packet=True` is the Claude path's: the question packet binds the answer to one label
+    (`asked_about`, by default `candidate`); a reused answer (#1112) also names the call it reused.
+    The legacy readers' calls carry no packet."""
+    question: dict[str, object] | None = None
+    if packet:
+        page = session.get(Page, candidate.page_id)
+        assert page is not None
+        question = {
+            "candidate_ids": [str(asked_about or candidate.id)],
+            "document_version_id": str(candidate.document_version_id),
+            "page_index": page.index,
+            "prompt_id": CLAUDE_SPAN_PROMPT_ID,
+        }
+        question["packet_sha256"] = hashlib.sha256(
+            json.dumps(question, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        if reused_from is not None:
+            question[REUSED_FROM_KEY] = str(reused_from)
+    call = ModelInvocation(
+        extraction_run_id=candidate.extraction_run_id,
+        model_id=model_id,
+        prompt_id=CLAUDE_SPAN_PROMPT_ID if packet else "synthetic-slot-test",
+        template_id="synthetic-slot-test",
+        input_tokens=0,
+        output_tokens=0,
+        latency_ms=0,
+        outcome=outcome,
+        private_raw_response=json.dumps(
+            {
+                "belongs": "yes",
+                "text": text,
+                "readable": True,
+                "no_dimension": False,
+                "stacked": False,
+                "combined": False,
+            }
+        ),
+        reader_question_packet=question,
+    )
+    session.add(call)
+    session.flush()
+    return call
+
+
 def _reader_support(
     session: Session,
     candidate: ObservationCandidate,
     *,
     second_mark: str = '"',
+    readers: tuple[str, str] = ("amazon.qwen3-vl", "moonshotai.kimi-k3"),
+    calls: bool = True,
 ) -> list[ObservationCandidate]:
+    """The two readers' records for a sealed candidate, each with its call on record (`calls`)."""
     assert candidate.value_numerator is not None
     supporters: list[ObservationCandidate] = []
-    for reader_id, mark in (("amazon.qwen3-vl", '"'), ("moonshotai.kimi-k3", second_mark)):
+    for reader_id, mark in zip(readers, ('"', second_mark), strict=True):
+        if calls:
+            _reader_call(session, candidate, reader_id, f"{candidate.value_numerator}{mark}")
         support = ObservationCandidate(
             document_version_id=candidate.document_version_id,
             page_id=candidate.page_id,
@@ -641,7 +708,9 @@ def _canonical_with_reader_support(
     semantic: SemanticType,
     value_numerator: int | None = None,
     parent_supported: bool = False,
+    lanes: tuple[CorroborationLane, ...] | None = None,
 ) -> CanonicalObservation:
+    """`lanes` defaults to what the row check stores: the second reader's for a reader-sealed one."""
     assert candidate.value_numerator is not None
     numerator = candidate.value_numerator if value_numerator is None else value_numerator
     supporters = _reader_support(session, candidate)
@@ -673,6 +742,12 @@ def _canonical_with_reader_support(
             role="primary" if index == 0 else "corroborating",
         )
         for index, support in enumerate(supported)
+    )
+    if lanes is None:
+        lanes = () if parent_supported else (CorroborationLane.SECOND_READER,)
+    session.add_all(
+        EvidenceCorroborationLane(canonical_observation_id=observation.id, lane=lane.value)
+        for lane in lanes
     )
     session.flush()
     return observation
@@ -1350,3 +1425,136 @@ def test_a_typed_squeezed_width_is_refused_with_a_suggestion(session: Session) -
     assert refused.value.status_code == 422
     assert 'did you mean 16 3/8"?' in str(refused.value.detail)
     assert session.query(SlotRowReviewDecision).count() == 0
+
+
+OPUS = "anthropic.claude-opus-5-5"
+SONNET = "anthropic.claude-sonnet-5-5"
+
+
+def test_a_saved_value_seals_only_with_the_second_reader_lane_on_record(session: Session) -> None:
+    """The gate's two-reader rule is checked against the stored lanes, never assumed. Input: a
+    saved reader-sealed value with its two reader records, with and without the second reader's
+    lane on record. Outcome: without it the gate refuses; with it the value seals."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    unlaned = _canonical_with_reader_support(
+        session, candidate, semantic=SemanticType.COUNTERTOP_PIECE_WIDTH, lanes=()
+    )
+
+    observation = _domain_observation(session, unlaned)
+
+    assert observation is not None
+    assert observation.corroborated_by == ()
+    refusal = seal(observation, "piece_width_1")
+    assert isinstance(refusal, GateRefusal)
+    assert "second-reader agreement" in refusal.detail
+
+    other = session.get(ObservationCandidate, anchors[1])
+    assert other is not None
+    laned = _canonical_with_reader_support(
+        session, other, semantic=SemanticType.COUNTERTOP_PIECE_WIDTH
+    )
+    sealed_observation = _domain_observation(session, laned)
+    assert sealed_observation is not None
+    assert not isinstance(seal(sealed_observation, "piece_width_1"), GateRefusal)
+
+
+def _pair_records(session: Session, candidate: ObservationCandidate) -> None:
+    """The Claude pair's two reader records for `candidate`, as the slot reader writes them."""
+    assert candidate.value_numerator is not None
+    _reader_support(session, candidate, readers=(OPUS, SONNET), calls=False)
+
+
+@pytest.mark.parametrize(
+    "sonnet",
+    [
+        "failed",  # Sonnet's call came back with no answer
+        "timeout",
+        "missing",  # no call by Sonnet on record at all
+        "another-label",  # Sonnet's only answer on record is to a different label
+        "another-value",  # Sonnet's answer on record says a different number
+    ],
+)
+def test_a_reader_record_without_its_answer_on_record_never_seals(
+    session: Session, sonnet: str
+) -> None:
+    """Two readers must really have agreed: each reader record needs that reader's own `ok` call
+    in this run, answering this label with this exact value. Input: the pair's two records, Opus's
+    answer on record, Sonnet's call failed, missing, about another label or another value.
+    Outcome: no evidence is created and the row is refused (the person decides)."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _pair_records(session, candidate)
+    _reader_call(session, candidate, OPUS, value, packet=True)
+    if sonnet in {"failed", "timeout"}:
+        _reader_call(session, candidate, SONNET, value, packet=True, outcome=sonnet)
+    elif sonnet == "another-label":
+        _reader_call(session, candidate, SONNET, value, packet=True, asked_about=anchors[1])
+    elif sonnet == "another-value":
+        _reader_call(session, candidate, SONNET, '99"', packet=True)
+
+    result = _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+    assert result is None
+    assert session.query(CanonicalObservation).count() == 0
+
+
+@pytest.mark.parametrize("reused", [(), (SONNET,), (OPUS, SONNET)])
+def test_reused_answers_on_record_still_seal(session: Session, reused: tuple[str, ...]) -> None:
+    """#1112: a reused answer is that reader's own earlier answer to the identical question,
+    recorded under the new run. Input: the pair's two records, each reader's answer on record,
+    live or reused. Outcome: the value seals with the second reader's lane."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _pair_records(session, candidate)
+    for model in (OPUS, SONNET):
+        _reader_call(
+            session,
+            candidate,
+            model,
+            value,
+            packet=True,
+            reused_from=uuid4() if model in reused else None,
+        )
+
+    result = _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+    assert result is not None
+    observation = _domain_observation(session, result)
+    assert observation is not None
+    assert observation.corroborated_by == (CorroborationLane.SECOND_READER,)
+    assert not isinstance(seal(observation, "piece_width_1"), GateRefusal)
+
+
+def test_a_legacy_reader_record_needs_a_call_by_that_reader_in_the_run(session: Session) -> None:
+    """The legacy readers' calls carry no question packet, so each record needs at least an `ok`
+    call by that reader in this run. Input: two records, one reader with no call. Outcome: refused."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    _reader_support(session, candidate, calls=False)
+    _reader_call(session, candidate, "amazon.qwen3-vl", f'{candidate.value_numerator}"')
+
+    result = _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+    assert result is None

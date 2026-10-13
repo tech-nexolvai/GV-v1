@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
@@ -331,9 +332,10 @@ def _seal_row(
             proposal_fields[overall_candidate.id],
             semantic=SemanticType.COUNTERTOP_OVERALL_WIDTH,
         )
-        if observation is None:
+        domain = None if observation is None else _domain_observation(session, observation)
+        if observation is None or domain is None:
             return "The overall label has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
-        operand = seal(_domain_observation(session, observation), "countertop_width")
+        operand = seal(domain, "countertop_width")
         if isinstance(operand, GateRefusal):
             return operand.detail
         operands["countertop_width"] = replace(operand, evidence_observation_id=str(observation.id))
@@ -361,9 +363,10 @@ def _seal_row(
             field,
             semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
         )
-        if observation is None:
+        domain = None if observation is None else _domain_observation(session, observation)
+        if observation is None or domain is None:
             return f"Piece {position + 1} has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
-        operand = seal(_domain_observation(session, observation), f"piece_width_{position + 1}")
+        operand = seal(domain, f"piece_width_{position + 1}")
         if isinstance(operand, GateRefusal) or not isinstance(operand.value, Measurement):
             return "A piece width did not pass the evidence gate."
         piece_operands.append(operand.value)
@@ -595,6 +598,8 @@ def _canonical_for_candidate(
         )
     ):
         return None
+    if not _answers_on_record(session, candidate, [reader_id for reader_id, _ in raw_by_reader]):
+        return None
 
     # The canonical is supported by the two per-reader child candidates, not necessarily by the
     # row's aggregate candidate. Check both shapes: older human confirmation can support the parent
@@ -713,25 +718,19 @@ def _canonical_for_candidate(
     return canonical
 
 
-def _materialize_stored_reader_answers(
-    session: Session,
-    candidate: ObservationCandidate,
-    *,
-    already_seen: set[str],
-) -> list[tuple[str, ObservationCandidate]]:
-    """Promote this run's already-stored attempts to immutable evidence candidates.
+def _stored_reader_answers(
+    session: Session, candidate: ObservationCandidate
+) -> dict[str, tuple[ModelInvocation, Measurement, str]]:
+    """Each Claude reader's `ok` answer on record in this run to this very label, by model.
 
-    The first replayable build predates the explicit support-candidate rows. Its private invocation
-    records still bind each successful answer to the exact candidate id, page and packet hash, so the
-    check may reconstitute those two raw answers without calling a model or modifying an old row.
+    An answer counts only when its question packet names this candidate, document version and page,
+    the packet's hash still matches, and the stored reply parses to the candidate's exact value. A
+    reused answer (#1112) is recorded the same way under the new run, with its own packet.
     """
-    flags = set(candidate.ambiguity_flags or ())
-    row_rank = next((flag for flag in flags if flag.startswith("row-rank:")), None)
-    if row_rank is None:
-        return []
     page = session.get(Page, candidate.page_id)
-    if page is None:
-        return []
+    if page is None or candidate.value_numerator is None or candidate.value_denominator is None:
+        return {}
+    expected = Fraction(candidate.value_numerator, candidate.value_denominator)
     invocations = session.scalars(
         select(ModelInvocation).where(
             ModelInvocation.extraction_run_id == candidate.extraction_run_id,
@@ -740,11 +739,11 @@ def _materialize_stored_reader_answers(
             ModelInvocation.private_raw_response.is_not(None),
         )
     ).all()
-    by_reader: dict[str, ObservationCandidate] = {}
+    by_reader: dict[str, tuple[ModelInvocation, Measurement, str]] = {}
     for invocation in invocations:
         packet = invocation.reader_question_packet
         raw = invocation.private_raw_response
-        if not isinstance(packet, dict) or raw is None or invocation.model_id in already_seen:
+        if not isinstance(packet, dict) or raw is None:
             continue
         packet_candidates = packet.get("candidate_ids")
         if (
@@ -770,13 +769,69 @@ def _materialize_stored_reader_answers(
             answer = parse_stored_reader_answer(raw)
         except (TypeError, ValueError):
             continue
-        if candidate.value_numerator is None or candidate.value_denominator is None:
-            continue
-        expected = Fraction(candidate.value_numerator, candidate.value_denominator)
         reading = _verified_reader_answer(answer, expected)
         if reading is None:
             continue
-        text = str(answer["text"])
+        by_reader[invocation.model_id] = (invocation, reading, str(answer["text"]))
+    return by_reader
+
+
+def _answers_on_record(
+    session: Session, candidate: ObservationCandidate, reader_ids: Sequence[str]
+) -> bool:
+    """Whether every reader supporting this candidate really answered in this run.
+
+    The reader records are written from the answers the slot reader held; this checks each one
+    against the calls on record, so two records never stand for one real reader (a failed, missing
+    or other-label answer). A Claude reader's calls carry their question packets, so its answer to
+    this very label, with this exact value, must be on record (`_stored_reader_answers`). A legacy
+    reader's calls carry none, so it needs at least an `ok` call by that reader in this run. The
+    file's own text is no call.
+    """
+    bound = _stored_reader_answers(session, candidate)
+    for reader_id in reader_ids:
+        if reader_id == TEXT_LAYER or reader_id in bound:
+            continue
+        calls = session.execute(
+            select(ModelInvocation.prompt_id, ModelInvocation.reader_question_packet).where(
+                ModelInvocation.extraction_run_id == candidate.extraction_run_id,
+                ModelInvocation.model_id == reader_id,
+                ModelInvocation.outcome == "ok",
+                ModelInvocation.private_raw_response.is_not(None),
+            )
+        ).all()
+        if not calls or any(
+            packet is not None and prompt_id in CLAUDE_SPAN_PROMPT_IDS
+            for prompt_id, packet in calls
+        ):
+            # No call by this reader, or a Claude reader whose answer to this label is not on record.
+            return False
+    return True
+
+
+def _materialize_stored_reader_answers(
+    session: Session,
+    candidate: ObservationCandidate,
+    *,
+    already_seen: set[str],
+) -> list[tuple[str, ObservationCandidate]]:
+    """Promote this run's already-stored attempts to immutable evidence candidates.
+
+    The first replayable build predates the explicit support-candidate rows. Its private invocation
+    records still bind each successful answer to the exact candidate id, page and packet hash, so the
+    check may reconstitute those two raw answers without calling a model or modifying an old row.
+    """
+    flags = set(candidate.ambiguity_flags or ())
+    row_rank = next((flag for flag in flags if flag.startswith("row-rank:")), None)
+    if row_rank is None:
+        return []
+    page = session.get(Page, candidate.page_id)
+    if page is None:
+        return []
+    materialized: list[tuple[str, ObservationCandidate]] = []
+    for model_id, (invocation, reading, text) in _stored_reader_answers(session, candidate).items():
+        if model_id in already_seen:
+            continue
         support = ObservationCandidate(
             id=uuid4(),
             document_version_id=candidate.document_version_id,
@@ -791,7 +846,7 @@ def _materialize_stored_reader_answers(
             ambiguity_flags=[
                 "slot-reader-support",
                 f"supports:{candidate.id}",
-                f"reader-id:{invocation.model_id}",
+                f"reader-id:{model_id}",
                 f"reader-invocation:{invocation.id}",
                 row_rank,
                 f"slot-reader-page:{page.index}",
@@ -799,11 +854,26 @@ def _materialize_stored_reader_answers(
         )
         session.add(support)
         session.flush()
-        by_reader[invocation.model_id] = support
-    return list(by_reader.items())
+        materialized.append((model_id, support))
+    return materialized
 
 
-def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCanonicalObservation:
+def _domain_observation(
+    session: Session, row: CanonicalObservation
+) -> DomainCanonicalObservation | None:
+    """The stored value as the gate sees it, with the lanes on record, never an assumed one.
+
+    `None` when the stored row cannot be reconstituted (its lanes contradict its status): a
+    row-level refusal, never an exception that aborts the whole check stage.
+    """
+    lanes = tuple(
+        CorroborationLane(value)
+        for value in session.scalars(
+            select(EvidenceCorroborationLane.lane)
+            .where(EvidenceCorroborationLane.canonical_observation_id == row.id)
+            .order_by(EvidenceCorroborationLane.lane)
+        )
+    )
     supporting = tuple(
         str(value)
         for value in session.scalars(
@@ -815,6 +885,18 @@ def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCa
     page = session.get(Page, row.page_id)
     if page is None:
         raise ValueError("the candidate page disappeared")
+    try:
+        return _reconstituted(row, page, supporting, lanes)
+    except ValueError:
+        return None
+
+
+def _reconstituted(
+    row: CanonicalObservation,
+    page: Page,
+    supporting: tuple[str, ...],
+    lanes: tuple[CorroborationLane, ...],
+) -> DomainCanonicalObservation:
     return DomainCanonicalObservation(
         document_version_id=row.document_version_id,
         document_role=DocumentRole(row.document_role),
@@ -832,7 +914,7 @@ def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCa
         status=EvidenceStatus(row.status),
         authority=Authority(row.authority),
         supported_by=supporting,
-        corroborated_by=(CorroborationLane.SECOND_READER,),
+        corroborated_by=lanes,
         conflicts_with=(),
         evidence_crop_uri=row.evidence_crop_uri,
     )
