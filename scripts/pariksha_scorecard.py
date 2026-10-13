@@ -9,15 +9,17 @@ No model call, no cost: the stored answers of a run that already happened are re
         --db <database name or URL> --key ~/gv-local/<key>.json [--run <extraction run id>] \\
         --code-version <commit of the code that made the run> --out ~/gv-local/<card>.json
 
-    # compare: exits 0 on ACCEPT (better, 0 new wrong), 1 on REJECT
+    # compare: exits 0 on ACCEPT (better, 0 new wrong), 1 on REJECT, 2 on a refusal
     python scripts/pariksha_scorecard.py compare <before.json> <after.json>
 
 `--db` is a full SQLAlchemy URL, or a database name on the server `DATABASE_URL` points at. A
 database holding several runs needs `--run`; the refusal lists them. Vastu also takes
 `--document-sha256` when the run read more than one document.
 
-Keys and scorecards hold client values (what the readers read): keep both outside the repository.
-`--out` inside it is refused.
+`--code-version` is the stored run's commit, or `unrecorded` (flagged: not attributable).
+
+Keys and scorecards hold client values (what the readers read): keep both outside any repository.
+An `--out` inside a git working tree is refused. Exit codes: 0 ACCEPT, 1 REJECT, 2 refused.
 """
 
 from __future__ import annotations
@@ -38,10 +40,15 @@ from sqlalchemy.orm import Session
 
 from eval.pariksha.compare import compare_scorecards
 from eval.pariksha.keys import AnswerKey, ArchitectAnswerKey, KeyFormatError, read_key
-from eval.pariksha.score import Scorecard, score_akshara, score_rekha, score_vastu
+from eval.pariksha.score import UNRECORDED, Scorecard, score_akshara, score_rekha, score_vastu
 from eval.pariksha.scorecard import ScorecardError, read_scorecard, write_scorecard
 from eval.pariksha.stored import StoredRunError, load_architect_run, load_stored_run
 from eval.regression import IncomparableRuns
+from eval.runs import MissingProvenanceError
+
+#: Exit codes: ACCEPT 0, REJECT 1, a refusal (tampered file, other agent or key, unreadable
+#: answers, bad provenance, an output path inside a git working tree) 2.
+REFUSED = 2
 
 
 def _database_url(value: str) -> URL:
@@ -68,12 +75,34 @@ def _scorer_version() -> str:
         return "unknown"
 
 
-def _outside_repository(path: Path) -> Path:
+class Refused(Exception):
+    """The script will not do what was asked; the message says why. Exit code 2."""
+
+
+def _inside_git_working_tree(path: Path) -> bool:
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    if existing.is_file():
+        existing = existing.parent
+    try:
+        answer = subprocess.run(
+            ["git", "-C", str(existing), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return answer.returncode == 0 and answer.stdout.strip() == "true"
+
+
+def _outside_git(path: Path) -> Path:
     resolved = path.expanduser().resolve()
-    if resolved == REPO or REPO in resolved.parents:
-        raise SystemExit(
-            f"{path} is inside the repository; a scorecard holds what the readers read on client "
-            "drawings, so write it outside the repository (for example under ~/gv-local/)"
+    if resolved == REPO or REPO in resolved.parents or _inside_git_working_tree(resolved.parent):
+        raise Refused(
+            f"{path} is inside a git working tree; a scorecard holds what the readers read on "
+            "client drawings, so write it outside any repository (for example under ~/gv-local/)"
         )
     return resolved
 
@@ -83,9 +112,12 @@ def summary(card: Scorecard) -> str:
         f"Pariksha scorecard: {card.agent} on key {card.key_name} {card.key_version}",
         (
             f"  run {card.source.get('database')}/{card.source.get('extraction_run_id')}, "
-            f"code {card.code_version}, prompts {card.extractor_versions.get('prompt_ids')}, "
+            f"code {card.code_version}"
+            + (" (NOT ATTRIBUTABLE)" if card.code_version == UNRECORDED else "")
+            + f", prompts {card.extractor_versions.get('prompt_ids')}, "
             f"models {card.extractor_versions.get('model_ids')}"
         ),
+        f"  reader settings: {card.extractor_versions.get('reader_settings', 'none (code only)')}",
     ]
     for name, metric in card.metrics.items():
         shown = (
@@ -103,11 +135,11 @@ def summary(card: Scorecard) -> str:
 
 
 def _score(args: argparse.Namespace) -> int:
-    out = _outside_repository(args.out)
+    out = _outside_git(args.out)
     key = read_key(args.key.expanduser())
     expected = ArchitectAnswerKey if args.agent == "vastu" else AnswerKey
     if not isinstance(key, expected) or (isinstance(key, AnswerKey) and key.agent != args.agent):
-        raise SystemExit(f"{args.key} is not a key for {args.agent}")
+        raise Refused(f"{args.key} is not a key for {args.agent}")
     url = _database_url(args.db)
     engine = create_engine(url)
     database = url.database or "unknown"
@@ -182,9 +214,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.handler(args))
-    except (KeyFormatError, StoredRunError, ScorecardError, IncomparableRuns) as error:
-        # A refusal is an answer, not a crash: say why, exit non-zero.
-        raise SystemExit(f"pariksha: {error}") from error
+    except (
+        Refused,
+        KeyFormatError,
+        StoredRunError,
+        ScorecardError,
+        IncomparableRuns,
+        MissingProvenanceError,
+        FileExistsError,
+    ) as error:
+        # A refusal is not a verdict: 0 is ACCEPT, 1 is REJECT, 2 is "will not judge this".
+        print(f"pariksha: {error}", file=sys.stderr)
+        return REFUSED
 
 
 if __name__ == "__main__":

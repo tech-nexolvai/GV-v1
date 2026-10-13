@@ -33,11 +33,12 @@ from sqlalchemy.orm import Session
 
 from app.models.document import DocumentVersion, Page
 from app.models.evidence import ObservationCandidate
-from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation
+from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, TaskRun
 from eval.architect_reader import ReadSpan
 from eval.pariksha.keys import FAMILIES, QuestionIdentity
 from extraction.architect.labels import read_label
 from extraction.product_context import PRODUCT_SUFFIX
+from workflow.reading_watch import LEDGER_EXTRACTOR, ledger_key_prefix
 
 __all__ = [
     "QuestionIdentity",
@@ -52,6 +53,9 @@ __all__ = [
 ]
 
 _VERSION: Final = re.compile(r"-v\d+$")
+_FORM_READER: Final = "extraction.form_reader"
+#: A ledger run's task key is its stage's key, then this, then a tag (`ledger_key_prefix`).
+_LEDGER_KEY: Final = ledger_key_prefix("")
 _ARCHITECT_FLAG: Final = "architect-reader"
 _OUTLINE: Final = {"yes": True, "no": False}
 
@@ -104,6 +108,10 @@ class StoredRun:
     questions: tuple[StoredQuestion, ...]
     unidentified: int = 0
     """Answers whose packet names no page hash or question id: counted, never matched."""
+    reader_settings: str = ""
+    """The form-reader run's settings (readers, prompts, effort, cap): the run's own when it is the
+    form-reader run, its stage's form-reader run's when it is the call ledger (#1178); empty when
+    neither is found."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +218,14 @@ def load_stored_run(
                 reused=REUSED_FROM_KEY in packet,
             )
         )
-        packets.setdefault(identity, (row.prompt_id, packet))
+        known = packets.setdefault(identity, (row.prompt_id, packet))[1]
+        if known.get("packet_sha256") != packet.get("packet_sha256"):
+            raise StoredRunError(
+                f"run {run_id} asked {identity} with two different question packets "
+                f"({str(known.get('packet_sha256'))[:12]}, "
+                f"{str(packet.get('packet_sha256'))[:12]}): not one question, so it cannot be "
+                "scored as one"
+            )
 
     boxes = _slot_boxes(session, packets.values()) if agent == "akshara" else {}
     questions = []
@@ -236,7 +251,27 @@ def load_stored_run(
         config_hash=run.config_hash,
         questions=tuple(questions),
         unidentified=unidentified,
+        reader_settings=_reader_settings(session, run),
     )
+
+
+def _reader_settings(session: Session, run: ExtractionRun) -> str:
+    """The settings the readers were asked with, from the form-reader run of the run's stage."""
+    if run.extractor == _FORM_READER:
+        return run.config_hash
+    if run.extractor != LEDGER_EXTRACTOR:
+        return ""
+    key = session.scalar(select(TaskRun.idempotency_key).where(TaskRun.id == run.task_run_id))
+    if not isinstance(key, str) or _LEDGER_KEY not in key:
+        return ""
+    stage_key = key.split(_LEDGER_KEY, 1)[0]
+    settings = session.scalars(
+        select(ExtractionRun.config_hash)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .where(TaskRun.idempotency_key == stage_key, ExtractionRun.extractor == _FORM_READER)
+        .order_by(ExtractionRun.created_at)
+    ).all()
+    return " | ".join(sorted(set(settings)))
 
 
 def _slot_boxes(

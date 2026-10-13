@@ -110,11 +110,11 @@ class KeyCase:
     question: QuestionIdentity
     truth: LabelTruth | RowTruth
     slot_box: str | None = None
-    """Labels only: the span's box as recorded (`slot-box:` flag); a question about another box
-    is not this case's question."""
+    """Labels (required): the span's box as recorded (`slot-box:` flag). The question is found by
+    page, box and label position, so a renumbered slot is followed and another span never matches."""
     picture_sha256: str | None = None
-    """The hash of a picture the question must have shown (for a row: the numbered picture whose
-    box numbers the answer uses); a question that showed other pictures is not this case's."""
+    """Rows (required): the numbered picture whose box numbers the answer uses; a question that
+    showed another picture is not this case's. Optional on a label."""
     source: str = ""
     """Who keyed it and how (free text, for a person)."""
 
@@ -210,11 +210,21 @@ def _case(agent: str, data: object, index: int) -> KeyCase:
         raise KeyFormatError(f"{where}: page_sha256 must be 64 lower-case hex characters")
     question_id = _text(data.get("question_id"), f"{where} question_id")
     slot_box = data.get("slot_box")
+    if agent == "akshara" and slot_box is None:
+        raise KeyFormatError(
+            f"{where}: a label case needs its slot_box: slot numbers follow the chosen row, so "
+            "without the box the case could be scored against another span"
+        )
     if slot_box is not None and (
         agent != "akshara" or not isinstance(slot_box, str) or not _BOX.match(slot_box)
     ):
         raise KeyFormatError(f"{where}: slot_box is a label's 'x0,y0,x1,y1', not {slot_box!r}")
     picture = data.get("picture_sha256")
+    if agent == "rekha" and picture is None:
+        raise KeyFormatError(
+            f"{where}: a row case needs picture_sha256, the numbered picture its box number "
+            "belongs to: on a re-numbered picture the same number is another line"
+        )
     if picture is not None and (not isinstance(picture, str) or not _SHA256.match(picture)):
         raise KeyFormatError(f"{where}: picture_sha256 must be 64 lower-case hex characters")
     answer = data.get("answer")

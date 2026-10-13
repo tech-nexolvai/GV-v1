@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zlib
 from collections.abc import Iterator, Mapping
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
@@ -152,13 +153,19 @@ def add_slot_candidate(session: Session, version: Any, page: Any, run: Any, box:
     return str(candidate.id)
 
 
+def slot_box_of(question_id: str) -> str:
+    """The invented slot box `synthetic_run` gives each label question."""
+    left = zlib.crc32(question_id.encode()) % 1000
+    return f"{left},20,{left + 5},40"
+
+
 def synthetic_run(session: Session, answers: Mapping[str, tuple[str, str]]) -> tuple[Any, Any]:
     """One stored run: each label question id → (first reader's text, second reader's text)."""
     from tests.workflow.test_slot_reader import _scaffold
 
     _revision, version, page, run = _scaffold(session)
-    candidate = add_slot_candidate(session, version, page, run, "10,20,30,40")
     for question_id, (first, second) in answers.items():
+        candidate = add_slot_candidate(session, version, page, run, slot_box_of(question_id))
         for model, said in ((OPUS, first), (SONNET, second)):
             add_answer(
                 session,
@@ -187,7 +194,21 @@ def synthetic_run(session: Session, answers: Mapping[str, tuple[str, str]]) -> t
 def test_a_stored_run_reads_each_question_with_its_identity_and_every_attempt(
     session: Session,
 ) -> None:
+    from app.models.runs import ModelInvocation
+
     version, run = synthetic_run(session, {"p0:slot0:0": ('3/4"', '3/4"')})
+    asked = (
+        session.execute(
+            select(ModelInvocation.reader_question_packet).where(
+                ModelInvocation.prompt_id == "claude-slot-span-v4"
+            )
+        )
+        .scalars()
+        .first()
+    )
+    assert isinstance(asked, dict)
+    candidates = asked["candidate_ids"]
+    assert isinstance(candidates, list)
     add_answer(
         session,
         run.id,
@@ -198,6 +219,7 @@ def test_a_stored_run_reads_each_question_with_its_identity_and_every_attempt(
         raw=None,
         outcome="timeout",
         cost_micros=None,
+        candidate_ids=[str(c) for c in candidates],  # the same question: the same packet
     )
     session.commit()
 
@@ -208,7 +230,7 @@ def test_a_stored_run_reads_each_question_with_its_identity_and_every_attempt(
     assert question.identity.family == "claude-slot-span"
     assert question.identity.page_sha256 == PAGE_HASH
     assert question.identity.question_id == "p0:slot0:0"
-    assert question.slot_box == "10,20,30,40"
+    assert question.slot_box == slot_box_of("p0:slot0:0")
     assert sorted((a.model_id, a.outcome) for a in question.attempts) == [
         (OPUS, "ok"),
         (SONNET, "ok"),
@@ -216,6 +238,67 @@ def test_a_stored_run_reads_each_question_with_its_identity_and_every_attempt(
     ]
     rows = load_stored_run(session, agent="rekha", database="synthetic")
     assert [q.identity.question_id for q in rows.questions] == ["p0:row-choice"]
+    # The reader settings come from the form-reader run (the ledger run's, when it is a ledger).
+    assert stored.reader_settings == "test"
+
+
+def test_one_question_stored_with_two_different_packets_is_refused(session: Session) -> None:
+    version, run = synthetic_run(session, {"p0:slot0:0": ('3/4"', '3/4"')})
+    add_answer(
+        session,
+        run.id,
+        version.id,
+        question_id="p0:slot0:0",
+        prompt_id="claude-slot-span-v4",
+        model_id=SONNET,
+        raw=span_answer('3/4"'),
+        candidate_ids=[str(uuid4())],  # another candidate: another packet hash
+    )
+    session.commit()
+
+    with pytest.raises(StoredRunError, match="two different question packets"):
+        load_stored_run(session, agent="akshara", database="synthetic")
+
+
+def test_a_ledger_run_records_its_form_reader_runs_settings(session: Session) -> None:
+    from app.models.runs import ExtractionRun, TaskRun
+
+    version, run = synthetic_run(session, {"p0:slot0:0": ('3/4"', '3/4"')})
+    reader_task = session.get(TaskRun, run.task_run_id)
+    assert reader_task is not None
+    ledger_task = TaskRun(
+        workflow_run_id=reader_task.workflow_run_id,
+        idempotency_key=f"{reader_task.idempotency_key}:reader-calls:abc",
+        task_type="reader_call_ledger",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(ledger_task)
+    session.flush()
+    ledger = ExtractionRun(
+        task_run_id=ledger_task.id,
+        extractor="workflow.call_ledger",
+        extractor_version="call-ledger-v1",
+        config_hash="calls-of:slot-reader-v1-ink-v1",
+    )
+    session.add(ledger)
+    session.flush()
+    add_answer(
+        session,
+        ledger.id,
+        version.id,
+        question_id="p0:slot9:0",
+        prompt_id="claude-slot-span-v4",
+        model_id=OPUS,
+        raw=span_answer('1"'),
+    )
+    session.commit()
+
+    stored = load_stored_run(
+        session, agent="akshara", database="synthetic", extraction_run_id=ledger.id
+    )
+
+    assert stored.reader_settings == "test"
 
 
 def test_the_stored_run_is_read_in_a_read_only_transaction(session: Session) -> None:

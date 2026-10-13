@@ -43,6 +43,7 @@ def _label_case(question_id: str = "p1:slot0:0", **answer: Any) -> dict[str, Any
         "family": "claude-slot-span",
         "page_sha256": PAGE,
         "question_id": question_id,
+        "slot_box": "1,2,3,4",
         "answer": answer or {"texts": ['3/4"']},
     }
 
@@ -79,12 +80,14 @@ def test_a_row_key_reads_a_box_number_or_one_of_the_two_no_row_answers() -> None
                     "family": "slot-row-choice",
                     "page_sha256": PAGE,
                     "question_id": "p1:row-choice",
+                    "picture_sha256": "d" * 64,
                     "answer": {"box": 2},
                 },
                 {
                     "family": "slot-row-choice",
                     "page_sha256": OTHER_PAGE,
                     "question_id": "p2:row-choice",
+                    "picture_sha256": "d" * 64,
                     "answer": {"kind": "no_countertop"},
                 },
             ],
@@ -149,6 +152,35 @@ def test_a_malformed_case_is_refused(case: dict[str, Any], message: str) -> None
         load_key(_label_key(case))
 
 
+def test_a_label_case_without_its_slot_box_is_refused() -> None:
+    """Slot numbers follow the chosen row; without the box a case could score another span."""
+    case = _label_case()
+    del case["slot_box"]
+    with pytest.raises(KeyFormatError, match="slot_box"):
+        load_key(_label_key(case))
+
+
+def test_a_row_case_without_its_numbered_picture_is_refused() -> None:
+    """Box numbers belong to one numbered picture; without it "box 2" could be another line."""
+    with pytest.raises(KeyFormatError, match="picture_sha256"):
+        load_key(
+            {
+                "format": KEY_FORMAT,
+                "agent": "rekha",
+                "name": "rows",
+                "version": "1",
+                "cases": [
+                    {
+                        "family": "slot-row-choice",
+                        "page_sha256": PAGE,
+                        "question_id": "p1:row-choice",
+                        "answer": {"box": 1},
+                    }
+                ],
+            }
+        )
+
+
 def test_two_cases_for_one_question_are_refused() -> None:
     with pytest.raises(KeyFormatError, match="twice"):
         load_key(_label_key(_label_case(), _label_case(texts=['1/2"'])))
@@ -170,6 +202,7 @@ def test_a_row_answer_must_be_a_positive_box_or_a_named_no_row_answer(
                         "family": "slot-row-choice",
                         "page_sha256": PAGE,
                         "question_id": "p1:row-choice",
+                        "picture_sha256": "d" * 64,
                         "answer": answer,
                     }
                 ],

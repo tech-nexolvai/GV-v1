@@ -8,8 +8,14 @@ has no new wrong answer**:
   case the older run never asked counts too: its first answer can be the new wrong one.
   `eval/regression.compare_cases` skips a case present in only one run, which is right for a gold
   set whose cases are added over time and wrong here, so the per-case walk is its own.
+* **No longer asked**: a case the older run asked and the newer did not. Not asking a question is
+  never a way to stop answering it wrong, so each one rejects the change, and so does any fall in
+  `asked`.
 * **Better**: more right automatic answers (`score.RIGHT_OUTCOMES`) and no more wrong ones, or as
   many right and fewer wrong.
+
+Two scorecards made with different keys (or, for Vastu, of different documents) are not compared
+at all: a bigger or corrected key moves the score without the agent changing.
 
 Per metric, each before → after is an `eval.regression.MetricDelta`, so "better" and "worse" are
 judged by the same code the release gate uses, with this module's directions. Per case, every
@@ -25,7 +31,14 @@ from dataclasses import dataclass
 from typing import Final
 
 from eval.metrics import MetricResult
-from eval.pariksha.score import NOT_ASKED, RIGHT_OUTCOMES, WRONG_OUTCOMES, CaseScore, Scorecard
+from eval.pariksha.score import (
+    NOT_ASKED,
+    RIGHT_OUTCOMES,
+    UNRECORDED,
+    WRONG_OUTCOMES,
+    CaseScore,
+    Scorecard,
+)
 from eval.regression import IncomparableRuns, MetricDelta
 from eval.release_metrics import Direction
 
@@ -64,6 +77,8 @@ class Comparison:
     new_wrong: tuple[CaseChange, ...]
     moved: tuple[CaseChange, ...]
     """Changes that are none of the above (for example agreed-wrong to held)."""
+    dropped: tuple[CaseChange, ...]
+    """Cases asked before and not asked after: each one rejects the change."""
     unchanged: int
     accepted: bool
     verdict: str
@@ -102,12 +117,15 @@ class Comparison:
         lines += ["", "Cases:"]
         for label, changes in (
             ("NEW WRONG", self.new_wrong),
+            ("NO LONGER ASKED", self.dropped),
             ("fixed", self.fixed),
             ("broke", self.broke),
             ("moved", self.moved),
         ):
             for change in changes:
-                if label == "broke" and change in self.new_wrong:
+                if label == "broke" and (change in self.new_wrong or change in self.dropped):
+                    continue
+                if label == "moved" and change in self.dropped:
                     continue
                 lines.append(f"  {change.case_id}: {change.before} -> {change.after} ({label})")
         lines.append(f"  unchanged: {self.unchanged}")
@@ -116,10 +134,49 @@ class Comparison:
 
 
 def _provenance(card: Scorecard) -> str:
+    flag = " (NOT ATTRIBUTABLE)" if card.code_version == UNRECORDED else ""
     return (
-        f"code {card.code_version}, prompts {card.extractor_versions.get('prompt_ids')}, "
+        f"code {card.code_version}{flag}, prompts {card.extractor_versions.get('prompt_ids')}, "
         f"run {card.source.get('database')}/{card.source.get('extraction_run_id')}"
     )
+
+
+def _listed(changes: list[CaseChange]) -> str:
+    listed = ", ".join(change.case_id for change in changes[:_LISTED])
+    return listed + (f", and {len(changes) - _LISTED} more" if len(changes) > _LISTED else "")
+
+
+def _asked(card: Scorecard) -> int | None:
+    metric = card.metrics.get("asked")
+    return None if metric is None else metric.numerator
+
+
+def _comparable(before: Scorecard, after: Scorecard) -> None:
+    """Refuse a comparison whose difference would not be the agent's."""
+    if before.agent != after.agent:
+        raise IncomparableRuns(
+            f"a {before.agent} scorecard and a {after.agent} scorecard measure different agents"
+        )
+    if before.key_sha256 != after.key_sha256:
+        raise IncomparableRuns(
+            f"the scorecards were made with different answer keys ({before.key_name} "
+            f"{before.key_version}, {before.key_sha256[:12]}; {after.key_name} "
+            f"{after.key_version}, {after.key_sha256[:12]}): a bigger or corrected key moves the "
+            "score without the agent changing. Score both runs with the same key"
+        )
+    documents = (before.source.get("document_sha256"), after.source.get("document_sha256"))
+    if documents[0] != documents[1]:
+        raise IncomparableRuns(
+            f"the scorecards read different documents ({str(documents[0])[:12]}, "
+            f"{str(documents[1])[:12]})"
+        )
+    for card in (before, after):
+        unreadable = card.metrics.get("unreadable_stored_answers")
+        if unreadable is not None and unreadable.numerator:
+            raise IncomparableRuns(
+                f"the scorecard of run {card.source.get('extraction_run_id')} has "
+                f"{unreadable.numerator} stored answer(s) it could not read"
+            )
 
 
 def _shown(metric: MetricResult | None) -> str:
@@ -134,10 +191,7 @@ def _outcomes(card: Scorecard) -> dict[str, CaseScore]:
 
 def compare_scorecards(before: Scorecard, after: Scorecard) -> Comparison:
     """Before → after per metric and per case, and the verdict."""
-    if before.agent != after.agent:
-        raise IncomparableRuns(
-            f"a {before.agent} scorecard and a {after.agent} scorecard measure different agents"
-        )
+    _comparable(before, after)
     deltas = tuple(
         MetricDelta(
             metric=name,
@@ -153,6 +207,7 @@ def compare_scorecards(before: Scorecard, after: Scorecard) -> Comparison:
     broke: list[CaseChange] = []
     new_wrong: list[CaseChange] = []
     moved: list[CaseChange] = []
+    dropped: list[CaseChange] = []
     unchanged = 0
     for case_id in sorted(set(old) | set(new)):
         was, now = old.get(case_id), new.get(case_id)
@@ -167,6 +222,9 @@ def compare_scorecards(before: Scorecard, after: Scorecard) -> Comparison:
             unchanged += 1
             continue
         sorted_into = False
+        if change.before != NOT_ASKED and change.after == NOT_ASKED:
+            # Not asking a question is never a way to stop answering it wrong.
+            dropped.append(change)
         if change.after in WRONG_OUTCOMES and change.before not in WRONG_OUTCOMES:
             new_wrong.append(change)
             sorted_into = True
@@ -187,17 +245,20 @@ def compare_scorecards(before: Scorecard, after: Scorecard) -> Comparison:
     better = (right_after > right_before and wrong_after <= wrong_before) or (
         right_after >= right_before and wrong_after < wrong_before
     )
+    reasons: list[str] = []
     if new_wrong:
-        listed = ", ".join(change.case_id for change in new_wrong[:_LISTED])
-        more = f", and {len(new_wrong) - _LISTED} more" if len(new_wrong) > _LISTED else ""
-        verdict = f"REJECT ({len(new_wrong)} new wrong: {listed}{more})"
-    elif not better:
-        verdict = (
-            f"REJECT (not better: right {right_before} -> {right_after}, "
-            f"wrong {wrong_before} -> {wrong_after})"
+        reasons.append(f"{len(new_wrong)} new wrong: {_listed(new_wrong)}")
+    if dropped:
+        reasons.append(f"{len(dropped)} no longer asked: {_listed(dropped)}")
+    asked_before, asked_after = _asked(before), _asked(after)
+    if asked_before is not None and asked_after is not None and asked_after < asked_before:
+        reasons.append(f"asked {asked_before} -> {asked_after}")
+    if not reasons and not better:
+        reasons.append(
+            f"not better: right {right_before} -> {right_after}, "
+            f"wrong {wrong_before} -> {wrong_after}"
         )
-    else:
-        verdict = "ACCEPT (better, 0 new wrong)"
+    verdict = f"REJECT ({'; '.join(reasons)})" if reasons else "ACCEPT (better, 0 new wrong)"
     return Comparison(
         agent=before.agent,
         before=before,
@@ -207,6 +268,7 @@ def compare_scorecards(before: Scorecard, after: Scorecard) -> Comparison:
         broke=tuple(broke),
         new_wrong=tuple(new_wrong),
         moved=tuple(moved),
+        dropped=tuple(dropped),
         unchanged=unchanged,
         accepted=verdict.startswith("ACCEPT"),
         verdict=verdict,

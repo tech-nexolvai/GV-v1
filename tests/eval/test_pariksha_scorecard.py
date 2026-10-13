@@ -47,7 +47,14 @@ def _case(case_id: str, outcome: str) -> CaseScore:
     )
 
 
-def _card(outcomes: dict[str, str], *, agent: str = "akshara", code: str = "v1") -> Scorecard:
+def _card(
+    outcomes: dict[str, str],
+    *,
+    agent: str = "akshara",
+    code: str = "v1",
+    key_sha: str = "f" * 64,
+    document: str | None = None,
+) -> Scorecard:
     cases = tuple(_case(case_id, outcome) for case_id, outcome in outcomes.items())
     asked = sum(1 for case in cases if case.outcome != NOT_ASKED)
 
@@ -62,12 +69,22 @@ def _card(outcomes: dict[str, str], *, agent: str = "akshara", code: str = "v1")
         agent=agent,
         key_name="synthetic",
         key_version="1",
-        key_sha256="f" * 64,
+        key_sha256=key_sha,
         code_version=code,
         scorer_version="scorer-test",
         extractor_versions={"agent": agent, "prompt_ids": f"prompt-{code}", "model_ids": "a,b"},
-        source={"database": "synthetic", "extraction_run_id": f"run-{code}"},
+        source={
+            "database": "synthetic",
+            "extraction_run_id": f"run-{code}",
+            **({} if document is None else {"document_sha256": document}),
+        },
         metrics={
+            "asked": MetricResult(
+                key="asked",
+                value=Fraction(asked, len(cases)),
+                numerator=asked,
+                denominator=len(cases),
+            ),
             "pair_agreed_right": rate(AGREED_RIGHT),
             "pair_agreed_wrong": rate(AGREED_WRONG),
             "pair_held": rate(HELD),
@@ -185,3 +202,37 @@ def test_the_comparison_reads_as_a_per_metric_and_per_case_report() -> None:
     assert "c1: agreed_right -> agreed_wrong (NEW WRONG)" in text
     assert "c2: held -> agreed_right (fixed)" in text
     assert text.rstrip().endswith("REJECT (1 new wrong: c1)")
+
+
+def test_a_wrong_answer_cannot_be_hidden_by_no_longer_asking_its_question() -> None:
+    before = _card({"c1": AGREED_RIGHT, "c2": AGREED_WRONG, "c3": AGREED_RIGHT})
+    after = _card({"c1": AGREED_RIGHT, "c2": NOT_ASKED, "c3": AGREED_RIGHT}, code="v2")
+
+    comparison = compare_scorecards(before, after)
+
+    assert not comparison.accepted
+    assert "1 no longer asked: c2" in comparison.verdict
+
+
+def test_asking_fewer_questions_is_rejected_even_when_a_case_got_right() -> None:
+    before = _card({"c1": HELD, "c2": HELD, "c3": HELD})
+    after = _card({"c1": AGREED_RIGHT, "c2": NOT_ASKED, "c3": NOT_ASKED}, code="v2")
+
+    comparison = compare_scorecards(before, after)
+
+    assert not comparison.accepted
+    assert "asked 3 -> 1" in comparison.verdict
+
+
+def test_scorecards_made_with_different_keys_are_not_compared() -> None:
+    """A bigger key brings more right cases; that is not the agent getting better."""
+    with pytest.raises(IncomparableRuns, match="key"):
+        compare_scorecards(_card({"c1": HELD}), _card({"c1": HELD}, key_sha="e" * 64))
+
+
+def test_architect_scorecards_of_different_documents_are_not_compared() -> None:
+    with pytest.raises(IncomparableRuns, match="document"):
+        compare_scorecards(
+            _card({"c1": HELD}, agent="vastu", document="1" * 64),
+            _card({"c1": HELD}, agent="vastu", document="2" * 64),
+        )
