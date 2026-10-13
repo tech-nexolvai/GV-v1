@@ -54,6 +54,7 @@ from rules.snapshot import publish
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
+from workflow.assignment_bedrock import PROMPT_ID as ASSIGNMENT_PROMPT_ID
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
 from workflow.stages import (
@@ -668,7 +669,10 @@ def test_a_pending_invalid_row_still_raises_its_own_error_in_the_stage(
         recorder.write_pending()
 
 
-@pytest.mark.parametrize("prompt_id", ["layout-discriminator-v2", "reading-assignment-v3"])
+@pytest.mark.parametrize(
+    "prompt_id",
+    [LAYOUT_PROMPT_ID, ASSIGNMENT_PROMPT_ID, "layout-discriminator-v2", "reading-assignment-v3"],
+)
 def test_a_later_version_of_an_unmetered_prompt_stays_out_of_the_reading_budget(
     session: Session, store: LocalStore, prompt_id: str
 ) -> None:

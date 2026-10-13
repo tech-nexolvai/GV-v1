@@ -79,7 +79,7 @@ class Policy:
 ```
 
 **Budget.** There is one budget per reading, shared by every caller in it. It replaces three
-separate pieces: `_SpendMeter` (`workflow/stages.py:767`), `BatchSpendGuard`
+separate pieces: `_SpendMeter` (`workflow/stages.py:766`), `BatchSpendGuard`
 (`extraction/slot_reader/anthropic.py:117`) and the `ai_budget` settings.
 
 ```python
@@ -135,10 +135,10 @@ Verified on `8a6ac722` plus #1221.
 | Provider | Bedrock, OpenRouter, Anthropic | Bedrock | Bedrock | Bedrock | Bedrock | Bedrock | Bedrock | OpenRouter |
 | Pinned prompt id | yes | yes | yes | yes (`layout-discriminator-v1`) | yes (`findings-composer-v3`) | yes (`reading-assignment-v2`) | yes | yes |
 | Strict answer shape | yes, one re-ask (`bedrock.py:874-944`) | partly | yes (forced tool) | yes (forced tool) | yes (forced tool) | yes (forced tool, enums) | yes | yes |
-| Spend reserved before sending | yes (`BatchSpendGuard`) | counted after | checked before (`stages.py:1205`) | **no** | no | no | no | no (by decision, `app/config.py:83`) |
+| Spend reserved before sending | yes (`BatchSpendGuard`) | counted after | checked before (`stages.py:1206`) | **no** | no | no | no | no (by decision, `app/config.py:83`) |
 | Stored-answer reuse | yes | no | no | no | no | no | no | no |
 | Question packet | yes | no | no | no | no | no | no | no |
-| One row per call | yes (`CallLedger` + twins) | yes | yes (`_BufferedVisionRecorder`, `stages.py:825`) | **yes since #1221** | yes | **yes since #1221** | yes | yes |
+| One row per call | yes (`CallLedger` + twins) | yes | yes (`_BufferedVisionRecorder`, `stages.py:824`) | **yes since #1221** | yes | **yes since #1221** | yes | yes |
 | Failure reason on the row (#1215) | yes | yes | yes | **yes since #1221** | yes | **yes since #1221** | yes | yes |
 | Retries | pacer + throttle back-off + 402 rules | pacer + back-off | own loop (`nova.py:1167`) | boto defaults | boto `total_max_attempts` + profile fallback | 1 attempt + one guarded retry | 1 attempt | none |
 | Timeout | yes | yes | 10 s / 120 s (`nova.py:289-290`) | **boto default** | yes | yes | yes | 60 s |
@@ -162,7 +162,7 @@ before.
     `BedrockConverseInvocationRecorder`.
   - **Two steps.** While the model is asked, `record` only keeps the call in memory and cannot
     fail. `write_pending` writes the rows after the AI step has returned:
-    - after `classify_layout`, `workflow/stages.py:4040`;
+    - after `classify_layout`, `workflow/stages.py:4041`;
     - after `propose_and_guard`, `workflow/propose.py:382` and `app/api/measurements.py:1707`.
 
     This is what `_BufferedVisionRecorder` does for the vision readers. A recorder that raised
@@ -180,9 +180,10 @@ before.
   - `refused`: the provider's content filter stopped the call.
   - So a well-formed assignment that the guard refuses is still an `ok` call. The retry it causes
     is a second call with its own row.
-  - An interrupt (Ctrl-C, a shutdown) during the call still raises as before. The layout reader
-    hands it over as the call's error, never as an `ok` call with no tokens. A call that ended with
-    neither an answer nor an error writes no row and is logged.
+  - An interrupt (Ctrl-C, a shutdown) during the call still raises as before. The callers hand it
+    over as the call's error, never as an `ok` call with no tokens. But the interrupt ends the step
+    before `write_pending` runs, so **no row is written for an interrupted call**. A call that
+    ended with neither an answer nor an error also writes no row, and is logged.
 - **The scope.**
   - A layout call belongs to the extraction run of the page being read (the text run that the
     layout crops are filed under).
@@ -201,6 +202,8 @@ before.
   - If anything else is pending in that session (`new`, `dirty`, `deleted`), the recorder does not
     commit and logs that it did not. Work already flushed but not committed cannot be seen from
     there, so the API caller must have none (today it has none: it only reads before the call).
+  - If that commit itself fails (an infrastructure error), it is rolled back and logged, the row is
+    lost, and the stream carries on exactly as it did before #1221.
 - **Recording never changes the answer, and never hides anyone else's error.**
   - `write_pending` first flushes the session outside any guard, so an error that belongs to other
     pending work raises as itself, exactly as without the recorder.
@@ -208,8 +211,10 @@ before.
     savepoint is rolled back, the refusal is logged (`gv.workflow.model_call_recorder`) and the
     answer is kept.
 - **Not reading spend.** Layout and assignment rows are excluded from the reading meter until
-  migration step 3: `stage_spend_so_far` leaves out `UNMETERED_PROMPT_IDS` (`workflow/stages.py:976`,
-  `:9656`). Without that, "Read the unread pages" (`:3018`) and a re-run of the reading (`:2204`)
+  migration step 3: `stage_spend_so_far` leaves out every prompt of the two families in
+  `UNMETERED_PROMPT_FAMILIES` (`layout-discriminator-*`, `reading-assignment-*`;
+  `workflow/stages.py:977`, `:9657`), so a later prompt version cannot start counting by
+  accident. Without that, "Read the unread pages" (`:3019`) and a re-run of the reading (`:2205`)
   would rebuild the meter from committed layout rows. A priced row would shrink the readers' room,
   and an unpriced one would close it to $0 (`_remaining_claude_budget`).
 - **Usage.** The new rows reach `/projects/{id}/usage` (`app/api/usage.py`): layout rows through
@@ -246,7 +251,7 @@ before.
    - one `Budget` per reading;
    - every caller reserves before sending;
    - the layout classifier and the assignment count towards it (that step removes them from
-     `UNMETERED_PROMPT_IDS`).
+     `UNMETERED_PROMPT_FAMILIES`).
 
    This changes when a reading stops, so it gets its own decision and its own measurement.
 4. **Later:** stored-answer reuse and question packets for callers other than the slot reader;

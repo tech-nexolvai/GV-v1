@@ -29,7 +29,8 @@ lost row is a logged gap in the cost record, never a different result.
   (#1134): `get_session` never commits, so an uncommitted row would vanish with the request though
   the call was paid for. If anything else is pending in the session (`new`, `dirty`, `deleted`),
   it does not commit, and logs that it did not: committing someone else's half-done work is worse
-  than a row that is lost with the request. Work already flushed but not committed cannot be seen
+  than a row that is lost with the request. A commit that fails (an infrastructure error) is rolled
+  back and logged, and the request carries on exactly as it did before the row existed. Work already flushed but not committed cannot be seen
   from here; the API caller must not have any.
 
 This module must stay importable from `app/api/` (`tests/api/test_no_heavy_work.py`), so it names
@@ -155,5 +156,15 @@ class ModelCallRecorder:
                     "model call rows not committed: other work was pending in the session"
                 )
             else:
-                self.session.commit()
+                try:
+                    self.session.commit()
+                except Exception as commit_error:  # noqa: BLE001 - the answer goes on as before
+                    # An infrastructure failure on the one write this recorder added: the row is
+                    # lost (logged), and the request carries on exactly as it did before #1221.
+                    logger.warning("model call rows not committed: %s", type(commit_error).__name__)
+                    try:
+                        self.session.rollback()
+                    except Exception:  # noqa: BLE001 - the session is already being given up on
+                        logger.warning("model call recorder could not roll back its session")
+                    return 0
         return written
