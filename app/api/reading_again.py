@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_session
 from app.api.documents import EXTRACT_PACKAGE_WORKFLOW, _package_revision
+from app.api.signed_off import open_revision
 from app.audit.events import AuditCategory, emit
 from app.auth import Action, Principal, require_action, require_project_access
 from app.lifecycle.side_states import PLAIN_STOP_REASONS
@@ -99,6 +100,8 @@ def _work_waiting(session: Session, revision_id: UUID, workflow: str) -> bool:
     response_model=ReadingAgainOut,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Run the reading again after it stopped for the AI account or the AI budget",
+    # A signed-off or closed review is never read again: refused with the plain sentence.
+    dependencies=[Depends(open_revision)],
 )
 def read_again(
     principal: Annotated[Principal, Depends(require_project_access)],
