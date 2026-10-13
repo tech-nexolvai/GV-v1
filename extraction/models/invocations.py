@@ -83,6 +83,9 @@ _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
 #: `user:password@host` written without a scheme.
 _USERINFO = re.compile(r"[^\s:@/]+:[^\s@/]+@\S+")
+#: An apostrophe between two letters (`didn't`, `model's`) is not a quote: made U+2019 first, so it
+#: cannot pair with a real opening quote and leave the quoted text between them in place.
+_WORD_APOSTROPHE = re.compile(r"(?<=[A-Za-z])'(?=[A-Za-z])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"|`[^`]*`")
 #: A quote left open after the closed ones are gone: everything from it to the end of the line.
 _UNCLOSED_QUOTE = re.compile(r"['\"`].*$")
@@ -90,6 +93,11 @@ _BEARER = re.compile(r"(?i)\b(bearer|basic)\s+\S+")
 _SECRET_PAIR = re.compile(
     r"(?i)\b([\w-]*(?:secret|token|password|passwd|signature|credential|api[_-]?key|access[_-]?key"
     r"|authorization)[\w-]*)\s*[=:]\s*\S+"
+)
+#: A compound secret name (`session-token`, `client_secret`) followed by a space and its value.
+_COMPOUND_SECRET_WORD = re.compile(
+    r"(?i)\b((?=[\w-]*[-_])[\w-]*(?:secret|token|password|passwd|credential|api[_-]?key"
+    r"|access[_-]?key)[\w-]*)\s+\S+"
 )
 #: The bare names a password is written after, with a space allowed in place of `=` or `:`.
 _PASSWORD_WORD = re.compile(r"(?i)\b(pass|pwd|password|passwd)(?:\s*[=:]\s*|\s+)\S+")
@@ -144,8 +152,8 @@ def failure_reason(error: BaseException) -> str:
     message, which can repeat the request. For any other error the message is cut to its first
     line, control and format characters become spaces, and anything that could carry a secret or a
     client value is replaced: URLs and `user:password@host`, quoted text (a prompt, a model's answer
-    or a drawing value is quoted when an error repeats it; an unclosed quote takes the rest of the
-    line), bearer and `name=value` credentials, a password after `pass`/`pwd`/`password`, known key
+    or a drawing value is quoted when an error repeats it; an apostrophe inside a word is not a
+    quote; an unclosed quote takes the rest of the line), bearer and `name=value` credentials, a password after `pass`/`pwd`/`password`, known key
     prefixes, access key ids and long key-like runs. The whole is one line of at most
     `FAILURE_REASON_LIMIT` characters.
     """
@@ -161,10 +169,12 @@ def failure_reason(error: BaseException) -> str:
     for pattern, replacement in (
         (_URL, "<url>"),
         (_USERINFO, "<redacted>"),
+        (_WORD_APOSTROPHE, "\u2019"),
         (_QUOTED, "<quoted>"),
         (_UNCLOSED_QUOTE, "<quoted>"),
         (_BEARER, r"\1 <redacted>"),
         (_SECRET_PAIR, r"\1=<redacted>"),
+        (_COMPOUND_SECRET_WORD, r"\1=<redacted>"),
         (_PASSWORD_WORD, r"\1=<redacted>"),
         (_KEY_PREFIX, "<redacted>"),
         (_ACCESS_KEY_ID, "<redacted>"),

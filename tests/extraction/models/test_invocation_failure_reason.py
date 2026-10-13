@@ -170,3 +170,40 @@ def test_a_provider_error_with_an_odd_code_keeps_only_its_class() -> None:
     error = ClientError("not a code\x00", "anything")
 
     assert failure_reason(error) == "ClientError"
+
+
+# --- re-review of #1218: an apostrophe inside a word must not pair with a quote ----------------------
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "the model didn't accept 'Read 34 1/2 width of base B24'",
+            "RuntimeError: the model didn’t accept <quoted>",
+        ),
+        (
+            "model's answer 'Read the BASE CABINET width' won't parse",
+            "RuntimeError: model’s answer <quoted> won’t parse",
+        ),
+        ("can't connect to the endpoint", "RuntimeError: can’t connect to the endpoint"),
+    ],
+)
+def test_an_apostrophe_inside_a_word_is_not_a_quote(message: str, expected: str) -> None:
+    assert failure_reason(RuntimeError(message)) == expected
+
+
+@pytest.mark.parametrize(
+    "message", ["refused session-token zzzmadeup", "refused client_secret zzzmadeup"]
+)
+def test_a_compound_secret_name_followed_by_a_space_is_redacted(message: str) -> None:
+    reason = failure_reason(RuntimeError(message))
+
+    assert "zzzmadeup" not in reason
+
+
+def test_a_plain_word_token_followed_by_a_space_is_kept() -> None:
+    """Only a compound name (with `-` or `_`) counts as a secret's name before a space."""
+    reason = failure_reason(RuntimeError("the security token included in the request expired"))
+
+    assert reason == "RuntimeError: the security token included in the request expired"
