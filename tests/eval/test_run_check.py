@@ -27,9 +27,11 @@ from app.models import (
     ArchitectPairingRecord,
     CanonicalObservation,
     EvidenceCorroborationLane,
+    EvidenceSupportingCandidate,
     NoCountertopAnswer,
     ObservationCandidate,
     PackageRevision,
+    SlotRowReviewDecision,
 )
 from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
@@ -44,6 +46,8 @@ from tests.api.test_slot_rows import (
     _unwitnessed_on_first_page,
 )
 from tests.app.postgres_fixture import alembic_config
+from workflow.architect_pairing_contract import EffectivePairing
+from workflow.architect_row_plan import pairing_source_note
 from workflow.slot_row_scope import latest_slot_reader_run
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -161,7 +165,7 @@ def _forge(
         session.add(
             VerdictInput(
                 check_run_id=run.id,
-                operand_name=item.get("name", "countertop_width"),
+                operand_name=item.get("name", "countertop_depth"),
                 value_numerator=40,
                 value_denominator=1,
                 unit=item.get("unit", "in"),
@@ -199,7 +203,7 @@ def _calculation(
             operands
             or (
                 {
-                    "name": "countertop_width",
+                    "name": "countertop_depth",
                     "value": "40 in",
                     "source": "SHOP",
                     "evidence_ref": "synthetic-ref",
@@ -254,6 +258,8 @@ def _codes(report: RunCheckReport) -> set[str]:
 
 
 def _only(report: RunCheckReport, code: str) -> Any:
+    """The one item the seeded fault must give, and nothing else."""
+    assert _codes(report) == {code}, [(item.code, item.found) for item in report.items]
     found = [item for item in report.items if item.code == code]
     assert len(found) == 1, [item.code for item in report.items]
     return found[0]
@@ -368,7 +374,7 @@ def test_a_rule_for_another_product_needs_no_result(session: Session, tmp_path: 
     rules = {rule for _finding, _run, rule in _live(session, revision_id)}
     assert not any(rule.startswith("CAB-") for rule in rules)
 
-    assert "rule-without-result" not in _codes(run_check(session, revision_id))
+    assert run_check(session, revision_id).items == ()
 
 
 def test_a_countertop_row_with_no_width_result_points_to_nina(
@@ -479,84 +485,160 @@ def test_a_pass_on_walls_set_automatically_points_to_rekha(
     assert finding.outcome == "PASS"
 
     report = run_check(session, revision_id)
-    items = [item for item in report.items if item.code == "pass-on-automatic-walls"]
+    assert _codes(report) == {"pass-on-automatic-walls"}
+    items = list(report.items)
     assert len(items) == 2
     assert all(item.agent is Agent.REKHA and item.action is Action.HOLD for item in items)
     assert all(item.check is Check.TWO_JUDGMENTS for item in items)
+
+
+def _pairing(
+    session: Session,
+    revision_id: UUID,
+    anchor_id: UUID,
+    source: str,
+    *,
+    view: str | None = None,
+    supersedes: ArchitectPairingRecord | None = None,
+) -> ArchitectPairingRecord:
+    anchor = session.get(ObservationCandidate, anchor_id)
+    assert anchor is not None
+    reviewer = source == "reviewer"
+    record = ArchitectPairingRecord(
+        package_revision_id=revision_id,
+        page_id=anchor.page_id,
+        row_anchor_candidate_id=anchor.id,
+        extraction_run_id=None if reviewer else latest_slot_reader_run(session, revision_id),
+        source=source,
+        status="reviewer" if reviewer else "paired",
+        pairs=[],
+        details={} if view is None else {"view": view},
+        decided_by="synthetic reviewer" if reviewer else None,
+        supersedes_id=None if supersedes is None else supersedes.id,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def _architect_result(
+    session: Session,
+    revision_id: UUID,
+    anchor_id: UUID,
+    *,
+    noted: ArchitectPairingRecord | None,
+    source: str | None = None,
+) -> Finding:
+    """A decided architect result on one row, noting the pairing it used as the check writes it."""
+    _finding, run = _live_for(session, revision_id, "CT-ARCH-WIDTH-001")
+    notes: tuple[str, ...] = ()
+    if noted is not None:
+        notes = (
+            pairing_source_note(
+                EffectivePairing(
+                    record_id=noted.id,
+                    source=source or noted.source,  # type: ignore[arg-type]
+                    status=noted.status,
+                    pairs=(),
+                    reasons=(),
+                )
+            ),
+        )
+    return _forge(
+        session,
+        revision_id,
+        replaces=run,
+        outcome="PASS",
+        trace=_calculation("PASS"),
+        inputs=({"canonical": _canonical(session, anchor_id)},),
+        scope_row=anchor_id,
+        scope_label="Countertop row on page 1 · architect",
+        notes=notes,
+    )
 
 
 def test_a_decision_on_a_one_judgment_architect_pairing_points_to_milan(
     session: Session, tmp_path: Path
 ) -> None:
     revision_id, anchors = _rows(session, tmp_path)
-    anchor = session.get(ObservationCandidate, anchors[0])
-    assert anchor is not None
-    run_id = latest_slot_reader_run(session, revision_id)
-    session.add(
-        ArchitectPairingRecord(
-            package_revision_id=revision_id,
-            page_id=anchor.page_id,
-            row_anchor_candidate_id=anchor.id,
-            extraction_run_id=run_id,
-            source="code",
-            status="paired",
-            pairs=[],
-            details={},
-        )
-    )
-    session.flush()
-    _finding, run = _live_for(session, revision_id, "CT-ARCH-WIDTH-001")
-    forged = _forge(
-        session,
-        revision_id,
-        replaces=run,
-        outcome="PASS",
-        trace=_calculation("PASS"),
-        inputs=({"canonical": _canonical(session, anchors[0])},),
-        scope_row=anchors[0],
-        scope_label="Countertop row on page 1 · architect",
-    )
+    record = _pairing(session, revision_id, anchors[0], "code")
+    forged = _architect_result(session, revision_id, anchors[0], noted=record)
 
     item = _only(run_check(session, revision_id), "decision-on-one-judgment-pairing")
     assert item.check is Check.TWO_JUDGMENTS
     assert item.agent is Agent.MILAN
     assert item.action is Action.HOLD
     assert ("finding", str(forged.id)) in item.ids
+    assert "code alone" in item.found and "'" not in item.found
+
+
+def test_an_older_reviewer_record_does_not_hide_a_one_judgment_pairing(
+    session: Session, tmp_path: Path
+) -> None:
+    """Probe 1 (#1222 review): a reviewer paired the row against an earlier view, then the row was
+    matched with another view and the effective pairing is both AIs alone. The result's own note
+    says so: flagged, although a reviewer record exists."""
+    revision_id, anchors = _rows(session, tmp_path)
+    earlier = _pairing(session, revision_id, anchors[0], "reviewer", view="earlier view")
+    effective = _pairing(
+        session, revision_id, anchors[0], "both-ais", view="matched view", supersedes=earlier
+    )
+    _architect_result(session, revision_id, anchors[0], noted=effective)
+
+    item = _only(run_check(session, revision_id), "decision-on-one-judgment-pairing")
+    assert ("pairing source", "both-ais") in item.ids
+
+
+def test_a_newer_record_on_a_view_no_longer_matched_does_not_raise_a_false_alarm(
+    session: Session, tmp_path: Path
+) -> None:
+    """Probe 2 (#1222 review): the effective pairing is code and both AIs; a newer record, made on
+    a view the row is no longer matched with, says code alone. The result rests on the first."""
+    revision_id, anchors = _rows(session, tmp_path)
+    effective = _pairing(session, revision_id, anchors[0], "code+ais", view="matched view")
+    _pairing(
+        session,
+        revision_id,
+        anchors[0],
+        "code",
+        view="view no longer matched",
+        supersedes=effective,
+    )
+    _architect_result(session, revision_id, anchors[0], noted=effective)
+
+    assert run_check(session, revision_id).items == ()
 
 
 def test_a_reviewer_pairing_lets_the_architect_decision_stand(
     session: Session, tmp_path: Path
 ) -> None:
     revision_id, anchors = _rows(session, tmp_path)
-    anchor = session.get(ObservationCandidate, anchors[0])
-    assert anchor is not None
-    session.add(
-        ArchitectPairingRecord(
-            package_revision_id=revision_id,
-            page_id=anchor.page_id,
-            row_anchor_candidate_id=anchor.id,
-            extraction_run_id=None,
-            source="reviewer",
-            status="reviewer",
-            pairs=[],
-            details={},
-            decided_by="synthetic reviewer",
-        )
-    )
-    session.flush()
-    _finding, run = _live_for(session, revision_id, "CT-ARCH-WIDTH-001")
-    _forge(
-        session,
-        revision_id,
-        replaces=run,
-        outcome="PASS",
-        trace=_calculation("PASS"),
-        inputs=({"canonical": _canonical(session, anchors[0])},),
-        scope_row=anchors[0],
-        scope_label="Countertop row on page 1 · architect",
-    )
+    record = _pairing(session, revision_id, anchors[0], "reviewer")
+    _architect_result(session, revision_id, anchors[0], noted=record)
 
-    assert "decision-on-one-judgment-pairing" not in _codes(run_check(session, revision_id))
+    assert run_check(session, revision_id).items == ()
+
+
+def test_a_decided_architect_result_with_no_pairing_note_is_held(
+    session: Session, tmp_path: Path
+) -> None:
+    revision_id, anchors = _rows(session, tmp_path)
+    forged = _architect_result(session, revision_id, anchors[0], noted=None)
+
+    item = _only(run_check(session, revision_id), "decision-without-pairing-record")
+    assert item.agent is Agent.MILAN and item.action is Action.HOLD
+    assert ("finding", str(forged.id)) in item.ids
+
+
+def test_a_pairing_note_that_disagrees_with_its_record_is_held(
+    session: Session, tmp_path: Path
+) -> None:
+    revision_id, anchors = _rows(session, tmp_path)
+    record = _pairing(session, revision_id, anchors[0], "code")
+    _architect_result(session, revision_id, anchors[0], noted=record, source="code+ais")
+
+    item = _only(run_check(session, revision_id), "decision-without-pairing-record")
+    assert "says 'code'" in item.found
 
 
 def test_a_decision_on_a_value_with_one_reading_on_record_points_to_akshara(
@@ -813,7 +895,7 @@ def test_a_decision_with_a_value_from_no_source_breaks_the_missing_source_gate(
         trace=_calculation(
             "PASS",
             operands=(
-                {"name": "countertop_width", "value": "", "source": "SHOP", "evidence_ref": None},
+                {"name": "countertop_depth", "value": "", "source": "SHOP", "evidence_ref": None},
             ),
         ),
         inputs=({"canonical": None},),
@@ -839,7 +921,7 @@ def test_a_decision_on_advisory_evidence_breaks_the_advisory_gate(
             "PASS",
             operands=(
                 {
-                    "name": "countertop_width",
+                    "name": "countertop_depth",
                     "value": "40 in",
                     "source": "RETRIEVAL",
                     "evidence_ref": "synthetic-ref",
@@ -855,3 +937,260 @@ def test_a_decision_on_advisory_evidence_breaks_the_advisory_gate(
     assert advisory[0].check is Check.CONTRACT_GATES
     assert advisory[0].agent is Agent.NINA and advisory[0].action is Action.HOLD
     assert ("gate", "advisory_retrieval_never_an_operand") in advisory[0].ids
+
+
+# --- other kinds of revision (#1222 review): each must be ready when nothing is wrong -------------
+
+
+def _filled_by_the_reviewer(session: Session) -> UUID:
+    """`tests/workflow/test_full_coverage.py`'s revision: no product stated, every value typed by
+    the reviewer, list inputs (cabinets, fillers, categories) included; every check that can decide
+    passes."""
+    from rules.parameters import ParameterLayer
+    from tests.workflow.test_full_coverage import (
+        CABINET_TYPES,
+        DISCRIMINATORS,
+        MEASUREMENTS,
+        PROJECT_PARAMETERS,
+        RUN_PARAMETERS,
+        _publish_rulebook,
+        _revision,
+        _store,
+    )
+    from workflow.classifications import record_classifications
+    from workflow.measurements import operands_for
+    from workflow.stages import DatabaseStages
+
+    revision = _revision(session)
+    _publish_rulebook(session)
+    _store(session, revision, ParameterLayer.PROJECT, PROJECT_PARAMETERS)
+    _store(session, revision, ParameterLayer.RUN, {**RUN_PARAMETERS, **MEASUREMENTS})
+    record_classifications(
+        session,
+        package_revision_id=revision.id,
+        rule_id="CAB-FILLER-001",
+        input_name="cabinet_type",
+        categories=CABINET_TYPES,
+        confirmed_by="reviewer",
+    )
+    session.flush()
+    DatabaseStages(
+        operands=operands_for(session, revision.id), discriminators=DISCRIMINATORS
+    ).run_checks(session, revision.id)
+    return revision.id
+
+
+def test_a_revision_the_reviewer_filled_in_with_list_inputs_must_be_ready(
+    session: Session,
+) -> None:
+    """List inputs are never stored one value per row (`record_finding`), so they are read from
+    the calculation; the checks that cannot follow each list member say so."""
+    revision_id = _filled_by_the_reviewer(session)
+    outcomes = {rule: finding.outcome for finding, _run, rule in _live(session, revision_id)}
+    assert outcomes["CAB-ARCH-VS-SHOP-001"] == "PASS"
+
+    report = run_check(session, revision_id)
+
+    assert report.items == (), [(item.code, item.found) for item in report.items]
+    assert report.action == "ready"
+    assert report.product_type is None
+    reasons = {(entry.check, entry.reason) for entry in report.not_computable}
+    assert any(
+        check is Check.TWO_JUDGMENTS and "list of values" in reason for check, reason in reasons
+    )
+    assert any(
+        check is Check.CONTRACT_GATES and "list of values" in reason for check, reason in reasons
+    )
+
+
+def test_a_dropped_single_value_of_a_list_rule_is_still_reported(session: Session) -> None:
+    revision_id = _filled_by_the_reviewer(session)
+    finding, run = _live_for(session, revision_id, "CAB-FILLER-001")
+    trace = dict(finding.trace)
+    forged = _forge(
+        session,
+        revision_id,
+        replaces=run,
+        outcome="PASS",
+        trace=trace,
+        inputs=({"name": "design_width", "status": "HUMAN_CONFIRMED"},),
+    )
+
+    item = _only(run_check(session, revision_id), "decision-without-inputs")
+    assert ("finding", str(forged.id)) in item.ids
+    assert ("input", "field_width") in item.ids
+
+
+@pytest.mark.parametrize("product", ["cabinet", "countertop", None])
+def test_a_revision_for_one_product_or_none_with_nothing_read_is_ready(
+    session: Session, product: str | None
+) -> None:
+    from app.models import Package
+    from tests.workflow.test_stages import _publish_rulebook, _revision
+    from workflow.stages import DatabaseStages
+
+    revision = _revision(session)
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+    package.product_type = product
+    _publish_rulebook(session)
+    DatabaseStages().run_checks(session, revision.id)
+
+    report = run_check(session, revision.id)
+    assert report.items == (), [(item.code, item.found) for item in report.items]
+    assert report.product_type == product
+    rules = {rule for _finding, _run, rule in _live(session, revision.id)}
+    assert all(rule.startswith("CAB-") for rule in rules) == (product == "cabinet")
+
+
+def test_a_confirmed_countertop_without_its_width_result_points_to_nina(
+    session: Session, tmp_path: Path
+) -> None:
+    from storage.local import LocalStore
+    from tests.workflow.test_part_operands import Assembly
+
+    store = LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test-only")
+    assembly = Assembly(session, store)
+    finding = assembly.check(session, store)
+    assert finding.outcome == "PASS"
+    assert run_check(session, assembly.revision.id).items == ()
+
+    _supersede(session, session.get_one(CheckRun, finding.check_run_id))
+    report = run_check(session, assembly.revision.id)
+    # It was the width rule's only result, so the rule has none either.
+    assert _codes(report) == {"countertop-without-width-result", "rule-without-result"}
+    item = next(item for item in report.items if item.code == "countertop-without-width-result")
+    assert item.agent is Agent.NINA and item.action is Action.RERUN
+    assert ("item", str(assembly.parts[0])) in item.ids
+
+
+def test_a_revision_with_the_architect_drawings_as_their_own_file_is_ready(
+    session: Session, tmp_path: Path
+) -> None:
+    from app.models import (
+        Document,
+        DocumentKind,
+        DocumentVersion,
+        Package,
+        PackageRevisionDocument,
+        SourceArtifact,
+    )
+
+    revision_id, _anchors = _rows(session, tmp_path, run=False)
+    revision = session.get_one(PackageRevision, revision_id)
+    package = session.get_one(Package, revision.package_id)
+    source = SourceArtifact(storage_key=f"synthetic/{uuid4()}", sha256="b" * 64, size=1)
+    document = Document(package_id=package.id, kind=DocumentKind.ARCHITECTURAL.value)
+    session.add_all((source, document))
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id, source_artifact_id=source.id, sha256="b" * 64, page_count=1
+    )
+    session.add(version)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=revision_id,
+            package_id=package.id,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+    )
+    session.flush()
+    _run(session, revision_id, tmp_path)
+    architect, _run_row = _live_for(session, revision_id, "CT-ARCH-WIDTH-001")
+    assert architect.outcome == "REVIEW_REQUIRED"
+
+    assert run_check(session, revision_id).items == ()
+
+
+# --- more seeded faults (#1222 review) ------------------------------------------------------------
+
+
+def test_a_supporting_reading_that_names_no_valid_reading_is_reported_not_a_crash(
+    session: Session, tmp_path: Path
+) -> None:
+    revision_id, anchors = _rows(session, tmp_path)
+    anchor = session.get_one(ObservationCandidate, anchors[0])
+    value_id = _canonical(session, anchors[0])
+    supporter = ObservationCandidate(
+        document_version_id=anchor.document_version_id,
+        page_id=anchor.page_id,
+        extraction_run_id=anchor.extraction_run_id,
+        raw_text='40"',
+        value_numerator=40,
+        value_denominator=1,
+        unit="in",
+        polygon=anchor.polygon,
+        coordinate_space="image",
+        ambiguity_flags=["slot-reader-support", "supports:not-a-reading-id"],
+    )
+    session.add(supporter)
+    session.flush()
+    session.add(
+        EvidenceSupportingCandidate(
+            canonical_observation_id=value_id, candidate_id=supporter.id, role="primary"
+        )
+    )
+    session.flush()
+    _finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
+    _forge(
+        session,
+        revision_id,
+        replaces=run,
+        outcome="PASS",
+        trace=_calculation("PASS"),
+        inputs=({"canonical": value_id},),
+    )
+
+    item = _only(run_check(session, revision_id), "malformed-supporting-reading")
+    assert item.agent is Agent.AKSHARA and item.action is Action.HOLD
+    assert ("reading", str(supporter.id)) in item.ids
+
+
+def test_a_pass_whose_row_no_longer_has_a_wall_choice_is_held(
+    session: Session, tmp_path: Path
+) -> None:
+    """Walls are recomputed from the row, not only read from the result's note: the reviewer's
+    wall choice was taken back after the run, so the PASS rests on walls nobody chose."""
+    revision_id, anchors = _rows(session, tmp_path)
+    decision = session.scalars(
+        select(SlotRowReviewDecision).where(SlotRowReviewDecision.row_candidate_id == anchors[0])
+    ).one()
+    session.add(
+        SlotRowReviewDecision(
+            id=uuid4(),
+            row_candidate_id=anchors[0],
+            supersedes_id=decision.id,
+            wall_config=None,
+            measurements={},
+            confirmed_by="synthetic reviewer",
+        )
+    )
+    session.flush()
+
+    report = run_check(session, revision_id)
+    item = _only(report, "pass-on-automatic-walls")
+    assert ("row", str(anchors[0])) in item.ids
+
+
+def test_holds_and_re_runs_together_are_both_in_the_action(
+    session: Session, tmp_path: Path
+) -> None:
+    revision_id, _anchors = _rows(session, tmp_path, row_pages=(0,))
+    _finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
+    _forge(session, revision_id, replaces=run, outcome="NOT_FOUND", reason=None)
+
+    report = run_check(session, revision_id)
+    assert _codes(report) == {"silent-page", "abstention-without-reason"}
+    assert report.action == "hold for a person; re-run Rekha"
+
+
+def test_every_report_names_what_it_cannot_compute(session: Session, tmp_path: Path) -> None:
+    revision_id, _anchors = _rows(session, tmp_path)
+    report = run_check(session, revision_id)
+
+    named = {entry.check: entry.reason for entry in report.not_computable}
+    assert set(named) == {Check.TWO_JUDGMENTS, Check.WORDING}
+    assert "mark" in named[Check.TWO_JUDGMENTS]
+    assert "_" not in named[Check.WORDING], "plain English, no table names"

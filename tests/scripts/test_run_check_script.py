@@ -64,7 +64,7 @@ def test_the_script_prints_the_report_and_saves_it_as_json(
     assert saved["package_revision_id"] == str(revision_id)
     assert saved["action"] == "re-run Rekha"
     assert [item["code"] for item in saved["items"]] == ["silent-page"]
-    assert saved["not_computable"][0]["check"] == "wording"
+    assert "wording" in {entry["check"] for entry in saved["not_computable"]}
     session.expire_all()
     assert session.execute(select(func.count()).select_from(Finding)).scalar_one() == before
     assert session.execute(select(func.count()).select_from(CheckRun)).scalar_one() == runs
@@ -91,3 +91,28 @@ def test_an_unknown_revision_exits_with_two(
     session.commit()
     assert run_check_script.main([str(uuid4()), "--database-url", _url(postgres_engine)]) == 2
     assert "no package revision" in capsys.readouterr().err
+
+
+def test_a_database_at_an_older_schema_gets_a_plain_message(
+    session: Session,
+    postgres_engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """What an older database does to the current models: a column they select is missing."""
+    from sqlalchemy.exc import ProgrammingError
+
+    session.commit()
+
+    def older(_session: Session, _revision: object) -> None:
+        raise ProgrammingError(
+            "SELECT a_new_column FROM a_table", {}, Exception("column does not exist")
+        )
+
+    monkeypatch.setattr(run_check_script, "run_check", older)
+    code = run_check_script.main([str(uuid4()), "--database-url", _url(postgres_engine)])
+
+    assert code == 3
+    err = capsys.readouterr().err
+    assert "do not match this code" in err and "migrated" in err
+    assert "Traceback" not in err and "a_new_column" not in err

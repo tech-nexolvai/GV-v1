@@ -15,14 +15,18 @@ can be pasted without carrying a drawing's values.
 
 * (a) coverage: every published rule for the package's product has a result; every abstention says
   why; every countertop row (and every confirmed countertop) has its width result.
-* (b) two judgments: no PASS or FAIL rests on a one-judgment architect pairing
-  (`workflow/architect_row_plan.AUTOMATIC_SOURCES`) or on a value with only one reading on record;
-  no PASS rests on a reading flagged `no-drawn-length-witness` (`confirm_unwitnessed_pass`) or on
-  walls set automatically (`confirm_vendor_walls_pass`).
-* (c) inputs: every PASS or FAIL has its qualified `verdict_inputs` and its calculation on record.
+* (b) two judgments: no PASS or FAIL rests on a one-judgment architect pairing (the pairing the
+  result recorded in its own note, checked against the record it names; `AUTOMATIC_SOURCES`) or
+  on a value with only one reading on record; no PASS rests on a reading flagged
+  `no-drawn-length-witness` (`confirm_unwitnessed_pass`) or on walls nobody chose
+  (`confirm_vendor_walls_pass`).
+* (c) inputs: every PASS or FAIL has each single-valued input of its rule stored in
+  `verdict_inputs` (a list input is never stored as a list, so it must show in the calculation),
+  and its calculation on record.
 * (d) unread pages: every vendor page of the newest reading has a row, a recorded reason or a
   reviewer's answer, and every page that blocks sign-off has its result.
-* (e) wording: not computable from stored rows yet (see `WORDING_NOT_STORED`).
+* (e) wording: not computable from stored rows yet (see `WORDING_NOT_STORED`). Two limits of (b)
+  and (f) are listed with every report too (`UNWITNESSED_FLAG_ONLY`, `LIST_MEMBERS_NOT_STORED`).
 * (f) the four contract gates of `eval/release_gates.py`, on the run's own operands: no decision
   on conflicting or unqualified evidence, in an unknown unit, on a value with no source, or on
   advisory evidence.
@@ -38,10 +42,10 @@ Source: issue #1220. Verification: `tests/eval/test_run_check.py`.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
@@ -67,7 +71,8 @@ from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.verdicts import CheckRun, Finding, VerdictInput
 from app.review.no_countertop import answered_pages
-from app.verdicts.rulebook import snapshot_store
+from app.verdicts.rulebook import from_row, snapshot_store
+from eval.release_gates import ADVISORY_GATE, MISSING_SOURCE_GATE, OCR_GATE, UNKNOWN_UNIT_GATE
 from evidence.canonical import Authority, CorroborationLane
 from extraction.slot_reader.seal import TEXT_LAYER
 from rules.semantic_types import ProductType
@@ -76,8 +81,12 @@ from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
 from verdict.outcomes import DECISIVE_OUTCOMES, Outcome
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import DocumentRole, OperandSource
-from vocabulary.wall_layouts import AUTOMATIC_WALLS_LINE
-from workflow.architect_row_plan import ARCHITECT_CHECK_RULE_ID, AUTOMATIC_SOURCES
+from vocabulary.wall_layouts import AUTOMATIC_WALLS_LINE, NOT_NEEDED_PASS_LINE
+from workflow.architect_row_plan import (
+    ARCHITECT_CHECK_RULE_ID,
+    AUTOMATIC_SOURCES,
+    pairing_source_from_notes,
+)
 from workflow.part_operands import CountertopScope, countertop_scopes, manual_run_pages
 from workflow.slot_row_scope import (
     SlotRow,
@@ -88,6 +97,8 @@ from workflow.slot_row_scope import (
 )
 
 __all__ = [
+    "LIST_MEMBERS_NOT_STORED",
+    "UNWITNESSED_FLAG_ONLY",
     "WORDING_NOT_STORED",
     "Action",
     "Agent",
@@ -102,19 +113,28 @@ __all__ = [
 #: The countertop width check: one result per countertop row, confirmed countertop or split page.
 WIDTH_RULE_ID: Final = "CT-WIDTH-001"
 
-#: `eval/release_gates.py`'s four contract gates, applied here to the run's own stored operands.
-OCR_GATE: Final = "ocr_disagreement_never_auto_resolved"
-UNKNOWN_UNIT_GATE: Final = "unknown_unit_cannot_enter_verdict"
-MISSING_SOURCE_GATE: Final = "missing_approved_source_is_not_found"
-ADVISORY_GATE: Final = "advisory_retrieval_never_an_operand"
-
 #: Why check (e) cannot be computed from stored rows yet.
 WORDING_NOT_STORED: Final = (
-    "Whether the findings wording passed its guard or fell back is not stored. The output stage "
-    "returns it in its summary (findings_composition: mode and fallback reason), and stage "
-    "summaries are not persisted; model_invocations keeps only the provider call's outcome, not "
-    "the guard's verdict on the text. Keeping it needs a new column or table (a migration), which "
+    "Whether the AI's wording of the findings passed its fact check, or the plain template was "
+    "used instead, is not kept anywhere. The step that writes the reports works it out but does "
+    "not save it, and the record of each AI call keeps only whether the call itself worked, not "
+    "whether its text passed the check. Keeping it needs a database change (a migration), which "
     "phase 1 does not add."
+)
+
+#: Why part of checks (b) and (f) cannot be computed (#1222 review): a list input's members.
+LIST_MEMBERS_NOT_STORED: Final = (
+    "{count} decision(s) in this run used a list of values (several cabinets or fillers, say) "
+    "outside a countertop row. The results keep each single value with where it came from, but a "
+    "list only as text in the calculation, so where each member of the list came from, and whether "
+    "it had two judgments, cannot be checked from what is stored."
+)
+
+#: The limit of the unwitnessed-reading check (#1222 review).
+UNWITNESSED_FLAG_ONLY: Final = (
+    "The drawn-length check reads the same 'drawn length not checked' mark the reader sets on a "
+    "reading. A reading that should carry the mark but does not cannot be caught: the drawn "
+    "lengths and the scale they were checked against are not stored."
 )
 
 _UNITS: Final = frozenset(unit.value for unit in Unit)
@@ -239,14 +259,19 @@ class RunCheckReport:
 
     @property
     def action(self) -> str:
-        """`ready` when nothing was found; `hold for a person` when any item needs one; else
-        `re-run` and the agents to re-run, in the order the items name them."""
+        """`ready` when nothing was found; else `hold for a person` when any item needs one, and
+        `re-run` with the agents to re-run, in the order the items name them, joined by `; `."""
         if not self.items:
             return Action.READY.value
+        parts: list[str] = []
         if any(item.action is Action.HOLD for item in self.items):
-            return Action.HOLD.value
-        agents = dict.fromkeys(item.agent.value for item in self.items)
-        return f"{Action.RERUN.value} {', '.join(agents)}"
+            parts.append(Action.HOLD.value)
+        agents = dict.fromkeys(
+            item.agent.value for item in self.items if item.action is Action.RERUN
+        )
+        if agents:
+            parts.append(f"{Action.RERUN.value} {', '.join(agents)}")
+        return "; ".join(parts)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -267,6 +292,7 @@ class _Live:
     finding: Finding
     run: CheckRun
     rule_id: str
+    snapshot: RuleSnapshotRow
 
     @property
     def decided(self) -> bool:
@@ -292,6 +318,9 @@ class _Value:
     parents: tuple[ObservationCandidate, ...]
     """The readings the supporters support (`supports:<id>`), or the supporter itself when it
     supports nothing else (a reviewer-confirmed reading)."""
+    malformed: tuple[str, ...] = ()
+    """Supporting readings whose `supports:` mark names no reading id: what they support is
+    unknown."""
 
     @property
     def reader_ids(self) -> frozenset[str]:
@@ -313,9 +342,9 @@ class _Value:
 
 def _live_results(session: Session, revision_id: UUID) -> list[_Live]:
     return [
-        _Live(finding, run, rule_id)
-        for finding, run, rule_id in session.execute(
-            select(Finding, CheckRun, RuleDefinition.rule_id)
+        _Live(finding, run, rule_id, snapshot)
+        for finding, run, rule_id, snapshot in session.execute(
+            select(Finding, CheckRun, RuleDefinition.rule_id, RuleSnapshotRow)
             .join(CheckRun, CheckRun.id == Finding.check_run_id)
             .join(RuleSnapshotRow, RuleSnapshotRow.id == CheckRun.rule_snapshot_id)
             .join(RuleDefinition, RuleDefinition.id == RuleSnapshotRow.rule_definition_id)
@@ -334,6 +363,20 @@ def _inputs_by_run(session: Session, run_ids: Sequence[UUID]) -> dict[UUID, list
             .order_by(VerdictInput.operand_name)
         ):
             found[item.check_run_id].append(item)
+    return found
+
+
+def _supported(candidate: ObservationCandidate) -> list[UUID | None]:
+    """The reading ids a supporting reading's `supports:` marks name; `None` for a mark that names
+    no valid id (reported, never a crash)."""
+    found: list[UUID | None] = []
+    for flag in candidate.ambiguity_flags or ():
+        if not flag.startswith(_SUPPORTS):
+            continue
+        try:
+            found.append(UUID(flag.removeprefix(_SUPPORTS)))
+        except ValueError:
+            found.append(None)
     return found
 
 
@@ -366,11 +409,11 @@ def _values(session: Session, observation_ids: Iterable[UUID]) -> dict[UUID, _Va
     ):
         supporters[observation_id].append(candidate)
     parent_ids = {
-        UUID(flag.removeprefix(_SUPPORTS))
+        parent_id
         for candidates in supporters.values()
         for candidate in candidates
-        for flag in candidate.ambiguity_flags or ()
-        if flag.startswith(_SUPPORTS)
+        for parent_id in _supported(candidate)
+        if parent_id is not None
     }
     parents = (
         {
@@ -386,43 +429,67 @@ def _values(session: Session, observation_ids: Iterable[UUID]) -> dict[UUID, _Va
     for observation_id, row in rows.items():
         mine = tuple(supporters.get(observation_id, ()))
         readings: dict[UUID, ObservationCandidate] = {}
+        malformed: list[str] = []
         for supporter in mine:
-            supported = [
-                UUID(flag.removeprefix(_SUPPORTS))
-                for flag in supporter.ambiguity_flags or ()
-                if flag.startswith(_SUPPORTS)
-            ]
+            supported = _supported(supporter)
             if not supported:
                 readings[supporter.id] = supporter
             for parent_id in supported:
-                if (parent := parents.get(parent_id)) is not None:
+                if parent_id is None:
+                    malformed.append(str(supporter.id))
+                elif (parent := parents.get(parent_id)) is not None:
                     readings[parent.id] = parent
         values[observation_id] = _Value(
             row=row,
             lanes=frozenset(lanes.get(observation_id, ())),
             supporters=mine,
             parents=tuple(readings[key] for key in sorted(readings, key=str)),
+            malformed=tuple(sorted(set(malformed))),
         )
     return values
 
 
-def _pairing_source(session: Session, anchor_id: UUID | None, at: datetime) -> str:
-    """The pairing a row's architect result rested on when it was written: a reviewer's, when one
-    had paired the row by then, else the newest automatic record's source (`none` when there was
-    none). The same order `workflow.architect_pairing_records.latest_architect_pairing` reads."""
-    if anchor_id is None:
-        return "none"
-    sources = session.scalars(
-        select(ArchitectPairingRecord.source)
-        .where(
-            ArchitectPairingRecord.row_anchor_candidate_id == anchor_id,
-            ArchitectPairingRecord.created_at <= at,
-        )
-        .order_by(ArchitectPairingRecord.created_at.desc(), ArchitectPairingRecord.id.desc())
-    ).all()
-    if "reviewer" in sources:
-        return "reviewer"
-    return sources[0] if sources else "none"
+_PAIRING_RECORD: Final = re.compile(r"\(pairing record ([0-9a-fA-F-]{36})\)")
+
+
+def _noted_pairing(
+    session: Session, finding: Finding, run: CheckRun
+) -> tuple[str | None, str | None]:
+    """The pairing source the architect result recorded in its own notes
+    (`workflow.architect_row_plan.pairing_source_note`), and why it cannot be trusted, if so.
+
+    The finding's note is what the check used: it names the effective pairing, after the #1167
+    rule that a pairing counts only while its view is the row's match. The record it names must
+    exist, belong to the same row, have been written before the result, and say the same source.
+    """
+    source = pairing_source_from_notes(finding.notes)
+    if source is None:
+        return None, "it records no pairing source"
+    record_id = next(
+        (
+            match.group(1)
+            for note in finding.notes or ()
+            if isinstance(note, str) and note.startswith("Pairing source: ")
+            for match in (_PAIRING_RECORD.search(note),)
+            if match is not None
+        ),
+        None,
+    )
+    if record_id is None:
+        return source, "its pairing note names no pairing record"
+    try:
+        record = session.get(ArchitectPairingRecord, UUID(record_id))
+    except ValueError:
+        record = None
+    if record is None:
+        return source, "the pairing record its note names does not exist"
+    if record.row_anchor_candidate_id != finding.scope_row_candidate_id:
+        return source, "the pairing record its note names belongs to another row"
+    if record.created_at > run.created_at:
+        return source, "the pairing record its note names was written after the result"
+    if record.source != source:
+        return source, f"its note says '{source}' but the record it names says '{record.source}'"
+    return source, None
 
 
 def _shop_pages(session: Session, revision_id: UUID) -> list[Page]:
@@ -532,11 +599,32 @@ def _width_coverage(
     return items
 
 
+_ONE_JUDGMENT_WORDS: Final = {"code": "code alone", "both-ais": "the two AIs alone"}
+
+
+def _walls_automatic(entry: _Live, rows: Mapping[UUID, SlotRow]) -> bool:
+    """Whether a width PASS rests on walls nobody chose (#1202 review): its own note says the
+    walls were set automatically, or its row has no reviewer's wall choice and the result is not
+    one that is right for every wall case."""
+    notes = entry.finding.notes or ()
+    if any(AUTOMATIC_WALLS_LINE in note for note in notes):
+        return True
+    row = (
+        None
+        if entry.finding.scope_row_candidate_id is None
+        else rows.get(entry.finding.scope_row_candidate_id)
+    )
+    if row is None or any(NOT_NEEDED_PASS_LINE in note for note in notes):
+        return False
+    return row.decision is None or row.decision.wall_config is None
+
+
 def _two_judgments(
     session: Session,
     live: Sequence[_Live],
     inputs: Mapping[UUID, Sequence[VerdictInput]],
     values: Mapping[UUID, _Value],
+    rows: Mapping[UUID, SlotRow],
 ) -> list[RunCheckItem]:
     items: list[RunCheckItem] = []
     for entry in live:
@@ -544,17 +632,31 @@ def _two_judgments(
             continue
         finding = entry.finding
         if entry.rule_id == ARCHITECT_CHECK_RULE_ID:
-            source = _pairing_source(session, finding.scope_row_candidate_id, entry.run.created_at)
-            if source not in AUTOMATIC_SOURCES:
+            source, untrusted = _noted_pairing(session, finding, entry.run)
+            if untrusted is not None:
+                items.append(
+                    RunCheckItem(
+                        Check.TWO_JUDGMENTS,
+                        "decision-without-pairing-record",
+                        Agent.MILAN,
+                        Action.HOLD,
+                        f"A {finding.outcome} compared with the architect cannot show which "
+                        f"pairing it rests on: {untrusted}.",
+                        entry.ids,
+                    )
+                )
+            elif source is not None and source not in AUTOMATIC_SOURCES:
+                who = _ONE_JUDGMENT_WORDS.get(source)
                 items.append(
                     RunCheckItem(
                         Check.TWO_JUDGMENTS,
                         "decision-on-one-judgment-pairing",
                         Agent.MILAN,
                         Action.HOLD,
-                        f"A {finding.outcome} compared with the architect rests on a pairing "
-                        f"decided by '{source}' alone; only code and both AIs together, or a "
-                        "reviewer, may make it automatic.",
+                        f"A {finding.outcome} compared with the architect rests on "
+                        + (f"a pairing made by {who}" if who else "no pairing at all")
+                        + "; only code and both AIs together, or a reviewer, may make it "
+                        "automatic. It should have waited for the reviewer and did not.",
                         (*entry.ids, ("pairing source", source)),
                     )
                 )
@@ -564,6 +666,22 @@ def _two_judgments(
             if item.canonical_observation_id is not None and item.canonical_observation_id in values
         ]
         for value in used:
+            if value.malformed:
+                items.append(
+                    RunCheckItem(
+                        Check.TWO_JUDGMENTS,
+                        "malformed-supporting-reading",
+                        value.agent,
+                        Action.HOLD,
+                        f"A {finding.outcome} uses a value whose supporting reading names no "
+                        "valid reading it supports, so its readings cannot be checked.",
+                        (
+                            *entry.ids,
+                            ("value", str(value.row.id)),
+                            *(("reading", reading) for reading in value.malformed),
+                        ),
+                    )
+                )
             if value.row.status != EvidenceStatus.CORROBORATED.value:
                 # A reviewer-confirmed value needs no second reading; an unqualified one is the
                 # contract gate's (below).
@@ -612,13 +730,12 @@ def _two_judgments(
                     Agent.AKSHARA,
                     Action.HOLD,
                     f"A PASS rests on {len(unwitnessed)} reading(s) whose drawn length was not "
-                    "checked (no scale): the two readers' text alone. It waits for one click.",
+                    "checked (no scale): the two readers' text alone. It should have waited for "
+                    "one click and did not.",
                     (*entry.ids, *(("reading", reading) for reading in unwitnessed)),
                 )
             )
-        if entry.rule_id == WIDTH_RULE_ID and any(
-            AUTOMATIC_WALLS_LINE in note for note in finding.notes or ()
-        ):
+        if entry.rule_id == WIDTH_RULE_ID and _walls_automatic(entry, rows):
             items.append(
                 RunCheckItem(
                     Check.TWO_JUDGMENTS,
@@ -626,35 +743,90 @@ def _two_judgments(
                     Agent.REKHA,
                     Action.HOLD,
                     "A width PASS rests on walls set automatically from the vendor's drawing; "
-                    "no reviewer chose them. It waits for one click.",
+                    "no reviewer chose them. It should have waited for one click and did not.",
                     entry.ids,
                 )
             )
     return items
 
 
-def _inputs(
-    live: Sequence[_Live], inputs: Mapping[UUID, Sequence[VerdictInput]]
-) -> list[RunCheckItem]:
+def _trace(finding: Finding) -> tuple[Mapping[str, object], list[Mapping[str, object]]]:
+    trace = finding.trace if isinstance(finding.trace, Mapping) else {}
+    stored = trace.get("operands")
+    operands = [
+        operand
+        for operand in (stored if isinstance(stored, list) else ())
+        if isinstance(operand, Mapping)
+    ]
+    return trace, operands
+
+
+def _cardinalities(
+    snapshot: RuleSnapshotRow, cache: dict[UUID, dict[str, str] | None]
+) -> dict[str, str] | None:
+    """Each declared input of the result's own rule snapshot and how many values it takes
+    (`one` or `many`); `None` when the snapshot cannot be read as a rule."""
+    if snapshot.id not in cache:
+        try:
+            rule = from_row(snapshot).rule
+        except Exception:  # noqa: BLE001 - an unreadable snapshot is reported, never a crash
+            cache[snapshot.id] = None
+        else:
+            cache[snapshot.id] = {
+                name: selector.cardinality.value for name, selector in rule.inputs.items()
+            }
+    return cache[snapshot.id]
+
+
+@dataclass(frozen=True, slots=True)
+class _InputsSeen:
+    items: list[RunCheckItem]
+    list_decisions: int
+    """Decisions with a list input whose members are not stored one by one."""
+
+
+def _inputs(live: Sequence[_Live], inputs: Mapping[UUID, Sequence[VerdictInput]]) -> _InputsSeen:
+    """A decision's single values must each be stored (`verdict_inputs`, which the database
+    admits only qualified); a list input is never stored as a list (`record_finding` keeps one
+    exact number per input), so it must show in the calculation instead."""
     items: list[RunCheckItem] = []
+    cache: dict[UUID, dict[str, str] | None] = {}
+    list_decisions = 0
     for entry in live:
         if not entry.decided:
             continue
-        recorded = inputs.get(entry.run.id, ())
-        qualified = [item for item in recorded if item.evidence_status in _QUALIFIED]
-        if not qualified or len(qualified) != len(recorded):
+        recorded = {item.operand_name for item in inputs.get(entry.run.id, ())}
+        trace, operands = _trace(entry.finding)
+        shown = {
+            str(operand.get("name"))
+            for operand in operands
+            if str(operand.get("value") or "").strip()
+        }
+        declared = _cardinalities(entry.snapshot, cache)
+        if declared is None:
+            missing = [] if recorded else ["(the rule could not be read)"]
+            lists: list[str] = []
+        else:
+            missing = sorted(
+                name for name, many in declared.items() if many == "one" and name not in recorded
+            )
+            lists = [name for name, many in declared.items() if many == "many" and name in shown]
+            if not recorded and not lists:
+                missing = missing or ["(no input at all)"]
+        if any(not any(stored.startswith(f"{name}[") for stored in recorded) for name in lists):
+            list_decisions += 1
+        if missing:
             items.append(
                 RunCheckItem(
                     Check.INPUTS,
                     "decision-without-inputs",
                     Agent.NINA,
                     Action.HOLD,
-                    f"A {entry.finding.outcome} has {len(qualified)} qualified input(s) on record "
-                    f"of {len(recorded)}: it cannot be recomputed from what was stored.",
-                    entry.ids,
+                    f"A {entry.finding.outcome} has no stored value for {len(missing)} of its "
+                    "inputs: it cannot be recomputed from what was stored.",
+                    (*entry.ids, *(("input", name) for name in missing)),
                 )
             )
-        trace = entry.finding.trace if isinstance(entry.finding.trace, Mapping) else {}
         if not isinstance(trace.get("operation"), str) or not isinstance(
             trace.get("operands"), list
         ):
@@ -669,7 +841,7 @@ def _inputs(
                     entry.ids,
                 )
             )
-    return items
+    return _InputsSeen(items, list_decisions)
 
 
 def _unread_pages(
@@ -750,13 +922,7 @@ def _contract_gates(
             for item in recorded
             if item.canonical_observation_id is not None and item.canonical_observation_id in values
         ]
-        trace = finding.trace if isinstance(finding.trace, Mapping) else {}
-        stored_operands = trace.get("operands")
-        operands = [
-            operand
-            for operand in (stored_operands if isinstance(stored_operands, list) else ())
-            if isinstance(operand, Mapping)
-        ]
+        trace, operands = _trace(finding)
 
         unqualified = [value for value in used if value.row.status not in _QUALIFIED]
         if unqualified:
@@ -872,7 +1038,7 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
     product = package_product(package)
     in_scope = {item.value for item in ProductType} if product is None else {product.value}
     countertops = ProductType.COUNTERTOP.value in in_scope
-    not_computable = (NotComputable(Check.WORDING, WORDING_NOT_STORED),)
+    not_computable: list[NotComputable] = [NotComputable(Check.WORDING, WORDING_NOT_STORED)]
 
     store = snapshot_store(session)
     rules_in_scope = sorted(
@@ -890,7 +1056,9 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
             package_revision_id=str(package_revision_id),
             product_type=None if product is None else product.value,
             items=tuple(ordered),
-            not_computable=not_computable,
+            not_computable=tuple(
+                sorted(not_computable, key=lambda entry: _CHECK_ORDER[entry.check])
+            ),
             examined=tuple(examined.items()),
         )
 
@@ -933,11 +1101,23 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
             if item.canonical_observation_id is not None
         ),
     )
+    reading = (
+        slot_rows_and_unchosen_pages(session, package_revision_id)
+        if countertops and WIDTH_RULE_ID in rules_in_scope
+        else None
+    )
+    rows: tuple[SlotRow, ...] = () if reading is None else reading[0]
 
+    seen = _inputs(live, inputs)
     items = _coverage(live, rules_in_scope)
-    items += _two_judgments(session, live, inputs, values)
-    items += _inputs(live, inputs)
+    items += _two_judgments(session, live, inputs, values, {row.anchor.id: row for row in rows})
+    items += seen.items
     items += _contract_gates(live, inputs, values)
+    not_computable.append(NotComputable(Check.TWO_JUDGMENTS, UNWITNESSED_FLAG_ONLY))
+    if seen.list_decisions:
+        words = LIST_MEMBERS_NOT_STORED.format(count=seen.list_decisions)
+        not_computable.append(NotComputable(Check.TWO_JUDGMENTS, words))
+        not_computable.append(NotComputable(Check.CONTRACT_GATES, words))
 
     examined = {
         "rules in scope": len(rules_in_scope),
@@ -946,8 +1126,8 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
         "recorded inputs": sum(len(inputs.get(entry.run.id, ())) for entry in live),
         "values behind decisions": len(values),
     }
-    if countertops and WIDTH_RULE_ID in rules_in_scope:
-        rows, unchosen = slot_rows_and_unchosen_pages(session, package_revision_id)
+    if reading is not None:
+        unchosen = reading[1]
         manual = countertop_scopes(session, package_revision_id)
         manual_pages = {subject.page_index for subject in manual or ()} | manual_run_pages(
             session, package_revision_id
@@ -969,8 +1149,7 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
                 finding.scope_item_id for finding in widths if finding.scope_item_id is not None
             },
         )
-        reading = latest_slot_reader_run(session, package_revision_id)
-        if reading is not None:
+        if latest_slot_reader_run(session, package_revision_id) is not None:
             items += _unread_pages(
                 session,
                 revision,

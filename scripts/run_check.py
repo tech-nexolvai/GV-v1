@@ -8,7 +8,8 @@ action; it changes nothing.
     DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5434/<database> \\
         .venv/bin/python scripts/run_check.py <revision-id> [--json report.json]
 
-`--database-url` overrides `DATABASE_URL`. The report holds code's own sentences, ids, page
+`--database-url` overrides `DATABASE_URL`. A database at an older schema than this code is refused
+with a plain message (exit code 3): run the check on a migrated copy. The report holds code's own sentences, ids, page
 numbers and counts, never a drawing's values; a report about a client's drawings is still kept
 out of the repository.
 """
@@ -26,6 +27,8 @@ from uuid import UUID
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from eval.run_check import RunCheckReport, UnknownRevision, run_check
@@ -52,6 +55,16 @@ def render(report: RunCheckReport) -> str:
     return "\n".join(lines)
 
 
+def _schema(engine: Engine) -> str:
+    """The database's migration version, or `unknown`."""
+    try:
+        with engine.connect() as connection:
+            version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    except Exception:  # noqa: BLE001 - only for the message
+        return "unknown"
+    return str(version) if version else "unknown"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("revision", type=UUID, help="the package revision id")
@@ -73,6 +86,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 except UnknownRevision as error:
                     print(f"run check: {error}", file=sys.stderr)
                     return 2
+                except ProgrammingError:
+                    print(
+                        "run check: this database's tables do not match this code (it is at "
+                        f"schema {_schema(engine)}, probably older). Nothing was "
+                        "changed. Run the check on a copy migrated to the current schema.",
+                        file=sys.stderr,
+                    )
+                    return 3
             connection.rollback()
     finally:
         engine.dispose()
