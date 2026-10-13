@@ -293,7 +293,8 @@ def test_row_reader_keeps_each_kind_of_answer(payload: dict[str, object], kind: 
     assert answer.row == payload["row"]
     assert answer.also == ()
     assert [attempt.malformed for attempt in attempts] == [False]
-    assert attempts[0].prompt_id == "slot-row-choice-v3"
+    # #1213: the live row question is v4; its answer shape is v3's, unchanged.
+    assert attempts[0].prompt_id == "slot-row-choice-v4"
 
 
 def test_row_reader_keeps_a_second_countertop_row_but_never_the_row_itself() -> None:
@@ -333,10 +334,19 @@ def test_row_prompt_names_its_box_colours_and_none_is_the_reviewers() -> None:
     """Box 1 was crimson while the same question said red numbers are the reviewer's (#1108)."""
     from extraction.slot_reader.bedrock import ROW_BOX_COLOURS, ROW_PROMPT_IDS
 
-    assert {"slot-row-choice-v1", "slot-row-choice-v2", "slot-row-choice-v3"} == ROW_PROMPT_IDS
+    assert {
+        "slot-row-choice-v1",
+        "slot-row-choice-v2",
+        "slot-row-choice-v3",
+        "slot-row-choice-v4",
+    } == ROW_PROMPT_IDS
     for name, _rgb in ROW_BOX_COLOURS:
         assert name in ROW_PROMPT
-    assert "numbers in red or blue, and yellow boxes, are the reviewer's markup" in ROW_PROMPT
+    # #1213 (v4) names every colour of the reviewer's markup, not only red, blue and yellow.
+    assert (
+        "red or blue text, yellow boxes, clouds and small green or purple ticks are the "
+        "reviewer's markup" in ROW_PROMPT
+    )
     for name in ("red", "crimson", "blue", "yellow", "orange"):
         assert name not in {colour for colour, _ in ROW_BOX_COLOURS}
     for kind in ("no_countertop", "not_among_boxes", "unsure", '"also"'):
@@ -901,7 +911,7 @@ def test_a_span_without_a_sideways_label_keeps_its_two_pictures_and_wording() ->
 
     assert [part["image"]["source"]["bytes"] for part in content if "image" in part] == [VIEW, PNG]
     assert [part["text"] for part in content if "text" in part] == [CLAUDE_SPAN_PROMPT]
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v5"
 
 
 def test_an_upright_copy_belongs_only_to_a_grounded_claude_span() -> None:
@@ -924,6 +934,7 @@ def test_the_claude_label_question_defines_every_answer_field() -> None:
     assert "A single dimension is not combined, even with a stacked fraction" in CLAUDE_SPAN_PROMPT
     assert "inches in brackets" in CLAUDE_SPAN_PROMPT and "is not combined" in CLAUDE_SPAN_PROMPT
     assert CLAUDE_SPAN_PROMPT_IDS == {
+        "claude-slot-span-v5",
         "claude-slot-span-v4",
         "claude-slot-span-v3",
         "claude-slot-span-v2",
@@ -939,8 +950,9 @@ def test_the_claude_label_question_defines_every_answer_field() -> None:
 def test_the_claude_label_question_asks_yes_no_or_unsure_and_names_the_magenta_box() -> None:
     """v3 told a reader to answer false when merely unsure, and two such answers counted as "no
     label". It also called the span's mark a red box while telling the reader to ignore red
-    markup. v4 defines `belongs` as yes / no / unsure and names the box's real colour."""
-    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+    markup. v4 defines `belongs` as yes / no / unsure and names the box's real colour; v5 (#1213)
+    keeps both and marks the span's ends in the close-up too."""
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v5"
     assert '- "belongs": "yes" if you are sure' in CLAUDE_SPAN_PROMPT
     assert '"no" only if you are sure the marked span has no printed dimension label' in (
         CLAUDE_SPAN_PROMPT
@@ -949,9 +961,15 @@ def test_the_claude_label_question_asks_yes_no_or_unsure_and_names_the_magenta_b
     assert "Being unsure is never a no" in CLAUDE_SPAN_PROMPT
     assert '"belongs": "yes|no|unsure"' in CLAUDE_SPAN_PROMPT
     assert "or you are unsure, set belongs to false" not in CLAUDE_SPAN_PROMPT
-    assert "magenta" in CLAUDE_SPAN_PROMPT and "magenta-boxed span" in CLAUDE_SPAN_PROMPT
+    # v5 (#1213): the span is "the marked span" (boxed in Picture 1, its ends marked in Picture 2),
+    # and every colour of the reviewer's markup is named.
+    assert "magenta" in CLAUDE_SPAN_PROMPT and "the marked span" in CLAUDE_SPAN_PROMPT
+    assert "magenta-boxed span" not in CLAUDE_SPAN_PROMPT
     assert "red box" not in CLAUDE_SPAN_PROMPT and "red-boxed" not in CLAUDE_SPAN_PROMPT
-    assert "red, blue or yellow reviewer markup" in CLAUDE_SPAN_PROMPT
+    assert (
+        "The reviewer's markup is red or blue text, yellow boxes, clouds, and green or purple ticks"
+        in CLAUDE_SPAN_PROMPT
+    )
     assert SPAN_SCHEMA["properties"]["belongs"] == {  # type: ignore[index]
         "type": "string",
         "enum": ["yes", "no", "unsure"],
@@ -990,3 +1008,107 @@ def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> No
 
     assert answers[("slot", OPUS)] is None
     assert len(clients.requests) == 2, "asked once more, then abstained"
+
+
+# ---------------------------------------------------------------------------------------------
+# #1213: the row and label wordings shipped are exactly the demo-tested ones
+# ---------------------------------------------------------------------------------------------
+
+#: SHA-256 of the two wordings the demo-test measured (2026-10-13, Opus 5.5 + Sonnet 5.5 on real
+#: stored questions). The label wording ships with one example number swapped for an invented one
+#: after review (the inch-mark example); nothing else differs. Any other change to either text,
+#: even one character, needs a new prompt id and a new measurement, so the digest is pinned here.
+SPAN_V5_SHA256 = "93d58252d2efcbaade50c6878559e90b7a204dbfeecc5bc067aefdc70b1268f0"
+ROW_V4_SHA256 = "07eaec6ecb52fb36848800869943c1cd24188a3d04a5c6d7924a5c4900513eec"
+
+
+def test_the_shipped_wordings_are_byte_for_byte_the_pinned_ones() -> None:
+    import hashlib
+
+    from extraction.slot_reader.bedrock import ROW_PROMPT_ID
+
+    assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v5"
+    assert ROW_PROMPT_ID == "slot-row-choice-v4"
+    assert hashlib.sha256(CLAUDE_SPAN_PROMPT.encode()).hexdigest() == SPAN_V5_SHA256
+    assert hashlib.sha256(ROW_PROMPT.encode()).hexdigest() == ROW_V4_SHA256
+
+
+def test_the_label_question_says_where_the_span_is_which_label_to_copy_and_how_to_write_it() -> (
+    None
+):
+    """v5: the span is between the two marks in Picture 2; an overall's label is the overall's;
+    sums and worded labels belong to their span; fractions on one line as `n/d`."""
+    for words in (
+        "Picture 1 shows the vendor's shop drawing around the selected countertop dimension row",
+        "Two short magenta marks above and below the drawing in Picture 2",
+        "the span is the stretch between them",
+        "If the box marks the long overall line, the label is the overall's",
+        "belongs to its span like any other label",
+        "Write it on one line in plain keyboard characters",
+        "Write a fraction as numerator/denominator with one space after the whole number",
+        "a stacked fraction is written the same way",
+        "Being unsure is never a no",
+    ):
+        assert words in CLAUDE_SPAN_PROMPT, words
+    assert "full vendor shop drawing" not in CLAUDE_SPAN_PROMPT, "Picture 1 is no longer the page"
+
+
+def test_the_row_question_says_where_the_row_may_be_and_what_is_never_the_row() -> None:
+    """v4: the row may be drawn anywhere on the front view; a numberless outline or a row of
+    material tags is never the row; the stone's own chain gives way to the cabinets' chain."""
+    for words in (
+        "It may be drawn anywhere on the front view",
+        "as long as its ticks line up with the pieces under the stone",
+        "that is not the piece row when another box measures the cabinets and fillers under it",
+        "A box around a line that carries no printed numbers",
+        "or around a row of material tags is never the piece row",
+        "Answer fields:",
+    ):
+        assert words in ROW_PROMPT, words
+    assert "NOT an upper-cabinet row" not in ROW_PROMPT
+
+
+def test_the_earlier_ids_stay_recognised_and_their_stored_answers_still_parse() -> None:
+    """A stored v4 label answer and a stored v3 row answer are read by the same parsers: the
+    answer shapes did not change with the wording."""
+    from extraction.slot_reader.bedrock import (
+        CLAUDE_SPAN_PROMPT_IDS,
+        ROW_PROMPT_IDS,
+        replay_stored_answer,
+    )
+
+    assert {"claude-slot-span-v4", "claude-slot-span-v3"} < CLAUDE_SPAN_PROMPT_IDS
+    assert {"slot-row-choice-v3", "slot-row-choice-v2"} < ROW_PROMPT_IDS
+
+    stored_span = json.dumps(span('17 3/4"'))
+    replayed = replay_stored_answer(
+        CropJob("slot", OPUS, 0, PNG, view_png=VIEW, grounded_claude=True),
+        stored_span,
+        reused_from="00000000-0000-0000-0000-000000000001",
+        max_tokens=3000,
+    )
+    assert replayed is not None
+    answer, attempt = replayed
+    assert isinstance(answer, ReaderAnswer) and answer.belongs is Belongs.YES
+    assert attempt.prompt_id == "claude-slot-span-v5"
+
+    stored_row = json.dumps({"row": 2, "kind": "row", "also": [], "why": "synthetic"})
+    replayed_row = replay_stored_answer(
+        CropJob("row", OPUS, 0, PNG, row_question=True, candidate_count=3),
+        stored_row,
+        reused_from="00000000-0000-0000-0000-000000000002",
+        max_tokens=3000,
+    )
+    assert replayed_row is not None
+    row_answer, row_attempt = replayed_row
+    assert isinstance(row_answer, RowChoiceAnswer) and row_answer.row == 2
+    assert row_attempt.prompt_id == "slot-row-choice-v4"
+
+
+def test_the_request_builders_send_the_new_wordings() -> None:
+    requests = claude_requests()
+    span_texts = [p["text"] for p in requests["span"][0]["messages"][0]["content"] if "text" in p]
+    row_texts = [p["text"] for p in requests["row"][0]["messages"][0]["content"] if "text" in p]
+
+    assert span_texts == [CLAUDE_SPAN_PROMPT]
+    assert row_texts == [ROW_PROMPT]

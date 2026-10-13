@@ -134,17 +134,33 @@ __all__ = [
 ]
 
 CROP_PROMPT_ID: Final = "slot-crop-v1"
-ROW_PROMPT_ID: Final = "slot-row-choice-v3"
-"""v3 (#1108): the answer says what kind of answer it is (`ROW_KINDS`). v2 gave one answer, 0, for
+ROW_PROMPT_ID: Final = "slot-row-choice-v4"
+"""v4 (#1213): the wording the demo-test measured (2026-10-13). The piece row may be drawn anywhere
+on the front view, as long as its ticks line up with the pieces under the stone; a box around a line
+with no printed numbers (the stone's own outline) or around material tags is never the row; the
+stone's own chain is not the piece row when another box measures the cabinets and fillers; every
+colour of the reviewer's markup is named. The answer fields, examples and shape are v3's, word for
+word, so a v4 answer parses as a v3 one did.
+v3 (#1108): the answer says what kind of answer it is (`ROW_KINDS`). v2 gave one answer, 0, for
 two different things: "the sheet has no stone countertop" and "a countertop is drawn but none of
 the numbered boxes is its row"; since #1093 the first is only listed, so the second slipped past the
 reviewer. v3 also asks for a second countertop's row (`also`), which V1 does not read but lists, and
 names the box colours, none of which the reviewer's markup uses (box 1 used to be crimson while the
 same question said red numbers are the reviewer's)."""
 #: Earlier wordings of the row question, still recognised when a stored run is replayed.
-ROW_PROMPT_IDS: Final = frozenset({ROW_PROMPT_ID, "slot-row-choice-v2", "slot-row-choice-v1"})
-CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v4"
-"""v4 (#1110): `belongs` is "yes", "no" or "unsure". v3 told a reader to answer false when it was
+ROW_PROMPT_IDS: Final = frozenset(
+    {ROW_PROMPT_ID, "slot-row-choice-v3", "slot-row-choice-v2", "slot-row-choice-v1"}
+)
+CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v5"
+"""v5 (#1213): the wording the demo-test measured (2026-10-13), asked with new pictures
+(`workflow/slot_reader.py`): Picture 1 is the drawing around the row with the span boxed, and
+Picture 2 the close-up with two magenta marks at the span's ends. The question says the span is
+between the marks, whose label to copy (the overall's or the piece's), that sums and worded labels
+belong to their span, and how to write a fraction (on one line, `n/d`, one space after the whole
+number); every colour of the reviewer's markup is named. The answer fields and shape are v4's, so a
+v5 answer parses as a v4 one did. After review one example number (the inch-mark example) was
+swapped for an invented one; the wording is otherwise the tested one.
+v4 (#1110): `belongs` is "yes", "no" or "unsure". v3 told a reader to answer false when it was
 merely unsure, and two such answers counted as "no label", the trigger of the equal-shares
 read-through (#1086). "No" now means only "this span has no printed label of its own"; unsure is
 its own answer and sends the label to the reviewer. The span is boxed in magenta, a colour the
@@ -158,7 +174,13 @@ v2 (#1051): a fixed answer shape and stated effort, and an upright third picture
 label is drawn sideways (`CLAUDE_UPRIGHT_NOTE`)."""
 #: Earlier wordings, still recognised when a stored run is replayed.
 CLAUDE_SPAN_PROMPT_IDS: Final = frozenset(
-    {CLAUDE_SPAN_PROMPT_ID, "claude-slot-span-v3", "claude-slot-span-v2", "claude-slot-span-v1"}
+    {
+        CLAUDE_SPAN_PROMPT_ID,
+        "claude-slot-span-v4",
+        "claude-slot-span-v3",
+        "claude-slot-span-v2",
+        "claude-slot-span-v1",
+    }
 )
 COUNTER_BREAK_PROMPT_ID: Final = "claude-counter-break-v3"
 """v3 (#1111): every answer field is defined with examples (invented); `stone_ends` gains
@@ -224,16 +246,22 @@ ROW_BOX_COLOUR_WORDS: Final = (
 
 ROW_PROMPT: Final = (
     "This is a vendor's cabinet shop drawing sheet. The vendor drew it in black ink. A reviewer may "
-    "have marked it up: numbers in red or blue, and yellow boxes, are the reviewer's markup, not "
-    "the vendor's; ignore them. "
+    "have marked it up: red or blue text, yellow boxes, clouds and small green or purple ticks are "
+    "the reviewer's markup, not the vendor's; ignore them. "
     "Numbered coloured boxes mark candidate dimension rows that were found on the drawing. They are "
-    f"drawn in {ROW_BOX_COLOUR_WORDS}, colours the reviewer's markup never uses; each box's number "
-    "is in the filled square of the same colour just left of it. "
-    "Task: which numbered box marks the COUNTERTOP PIECE ROW — the horizontal chain of piece "
-    "widths (fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that "
-    "runs along the stone countertop and measures the pieces under it from one end of the stone "
-    "top to the other? It is NOT an upper-cabinet row, NOT a wall-to-wall or room dimension, NOT "
-    "a row inside a plan (top) view or a section view, and NOT the architect's small drawing.\n"
+    f"drawn in {ROW_BOX_COLOUR_WORDS}; each box's number is in the filled square of the same "
+    "colour just left of it. "
+    "Task: which numbered box marks the COUNTERTOP PIECE ROW - the horizontal chain of piece widths "
+    "(fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that measures the "
+    "pieces under the stone countertop, from one end of the stone top to the other? It may be drawn "
+    "anywhere on the front view - just above or below the stone, below the base cabinets, or at the "
+    "top of the view above the upper cabinets - as long as its ticks line up with the pieces under "
+    "the stone. It is NOT a wall-to-wall or room dimension, NOT a row inside a plan (top) view or a "
+    "section view, and NOT the architect's small drawing. If the stone top has a chain of its own "
+    "(the top with its end splashes, or the top split into slabs), that is not the piece row when "
+    "another box measures the cabinets and fillers under it. A box around a line that carries no "
+    "printed numbers - for example the outline of the stone top itself - or around a row of "
+    "material tags is never the piece row.\n"
     "Answer fields:\n"
     '- "kind": exactly one of these four words.\n'
     '  "row": one numbered box is the countertop piece row.\n'
@@ -446,21 +474,35 @@ CROP_PROMPT: Final = (
 )
 
 CLAUDE_SPAN_PROMPT: Final = (
-    "Picture 1 is the full vendor shop drawing. A magenta (pink-purple) box marks one span of "
-    "the selected countertop dimension row; magenta is never the reviewer's colour. Picture 2 "
-    "is a close-up of that same span. Does the printed dimension label in Picture 2 belong to the "
-    "exact magenta-boxed span in Picture 1? Do not use a neighbour's label, an overall when a "
-    "piece is marked, a height, or red, blue or yellow reviewer markup. If it belongs, copy its "
-    "characters exactly as printed, including inch marks, fractions, metric text in brackets, and "
-    "words. Do not calculate, convert, correct, or complete the text.\n"
-    '- "belongs": "yes" if you are sure the label you copy belongs to the magenta-boxed span. '
+    "Picture 1 shows the vendor's shop drawing around the selected countertop dimension row. A thin "
+    "magenta (pink-purple) box marks one span of that row; magenta is never the reviewer's colour. "
+    "Picture 2 is a sharper close-up of the same span, cut a little wider than the span so that it "
+    "also shows the ends of the neighbouring spans and their labels. Two short magenta marks above "
+    "and below the drawing in Picture 2 show where the marked span starts and ends: the span is the "
+    "stretch between them, in the middle of Picture 2.\n"
+    "Does the printed dimension label of that span appear in Picture 2? The span's label is the one "
+    "printed for that stretch; on a very narrow span it may stand just outside the marks, often with "
+    "a leader line pointing to the span. If the box marks the long overall line, the label is the "
+    "overall's, not a piece label above or below it; if it marks one piece, the label is that "
+    'piece\'s, not the overall. A label that is a sum or has words, such as 2"+1" Filler or '
+    "96\" INCLUDING FIELD CUT, belongs to its span like any other label. Never use a neighbour's "
+    "label or a height. The reviewer's markup is red or blue text, yellow boxes, clouds, and green "
+    "or purple ticks: a number in the reviewer's markup is never the vendor's label.\n"
+    "If the label belongs, copy its characters exactly as printed, including inch marks, fractions, "
+    "metric text in brackets, and words. Do not calculate, convert, correct, or complete the text. "
+    "Write it on one line in plain keyboard characters. Write a fraction as numerator/denominator "
+    'with one space after the whole number, such as 22 5/16" - never 225/16", 22\\frac{5}{16}", '
+    # The superscript-and-subscript fraction as some readers wrote it, by code point.
+    '22\u2075\u2044\u2081\u2086" or a fraction split over two lines; a stacked fraction is written '
+    "the same way. Put an inch mark only where one is printed, in its printed place "
+    '(37 3/8", not 37"3/8").\n'
+    '- "belongs": "yes" if you are sure the label you copy belongs to the marked span. '
     '"no" only if you are sure the marked span has no printed dimension label of its own: every '
     "label near it belongs to a neighbouring span, the overall or a height, or none is printed. "
-    "\"unsure\" if you cannot tell, for example a label may be the span's or a neighbour's, or "
-    'may be cut off or hidden. Being unsure is never a no. When the answer is not "yes", '
-    "return an empty text.\n"
-    "The other fields describe only that one label, the one that belongs to the magenta-boxed "
-    "span:\n"
+    '"unsure" if you cannot tell, for example two labels could belong to it, or the label may be '
+    "cut off or hidden under the reviewer's markup. Being unsure is never a no. When the answer is "
+    'not "yes", return an empty text.\n'
+    "The other fields describe only that one label, the one that belongs to the marked span:\n"
     '- "stacked": true if a fraction in it is drawn with its numerator above its denominator.\n'
     '- "combined": true only if that label is itself a sum, an expression, a count or has words, '
     'such as 4"+1", 2"+1" Filler, 96"(4EQ) or INCLUDING FIELD CUT. A single dimension is not '

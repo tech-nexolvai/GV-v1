@@ -265,7 +265,9 @@ def crops_to_texts(page: SlotPage, texts: Mapping[int | None, str]) -> dict[byte
 
 
 def claude_crops_to_texts(page: SlotPage, texts: Mapping[int | None, str]) -> dict[bytes, str]:
-    from workflow.slot_reader import _claude_span_plan
+    """Which close-up the Claude readers are shown for which span: since #1213 the close-up as cut
+    with the span's two ends marked (`_marked_close_up_png`), at the readers' 2576 px limit."""
+    from workflow.slot_reader import _claude_span_plan, _marked_close_up_png
 
     plan = plan_slots(
         page.rows.candidates.rows,
@@ -275,8 +277,11 @@ def claude_crops_to_texts(page: SlotPage, texts: Mapping[int | None, str]) -> di
     )
     span_plan = _claude_span_plan(page, plan)
     return {
-        _crop_png(
-            page.rendered, _pixels(page.rows, owner.labels[0].crop, page.rendered)
+        _marked_close_up_png(
+            page.rendered,
+            _pixels(page.rows, owner.labels[0].crop, page.rendered),
+            _pixels(page.rows, owner.labels[0].box, page.rendered),
+            max_long_edge=2576,
         ): texts.get(owner.index, "")
         for owner in (*span_plan.slots, *((span_plan.overall,) if span_plan.overall else ()))
     }
@@ -394,7 +399,7 @@ def test_claude_opus_selects_only_a_numbered_code_candidate_before_slot_reading(
     asked = sorted(model for model, _image in readers.row_requests)
     assert asked == sorted([OPUS, SONNET]), "both readers are asked the row question"
     assert len({image for _model, image in readers.row_requests}) == 1, "with the same picture"
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v4")
     assert row_attempt.raw_response_text is not None
     assert row_attempt.question_packet is None
     assert result.mapping.proposals, "the selected non-rank-one candidate supplies the slot plan"
@@ -469,7 +474,7 @@ def test_claude_asks_every_code_span_even_when_label_detection_is_empty_or_dupli
     (result,) = read_slot_pages([page], runtime=configured, record_attempt=attempts.append)
 
     owner_count = len(result.plan.slots) + (result.plan.overall is not None)
-    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v4"]
+    label_attempts = [attempt for attempt in attempts if attempt.prompt_id == "claude-slot-span-v5"]
     assert len(readers.requests) == owner_count * 2
     assert len(label_attempts) == owner_count * 2
     assert all(len(owner.labels) == 1 for owner in result.plan.slots)
@@ -543,7 +548,7 @@ def test_row_selection_packet_binds_the_numbered_page_and_ordered_candidates() -
         [page], runtime=configured, record_attempt=attempts.append, store=store
     )
 
-    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v3")
+    row_attempt = next(attempt for attempt in attempts if attempt.prompt_id == "slot-row-choice-v4")
     packet = row_attempt.question_packet
     assert packet is not None
     assert packet["candidate_ids"] == [str(value) for value in result.row_candidate_ids]
@@ -2684,7 +2689,7 @@ def test_a_sideways_label_adds_its_upright_close_up_as_a_third_picture() -> None
     upright_spans = {texts for _model, texts in readers.span_texts if CLAUDE_UPRIGHT_NOTE in texts}
     assert len(upright_spans) == 1
     assert all(
-        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v4"
+        attempt.prompt_id == CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v5"
         for attempt in attempts
         if attempt.prompt_id.startswith("claude-slot-span")
     )
@@ -2977,7 +2982,7 @@ def _equal_share_read(
     blank_flags: Callable[[str], Mapping[str, object]] = lambda _model: {},
 ) -> tuple[PageSlotResult, FakeReaders, Any, Any]:
     """Both readers choose the blank row (box 1); the chain with its overall is box 2."""
-    from workflow.slot_reader import _claude_span_plan
+    from workflow.slot_reader import _claude_span_plan, _marked_close_up_png
 
     page = slot_page(sheets.sheet(sheets.glyph_labels()))
     chain = replace(page.rows.candidates.rows.candidates[0], rank=2)
@@ -3003,9 +3008,13 @@ def _equal_share_read(
             row_choice_made=True,
         ),
     )
+    # The Claude readers are shown the marked close-up (#1213).
     chain_crops = {
-        _crop_png(
-            page.rendered, _pixels(page.rows, owner.labels[0].crop, page.rendered)
+        _marked_close_up_png(
+            page.rendered,
+            _pixels(page.rows, owner.labels[0].crop, page.rendered),
+            _pixels(page.rows, owner.labels[0].box, page.rendered),
+            max_long_edge=2576,
         ): texts.get(owner.index, "")
         for owner in (*chain_plan.slots, *((chain_plan.overall,) if chain_plan.overall else ()))
     }

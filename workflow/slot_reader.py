@@ -76,6 +76,7 @@ from extraction.slot_reader.claude_output import (
     CLAUDE_EFFORTS,
     DEFAULT_CLAUDE_EFFORT,
     ClaudeEffort,
+    long_edge_limit,
 )
 from extraction.slot_reader.equal_shares import (
     NO_LABEL,
@@ -580,6 +581,9 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
     110 dpi page (3 px past each end, 14 px above and below, 4 px thick) and shrank it to 1800 px.
     The product marks its 300 dpi render and shrinks it the same way, so every length scales by
     dpi/110; unscaled, the mark on a narrow piece shrank to under a pixel (proof run 2026-10-08).
+
+    Since #1213 only the non-Claude crop question's packet holds it; the grounded Claude label
+    question is shown the area around the row instead (`_row_area_png`).
     """
     scale = Fraction(page.rendered.dpi, _PROTOTYPE_VIEW_DPI)
     first = page.rows.to_pixels(owner.x0, owner.line_y)
@@ -601,10 +605,152 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
         thickness=max(2, round(4 * scale)),
         max_side=1800,
         outline=outline,
-        # Magenta, named in the question (`claude-slot-span-v4`, #1110): the reviewer marks in
-        # red, blue and yellow, and the readers are told to ignore that markup.
+        # Magenta, a colour the reviewer never marks in (#1110). Since #1213 this whole-page view
+        # serves only the non-Claude crop question's packets; the Claude label question is shown
+        # the row area (`_row_area_png`).
         mark_color=_MAGENTA,
     )
+
+
+#: The grounded Claude label question's pictures (#1213), exactly as the demo-test measured them
+#: (2026-10-13, Opus 5.5 + Sonnet 5.5 on real stored questions). Every length on the page is stated
+#: in rendered-page pixels at 300 dpi, the reader's render (`workflow/config.py`), and scaled by
+#: dpi/300 for any other render, so at 300 dpi the pictures are pixel for pixel the tested ones.
+#: The picture-size rules (2x below 300 px, the readers' long-edge limit, 1800 px) are not scaled.
+_LABEL_PICTURE_DPI: Final = 300
+#: Picture 1 reaches 150 px past each end of the row, or 6% of the row's width when that is more,
+#: and 450 px above and below the span's label band.
+_ROW_AREA_REACH_X_PX: Final = 150
+_ROW_AREA_REACH_X_PERCENT: Final = 6
+_ROW_AREA_REACH_Y_PX: Final = 450
+#: Its magenta box stands 6 px left and right and 8 px above and below the label band, 6 px thick,
+#: drawn outward (3 px as sent).
+_ROW_AREA_BOX_PAD_X_PX: Final = 6
+_ROW_AREA_BOX_PAD_Y_PX: Final = 8
+_ROW_AREA_BOX_THICKNESS_PX: Final = 6
+#: Shrunk at least 2x (about 150 dpi as sent), and more when a side would pass 1800 px.
+_ROW_AREA_MIN_SHRINK: Final = 2
+_ROW_AREA_MAX_SIDE_PX: Final = 1800
+#: Picture 2 gains an 18 px white strip above and below; each end mark is 5 px wide (2 px each
+#: side of the end) and stops 2 px short of the drawing.
+_CLOSE_UP_STRIP_PX: Final = 18
+_CLOSE_UP_MARK_HALF_WIDTH_PX: Final = 2
+_CLOSE_UP_MARK_GAP_PX: Final = 2
+#: A close-up narrower than this, as sent, is shown twice as large.
+_CLOSE_UP_NARROW_PX: Final = 300
+_WHITE: Final = (255, 255, 255)
+
+
+def _at_label_dpi(length_px: int, dpi: int) -> int:
+    """A length stated at 300 dpi, in pixels of a render at `dpi` (never under one pixel)."""
+    return max(1, round(Fraction(length_px * dpi, _LABEL_PICTURE_DPI)))
+
+
+def _row_x_px(page: SlotPage, plan: SlotPlan) -> tuple[int, int]:
+    """How far the row reaches, in page pixels: from the leftmost to the rightmost label box of
+    every piece and the overall in `plan`."""
+    boxes = [
+        _pixels(page.rows, label.box, page.rendered)
+        for owner in (*plan.slots, *((plan.overall,) if plan.overall is not None else ()))
+        for label in owner.labels
+    ]
+    if not boxes:
+        raise ValueError("a row with no label has no reach")
+    return min(box[0] for box in boxes), max(box[2] for box in boxes)
+
+
+def _row_area_png(
+    rendered: RenderedPage, row_x: tuple[int, int], span: tuple[int, int, int, int]
+) -> bytes:
+    """Picture 1 of the grounded Claude label question (#1213): the drawing around the row, at
+    about 150 dpi, with the asked span's label band boxed in thin magenta.
+
+    `row_x` is the row's reach and `span` the span's label box, both in page pixels. It replaced
+    the whole page at about 100 dpi (`_span_view_png`), which cost about 2,500 picture tokens a
+    question and whose box covered narrow labels. The box never supplies a value.
+    """
+    from PIL import Image, ImageDraw
+
+    dpi = rendered.dpi
+    row_left, row_right = row_x
+    reach_x = max(
+        _at_label_dpi(_ROW_AREA_REACH_X_PX, dpi),
+        _ROW_AREA_REACH_X_PERCENT * (row_right - row_left) // 100,
+    )
+    reach_y = _at_label_dpi(_ROW_AREA_REACH_Y_PX, dpi)
+    area = (
+        max(0, row_left - reach_x),
+        max(0, span[1] - reach_y),
+        min(rendered.width_px, row_right + reach_x),
+        min(rendered.height_px, span[3] + reach_y),
+    )
+    left, top, right, bottom = area
+    image = Image.frombytes("RGB", (right - left, bottom - top), _crop_rgb(rendered, area))
+    draw = ImageDraw.Draw(image)
+    pad_x = _at_label_dpi(_ROW_AREA_BOX_PAD_X_PX, dpi)
+    pad_y = _at_label_dpi(_ROW_AREA_BOX_PAD_Y_PX, dpi)
+    box_left, box_top = span[0] - left - pad_x, span[1] - top - pad_y
+    box_right, box_bottom = span[2] - left + pad_x, span[3] - top + pad_y
+    # Magenta, named in the question (`claude-slot-span-v5`): never a colour of the reviewer's.
+    for step in range(_at_label_dpi(_ROW_AREA_BOX_THICKNESS_PX, dpi)):
+        draw.rectangle(
+            (box_left - step, box_top - step, box_right + step, box_bottom + step),
+            outline=tuple(_MAGENTA),
+        )
+    factor = max(
+        max(1, round(Fraction(_ROW_AREA_MIN_SHRINK * dpi, _LABEL_PICTURE_DPI))),
+        -(-max(image.size) // _ROW_AREA_MAX_SIDE_PX),
+    )
+    image = image.resize(
+        (max(1, image.width // factor), max(1, image.height // factor)),
+        Image.Resampling.LANCZOS,
+    )
+    return encode_png(image.width, image.height, image.tobytes())
+
+
+def _marked_close_up_png(
+    rendered: RenderedPage,
+    crop: tuple[int, int, int, int],
+    span: tuple[int, int, int, int],
+    *,
+    max_long_edge: int,
+) -> bytes:
+    """Picture 2 of the grounded Claude label question (#1213): the close-up as cut (`crop`), with
+    a white strip above and below carrying two magenta marks at the span's ends.
+
+    The close-up is cut wider than the span (`_claude_span_plan`), so without the marks a reader
+    could not tell which label is the span's and copied a neighbour's on a narrow piece. A mark at
+    or past the crop's edge is drawn just inside it. Narrower than 300 px, the picture is shown 2x;
+    wider than `max_long_edge` (the readers' limit), it is shrunk to fit instead of being refused
+    and never asked. The evidence crop, the ink check and the drawn-length check still use the
+    close-up's box as cut, never these pixels.
+    """
+    from PIL import Image, ImageDraw
+
+    dpi = rendered.dpi
+    left, top, right, bottom = crop
+    width, height = right - left, bottom - top
+    strip = _at_label_dpi(_CLOSE_UP_STRIP_PX, dpi)
+    half = _at_label_dpi(_CLOSE_UP_MARK_HALF_WIDTH_PX, dpi)
+    gap = _at_label_dpi(_CLOSE_UP_MARK_GAP_PX, dpi)
+    canvas = Image.new("RGB", (width, height + 2 * strip), _WHITE)
+    canvas.paste(Image.frombytes("RGB", (width, height), _crop_rgb(rendered, crop)), (0, strip))
+    draw = ImageDraw.Draw(canvas)
+    for end in (span[0] - left, span[2] - left):
+        x = max(half, min(width - 1 - half, end))
+        draw.rectangle((x - half, 0, x + half, strip - gap - 1), fill=tuple(_MAGENTA))
+        draw.rectangle(
+            (x - half, height + strip + gap, x + half, height + 2 * strip - 1),
+            fill=tuple(_MAGENTA),
+        )
+    if canvas.width < _CLOSE_UP_NARROW_PX:
+        canvas = canvas.resize((canvas.width * 2, canvas.height * 2), Image.Resampling.LANCZOS)
+    if canvas.width > max_long_edge:
+        canvas = canvas.resize(
+            (max_long_edge, max(1, round(canvas.height * (max_long_edge / canvas.width)))),
+            Image.Resampling.LANCZOS,
+        )
+    return encode_png(canvas.width, canvas.height, canvas.tobytes())
 
 
 def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
@@ -616,7 +762,8 @@ def _claude_span_plan(page: SlotPage, plan: SlotPlan) -> SlotPlan:
     The close-up reaches past the span's ends as the prototype's did (at least 50 px at 300 dpi,
     or 15% of the span, a side): a narrow piece's label is wider than the piece, and a close-up
     cut at its ticks showed the readers only "1/2" of a printed 1 1/2 (proof run 2026-10-08).
-    Which span is meant stays the full view's magenta box, never the close-up's edges.
+    Which span is meant is shown by Picture 1's magenta box and Picture 2's two end marks
+    (`_row_area_png`, `_marked_close_up_png`, #1213), never by the close-up's edges.
     """
     if plan.row is None:
         return plan
@@ -683,7 +830,8 @@ def _question_packet(
     """Bind the exact encoded images, prompt, candidate key and coordinate transform.
 
     A Claude question also records the effort it was asked at and, for a sideways label, the
-    upright third picture (#1051)."""
+    upright third picture (#1051). For the grounded Claude label question the `full_view` key holds
+    the row-area picture (`_row_area_png`, #1213), not the whole page."""
     from io import BytesIO
 
     full_hash = hashlib.sha256(full_view_png).hexdigest()
@@ -1123,6 +1271,16 @@ def read_slot_pages(
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
     readers = runtime.form.reader_ids
+    # The grounded Claude label close-up is shrunk to the smallest long edge its readers take
+    # unresized (#1213); `require_picture_fits` still refuses anything else before a call.
+    close_up_limit: int | None = None
+    if runtime.claude_row_reader:
+        if not readers:
+            raise ValueError(
+                "a Claude label reading needs at least one configured reader: its close-up is "
+                "sized to the readers' long-edge limit"
+            )
+        close_up_limit = min(long_edge_limit(model) for model in readers)
     page_rows = {page.page_index: page.rows.candidates.rows for page in pages}
     row_images: dict[int, bytes] = {}
     row_ids: dict[int, tuple[UUID, ...]] = {}
@@ -1273,6 +1431,12 @@ def read_slot_pages(
             if runtime.claude_row_reader
             else set()
         )
+        # The grounded Claude label question's Picture 1 shows the drawing around the row (#1213).
+        row_x = (
+            _row_x_px(page, plan)
+            if runtime.claude_row_reader and any(owner.labels for owner in owners)
+            else None
+        )
         for owner in owners:
             for position, label in enumerate(owner.labels):
                 key = _key(page.page_index, owner.index, position, row_key)
@@ -1299,12 +1463,19 @@ def read_slot_pages(
                     )
                 else:
                     wanted = readers
-                png = _crop_png(page.rendered, crop_px)
-                view_png = (
-                    _span_view_png(page, owner)
-                    if runtime.claude_row_reader or runtime.question_packets
-                    else None
-                )
+                view_png: bytes | None
+                if runtime.claude_row_reader:
+                    # #1213: the area around the row with the span boxed, and the close-up with
+                    # the span's ends marked, shrunk to the readers' limit when wider; the
+                    # packet stores exactly these. `crops[key]` keeps the close-up's box as cut.
+                    assert row_x is not None and close_up_limit is not None
+                    view_png = _row_area_png(page.rendered, row_x, box_px)
+                    png = _marked_close_up_png(
+                        page.rendered, crop_px, box_px, max_long_edge=close_up_limit
+                    )
+                else:
+                    png = _crop_png(page.rendered, crop_px)
+                    view_png = _span_view_png(page, owner) if runtime.question_packets else None
                 upright_png = (
                     _upright_png(png)
                     if runtime.claude_row_reader and owner.index in sideways_owners
