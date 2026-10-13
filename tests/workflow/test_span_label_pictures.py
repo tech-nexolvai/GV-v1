@@ -22,6 +22,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from PIL import Image
 
 from evidence.coordinates import PageTransform
@@ -267,6 +268,19 @@ def _span_plan(page_bytes: bytes) -> tuple[SlotPage, SlotPlan]:
         row_settings=MEASURED_SETTINGS,
     )
     return page, _claude_span_plan(page, plan)
+
+
+def test_a_claude_reading_with_no_readers_is_refused_before_any_picture_is_cut() -> None:
+    """The close-up is sized to the readers' long-edge limit; with no reader there is no limit,
+    and the reading stops with a clear reason instead of shrinking the close-up to nothing."""
+    page = slot_page(named_sheet())
+    readers = FakeReaders(lambda _model, _png: '2"')
+    configured = claude_runtime(readers)
+    configured = replace(configured, form=replace(configured.form, reader_ids=()))
+
+    with pytest.raises(ValueError, match="needs at least one configured reader"):
+        read_slot_pages([page], runtime=configured, record_attempt=lambda _a: None)
+    assert not readers.requests and not readers.row_requests
 
 
 def test_the_row_reaches_from_its_first_label_to_its_last_pieces_and_overall() -> None:

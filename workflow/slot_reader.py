@@ -605,8 +605,9 @@ def _span_view_png(page: SlotPage, owner: PlannedOwner) -> bytes:
         thickness=max(2, round(4 * scale)),
         max_side=1800,
         outline=outline,
-        # Magenta, named in the question (`claude-slot-span-v4`, #1110): the reviewer marks in
-        # red, blue and yellow, and the readers are told to ignore that markup.
+        # Magenta, a colour the reviewer never marks in (#1110). Since #1213 this whole-page view
+        # serves only the non-Claude crop question's packets; the Claude label question is shown
+        # the row area (`_row_area_png`).
         mark_color=_MAGENTA,
     )
 
@@ -829,7 +830,8 @@ def _question_packet(
     """Bind the exact encoded images, prompt, candidate key and coordinate transform.
 
     A Claude question also records the effort it was asked at and, for a sideways label, the
-    upright third picture (#1051)."""
+    upright third picture (#1051). For the grounded Claude label question the `full_view` key holds
+    the row-area picture (`_row_area_png`, #1213), not the whole page."""
     from io import BytesIO
 
     full_hash = hashlib.sha256(full_view_png).hexdigest()
@@ -1271,7 +1273,14 @@ def read_slot_pages(
     readers = runtime.form.reader_ids
     # The grounded Claude label close-up is shrunk to the smallest long edge its readers take
     # unresized (#1213); `require_picture_fits` still refuses anything else before a call.
-    close_up_limit = min((long_edge_limit(model) for model in readers), default=0)
+    close_up_limit: int | None = None
+    if runtime.claude_row_reader:
+        if not readers:
+            raise ValueError(
+                "a Claude label reading needs at least one configured reader: its close-up is "
+                "sized to the readers' long-edge limit"
+            )
+        close_up_limit = min(long_edge_limit(model) for model in readers)
     page_rows = {page.page_index: page.rows.candidates.rows for page in pages}
     row_images: dict[int, bytes] = {}
     row_ids: dict[int, tuple[UUID, ...]] = {}
@@ -1459,7 +1468,7 @@ def read_slot_pages(
                     # #1213: the area around the row with the span boxed, and the close-up with
                     # the span's ends marked, shrunk to the readers' limit when wider; the
                     # packet stores exactly these. `crops[key]` keeps the close-up's box as cut.
-                    assert row_x is not None
+                    assert row_x is not None and close_up_limit is not None
                     view_png = _row_area_png(page.rendered, row_x, box_px)
                     png = _marked_close_up_png(
                         page.rendered, crop_px, box_px, max_long_edge=close_up_limit
