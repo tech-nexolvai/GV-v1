@@ -319,9 +319,7 @@ def rates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
                 "source": "test prices, authored",
                 "retrieved": "2026-10-14",
                 "currency": "USD",
-                "rates": {
-                    LAYOUT_MODEL: {"input_per_1k_tokens": "1", "output_per_1k_tokens": "2"}
-                },
+                "rates": {LAYOUT_MODEL: {"input_per_1k_tokens": "1", "output_per_1k_tokens": "2"}},
             }
         ),
         encoding="utf-8",
@@ -455,7 +453,9 @@ def test_a_malformed_layout_answer_writes_one_rejected_row_and_still_abstains(
     rows = _layout_rows(session)
     assert len(rows) == client.calls > 0
     assert {row.outcome for row in rows} == {"rejected"}
-    assert all(row.rejection_reason and row.rejection_reason.startswith("ValueError:") for row in rows)
+    assert all(
+        row.rejection_reason and row.rejection_reason.startswith("ValueError:") for row in rows
+    )
     # The model answered and was paid, so its tokens count.
     assert {row.cost_micros for row in rows} == {1_200_000}
     assert {proposal.proposed_value for proposal in _proposals(session)} == {"abstained"}

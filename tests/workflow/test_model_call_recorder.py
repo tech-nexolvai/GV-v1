@@ -107,7 +107,9 @@ def _answer() -> dict[str, Any]:
                         "toolUse": {
                             "name": TOOL_NAME,
                             "input": {
-                                "assignments": [{"field_key": "SHOP:CT010", "candidate_ids": ["r1"]}]
+                                "assignments": [
+                                    {"field_key": "SHOP:CT010", "candidate_ids": ["r1"]}
+                                ]
                             },
                         }
                     }

@@ -219,6 +219,7 @@ from extraction.ink import PageInk, read_page_ink
 from extraction.layout import (
     BedrockClosedQuestionConfig,
     BedrockClosedQuestionReader,
+    LayoutCall,
     LayoutClassification,
     LayoutReader,
     LayoutStatus,
@@ -387,6 +388,7 @@ from workflow.layout_proposals import (
     slot_reader_has_rows,
 )
 from workflow.measurements import run_parameters_for
+from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.part_operands import (
     CountertopScope,
@@ -4013,7 +4015,13 @@ class DatabaseStages:
 
         written = 0
         refused: list[str] = []
-        readers = tuple(route.reader for route in self._layout_reader_routes)
+        # Every Bedrock call writes one row under this page's run (#1221), in the stage's own
+        # transaction, as the vision readers' rows are. An injected reader that calls no model
+        # writes none.
+        recorder = ModelCallRecorder(session, extraction_run_id=extraction_run_id)
+        readers = tuple(
+            _recorded_layout_reader(route.reader, recorder) for route in self._layout_reader_routes
+        )
         model_id, prompt_id = _layout_proposal_identity(self._layout_reader_routes)
         for discriminator in discriminators:
             classification = classify_layout(
@@ -8493,6 +8501,25 @@ def _layout_discriminators(session: Session) -> tuple[DiscriminatorNeed, ...]:
         if snapshot is not None
     )
     return required_inputs(rules).discriminators
+
+
+def _recorded_layout_reader(reader: LayoutReader, recorder: ModelCallRecorder) -> LayoutReader:
+    """The Bedrock layout reader with every call it makes recorded; any other reader unchanged."""
+
+    if not isinstance(reader, BedrockClosedQuestionReader):
+        return reader
+
+    def record(call: LayoutCall) -> None:
+        recorder.record(
+            model_id=call.model_id,
+            prompt_id=call.prompt_id,
+            template_id=call.template_id,
+            started_ns=call.started_ns,
+            response=call.response,
+            error=call.error,
+        )
+
+    return reader.with_call_recorder(record)
 
 
 def _layout_proposal_identity(routes: Sequence[_LayoutReaderRoute]) -> tuple[str, str]:

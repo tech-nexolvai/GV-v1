@@ -14,6 +14,7 @@ No provider is contacted. The client is a stub, and every fixture is authored.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -877,16 +878,22 @@ class _Raises:
 
 
 def _both_ways(
-    client: Any, context: AssignmentContext | None = None
+    make_client: Callable[[], Any], context: AssignmentContext | None = None
 ) -> tuple[Any, Any, list[AssignmentProgress], list[AssignmentProgress], _Recorder]:
-    """The same question asked without and with a recorder: answers and phases must be identical."""
+    """The same question asked without and with a recorder: answers and phases must be identical.
+
+    Each run gets a fresh client, so a client that answers differently on its second call (the
+    guard's retry) behaves the same way in both runs.
+    """
     context = context if context is not None else _context()
     plain_seen: list[AssignmentProgress] = []
-    plain = propose_and_guard(context, _model_with(client), observer=plain_seen.append)
+    plain = propose_and_guard(context, _model_with(make_client()), observer=plain_seen.append)
     recorder = _Recorder()
     seen: list[AssignmentProgress] = []
     recorded = propose_and_guard(
-        context, _model_with(client).with_invocation_recorder(recorder), observer=seen.append
+        context,
+        _model_with(make_client()).with_invocation_recorder(recorder),
+        observer=seen.append,
     )
     return plain, recorded, plain_seen, seen, recorder
 
@@ -906,7 +913,7 @@ def _model_with(client: Any) -> BedrockAssignmentModel:
 def test_an_answered_call_is_recorded_once_with_its_identity_and_response() -> None:
     """**Outcome: one record per call; the answer and the phases are what they were.**"""
     response = {**_response(), "usage": {"inputTokens": 1000, "outputTokens": 100}}
-    plain, recorded, plain_seen, seen, recorder = _both_ways(_Client(response))
+    plain, recorded, plain_seen, seen, recorder = _both_ways(lambda: _Client(response))
 
     assert recorded == plain
     assert recorded[0] == (ProposedAssignment(field_key="SHOP:CT010", candidate_ids=("c1",)),)
@@ -925,7 +932,7 @@ def test_a_malformed_answer_is_recorded_with_its_response_and_its_error() -> Non
     """**Outcome: fail closed as before; the record carries both, which the recorder stores as
     `rejected`: the model answered (and was paid), and the local code refused the answer.**"""
     response = {"output": {"message": {"content": [{"text": "free text, no tool"}]}}}
-    plain, recorded, plain_seen, seen, recorder = _both_ways(_Client(response))
+    plain, recorded, plain_seen, seen, recorder = _both_ways(lambda: _Client(response))
 
     assert recorded == plain == ((), ())
     assert seen == plain_seen
@@ -937,7 +944,7 @@ def test_a_malformed_answer_is_recorded_with_its_response_and_its_error() -> Non
 
 def test_a_failed_call_is_recorded_with_its_error_and_no_response() -> None:
     error = _client_error("ThrottlingException")
-    plain, recorded, plain_seen, seen, recorder = _both_ways(_Raises(error))
+    plain, recorded, plain_seen, seen, recorder = _both_ways(lambda: _Raises(error))
 
     assert recorded == plain == ((), ())
     assert seen == plain_seen
@@ -951,7 +958,7 @@ def test_a_timed_out_call_is_recorded_with_its_error_and_no_response() -> None:
     from botocore.exceptions import ReadTimeoutError  # type: ignore[import-untyped]
 
     error = ReadTimeoutError(endpoint_url="https://bedrock.invalid")
-    plain, recorded, plain_seen, seen, recorder = _both_ways(_Raises(error))
+    plain, recorded, plain_seen, seen, recorder = _both_ways(lambda: _Raises(error))
 
     assert recorded == plain == ((), ())
     assert seen == plain_seen
@@ -962,7 +969,7 @@ def test_a_timed_out_call_is_recorded_with_its_error_and_no_response() -> None:
 
 def test_the_guarded_retry_is_a_second_call_and_a_second_record() -> None:
     """**Outcome: two calls, two records.** The retry after the guard's refusal is paid for too."""
-    plain, recorded, _plain_seen, _seen, recorder = _both_ways(_CorrectsOnceClient(), _run_context())
+    plain, recorded, _plain_seen, _seen, recorder = _both_ways(_CorrectsOnceClient, _run_context())
 
     assert recorded == plain
     assert len(recorded[0]) == 2
