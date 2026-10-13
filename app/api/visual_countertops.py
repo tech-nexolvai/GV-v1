@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
-from dataclasses import replace
 from fractions import Fraction
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID, uuid4
@@ -45,6 +44,7 @@ from app.review.architect_view_match import (
     match_out,
     separate_file_views,
 )
+from app.review.cabinet_reading import results_note
 from app.review.drawings_not_read import drawings_not_read
 from app.review.no_countertop import (
     PageAnswer,
@@ -815,16 +815,19 @@ def countertop_results(
     ] = None,
 ) -> CountertopResultsOut:
     del principal
-    chosen = select(PackageRevision).join(Package, Package.id == PackageRevision.package_id)
+    # The package is loaded with its revision, so its product (#1205) costs no statement of its own.
+    chosen = select(PackageRevision, Package).join(
+        Package, Package.id == PackageRevision.package_id
+    )
     chosen = chosen.where(Package.id == package_id, Package.project_id == project_id)
     if revision_number is not None:
         chosen = chosen.where(PackageRevision.revision_number == revision_number)
-    revision = session.execute(
+    found = session.execute(
         chosen.order_by(PackageRevision.revision_number.desc()).limit(1)
-    ).scalar_one_or_none()
-    if revision is None:
+    ).first()
+    if found is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return _countertop_results_for_revision(session, package_id, revision)
+    return _countertop_results_for_revision(session, package_id, found[0])
 
 
 #: Why a page whose countertop row was not chosen has no architect comparison (#1093).
@@ -994,14 +997,17 @@ def _countertop_results_for_revision(
     )
     # The decision standing on each result: the reviewer's own latest, or the one it carried over an
     # unchanged re-run (#1073). Read once, with sign-off readiness, so the two cannot disagree.
+    # The package's product (#1205): a cabinet package is asked no countertop question. Read from
+    # the identity map when the caller already loaded the package (the read endpoint does).
+    package = session.get(Package, package_id)
+    product = None if package is None else package.product_type
+    checked = countertops_checked(product)
     pages_blocking = blocking_pages(
-        unchosen, page_answers, {row for row in finding_by_row if row is not None}
+        unchosen,
+        page_answers,
+        {row for row in finding_by_row if row is not None},
+        countertops_checked=checked,
     )
-    if pages_blocking.unchecked and not countertops_checked(
-        session.scalar(select(Package.product_type).where(Package.id == package_id))
-    ):
-        # Another product's package never checks a countertop width, so no result is awaited.
-        pages_blocking = replace(pages_blocking, unchecked=())
     readiness, records = readiness_and_decisions(session, revision.id, pages=pages_blocking)
     decisions = records.decisions
     need_ids = set(readiness.blocking_finding_ids)
@@ -1178,6 +1184,9 @@ def _countertop_results_for_revision(
         revision_id=revision.id,
         # Stable: rows on one page keep their order; a split page sits among them by page number.
         items=tuple(sorted(items, key=lambda item: item.page_number)),
+        product_type=product,
+        countertops_checked=checked,
+        reading_note=results_note(session, revision.id, product),
         pages_without_countertop=tuple(
             PageWithoutCountertopOut(
                 page_number=page.page_number,

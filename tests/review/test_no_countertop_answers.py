@@ -345,6 +345,48 @@ def test_a_package_for_another_product_never_waits_for_a_countertop_result(
     assert blocking_pages((), {}, set(), countertops_checked=False).unchecked == ()
 
 
+def test_a_cabinet_package_is_never_held_by_a_countertop_page_question(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1205: a cabinet package read before #1205 still lists a page "with no countertop", with no
+    answer. That countertop question never blocks a cabinet review's sign-off, and the results say
+    the package's product and, instead of countertop wording, where the cabinet checks take their
+    values from. A countertop package is unchanged."""
+    from app.models import Package
+    from app.review.cabinet_reading import CABINET_LISTS_LINE
+
+    project_id, package_id, revision, _record_id = _listed_page(session, tmp_path)
+    before = _results(session, package_id)
+    assert (before.product_type, before.countertops_checked, before.reading_note) == (
+        "countertop",
+        True,
+        None,
+    )
+    assert approval_readiness(session, revision.id).unconfirmed_no_countertop_pages == (3,)
+    package = session.get(Package, package_id)
+    assert package is not None
+    package.product_type = "cabinet"
+    session.commit()
+
+    pages = pages_blocking_sign_off(session, [revision.id])[revision.id]
+    assert (pages.unconfirmed, pages.unchecked, pages.carried) == ((), (), ())
+    readiness = approval_readiness(session, revision.id)
+    assert readiness.unconfirmed_no_countertop_pages == ()
+    assert readiness.can_approve, readiness.reason
+    after = _results(session, package_id)
+    assert (after.product_type, after.countertops_checked, after.reading_note) == (
+        "cabinet",
+        False,
+        CABINET_LISTS_LINE,
+    )
+    review_id = _review_session(session, revision.id)
+    decision = approve_package(
+        session, principal=_reviewer(project_id), review_session_id=review_id
+    )
+    session.commit()
+    assert decision.approval.package_revision_id == revision.id
+
+
 # --- repeat clicks --------------------------------------------------------------------------------
 
 

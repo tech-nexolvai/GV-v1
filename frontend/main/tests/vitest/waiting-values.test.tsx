@@ -136,7 +136,7 @@ describe('the "Needs" line (#1181)', () => {
     render(<NeedsValues finding={waiting([drawnDepth])} packageId="package-1" onSaved={() => {}} />);
 
     const section = screen.getByRole('region', { name: 'Values this check needs' });
-    expect(section.textContent).toContain('Needs: Countertop depth, as drawn (in) from the section drawing (not supplied)');
+    expect(section.textContent).toContain('Needs: Countertop depth, as drawn (in) from the drawing (not supplied)');
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
   });
@@ -215,6 +215,62 @@ describe('the "Needs" line (#1181)', () => {
     await user.click(screen.getByRole('button', { name: /Other checks/ }));
 
     expect(screen.getByRole('region', { name: 'Values this check needs' }).textContent).toContain('Needs: Countertop overhang (in)');
+  });
+});
+
+describe('a cabinet check waits for values entered on Measurements (#1205)', () => {
+  const vendorRun: MissingInput = {
+    key: 'SHOP:cabinet_width',
+    label: "The vendor's cabinet widths",
+    unit: 'in',
+    where_to_find: 'Entered on Measurements, in wall order from left to right.',
+    scope: 'measurements',
+    askable: false,
+    sources: [],
+    saved: null,
+  };
+  const types: MissingInput = {
+    key: 'USER_INPUT:cabinet_category',
+    label: "Each cabinet's type",
+    unit: null,
+    where_to_find: 'Marked on Measurements, cabinet by cabinet.',
+    scope: 'measurements',
+    askable: false,
+    sources: [],
+    saved: null,
+  };
+  const limit: MissingInput = {
+    key: 'single_door_cab_width_min',
+    label: 'Single-door cabinet width, minimum',
+    unit: 'in',
+    where_to_find: "GV's own standard for this job.",
+    scope: 'project',
+    askable: true,
+    sources: ['Company standard', 'G.C / Client'],
+    saved: null,
+  };
+
+  it('a list or a type says where it is entered, with no box and no drawing wording; a limit gets a box', () => {
+    render(<NeedsValues finding={waiting([limit, vendorRun, types])} packageId="package-1" onSaved={vi.fn()} />);
+    const section = screen.getByRole('region', { name: 'Values this check needs' });
+    const run = section.querySelector('[data-key="SHOP:cabinet_width"]');
+    expect(run?.textContent).toBe("Needs: The vendor's cabinet widths (in) — Entered on Measurements, in wall order from left to right.");
+    const kinds = section.querySelector('[data-key="USER_INPUT:cabinet_category"]');
+    expect(kinds?.textContent).toBe("Needs: Each cabinet's type — Marked on Measurements, cabinet by cabinet.");
+    expect(section.textContent).not.toMatch(/drawing/);
+    expect(section.textContent).not.toContain('null');
+    expect(within(section).getAllByRole('textbox').map((box) => box.id)).toHaveLength(2); // the limit and the note
+    expect(typeable([limit, vendorRun, types])).toEqual([limit]);
+    expect(drawingNeeded([limit, vendorRun, types])).toEqual([]);
+  });
+
+  it('a value entered on Measurements since the result says so', () => {
+    const entered = { ...saved, text: '63"', source: null, layer: 'run' as const };
+    const site: MissingInput = { ...vendorRun, key: 'USER_INPUT:field_dimension', label: 'Site width, wall to wall', saved: entered };
+    render(<NeedsValues finding={waiting([site])} packageId="package-1" onSaved={vi.fn()} />);
+    const line = screen.getByRole('region', { name: 'Values this check needs' }).querySelector('[data-key="USER_INPUT:field_dimension"]');
+    expect(line?.textContent).toContain('63"');
+    expect(line?.textContent).toContain('entered on Measurements');
   });
 });
 

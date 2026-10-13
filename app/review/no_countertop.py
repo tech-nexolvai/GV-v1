@@ -41,7 +41,8 @@ has one event per page and one for the batch.
 answer, and while a page that is blocking (a reviewer said there is a countertop, or the AIs
 disagreed) has no result on the live check run: such a page shows only "Not checked", and signing
 past it is the silent skip this issue closes. A confirmation carried from an earlier revision joins
-#1180's list of carried answers the signer says still apply.
+#1180's list of carried answers the signer says still apply. None of this applies to a package for
+another product, such as cabinets: it is asked no countertop question at all (#1205).
 
 Verification: `tests/review/test_no_countertop_answers.py`
 """
@@ -273,8 +274,13 @@ def blocking_pages(
 
     `checked_records` are the records a live result is scoped to. `countertops_checked` is False on
     a package whose checks never include the countertop width (another product): its blocking pages
-    can get no result, so a missing one is not asked for.
+    can get no result, so a missing one is not asked for. **Nor is any countertop question (#1205):**
+    a cabinet package read before #1205 still has pages listed "with no countertop", and confirming
+    them was the wrong question and a blocking one. None of its pages blocks sign-off, and no
+    carried confirmation needs the signer's word.
     """
+    if not countertops_checked:
+        return PagesBlockingSignOff()
     pages = tuple(pages)
     # A page code proved blank (#1195) is listed but needs no answer.
     unconfirmed = sorted(
@@ -284,16 +290,12 @@ def blocking_pages(
             if page.needs_answer and answers.get(page.record.id) is None
         }
     )
-    unchecked = (
-        sorted(
-            {
-                page.page_number
-                for page in pages
-                if page.kind == "split" and page.record.id not in checked_records
-            }
-        )
-        if countertops_checked
-        else []
+    unchecked = sorted(
+        {
+            page.page_number
+            for page in pages
+            if page.kind == "split" and page.record.id not in checked_records
+        }
     )
     carried = sorted(
         (

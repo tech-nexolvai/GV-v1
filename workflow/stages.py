@@ -103,6 +103,11 @@ from app.models.rules import RuleSnapshot as RuleSnapshotRow
 from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, TaskRun
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
+from app.review.cabinet_reading import (
+    AI_READING_SKIPPED,
+    AI_READING_SKIPPED_VERSION,
+    ai_reading_used,
+)
 from app.review.carry_over import carry_decisions_over, live_finding_ids
 from app.review.no_countertop import answered_pages
 from app.runs.invocations import (
@@ -343,7 +348,11 @@ from workflow.association import (
     dimension_texts,
 )
 from workflow.config import READER_RASTER_DPI
-from workflow.evidence_operands import evidence_operands, position_sensitive_inputs
+from workflow.evidence_operands import (
+    evidence_operands,
+    order_sentences,
+    position_sensitive_inputs,
+)
 from workflow.findings_composer import (
     ComposerFinding,
     ComposerOperand,
@@ -2205,7 +2214,20 @@ class DatabaseStages:
             # Never silent (#1163): each page's architect notes — views found without a role,
             # views refused, why no view was found — travel with that page's result.
             results = _with_architect_notes(results, architect)
-        if self._form_reader is not None:
+        if self._form_reader is not None and not ai_reading_used(
+            _revision_product(session, package_revision_id)
+        ):
+            # **A cabinet package is not read by the AI (#1205).** The readers ask countertop
+            # questions, and no cabinet check can use a reading (`app/review/cabinet_reading.py`).
+            # Never silent: the skip is a run of its own on this revision, and the results say it.
+            open_extraction_run(
+                session,
+                task_run_id=task_run.id,
+                extractor=AI_READING_SKIPPED,
+                extractor_version=AI_READING_SKIPPED_VERSION,
+                config_hash=f"product={ProductType.CABINET.value}",
+            )
+        elif self._form_reader is not None:
             for version in _shop_document_versions_for(session, package_revision_id):
                 shop_data = verified_data.get(version)
                 if shop_data is not None:
@@ -7267,14 +7289,16 @@ class DatabaseStages:
                     # sentence — otherwise "could not resolve 'shop_cabinets'" reads as though labelling
                     # a cabinet would fix it, when it is the tag, or the order along the wall, that is
                     # missing. Sorted so that a rule with two such sentences reads the same every run.
-                    unfilled = sorted(
+                    # Said about labelled readings only when there were some (#1205); otherwise the
+                    # sentence says where the runs are entered.
+                    unfilled = order_sentences(
+                        applicable.snapshot.rule,
                         {
-                            why
-                            for name, why in position_sensitive_inputs(
-                                applicable.snapshot.rule
-                            ).items()
+                            name
+                            for name in position_sensitive_inputs(applicable.snapshot.rule)
                             if name not in supplied and name not in selected.owned.get(rule_id, ())
-                        }
+                        },
+                        selected.with_readings.get(rule_id, ()),
                     )
                     if finding.outcome is Outcome.NOT_FOUND and unfilled:
                         finding = replace(

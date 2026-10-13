@@ -69,6 +69,33 @@ SIX: dict[str, list[tuple[str, str]]] = {
 }
 
 
+#: The two cabinet checks on a cabinet package where nothing was entered (#1205): the six cabinet
+#: width limits are project settings, typed here; the cabinet lists, each cabinet's type and the site
+#: width are the reviewer's entries on Measurements, listed with where to enter them; the architect's
+#: wall-to-wall width is drawn, listed and never typed here.
+CABINET: dict[str, list[tuple[str, str]]] = {
+    "CAB-FILLER-001": [
+        ("double_door_cab_width_max", "project"),
+        ("double_door_cab_width_min", "project"),
+        ("drawer_cab_width_max", "project"),
+        ("drawer_cab_width_min", "project"),
+        ("single_door_cab_width_max", "project"),
+        ("single_door_cab_width_min", "project"),
+        ("ARCH:CT001", "drawing"),
+        ("ARCH:cabinet_width", "measurements"),
+        ("ARCH:filler_width", "measurements"),
+        ("SHOP:cabinet_width", "measurements"),
+        ("SHOP:filler_width", "measurements"),
+        ("USER_INPUT:cabinet_category", "measurements"),
+        ("USER_INPUT:field_dimension", "measurements"),
+    ],
+    "CAB-ARCH-VS-SHOP-001": [
+        ("ARCH:cabinet_width", "measurements"),
+        ("SHOP:cabinet_width", "measurements"),
+    ],
+}
+
+
 def _upgrade(engine: Engine) -> None:
     config = alembic_config()
     config.attributes["database_url"] = engine.url.render_as_string(hide_password=False)
@@ -104,11 +131,11 @@ def _client(session: Session, *, role: str = "reviewer", actor: str = "a reviewe
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _package(session: Session) -> tuple[UUID, UUID]:
+def _package(session: Session, product: str | None = None) -> tuple[UUID, UUID]:
     if session.get(Project, PROJECT) is None:
         session.add(Project(id=PROJECT, name="waiting values tests"))
         session.flush()
-    package = Package(project_id=PROJECT, vendor="Synthetic Vendor")
+    package = Package(project_id=PROJECT, vendor="Synthetic Vendor", product_type=product)
     session.add(package)
     session.flush()
     revision = PackageRevision(
@@ -221,15 +248,19 @@ def test_each_waiting_check_asks_for_exactly_what_it_misses(session: Session, ru
 
 
 def test_no_other_check_asks_for_anything(session: Session) -> None:
-    """Only the six ask (#1181); every other waiting result — the countertop width, the cabinet
-    rows — is answered on its own card or on Measurements, and carries an empty list."""
+    """Only the six and the two cabinet checks ask (#1181, #1205); every other waiting result — the
+    countertop width — is answered on its own card, and carries an empty list."""
     client = _client(session)
     package, revision = _package(session)
     _run(session, revision)
 
     findings = _findings(client, package)
 
-    others = {rule_id: item for rule_id, item in findings.items() if rule_id not in SIX}
+    others = {
+        rule_id: item
+        for rule_id, item in findings.items()
+        if rule_id not in SIX and rule_id not in CABINET
+    }
     assert others, "the rulebook publishes more than the six"
     assert any(item["outcome"] == "NOT_FOUND" for item in others.values())
     assert all(item["missing_inputs"] == [] for item in others.values())
@@ -654,3 +685,76 @@ def test_values_typed_here_are_in_the_changed_values_list(session: Session) -> N
     ), entered
     assert not any("sink_interior_width" in line for line in entered)
     assert "countertop_overhang" not in changed["outstanding"]
+
+
+# ---------------------------------------------------------------------------
+# The two cabinet checks (#1205)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rule_id", sorted(CABINET))
+def test_each_cabinet_check_lists_every_value_it_waits_for(session: Session, rule_id: str) -> None:
+    """Before #1205 both said `missing_inputs: []` while their reason named one value. Outcome:
+    every value the run lacked, in plain words, with where each is entered; only the six width
+    limits get a box here (project settings, either source); and the reason no longer speaks of
+    labelled readings nobody made."""
+    client = _client(session)
+    package, revision = _package(session, product="cabinet")
+    _run(session, revision)
+
+    finding = _findings(client, package)[rule_id]
+
+    assert finding["outcome"] == "NOT_FOUND"
+    assert _needs(finding) == CABINET[rule_id]
+    assert "labelled readings" not in finding["reason"]
+    for need in finding["missing_inputs"]:
+        assert need["label"] and need["where_to_find"]
+        assert "CT0" not in need["label"] and "_" not in need["label"]
+        assert need["saved"] is None
+        assert need["askable"] is (need["scope"] == "project")
+        assert need["unit"] == (None if need["key"] == "USER_INPUT:cabinet_category" else "in")
+        if need["scope"] == "project":
+            assert need["sources"] == ["Company standard", "G.C / Client"]
+        if need["scope"] == "measurements":
+            assert "on Measurements" in need["where_to_find"]
+
+
+def test_a_cabinet_value_entered_is_no_longer_listed_and_says_run_checks(
+    session: Session,
+) -> None:
+    """The list is worked out from what the run had: the site width entered on Measurements shows as
+    saved until the next run, and is then no longer listed; the limits typed are gone too."""
+    client = _client(session)
+    package, revision = _package(session, product="cabinet")
+    _run(session, revision)
+    response = client.post(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+        json={
+            "measurements": [{"rule_id": "CAB-FILLER-001", "name": "field_width", "value": '63"'}],
+            "parameters": [
+                {"name": name, "value": value, "scope": "project", "source": "Company standard"}
+                for name, value in {
+                    "single_door_cab_width_min": '9"',
+                    "single_door_cab_width_max": '24"',
+                    "double_door_cab_width_min": '24"',
+                    "double_door_cab_width_max": '48"',
+                    "drawer_cab_width_min": '12"',
+                    "drawer_cab_width_max": '36"',
+                }.items()
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    saved = {
+        need["key"]: need for need in _findings(client, package)["CAB-FILLER-001"]["missing_inputs"]
+    }
+    assert saved["USER_INPUT:field_dimension"]["saved"]["text"] == '63"'
+    assert saved["single_door_cab_width_min"]["saved"]["source"] == "Company standard"
+
+    _run(session, revision)
+    after = [key for key, _scope in _needs(_findings(client, package)["CAB-FILLER-001"])]
+
+    assert (
+        after == [key for key, scope in CABINET["CAB-FILLER-001"] if scope != "project"][:-1]
+    ), "the limits and the site width are no longer listed"

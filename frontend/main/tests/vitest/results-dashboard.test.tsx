@@ -293,3 +293,49 @@ describe('results dashboard', () => {
     expect(props.onRetry).toHaveBeenCalled();
   });
 });
+
+describe('a cabinet package (#1205)', () => {
+  const NOT_READ = 'Cabinet checks use the cabinet lists entered on Measurements; the drawings were not read by the AI for this package.';
+  const listed = { page_number: 3, reason: 'Synthetic: no stone countertop is drawn.', record_id: 'rec-3', confirmation: null, needs_answer: true };
+
+  it('says once where its checks take their values from, in place of the countertop wording', () => {
+    setup({
+      countertops: { status: 'ready', rows: [], countertopsChecked: false, readingNote: NOT_READ },
+      findings: [finding('c-run', 'NOT_FOUND', { scope_label: 'Cabinet run' })],
+      blockingIds: new Set(['c-run']),
+    });
+    const note = document.querySelector('[data-slot="cabinet-reading-note"]');
+    expect(note?.textContent).toBe(NOT_READ);
+    expect(screen.queryByText('No countertops in this run')).toBeNull();
+    expect(screen.queryByText(/Run checks from Measurements to see results here/)).toBeNull();
+    // The cabinet checks are still listed, with what they wait for.
+    expect(document.querySelector('[data-slot="results-dashboard"]')?.textContent).toContain('Cabinet run');
+  });
+
+  it('asks no countertop question, even on a package read before #1205', () => {
+    setup({
+      countertops: {
+        status: 'ready',
+        rows: ROWS,
+        pagesWithoutCountertop: [listed],
+        countertopsChecked: false,
+        readingNote: 'Cabinet checks use the cabinet lists on Measurements.',
+      },
+      findings: [],
+      blockingIds: new Set(),
+    });
+    expect(screen.getByText('Cabinet checks use the cabinet lists on Measurements.')).toBeTruthy();
+    expect(screen.queryByText('Pages not checked')).toBeNull();
+    expect(screen.queryByText(/Confirm: no countertop here/)).toBeNull();
+    expect(screen.queryByText(/There is a countertop/)).toBeNull();
+    expect(tableRows()).toHaveLength(0);
+  });
+
+  it('a countertop package is unchanged: its listed pages still ask', () => {
+    setup({ countertops: { status: 'ready', rows: [], pagesWithoutCountertop: [listed], countertopsChecked: true, readingNote: null } });
+    expect(screen.getAllByText('Pages not checked').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Synthetic: no stone countertop is drawn/)).toBeTruthy();
+    expect(document.querySelector('[data-slot="cabinet-reading-note"]')).toBeNull();
+  });
+});
+

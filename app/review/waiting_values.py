@@ -16,7 +16,14 @@ revision-wide `NOT_FOUND` result:
   they do not fill in measurements (GV's rule; Anant, 2026-10-12), so the check waits for the
   drawing to be read or supplied.
 
-Only the six checks above ask (`WAITING_RULES`). Nothing is filled in, defaulted or treated as zero
+**The two cabinet checks ask too (#1205).** Their reason named one value (the first the arithmetic
+tripped on) while up to four lists, two reviewer entries and six width limits were missing, and the
+list said nothing. Their values are of a third kind: a **reviewer's entry on Measurements** (the
+cabinet lists, each cabinet's type, the site width; GV's method has the reviewer enter these),
+listed with where it is entered and in what order, never a box here. Their six cabinet width
+limits are project settings, asked like any other.
+
+Only these checks ask (`WAITING_RULES`). Nothing is filled in, defaulted or treated as zero
 here: a missing value is listed, and the check keeps waiting until it is supplied and the checks run
 again. A setting the rulebook gives a
 default (the 4" front offset, the ¼" clearance) is never listed, because the run had it.
@@ -65,11 +72,11 @@ __all__ = [
     "missing_inputs_for",
 ]
 
-Scope = Literal["project", "sink", "drawing"]
+Scope = Literal["project", "sink", "drawing", "measurements"]
 
 
-#: The six checks this asks for (#1181). Every other check's waiting is answered elsewhere: a
-#: countertop's on its own card, a cabinet row's on Measurements.
+#: The checks this asks for: the six of #1181 and the two cabinet checks (#1205). Every other
+#: check's waiting is answered elsewhere: a countertop's on its own card.
 WAITING_RULES: Final[frozenset[str]] = frozenset(
     {
         "CT-DEPTH-001",
@@ -78,11 +85,22 @@ WAITING_RULES: Final[frozenset[str]] = frozenset(
         "CT-SINK-OFFSET-FRONT-001",
         "CT-BACK-OFFSET-MIN-001",
         "CT-SINK-CABINET-WIDTH-001",
+        "CAB-FILLER-001",
+        "CAB-ARCH-VS-SHOP-001",
     }
 )
 
 #: Where a list a check lacks is entered (a row of cabinets keeps its order there).
 LIST_ON_MEASUREMENTS: Final = "Entered on Measurements, where a row keeps its order."
+
+#: Where a list is entered for a check that compares it member by member, by the check's operation:
+#: the order is what the check compares, so it is said (#1205).
+LIST_ORDER: Final[Mapping[str, str]] = {
+    "cabinet_run_distribution": "Entered on Measurements, in wall order from left to right.",
+    "pairwise_within_tolerance": (
+        "Entered on Measurements, in the same order as the other list of cabinets."
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +173,36 @@ DRAWING_GUIDE: Final[Mapping[str, Guide]] = {
         "The vendor's plan view: from the cut-out to the sink cabinet's right inside face.",
     ),
 }
+
+#: Each value a cabinet check takes from the reviewer, by source and type (#1205): the cabinet lists,
+#: each cabinet's type and the site width. Entered on Measurements; GV's method has the reviewer
+#: enter them (the client lead's deck, slide 11: the reviewer marks each cabinet's category).
+REVIEWER_GUIDE: Final[Mapping[tuple[str, str], Guide]] = {
+    ("USER_INPUT", SemanticType.FIELD_DIMENSION.value): Guide(
+        "Site width, wall to wall",
+        "Entered on Measurements: the wall-to-wall width measured on site for this run.",
+    ),
+    ("USER_INPUT", SemanticType.CABINET_CATEGORY.value): Guide(
+        "Each cabinet's type",
+        "Marked on Measurements, cabinet by cabinet: single door, double door or drawer, or an "
+        "equipment cabinet, whose width never changes.",
+    ),
+    ("ARCH", SemanticType.CABINET_WIDTH.value): Guide(
+        "The architect's cabinet widths", LIST_ON_MEASUREMENTS
+    ),
+    ("SHOP", SemanticType.CABINET_WIDTH.value): Guide(
+        "The vendor's cabinet widths", LIST_ON_MEASUREMENTS
+    ),
+    ("ARCH", SemanticType.FILLER_WIDTH.value): Guide(
+        "The architect's filler widths", LIST_ON_MEASUREMENTS
+    ),
+    ("SHOP", SemanticType.FILLER_WIDTH.value): Guide(
+        "The vendor's filler widths", LIST_ON_MEASUREMENTS
+    ),
+}
+
+#: The one value a check may lack that is not a length: each cabinet's type.
+_NOT_A_LENGTH: Final = frozenset({SemanticType.CABINET_CATEGORY.value})
 
 _DRAWING_SIDE: Final[Mapping[str, str]] = {
     "SHOP": "The vendor's drawing",
@@ -359,22 +407,28 @@ def missing_inputs_for(
         # **A drawn number is never a box** (GV's admin: people confirm, they do not fill in
         # measurements; Anant, 2026-10-12). It is listed, not askable, so the screen can say plainly
         # that the check waits for the drawing; a reader reading it, or a value already confirmed on
-        # Measurements, is what supplies it.
+        # Measurements, is what supplies it. **A reviewer's entry** — a list of cabinets, each
+        # cabinet's type, the site width (#1205) — is not a box here either: it is entered on
+        # Measurements, where a run keeps its order, and the line says so.
         drawn: list[MissingInputOut] = []
         for input_name, selector in rule.inputs.items():
             if input_name in operands:
                 continue
             source = getattr(selector.source, "value", str(selector.source))
             semantic = getattr(selector.semantic_type, "value", str(selector.semantic_type))
-            guide = _drawing_guide(source, semantic)
             is_list = selector.cardinality is not Cardinality.ONE
+            entered = source == "USER_INPUT" or is_list
+            guide = REVIEWER_GUIDE.get((source, semantic)) or _drawing_guide(source, semantic)
+            where = guide.where_to_find
+            if is_list:
+                where = LIST_ORDER.get(rule.operation.type, LIST_ON_MEASUREMENTS)
             drawn.append(
                 MissingInputOut(
                     key=f"{source}:{semantic}",
                     label=guide.label,
-                    unit="in",
-                    where_to_find=LIST_ON_MEASUREMENTS if is_list else guide.where_to_find,
-                    scope="drawing",
+                    unit=None if semantic in _NOT_A_LENGTH else "in",
+                    where_to_find=where,
+                    scope="measurements" if entered else "drawing",
                     askable=False,
                     saved=(
                         None
