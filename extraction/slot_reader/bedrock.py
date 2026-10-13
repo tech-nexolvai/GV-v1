@@ -76,6 +76,7 @@ from extraction.slot_reader.claude_output import (
     require_picture_fits,
 )
 from extraction.slot_reader.seal import Belongs, ReaderAnswer, parse_belongs
+from extraction.slot_reader.stop import ReadingStop
 from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, WallAnswer
 from vocabulary.semantic_types import ProductType
 
@@ -1986,6 +1987,7 @@ def read_crops_parallel(
     pacer: ModelPacer | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
     on_answered: Callable[[CropJob], None] | None = None,
+    stop: ReadingStop | None = None,
 ) -> dict[
     tuple[str, str],
     ReaderAnswer
@@ -1997,6 +1999,13 @@ def read_crops_parallel(
     | None,
 ]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
+
+    **A clean stop (#1206).** The first question refused for the spend cap (`SpendCapExceeded`) or
+    by the provider for the account (`ProviderAccountRefused`, HTTP 402) trips `stop`: no question
+    is sent after it, the ones in flight finish, and each one refused or never sent is noted with
+    its page (`ReadingStop`). Shared by every batch of one reading, so a later batch sends nothing
+    either. An account refusal is then raised, never retried as a rate limit. Without a `stop`
+    given, one is made for this batch alone.
 
     `on_answered` (#1178), when given, is told each job as its answer (or abstention) arrives, on
     the calling thread, so the worker can say how many pages are done. It sees nothing of the answer
@@ -2033,6 +2042,7 @@ def read_crops_parallel(
         from extraction.slot_reader.anthropic import BatchSpendGuard
 
         spend_guard = BatchSpendGuard(spend_cap_usd, rates)
+    reading_stop = stop if stop is not None else ReadingStop()
 
     def invoke(
         job: CropJob,
@@ -2046,6 +2056,9 @@ def read_crops_parallel(
         | ArchMatchAnswer
         | None,
     ]:
+        if reading_stop.stopped:
+            reading_stop.not_asked(job.key, job.model_id, job.page_index)
+            return (job.key, job.model_id), None
         if is_claude_model(job.model_id):
             try:
                 require_picture_fits(job.pictures, job.model_id)
@@ -2067,6 +2080,10 @@ def read_crops_parallel(
                 return (job.key, job.model_id), None
         for throttle_attempt in range(max_throttle_retries + 1):
             shared_pacer.wait(job.model_id)
+            if reading_stop.stopped:
+                # Stopped while this question waited its turn (or its retry): never sent.
+                reading_stop.not_asked(job.key, job.model_id, job.page_index)
+                return (job.key, job.model_id), None
             try:
                 client = clients.for_current_thread()
                 if spend_guard is not None:
@@ -2088,10 +2105,19 @@ def read_crops_parallel(
             except (MalformedFormAnswer, PictureWouldBeResized):
                 return (job.key, job.model_id), None
             except Exception as error:
-                from extraction.slot_reader.anthropic import SpendCapExceeded
+                from extraction.slot_reader.anthropic import (
+                    ProviderAccountRefused,
+                    SpendCapExceeded,
+                )
 
                 if isinstance(error, SpendCapExceeded):
+                    # The budget is reached: this question abstains and the reading stops here.
+                    reading_stop.refused(job.key, job.model_id, job.page_index, "budget")
                     return (job.key, job.model_id), None
+                if isinstance(error, ProviderAccountRefused):
+                    # Out of credit: nothing more is sent, and the error ends the reading.
+                    reading_stop.refused(job.key, job.model_id, job.page_index, "account")
+                    raise
                 if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
                     raise
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))

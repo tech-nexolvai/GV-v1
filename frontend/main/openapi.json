@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "AbstentionTraceOut": {
-        "description": "Why nothing was calculated.\n\nA real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when\na package exhausts its model budget, and it carries a cause and a reason rather than operands.\nReporting it as an empty calculation would render an abstention as a check that ran and found\nnothing, which is the reading V1 must never invite.",
+        "description": "Why nothing was calculated.\n\nA real and separate shape, not a degenerate calculation: a check that abstained carries a cause\nand a reason rather than operands (`app/verdicts/trace.abstention_trace`; before #1206 the\nremoved `app/budget/overflow.py` wrote one with `regions_done` when a package exhausted its\nmodel budget, and such a stored row still reads here).\nReporting it as an empty calculation would render an abstention as a check that ran and found\nnothing, which is the reading V1 must never invite.",
         "properties": {
           "cause": {
             "title": "Cause",
@@ -6019,6 +6019,17 @@
             "title": "State",
             "type": "string"
           },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
           "vendor": {
             "anyOf": [
               {
@@ -7461,7 +7472,7 @@
         "type": "object"
       },
       "ReadingTimeOut": {
-        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI\nbudget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or\nat a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so\nthe time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
+        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type). An AI\nbudget stop is a `finished` reading too: it hands over as usual and lists the pages it left\nunread (#1206). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that,\nor at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading,\nso the time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
         "properties": {
           "duration_ms": {
             "anyOf": [
@@ -7528,6 +7539,18 @@
             "format": "date-time",
             "title": "Started At",
             "type": "string"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why a failed reading stopped, in plain words a person can act on, when it is one (#1206): today only 'The AI provider account is out of credit. Top it up, then run the reading again.' Null for any other end, and while reading.",
+            "title": "Stop Reason"
           }
         },
         "required": [

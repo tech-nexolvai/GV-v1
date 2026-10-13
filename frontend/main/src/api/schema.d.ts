@@ -2175,8 +2175,10 @@ export interface components {
          * AbstentionTraceOut
          * @description Why nothing was calculated.
          *
-         *     A real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when
-         *     a package exhausts its model budget, and it carries a cause and a reason rather than operands.
+         *     A real and separate shape, not a degenerate calculation: a check that abstained carries a cause
+         *     and a reason rather than operands (`app/verdicts/trace.abstention_trace`; before #1206 the
+         *     removed `app/budget/overflow.py` wrote one with `regions_done` when a package exhausted its
+         *     model budget, and such a stored row still reads here).
          *     Reporting it as an empty calculation would render an abstention as a check that ran and found
          *     nothing, which is the reading V1 must never invite.
          */
@@ -4820,6 +4822,8 @@ export interface components {
             reading?: components["schemas"]["ReadingProgressOut"] | null;
             /** State */
             state: string;
+            /** Stop Reason */
+            stop_reason?: string | null;
             /** Vendor */
             vendor: string | null;
         };
@@ -5536,10 +5540,11 @@ export interface components {
          * @description How long one package revision's reading took, from its recorded state events (#1071).
          *
          *     It starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to
-         *     a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI
-         *     budget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or
-         *     at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so
-         *     the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
+         *     a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type). An AI
+         *     budget stop is a `finished` reading too: it hands over as usual and lists the pages it left
+         *     unread (#1206). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that,
+         *     or at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading,
+         *     so the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
          *     Anything after the hand-over (a reviewer re-running the checks) is not reading time.
          */
         ReadingTimeOut: {
@@ -5581,6 +5586,11 @@ export interface components {
              * @description When the revision first entered EXTRACTING.
              */
             started_at: string;
+            /**
+             * Stop Reason
+             * @description Why a failed reading stopped, in plain words a person can act on, when it is one (#1206): today only 'The AI provider account is out of credit. Top it up, then run the reading again.' Null for any other end, and while reading.
+             */
+            stop_reason?: string | null;
         };
         /**
          * RecordAction

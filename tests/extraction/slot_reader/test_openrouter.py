@@ -322,19 +322,18 @@ def test_a_malformed_reply_is_an_error_not_an_answer(payload: object) -> None:
     ("status", "body", "expected_code", "throttle"),
     [
         (429, b'{"error":{"type":"rate_limit_error"}}', "TooManyRequestsException", True),
-        # A new or low-balance account's "in-flight budget" (decision log 2026-10-06): retried.
+        # #1206: every 402 is the account (no credit, or too little for the calls in flight),
+        # named for what it is and never retried as a rate limit.
         (
             402,
             b'{"error":{"type":"billing_error","message":"in_flight_budget_exhausted"}}',
-            "TooManyRequestsException",
-            True,
+            "ProviderAccountRefused",
+            False,
         ),
-        # No credit: refused without a retry, so the run stops with this error, as any other
-        # refused request does.
         (
             402,
             b'{"error":{"type":"billing_error","message":"Insufficient credits"}}',
-            "ProviderRequestRejected",
+            "ProviderAccountRefused",
             False,
         ),
         (529, b"{}", "ModelOverloadedException", True),
@@ -383,7 +382,7 @@ def test_an_error_reply_cut_off_mid_read_never_leaks_its_words() -> None:
     ):
         OpenRouterMessagesClient("private-test-key").converse(**REQUEST)
 
-    assert caught.value.response == {"Error": {"Code": "ProviderRequestRejected"}}
+    assert caught.value.response == {"Error": {"Code": "ProviderAccountRefused"}}
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "secret" not in repr(caught.value)

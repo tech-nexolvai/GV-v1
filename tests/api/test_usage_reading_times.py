@@ -80,8 +80,10 @@ def _revision(
     *,
     number: int = 1,
     supersedes: UUID | None = None,
+    reasons: dict[str, str] | None = None,
 ) -> UUID:
-    """A revision whose history is `walk`: (state entered, minutes after T0), after CREATED."""
+    """A revision whose history is `walk`: (state entered, minutes after T0), after CREATED;
+    `reasons` gives a state's event its reason."""
     revision = PackageRevision(
         package_id=package_id,
         revision_number=number,
@@ -99,6 +101,7 @@ def _revision(
                 from_state=previous,
                 to_state=state,
                 actor="synthetic test",
+                reason=(reasons or {}).get(state),
                 created_at=T0 + offset,
             )
         )
@@ -466,3 +469,40 @@ def test_a_reused_stored_answer_is_not_a_call(session: Session) -> None:
     assert totals["calls"] == 1
     assert (totals["input_tokens"], totals["output_tokens"]) == (10, 5)
     assert totals["cost_usd"] == "0.000007"
+
+
+def test_a_reading_stopped_out_of_credit_says_why_and_no_other_failure_does(
+    session: Session,
+) -> None:
+    """#1206: the Usage page can say a reading stopped because the AI provider account is out of
+    credit. Any other failure's reason may be an exception's own words, so it is not passed on."""
+    from app.lifecycle.side_states import OUT_OF_CREDIT
+
+    project_id = _project(session)
+    stopped = _revision(
+        session,
+        _package(session, project_id),
+        [*UPLOADED, ("EXTRACTING", _minutes(0)), ("FAILED_RETRYABLE", _minutes(1))],
+        reasons={"FAILED_RETRYABLE": OUT_OF_CREDIT},
+    )
+    other = _revision(
+        session,
+        _package(session, project_id),
+        [*UPLOADED, ("EXTRACTING", _minutes(0)), ("FAILED_RETRYABLE", _minutes(2))],
+        reasons={"FAILED_RETRYABLE": "stopped by something - TimeoutError: socket 10.0.0.4"},
+    )
+    finished = _revision(
+        session,
+        _package(session, project_id),
+        [*UPLOADED, ("EXTRACTING", _minutes(0)), *PIPELINE_TAIL, ("AWAITING_REVIEW", _minutes(3))],
+    )
+    session.commit()
+
+    by_revision = {item["revision_id"]: item for item in _readings(session, project_id)}
+
+    assert by_revision[str(stopped)]["outcome"] == "failed"
+    assert by_revision[str(stopped)]["stop_reason"] == (
+        "The AI provider account is out of credit. Top it up, then run the reading again."
+    )
+    assert by_revision[str(other)]["stop_reason"] is None
+    assert by_revision[str(finished)]["stop_reason"] is None

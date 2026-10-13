@@ -288,6 +288,7 @@ def _stages(
 ) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
+    from workflow.ai_budget import ai_budget_from_settings
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.stages import (
         DatabaseStages,
@@ -349,6 +350,8 @@ def _stages(
         ),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
+        # What the AI readers may spend on a drawing set, grown by its pages (#1206).
+        ai_budget=ai_budget_from_settings(settings),
     )
 
 

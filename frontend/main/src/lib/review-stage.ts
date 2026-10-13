@@ -98,6 +98,11 @@ export interface ReviewFacts {
   readiness: { blockingFindings: number; canApprove: boolean; reason: string | null } | null;
   /** Signed-export status after approval; null when not loaded or not applicable. */
   exports: 'not_requested' | 'preparing' | 'ready' | 'failed' | null;
+  /**
+   * Why the reading stopped, in words a person can act on (`PackageOut.stop_reason`, #1206): e.g.
+   * the AI provider account is out of credit. Shown as it is; null when the API gives none.
+   */
+  stopReason?: string | null;
 }
 
 export interface ReviewStage {
@@ -126,6 +131,8 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
   const approved = state === 'APPROVED';
   const failedForGood = state === 'FAILED_PERMANENT';
   const retrying = state === 'FAILED_RETRYABLE';
+  // A stop a person must act on (#1206): it waits for them, never retries on its own.
+  const stoppedFor = (failedForGood || retrying) && facts.stopReason ? facts.stopReason : null;
 
   const uploadDone = !UPLOADING.has(state);
   const retryingReading = retrying && facts.reading?.retrying === true;
@@ -172,6 +179,10 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
       }
       // While the retry is visibly reading, the Reading step says so instead (#1178 review).
       if (retrying && !retryingReading) step.note = 'Processing hit a problem and will retry';
+      if (stoppedFor && !retryingReading) {
+        step.state = 'blocked';
+        step.note = stoppedFor;
+      }
     }
     return step;
   });
@@ -186,6 +197,9 @@ function nextAction(
 ): NextAction {
   if (HISTORICAL.has(facts.state)) {
     return { kind: 'none', label: facts.state === 'SUPERSEDED' ? 'Replaced by a newer upload' : 'Cancelled', disabled: true, reason: 'This is a historical record.' };
+  }
+  if ((facts.state === 'FAILED_PERMANENT' || facts.state === 'FAILED_RETRYABLE') && facts.stopReason && facts.reading?.retrying !== true) {
+    return { kind: 'none', label: 'Reading stopped', disabled: true, reason: facts.stopReason };
   }
   if (facts.state === 'FAILED_PERMANENT') {
     return { kind: 'none', label: 'Processing failed', disabled: true, reason: 'Processing stopped and will not retry on its own. Missing results do not mean the drawing passed.' };

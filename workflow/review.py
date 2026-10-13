@@ -50,6 +50,7 @@ from app.lifecycle.states import (
 )
 from app.models import PackageRevision, PackageState
 from workflow.idempotency import CLAIMED, claim, stage_idempotency_key
+from workflow.reader_failures import known_failure
 
 if (
     TYPE_CHECKING
@@ -523,7 +524,19 @@ def _record_failure(
                     actor=actor,
                     reason="re-stated so the failure has somewhere legal to go",
                 )
-            enter_failure(session, package_revision_id, actor=actor, error=error)
+            # A reader failure the workflow names itself (#1206): out of credit is retryable, with
+            # a reason a person can act on. `app/lifecycle` may not import the reader to know it.
+            known = known_failure(error)
+            if known is None:
+                enter_failure(session, package_revision_id, actor=actor, error=error)
+            else:
+                enter_failure(
+                    session,
+                    package_revision_id,
+                    actor=actor,
+                    failure_class=known.failure_class,
+                    reason=known.reason,
+                )
     except Exception as write_failed:  # noqa: BLE001 - the original error must outlive this one
         error.add_note(
             f"the failure could not be recorded: {type(write_failed).__name__}: {write_failed}"
@@ -604,7 +617,15 @@ def register(
                     error=error,
                     stage_state=_state,
                 )
-                if classify(error) is FailureClass.PERMANENT:
+                # Out of credit (#1206) is retryable by a person once the account is topped up,
+                # never by the engine on a timer: a retry cannot top it up.
+                known = known_failure(error)
+                engine_retries = (
+                    classify(error) is not FailureClass.PERMANENT
+                    if known is None
+                    else known.engine_retries
+                )
+                if not engine_retries:
                     # Imported here for the same reason the client is: `hatchet_sdk` pulls in gRPC, and
                     # this module is imported by tests that never start an engine.
                     from hatchet_sdk.exceptions import NonRetryableException

@@ -100,7 +100,13 @@ from app.models.package import Package, PackageRevision, package_product
 from app.models.parameters import declared_defaults, load_parameter_sets
 from app.models.rules import RuleDefinition
 from app.models.rules import RuleSnapshot as RuleSnapshotRow
-from app.models.runs import REUSED_FROM_KEY, ExtractionRun, ModelInvocation, TaskRun
+from app.models.runs import (
+    REUSED_FROM_KEY,
+    ExtractionRun,
+    ModelInvocation,
+    ModelInvocationOutcome,
+    TaskRun,
+)
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
 from app.review.carry_over import carry_decisions_over, live_finding_ids
@@ -261,6 +267,7 @@ from extraction.reader import (
 )
 from extraction.rows import page_rows_and_ink
 from extraction.slot_reader.bedrock import ARCH_MATCH_PROMPT_ID, ARCH_PAIR_PROMPT_ID
+from extraction.slot_reader.stop import ReadingStop
 from extraction.stamp_text import (
     ColouredPath,
     PixelBox,
@@ -294,6 +301,7 @@ from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome, is_decision
 from vocabulary.part_kinds import PartKind
+from workflow.ai_budget import AiBudget
 from workflow.architect_match_contract import MatchLookup
 from workflow.architect_match_records import persist_architect_matches, remembered_matches
 from workflow.architect_matching import (
@@ -400,6 +408,7 @@ from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.slot_reader import (
     SLOT_READER_VERSION,
+    PageSlotResult,
     SlotPage,
     SlotReaderRuntime,
     persist_slot_readings,
@@ -416,6 +425,7 @@ from workflow.unread_pages import (
     UNREADABLE,
     ConfirmedRole,
     UnreadPage,
+    budget_reached,
     has_unnamed_drawing,
     persist_unread_pages,
     unread_page,
@@ -636,21 +646,22 @@ def _shows_a_numeral(text: str | None) -> bool:
     return text is not None and any(character.isnumeric() for character in text)
 
 
-#: Where a deployment states what the AI readers may spend on one drawing set, in US dollars.
+#: Where a deployment states a fixed amount the AI readers may spend on one drawing set, in US
+#: dollars, in place of the page-scaled budget (#1206). Unset by default; a proof run may state one.
 AI_BUDGET_ENV: Final = "GV_AI_BUDGET_PER_SET_USD"
 
-#: The admin's cap (#757, decided 2026-10-01): $3 for one drawing set. Measured use is at most about
-#: $1.60 per 1,000 labels — under a dollar for a set the size of the client's 17 pages — so the cap
-#: never limits ordinary work. It stops a runaway: once a set has spent it, every label left goes to
-#: a reviewer without a model reading, and the page result says so.
-DEFAULT_AI_BUDGET_USD: Final = Decimal(3)
 
+def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decimal | None:
+    """The deployment's fixed budget for a drawing set, or `None` where it states none: the budget
+    then grows with the pages sent to the AI readers (`workflow/ai_budget.py`, #1206).
 
-def ai_budget_from_environment(environ: Mapping[str, str] = os.environ) -> Decimal:
-    """The deployment's stated cap, or the admin's $3 where it states none."""
+    Before #1206 an unstated budget was a fixed $3 (#757), measured when the readers cost about
+    $1.60 per 1,000 labels. The Claude pair costs about $0.088 a page, so a 60-page set (about
+    $5.25) could not fit, and a fixed figure either stops big sets or lets small ones run away.
+    """
     raw = environ.get(AI_BUDGET_ENV, "").strip()
     if not raw:
-        return DEFAULT_AI_BUDGET_USD
+        return None
     try:
         value = Decimal(raw)
     except InvalidOperation as error:
@@ -726,16 +737,29 @@ def fraction_parts_from_environment(environ: Mapping[str, str] = os.environ) -> 
 
 @dataclass(slots=True)
 class _SpendMeter:
-    """What the AI readers have spent on one drawing set, against its cap (#757).
+    """What the AI readers have spent on one drawing set, against its cap (#757, #1206).
 
     Counted from each call's recorded cost. A call whose model has no stated price has no cost to
     count (#700 keeps that unknown rather than zero), so it is counted by number instead and reported:
     the cap holds only where the deployment's price file names its models.
+
+    **The cap grows with the pages read (#1206).** With a `budget`, the cap is that budget for the
+    pages sent to an AI reader so far (`send`): $0.15 a page plus $1, at least $3, at most the
+    admin's maximum, by default. Without one (a fixed amount the deployment stated), it stays put.
     """
 
     cap_micros: int
     spent_micros: int = 0
     unpriced_calls: int = 0
+    budget: AiBudget | None = None
+    pages_sent: set[object] = field(default_factory=set)
+
+    def send(self, page: object) -> None:
+        """A page is sent to an AI reader: a page-scaled cap grows by its share, once per page."""
+        if self.budget is None or page in self.pages_sent:
+            return
+        self.pages_sent.add(page)
+        self.cap_micros = _micros(self.budget.for_pages(len(self.pages_sent)))
 
     def add(self, cost_micros: int | None) -> None:
         if cost_micros is None:
@@ -762,6 +786,11 @@ class _SpendMeter:
             "calls_without_a_price": self.unpriced_calls,
             "reached": self.reached,
         }
+
+
+def _micros(amount: Decimal) -> int:
+    """US dollars as whole millionths, rounded down: a cap never rounds up past what was set."""
+    return int(amount * 1_000_000)
 
 
 @dataclass(slots=True)
@@ -1745,6 +1774,7 @@ class DatabaseStages:
         reading_agent: ReadingAgentSettings | None = None,
         vision_gate: str | None = None,
         ai_budget_usd: Decimal | None = None,
+        ai_budget: AiBudget | None = None,
         fraction_parts: PieceDrawing | None = None,
         reader_pictures: PictureSettings | None = None,
         missing_space: MissingSpace | None = None,
@@ -1860,12 +1890,15 @@ class DatabaseStages:
                 f"{reader_pictures.sharper_dpi} is not"
             )
         self._reader_pictures = reader_pictures
-        # **What the AI readers may spend on one drawing set (#757)**: the admin's $3 unless the
-        # deployment states its own. Metered per `extract_pages`, from the set's recorded calls.
-        budget = ai_budget_from_environment() if ai_budget_usd is None else ai_budget_usd
-        if not budget.is_finite() or budget <= 0:
+        # **What the AI readers may spend on one drawing set (#757, #1206)**: the page-scaled budget
+        # (`ai_budget`, from the admin's settings; the defaults when not given), unless a fixed
+        # amount is stated (`ai_budget_usd` or `GV_AI_BUDGET_PER_SET_USD`). Metered per
+        # `extract_pages`, from the set's recorded calls.
+        fixed = ai_budget_from_environment() if ai_budget_usd is None else ai_budget_usd
+        if fixed is not None and (not fixed.is_finite() or fixed <= 0):
             raise ValueError("the AI budget for a drawing set must be more than zero dollars")
-        self._ai_budget_micros = int(budget * 1_000_000)
+        self._ai_budget_fixed_micros = None if fixed is None else _micros(fixed)
+        self._ai_budget = ai_budget if ai_budget is not None else AiBudget()
         self._meter: _SpendMeter | None = None
         if bounded_agent is None and reading_agent is None and bounded_agent_planner is not None:
             raise ValueError("bounded_agent_planner cannot be supplied without a bounded_agent")
@@ -2122,10 +2155,20 @@ class DatabaseStages:
         # so a stage run again after a failure carries on from what was already spent.
         with session.no_autoflush:
             spent, unpriced = stage_spend_so_far(session, task_run)
-        self._meter = _SpendMeter(
-            cap_micros=self._ai_budget_micros,
-            spent_micros=int(spent or 0),
-            unpriced_calls=int(unpriced or 0),
+        self._meter = (
+            _SpendMeter(
+                cap_micros=self._ai_budget_fixed_micros,
+                spent_micros=int(spent or 0),
+                unpriced_calls=int(unpriced or 0),
+            )
+            if self._ai_budget_fixed_micros is not None
+            else _SpendMeter(
+                # No page is sent yet: the minimum, until `send` grows it page by page.
+                cap_micros=_micros(self._ai_budget.for_pages(0)),
+                spent_micros=int(spent or 0),
+                unpriced_calls=int(unpriced or 0),
+                budget=self._ai_budget,
+            )
         )
 
         results: list[PageResult] = []
@@ -2598,9 +2641,7 @@ class DatabaseStages:
             output_tokens=output_tokens,
             cost_micros=cost,
             latency_ms=latency_ms,
-            outcome=(
-                "rejected" if attempt.malformed else "failed" if attempt.failure_kind else "ok"
-            ),
+            outcome=_reader_outcome(attempt),
             rejection_reason=("malformed_form_answer" if attempt.malformed else None),
             private_raw_response=attempt.raw_response_text,
             reader_page_index=attempt.page_index,
@@ -2751,15 +2792,21 @@ class DatabaseStages:
         if runtime.spend_cap_usd is not None:
             if self._meter is None:
                 raise RuntimeError("Claude reader cannot run before the drawing-set spend meter")
+            # **The cap follows the pages sent (#1206).** Every page this reading sends grows the
+            # set's meter; the reading may spend the page-scaled budget for its own pages, never
+            # above the configured ceiling and never more than the set has left.
+            for page in pages:
+                self._meter.send(page.page_id)
             runtime = replace(
                 runtime,
                 spend_cap_usd=_remaining_claude_budget(
-                    runtime.spend_cap_usd,
+                    min(runtime.spend_cap_usd, self._ai_budget.for_pages(len(pages))),
                     cap_micros=self._meter.cap_micros,
                     spent_micros=self._meter.spent_micros,
                     unpriced_calls=self._meter.unpriced_calls,
                 ),
             )
+        stop = ReadingStop()
         recorder = self._call_ledger(
             session, task_run_id, reader_version=f"{SLOT_READER_VERSION}-ink-v1"
         )
@@ -2804,7 +2851,20 @@ class DatabaseStages:
             # the stored answer; `GV_READER_REUSE_ANSWERS=false` asks everything again.
             stored_answers=StoredReaderAnswers(session) if runtime.reuse_answers else None,
             progress=self._batch_progress(),
+            stop=stop,
         )
+        if stop.cause == "budget":
+            # **A clean stop (#1206).** The budget was reached: the pages from the first one not
+            # fully read onwards are listed, each with the budget named, and none is half-read.
+            # What was paid for is kept in the call ledger and reused by the next reading (#1112).
+            results, unread = _stopped_at_budget(
+                session,
+                results,
+                pages,
+                stop=stop,
+                cap_usd=runtime.spend_cap_usd,
+                unread=unread,
+            )
         self._progress("saving")
         run = open_extraction_run(
             session,
@@ -4403,6 +4463,9 @@ class DatabaseStages:
                         source_candidate_id=source,
                     ).id
 
+                if self._meter is not None:
+                    # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
+                    self._meter.send(page.id)
                 reads = _AgentReads(
                     session=session,
                     page_index=page.index,
@@ -5840,6 +5903,9 @@ class DatabaseStages:
             crop_box=(crop[0], crop[1], crop[2], crop[3]),
         )
         rows: list[ObservationCandidate] = []
+        if self._meter is not None:
+            # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
+            self._meter.send(page.id)
         reads = _PieceReads(
             session=session, run_id=run.id, page_index=page.index, reader=second, meter=self._meter
         )
@@ -6034,6 +6100,9 @@ class DatabaseStages:
                         f"{pre_call_refusal}: crop skipped before model call"
                     )
                     continue
+                if self._meter is not None:
+                    # The page goes to an AI reader: a page-scaled budget grows by it (#1206).
+                    self._meter.send(page.id)
                 if self._meter is not None and self._meter.reached:
                     refusals.append(
                         f"page {page.index}: {reader.config.extractor}: {self._meter.reason}"
@@ -8089,6 +8158,74 @@ def _architect_reader_versions_for(
 def _whole_page_fallback_enabled(slot_reader: object | None) -> bool:
     """Only the legacy slot route may fall back to whole-page proposals on unranked pages."""
     return not bool(getattr(slot_reader, "question_packets", False))
+
+
+#: A reader attempt's failure, by the exception's name, whose cause is recorded on its row rather
+#: than as a bare `failed` (#1206): the budget refused it before it was sent, or the provider
+#: refused the account (HTTP 402). Both made no answer and cost nothing.
+_CAUSED_FAILURES: Final = {
+    "SpendCapExceeded": ModelInvocationOutcome.BUDGET_REFUSED.value,
+    "ProviderAccountRefused": ModelInvocationOutcome.ACCOUNT_REFUSED.value,
+}
+
+
+def _reader_outcome(attempt: AttemptUsage) -> str:
+    """The recorded outcome of one reader attempt: its cause kept, never dropped (#1206)."""
+    if attempt.malformed:
+        return ModelInvocationOutcome.REJECTED.value
+    if attempt.failure_kind:
+        return _CAUSED_FAILURES.get(attempt.failure_kind, ModelInvocationOutcome.FAILED.value)
+    return ModelInvocationOutcome.OK.value
+
+
+def _stopped_at_budget(
+    session: Session,
+    results: Sequence[PageSlotResult],
+    pages: Sequence[SlotPage],
+    *,
+    stop: ReadingStop,
+    cap_usd: Decimal | None,
+    unread: Sequence[UnreadPage],
+) -> tuple[tuple[PageSlotResult, ...], list[UnreadPage]]:
+    """The results of the pages read in full before the budget was reached, and every page from
+    the first one not fully read onwards listed as unread with the budget named (#1206).
+
+    Questions run eight at a time, so a page after the stop may have been answered in full while
+    an earlier one was not. The stop is still one clean place: page k is the last page, in page
+    order, before the first one with a question refused or never sent; every page sent to the
+    readers after it is listed, its partial answers set aside (they are in the call ledger, and
+    the next reading reuses them at no cost). Nothing is dropped silently: each listed page needs
+    a reviewer's answer before sign-off, or a new reading.
+    """
+    left = stop.pages_left()
+    ordered = sorted(pages, key=lambda page: page.page_index)
+    first_unread = next(
+        (position for position, page in enumerate(ordered) if page.page_index in left), None
+    )
+    if first_unread is None:
+        return tuple(results), list(unread)
+    stopped = ordered[first_unread:]
+    read_through = ordered[first_unread - 1].page_index + 1 if first_unread else 0
+    kept = tuple(result for result in results if result.page_index < stopped[0].page_index)
+    version_id = stopped[0].document_version_id
+    total = int(
+        session.scalar(select(func.count(Page.id)).where(Page.document_version_id == version_id))
+        or 0
+    )
+    rows = {
+        page.id: page
+        for page in session.scalars(
+            select(Page).where(Page.id.in_([page.page_id for page in stopped]))
+        )
+    }
+    reason = budget_reached(
+        cap_usd=Decimal(0) if cap_usd is None else cap_usd,
+        read_through=read_through,
+        page_count=max(total, stopped[-1].page_index + 1),
+    )
+    listed = [unread_page(rows[page.page_id], reason) for page in stopped]
+    already = {page.page_id for page in unread}
+    return kept, [*unread, *(page for page in listed if page.page_id not in already)]
 
 
 def _remaining_claude_budget(

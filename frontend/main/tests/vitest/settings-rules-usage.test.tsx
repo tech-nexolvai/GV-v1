@@ -8,7 +8,7 @@ import { CompanySettingsPage } from '@/pages/CompanySettingsPage';
 import { RulebookPage } from '@/pages/RulebookPage';
 import { UsagePage } from '@/pages/UsagePage';
 import { checkTypeWord, matchesRuleFilter, ruleGrid, severityCounts, sharedReleaseNote } from '@/lib/rulebook-overview';
-import { compactCount, costByDay, dayLabel, costText, formatUsd, fullDayLabel, modelName, modelWord, outcomeTotals, outcomesByUploadDay, purposeWord, routeWord, shortDayLabel, usageBySet, usageKpis } from '@/lib/usage';
+import { compactCount, costByDay, dayLabel, costText, formatUsd, fullDayLabel, modelName, modelWord, outcomeTotals, outcomesByUploadDay, purposeWord, routeWord, shortDayLabel, stoppedReadings, usageBySet, usageKpis } from '@/lib/usage';
 
 // Synthetic data only: nothing here comes from a client drawing.
 vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
@@ -216,7 +216,7 @@ describe('Rulebook page', () => {
 
 const totals = (calls: number, cost: string, extra: Partial<UsageGroup> = {}) => ({ calls, failed_calls: 0, input_tokens: calls * 100, output_tokens: calls * 10, cost_usd: cost, unpriced_calls: 0, ...extra });
 const BY_DAY = {
-  from: null, to: null, group_by: 'day', package_reading_times: [],
+  from: null, to: null, group_by: 'day', package_reading_times: [], reading_times: [],
   totals: totals(150, '1.717358', { failed_calls: 10, unpriced_calls: 2 }),
   groups: [
     { ...totals(140, '1.700000'), day: '2026-10-08', package_id: null, models: [{ ...totals(70, '1.0'), model: 'anthropic.claude-opus-5-5' }] },
@@ -244,6 +244,29 @@ const SUMMARY = {
   ],
   next_cursor: null, limit: 200,
 };
+
+describe('readings stopped (#1206)', () => {
+  const OUT_OF_CREDIT = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+  const reading = (packageId: string, started: string, outcome: 'finished' | 'failed' | 'reading', stop: string | null = null) => ({
+    package_id: packageId, revision_id: `rev-${packageId}-${started}`, revision_number: 1, started_at: started,
+    finished_at: outcome === 'reading' ? null : started, outcome, end_state: outcome === 'failed' ? 'FAILED_RETRYABLE' : null,
+    duration_ms: null, stop_reason: stop,
+  });
+
+  it('lists a set whose newest reading stopped out of credit, in the API\'s own words', () => {
+    const stopped = stoppedReadings([
+      reading('set-a', '2026-10-08T09:00:00Z', 'failed', OUT_OF_CREDIT),
+      reading('set-b', '2026-10-08T09:00:00Z', 'failed', OUT_OF_CREDIT),
+      reading('set-b', '2026-10-08T10:00:00Z', 'finished'), // read again since: not listed
+      reading('set-c', '2026-10-08T09:00:00Z', 'failed'), // a failure with no plain reason
+      reading('set-gone', '2026-10-08T09:00:00Z', 'failed', OUT_OF_CREDIT),
+    ], SUMMARY.items);
+    expect(stopped).toEqual([
+      { packageId: 'set-a', vendor: 'Synthetic set-a', reason: OUT_OF_CREDIT },
+      { packageId: 'set-gone', vendor: null, reason: OUT_OF_CREDIT },
+    ]);
+  });
+});
 
 describe('usage arithmetic', () => {
   it('formats money honestly', () => {
@@ -326,6 +349,28 @@ describe('Usage page', () => {
     routes['GET /projects/p/usage/history'] = () => json(HISTORY);
     routes['GET /projects/p/usage/provider-check'] = () => json({ checks: [] });
   }
+
+  it('says which drawing set stopped because the AI account is out of credit (#1206)', async () => {
+    serve();
+    const stop = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+    routes['GET /projects/p/usage?group_by=package'] = () => json({
+      ...BY_SET,
+      reading_times: [{
+        package_id: 'set-a', revision_id: 'rev-set-a', revision_number: 1, started_at: '2026-10-08T09:00:00Z',
+        finished_at: '2026-10-08T09:05:00Z', outcome: 'failed', end_state: 'FAILED_RETRYABLE', duration_ms: 300000, stop_reason: stop,
+      }],
+    });
+    render(<UsagePage />);
+    const section = await screen.findByRole('region', { name: 'Readings stopped' });
+    expect(section.textContent).toBe(`Readings stoppedSynthetic set-a: ${stop}`);
+  });
+
+  it('shows no stopped readings when none stopped', async () => {
+    serve();
+    render(<UsagePage />);
+    expect(await screen.findByRole('table', { name: 'AI usage by drawing set' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Readings stopped' })).toBeNull();
+  });
 
   it('puts all spending so far on top: one total, by model, and earlier runs (#1165)', async () => {
     serve();

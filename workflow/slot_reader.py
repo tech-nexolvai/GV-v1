@@ -111,6 +111,7 @@ from extraction.slot_reader.seal import (
     plain_dimension,
     seal_label,
 )
+from extraction.slot_reader.stop import ReadingStop
 from extraction.slot_reader.veto import (
     DrawnReading,
     drawn_length_vetoes,
@@ -130,6 +131,7 @@ from extraction.slot_reader.walls import (
 from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
+from workflow.ai_budget import AiBudget, ai_budget_from_settings
 from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
@@ -217,7 +219,10 @@ class SlotReaderRuntime:
     question_packets: bool = False
     """Enable storing a private, hash-bound question packet for every reader attempt."""
     spend_cap_usd: Decimal | None = None
-    """Per-reading-batch maximum when the Claude readers are on (either route); otherwise unset."""
+    """The most one reading may spend when the Claude readers are on (either route); otherwise
+    unset. Configured as the admin's maximum for a drawing set, or the lower Claude ceiling when one
+    is stated; the extraction stage then sets each reading's cap from the page-scaled budget for
+    the pages it sends, never above this or what the drawing set has left (#1206)."""
     claude_row_reader: bool = False
     """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
@@ -307,6 +312,16 @@ class SlotReaderRuntime:
         return f"{readers};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
 
 
+def _claude_ceiling(settings: object, budget: AiBudget) -> Decimal:
+    """The most one Claude reading may spend (#1206): the lower ceiling the admin stated
+    (`GV_CLAUDE_READER_BUDGET_USD`), or else the maximum for a drawing set. Each reading's cap is
+    then the page-scaled budget under it (`workflow/stages.py`, `_read_slots`)."""
+    stated = getattr(settings, "claude_reader_budget_usd", None)
+    if stated is None:
+        return budget.maximum_usd
+    return min(Decimal(stated), budget.maximum_usd)
+
+
 def configured_slot_reader(
     settings: object,
     form: FormReaderRuntime | None,
@@ -388,9 +403,7 @@ def configured_slot_reader(
         ),
         question_packets=claude_enabled,
         spend_cap_usd=(
-            getattr(settings, "claude_reader_budget_usd", Decimal("2.50"))
-            if claude_enabled
-            else None
+            _claude_ceiling(settings, ai_budget_from_settings(settings)) if claude_enabled else None
         ),
         claude_row_reader=claude_enabled,
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
@@ -1055,6 +1068,7 @@ def read_slot_pages(
     architect: ArchitectPairing | None = None,
     stored_answers: StoredAnswerSource | None = None,
     progress: BatchProgress | None = None,
+    stop: ReadingStop | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -1086,7 +1100,13 @@ def read_slot_pages(
     `progress` (#1178), when given, is told each batch's questions before they are asked
     (`rows`, `dimensions`, `chains`, `architect_pairing`) and each question as it is answered, so
     the worker can say "page k of N". It only watches: no answer, hold or seal depends on it.
+
+    `stop` (#1206) is shared by every batch of this reading: the first question refused for the
+    budget or the account stops it, and no later question is sent, in this batch or the next
+    (stored answers are still reused: they cost nothing). The caller reads from it which pages were
+    left unread; a reading given none makes its own.
     """
+    reading_stop = stop if stop is not None else ReadingStop()
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
     readers = runtime.form.reader_ids
@@ -1182,6 +1202,13 @@ def read_slot_pages(
             items = to_ask
             if not items:
                 return reused
+        if reading_stop.stopped:
+            # Stopped in an earlier batch (#1206): nothing more is sent.
+            for job in items:
+                reading_stop.not_asked(job.key, job.model_id, job.page_index)
+                if answered is not None:
+                    answered(job)
+            return reused | {(job.key, job.model_id): None for job in items}
         return reused | read_crops_parallel(
             items,
             clients=runtime.form.clients,
@@ -1198,6 +1225,7 @@ def read_slot_pages(
             pacer=shared_pacer,
             claude_effort=runtime.claude_effort,
             on_answered=answered,
+            stop=reading_stop,
         )
 
     def label_jobs(

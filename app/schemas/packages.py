@@ -151,6 +151,11 @@ class PackageOut(BaseModel):
     reading: ReadingProgressOut | None = None
     """Where the reading is while it runs (#1178). Filled by `GET .../packages/{id}` only, and only
     while the revision is being read; `null` otherwise and on the package list."""
+    stop_reason: str | None = None
+    """Why the current revision's reading stopped, in plain words a person can act on (#1206):
+    today only "The AI provider account is out of credit. Top it up, then run the reading again."
+    Filled by `GET .../packages/{id}` only, while the revision is stopped (`FAILED_RETRYABLE` or
+    `FAILED_PERMANENT`) for that reason; `null` otherwise and on the package list."""
 
 
 class ExtractionRequestOut(BaseModel):

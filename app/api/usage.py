@@ -17,6 +17,7 @@ from sqlalchemy.sql import Subquery
 from app.api.dependencies import get_session
 from app.auth import Action, Principal, require_action, require_project_access
 from app.config import Settings
+from app.lifecycle.side_states import PLAIN_STOP_REASONS
 from app.models import (
     AiSpendHistory,
     ExtractionRun,
@@ -58,7 +59,8 @@ class _InvocationUsage:
 
 
 #: Where a reading hands the revision to a person: ready for review, or waiting for a reviewer to
-#: confirm or type values (also where an AI budget stop lands). What happens after is not reading.
+#: confirm or type values. What happens after is not reading. (An AI budget stop does not land in
+#: `NEEDS_INPUT`: since #1206 the reading hands over as usual and lists the pages it left unread.)
 _READING_HANDOVERS: frozenset[str] = frozenset(
     {PackageState.AWAITING_REVIEW.value, PackageState.NEEDS_INPUT.value}
 )
@@ -111,6 +113,7 @@ def _reading_times(
             PackageRevision.revision_number,
             PackageStateEvent.to_state,
             PackageStateEvent.created_at,
+            PackageStateEvent.reason,
         )
         .select_from(PackageStateEvent)
         .join(
@@ -132,6 +135,8 @@ def _reading_times(
         finished_at: datetime | None = None
         end_state: str | None = None
         outcome: Literal["finished", "failed", "reading"] = "reading"
+        # Why it stopped, when the failure says so in words a person can act on (#1206).
+        stop_reason: str | None = None
         done = False
         while index < len(rows) and rows[index].revision_id == start.revision_id:
             row = rows[index]
@@ -140,17 +145,21 @@ def _reading_times(
                 continue
             if row.to_state in _READING_HANDOVERS:
                 finished_at, end_state, outcome = row.created_at, row.to_state, "finished"
+                stop_reason = None
                 done = True
             elif row.to_state in _READING_FINAL_STOPS:
                 # A retryable failure followed by a final stop failed at the first one.
                 if outcome != "failed":
                     finished_at, end_state, outcome = row.created_at, row.to_state, "failed"
+                    stop_reason = _plain(row.reason)
                 done = True
             elif row.to_state == PackageState.FAILED_RETRYABLE.value:
                 finished_at, end_state, outcome = row.created_at, row.to_state, "failed"
+                stop_reason = _plain(row.reason)
             else:
                 # Still in (or resumed into) the pipeline.
                 finished_at, end_state, outcome = None, None, "reading"
+                stop_reason = None
         started_at: datetime = start.created_at
         readings.append(
             ReadingTimeOut(
@@ -166,9 +175,16 @@ def _reading_times(
                     if finished_at is None
                     else (finished_at - started_at) // timedelta(milliseconds=1)
                 ),
+                stop_reason=stop_reason,
             )
         )
     return tuple(sorted(readings, key=lambda item: (item.started_at, str(item.revision_id))))
+
+
+def _plain(reason: str | None) -> str | None:
+    """A failure's reason when it was written for a person (`PLAIN_STOP_REASONS`, #1206); `None`
+    for any other, whose words may be an exception's own."""
+    return reason if reason in PLAIN_STOP_REASONS else None
 
 
 def _invocation_revision() -> Subquery:

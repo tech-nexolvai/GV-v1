@@ -54,7 +54,7 @@ The trigger rate is measured — it is the denominator for the cost story (F5).
 | Context | crop + bounded nearby text/geometry; **no full package by default** |
 | Numeric disagreement | never resolved by model preference — mark `CONFLICTING` |
 | Terminal states | candidate with provenance, **or** explicit abstention |
-| Budget | per-package call and token ceiling; overflow → REVIEW REQUIRED (F5) |
+| Budget | per-drawing-set budget that grows with the pages read; reaching it lists every unread page, which blocks sign-off (F5, #1206) |
 
 Enforced by the graph, not by prompt instruction. There are exactly **two** terminal states — no third
 "best effort" outcome exists, and exceeding any bound produces abstention rather than a partial answer.

@@ -629,10 +629,11 @@ class ReadingTimeOut(BaseModel):
     """How long one package revision's reading took, from its recorded state events (#1071).
 
     It starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to
-    a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI
-    budget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or
-    at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so
-    the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
+    a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type). An AI
+    budget stop is a `finished` reading too: it hands over as usual and lists the pages it left
+    unread (#1206). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that,
+    or at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading,
+    so the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
     Anything after the hand-over (a reviewer re-running the checks) is not reading time.
     """
 
@@ -651,6 +652,14 @@ class ReadingTimeOut(BaseModel):
     )
     duration_ms: int | None = Field(
         description="finished_at minus started_at in whole milliseconds; null while reading."
+    )
+    stop_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why a failed reading stopped, in plain words a person can act on, when it is one "
+            "(#1206): today only 'The AI provider account is out of credit. Top it up, then run "
+            "the reading again.' Null for any other end, and while reading."
+        ),
     )
 
 

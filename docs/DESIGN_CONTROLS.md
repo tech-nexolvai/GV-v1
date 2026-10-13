@@ -15,7 +15,7 @@ app/audit/      events.py
 app/db/         roles.py
 app/retention/  __init__.py policy.py
 app/telemetry/  tracing.py metrics.py triggers.py threshold_report.py
-app/budget/     ceiling.py overflow.py attribution.py
+app/budget/     ceiling.py attribution.py
 eval/           release_metrics.py runs.py regression.py
 storage/        urls.py
 deploy/verdict_isolation/
@@ -202,6 +202,16 @@ Judging a package on the regions that happened to finish, while it looks complet
 That is why this sits with the guardrails that fail closed rather than with cost reporting.
 
 Cost is stored as integer minor units (`cost_micros`) — never a float.
+
+**As built (#1206).** `on_overflow` was never called by anything and was removed. The readers' budget
+for one drawing set grows with the pages sent to them (`workflow/ai_budget.py`: $0.15 a page plus $1,
+at least $3, at most the admin's maximum, all settings). Reaching it stops the reading cleanly
+(`extraction/slot_reader/stop.py`): no question is sent after the first refusal, and every page from
+the first one not fully read onwards is listed with "AI budget $X reached after page k of N"
+(`workflow/unread_pages.py`). Those pages block sign-off until a reviewer answers them or the reading
+is run again, so a partly read package never looks complete. A provider refusing the account for
+payment (HTTP 402) stops the reading too, and the package waits, retryable, saying the account is out
+of credit.
 
 ---
 

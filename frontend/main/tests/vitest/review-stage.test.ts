@@ -157,6 +157,19 @@ describe('reviewStage: one step per state', () => {
     expect(current?.note).toMatch(/retry/);
   });
 
+  it('out of credit (#1206): the step and the button say so plainly, and nothing promises a retry on its own', () => {
+    const stopReason = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+    const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null, stopReason });
+    const current = stage.steps.find((s) => s.id === stage.current);
+    expect(current?.state).toBe('blocked');
+    expect(current?.note).toBe(stopReason);
+    expect(stage.next).toEqual({ kind: 'none', label: 'Reading stopped', disabled: true, reason: stopReason });
+    // Once a person runs the reading again, the retry's line wins.
+    const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
+    const again = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null, stopReason });
+    expect(again.next.kind).toBe('wait-reading');
+  });
+
   it.each(['CANCELLED', 'SUPERSEDED'])('historical (%s): no action', (state) => {
     expect(reviewStage({ ...base, state }).next).toMatchObject({ kind: 'none', disabled: true });
   });

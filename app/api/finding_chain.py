@@ -140,8 +140,10 @@ class CalculationTraceOut(BaseModel):
 class AbstentionTraceOut(BaseModel):
     """Why nothing was calculated.
 
-    A real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when
-    a package exhausts its model budget, and it carries a cause and a reason rather than operands.
+    A real and separate shape, not a degenerate calculation: a check that abstained carries a cause
+    and a reason rather than operands (`app/verdicts/trace.abstention_trace`; before #1206 the
+    removed `app/budget/overflow.py` wrote one with `regions_done` when a package exhausted its
+    model budget, and such a stored row still reads here).
     Reporting it as an empty calculation would render an abstention as a check that ran and found
     nothing, which is the reading V1 must never invite.
     """

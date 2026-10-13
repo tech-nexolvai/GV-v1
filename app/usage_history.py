@@ -127,6 +127,11 @@ class ChargedCost:
     priced_later: bool = False
 
 
+#: Outcomes of a call that made no answer: failed, or refused before it was sent (the drawing set's
+#: budget) or by the provider for the account (#1206). With no tokens, none was charged.
+_UNSERVED_OUTCOMES = frozenset({"failed", "budget_refused", "account_refused"})
+
+
 def charged_cost(
     model_id: str,
     cost_micros: int | None,
@@ -138,14 +143,15 @@ def charged_cost(
 ) -> ChargedCost:
     """What a recorded call cost, counted the same way everywhere (see the module docstring).
 
-    - No recorded price: unpriced, except a failed call that used no tokens (not charged: 0).
+    - No recorded price: unpriced, except a failed or refused call that used no tokens (not
+      charged: 0).
     - A stored 0 with tokens (a pre-#754 row): priced from `rates` (the published file when not
       given) and marked `priced_later`; unpriced if its model has no published rate.
     - Otherwise the recorded cost.
     """
     used_tokens = input_tokens > 0 or output_tokens > 0
     if cost_micros is None:
-        return ChargedCost(0 if outcome == "failed" and not used_tokens else None)
+        return ChargedCost(0 if outcome in _UNSERVED_OUTCOMES and not used_tokens else None)
     if cost_micros == 0 and used_tokens:
         source = published_rates() if rates is None else rates
         micros = call_cost_micros(source, model_id, input_tokens, output_tokens)

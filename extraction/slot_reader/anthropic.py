@@ -62,6 +62,20 @@ class AnthropicRequestError(RuntimeError):
         super().__init__(f"{api} returned HTTP {status_code} ({error_type})")
 
 
+class ProviderAccountRefused(AnthropicRequestError):
+    """The provider refused the call for the account (HTTP 402): no credit, or too little for the
+    calls in flight (#1206, #1200). Nothing was generated or charged.
+
+    **Never a rate limit.** Before #1206 a 402 that mentioned OpenRouter's in-flight budget was
+    named `TooManyRequestsException` and retried like throttling, and any other 402 failed the
+    package for good with no word about the account. Only a person can fix this (top the account
+    up), so it is never retried here; the reading stops cleanly and the package waits, retryable,
+    saying so (`workflow/reader_failures.py`)."""
+
+    def __init__(self, *, api: str = "Anthropic Messages API") -> None:
+        super().__init__(402, "ProviderAccountRefused", api=api)
+
+
 class SpendCapExceeded(RuntimeError):
     """A request was refused before generation because its worst-case charge would exceed cap."""
 
@@ -453,15 +467,17 @@ def post_json(
             payload = json.loads(response.read())
     except HTTPError as error:
         status = int(error.code)
-        # OpenRouter's "in-flight budget" (a new or low-balance account, too many calls at once)
-        # is a 402 that clears by itself, so it is retried like a throttle (decision log
-        # 2026-10-06). Any other 402 (no credit) is refused. Only that marker is looked for; the
-        # reply's words never leave this function.
-        in_flight = status == 402 and b"in_flight_budget" in _error_body(error)
+        # The reply's words are never read: they never leave this function.
         error.close()
+        if status == 402:
+            # Payment required (#1206): the account has no credit, or too little for the calls in
+            # flight (OpenRouter's "in-flight budget", which also clears only once the balance is
+            # topped up or the calls finish). Named for what it is and never retried as a rate
+            # limit; the decision log's 2026-10-06 retry of the in-flight case is replaced.
+            raise ProviderAccountRefused(api=api) from None
         error_type = (
             "TooManyRequestsException"
-            if status == 429 or in_flight
+            if status == 429
             else (
                 "ModelOverloadedException"
                 if status == 529
@@ -474,19 +490,6 @@ def post_json(
     if not isinstance(payload, Mapping):
         raise AnthropicRequestError(502, "ProviderResponseMalformed", api=api)
     return payload
-
-
-def _error_body(error: HTTPError) -> bytes:
-    """At most 4 KB of an error reply, or nothing when it cannot be read whole; always closed.
-
-    Any failure is swallowed: a cut-off reply (`IncompleteRead`) carries the reply's own bytes,
-    which must never reach an exception."""
-    try:
-        return error.read(4096) or b""
-    except Exception:  # noqa: BLE001 - the reply's words must never escape
-        return b""
-    finally:
-        error.close()
 
 
 def _answered_by(reported: object, requested: str) -> bool:

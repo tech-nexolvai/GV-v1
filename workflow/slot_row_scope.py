@@ -87,6 +87,9 @@ NO_ROW_CODES: Final = frozenset(
         "no-row-found",
         "unreadable",
         "blank-page",
+        # #1206: the AI budget was reached before the page was read in full; never a page without
+        # a countertop, so it needs the reviewer's answer or a new reading.
+        "budget-reached",
     }
 )
 
@@ -123,9 +126,10 @@ UNNAMED_DRAWING_FLAG: Final = "no-row-unnamed-drawing"
 #: that code cannot read. Unticked in "Confirm these pages" until the reviewer has looked.
 INK_FOUND_FLAG: Final = "no-row-ink-found"
 
-#: `no-row:` codes that leave a doubt: a vendor drawing code found no row on, or a page code could
-#: not read. Unticked in "Confirm these pages" until the reviewer has looked (#1195).
-_DOUBTFUL_CODES: Final = frozenset({"no-row-found", "unreadable"})
+#: `no-row:` codes that leave a doubt: a vendor drawing code found no row on, a page code could
+#: not read, or one the AI budget stopped before it was read (#1206). Unticked in "Confirm these
+#: pages" until the reviewer has looked (#1195).
+_DOUBTFUL_CODES: Final = frozenset({"no-row-found", "unreadable", "budget-reached"})
 
 #: How the reader ends a reason it wrote itself for a page whose row it did not choose
 #: (`workflow/slot_reader.py:_agreed_row`), and its default when no reader answer was kept.
@@ -188,6 +192,12 @@ class UnchosenRowPage:
     def found_by_code(self) -> bool:
         """Whether code, not the AIs, found no row to read on this page (#1193): no AI was asked."""
         return found_by_code(self.record)
+
+    @property
+    def budget_stopped(self) -> bool:
+        """Whether the AI budget was reached before this page was read (#1206): it was sent to the
+        readers, not found empty by code."""
+        return f"{NO_ROW_FLAG}budget-reached" in (self.record.ambiguity_flags or ())
 
     @property
     def blank_proof(self) -> dict[str, int] | None:

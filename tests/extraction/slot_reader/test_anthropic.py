@@ -174,6 +174,8 @@ def test_response_is_adapted_to_the_existing_reader_shape_without_losing_usage()
         (529, "ModelOverloadedException"),
         (503, "ServiceUnavailableException"),
         (400, "ProviderRequestRejected"),
+        # #1206: payment required is the account, never a rate limit.
+        (402, "ProviderAccountRefused"),
     ],
 )
 def test_provider_errors_are_sanitized_and_categorized_for_retry(
@@ -192,7 +194,7 @@ def test_provider_errors_are_sanitized_and_categorized_for_retry(
     assert "secret" not in str(caught.value)
     assert "private-test-key" not in repr(caught.value)
     assert caught.value.response == {"Error": {"Code": expected_code}}
-    assert _is_throttle(caught.value) is (status != 400)
+    assert _is_throttle(caught.value) is (status not in (400, 402))
 
 
 def test_thread_local_provider_keeps_clients_separate_by_thread() -> None:
