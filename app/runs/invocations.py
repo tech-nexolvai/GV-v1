@@ -298,6 +298,21 @@ def _rejection_reason(error: BaseException | None) -> str | None:
     return text[:500] if text else error.__class__.__name__
 
 
+def _reason(outcome: str, error: BaseException | None) -> str | None:
+    """The cause kept on a Bedrock call's row.
+
+    A rejected answer keeps its long-standing reason, unchanged. A call that failed, timed out or
+    was refused with an error keeps the error's class and a short, sanitised first line (#1215):
+    before, that error reached no column, so a findings wording call that failed left no trace.
+    """
+    if outcome == ModelInvocationOutcome.REJECTED.value:
+        return _rejection_reason(error)
+    if outcome == ModelInvocationOutcome.OK.value or error is None:
+        return None
+    reason: str = import_module("extraction.models.invocations").failure_reason(error)
+    return reason
+
+
 @dataclass(frozen=True, slots=True)
 class BedrockConverseInvocationRecorder:
     """Persist one Bedrock converse call against the package revision it was made for.
@@ -348,11 +363,7 @@ class BedrockConverseInvocationRecorder:
                 ),
                 latency_ms=_milliseconds_since(started_ns),
                 outcome=outcome,
-                rejection_reason=(
-                    _rejection_reason(error)
-                    if outcome == ModelInvocationOutcome.REJECTED.value
-                    else None
-                ),
+                rejection_reason=_reason(outcome, error),
             ),
         )
 

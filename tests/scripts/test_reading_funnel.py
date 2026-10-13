@@ -362,3 +362,11 @@ def test_the_line_counts_the_route_by_the_name_it_records_under() -> None:
 
     assert COUNTED == FRACTION_PARTS_EXTRACTOR
     assert f"'{FRACTION_PARTS_EXTRACTOR}'" in FUNNEL_SQL
+
+
+def test_the_rejections_by_reason_count_only_rejected_rows() -> None:
+    """#1215: a failed or unsent call may now keep its cause in `rejection_reason`. The funnel's
+    "rejections by reason" must still count only answers the code rejected, never those causes."""
+    sql = dict(QUERIES)["model_rejections_by_reason"]
+
+    assert re.search(r"WHERE\s+mi\.outcome\s*=\s*'rejected'", sql)

@@ -235,7 +235,7 @@ from extraction.model.part_proposals import (
     propose_parts,
 )
 from extraction.models.context import AssembledContext
-from extraction.models.invocations import InvocationRecord
+from extraction.models.invocations import InvocationRecord, failure_kind_reason
 from extraction.models.nova import (
     NovaAdapter,
     NovaAdapterError,
@@ -2692,7 +2692,7 @@ class DatabaseStages:
             cost_micros=cost,
             latency_ms=latency_ms,
             outcome=_reader_outcome(attempt),
-            rejection_reason=("malformed_form_answer" if attempt.malformed else None),
+            rejection_reason=_reader_reason(attempt),
             private_raw_response=attempt.raw_response_text,
             reader_page_index=attempt.page_index,
             reader_attempt_number=attempt.attempt_number,
@@ -8345,6 +8345,20 @@ def _reader_outcome(attempt: AttemptUsage) -> str:
     if attempt.failure_kind:
         return _CAUSED_FAILURES.get(attempt.failure_kind, ModelInvocationOutcome.FAILED.value)
     return ModelInvocationOutcome.OK.value
+
+
+def _reader_reason(attempt: AttemptUsage) -> str | None:
+    """Why one reader attempt gave no usable answer, kept on its row (#1215).
+
+    A malformed answer keeps its long-standing reason. An attempt that failed or was never sent
+    (its picture too wide, the budget or the provider refused it) keeps its failure kind, the
+    exception's class name; before #1215 that cause was dropped and the row said only `failed`.
+    """
+    if attempt.malformed:
+        return "malformed_form_answer"
+    if attempt.failure_kind:
+        return failure_kind_reason(attempt.failure_kind)
+    return None
 
 
 #: Why "Read the unread pages" does not run with stored answers switched off (#1206).

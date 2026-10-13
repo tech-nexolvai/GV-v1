@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from evidence.candidate import ObservationCandidate
 from extraction.glyph_bands import FractionLayout
 from extraction.models.context import AssembledContext
+from extraction.models.invocations import failure_reason
 from extraction.models.sanitisation import (
     DIGITS_JSON_PROMPT,
     DIGITS_PROMPT_ID,
@@ -1182,6 +1183,8 @@ class NovaAdapter:
                 raise
             except Exception as error:
                 last_error = error
+                # Never silent (#1215): the failed attempt keeps its class and a safe first line.
+                rejection_reason = failure_reason(error)
                 if not _is_retryable(error):
                     outcome = NovaInvocationOutcome.ERROR
                     raise NovaServiceError("Bedrock invocation failed without retry") from error
