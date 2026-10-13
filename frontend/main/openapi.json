@@ -5990,6 +5990,14 @@
             "title": "Id",
             "type": "string"
           },
+          "pages_waiting_for_budget": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages Waiting For Budget",
+            "type": "array"
+          },
           "product_type": {
             "anyOf": [
               {
@@ -7352,6 +7360,47 @@
         ],
         "title": "PublicationTarget",
         "type": "string"
+      },
+      "ReadingAgainOut": {
+        "description": "What was asked for: the whole reading resumed, or only the pages the budget stopped.",
+        "properties": {
+          "accepted_id": {
+            "description": "The enqueued work, not a workflow run.",
+            "format": "uuid",
+            "title": "Accepted Id",
+            "type": "string"
+          },
+          "action": {
+            "description": "run_reading_again: the reading stopped because the AI provider account was out of credit, and resumes where it stopped. read_unread_pages: the AI budget was reached, and the pages it left are read on this revision.",
+            "enum": [
+              "run_reading_again",
+              "read_unread_pages"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "pages": {
+            "default": [],
+            "description": "For read_unread_pages, the page numbers to be read; empty otherwise.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "accepted_id",
+          "package_revision_id"
+        ],
+        "title": "ReadingAgainOut",
+        "type": "object"
       },
       "ReadingPartsOut": {
         "properties": {
@@ -14761,6 +14810,60 @@
         "summary": "Say one suggestion is not a part",
         "tags": [
           "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-again": {
+      "post": {
+        "description": "Enqueue \"Run the reading again\" (out of credit) or \"Read the unread pages\" (budget).\n\nRefused (409) when the revision did not stop for either, or the same work is already queued.",
+        "operationId": "read_again_api_v1_projects__project_id__packages__package_id__reading_again_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingAgainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run the reading again after it stopped for the AI account or the AI budget",
+        "tags": [
+          "packages"
         ]
       }
     },

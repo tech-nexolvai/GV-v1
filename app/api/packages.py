@@ -46,7 +46,14 @@ from app.api.dependencies import get_session
 from app.auth import Action, Principal, Role, require_action, require_project_access, require_role
 from app.lifecycle import begin
 from app.lifecycle.side_states import PLAIN_STOP_REASONS
-from app.models import Package, PackageRevision, PackageState, PackageStateEvent, Project
+from app.models import (
+    OutboxEntry,
+    Package,
+    PackageRevision,
+    PackageState,
+    PackageStateEvent,
+    Project,
+)
 from app.runs.reading_progress import reading_progress_for
 from app.schemas.packages import (
     PackageCreate,
@@ -57,6 +64,7 @@ from app.schemas.packages import (
 )
 from app.verdicts.rulebook import snapshot_store
 from vocabulary.semantic_types import ProductType
+from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW, budget_stopped_pages
 
 router = APIRouter(tags=["packages"])
 
@@ -387,14 +395,25 @@ def get_package(
     package.stop_reason = _plain_stop_reason(
         session, package.current_revision_id, PackageState(package.state)
     )
+    package.pages_waiting_for_budget = budget_stopped_pages(session, package.current_revision_id)
     return package
 
 
 def _plain_stop_reason(session: Session, revision_id: UUID, state: PackageState) -> str | None:
     """Why a stopped revision stopped, when that was written for a person (#1206): the reason of
-    the failure event it is in, if it is one of `PLAIN_STOP_REASONS`; `None` otherwise."""
+    the failure event it is in, if it is one of `PLAIN_STOP_REASONS`; or the reason "Read the
+    unread pages" was parked with, when its newest request stopped that way. `None` otherwise."""
     if state not in (PackageState.FAILED_RETRYABLE, PackageState.FAILED_PERMANENT):
-        return None
+        newest = session.execute(
+            select(OutboxEntry.abandoned_reason)
+            .where(
+                OutboxEntry.workflow == READ_UNREAD_PAGES_WORKFLOW,
+                OutboxEntry.payload["package_revision_id"].astext == str(revision_id),
+            )
+            .order_by(OutboxEntry.created_at.desc(), OutboxEntry.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return newest if newest in PLAIN_STOP_REASONS else None
     reason = session.scalar(
         select(PackageStateEvent.reason)
         .where(

@@ -322,12 +322,13 @@ def test_a_malformed_reply_is_an_error_not_an_answer(payload: object) -> None:
     ("status", "body", "expected_code", "throttle"),
     [
         (429, b'{"error":{"type":"rate_limit_error"}}', "TooManyRequestsException", True),
-        # #1206: every 402 is the account (no credit, or too little for the calls in flight),
-        # named for what it is and never retried as a rate limit.
+        # #1206: the in-flight budget (too many calls at once for the balance) is its own error,
+        # retried a bounded number of times by the batch, never as a rate limit; any other 402 is
+        # out of credit.
         (
             402,
             b'{"error":{"type":"billing_error","message":"in_flight_budget_exhausted"}}',
-            "ProviderAccountRefused",
+            "ProviderInFlightLimited",
             False,
         ),
         (
@@ -452,7 +453,8 @@ def test_the_spend_cap_refuses_before_an_openrouter_call_it_cannot_afford() -> N
 
 def test_the_spend_cap_settles_an_openrouter_reply_by_its_reported_tokens() -> None:
     """The reply's token counts reach the guard: a reply that used far more than was reserved
-    stops the batch, so OpenRouter's usage is really what the cap is settled on."""
+    spends the guard, so the next call is refused and OpenRouter's usage is really what the cap
+    is settled on."""
     guard = BatchSpendGuard(Decimal(1), Rates())
     limited = SpendLimitedClient(OpenRouterMessagesClient("private-test-key"), guard)
     with patch(
@@ -463,14 +465,19 @@ def test_the_spend_cap_settles_an_openrouter_reply_by_its_reported_tokens() -> N
     assert result["usage"] == {"inputTokens": 45, "outputTokens": 12}
 
     huge = provider_reply(usage={"input_tokens": 45, "output_tokens": 1_000_000})
+    with patch(
+        "extraction.slot_reader.anthropic.urlopen",
+        side_effect=lambda *_a, **_k: Response(huge),
+    ):
+        # Served and paid (#1206): the reply is kept, and the guard is spent.
+        assert limited.converse(**REQUEST)["usage"]["outputTokens"] == 1_000_000
+    assert guard.exhausted
     with (
-        patch(
-            "extraction.slot_reader.anthropic.urlopen",
-            side_effect=lambda *_a, **_k: Response(huge),
-        ),
-        pytest.raises(SpendCapExceeded, match="exceeded the reserved"),
+        patch("extraction.slot_reader.anthropic.urlopen") as urlopen,
+        pytest.raises(SpendCapExceeded, match="would be exceeded"),
     ):
         limited.converse(**REQUEST)
+    urlopen.assert_not_called()
 
 
 @pytest.mark.parametrize("status", [429, 402])

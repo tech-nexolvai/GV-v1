@@ -153,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         packages_summary,
         page_pictures,
         project_sink,
+        reading_again,
         reading_parts,
         review,
         review_assistant,
@@ -169,6 +170,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents.router, prefix=API_PREFIX)
     # Revisions of a review (#1180): start the next one, list them, what changed.
     app.include_router(revisions.router, prefix=API_PREFIX)
+    # Run the reading again after the AI account or the AI budget stopped it (#1206).
+    app.include_router(reading_again.router, prefix=API_PREFIX)
     # Reviewer-entered values and the request to check them. Ordinary control-plane
     # writes: it enqueues rather than running anything, because it may not import the
     # code that does — see the module docstring and tests/api/test_no_heavy_work.py.

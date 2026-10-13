@@ -1,4 +1,4 @@
-import { Download, FileCheck2, Loader2, MoreHorizontal, PenLine, Play, ScanText, SearchCheck } from 'lucide-react';
+import { Download, FileCheck2, Loader2, MoreHorizontal, PenLine, Play, RotateCcw, ScanText, SearchCheck } from 'lucide-react';
 
 import type { NextAction, NextActionKind } from '@/lib/review-stage';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,7 @@ const ICON: Partial<Record<NextActionKind, typeof Play>> = {
   'preparing-report': Loader2,
   'prepare-report': FileCheck2,
   'download-report': Download,
+  'read-again': RotateCcw,
 };
 
 /**

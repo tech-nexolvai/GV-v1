@@ -28,6 +28,7 @@ Source: issues #987, #992, #1051 · Verification: `tests/extraction/slot_reader/
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1970,6 +1971,11 @@ def replay_stored_answer(
     return answer, replace(attempts[0], latency_ms=0, reused_from=reused_from)
 
 
+#: How many times a call refused by the account's in-flight budget (HTTP 402) is tried again,
+#: one call at a time, before the reading stops with "credit too low" (#1206).
+IN_FLIGHT_RETRIES: Final = 3
+
+
 def read_crops_parallel(
     jobs: Sequence[CropJob],
     *,
@@ -2043,6 +2049,8 @@ def read_crops_parallel(
 
         spend_guard = BatchSpendGuard(spend_cap_usd, rates)
     reading_stop = stop if stop is not None else ReadingStop()
+    one_at_a_time = threading.Lock()
+    one_at_a_time_now = threading.Event()
 
     def invoke(
         job: CropJob,
@@ -2057,7 +2065,7 @@ def read_crops_parallel(
         | None,
     ]:
         if reading_stop.stopped:
-            reading_stop.not_asked(job.key, job.model_id, job.page_index)
+            reading_stop.not_asked(job)
             return (job.key, job.model_id), None
         if is_claude_model(job.model_id):
             try:
@@ -2078,50 +2086,79 @@ def read_crops_parallel(
                     )
                 )
                 return (job.key, job.model_id), None
-        for throttle_attempt in range(max_throttle_retries + 1):
+        from extraction.slot_reader.anthropic import (
+            ProviderAccountRefused,
+            ProviderInFlightLimited,
+            SpendCapExceeded,
+            SpendLimitedClient,
+        )
+
+        throttle_attempt = 0
+        in_flight_attempt = 0
+        while True:
             shared_pacer.wait(job.model_id)
             if reading_stop.stopped:
                 # Stopped while this question waited its turn (or its retry): never sent.
-                reading_stop.not_asked(job.key, job.model_id, job.page_index)
+                reading_stop.not_asked(job)
                 return (job.key, job.model_id), None
             try:
                 client = clients.for_current_thread()
                 if spend_guard is not None:
-                    from extraction.slot_reader.anthropic import (
-                        SpendCapExceeded,
-                        SpendLimitedClient,
-                    )
-
                     client = SpendLimitedClient(client, spend_guard)
-                answer = _ask(
-                    job,
-                    client,
-                    max_tokens=max_tokens,
-                    record_attempt=record_attempt,
-                    product=product,
-                    claude_effort=claude_effort,
-                )
+                if one_at_a_time_now.is_set():
+                    # The account's in-flight budget refused a call (#1206): one call at a time.
+                    with one_at_a_time:
+                        answer = _ask(
+                            job,
+                            client,
+                            max_tokens=max_tokens,
+                            record_attempt=record_attempt,
+                            product=product,
+                            claude_effort=claude_effort,
+                        )
+                else:
+                    answer = _ask(
+                        job,
+                        client,
+                        max_tokens=max_tokens,
+                        record_attempt=record_attempt,
+                        product=product,
+                        claude_effort=claude_effort,
+                    )
+                if spend_guard is not None and getattr(spend_guard, "exhausted", False):
+                    # This answer was served and paid, and its real cost took the spend past the
+                    # budget (#1206): it is kept, and nothing more is sent.
+                    reading_stop.trip("budget")
                 return (job.key, job.model_id), answer
             except (MalformedFormAnswer, PictureWouldBeResized):
                 return (job.key, job.model_id), None
-            except Exception as error:
-                from extraction.slot_reader.anthropic import (
-                    ProviderAccountRefused,
-                    SpendCapExceeded,
+            except SpendCapExceeded:
+                # The budget is reached: this question abstains and the reading stops here.
+                reading_stop.refused(job, "budget")
+                return (job.key, job.model_id), None
+            except ProviderAccountRefused:
+                # Out of credit: nothing more is sent, and the error ends the reading.
+                reading_stop.refused(job, "account")
+                raise
+            except ProviderInFlightLimited as limited:
+                # Too many calls at once for the account's balance (#1206): a bounded retry, one
+                # call at a time; still refused after that, the credit is too low for the reading.
+                one_at_a_time_now.set()
+                if in_flight_attempt >= IN_FLIGHT_RETRIES:
+                    reading_stop.refused(job, "account")
+                    raise ProviderAccountRefused(api=limited.api, credit_too_low=True) from limited
+                wait = (
+                    limited.retry_after_seconds
+                    if limited.retry_after_seconds is not None
+                    else retry_backoff_seconds * (2**in_flight_attempt)
                 )
-
-                if isinstance(error, SpendCapExceeded):
-                    # The budget is reached: this question abstains and the reading stops here.
-                    reading_stop.refused(job.key, job.model_id, job.page_index, "budget")
-                    return (job.key, job.model_id), None
-                if isinstance(error, ProviderAccountRefused):
-                    # Out of credit: nothing more is sent, and the error ends the reading.
-                    reading_stop.refused(job.key, job.model_id, job.page_index, "account")
-                    raise
+                in_flight_attempt += 1
+                time.sleep(wait)
+            except Exception as error:
                 if not _is_throttle(error) or throttle_attempt >= max_throttle_retries:
                     raise
                 time.sleep(retry_backoff_seconds * (2**throttle_attempt))
-        raise AssertionError("unreachable")
+                throttle_attempt += 1
 
     answers: dict[
         tuple[str, str],

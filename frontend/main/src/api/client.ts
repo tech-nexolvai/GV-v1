@@ -1239,6 +1239,16 @@ export function getSignedExports(projectId: string, packageId: string, revision?
   return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports${revisionQuery(revision)}`);
 }
 
+export type ReadingAgain = components['schemas']['ReadingAgainOut'];
+
+/**
+ * Run the reading again after it stopped for the AI account (out of credit), or read the pages the
+ * AI budget left (#1206). The server decides which from the recorded state, and refuses otherwise.
+ */
+export function readAgain(projectId: string, packageId: string) {
+  return request<ReadingAgain>(`/projects/${projectId}/packages/${packageId}/reading-again`, { method: 'POST' });
+}
+
 export function prepareSignedExports(projectId: string, packageId: string) {
   return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`, { method: 'POST' });
 }

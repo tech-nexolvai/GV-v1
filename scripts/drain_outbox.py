@@ -751,6 +751,7 @@ def _consume(
     whichever worker does consume it.
     """
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+    from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW
     from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
 
     revision_id = UUID(str(payload["package_revision_id"]))
@@ -788,6 +789,10 @@ def _consume(
             else {}
         )
         return _run_checks(session, revision_id, idempotency_key, stated, sources)
+    if workflow == READ_UNREAD_PAGES_WORKFLOW:
+        # A person asked to read the pages the AI budget stopped (#1206), on the same revision.
+        stages = _stages(timings=timings)
+        return stages.read_unread_pages(session, revision_id)  # type: ignore[attr-defined]
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return _cut_part_pictures(session, revision_id)

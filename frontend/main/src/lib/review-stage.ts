@@ -36,6 +36,7 @@ export type NextActionKind =
   | 'preparing-report'
   | 'prepare-report'
   | 'download-report'
+  | 'read-again'
   | 'none';
 
 export interface NextAction {
@@ -103,6 +104,11 @@ export interface ReviewFacts {
    * the AI provider account is out of credit. Shown as it is; null when the API gives none.
    */
   stopReason?: string | null;
+  /**
+   * Pages the newest reading left waiting for the AI budget (`PackageOut.pages_waiting_for_budget`,
+   * #1206); "Read the unread pages" reads them. Empty or absent when none.
+   */
+  pagesWaitingForBudget?: readonly number[];
 }
 
 export interface ReviewStage {
@@ -199,7 +205,16 @@ function nextAction(
     return { kind: 'none', label: facts.state === 'SUPERSEDED' ? 'Replaced by a newer upload' : 'Cancelled', disabled: true, reason: 'This is a historical record.' };
   }
   if ((facts.state === 'FAILED_PERMANENT' || facts.state === 'FAILED_RETRYABLE') && facts.stopReason && facts.reading?.retrying !== true) {
-    return { kind: 'none', label: 'Reading stopped', disabled: true, reason: facts.stopReason };
+    // Only a person can fix it (#1206): once the account is topped up, they run it again here.
+    return facts.state === 'FAILED_RETRYABLE'
+      ? { kind: 'read-again', label: 'Run the reading again', disabled: false, reason: facts.stopReason }
+      : { kind: 'none', label: 'Reading stopped', disabled: true, reason: facts.stopReason };
+  }
+  const waiting = facts.pagesWaitingForBudget ?? [];
+  if (waiting.length > 0 && (facts.state === 'AWAITING_REVIEW' || facts.state === 'NEEDS_INPUT') && !checking) {
+    // The AI budget stopped the reading (#1206): those pages block sign-off until read or answered.
+    const pages = `${waiting.length} ${waiting.length === 1 ? 'page waits' : 'pages wait'} for the AI budget`;
+    return { kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: facts.stopReason ?? `${pages} (${waiting.join(', ')}).` };
   }
   if (facts.state === 'FAILED_PERMANENT') {
     return { kind: 'none', label: 'Processing failed', disabled: true, reason: 'Processing stopped and will not retry on its own. Missing results do not mean the drawing passed.' };

@@ -58,22 +58,48 @@ class AnthropicRequestError(RuntimeError):
         self, status_code: int, error_type: str, *, api: str = "Anthropic Messages API"
     ) -> None:
         self.status_code = status_code
+        self.api = api
         self.response = {"Error": {"Code": error_type}}
         super().__init__(f"{api} returned HTTP {status_code} ({error_type})")
 
 
 class ProviderAccountRefused(AnthropicRequestError):
-    """The provider refused the call for the account (HTTP 402): no credit, or too little for the
-    calls in flight (#1206, #1200). Nothing was generated or charged.
+    """The provider refused the call for the account (HTTP 402): no credit, or (`credit_too_low`)
+    still too little for the calls in flight after the bounded in-flight retries (#1206, #1200).
+    Nothing was generated or charged.
 
     **Never a rate limit.** Before #1206 a 402 that mentioned OpenRouter's in-flight budget was
-    named `TooManyRequestsException` and retried like throttling, and any other 402 failed the
-    package for good with no word about the account. Only a person can fix this (top the account
-    up), so it is never retried here; the reading stops cleanly and the package waits, retryable,
-    saying so (`workflow/reader_failures.py`)."""
+    named `TooManyRequestsException` and retried like throttling for ever, and any other 402 failed
+    the package for good with no word about the account. Only a person can fix this (top the
+    account up), so it is never retried; the reading stops cleanly and the package waits,
+    retryable, saying so (`workflow/reader_failures.py`).
 
-    def __init__(self, *, api: str = "Anthropic Messages API") -> None:
+    `needs_a_person` tells the outbox to park the work rather than redeliver it every poll
+    (`workflow/outbox.py`), without the outbox importing the reader."""
+
+    needs_a_person = True
+
+    def __init__(
+        self, *, api: str = "Anthropic Messages API", credit_too_low: bool = False
+    ) -> None:
         super().__init__(402, "ProviderAccountRefused", api=api)
+        self.credit_too_low = credit_too_low
+
+
+class ProviderInFlightLimited(AnthropicRequestError):
+    """OpenRouter's in-flight budget (HTTP 402 naming `in_flight_budget`): a new or low-balance
+    account may not have this many calls running at once (#1206). Nothing was charged.
+
+    Retried a bounded number of times, after `retry_after_seconds` (the reply's `Retry-After`,
+    when it gives one) or a backoff, with the batch's calls then made one at a time
+    (`extraction/slot_reader/bedrock.read_crops_parallel`). Still refused after that, it becomes
+    `ProviderAccountRefused(credit_too_low=True)`: the balance is too low for this reading."""
+
+    def __init__(
+        self, *, api: str = "Anthropic Messages API", retry_after_seconds: int | None = None
+    ) -> None:
+        super().__init__(402, "ProviderInFlightLimited", api=api)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class SpendCapExceeded(RuntimeError):
@@ -103,6 +129,7 @@ class BatchSpendGuard:
         self._maximum_usd = maximum_usd
         self._rates = rates
         self._reserved_usd = Decimal(0)
+        self._exhausted = False
         self._lock = threading.Lock()
 
     def reserve(self, model_id: str, input_tokens: int, output_limit: int) -> _Reservation:
@@ -158,7 +185,15 @@ class BatchSpendGuard:
             # If actual exceeds the reserve, keep the higher amount accounted for and fail closed.
             self._reserved_usd += actual - reservation.reserved_usd
             if self._reserved_usd > self._maximum_usd:
-                raise SpendCapExceeded("provider usage exceeded the reserved Claude reader budget")
+                # Served and paid (#1206): the answer is kept and its cost recorded as usual, and
+                # the guard is spent, so the next reservation is refused and the reading stops.
+                self._exhausted = True
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether a served call's real cost took the spend past the cap (#1206)."""
+        with self._lock:
+            return self._exhausted
 
 
 class SpendLimitedClient:
@@ -467,13 +502,17 @@ def post_json(
             payload = json.loads(response.read())
     except HTTPError as error:
         status = int(error.code)
-        # The reply's words are never read: they never leave this function.
+        # Only the in-flight marker and the `Retry-After` header are looked for; the reply's words
+        # never leave this function.
+        in_flight = status == 402 and b"in_flight_budget" in _error_body(error)
+        retry_after = _retry_after_seconds(error.headers) if in_flight else None
         error.close()
+        if in_flight:
+            # OpenRouter's in-flight budget (#1206): too many calls at once for the balance. A
+            # bounded retry, then "credit too low" (`ProviderInFlightLimited`).
+            raise ProviderInFlightLimited(api=api, retry_after_seconds=retry_after) from None
         if status == 402:
-            # Payment required (#1206): the account has no credit, or too little for the calls in
-            # flight (OpenRouter's "in-flight budget", which also clears only once the balance is
-            # topped up or the calls finish). Named for what it is and never retried as a rate
-            # limit; the decision log's 2026-10-06 retry of the in-flight case is replaced.
+            # Payment required, out of credit (#1206): named for what it is, never retried.
             raise ProviderAccountRefused(api=api) from None
         error_type = (
             "TooManyRequestsException"
@@ -490,6 +529,33 @@ def post_json(
     if not isinstance(payload, Mapping):
         raise AnthropicRequestError(502, "ProviderResponseMalformed", api=api)
     return payload
+
+
+def _error_body(error: HTTPError) -> bytes:
+    """At most 4 KB of an error reply, or nothing when it cannot be read whole; always closed.
+
+    Any failure is swallowed: a cut-off reply (`IncompleteRead`) carries the reply's own bytes,
+    which must never reach an exception."""
+    try:
+        return error.read(4096) or b""
+    except Exception:  # noqa: BLE001 - the reply's words must never escape
+        return b""
+    finally:
+        error.close()
+
+
+#: The longest `Retry-After` honoured, in whole seconds: a reply asking for longer waits this long.
+_LONGEST_RETRY_AFTER_SECONDS = 60
+
+
+def _retry_after_seconds(headers: object) -> int | None:
+    """The reply's `Retry-After` in whole seconds, when it gives a plain number; at most a minute.
+    (An HTTP date is not honoured: the caller's own backoff applies.)"""
+    get = getattr(headers, "get", None)
+    raw = get("Retry-After") if callable(get) else None
+    if not isinstance(raw, str) or not raw.strip().isdigit():
+        return None
+    return min(int(raw.strip()), _LONGEST_RETRY_AFTER_SECONDS)
 
 
 def _answered_by(reported: object, requested: str) -> bool:

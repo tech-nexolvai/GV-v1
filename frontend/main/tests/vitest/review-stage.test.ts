@@ -157,17 +157,26 @@ describe('reviewStage: one step per state', () => {
     expect(current?.note).toMatch(/retry/);
   });
 
-  it('out of credit (#1206): the step and the button say so plainly, and nothing promises a retry on its own', () => {
+  it('out of credit (#1206): the step says so plainly, and the button runs the reading again', () => {
     const stopReason = 'The AI provider account is out of credit. Top it up, then run the reading again.';
     const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null, stopReason });
     const current = stage.steps.find((s) => s.id === stage.current);
     expect(current?.state).toBe('blocked');
     expect(current?.note).toBe(stopReason);
-    expect(stage.next).toEqual({ kind: 'none', label: 'Reading stopped', disabled: true, reason: stopReason });
+    expect(stage.next).toEqual({ kind: 'read-again', label: 'Run the reading again', disabled: false, reason: stopReason });
     // Once a person runs the reading again, the retry's line wins.
     const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
     const again = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null, stopReason });
     expect(again.next.kind).toBe('wait-reading');
+  });
+
+  it('budget stop (#1206): pages waiting for the AI budget offer "Read the unread pages", naming them', () => {
+    const stage = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [2, 3] });
+    expect(stage.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: '2 pages wait for the AI budget (2, 3).' });
+    // None waiting: the usual next step.
+    expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [] }).next.kind).not.toBe('read-again');
+    // While checks run, never offered.
+    expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [2], checksQueued: true }).next.kind).toBe('checking');
   });
 
   it.each(['CANCELLED', 'SUPERSEDED'])('historical (%s): no action', (state) => {

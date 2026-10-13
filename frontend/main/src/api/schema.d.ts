@@ -1276,6 +1276,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-again": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the reading again after it stopped for the AI account or the AI budget
+         * @description Enqueue "Run the reading again" (out of credit) or "Read the unread pages" (budget).
+         *
+         *     Refused (409) when the revision did not stop for either, or the same work is already queued.
+         */
+        post: operations["read_again_api_v1_projects__project_id__packages__package_id__reading_again_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
         parameters: {
             query?: never;
@@ -4813,6 +4835,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Pages Waiting For Budget
+             * @default []
+             */
+            pages_waiting_for_budget: number[];
             product_type: components["schemas"]["ProductType"] | null;
             /**
              * Project Id
@@ -5470,6 +5497,35 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /**
+         * ReadingAgainOut
+         * @description What was asked for: the whole reading resumed, or only the pages the budget stopped.
+         */
+        ReadingAgainOut: {
+            /**
+             * Accepted Id
+             * Format: uuid
+             * @description The enqueued work, not a workflow run.
+             */
+            accepted_id: string;
+            /**
+             * Action
+             * @description run_reading_again: the reading stopped because the AI provider account was out of credit, and resumes where it stopped. read_unread_pages: the AI budget was reached, and the pages it left are read on this revision.
+             * @enum {string}
+             */
+            action: "run_reading_again" | "read_unread_pages";
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /**
+             * Pages
+             * @description For read_unread_pages, the page numbers to be read; empty otherwise.
+             * @default []
+             */
+            pages: number[];
+        };
         /** ReadingPartsOut */
         ReadingPartsOut: {
             /** Can Suggest */
@@ -9107,6 +9163,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_again_api_v1_projects__project_id__packages__package_id__reading_again_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingAgainOut"];
                 };
             };
             /** @description Validation Error */

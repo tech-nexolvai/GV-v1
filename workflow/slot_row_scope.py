@@ -225,6 +225,34 @@ class UnchosenRowPage:
         )
 
 
+#: The work "Read the unread pages" enqueues (#1206): `DatabaseStages.read_unread_pages`.
+READ_UNREAD_PAGES_WORKFLOW: Final = "read_unread_pages"
+
+#: The row hold of a page read in full whose later questions the AI budget stopped (#1206,
+#: `workflow/slot_reader.BUDGET_NOT_ASKED`).
+BUDGET_HOLD_FLAG: Final = "row-hold:budget-not-asked"
+
+
+def budget_stopped_pages(session: Session, revision_id: UUID) -> tuple[int, ...]:
+    """The page numbers the newest reading left waiting for the AI budget (#1206): listed unread
+    (`no-row:budget-reached`) or read and held because a later question was not asked. These are
+    what "Read the unread pages" reads."""
+    rows, unchosen = slot_rows_and_unchosen_pages(session, revision_id)
+    return tuple(
+        sorted(
+            {page.page_number for page in unchosen if page.budget_stopped}
+            | {
+                row.page_number
+                for row in rows
+                if any(
+                    BUDGET_HOLD_FLAG in (candidate.ambiguity_flags or ())
+                    for candidate in row.candidates
+                )
+            }
+        )
+    )
+
+
 def found_by_code(record: ObservationCandidate) -> bool:
     """Whether a row-choice record is code's "no row to read on this page" (#1193)."""
     return any(flag.startswith(NO_ROW_FLAG) for flag in record.ambiguity_flags or ())

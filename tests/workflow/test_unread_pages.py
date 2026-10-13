@@ -215,20 +215,26 @@ def test_a_reason_always_fits_its_column() -> None:
 
 
 def test_the_budget_reason_names_the_amount_and_where_the_reading_stopped() -> None:
-    """#1206: the exact words a reviewer sees on a page the AI budget left unread."""
+    """#1206: the exact words a reviewer sees on a page the AI budget left unread. "Top up" is for
+    the account (out of credit) only, never for the budget."""
     from workflow.unread_pages import BUDGET_REACHED, budget_reached
 
     assert budget_reached(cap_usd=Decimal(10), read_through=40, page_count=60) == (
         BUDGET_REACHED,
         (
-            "AI budget $10.00 reached after page 40 of 60; raise the limit or top up, then run "
-            "the reading again"
+            "AI budget $10.00 reached after page 40 of 60. Use 'Read the unread pages', or ask "
+            "an admin to raise the limit."
         ),
     )
     # Stopped before any page was read in full: never "after page 0".
     assert budget_reached(cap_usd=Decimal(3), read_through=0, page_count=60)[1] == (
-        "AI budget $3.00 reached before page 1 of 60 was read; raise the limit or top up, then "
-        "run the reading again"
+        "AI budget $3.00 reached before page 1 of 60 was read. Use 'Read the unread pages', or "
+        "ask an admin to raise the limit."
+    )
+    # A call with no price: no amount was reached; the model rates need checking.
+    assert budget_reached(cap_usd=Decimal(3), read_through=2, page_count=60, unpriced=True)[1] == (
+        "AI reading stopped after page 2 of 60: a call had no price, so no more calls were made; "
+        "check the model rates."
     )
     with pytest.raises(ValueError, match="page of the file"):
         budget_reached(cap_usd=Decimal(3), read_through=61, page_count=60)

@@ -23,11 +23,11 @@ is listed with the pages with no countertop and needs a reviewer's answer before
   typed title. The proof's facts are stored with the record (`blank-proof:` flags). It is still
   listed, but needs no reviewer answer before sign-off.
 
-* `budget-reached` — the AI budget for the drawing set was reached before this page was read in
-  full (#1206): "AI budget $X reached after page k of N; raise the limit or top up, then run the
-  reading again". Every page sent to the readers from the first one not fully read onwards gets
-  it, so the stop is one clean place, never scattered holds; it needs the reviewer's answer (or a
-  new reading) before sign-off, like any listed page, and starts unticked.
+* `budget-reached` — the drawing set's AI budget was reached before this page's own reading (its
+  row and dimension questions) finished (#1206): "AI budget $X reached after page k of N. Use
+  'Read the unread pages', or ask an admin to raise the limit." (or, when a call had no price,
+  that no more calls were made and the model rates need checking). It needs the reviewer's answer
+  (or that reading) before sign-off, like any listed page, and starts unticked.
 
 A `no-drawing` page code could not prove blank carries `no-row-ink-found` and says so: something is
 drawn or pictured on it (a scanned or flattened sheet) that code cannot read (#1195 review).
@@ -117,23 +117,34 @@ BLANK_PAGE: Final = (
 BUDGET_REACHED: Final = "budget-reached"
 
 
-def budget_reached(*, cap_usd: Decimal, read_through: int, page_count: int) -> tuple[str, str]:
-    """`(no-row code, the reviewer's sentence)` for a page left unread when the budget of `cap_usd`
-    was reached after page `read_through` (1-based; 0 when no page was read in full) of a file of
-    `page_count` pages (#1206)."""
+def budget_reached(
+    *, cap_usd: Decimal, read_through: int, page_count: int, unpriced: bool = False
+) -> tuple[str, str]:
+    """`(no-row code, the reviewer's sentence)` for a page left unread when the drawing set's AI
+    budget of `cap_usd` was reached after page `read_through` (1-based; 0 when no page was read in
+    full) of a file of `page_count` pages (#1206). `unpriced`: the reading stopped because a call
+    had no price, so no amount was reached; the admin checks the model rates."""
     if read_through < 0 or page_count < 1 or read_through > page_count:
         raise ValueError("the stop must name a page of the file")
-    amount = f"${cap_usd.quantize(Decimal('0.01'))}"
     where = (
         f"after page {read_through} of {page_count}"
         if read_through
         else f"before page 1 of {page_count} was read"
     )
+    if unpriced:
+        return (
+            BUDGET_REACHED,
+            (
+                f"AI reading stopped {where}: a call had no price, so no more calls were made; "
+                "check the model rates."
+            ),
+        )
+    amount = f"${cap_usd.quantize(Decimal('0.01'))}"
     return (
         BUDGET_REACHED,
         (
-            f"AI budget {amount} reached {where}; raise the limit or top up, then run the "
-            "reading again"
+            f"AI budget {amount} reached {where}. Use 'Read the unread pages', or ask an admin "
+            "to raise the limit."
         ),
     )
 

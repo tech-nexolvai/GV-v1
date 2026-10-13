@@ -155,7 +155,12 @@ class PackageOut(BaseModel):
     """Why the current revision's reading stopped, in plain words a person can act on (#1206):
     today only "The AI provider account is out of credit. Top it up, then run the reading again."
     Filled by `GET .../packages/{id}` only, while the revision is stopped (`FAILED_RETRYABLE` or
-    `FAILED_PERMANENT`) for that reason; `null` otherwise and on the package list."""
+    `FAILED_PERMANENT`) for that reason, or when "Read the unread pages" stopped for it; `null`
+    otherwise and on the package list."""
+    pages_waiting_for_budget: tuple[int, ...] = ()
+    """The page numbers the newest reading left waiting for the AI budget (#1206): listed unread,
+    or read and held because a later question was not asked. "Read the unread pages" reads them.
+    Filled by `GET .../packages/{id}` only; empty otherwise."""
 
 
 class ExtractionRequestOut(BaseModel):

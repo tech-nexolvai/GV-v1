@@ -5,8 +5,9 @@ the reader raises `ProviderAccountRefused`. Unclassified, it was a permanent fai
 went to `FAILED_PERMANENT` and the screen said "Processing failed … will not retry", with nothing
 telling anyone to top the account up. It is not permanent: once the account is topped up, the same
 reading succeeds, and the answers already paid for are reused (#1112). So the package goes to
-`FAILED_RETRYABLE` with a reason a person can act on (`OUT_OF_CREDIT`), which the package and Usage
-screens show word for word.
+`FAILED_RETRYABLE` with a reason a person can act on (`OUT_OF_CREDIT`, or `CREDIT_TOO_LOW` when
+the in-flight budget still refused after its bounded retries), which the package and Usage screens
+show word for word, and a person runs the reading again from the package screen.
 
 **Not retried by the engine.** Retrying on a timer cannot top the account up; each retry would read
 every page again for nothing. A person retries once the account is topped up.
@@ -21,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.lifecycle.side_states import OUT_OF_CREDIT, FailureClass
+from app.lifecycle.side_states import CREDIT_TOO_LOW, OUT_OF_CREDIT, FailureClass
 
 __all__ = ["KnownFailure", "known_failure"]
 
@@ -51,7 +52,9 @@ def known_failure(error: BaseException) -> KnownFailure | None:
             break
         if isinstance(seen, ProviderAccountRefused):
             return KnownFailure(
-                failure_class=FailureClass.RETRYABLE, reason=OUT_OF_CREDIT, engine_retries=False
+                failure_class=FailureClass.RETRYABLE,
+                reason=CREDIT_TOO_LOW if seen.credit_too_low else OUT_OF_CREDIT,
+                engine_retries=False,
             )
         seen = seen.__cause__ or seen.__context__
     return None
