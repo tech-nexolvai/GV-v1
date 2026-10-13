@@ -253,10 +253,16 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
     latency_ms: Mapped[int]
     outcome: Mapped[str] = mapped_column(String(32))
     rejection_reason: Mapped[str | None] = mapped_column(String(500), default=None)
-    """Code-authored reason for a locally rejected model response, when known.
+    """Code-authored reason a call did not give a usable answer, when known.
 
-    Null is allowed for historic rejected rows, because this table is append-only and a migration may
-    not rewrite old invocations to invent a reason they did not record at the time.
+    For a `rejected` row, why the local code refused the answer. Since #1215 also for a call that
+    failed, timed out, was refused or was never sent: the reader's failure kind (for example
+    `PictureWouldBeResized`, `SpendCapExceeded`) or, for a Bedrock call that failed outright, its
+    error class and a short sanitised message. Never on an `ok` row, and never empty. A reader of
+    this column that means "malformed answer" must also check `outcome = 'rejected'`.
+
+    Null is allowed for historic rows, because this table is append-only and a migration may not
+    rewrite old invocations to invent a reason they did not record at the time.
     """
     private_raw_response: Mapped[str | None] = mapped_column(Text(), default=None)
     """Exact raw provider answer, when returned. Private audit data; never a public response field."""
@@ -292,7 +298,7 @@ class ModelInvocation(Base, TimestampedUUID, Immutable):
             name="model_invocation_outcome",
         ),
         CheckConstraint(
-            "rejection_reason IS NULL OR (outcome = 'rejected' AND rejection_reason <> '')",
+            "rejection_reason IS NULL OR (outcome <> 'ok' AND rejection_reason <> '')",
             name="model_invocation_rejection_reason",
         ),
         CheckConstraint(

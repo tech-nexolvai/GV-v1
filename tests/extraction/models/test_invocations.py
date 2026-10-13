@@ -300,11 +300,35 @@ def test_rejected_invocation_must_name_the_local_rejection_reason() -> None:
         _built(uuid4(), outcome=ModelInvocationOutcome.REJECTED, rejection_reason=None)
 
 
-def test_rejection_reason_belongs_only_to_rejected_invocations() -> None:
+def test_a_reason_never_belongs_to_a_successful_invocation() -> None:
     """Input: reason on a successful call. Outcome: rejection. Why: the field must stay meaningful."""
 
-    with pytest.raises(ValueError, match="only valid"):
+    with pytest.raises(ValueError, match="successful"):
         _built(uuid4(), rejection_reason="schema_validation_failed")
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        ModelInvocationOutcome.FAILED,
+        ModelInvocationOutcome.TIMEOUT,
+        ModelInvocationOutcome.REFUSED,
+        ModelInvocationOutcome.BUDGET_REFUSED,
+        ModelInvocationOutcome.ACCOUNT_REFUSED,
+    ],
+)
+def test_a_call_that_did_not_answer_may_keep_its_cause(outcome: ModelInvocationOutcome) -> None:
+    """#1215: a question refused before it was sent, or a call that failed, keeps why."""
+
+    built = _built(uuid4(), outcome=outcome, rejection_reason="PictureWouldBeResized")
+
+    assert built.rejection_reason == "PictureWouldBeResized"
+
+
+def test_a_call_that_did_not_answer_may_still_leave_its_cause_unknown() -> None:
+    """Older writers and causes nobody knows stay `None`; only `rejected` must name one."""
+
+    assert _built(uuid4(), outcome=ModelInvocationOutcome.FAILED).rejection_reason is None
 
 
 def test_the_exact_bounded_context_is_persisted_with_the_invocation(

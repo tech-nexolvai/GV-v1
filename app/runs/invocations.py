@@ -294,8 +294,26 @@ def _outcome(response: Mapping[str, Any] | None, error: BaseException | None) ->
 def _rejection_reason(error: BaseException | None) -> str | None:
     if error is None:
         return None
-    text = f"{error.__class__.__name__}: {error}".strip()
+    # Control and format characters become spaces (review of #1218): a NUL failed the insert and
+    # lost the row; ESC and U+202E rewrite what a terminal shows.
+    printable = import_module("extraction.models.invocations").printable
+    text = str(printable(f"{error.__class__.__name__}: {error}")).strip()
     return text[:500] if text else error.__class__.__name__
+
+
+def _reason(outcome: str, error: BaseException | None) -> str | None:
+    """The cause kept on a Bedrock call's row.
+
+    A rejected answer keeps its long-standing reason, unchanged. A call that failed, timed out or
+    was refused with an error keeps the error's class and a short, sanitised first line (#1215):
+    before, that error reached no column, so a findings wording call that failed left no trace.
+    """
+    if outcome == ModelInvocationOutcome.REJECTED.value:
+        return _rejection_reason(error)
+    if outcome == ModelInvocationOutcome.OK.value or error is None:
+        return None
+    reason: str = import_module("extraction.models.invocations").failure_reason(error)
+    return reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,11 +366,7 @@ class BedrockConverseInvocationRecorder:
                 ),
                 latency_ms=_milliseconds_since(started_ns),
                 outcome=outcome,
-                rejection_reason=(
-                    _rejection_reason(error)
-                    if outcome == ModelInvocationOutcome.REJECTED.value
-                    else None
-                ),
+                rejection_reason=_reason(outcome, error),
             ),
         )
 

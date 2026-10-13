@@ -478,6 +478,27 @@ def test_non_retryable_service_error_fails_after_one_attempt() -> None:
     assert sink.items[0].outcome is NovaInvocationOutcome.ERROR
 
 
+def test_a_call_that_failed_or_timed_out_keeps_a_safe_short_cause() -> None:
+    """#1215: the error's class and a sanitised first line, never a key or a second line."""
+    fake_secret = "wJalrXUtnFEMI0K7MDENG0bPxRfiCYEXAMPLEKEY"
+    client = FakeBedrock(
+        TimeoutError("read timed out"),
+        PermissionError(f"denied for x-amz-security-token={fake_secret}\nthe prompt text"),
+    )
+    adapter, sink = _adapter(client)
+
+    with pytest.raises(NovaServiceError):
+        adapter.extract(_request())
+
+    assert [(item.outcome, item.rejection_reason) for item in sink.items] == [
+        (NovaInvocationOutcome.TIMEOUT, "TimeoutError: read timed out"),
+        (
+            NovaInvocationOutcome.ERROR,
+            "PermissionError: denied for x-amz-security-token=<redacted>",
+        ),
+    ]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
