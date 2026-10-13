@@ -602,21 +602,25 @@ def _width_coverage(
 _ONE_JUDGMENT_WORDS: Final = {"code": "code alone", "both-ais": "the two AIs alone"}
 
 
-def _walls_automatic(entry: _Live, rows: Mapping[UUID, SlotRow]) -> bool:
-    """Whether a width PASS rests on walls nobody chose (#1202 review): its own note says the
-    walls were set automatically, or its row has no reviewer's wall choice and the result is not
-    one that is right for every wall case."""
+def _walls_automatic(entry: _Live, rows: Mapping[UUID, SlotRow]) -> str | None:
+    """Whether a width PASS rests on walls nobody chose (#1202 review), and why: `skipped` when its
+    own note says the walls were set automatically (the run skipped the click), `changed` when
+    the note does not but its row has no reviewer's wall choice now (the choice was withdrawn
+    after the run, which was right when it ran). `None` otherwise, and for a result that is right
+    for every wall case."""
     notes = entry.finding.notes or ()
     if any(AUTOMATIC_WALLS_LINE in note for note in notes):
-        return True
+        return "skipped"
     row = (
         None
         if entry.finding.scope_row_candidate_id is None
         else rows.get(entry.finding.scope_row_candidate_id)
     )
     if row is None or any(NOT_NEEDED_PASS_LINE in note for note in notes):
-        return False
-    return row.decision is None or row.decision.wall_config is None
+        return None
+    if row.decision is None or row.decision.wall_config is None:
+        return "changed"
+    return None
 
 
 def _two_judgments(
@@ -735,7 +739,8 @@ def _two_judgments(
                     (*entry.ids, *(("reading", reading) for reading in unwitnessed)),
                 )
             )
-        if entry.rule_id == WIDTH_RULE_ID and _walls_automatic(entry, rows):
+        walls = _walls_automatic(entry, rows) if entry.rule_id == WIDTH_RULE_ID else None
+        if walls == "skipped":
             items.append(
                 RunCheckItem(
                     Check.TWO_JUDGMENTS,
@@ -744,6 +749,18 @@ def _two_judgments(
                     Action.HOLD,
                     "A width PASS rests on walls set automatically from the vendor's drawing; "
                     "no reviewer chose them. It should have waited for one click and did not.",
+                    entry.ids,
+                )
+            )
+        elif walls == "changed":
+            items.append(
+                RunCheckItem(
+                    Check.TWO_JUDGMENTS,
+                    "pass-on-automatic-walls",
+                    Agent.NINA,
+                    Action.RERUN,
+                    "The walls changed after this run: the reviewer's wall choice this width "
+                    "PASS used is no longer there. Re-run the checks.",
                     entry.ids,
                 )
             )
@@ -788,7 +805,10 @@ class _InputsSeen:
 def _inputs(live: Sequence[_Live], inputs: Mapping[UUID, Sequence[VerdictInput]]) -> _InputsSeen:
     """A decision's single values must each be stored (`verdict_inputs`, which the database
     admits only qualified); a list input is never stored as a list (`record_finding` keeps one
-    exact number per input), so it must show in the calculation instead."""
+    exact number per input), so it must show in the calculation instead.
+
+    This assumes every single-valued input of a rule is required, which is true of today's
+    rulebook (no rule declares an optional input)."""
     items: list[RunCheckItem] = []
     cache: dict[UUID, dict[str, str] | None] = {}
     list_decisions = 0

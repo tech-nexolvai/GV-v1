@@ -490,6 +490,7 @@ def test_a_pass_on_walls_set_automatically_points_to_rekha(
     assert len(items) == 2
     assert all(item.agent is Agent.REKHA and item.action is Action.HOLD for item in items)
     assert all(item.check is Check.TWO_JUDGMENTS for item in items)
+    assert all("should have waited for one click and did not" in item.found for item in items)
 
 
 def _pairing(
@@ -1148,11 +1149,12 @@ def test_a_supporting_reading_that_names_no_valid_reading_is_reported_not_a_cras
     assert ("reading", str(supporter.id)) in item.ids
 
 
-def test_a_pass_whose_row_no_longer_has_a_wall_choice_is_held(
+def test_a_pass_whose_wall_choice_was_withdrawn_after_the_run_asks_for_a_re_run(
     session: Session, tmp_path: Path
 ) -> None:
     """Walls are recomputed from the row, not only read from the result's note: the reviewer's
-    wall choice was taken back after the run, so the PASS rests on walls nobody chose."""
+    wall choice was taken back after the run, so the PASS now rests on walls nobody chose. The run
+    was right when it ran, so the item asks for a re-run rather than blaming it."""
     revision_id, anchors = _rows(session, tmp_path)
     decision = session.scalars(
         select(SlotRowReviewDecision).where(SlotRowReviewDecision.row_candidate_id == anchors[0])
@@ -1172,6 +1174,13 @@ def test_a_pass_whose_row_no_longer_has_a_wall_choice_is_held(
     report = run_check(session, revision_id)
     item = _only(report, "pass-on-automatic-walls")
     assert ("row", str(anchors[0])) in item.ids
+    # The run was right when it ran: the item says the walls changed, never that it skipped the
+    # click.
+    assert "walls changed after this run" in item.found
+    assert "Re-run the checks" in item.found
+    assert "did not" not in item.found
+    assert item.agent is Agent.NINA and item.action is Action.RERUN
+    assert report.action == "re-run Nina"
 
 
 def test_holds_and_re_runs_together_are_both_in_the_action(
