@@ -3048,12 +3048,12 @@ class DatabaseStages:
                 )
         session.flush()
         # The rows of the pages already read are new records in this reading: the reviewer's wall
-        # answers and typed widths on them come along (#1206), by the same row identity a later
-        # revision uses.
+        # answers, typed widths and architect pairings on them come along (#1206), by the same row
+        # identity a later revision uses; a pairing that cannot be placed holds its row.
         from app.lifecycle.carry_forward import carry_row_answers_within_revision
 
         carried = (
-            0
+            None
             if earlier_run is None
             else carry_row_answers_within_revision(session, package_revision_id, earlier_run)
         )
@@ -3065,7 +3065,9 @@ class DatabaseStages:
             "pages_waiting": list(waiting),
             "ai_budget": self._meter.as_payload(),
             "still_waiting": list(budget_stopped_pages(session, package_revision_id)),
-            "answers_carried": carried,
+            "answers_carried": 0 if carried is None else carried.decisions,
+            "pairings_carried": 0 if carried is None else carried.pairings,
+            "pairings_held": 0 if carried is None else carried.pairings_held,
             "checks_queued": checks is not None,
         }
 
