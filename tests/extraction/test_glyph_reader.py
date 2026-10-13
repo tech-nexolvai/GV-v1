@@ -565,3 +565,28 @@ def test_a_label_without_a_fraction_bar_is_not_marked_stacked() -> None:
 
     assert isinstance(reading, GlyphReading), reading
     assert reading.stacked is False
+
+
+@pytest.mark.parametrize(
+    ("whole", "numerator", "denominator", "written"),
+    [("", "163", "8", "163/8"), ("1", "15", "8", "1 15/8"), ("1", "3", "5", "1 3/5")],
+)
+def test_a_fraction_no_drawing_prints_abstains_with_the_reason(
+    whole: str, numerator: str, denominator: str, written: str
+) -> None:
+    """#1199: a stacked `163/8"` is never proposed as 20 3/8"; the abstention says why."""
+    paths, _ = _fraction(whole, numerator, denominator)
+
+    reading = _read(paths)
+
+    assert isinstance(reading, GlyphAbstention), reading
+    assert written in reading.reason and "fraction" in reading.reason
+
+
+def test_a_drawn_stacked_fraction_still_reads() -> None:
+    paths, _ = _fraction("1", "3", "8")
+
+    reading = _read(paths)
+
+    assert isinstance(reading, GlyphReading), reading
+    assert reading.value.exact == Fraction(11, 8)

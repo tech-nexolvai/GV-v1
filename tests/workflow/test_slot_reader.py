@@ -804,6 +804,13 @@ def test_the_run_identity_fits_its_column() -> None:
     assert len(configured.config_detail) > 200
 
 
+def test_the_run_records_the_fraction_fold_rule() -> None:
+    """#1199: a run sealed with the fraction fold and guard says so in its recorded rules. Stored
+    answers are reused by question (#1112), never by this setting, so the tag re-asks nothing."""
+    configured = runtime(FakeReaders(lambda _m, _p: ""))
+    assert "fraction-fold" in configured.config_detail
+
+
 # ---------------------------------------------------------------------------------------------
 # The admin's three rules (#992): drawn-length veto, labels from agreed text, walls by agreement
 # ---------------------------------------------------------------------------------------------

@@ -107,6 +107,10 @@ def _review_reason(reading: ComparedReading) -> str:
         "one-reader-missing": "only one reader",
         "combined": "combined label",
         "stacked": "stacked fraction",
+        "fraction-not-drawn": (
+            "a fraction no drawing prints (top not smaller than bottom, or not over 2 to 64); "
+            "a space may be missing"
+        ),
         "unreadable": "unreadable dimension text",
         "scope-not-run": "whole-wall overall, not a run width",
         "reader-topology-differs": "readers describe different drawing parts",
