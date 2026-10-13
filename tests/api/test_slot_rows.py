@@ -39,15 +39,23 @@ from app.models.verdicts import CheckRun, Finding, VerdictInput
 from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.corroborate import independence_key
 from evidence.gate import GateRefusal, seal
-from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID
+from extraction.slot_reader.bedrock import (
+    CLAUDE_SPAN_PROMPT_ID,
+    COUNTER_BREAK_PROMPT_ID,
+    CROP_PROMPT_ID,
+    ROW_PROMPT_ID,
+    crop_prompt_id,
+)
 from extraction.slot_reader.labels import plain_dimension
+from extraction.slot_reader.walls import WALL_PROMPT_ID
 from rules.semantic_types import SemanticType
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
+from vocabulary.semantic_types import ProductType
 from vocabulary.wall_layouts import VENDOR_WALLS_PASS_REASON
 from workflow.slot_row_evidence import _canonical_for_candidate, _domain_observation
-from workflow.stages import DatabaseStages
+from workflow.stages import LAYOUT_PROMPT_ID, DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -618,12 +626,18 @@ def _reader_call(
     packet: bool = False,
     asked_about: UUID | None = None,
     reused_from: UUID | None = None,
+    prompt_id: str | None = None,
+    belongs: bool = True,
 ) -> ModelInvocation:
     """One reader call on record for `candidate`'s run, as `workflow/stages.py` stores it.
 
     `packet=True` is the Claude path's: the question packet binds the answer to one label
     (`asked_about`, by default `candidate`); a reused answer (#1112) also names the call it reused.
-    The legacy readers' calls carry no packet."""
+    The legacy readers' calls carry no packet unless the run stored packets. `prompt_id` defaults to
+    the Claude span question with a packet and the legacy crop question without; `belongs=False`
+    leaves the field out, as the legacy crop answer does."""
+    if prompt_id is None:
+        prompt_id = CLAUDE_SPAN_PROMPT_ID if packet else CROP_PROMPT_ID
     question: dict[str, object] | None = None
     if packet:
         page = session.get(Page, candidate.page_id)
@@ -632,7 +646,7 @@ def _reader_call(
             "candidate_ids": [str(asked_about or candidate.id)],
             "document_version_id": str(candidate.document_version_id),
             "page_index": page.index,
-            "prompt_id": CLAUDE_SPAN_PROMPT_ID,
+            "prompt_id": prompt_id,
         }
         question["packet_sha256"] = hashlib.sha256(
             json.dumps(question, sort_keys=True, separators=(",", ":")).encode()
@@ -642,7 +656,7 @@ def _reader_call(
     call = ModelInvocation(
         extraction_run_id=candidate.extraction_run_id,
         model_id=model_id,
-        prompt_id=CLAUDE_SPAN_PROMPT_ID if packet else "synthetic-slot-test",
+        prompt_id=prompt_id,
         template_id="synthetic-slot-test",
         input_tokens=0,
         output_tokens=0,
@@ -650,7 +664,7 @@ def _reader_call(
         outcome=outcome,
         private_raw_response=json.dumps(
             {
-                "belongs": "yes",
+                **({"belongs": "yes"} if belongs else {}),
                 "text": text,
                 "readable": True,
                 "no_dimension": False,
@@ -1559,3 +1573,133 @@ def test_a_legacy_reader_record_needs_a_call_by_that_reader_in_the_run(session: 
     )
 
     assert result is None
+
+
+def _piece_evidence(
+    session: Session, candidate: ObservationCandidate
+) -> CanonicalObservation | None:
+    return _canonical_for_candidate(
+        session,
+        candidate,
+        "SHOP:countertop_piece_width",
+        semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
+    )
+
+
+#: The other questions a Claude reader answers in a run besides the labels: the row choice, the
+#: walls, the counter break and (#1221) the layout classifier.
+_OTHER_CALLS = (ROW_PROMPT_ID, WALL_PROMPT_ID, COUNTER_BREAK_PROMPT_ID, LAYOUT_PROMPT_ID)
+
+
+@pytest.mark.parametrize(
+    ("opus_answered", "sonnet", "other_call"),
+    [
+        *((True, sonnet, other) for sonnet in ("failed", "missing") for other in _OTHER_CALLS),
+        # Neither reader answered any label; each made only a row-choice call.
+        (False, "missing", ROW_PROMPT_ID),
+    ],
+)
+def test_a_claude_reader_never_passes_on_a_call_that_is_not_its_answer_to_this_label(
+    session: Session, opus_answered: bool, sonnet: str, other_call: str
+) -> None:
+    """A Claude reader is matched by its answer to this very label, never by any other `ok` call
+    it made in the run (#1226 review). Input: the pair's two records; Opus's answer on record (or
+    not); Sonnet's label call failed or missing; plus an `ok` call by each reader without its own
+    answer to some other question (row choice, walls, counter break or layout), bound to this
+    label's packet and worded like a matching answer. Outcome: no evidence; the row is refused."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _pair_records(session, candidate)
+    if opus_answered:
+        _reader_call(session, candidate, OPUS, value, packet=True)
+    else:
+        _reader_call(session, candidate, OPUS, value, packet=True, prompt_id=other_call)
+    if sonnet == "failed":
+        _reader_call(session, candidate, SONNET, value, packet=True, outcome="failed")
+    _reader_call(session, candidate, SONNET, value, packet=True, prompt_id=other_call)
+
+    assert _piece_evidence(session, candidate) is None
+    assert session.query(CanonicalObservation).count() == 0
+
+
+def test_a_claude_mode_value_never_passes_on_the_legacy_rule(session: Session) -> None:
+    """A value the Claude readers read (`reader-mode:claude`) is matched by each reader's answer
+    to this label, whatever its readers are named. Input: such a value with two records whose
+    readers each made one `ok` legacy crop call carrying no packet. Outcome: refused."""
+    _project_id, _package_id, anchors = _package_rows(
+        session, slot_flags=lambda _page, _row, _slot: ["reader-mode:claude"]
+    )
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    _reader_support(session, candidate)
+
+    assert _piece_evidence(session, candidate) is None
+
+
+def test_a_legacy_reader_needs_a_crop_call_not_any_call(session: Session) -> None:
+    """The no-packet fallback accepts only the legacy crop question (`slot-crop-v1`, with or
+    without the product). Input: two legacy records; one reader's only `ok` call is a row choice.
+    Outcome: refused."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _reader_support(session, candidate, calls=False)
+    _reader_call(session, candidate, "amazon.qwen3-vl", value, belongs=False)
+    _reader_call(session, candidate, "moonshotai.kimi-k3", value, prompt_id=ROW_PROMPT_ID)
+
+    assert _piece_evidence(session, candidate) is None
+
+
+@pytest.mark.parametrize("matches", [False, True])
+def test_a_legacy_reader_whose_calls_carry_packets_is_matched_by_its_answer(
+    session: Session, matches: bool
+) -> None:
+    """A run that stored question packets for the legacy crop question binds each answer to its
+    label, so the reader is matched by that answer, as a Claude reader is. Input: two legacy
+    records; each reader's crop answer (the legacy shape, no `belongs`) carries a packet, about
+    this label or another one. Outcome: about another label → refused; about this one → sealed."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _reader_support(session, candidate, calls=False)
+    for reader in ("amazon.qwen3-vl", "moonshotai.kimi-k3"):
+        _reader_call(
+            session,
+            candidate,
+            reader,
+            value,
+            packet=True,
+            prompt_id=crop_prompt_id(ProductType.COUNTERTOP),
+            belongs=False,
+            asked_about=None if matches else anchors[1],
+        )
+
+    assert (_piece_evidence(session, candidate) is not None) is matches
+
+
+def test_a_legacy_reader_with_a_product_crop_call_and_no_packet_still_seals(
+    session: Session,
+) -> None:
+    """Control: a legacy run (no packets) whose crop question named the product. Input: two
+    legacy records, each reader with one `ok` crop call (`slot-crop-v1+product=…`), no packet.
+    Outcome: sealed, as before."""
+    _project_id, _package_id, anchors = _package_rows(session)
+    candidate = session.get(ObservationCandidate, anchors[0])
+    assert candidate is not None
+    value = f'{candidate.value_numerator}"'
+    _reader_support(session, candidate, calls=False)
+    for reader in ("amazon.qwen3-vl", "moonshotai.kimi-k3"):
+        _reader_call(
+            session,
+            candidate,
+            reader,
+            value,
+            prompt_id=crop_prompt_id(ProductType.COUNTERTOP),
+            belongs=False,
+        )
+
+    assert _piece_evidence(session, candidate) is not None
