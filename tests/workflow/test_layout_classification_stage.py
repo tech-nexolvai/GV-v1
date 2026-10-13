@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -23,6 +25,8 @@ from app.models import (
     DocumentVersion,
     Finding,
     LayoutProposal,
+    ModelInvocation,
+    ObservationCandidate,
     Package,
     PackageRevision,
     PackageRevisionDocument,
@@ -36,7 +40,14 @@ from app.models.evidence import EvidenceArtifact
 from app.models.runs import TaskRun, WorkflowRun
 from app.verdicts.rulebook import from_row
 from evidence.crop import RenderedPage
-from extraction.layout import ClosedQuestion, LayoutReaderResult, full_page_region
+from extraction.layout import (
+    TOOL_NAME,
+    BedrockClosedQuestionConfig,
+    BedrockClosedQuestionReader,
+    ClosedQuestion,
+    LayoutReaderResult,
+    full_page_region,
+)
 from rules.required_inputs import required_inputs
 from rules.schema import Rule
 from rules.snapshot import publish
@@ -45,7 +56,12 @@ from tests.app.postgres_fixture import alembic_config
 from tests.extraction.test_reader import MISSING_SPACE, _pdf
 from workflow.idempotency import stage_idempotency_key
 from workflow.review import ENGINE_VERSION
-from workflow.stages import LAYOUT_PROMPT_ID, UNCONFIGURED_LAYOUT_MODEL_ID, DatabaseStages
+from workflow.stages import (
+    LAYOUT_PROMPT_ID,
+    LAYOUT_TEMPLATE_ID,
+    UNCONFIGURED_LAYOUT_MODEL_ID,
+    DatabaseStages,
+)
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -284,3 +300,249 @@ def test_layout_proposals_still_do_not_supply_run_checks_discriminators(
 
     assert result["ran"] is True
     assert _outcome_for(session, revision, "CT-WIDTH-001") == "REVIEW_REQUIRED"
+
+
+# ---------------------------------------------------------------------------
+# #1221: every layout call writes one `model_invocations` row
+# ---------------------------------------------------------------------------
+
+LAYOUT_MODEL = "test-layout-model"
+
+
+@pytest.fixture
+def rates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stated price for the test model: $1 per 1k input tokens, $2 per 1k output tokens."""
+    path = tmp_path / "rates.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source": "test prices, authored",
+                "retrieved": "2026-10-14",
+                "currency": "USD",
+                "rates": {
+                    LAYOUT_MODEL: {"input_per_1k_tokens": "1", "output_per_1k_tokens": "2"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GV_MODEL_RATES_FILE", str(path))
+
+
+class _AnsweringBedrock:
+    """Answers every layout question with its first permitted choice, and counts the calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def converse(self, **request: Any) -> Mapping[str, Any]:
+        self.calls += 1
+        schema = request["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]
+        return {
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1000, "outputTokens": 100},
+            "output": {
+                "message": {
+                    "content": [
+                        {
+                            "toolUse": {
+                                "name": TOOL_NAME,
+                                "input": {
+                                    "answer": schema["properties"]["answer"]["enum"][0],
+                                    "reason": "the plan view visibly matches this choice",
+                                    "region": [["0", "0"], ["1", "0"], ["1", "1"], ["0", "1"]],
+                                },
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+
+
+class _MalformedBedrock(_AnsweringBedrock):
+    def converse(self, **request: Any) -> Mapping[str, Any]:
+        response = dict(super().converse(**request))
+        response["output"] = {"message": {"content": [{"text": "no tool call"}]}}
+        return response
+
+
+class _RaisingBedrock:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    def converse(self, **_: Any) -> Mapping[str, Any]:
+        self.calls += 1
+        raise self.error
+
+
+def _bedrock_reader(client: Any) -> BedrockClosedQuestionReader:
+    return BedrockClosedQuestionReader(
+        BedrockClosedQuestionConfig(
+            model_id=LAYOUT_MODEL,
+            prompt_id=LAYOUT_PROMPT_ID,
+            template_id=LAYOUT_TEMPLATE_ID,
+        ),
+        client,
+    )
+
+
+def _layout_rows(session: Session) -> list[ModelInvocation]:
+    return list(
+        session.execute(
+            select(ModelInvocation).where(ModelInvocation.prompt_id == LAYOUT_PROMPT_ID)
+        ).scalars()
+    )
+
+
+def _layout_run_ids(session: Session) -> set[Any]:
+    """The extraction run the layout crops were filed under: the page's own run."""
+    return set(
+        session.execute(
+            select(ObservationCandidate.extraction_run_id).where(
+                ObservationCandidate.raw_text.like("layout %")
+            )
+        ).scalars()
+    )
+
+
+def test_each_layout_call_writes_one_priced_row_under_the_pages_run(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    """**Outcome: one `ok` row per call, with tokens, cost, identity and the page's run.**
+
+    Before #1221 the layout classifier recorded nothing: its calls were missing from Usage, cost and
+    every scorecard.
+    """
+    rules = _publish_rulebook(session)
+    revision = _revision(session, store)
+    client = _AnsweringBedrock()
+
+    DatabaseStages(
+        store, layout_readers=[_bedrock_reader(client)], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+
+    rows = _layout_rows(session)
+    assert client.calls == len(required_inputs(rules).discriminators)
+    assert len(rows) == client.calls
+    assert {row.extraction_run_id for row in rows} == _layout_run_ids(session)
+    assert len(_layout_run_ids(session)) == 1
+    for row in rows:
+        assert row.package_revision_id is None
+        assert row.model_id == LAYOUT_MODEL
+        assert row.template_id == LAYOUT_TEMPLATE_ID
+        assert (row.input_tokens, row.output_tokens) == (1000, 100)
+        assert row.cost_micros == 1_200_000
+        assert row.outcome == "ok"
+        assert row.rejection_reason is None
+    # The proposals are what an answering reader always produced.
+    choices = {choice for need in required_inputs(rules).discriminators for choice in need.choices}
+    assert {proposal.proposed_value for proposal in _proposals(session)} <= choices
+
+
+def test_a_malformed_layout_answer_writes_one_rejected_row_and_still_abstains(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    client = _MalformedBedrock()
+
+    DatabaseStages(
+        store, layout_readers=[_bedrock_reader(client)], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+
+    rows = _layout_rows(session)
+    assert len(rows) == client.calls > 0
+    assert {row.outcome for row in rows} == {"rejected"}
+    assert all(row.rejection_reason and row.rejection_reason.startswith("ValueError:") for row in rows)
+    # The model answered and was paid, so its tokens count.
+    assert {row.cost_micros for row in rows} == {1_200_000}
+    assert {proposal.proposed_value for proposal in _proposals(session)} == {"abstained"}
+
+
+def test_a_failed_layout_call_writes_one_failed_row_with_its_reason_and_still_abstains(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    client = _RaisingBedrock(
+        ClientError({"Error": {"Code": "ThrottlingException", "Message": "slow"}}, "Converse")
+    )
+
+    DatabaseStages(
+        store, layout_readers=[_bedrock_reader(client)], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+
+    rows = _layout_rows(session)
+    assert len(rows) == client.calls > 0
+    assert {row.outcome for row in rows} == {"failed"}
+    assert {row.rejection_reason for row in rows} == {"ClientError: ThrottlingException"}
+    assert {(row.input_tokens, row.output_tokens, row.cost_micros) for row in rows} == {(0, 0, 0)}
+    assert {proposal.proposed_value for proposal in _proposals(session)} == {"abstained"}
+
+
+def test_a_timed_out_layout_call_writes_one_timeout_row_and_still_abstains(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    from botocore.exceptions import ReadTimeoutError  # type: ignore[import-untyped]
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    client = _RaisingBedrock(ReadTimeoutError(endpoint_url="https://bedrock.invalid"))
+
+    DatabaseStages(
+        store, layout_readers=[_bedrock_reader(client)], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+
+    rows = _layout_rows(session)
+    assert len(rows) == client.calls > 0
+    assert {row.outcome for row in rows} == {"timeout"}
+    assert all(row.rejection_reason for row in rows)
+    assert {proposal.proposed_value for proposal in _proposals(session)} == {"abstained"}
+
+
+def test_an_injected_reader_that_calls_no_model_writes_no_row(
+    session: Session, store: LocalStore
+) -> None:
+    """**Outcome: unchanged.** Only a real Bedrock call is a model call."""
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+
+    DatabaseStages(
+        store, layout_readers=[_AnsweringReader()], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+
+    assert _layout_rows(session) == []
+
+
+def test_usage_counts_the_layout_calls(session: Session, store: LocalStore, rates: None) -> None:
+    """**Outcome: the Usage page's totals include the layout calls, priced, under their package.**"""
+    from app.api.usage import project_usage
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    client = _AnsweringBedrock()
+    DatabaseStages(
+        store, layout_readers=[_bedrock_reader(client)], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+    package = session.get(Package, revision.package_id)
+    assert package is not None
+
+    usage = project_usage(
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        session,
+        package.project_id,
+        from_=None,
+        to=None,
+        group_by="package",
+    )
+
+    layout = next(model for model in usage.groups[0].models if model.model == LAYOUT_MODEL)
+    assert layout.calls == client.calls
+    assert layout.input_tokens == 1000 * client.calls
+    assert layout.cost_usd == f"{1.2 * client.calls:.6f}"
+    assert usage.groups[0].package_id == package.id

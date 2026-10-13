@@ -21,6 +21,8 @@ import pytest
 from app.config import Settings
 from workflow.assignment import AssignmentContext, Field, ProposedAssignment, Reading
 from workflow.assignment_bedrock import (
+    PROMPT_ID,
+    TEMPLATE_ID,
     TOKEN_CEILING,
     TOKEN_FLOOR,
     TOOL_NAME,
@@ -849,3 +851,138 @@ def test_no_model_configured_is_its_own_kind() -> None:
     propose_and_guard(_context(), None, observer=seen.append)
 
     assert seen[-1].failure == "not-configured"
+
+
+# ---------------------------------------------------------------------------
+# #1221 — every call is handed to a recorder, and the answer does not change
+# ---------------------------------------------------------------------------
+
+
+class _Recorder:
+    """Keeps what `BedrockConverseInvocationRecorder.record` would be given, call by call."""
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def record(self, **call: Any) -> None:
+        self.records.append(call)
+
+
+class _Raises:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def converse(self, **_: Any) -> dict[str, Any]:
+        raise self.error
+
+
+def _both_ways(
+    client: Any, context: AssignmentContext | None = None
+) -> tuple[Any, Any, list[AssignmentProgress], list[AssignmentProgress], _Recorder]:
+    """The same question asked without and with a recorder: answers and phases must be identical."""
+    context = context if context is not None else _context()
+    plain_seen: list[AssignmentProgress] = []
+    plain = propose_and_guard(context, _model_with(client), observer=plain_seen.append)
+    recorder = _Recorder()
+    seen: list[AssignmentProgress] = []
+    recorded = propose_and_guard(
+        context, _model_with(client).with_invocation_recorder(recorder), observer=seen.append
+    )
+    return plain, recorded, plain_seen, seen, recorder
+
+
+def _model_with(client: Any) -> BedrockAssignmentModel:
+    return BedrockAssignmentModel(
+        config=_Config(
+            model_id="configured-model",
+            region_name="us-east-1",
+            connect_timeout_seconds=1,
+            read_timeout_seconds=2,
+        ),
+        client=client,
+    )
+
+
+def test_an_answered_call_is_recorded_once_with_its_identity_and_response() -> None:
+    """**Outcome: one record per call; the answer and the phases are what they were.**"""
+    response = {**_response(), "usage": {"inputTokens": 1000, "outputTokens": 100}}
+    plain, recorded, plain_seen, seen, recorder = _both_ways(_Client(response))
+
+    assert recorded == plain
+    assert recorded[0] == (ProposedAssignment(field_key="SHOP:CT010", candidate_ids=("c1",)),)
+    assert seen == plain_seen
+    assert len(recorder.records) == 1
+    call = recorder.records[0]
+    assert call["model_id"] == "configured-model"
+    assert call["prompt_id"] == PROMPT_ID
+    assert call["template_id"] == TEMPLATE_ID
+    assert call["response"] == response
+    assert call["error"] is None
+    assert call["started_ns"] > 0
+
+
+def test_a_malformed_answer_is_recorded_with_its_response_and_its_error() -> None:
+    """**Outcome: fail closed as before; the record carries both, which the recorder stores as
+    `rejected`: the model answered (and was paid), and the local code refused the answer.**"""
+    response = {"output": {"message": {"content": [{"text": "free text, no tool"}]}}}
+    plain, recorded, plain_seen, seen, recorder = _both_ways(_Client(response))
+
+    assert recorded == plain == ((), ())
+    assert seen == plain_seen
+    assert seen[-1].failure == "answer-malformed"
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["response"] == response
+    assert isinstance(recorder.records[0]["error"], UnusableAnswer)
+
+
+def test_a_failed_call_is_recorded_with_its_error_and_no_response() -> None:
+    error = _client_error("ThrottlingException")
+    plain, recorded, plain_seen, seen, recorder = _both_ways(_Raises(error))
+
+    assert recorded == plain == ((), ())
+    assert seen == plain_seen
+    assert seen[-1].failure == "throttled"
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["response"] is None
+    assert recorder.records[0]["error"] is error
+
+
+def test_a_timed_out_call_is_recorded_with_its_error_and_no_response() -> None:
+    from botocore.exceptions import ReadTimeoutError  # type: ignore[import-untyped]
+
+    error = ReadTimeoutError(endpoint_url="https://bedrock.invalid")
+    plain, recorded, plain_seen, seen, recorder = _both_ways(_Raises(error))
+
+    assert recorded == plain == ((), ())
+    assert seen == plain_seen
+    assert seen[-1].failure == "unreachable"
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["error"] is error
+
+
+def test_the_guarded_retry_is_a_second_call_and_a_second_record() -> None:
+    """**Outcome: two calls, two records.** The retry after the guard's refusal is paid for too."""
+    plain, recorded, _plain_seen, _seen, recorder = _both_ways(_CorrectsOnceClient(), _run_context())
+
+    assert recorded == plain
+    assert len(recorded[0]) == 2
+    assert len(recorder.records) == 2
+    assert all(call["error"] is None for call in recorder.records)
+
+
+def test_nothing_to_ask_makes_no_call_and_no_record() -> None:
+    context = AssignmentContext(fields=(DEPTH,), readings=())
+    recorder = _Recorder()
+
+    assert propose_and_guard(context, _model().with_invocation_recorder(recorder)) == ((), ())
+    assert recorder.records == []
+
+
+def test_with_invocation_recorder_leaves_the_original_model_unrecorded() -> None:
+    model = _model()
+    recorder = _Recorder()
+
+    model.with_invocation_recorder(recorder)
+    propose_and_guard(_context(), model)
+
+    assert recorder.records == []
