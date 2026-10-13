@@ -105,6 +105,7 @@ from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.requirements import needs_note
 from vocabulary.semantic_types import SemanticType
 from workflow.measurements import run_layer
+from workflow.pariksha_gates import GATE_FLAG as PARIKSHA_GATE_FLAG
 from workflow.slot_row_scope import effective_row_wall
 
 __all__ = [
@@ -551,8 +552,16 @@ def _stable_trace(trace: object) -> object:
 
 def _stable_flags(flags: Iterable[str] | None) -> list[str]:
     """A reading's flags with every id inside one (`supports:<uuid>`, minted per reading run)
-    replaced by `<id>`: the flag still counts, the id never does."""
-    return sorted({_ID_IN_TEXT.sub("<id>", flag) for flag in flags or ()})
+    replaced by `<id>`: the flag still counts, the id never does. A Pariksha gate's record
+    (`pariksha:`, #1228) is left out: it says the reading was handed on, not what was read, and
+    a reading from before the gates must keep matching the same reading after them."""
+    return sorted(
+        {
+            _ID_IN_TEXT.sub("<id>", flag)
+            for flag in flags or ()
+            if not flag.startswith(PARIKSHA_GATE_FLAG)
+        }
+    )
 
 
 def _polygon(points: object, space: str | None) -> object:
