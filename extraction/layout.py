@@ -339,6 +339,11 @@ class BedrockClosedQuestionReader:
                 fallback,
                 f"layout reader abstained: {reason}",
             )
+        except BaseException as interrupted:
+            # An interrupt (Ctrl-C, a shutdown) still ends the read as before, and is handed over
+            # as what ended the call, never as an answered call with no tokens.
+            refusal = interrupted
+            raise
         finally:
             # Only a call that was made is handed over: a request that could not be built cost
             # nothing and was never sent.

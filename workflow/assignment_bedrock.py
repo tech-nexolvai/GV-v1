@@ -27,8 +27,8 @@ the guard refuses: all of them end with the fields empty and a person filling th
 happens today. The model can improve that; it cannot degrade it.
 
 **Every call is recorded** (#1221). `with_invocation_recorder` attaches a recorder that is handed
-each Bedrock call — its raw response or its error — and writes one `model_invocations` row, as the
-findings narration and the reviewer chat do. The guard's refusal is not the call's: a well-formed
+each Bedrock call — its raw response or its error — and the caller writes one `model_invocations`
+row per call once `propose_and_guard` has returned (`workflow/model_call_recorder.py`). The guard's refusal is not the call's: a well-formed
 answer the guard refuses is an `ok` call, and the retry it causes is a second call and a second row.
 
 Source: issue #589 · Verification: `tests/workflow/test_assignment_bedrock.py`
@@ -334,7 +334,9 @@ class BedrockAssignmentModel:
         try:
             response = client.converse(**request)
             batch = self._batch(response)
-        except Exception as raised:
+        except BaseException as raised:
+            # Interrupts too (Ctrl-C, a shutdown): recorded as what ended the call, never as an
+            # answered call with no tokens, and raised exactly as before.
             error = raised
             raise
         finally:
@@ -360,9 +362,11 @@ class BedrockAssignmentModel:
     ) -> None:
         """Hand the call to the recorder, as the findings narration does.
 
-        A recorder that fails on a failed call adds a note to the call's error and lets the call's
-        own error speak; on an answered call it raises, so `propose_and_guard` fails closed. The
-        recorder in use (`ModelCallRecorder`) never raises.
+        The recorder in use (`ModelCallRecorder`) only keeps the call in memory here and cannot
+        fail; its caller writes the row after `propose_and_guard` returns. For any other recorder:
+        one that fails on a failed call adds a note to the call's error and lets that error speak;
+        one that fails on an answered call raises, and `propose_and_guard` then fails closed, which
+        would change the answer. So a recorder given here must not raise.
         """
         if self.recorder is None:
             return

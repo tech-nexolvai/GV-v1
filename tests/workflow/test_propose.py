@@ -205,6 +205,9 @@ def test_a_failed_call_is_named_and_its_exact_error_kept_for_the_log(
         def get(self, *_args: object, **_kwargs: object) -> object:
             return object()
 
+        def flush(self) -> None:
+            """The call's row is written after the step (#1221); nothing is pending here."""
+
     model = BedrockAssignmentModel(
         config=_Config(
             model_id="m", region_name="us-east-1", connect_timeout_seconds=1, read_timeout_seconds=2

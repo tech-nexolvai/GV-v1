@@ -352,6 +352,7 @@ from workflow.architect_row_plan import (
     plan_architect_row,
 )
 from workflow.architect_view_index import ArchitectViewCrop, record_architect_view_index
+from workflow.assignment_bedrock import PROMPT_ID as ASSIGNMENT_PROMPT_ID
 from workflow.association import (
     AssociationSettings,
     LocalizedOcrSettings,
@@ -966,6 +967,13 @@ LAYOUT_READERS_ENV = "GV_BEDROCK_LAYOUT_ENABLED"
 LAYOUT_MODEL_ENV = "GV_BEDROCK_LAYOUT_MODEL"
 LAYOUT_PROMPT_ID = "layout-discriminator-v1"
 LAYOUT_TEMPLATE_ID = "closed-question-page-v1"
+
+#: Recorded calls that are not reading spend (#1221). The layout classifier and the reading
+#: assignment record every call since #1221, but they never counted towards the drawing set's AI
+#: budget, and phase 1 changes no behaviour: `stage_spend_so_far` leaves them out until the shared
+#: budget (Sutra step 3, `docs/decisions/SUTRA_HARNESS.md`) decides how they count. The
+#: assignment's rows belong to a package revision, never to a run, so naming it is a safety net.
+UNMETERED_PROMPT_IDS: Final = frozenset({LAYOUT_PROMPT_ID, ASSIGNMENT_PROMPT_ID})
 UNCONFIGURED_LAYOUT_MODEL_ID = "layout-reader-unconfigured"
 
 #: How many individual refusals a stage payload carries, before it reports only the count.
@@ -4016,8 +4024,8 @@ class DatabaseStages:
         written = 0
         refused: list[str] = []
         # Every Bedrock call writes one row under this page's run (#1221), in the stage's own
-        # transaction, as the vision readers' rows are. An injected reader that calls no model
-        # writes none.
+        # transaction, as the vision readers' rows are: kept while the readers are asked, written
+        # once `classify_layout` has returned. An injected reader that calls no model writes none.
         recorder = ModelCallRecorder(session, extraction_run_id=extraction_run_id)
         readers = tuple(
             _recorded_layout_reader(route.reader, recorder) for route in self._layout_reader_routes
@@ -4029,6 +4037,7 @@ class DatabaseStages:
                 question_from_discriminator(discriminator),
                 readers,
             )
+            recorder.write_pending()
             crop_artifact_id = self._layout_crop_artifact_id(
                 session,
                 rendered=rendered,
@@ -9650,7 +9659,8 @@ def stage_spend_so_far(session: Session, task_run: TaskRun) -> tuple[int, int]:
     Every call recorded under this claim's own runs, **and** every call the call ledger committed
     for any attempt of the same stage (#1178): an attempt that failed rolled its own runs back, but
     its paid calls stayed in the ledger, so a retry starts from what was really spent and the
-    drawing-set cap still holds across attempts. A twin row (no cost) adds nothing.
+    drawing-set cap still holds across attempts. A twin row (no cost) adds nothing. The layout
+    classifier's and the assignment's rows are not reading spend (`UNMETERED_PROMPT_IDS`, #1221).
     """
     spent, unpriced = session.execute(
         select(
@@ -9665,6 +9675,7 @@ def stage_spend_so_far(session: Session, task_run: TaskRun) -> tuple[int, int]:
                 ledger_spend_filter(task_run.idempotency_key),
             )
         )
+        .where(ModelInvocation.prompt_id.notin_(UNMETERED_PROMPT_IDS))
     ).one()
     return int(spent or 0), int(unpriced or 0)
 

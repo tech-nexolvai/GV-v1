@@ -1650,13 +1650,12 @@ def propose_measurements(
         )
 
     model = configured_assignment_model(request.app.state.settings)
+    # One row per call, committed at once as the reviewer chat's is (#1221, #1134): the session
+    # never commits on its own, and nothing else is pending in it while the model is asked, so the
+    # paid call reaches Usage even when no proposal is filed. Written once the step has answered.
+    calls = ModelCallRecorder(session, package_revision_id=revision.id, commit=True)
     if isinstance(model, BedrockAssignmentModel):
-        # One row per call, committed at once as the reviewer chat's is (#1221, #1134): the
-        # session never commits on its own, and nothing else is pending in it while the model is
-        # asked, so the paid call reaches Usage even when no proposal is filed.
-        model = model.with_invocation_recorder(
-            ModelCallRecorder(session, package_revision_id=revision.id, commit=True)
-        )
+        model = model.with_invocation_recorder(calls)
     attached = sum(1 for reading in readings if reading.line_key is not None)
     by_id = {reading.candidate_id: reading for reading in readings}
     by_key = {field.key: field for field in fields}
@@ -1705,6 +1704,7 @@ def propose_measurements(
                 page_index=page_number - 1,
             ):
                 proposed, unverified = propose_and_guard(context, model, observer=observe)
+        calls.write_pending()
         for event in pending:
             yield send(event)
 
