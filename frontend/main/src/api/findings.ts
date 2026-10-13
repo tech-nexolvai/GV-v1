@@ -85,9 +85,10 @@ export function withChain(finding: Finding, chain: Chain): Finding {
   // free-form dict and this function read fields out of it with a string guard — the one place the
   // generated types could not check anything.
   //
-  // The abstention case matters as much as the calculation one: `app/budget/overflow.py` writes a
-  // trace with a cause and no arithmetic, and rendering that as a calculation with no operands would
-  // say "the check ran and found nothing" about a check that never ran.
+  // The abstention case matters as much as the calculation one: a check that abstained stores a
+  // trace with a cause and no arithmetic (`app/verdicts/trace.py`; before #1206 the removed budget
+  // module wrote one too), and rendering that as a calculation with no operands would say "the check
+  // ran and found nothing" about a check that never ran.
   const source = chain.trace;
   const trace: Trace =
     source.kind === 'calculation'

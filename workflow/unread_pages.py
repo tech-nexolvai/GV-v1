@@ -23,6 +23,12 @@ is listed with the pages with no countertop and needs a reviewer's answer before
   typed title. The proof's facts are stored with the record (`blank-proof:` flags). It is still
   listed, but needs no reviewer answer before sign-off.
 
+* `budget-reached` — the drawing set's AI budget was reached before this page's own reading (its
+  row and dimension questions) finished (#1206): "AI budget $X reached after page k of N. Use
+  'Read the unread pages', or ask an admin to raise the limit." (or, when a call had no price,
+  that no more calls were made and the model rates need checking). It needs the reviewer's answer
+  (or that reading) before sign-off, like any listed page, and starts unticked.
+
 A `no-drawing` page code could not prove blank carries `no-row-ink-found` and says so: something is
 drawn or pictured on it (a scanned or flattened sheet) that code cannot read (#1195 review).
 
@@ -61,10 +67,13 @@ from workflow.view_roles import CODE_CONFIRMERS
 
 __all__ = [
     "BLANK_PAGE",
+    "BUDGET_LIMIT_FLAG",
+    "BUDGET_REACHED",
     "INK_FOUND_REASON",
     "ConfirmedRole",
     "UnreadPage",
     "blank_proof_flags",
+    "budget_reached",
     "has_unnamed_drawing",
     "persist_unread_pages",
     "unread_page",
@@ -105,6 +114,46 @@ BLANK_PAGE: Final = (
 )
 
 
+#: The `no-row:` code of a page left unread because the AI budget was reached (#1206).
+BUDGET_REACHED: Final = "budget-reached"
+
+#: On a `budget-reached` record, why "Read the unread pages" cannot help on its own (#1206):
+#: `budget-limit:unpriced`, `budget-limit:fixed` or `budget-limit:maximum`.
+BUDGET_LIMIT_FLAG: Final = "budget-limit:"
+
+
+def budget_reached(
+    *, cap_usd: Decimal, read_through: int, page_count: int, unpriced: bool = False
+) -> tuple[str, str]:
+    """`(no-row code, the reviewer's sentence)` for a page left unread when the drawing set's AI
+    budget of `cap_usd` was reached after page `read_through` (1-based; 0 when no page was read in
+    full) of a file of `page_count` pages (#1206). `unpriced`: the reading stopped because a call
+    had no price, so no amount was reached; the admin checks the model rates."""
+    if read_through < 0 or page_count < 1 or read_through > page_count:
+        raise ValueError("the stop must name a page of the file")
+    where = (
+        f"after page {read_through} of {page_count}"
+        if read_through
+        else f"before page 1 of {page_count} was read"
+    )
+    if unpriced:
+        return (
+            BUDGET_REACHED,
+            (
+                f"AI reading stopped {where}: a call had no price, so no more calls were made; "
+                "check the model rates."
+            ),
+        )
+    amount = f"${cap_usd.quantize(Decimal('0.01'))}"
+    return (
+        BUDGET_REACHED,
+        (
+            f"AI budget {amount} reached {where}. Use 'Read the unread pages', or ask an admin "
+            "to raise the limit."
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class UnreadPage:
     """One page code read no countertop row on, with its `no-row:` code and reason.
@@ -123,6 +172,10 @@ class UnreadPage:
     blank_proof: BlankPageFacts | None = None
     unnamed_drawing: bool = False
     ink_found: bool = False
+    budget_limit: str | None = None
+    """On a `budget-reached` page (#1206), when "Read the unread pages" cannot help on its own:
+    `unpriced` (a call had no price; the model rates must be fixed first), `fixed` (the set's fixed
+    amount was reached) or `maximum` (the admin's maximum was reached); an admin raises those."""
 
     def __post_init__(self) -> None:
         if self.code not in NO_ROW_CODES:
@@ -351,6 +404,11 @@ def persist_unread_pages(
                     *(() if page.blank_proof is None else blank_proof_flags(page.blank_proof)),
                     *((UNNAMED_DRAWING_FLAG,) if page.unnamed_drawing else ()),
                     *((INK_FOUND_FLAG,) if page.ink_found else ()),
+                    *(
+                        ()
+                        if page.budget_limit is None
+                        else (f"{BUDGET_LIMIT_FLAG}{page.budget_limit}",)
+                    ),
                 ],
                 review_reason=_fit(page.reason),
             )

@@ -28,7 +28,7 @@ import { InfoTip } from '@/components/ui/info-tip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ProviderLine, SpendSoFar } from '@/components/usage/spend-so-far';
 import { resultTotal } from '@/lib/documents-table';
-import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
+import { costByDay, costText, modelWord, outcomeTotals, outcomesByUploadDay, stoppedReadings, usageBySet, usageKpis, type SetUsage } from '@/lib/usage';
 
 // The chart library is fetched the first time Usage opens (#1072).
 const CostByDayChart = lazy(() => import('@/components/usage/usage-charts').then((m) => ({ default: m.CostByDayChart })));
@@ -161,11 +161,26 @@ export function UsagePage() {
         const kpis = usageKpis(bySet.totals, bySet.groups);
         const days = costByDay(byDay.groups);
         const sets = usageBySet(bySet.groups, summary.items);
+        const stopped = stoppedReadings(bySet.reading_times, summary.items);
         const outcomeDays = outcomesByUploadDay(summary.items);
         const recorded = resultTotal(outcomeTotals(outcomeDays));
         const allUnpriced = kpis.calls > 0 && kpis.unpricedCalls >= kpis.calls;
         return (
           <div className="flex flex-col gap-4">
+            {/* #1206: a reading that stopped for something a person must fix (the AI account is out
+                of credit) says so here as well as on the review, in the API's own words. */}
+            {stopped.length > 0 && (
+              <section aria-labelledby="readings-stopped" className="flex flex-col gap-1 rounded-xl border p-4" data-part="readings-stopped">
+                <h2 id="readings-stopped" className="text-base font-semibold">Readings stopped</h2>
+                <ul className="flex flex-col gap-1 text-sm">
+                  {stopped.map((item) => (
+                    <li key={item.packageId}>
+                      <span className="font-medium">{item.vendor ?? <code className="text-xs">{item.packageId.slice(0, 8)}</code>}</span>: {item.reason}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-part="kpis">
               <Kpi label="Sets with AI calls" value={<span className="num">{kpis.setsWithCalls}</span>} sub="drawing sets (reading or chat)" />
               <Kpi

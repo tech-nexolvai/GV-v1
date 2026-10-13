@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "AbstentionTraceOut": {
-        "description": "Why nothing was calculated.\n\nA real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when\na package exhausts its model budget, and it carries a cause and a reason rather than operands.\nReporting it as an empty calculation would render an abstention as a check that ran and found\nnothing, which is the reading V1 must never invite.",
+        "description": "Why nothing was calculated.\n\nA real and separate shape, not a degenerate calculation: a check that abstained carries a cause\nand a reason rather than operands (`app/verdicts/trace.abstention_trace`; before #1206 the\nremoved `app/budget/overflow.py` wrote one with `regions_done` when a package exhausted its\nmodel budget, and such a stored row still reads here).\nReporting it as an empty calculation would render an abstention as a check that ran and found\nnothing, which is the reading V1 must never invite.",
         "properties": {
           "cause": {
             "title": "Cause",
@@ -6009,6 +6009,22 @@
       "PackageOut": {
         "description": "One package, and the revision documents currently attach to.\n\n`current_revision_number` is returned rather than left to be inferred. A package has several\nrevisions and a client that assumed \"the latest\" would eventually register a document against a\nsuperseded one (`docs/DESIGN_PLATFORM.md` \u00a75).",
         "properties": {
+          "budget_limit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "unpriced",
+                  "fixed",
+                  "maximum"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Limit"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -6027,6 +6043,14 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "pages_waiting_for_budget": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages Waiting For Budget",
+            "type": "array"
           },
           "product_type": {
             "anyOf": [
@@ -6056,6 +6080,17 @@
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
           },
           "vendor": {
             "anyOf": [
@@ -7380,6 +7415,47 @@
         "title": "PublicationTarget",
         "type": "string"
       },
+      "ReadingAgainOut": {
+        "description": "What was asked for: the whole reading resumed, or only the pages the budget stopped.",
+        "properties": {
+          "accepted_id": {
+            "description": "The enqueued work, not a workflow run.",
+            "format": "uuid",
+            "title": "Accepted Id",
+            "type": "string"
+          },
+          "action": {
+            "description": "run_reading_again: the reading stopped because the AI provider account was out of credit, and resumes where it stopped. read_unread_pages: the AI budget was reached, and the pages it left are read on this revision.",
+            "enum": [
+              "run_reading_again",
+              "read_unread_pages"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "package_revision_id": {
+            "format": "uuid",
+            "title": "Package Revision Id",
+            "type": "string"
+          },
+          "pages": {
+            "default": [],
+            "description": "For read_unread_pages, the page numbers to be read; empty otherwise.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "action",
+          "accepted_id",
+          "package_revision_id"
+        ],
+        "title": "ReadingAgainOut",
+        "type": "object"
+      },
       "ReadingPartsOut": {
         "properties": {
           "can_suggest": {
@@ -7499,7 +7575,7 @@
         "type": "object"
       },
       "ReadingTimeOut": {
-        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI\nbudget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or\nat a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so\nthe time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
+        "description": "How long one package revision's reading took, from its recorded state events (#1071).\n\nIt starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to\na person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type). An AI\nbudget stop is a `finished` reading too: it hands over as usual and lists the pages it left\nunread (#1206). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that,\nor at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading,\nso the time includes the wait before the retry. Otherwise it is still `reading` and has no end.\nAnything after the hand-over (a reviewer re-running the checks) is not reading time.",
         "properties": {
           "duration_ms": {
             "anyOf": [
@@ -7566,6 +7642,18 @@
             "format": "date-time",
             "title": "Started At",
             "type": "string"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why a failed reading stopped, in plain words a person can act on, when it is one (#1206): today only 'The AI provider account is out of credit. Top it up, then run the reading again.' Null for any other end, and while reading.",
+            "title": "Stop Reason"
           }
         },
         "required": [
@@ -14776,6 +14864,60 @@
         "summary": "Say one suggestion is not a part",
         "tags": [
           "drawing parts"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-again": {
+      "post": {
+        "description": "Enqueue \"Run the reading again\" (out of credit) or \"Read the unread pages\" (budget).\n\nRefused (409) when the revision did not stop for either, or the same work is already queued.",
+        "operationId": "read_again_api_v1_projects__project_id__packages__package_id__reading_again_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadingAgainOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run the reading again after it stopped for the AI account or the AI budget",
+        "tags": [
+          "packages"
         ]
       }
     },

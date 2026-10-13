@@ -134,6 +134,31 @@ export function usageBySet(bySet: readonly UsageGroup[], summaries: readonly Pac
     }));
 }
 
+export interface StoppedReading {
+  packageId: string;
+  /** The drawing set's name from `packages-summary`; null when it is not among those loaded. */
+  vendor: string | null;
+  /** Why it stopped, in the API's own plain words (#1206), e.g. the AI account is out of credit. */
+  reason: string;
+}
+
+/**
+ * Drawing sets whose newest reading stopped for a reason a person can act on (#1206), e.g. the AI
+ * provider account is out of credit. Taken from `reading_times[].stop_reason` as the API words it;
+ * a set read again since (its newest reading did not stop) is not listed.
+ */
+export function stoppedReadings(readings: Usage['reading_times'], summaries: readonly PackageSummary[]): StoppedReading[] {
+  const vendors = new Map(summaries.map((summary) => [summary.package_id, summary.vendor ?? 'Untitled document set']));
+  const newest = new Map<string, Usage['reading_times'][number]>();
+  for (const reading of readings) {
+    const seen = newest.get(reading.package_id);
+    if (!seen || reading.started_at >= seen.started_at) newest.set(reading.package_id, reading);
+  }
+  return [...newest.values()]
+    .filter((reading) => reading.outcome === 'failed' && typeof reading.stop_reason === 'string' && reading.stop_reason !== '')
+    .map((reading) => ({ packageId: reading.package_id, vendor: vendors.get(reading.package_id) ?? null, reason: reading.stop_reason as string }));
+}
+
 export interface OutcomeDay extends SummaryOutcomes {
   day: string;
   label: string;

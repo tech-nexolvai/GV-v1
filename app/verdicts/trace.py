@@ -106,9 +106,10 @@ def abstention_trace(outcome: Outcome, *, cause: str, reason: str) -> dict[str, 
     right — so it deserves a stored reason a reviewer can act on. "No dimension was read for
     `cutout_width`" sends somebody to the drawing; an empty trace sends them to us.
 
-    `regions_done` and `review_complete` are the fields `app/budget/overflow.py` fills when a run
-    stopped early, and they are left absent here rather than set to `False`: this check did not stop
-    early, it never had an input, and `False` would be an assertion about a run that did not happen.
+    `regions_done` and `review_complete` are the fields a budget abstention written before #1206
+    carries (the removed `app/budget/overflow.py`), and they are left absent here rather than set to
+    `False`: this check did not stop early, it never had an input, and `False` would be an assertion
+    about a run that did not happen.
     """
     return {"cause": cause, "reason": reason, "outcome": outcome.value}
 

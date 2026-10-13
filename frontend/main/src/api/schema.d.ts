@@ -1276,6 +1276,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/reading-again": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the reading again after it stopped for the AI account or the AI budget
+         * @description Enqueue "Run the reading again" (out of credit) or "Read the unread pages" (budget).
+         *
+         *     Refused (409) when the revision did not stop for either, or the same work is already queued.
+         */
+        post: operations["read_again_api_v1_projects__project_id__packages__package_id__reading_again_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/reading-parts": {
         parameters: {
             query?: never;
@@ -2175,8 +2197,10 @@ export interface components {
          * AbstentionTraceOut
          * @description Why nothing was calculated.
          *
-         *     A real and separate shape, not a degenerate calculation: `app/budget/overflow.py` writes one when
-         *     a package exhausts its model budget, and it carries a cause and a reason rather than operands.
+         *     A real and separate shape, not a degenerate calculation: a check that abstained carries a cause
+         *     and a reason rather than operands (`app/verdicts/trace.abstention_trace`; before #1206 the
+         *     removed `app/budget/overflow.py` wrote one with `regions_done` when a package exhausted its
+         *     model budget, and such a stored row still reads here).
          *     Reporting it as an empty calculation would render an abstention as a check that ran and found
          *     nothing, which is the reading V1 must never invite.
          */
@@ -4809,6 +4833,8 @@ export interface components {
          *     superseded one (`docs/DESIGN_PLATFORM.md` §5).
          */
         PackageOut: {
+            /** Budget Limit */
+            budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
              * Created At
              * Format: date-time
@@ -4826,6 +4852,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Pages Waiting For Budget
+             * @default []
+             */
+            pages_waiting_for_budget: number[];
             product_type: components["schemas"]["ProductType"] | null;
             /**
              * Project Id
@@ -4835,6 +4866,8 @@ export interface components {
             reading?: components["schemas"]["ReadingProgressOut"] | null;
             /** State */
             state: string;
+            /** Stop Reason */
+            stop_reason?: string | null;
             /** Vendor */
             vendor: string | null;
         };
@@ -5481,6 +5514,35 @@ export interface components {
          * @enum {string}
          */
         PublicationTarget: "development" | "production";
+        /**
+         * ReadingAgainOut
+         * @description What was asked for: the whole reading resumed, or only the pages the budget stopped.
+         */
+        ReadingAgainOut: {
+            /**
+             * Accepted Id
+             * Format: uuid
+             * @description The enqueued work, not a workflow run.
+             */
+            accepted_id: string;
+            /**
+             * Action
+             * @description run_reading_again: the reading stopped because the AI provider account was out of credit, and resumes where it stopped. read_unread_pages: the AI budget was reached, and the pages it left are read on this revision.
+             * @enum {string}
+             */
+            action: "run_reading_again" | "read_unread_pages";
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /**
+             * Pages
+             * @description For read_unread_pages, the page numbers to be read; empty otherwise.
+             * @default []
+             */
+            pages: number[];
+        };
         /** ReadingPartsOut */
         ReadingPartsOut: {
             /** Can Suggest */
@@ -5551,10 +5613,11 @@ export interface components {
          * @description How long one package revision's reading took, from its recorded state events (#1071).
          *
          *     It starts at the revision's first `EXTRACTING` event. It is `finished` at the first hand-over to
-         *     a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type, or an AI
-         *     budget stop). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that, or
-         *     at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading, so
-         *     the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
+         *     a person after that: `AWAITING_REVIEW`, or `NEEDS_INPUT` (values to confirm or type). An AI
+         *     budget stop is a `finished` reading too: it hands over as usual and lists the pages it left
+         *     unread (#1206). It is `failed` at a `FAILED_PERMANENT`, `CANCELLED` or `SUPERSEDED` before that,
+         *     or at a `FAILED_RETRYABLE` the revision is still in. A retried failure does not end the reading,
+         *     so the time includes the wait before the retry. Otherwise it is still `reading` and has no end.
          *     Anything after the hand-over (a reviewer re-running the checks) is not reading time.
          */
         ReadingTimeOut: {
@@ -5596,6 +5659,11 @@ export interface components {
              * @description When the revision first entered EXTRACTING.
              */
             started_at: string;
+            /**
+             * Stop Reason
+             * @description Why a failed reading stopped, in plain words a person can act on, when it is one (#1206): today only 'The AI provider account is out of credit. Top it up, then run the reading again.' Null for any other end, and while reading.
+             */
+            stop_reason?: string | null;
         };
         /**
          * RecordAction
@@ -9112,6 +9180,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PartOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_again_api_v1_projects__project_id__packages__package_id__reading_again_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingAgainOut"];
                 };
             };
             /** @description Validation Error */

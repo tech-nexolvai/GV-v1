@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { reviewStage, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { RAISE_THE_LIMIT_FIRST, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -155,6 +155,39 @@ describe('reviewStage: one step per state', () => {
     const current = stage.steps.find((s) => s.id === stage.current);
     expect(current?.state).toBe('current');
     expect(current?.note).toMatch(/retry/);
+  });
+
+  it('out of credit (#1206): the step says so plainly, and the button runs the reading again', () => {
+    const stopReason = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+    const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null, stopReason });
+    const current = stage.steps.find((s) => s.id === stage.current);
+    expect(current?.state).toBe('blocked');
+    expect(current?.note).toBe(stopReason);
+    expect(stage.next).toEqual({ kind: 'read-again', label: 'Run the reading again', disabled: false, reason: stopReason });
+    // Once a person runs the reading again, the retry's line wins.
+    const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
+    const again = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null, stopReason });
+    expect(again.next.kind).toBe('wait-reading');
+  });
+
+  it('budget stop (#1206): pages waiting for the AI budget offer "Read the unread pages", naming them', () => {
+    const stage = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [2, 3] });
+    expect(stage.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: '2 pages wait for the AI budget (2, 3).' });
+    // None waiting: the usual next step.
+    expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [] }).next.kind).not.toBe('read-again');
+    // While checks run, never offered.
+    expect(reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [2], checksQueued: true }).next.kind).toBe('checking');
+  });
+
+  it('budget stop (#1206): when reading the unread pages cannot help yet, the button says why', () => {
+    const unpriced = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [1, 2], budgetLimit: 'unpriced' });
+    expect(unpriced.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: true, reason: UNPRICED_FIRST });
+    expect(UNPRICED_FIRST).toMatch(/fix the model rates first/);
+    for (const limit of ['fixed', 'maximum'] as const) {
+      const raised = reviewStage({ ...base, state: 'NEEDS_INPUT', pagesWaitingForBudget: [3], budgetLimit: limit });
+      expect(raised.next).toEqual({ kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: RAISE_THE_LIMIT_FIRST });
+    }
+    expect(RAISE_THE_LIMIT_FIRST).toMatch(/ask an admin to raise the limit/);
   });
 
   it.each(['CANCELLED', 'SUPERSEDED'])('historical (%s): no action', (state) => {

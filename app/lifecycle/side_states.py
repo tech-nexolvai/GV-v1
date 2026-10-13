@@ -48,7 +48,10 @@ from storage.store import ArtifactConflict
 from workflow.outbox import OutboxDispatchError
 
 __all__ = [
+    "CREDIT_TOO_LOW",
     "FAILURE_CLASSIFICATION",
+    "OUT_OF_CREDIT",
+    "PLAIN_STOP_REASONS",
     "SIDE_STATE_DESCRIPTIONS",
     "FailureClass",
     "InputNotNamed",
@@ -57,6 +60,7 @@ __all__ = [
     "enter_failure",
     "enter_needs_input",
     "is_a_side_state",
+    "plain_stop_reason",
 ]
 
 
@@ -131,6 +135,40 @@ SIDE_STATE_DESCRIPTIONS: dict[PackageState, str] = {
 }
 
 
+#: Why a reading stopped when the AI provider refused the account for payment (HTTP 402, #1206,
+#: #1200). Written as the failure's whole reason, word for word, so the package and Usage screens
+#: can show it as it is: only a person can fix it, by topping the account up.
+OUT_OF_CREDIT = "The AI provider account is out of credit. Top it up, then run the reading again."
+
+#: Why a reading stopped when the provider's in-flight budget still refused calls after the bounded
+#: retries, one call at a time (#1206): the balance is too low for this reading, not empty.
+CREDIT_TOO_LOW = (
+    "The AI provider account's credit is too low for this reading. Top it up, then run the "
+    "reading again."
+)
+
+#: Failure reasons written for a person, which the screens show as they are (#1206). Any other
+#: failure reason may carry an exception's own words, so the screens keep their general message.
+PLAIN_STOP_REASONS: frozenset[str] = frozenset({OUT_OF_CREDIT, CREDIT_TOO_LOW})
+
+
+def plain_stop_reason(error: BaseException) -> str | None:
+    """The plain reason for a failure only a person can fix (#1206), or `None`.
+
+    By what the error says of itself (`needs_a_person`, `credit_too_low`), never by its class:
+    this module may not import `extraction/` (#208), and the reader's account refusal
+    (`ProviderAccountRefused`) is where those are set. The outbox uses it to park such work.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if getattr(current, "needs_a_person", False) is True:
+            return CREDIT_TOO_LOW if getattr(current, "credit_too_low", False) else OUT_OF_CREDIT
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def is_a_side_state(state: PackageState) -> bool:
     """Whether a package in this state is not going to finish on its own."""
     return state in SIDE_STATE_DESCRIPTIONS
@@ -175,7 +213,9 @@ def enter_failure(
 
     Give it either the exception (`error`) or the class (`failure_class`). Passing the exception is the
     normal path and lets the table decide; passing the class is for a caller that already knows and
-    cannot be classified here — `extraction/`'s own failures, which this module may not import.
+    cannot be classified here — `extraction/`'s own failures, which this module may not import. The
+    provider refusing the account for payment is one (#1206): `workflow/reader_failures.py` names it
+    and passes `RETRYABLE` with `OUT_OF_CREDIT` as the reason.
 
     The reason records what happened *and* how it was classified, because "failed" without either is a
     state a reviewer can see and not act on. Nothing commits; the caller owns the transaction.

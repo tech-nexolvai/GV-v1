@@ -111,6 +111,7 @@ from extraction.slot_reader.seal import (
     plain_dimension,
     seal_label,
 )
+from extraction.slot_reader.stop import ReadingStop
 from extraction.slot_reader.veto import (
     DrawnReading,
     drawn_length_vetoes,
@@ -130,6 +131,7 @@ from extraction.slot_reader.walls import (
 from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
+from workflow.ai_budget import AiBudget, ai_budget_from_settings
 from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
@@ -217,7 +219,10 @@ class SlotReaderRuntime:
     question_packets: bool = False
     """Enable storing a private, hash-bound question packet for every reader attempt."""
     spend_cap_usd: Decimal | None = None
-    """Per-reading-batch maximum when the Claude readers are on (either route); otherwise unset."""
+    """The most one reading may spend when the Claude readers are on (either route); otherwise
+    unset. Configured as the admin's maximum for a drawing set, or the lower Claude ceiling when one
+    is stated; the extraction stage then sets each reading's cap from the page-scaled budget for
+    the pages it sends, never above this or what the drawing set has left (#1206)."""
     claude_row_reader: bool = False
     """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
@@ -309,6 +314,27 @@ class SlotReaderRuntime:
         return f"{readers};run={hashlib.sha256(written.encode()).hexdigest()[:16]}"
 
 
+def _claude_ceiling(settings: object, budget: AiBudget) -> Decimal:
+    """The most one Claude reading may spend (#1206): the lower ceiling the admin stated
+    (`GV_CLAUDE_READER_BUDGET_USD`), or else the maximum for a drawing set. Each reading's cap is
+    then the page-scaled budget under it (`workflow/stages.py`, `_read_slots`)."""
+    stated = getattr(settings, "claude_reader_budget_usd", None)
+    if stated is None:
+        return budget.maximum_usd
+    ceiling = min(Decimal(stated), budget.maximum_usd)
+    if ceiling < budget.minimum_usd:
+        # Said at start-up (#1206): every Claude reading would stop at this ceiling, below the
+        # smallest page-scaled budget.
+        logging.getLogger("gv.slot_reader").warning(
+            "GV_CLAUDE_READER_BUDGET_USD ($%s) is below the page-scaled AI budget's minimum ($%s): "
+            "every Claude reading stops at $%s",
+            ceiling,
+            budget.minimum_usd,
+            ceiling,
+        )
+    return ceiling
+
+
 def configured_slot_reader(
     settings: object,
     form: FormReaderRuntime | None,
@@ -390,9 +416,7 @@ def configured_slot_reader(
         ),
         question_packets=claude_enabled,
         spend_cap_usd=(
-            getattr(settings, "claude_reader_budget_usd", Decimal("2.50"))
-            if claude_enabled
-            else None
+            _claude_ceiling(settings, ai_budget_from_settings(settings)) if claude_enabled else None
         ),
         claude_row_reader=claude_enabled,
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
@@ -1057,6 +1081,7 @@ def read_slot_pages(
     architect: ArchitectPairing | None = None,
     stored_answers: StoredAnswerSource | None = None,
     progress: BatchProgress | None = None,
+    stop: ReadingStop | None = None,
 ) -> tuple[PageSlotResult, ...]:
     """Read every page's slots: plan, crop, ask the readers in parallel, seal, name, map.
 
@@ -1088,7 +1113,13 @@ def read_slot_pages(
     `progress` (#1178), when given, is told each batch's questions before they are asked
     (`rows`, `dimensions`, `chains`, `architect_pairing`) and each question as it is answered, so
     the worker can say "page k of N". It only watches: no answer, hold or seal depends on it.
+
+    `stop` (#1206) is shared by every batch of this reading: the first question refused for the
+    budget or the account stops it, and no later question is sent, in this batch or the next
+    (stored answers are still reused: they cost nothing). The caller reads from it which pages were
+    left unread; a reading given none makes its own.
     """
+    reading_stop = stop if stop is not None else ReadingStop()
     if runtime.question_packets and store is None:
         raise ValueError("reader question packets require a private artifact store")
     readers = runtime.form.reader_ids
@@ -1184,6 +1215,13 @@ def read_slot_pages(
             items = to_ask
             if not items:
                 return reused
+        if reading_stop.stopped:
+            # Stopped in an earlier batch (#1206): nothing more is sent.
+            for job in items:
+                reading_stop.not_asked(job)
+                if answered is not None:
+                    answered(job)
+            return reused | {(job.key, job.model_id): None for job in items}
         return reused | read_crops_parallel(
             items,
             clients=runtime.form.clients,
@@ -1200,6 +1238,7 @@ def read_slot_pages(
             pacer=shared_pacer,
             claude_effort=runtime.claude_effort,
             on_answered=answered,
+            stop=reading_stop,
         )
 
     def label_jobs(
@@ -1741,16 +1780,70 @@ def read_slot_pages(
             )
         )
     if architect is not None:
-        return architect.pair(
-            results,
-            pages,
-            ask=run_jobs,
-            readers=readers,
-            ask_the_ais=runtime.claude_row_reader,
-            store=store if runtime.question_packets else None,
-            effort=runtime.claude_effort if runtime.claude_row_reader else None,
+        return _with_budget_holds(
+            architect.pair(
+                results,
+                pages,
+                ask=run_jobs,
+                readers=readers,
+                ask_the_ais=runtime.claude_row_reader,
+                store=store if runtime.question_packets else None,
+                effort=runtime.claude_effort if runtime.claude_row_reader else None,
+            ),
+            reading_stop,
+            runtime,
         )
-    return tuple(results)
+    return _with_budget_holds(tuple(results), reading_stop, runtime)
+
+
+#: The row hold of a page read in full whose later questions the AI budget stopped (#1206).
+BUDGET_NOT_ASKED: Final = "budget-not-asked"
+
+
+def _with_budget_holds(
+    results: Sequence[PageSlotResult], stop: ReadingStop, runtime: SlotReaderRuntime
+) -> tuple[PageSlotResult, ...]:
+    """Every page whose own reading finished but whose later questions (walls, stone ends, the
+    equal-share chain, the architect pairing) the budget stopped, held for the person with the
+    budget named (#1206). Its readings are kept, never offered as they are: a question not asked
+    is never taken as "nothing to hold". A page whose own reading is missing is the stage's to
+    list (`workflow/stages._stopped_at_budget`)."""
+    if stop.cause != "budget":
+        return tuple(results)
+    gaps = stop.later_gaps()
+    left = stop.pages_left()
+    held: list[PageSlotResult] = []
+    for result in results:
+        kinds = gaps.get(result.page_index)
+        if kinds is None or result.page_index in left or result.row_hold is not None:
+            held.append(result)
+            continue
+        hold = RowHold(
+            code=BUDGET_NOT_ASKED,
+            reason=(
+                "Not asked: the AI budget was reached before this page's "
+                f"{', '.join(sorted(kinds))} questions. Use 'Read the unread pages', or ask an "
+                "admin to raise the limit."
+            ),
+            text="",
+        )
+        mapping = map_row(
+            None if result.overall is None else result.overall.outcome,
+            [
+                PieceReading(
+                    index=item.owner.index,
+                    outcome=item.outcome,
+                    kind=item.kind or KindProposal(PieceKind.UNKNOWN, ""),
+                )
+                for item in result.slots
+                if item.owner.index is not None
+            ],
+            row_ambiguity=result.plan.ambiguity,
+            row_hold=hold.reason,
+            allow_partial_proposals=runtime.claude_row_reader,
+        )
+        held.append(replace(result, row_hold=hold, mapping=mapping))
+    return tuple(held)
 
 
 def stone_runs_to_walls(answers: Sequence[CounterBreakAnswer]) -> bool:

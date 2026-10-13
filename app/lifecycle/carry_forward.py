@@ -56,6 +56,7 @@ from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
 from app.models import (
+    ArchitectPairingRecord,
     DocumentVersion,
     DrawingView,
     ObservationCandidate,
@@ -72,15 +73,17 @@ from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from rules.parameters import ParameterLayer
 from rules.parameters import ParameterSet as InMemoryParameterSet
 from workflow.architect_match_records import VENDOR_ROW_Y_SLACK_PT
-from workflow.slot_row_scope import SlotRow, slot_rows
+from workflow.slot_row_scope import SlotRow, slot_rows, slot_rows_and_unchosen_pages
 from workflow.view_roles import CODE_CONFIRMERS, revision_views
 
 __all__ = [
     "CARRY_FORWARD_ACTOR",
     "CarriedOrigin",
     "CarryForwardReport",
+    "WithinRevisionCarry",
     "carried_answers_driving_results",
     "carry_after_reading",
+    "carry_row_answers_within_revision",
     "carry_run_values",
     "role_origins",
     "row_identity",
@@ -90,6 +93,10 @@ __all__ = [
 #: Who the audit record names as having copied an answer forward. Never a person: the person is on
 #: the carried record itself, as the one who gave the answer.
 CARRY_FORWARD_ACTOR: Final = "revision carry-forward (#1180)"
+
+#: Who the audit record names as having carried an answer to a newer reading of the same revision
+#: (#1206). Never a person: the person is on the carried record itself.
+CARRY_WITHIN_REVISION_ACTOR: Final = "read the unread pages (#1206)"
 
 #: How a RUN-layer name that belongs to a rule input is written (`workflow/measurements.py`).
 _RULE_INPUT_SEPARATOR: Final = ":"
@@ -295,11 +302,259 @@ def _readers(session: Session, rows: Iterable[SlotRow]) -> dict[UUID, tuple[str,
 
 
 def _carry_wall_answers(session: Session, prior_id: UUID, revision_id: UUID) -> int:
-    earlier = slot_rows(session, prior_id)
+    return _carry_row_answers(
+        session, slot_rows(session, prior_id), slot_rows(session, revision_id)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WithinRevisionCarry:
+    """What "Read the unread pages" carried from the earlier reading of the revision (#1206)."""
+
+    decisions: int
+    """Wall answers and typed widths (`SlotRowReviewDecision`) carried to their rows."""
+    pairings: int
+    """Reviewer architect pairings carried to their rows, each still the pairing that counts."""
+    pairings_held: int
+    """Reviewer pairings that could not be placed on exactly one new row: that row's pairing is
+    held, naming the earlier decision, so it never silently reverts to the automatic one."""
+
+
+def carry_row_answers_within_revision(
+    session: Session, revision_id: UUID, earlier_run_id: UUID
+) -> WithinRevisionCarry:
+    """Carry a reviewer's row answers from an earlier reading of this revision to its newest one
+    (#1206): "Read the unread pages" writes a new reading of every page, so every row is a new
+    record, and the rows of pages already read must keep what the reviewer said about them.
+
+    * **Wall answers and typed widths** (`SlotRowReviewDecision`): the same identity as between
+      revisions (page content hash, page number, row rank, piece count, reader version, every value
+      read, the line within `ROW_Y_SLACK_PT`); a row with no single match is asked again (its wall
+      and widths are blocking questions, so nothing is silent).
+    * **Architect pairings a reviewer made** (`ArchitectPairingRecord`, source `reviewer`): by the
+      same identity; the copy outranks the new automatic pairing exactly as before. One that cannot
+      be placed on exactly one new row, or would no longer count there, holds that row's pairing
+      with the earlier decision named (`_hold_pairing`): never a silent return to the automatic one.
+
+    Each copy names the original (`carried_from_id`, in the pairing's `details`) and is audited.
+    """
+    earlier, _unchosen = slot_rows_and_unchosen_pages(session, revision_id, run_id=earlier_run_id)
+    current = slot_rows(session, revision_id)
+    decisions = _carry_row_answers(session, earlier, current)
+    pairings, held = _carry_reviewer_pairings(session, revision_id, earlier, current)
+    return WithinRevisionCarry(decisions=decisions, pairings=pairings, pairings_held=held)
+
+
+def _carry_reviewer_pairings(
+    session: Session,
+    revision_id: UUID,
+    earlier: Iterable[SlotRow],
+    current: Iterable[SlotRow],
+) -> tuple[int, int]:
+    """`(carried, held)`: every reviewer pairing in force on an earlier row, on its new row."""
+    from workflow.architect_match_records import effective_architect_matches
+    from workflow.architect_pairing_records import latest_architect_pairings, record_view
+
+    earlier = tuple(earlier)
+    current = tuple(current)
+    in_force = {
+        anchor_id: pairing
+        for anchor_id, pairing in latest_architect_pairings(
+            session, [row.anchor.id for row in earlier]
+        ).items()
+        if pairing is not None and pairing.source == "reviewer"
+    }
+    if not in_force:
+        return 0, 0
+    hashes = _page_hashes(session, (*earlier, *current))
+    readers = _readers(session, (*earlier, *current))
+
+    def placed(row: SlotRow) -> tuple[RowIdentity | None, Decimal | None]:
+        version, dpi = readers.get(row.anchor.extraction_run_id, (None, None))
+        return (
+            row_identity(row, hashes.get(row.anchor.page_id), version),
+            row_y_pt(row, dpi),
+        )
+
+    carried = held = 0
+    for row in earlier:
+        pairing = in_force.get(row.anchor.id)
+        if pairing is None:
+            continue
+        original = session.get_one(ArchitectPairingRecord, pairing.record_id)
+        key, y = placed(row)
+        targets = [
+            other
+            for other in current
+            if key is not None
+            and y is not None
+            and (where := placed(other))[0] == key
+            and where[1] is not None
+            and abs(where[1] - y) <= ROW_Y_SLACK_PT
+        ]
+        if len(targets) == 1:
+            target = targets[0]
+            details: dict[str, object] = {**original.details, "carried_from_id": str(original.id)}
+            ok = True
+            if record_view(original) is not None:
+                # Made against a view of the architect's own file (#1167): it counts only under the
+                # row's match as it stands now, which the new reading re-made for the same view.
+                match = effective_architect_matches(session, [target.anchor.id]).get(
+                    target.anchor.id
+                )
+                view = None if match is None else match.matched
+                ok = (
+                    view is not None
+                    and str(view.page_id) == str(details.get("architect_page_id"))
+                    and str(view.document_version_id)
+                    == str(details.get("architect_document_version_id"))
+                    and view.view_tag == details.get("architect_view_tag")
+                )
+                if ok:
+                    assert match is not None and view is not None
+                    details["architect_view_id"] = str(view.view_id)
+                    details["match_record_id"] = str(match.record_id)
+            if ok and _copy_counts(session, target, original, details, pairing):
+                carried += 1
+                continue
+            held += _hold_pairing(session, revision_id, [target], original)
+            continue
+        # Two new rows it could be, or none with the same identity: the rows on the same page at the
+        # same rank are held, naming the decision, rather than taking the automatic pairing.
+        rank = _rank(row)
+        suspects = targets or [
+            other
+            for other in current
+            if other.anchor.page_id == row.anchor.page_id and _rank(other) == rank
+        ]
+        held += _hold_pairing(session, revision_id, suspects, original)
+    return carried, held
+
+
+def _tip(session: Session, row_anchor_id: UUID) -> UUID | None:
+    """The newest record of a row's pairing chain (the one nothing supersedes yet)."""
+    from sqlalchemy import exists
+    from sqlalchemy.orm import aliased
+
+    later = aliased(ArchitectPairingRecord)
+    return session.scalar(
+        select(ArchitectPairingRecord.id)
+        .where(
+            ArchitectPairingRecord.row_anchor_candidate_id == row_anchor_id,
+            ~exists().where(later.supersedes_id == ArchitectPairingRecord.id),
+        )
+        .order_by(ArchitectPairingRecord.created_at.desc(), ArchitectPairingRecord.id.desc())
+        .limit(1)
+    )
+
+
+def _copy_counts(
+    session: Session,
+    target: SlotRow,
+    original: ArchitectPairingRecord,
+    details: dict[str, object],
+    pairing: Any,
+) -> bool:
+    """Append the reviewer's pairing on the new row and keep it only when it is now the pairing that
+    counts there, with the same pairs; otherwise take it back (a savepoint) for a hold."""
+    from workflow.architect_pairing_records import latest_architect_pairing
+
+    reasons = details.get("reasons")
+    details["reasons"] = [
+        *(reasons if isinstance(reasons, list) else []),
+        "Carried from the reviewer's pairing on the earlier reading of this revision.",
+    ]
+    savepoint = session.begin_nested()
+    record = ArchitectPairingRecord(
+        package_revision_id=original.package_revision_id,
+        page_id=target.anchor.page_id,
+        row_anchor_candidate_id=target.anchor.id,
+        extraction_run_id=None,
+        source="reviewer",
+        status="reviewer",
+        pairs=list(original.pairs),
+        details=details,
+        supersedes_id=_tip(session, target.anchor.id),
+        decided_by=original.decided_by,
+    )
+    session.add(record)
+    session.flush()
+    now = latest_architect_pairing(session, target.anchor.id)
+    if (
+        now is None
+        or now.record_id != record.id
+        or {pair.architect_candidate_id for pair in now.pairs}
+        != {pair.architect_candidate_id for pair in pairing.pairs}
+    ):
+        savepoint.rollback()
+        return False
+    savepoint.commit()
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=CARRY_WITHIN_REVISION_ACTOR,
+        target_id=record.id,
+        target_type="architect_pairing_record",
+    )
+    return True
+
+
+def _hold_pairing(
+    session: Session,
+    revision_id: UUID,
+    rows: Iterable[SlotRow],
+    original: ArchitectPairingRecord,
+) -> int:
+    """Hold each row's pairing with the earlier reviewer decision named: a record of no pairing
+    that outranks the new automatic one, so a person pairs the row again."""
+    said = (
+        "nothing on the architect's drawing is comparable"
+        if not original.pairs
+        else f"{len(original.pairs)} architect dimension(s) paired"
+    )
+    count = 0
+    for row in rows:
+        record = ArchitectPairingRecord(
+            package_revision_id=revision_id,
+            page_id=row.anchor.page_id,
+            row_anchor_candidate_id=row.anchor.id,
+            extraction_run_id=row.anchor.extraction_run_id,
+            source="none",
+            status="ambiguous",
+            pairs=[],
+            details={
+                "earlier_reviewer_record_id": str(original.id),
+                "reasons": [
+                    (
+                        f"{original.decided_by} paired this row on the earlier reading ({said}), "
+                        "but the new reading could not be matched to that row for certain. Pair "
+                        "it again."
+                    )
+                ],
+            },
+            supersedes_id=_tip(session, row.anchor.id),
+            decided_by=None,
+        )
+        session.add(record)
+        session.flush()
+        emit(
+            session,
+            category=AuditCategory.REVIEW_ACTION,
+            actor=CARRY_WITHIN_REVISION_ACTOR,
+            target_id=record.id,
+            target_type="architect_pairing_record",
+        )
+        count += 1
+    return count
+
+
+def _carry_row_answers(
+    session: Session, earlier: Iterable[SlotRow], current: Iterable[SlotRow]
+) -> int:
     answered = [row for row in earlier if row.decision is not None]
     if not answered:
         return 0
-    current = slot_rows(session, revision_id)
+    current = tuple(current)
     hashes = _page_hashes(session, (*answered, *current))
     readers = _readers(session, (*answered, *current))
 

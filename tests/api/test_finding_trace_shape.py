@@ -5,9 +5,9 @@ could not check anything: a change to the trace's shape surfaced as an empty pan
 compile error.
 
 Typing it needed a decision rather than a transcription, because **two unrelated shapes are stored
-there**. `verdict/engine.py` builds a `CalculationTrace` — operation, operands, comparison — and
-`app/budget/overflow.py` writes an abstention record with a cause and a reason and no arithmetic at
-all. Reporting the second as a degenerate version of the first would render an abstention as a check
+there**. `verdict/engine.py` builds a `CalculationTrace` — operation, operands, comparison — and an
+abstention record carries a cause and a reason and no arithmetic at all (`app/verdicts/trace.py`;
+the budget one the removed `app/budget/overflow.py` wrote before #1206 still reads the same way). Reporting the second as a degenerate version of the first would render an abstention as a check
 that ran and found nothing, which is the reading V1 must never invite.
 
 So the wire type is a union discriminated on a `kind` this API adds when it reads the row. The stored

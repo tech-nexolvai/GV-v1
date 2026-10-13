@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from vocabulary.check_holds import CHECK_HOLD_REASONS
 
 REVIEWER_REASONS = {
+    # #1206: first, because the readers' later questions on this row were never asked at all.
+    "budget-not-asked": "Not asked: the AI budget was reached before this page's later questions (walls, stone ends, the equal-share chain or the architect pairing). Use 'Read the unread pages', or ask an admin to raise the limit.",
     "counter-break": "This row includes a tall appliance or range bay; it may be the wall-to-wall line, not the countertop.",
     "field-cut-included": "This width already includes the field cut. The reviewer must check it.",
     "vif": "This dimension is provisional (VIF). Verify it on site before using it.",

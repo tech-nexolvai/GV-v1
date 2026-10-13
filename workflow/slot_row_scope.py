@@ -87,6 +87,9 @@ NO_ROW_CODES: Final = frozenset(
         "no-row-found",
         "unreadable",
         "blank-page",
+        # #1206: the AI budget was reached before the page was read in full; never a page without
+        # a countertop, so it needs the reviewer's answer or a new reading.
+        "budget-reached",
     }
 )
 
@@ -123,9 +126,10 @@ UNNAMED_DRAWING_FLAG: Final = "no-row-unnamed-drawing"
 #: that code cannot read. Unticked in "Confirm these pages" until the reviewer has looked.
 INK_FOUND_FLAG: Final = "no-row-ink-found"
 
-#: `no-row:` codes that leave a doubt: a vendor drawing code found no row on, or a page code could
-#: not read. Unticked in "Confirm these pages" until the reviewer has looked (#1195).
-_DOUBTFUL_CODES: Final = frozenset({"no-row-found", "unreadable"})
+#: `no-row:` codes that leave a doubt: a vendor drawing code found no row on, a page code could
+#: not read, or one the AI budget stopped before it was read (#1206). Unticked in "Confirm these
+#: pages" until the reviewer has looked (#1195).
+_DOUBTFUL_CODES: Final = frozenset({"no-row-found", "unreadable", "budget-reached"})
 
 #: How the reader ends a reason it wrote itself for a page whose row it did not choose
 #: (`workflow/slot_reader.py:_agreed_row`), and its default when no reader answer was kept.
@@ -190,6 +194,12 @@ class UnchosenRowPage:
         return found_by_code(self.record)
 
     @property
+    def budget_stopped(self) -> bool:
+        """Whether the AI budget was reached before this page was read (#1206): it was sent to the
+        readers, not found empty by code."""
+        return f"{NO_ROW_FLAG}budget-reached" in (self.record.ambiguity_flags or ())
+
+    @property
     def blank_proof(self) -> dict[str, int] | None:
         """The page's blank-page proof (#1195), fact by fact, when code proved from the PDF that
         nothing is drawn on it; `None` otherwise (and for any incomplete or contradicting proof)."""
@@ -213,6 +223,49 @@ class UnchosenRowPage:
             or INK_FOUND_FLAG in flags
             or any(f"{NO_ROW_FLAG}{code}" in flags for code in _DOUBTFUL_CODES)
         )
+
+
+#: The work "Read the unread pages" enqueues (#1206): `DatabaseStages.read_unread_pages`.
+READ_UNREAD_PAGES_WORKFLOW: Final = "read_unread_pages"
+
+#: The row hold of a page read in full whose later questions the AI budget stopped (#1206,
+#: `workflow/slot_reader.BUDGET_NOT_ASKED`).
+BUDGET_HOLD_FLAG: Final = "row-hold:budget-not-asked"
+
+
+def budget_stopped_pages(session: Session, revision_id: UUID) -> tuple[int, ...]:
+    """The page numbers the newest reading left waiting for the AI budget (#1206): listed unread
+    (`no-row:budget-reached`) or read and held because a later question was not asked. These are
+    what "Read the unread pages" reads."""
+    rows, unchosen = slot_rows_and_unchosen_pages(session, revision_id)
+    return tuple(
+        sorted(
+            {page.page_number for page in unchosen if page.budget_stopped}
+            | {
+                row.page_number
+                for row in rows
+                if any(
+                    BUDGET_HOLD_FLAG in (candidate.ambiguity_flags or ())
+                    for candidate in row.candidates
+                )
+            }
+        )
+    )
+
+
+def budget_limit(session: Session, revision_id: UUID) -> str | None:
+    """Why "Read the unread pages" cannot help on its own (#1206), from the newest reading's pages
+    listed for the budget: `unpriced` (fix the model rates first), else `fixed` or `maximum` (an
+    admin raises the limit first); `None` when it can."""
+    _rows, unchosen = slot_rows_and_unchosen_pages(session, revision_id)
+    found = {
+        flag.removeprefix("budget-limit:")
+        for page in unchosen
+        if page.budget_stopped
+        for flag in page.record.ambiguity_flags or ()
+        if flag.startswith("budget-limit:")
+    }
+    return next((limit for limit in ("unpriced", "fixed", "maximum") if limit in found), None)
 
 
 def found_by_code(record: ObservationCandidate) -> bool:
@@ -519,10 +572,13 @@ def unchosen_row_pages(session: Session, revision_id: UUID) -> tuple[UnchosenRow
 
 
 def slot_rows_and_unchosen_pages(
-    session: Session, revision_id: UUID
+    session: Session, revision_id: UUID, *, run_id: UUID | None = None
 ) -> tuple[tuple[SlotRow, ...], tuple[UnchosenRowPage, ...]]:
-    """`slot_rows` and `unchosen_row_pages` from the same one read of the newest run's records."""
-    run_id = latest_slot_reader_run(session, revision_id)
+    """`slot_rows` and `unchosen_row_pages` from the same one read of the newest run's records,
+    or of `run_id`, an earlier reading of this revision (#1206: carrying a reviewer's answers from
+    the reading before "Read the unread pages")."""
+    if run_id is None:
+        run_id = latest_slot_reader_run(session, revision_id)
     if run_id is None:
         return (), ()
     records = session.execute(

@@ -214,3 +214,61 @@ def test_a_retry_after_a_failure_shows_its_own_progress_and_an_old_line_is_not_s
     assert answer["state"] == "FAILED_RETRYABLE"
     assert answer["reading"]["retrying"] is True
     assert (answer["reading"]["stage"], answer["reading"]["pages_done"]) == ("rows", 1)
+
+
+# --- #1206: why the reading stopped, in plain words ---------------------------------------------
+
+
+def test_out_of_credit_is_said_plainly_on_the_package(session: Session, store: Any) -> None:
+    """The provider refused the account (HTTP 402): the package waits, retryable, and says so in
+    words a person can act on, instead of "Processing failed"."""
+    from app.lifecycle.side_states import OUT_OF_CREDIT, FailureClass
+
+    package_id = _new_package(session)
+    revision = _revision(session, package_id)
+    _walk(
+        session,
+        revision.id,
+        PackageState.UPLOADING,
+        PackageState.UPLOADED,
+        PackageState.INGESTING,
+        PackageState.EXTRACTING,
+    )
+    enter_failure(
+        session,
+        revision.id,
+        actor="the extract pages worker",
+        failure_class=FailureClass.RETRYABLE,
+        reason=OUT_OF_CREDIT,
+    )
+    session.commit()
+
+    answer = _client(session, store).get(f"/api/v1/projects/{PROJECT}/packages/{package_id}")
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["state"] == "FAILED_RETRYABLE"
+    assert answer.json()["stop_reason"] == (
+        "The AI provider account is out of credit. Top it up, then run the reading again."
+    )
+
+
+def test_any_other_failure_keeps_its_words_off_the_package(session: Session, store: Any) -> None:
+    """A failure's reason may be an exception's own words: only a reason written for a person is
+    shown, so the screen keeps its general message for the rest."""
+    package_id = _new_package(session)
+    revision = _revision(session, package_id)
+    _walk(
+        session,
+        revision.id,
+        PackageState.UPLOADING,
+        PackageState.UPLOADED,
+        PackageState.INGESTING,
+        PackageState.EXTRACTING,
+    )
+    enter_failure(session, revision.id, actor="the worker", error=TimeoutError("socket 10.0.0.4"))
+    session.commit()
+
+    answer = _client(session, store).get(f"/api/v1/projects/{PROJECT}/packages/{package_id}")
+
+    assert answer.json()["state"] == "FAILED_RETRYABLE"
+    assert answer.json()["stop_reason"] is None

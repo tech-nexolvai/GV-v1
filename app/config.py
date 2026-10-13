@@ -126,9 +126,19 @@ class Settings(BaseSettings):
     )
     claude_reader_model_rpm: dict[str, int] = Field(default_factory=dict)
     claude_reader_timeout_seconds: int = Field(default=180, ge=1)
-    # Per drawing set. The admin raised it on 2026-10-08: at $2 the cap's worst-case reservation
-    # refused the last calls of a $1.72 run; cost is optimised later. $5 is the hard ceiling.
-    claude_reader_budget_usd: Decimal = Field(default=Decimal("2.50"), gt=0, le=5)
+    # What the AI readers may spend on one drawing set (#1206): $0.15 for every page sent to them
+    # plus $1 for the calls in flight, never below the minimum and never above the admin's maximum
+    # (`workflow/ai_budget.py`). The four figures are the defaults Claude proposed (decision log
+    # 2026-10-13); the admin may change each. They replace the fixed $2.50 (at most $5) Claude limit
+    # and the fixed $3 set meter, which a 60-page set (about $5.25 to read) could not fit.
+    ai_budget_per_page_usd: Decimal = Field(default=Decimal("0.15"), gt=0, allow_inf_nan=False)
+    ai_budget_margin_usd: Decimal = Field(default=Decimal("1.00"), ge=0, allow_inf_nan=False)
+    ai_budget_minimum_usd: Decimal = Field(default=Decimal("3.00"), gt=0, allow_inf_nan=False)
+    ai_budget_maximum_usd: Decimal = Field(default=Decimal("25.00"), gt=0, allow_inf_nan=False)
+    # Optional: a lower ceiling for one Claude reading, below the page-scaled budget (a cautious
+    # trial run, say). Unset (the default) the page-scaled budget alone applies. It can only lower
+    # the limit: at most `ai_budget_maximum_usd`, which replaced the old fixed $5 ceiling.
+    claude_reader_budget_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
     # How hard both Claude readers think before answering (#1051), stated on every call so a run
     # never depends on a model's own default (Opus 5.5's is `medium`). Accuracy first: `high`.
     # Kept in step with `extraction/slot_reader/claude_output.py` `CLAUDE_EFFORTS`.
@@ -243,9 +253,15 @@ class Settings(BaseSettings):
                     f"GV_CLAUDE_READER_ENABLED with GV_CLAUDE_READER_PROVIDER="
                     f"{self.claude_reader_provider} requires {name}"
                 )
-        if self.claude_reader_enabled and self.claude_reader_budget_usd > Decimal("5.00"):
+        if self.ai_budget_maximum_usd < self.ai_budget_minimum_usd:
+            raise ValueError("GV_AI_BUDGET_MAXIMUM_USD must not be below GV_AI_BUDGET_MINIMUM_USD")
+        if (
+            self.claude_reader_budget_usd is not None
+            and self.claude_reader_budget_usd > self.ai_budget_maximum_usd
+        ):
             raise ValueError(
-                "GV_CLAUDE_READER_BUDGET_USD must not exceed the approved $5 per-set ceiling"
+                "GV_CLAUDE_READER_BUDGET_USD must not exceed the admin's maximum for one drawing "
+                "set (GV_AI_BUDGET_MAXIMUM_USD); raise that instead"
             )
         if self.slot_reader_enabled and not self.form_reader_enabled:
             raise ValueError(

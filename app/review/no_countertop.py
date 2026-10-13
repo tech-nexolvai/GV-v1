@@ -116,16 +116,23 @@ class PageAnswer:
     """The reviewer's optional note (#1195)."""
 
 
-def reviewer_says_countertop(answer: PageAnswer, *, found_by_code: bool = False) -> str:
+def reviewer_says_countertop(
+    answer: PageAnswer, *, found_by_code: bool = False, budget_stopped: bool = False
+) -> str:
     """Why a listed page now needs the reviewer: who said there is a countertop, and when (#1191).
     The check stage records it as the page's result reason, so the signed files print it too.
-    `found_by_code`: code, not the AIs, read no row on the page (#1193)."""
+    `found_by_code`: code, not the AIs, read no row on the page (#1193); `budget_stopped`: the AI
+    budget was reached before the page was read (#1206)."""
     when = answer.answered_at.strftime("%Y-%m-%d %H:%M UTC")
     carried = "" if answer.from_revision is None else f" on revision {answer.from_revision}"
     found = (
-        "code found no countertop row to read on it"
-        if found_by_code
-        else "both AIs found no countertop line on it"
+        "the AI budget was reached before it was read"
+        if budget_stopped
+        else (
+            "code found no countertop row to read on it"
+            if found_by_code
+            else "both AIs found no countertop line on it"
+        )
     )
     return (
         f"{answer.answered_by} said on {when}{carried} that this page has a countertop, although "
@@ -235,7 +242,9 @@ def apply_answers(
             replace(
                 page,
                 kind="split",
-                reason=reviewer_says_countertop(answer, found_by_code=page.found_by_code),
+                reason=reviewer_says_countertop(
+                    answer, found_by_code=page.found_by_code, budget_stopped=page.budget_stopped
+                ),
             )
             if page.listed
             and (answer := answers.get(page.record.id)) is not None

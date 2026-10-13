@@ -54,6 +54,11 @@ class ModelInvocationOutcome(StrEnum):
     TIMEOUT = "timeout"
     REFUSED = "refused"
     FAILED = "failed"
+    BUDGET_REFUSED = "budget_refused"
+    """Not sent: the drawing set's AI budget would have been exceeded (#1206). No answer, no cost."""
+    ACCOUNT_REFUSED = "account_refused"
+    """The provider refused the account, unserved (HTTP 402: out of credit, #1206). No answer, no
+    cost; the reading stops and waits for a top-up."""
 
 
 class AgentNodeInvocationState(StrEnum):

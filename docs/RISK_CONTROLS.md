@@ -74,10 +74,11 @@ cannot acquire verdict authority.
 
 **Control (§16):** Maximum steps, call budget and mandatory abstention.
 **Status:** ENFORCED
-**Refs:** module:extraction/agent/graph.py, module:app/budget/ceiling.py, module:app/budget/overflow.py
-**Owner:** #244, #264, #265
+**Refs:** module:extraction/agent/graph.py, module:app/budget/ceiling.py, module:workflow/ai_budget.py, module:extraction/slot_reader/stop.py
+**Owner:** #244, #264, #265, #1206
 **Effectiveness claim:** exceeding any bound produces abstention rather than a partial answer, and
-budget overflow becomes REVIEW REQUIRED rather than a verdict on the regions that happened to finish.
+reaching the AI budget stops the reading cleanly and lists every page left unread, which blocks
+sign-off, rather than a verdict on the pages that happened to finish (#1206).
 
 ## R5 — False PASS
 

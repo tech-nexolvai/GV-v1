@@ -322,19 +322,19 @@ def test_a_malformed_reply_is_an_error_not_an_answer(payload: object) -> None:
     ("status", "body", "expected_code", "throttle"),
     [
         (429, b'{"error":{"type":"rate_limit_error"}}', "TooManyRequestsException", True),
-        # A new or low-balance account's "in-flight budget" (decision log 2026-10-06): retried.
+        # #1206: the in-flight budget (too many calls at once for the balance) is its own error,
+        # retried a bounded number of times by the batch, never as a rate limit; any other 402 is
+        # out of credit.
         (
             402,
             b'{"error":{"type":"billing_error","message":"in_flight_budget_exhausted"}}',
-            "TooManyRequestsException",
-            True,
+            "ProviderInFlightLimited",
+            False,
         ),
-        # No credit: refused without a retry, so the run stops with this error, as any other
-        # refused request does.
         (
             402,
             b'{"error":{"type":"billing_error","message":"Insufficient credits"}}',
-            "ProviderRequestRejected",
+            "ProviderAccountRefused",
             False,
         ),
         (529, b"{}", "ModelOverloadedException", True),
@@ -383,7 +383,7 @@ def test_an_error_reply_cut_off_mid_read_never_leaks_its_words() -> None:
     ):
         OpenRouterMessagesClient("private-test-key").converse(**REQUEST)
 
-    assert caught.value.response == {"Error": {"Code": "ProviderRequestRejected"}}
+    assert caught.value.response == {"Error": {"Code": "ProviderAccountRefused"}}
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
     assert "secret" not in repr(caught.value)
@@ -453,7 +453,8 @@ def test_the_spend_cap_refuses_before_an_openrouter_call_it_cannot_afford() -> N
 
 def test_the_spend_cap_settles_an_openrouter_reply_by_its_reported_tokens() -> None:
     """The reply's token counts reach the guard: a reply that used far more than was reserved
-    stops the batch, so OpenRouter's usage is really what the cap is settled on."""
+    spends the guard, so the next call is refused and OpenRouter's usage is really what the cap
+    is settled on."""
     guard = BatchSpendGuard(Decimal(1), Rates())
     limited = SpendLimitedClient(OpenRouterMessagesClient("private-test-key"), guard)
     with patch(
@@ -464,14 +465,19 @@ def test_the_spend_cap_settles_an_openrouter_reply_by_its_reported_tokens() -> N
     assert result["usage"] == {"inputTokens": 45, "outputTokens": 12}
 
     huge = provider_reply(usage={"input_tokens": 45, "output_tokens": 1_000_000})
+    with patch(
+        "extraction.slot_reader.anthropic.urlopen",
+        side_effect=lambda *_a, **_k: Response(huge),
+    ):
+        # Served and paid (#1206): the reply is kept, and the guard is spent.
+        assert limited.converse(**REQUEST)["usage"]["outputTokens"] == 1_000_000
+    assert guard.exhausted
     with (
-        patch(
-            "extraction.slot_reader.anthropic.urlopen",
-            side_effect=lambda *_a, **_k: Response(huge),
-        ),
-        pytest.raises(SpendCapExceeded, match="exceeded the reserved"),
+        patch("extraction.slot_reader.anthropic.urlopen") as urlopen,
+        pytest.raises(SpendCapExceeded, match="would be exceeded"),
     ):
         limited.converse(**REQUEST)
+    urlopen.assert_not_called()
 
 
 @pytest.mark.parametrize("status", [429, 402])

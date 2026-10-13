@@ -446,6 +446,33 @@ def _architect_view_match(db: Session, sheet: Sheet, at: datetime | None) -> Non
     db.add(_match(sheet, source="reviewer", status="none_matches", decided_by=ACTOR, **_at(at)))
 
 
+def _new_reading(db: Session, sheet: Sheet, at: datetime | None) -> None:
+    """A new reading of the countertop rows on this revision (#1206: "Read the unread pages")."""
+    from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
+
+    workflow = WorkflowRun(package_revision_id=sheet.revision.id, engine_run_id=str(uuid4()))
+    db.add(workflow)
+    db.flush()
+    task = TaskRun(
+        workflow_run_id=workflow.id,
+        idempotency_key=str(uuid4()),
+        task_type="extract_pages",
+        attempt=1,
+        outcome="claimed",
+    )
+    db.add(task)
+    db.flush()
+    db.add(
+        ExtractionRun(
+            task_run_id=task.id,
+            extractor="extraction.form_reader",
+            extractor_version="slot-reader-v1-ink-v1",
+            config_hash="synthetic",
+            **_at(at),
+        )
+    )
+
+
 READ_BY_THE_CHECKS: dict[str, Callable[[Session, Sheet, datetime | None], None]] = {
     "typed-measurement": _typed_measurement,
     "project-setting": _project_setting,
@@ -459,6 +486,7 @@ READ_BY_THE_CHECKS: dict[str, Callable[[Session, Sheet, datetime | None], None]]
     "reading-confirmation": _reading_confirmation,
     "architect-pairing": _architect_pairing,
     "architect-view-match": _architect_view_match,
+    "new-reading": _new_reading,
 }
 
 

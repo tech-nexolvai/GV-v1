@@ -27,6 +27,7 @@ Verification: `tests/api/test_packages.py`
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -151,6 +152,21 @@ class PackageOut(BaseModel):
     reading: ReadingProgressOut | None = None
     """Where the reading is while it runs (#1178). Filled by `GET .../packages/{id}` only, and only
     while the revision is being read; `null` otherwise and on the package list."""
+    stop_reason: str | None = None
+    """Why the current revision's reading stopped, in plain words a person can act on (#1206):
+    today only "The AI provider account is out of credit. Top it up, then run the reading again."
+    Filled by `GET .../packages/{id}` only, while the revision is stopped (`FAILED_RETRYABLE` or
+    `FAILED_PERMANENT`) for that reason, or when "Read the unread pages" stopped for it; `null`
+    otherwise and on the package list."""
+    pages_waiting_for_budget: tuple[int, ...] = ()
+    """The page numbers the newest reading left waiting for the AI budget (#1206): listed unread,
+    or read and held because a later question was not asked. "Read the unread pages" reads them.
+    Filled by `GET .../packages/{id}` only; empty otherwise."""
+    budget_limit: Literal["unpriced", "fixed", "maximum"] | None = None
+    """When "Read the unread pages" cannot help on its own (#1206): `unpriced` (a call had no
+    price; the model rates must be fixed first, and the action is refused), `fixed` (the set's
+    fixed AI budget was reached) or `maximum` (the admin's maximum was reached): an admin raises
+    the limit first. `null` when it can help, or nothing waits."""
 
 
 class ExtractionRequestOut(BaseModel):

@@ -253,6 +253,7 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
         )
         return EXIT_MISCONFIGURED
 
+    from workflow.ai_budget import ai_budget_from_settings
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.form_reader import configured_form_reader
     from workflow.hatchet_app import build_worker
@@ -295,6 +296,8 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
             form_reader=(form_reader := configured_form_reader(settings)),
             slot_reader=configured_slot_reader(settings, form_reader),
             architect_reader=configured_architect_reader(settings),
+            # What the AI readers may spend on a drawing set, grown by its pages (#1206).
+            ai_budget=ai_budget_from_settings(settings),
         ),
     )
     logger.info("worker starting")

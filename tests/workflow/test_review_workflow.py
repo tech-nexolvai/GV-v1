@@ -905,6 +905,50 @@ def test_a_retryable_failure_is_handed_back_for_retry(factory: sessionmaker[Sess
     assert PackageState.FAILED_PERMANENT.value not in reached
 
 
+def test_out_of_credit_waits_retryable_for_a_person_with_the_plain_message(
+    factory: sessionmaker[Session],
+) -> None:
+    """#1206 (#1200): the provider refusing the account (HTTP 402) failed the package for good,
+    with nothing telling anyone to top up. Now it is `FAILED_RETRYABLE` with the plain message as
+    the reason, never `FAILED_PERMANENT`; and the engine does not retry it on a timer, because a
+    retry cannot top the account up. A person runs the reading again once it is topped up."""
+    from hatchet_sdk.exceptions import NonRetryableException
+
+    from app.lifecycle.side_states import OUT_OF_CREDIT
+    from extraction.slot_reader.anthropic import ProviderAccountRefused
+
+    with unit_of_work(factory) as session:
+        revision_id, run_id = _revision_and_run(session)
+
+    stages = Boom(ProviderAccountRefused(api="OpenRouter Messages API"), at="extract_pages")
+    client = RecordingClient()
+    register(client, factory=factory, stages=stages, max_concurrent_packages=1)  # type: ignore[arg-type]  # the client is a stub, not the stages
+
+    payload = PackageReviewInput(package_revision_id=revision_id, workflow_run_id=run_id)
+    for stage in stage_order():
+        function = client.functions[stage]
+        assert callable(function)
+        if stage != "extract_pages":
+            function(payload, None)
+            continue
+        with pytest.raises(NonRetryableException):
+            function(payload, None)
+        break
+
+    assert stages.calls.count("extract_pages") == 1
+    with unit_of_work(factory) as session:
+        events = history(session, revision_id)
+        reached = [str(event.to_state) for event in events]
+        reason = events[-1].reason
+    assert reached[-1] == PackageState.FAILED_RETRYABLE.value
+    assert PackageState.FAILED_PERMANENT.value not in reached
+    assert reason == OUT_OF_CREDIT
+    assert (
+        reason == "The AI provider account is out of credit. Top it up, then run the reading again."
+    )
+    assert "TooManyRequests" not in reason
+
+
 def test_the_page_join_refuses_anything_that_is_not_a_page(factory: sessionmaker[Session]) -> None:
     """A wrong return type from `extract_pages` must fail, not become a page count.
 

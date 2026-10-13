@@ -23,6 +23,7 @@ import {
   confirmNoCountertopPages,
   getSignedExports,
   prepareSignedExports,
+  readAgain,
   getChangedValues,
   listReviewSessions,
   openReviewSession,
@@ -179,6 +180,12 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   const [recordedStatus, setRecordedStatus] = useState<PackageStatus | null>(null);
   // Where the reading is while it runs (#1178), re-read with the package on every refresh.
   const [recordedReading, setRecordedReading] = useState<PackageDetail['reading'] | undefined>(undefined);
+  // Why the reading stopped, when a person must act (#1206), re-read with the package.
+  const [recordedStopReason, setRecordedStopReason] = useState<string | null | undefined>(undefined);
+  const [recordedPagesWaiting, setRecordedPagesWaiting] = useState<readonly number[] | undefined>(undefined);
+  const [recordedBudgetLimit, setRecordedBudgetLimit] = useState<PackageDetail['budget_limit'] | undefined>(undefined);
+  // "Run the reading again" / "Read the unread pages" (#1206), while the request is being sent.
+  const [readAgainPending, setReadAgainPending] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
   const downloadPending = useRef(false);
   // #1034: values saved in this session after the last check run (the API records no time for values).
@@ -296,6 +303,9 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         getApprovalReadiness(projectId(), packageId),
       ]);
       setFindings(fresh); setRecordedStatus(detail.state as PackageStatus); setRecordedReading(detail.reading ?? null);
+      setRecordedStopReason(detail.stop_reason ?? null);
+      setRecordedPagesWaiting(detail.pages_waiting_for_budget ?? []);
+      setRecordedBudgetLimit(detail.budget_limit ?? null);
       setCountertopsVersion(n => n + 1);
       const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
       const finished = changed && detail.state === 'AWAITING_REVIEW';
@@ -704,6 +714,9 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     valuesChangedSinceRun,
     readiness: readiness ? { blockingFindings: itemsNeedingYou(readiness), canApprove: readiness.can_approve, reason: readiness.reason } : null,
     exports: exportsStatus,
+    stopReason: recordedStopReason !== undefined ? recordedStopReason : (remote.status === 'ready' ? remote.data.detail.stop_reason ?? null : null),
+    pagesWaitingForBudget: recordedPagesWaiting !== undefined ? recordedPagesWaiting : (remote.status === 'ready' ? remote.data.detail.pages_waiting_for_budget ?? [] : []),
+    budgetLimit: recordedBudgetLimit !== undefined ? recordedBudgetLimit : (remote.status === 'ready' ? remote.data.detail.budget_limit ?? null : null),
   });
   // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
   const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks || isApproved;
@@ -814,6 +827,22 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       void prepareReport();
     } else if (kind === 'download-report') {
       void handleDownload('pdf');
+    } else if (kind === 'read-again') {
+      void readTheReadingAgain();
+    }
+  }
+
+  /** #1206: the server decides which (the whole reading, or only the unread pages) and audits it. */
+  async function readTheReadingAgain() {
+    setReadAgainPending(true);
+    setActionError(null);
+    try {
+      await readAgain(projectId(), packageId);
+      await refreshResults();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReadAgainPending(false);
     }
   }
 
@@ -957,8 +986,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
         <NextActionButton
           action={stage.next}
           onAct={act}
-          busyLabel={stage.next.kind === 'sign-off' && isSigningOff ? 'Signing off…' : stage.next.kind === 'prepare-report' && preparingExports ? 'Requesting…' : stage.next.kind === 'run-checks' && (headerRunPending || measureRunning) ? 'Starting checks…' : null}
-          extraDisabled={stage.next.kind === 'sign-off' ? signOffBlocked : stage.next.kind === 'download-report' ? downloadState.status === 'loading' : stage.next.kind === 'prepare-report' ? preparingExports : stage.next.kind === 'run-checks' ? headerRunPending || measureRunning : false}
+          busyLabel={stage.next.kind === 'read-again' && readAgainPending ? 'Asking…' : stage.next.kind === 'sign-off' && isSigningOff ? 'Signing off…' : stage.next.kind === 'prepare-report' && preparingExports ? 'Requesting…' : stage.next.kind === 'run-checks' && (headerRunPending || measureRunning) ? 'Starting checks…' : null}
+          extraDisabled={stage.next.kind === 'read-again' ? readAgainPending : stage.next.kind === 'sign-off' ? signOffBlocked : stage.next.kind === 'download-report' ? downloadState.status === 'loading' : stage.next.kind === 'prepare-report' ? preparingExports : stage.next.kind === 'run-checks' ? headerRunPending || measureRunning : false}
           secondary={secondary}
         />
       </HeaderActions>

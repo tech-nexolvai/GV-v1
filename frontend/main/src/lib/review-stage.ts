@@ -36,6 +36,7 @@ export type NextActionKind =
   | 'preparing-report'
   | 'prepare-report'
   | 'download-report'
+  | 'read-again'
   | 'none';
 
 export interface NextAction {
@@ -98,7 +99,27 @@ export interface ReviewFacts {
   readiness: { blockingFindings: number; canApprove: boolean; reason: string | null } | null;
   /** Signed-export status after approval; null when not loaded or not applicable. */
   exports: 'not_requested' | 'preparing' | 'ready' | 'failed' | null;
+  /**
+   * Why the reading stopped, in words a person can act on (`PackageOut.stop_reason`, #1206): e.g.
+   * the AI provider account is out of credit. Shown as it is; null when the API gives none.
+   */
+  stopReason?: string | null;
+  /**
+   * Pages the newest reading left waiting for the AI budget (`PackageOut.pages_waiting_for_budget`,
+   * #1206); "Read the unread pages" reads them. Empty or absent when none.
+   */
+  pagesWaitingForBudget?: readonly number[];
+  /**
+   * When "Read the unread pages" cannot help on its own (`PackageOut.budget_limit`, #1206): a call
+   * had no price (the model rates come first), or a fixed amount or the maximum was reached (an
+   * admin raises the limit first).
+   */
+  budgetLimit?: 'unpriced' | 'fixed' | 'maximum' | null;
 }
+
+/** What the screen says when reading the unread pages cannot help yet (#1206). */
+export const UNPRICED_FIRST = 'A call had no price, so no more calls can be made: an admin must fix the model rates first.';
+export const RAISE_THE_LIMIT_FIRST = 'This set reached its AI budget limit: ask an admin to raise the limit first, then read the unread pages.';
 
 export interface ReviewStage {
   steps: ReviewStep[];
@@ -126,6 +147,8 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
   const approved = state === 'APPROVED';
   const failedForGood = state === 'FAILED_PERMANENT';
   const retrying = state === 'FAILED_RETRYABLE';
+  // A stop a person must act on (#1206): it waits for them, never retries on its own.
+  const stoppedFor = (failedForGood || retrying) && facts.stopReason ? facts.stopReason : null;
 
   const uploadDone = !UPLOADING.has(state);
   const retryingReading = retrying && facts.reading?.retrying === true;
@@ -172,6 +195,10 @@ export function reviewStage(facts: ReviewFacts): ReviewStage {
       }
       // While the retry is visibly reading, the Reading step says so instead (#1178 review).
       if (retrying && !retryingReading) step.note = 'Processing hit a problem and will retry';
+      if (stoppedFor && !retryingReading) {
+        step.state = 'blocked';
+        step.note = stoppedFor;
+      }
     }
     return step;
   });
@@ -186,6 +213,25 @@ function nextAction(
 ): NextAction {
   if (HISTORICAL.has(facts.state)) {
     return { kind: 'none', label: facts.state === 'SUPERSEDED' ? 'Replaced by a newer upload' : 'Cancelled', disabled: true, reason: 'This is a historical record.' };
+  }
+  if ((facts.state === 'FAILED_PERMANENT' || facts.state === 'FAILED_RETRYABLE') && facts.stopReason && facts.reading?.retrying !== true) {
+    // Only a person can fix it (#1206): once the account is topped up, they run it again here.
+    return facts.state === 'FAILED_RETRYABLE'
+      ? { kind: 'read-again', label: 'Run the reading again', disabled: false, reason: facts.stopReason }
+      : { kind: 'none', label: 'Reading stopped', disabled: true, reason: facts.stopReason };
+  }
+  const waiting = facts.pagesWaitingForBudget ?? [];
+  if (waiting.length > 0 && (facts.state === 'AWAITING_REVIEW' || facts.state === 'NEEDS_INPUT') && !checking) {
+    // The AI budget stopped the reading (#1206): those pages block sign-off until read or answered.
+    const pages = `${waiting.length} ${waiting.length === 1 ? 'page waits' : 'pages wait'} for the AI budget`;
+    if (facts.budgetLimit === 'unpriced') {
+      // It cannot help until the rates name the model: the server refuses it too.
+      return { kind: 'read-again', label: 'Read the unread pages', disabled: true, reason: UNPRICED_FIRST };
+    }
+    if (facts.budgetLimit === 'fixed' || facts.budgetLimit === 'maximum') {
+      return { kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: RAISE_THE_LIMIT_FIRST };
+    }
+    return { kind: 'read-again', label: 'Read the unread pages', disabled: false, reason: facts.stopReason ?? `${pages} (${waiting.join(', ')}).` };
   }
   if (facts.state === 'FAILED_PERMANENT') {
     return { kind: 'none', label: 'Processing failed', disabled: true, reason: 'Processing stopped and will not retry on its own. Missing results do not mean the drawing passed.' };

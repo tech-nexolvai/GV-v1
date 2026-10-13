@@ -288,6 +288,7 @@ def _stages(
 ) -> object:
     """Build the local worker's real stages against the same storage root as the dev API."""
     from storage.local import LocalStore
+    from workflow.ai_budget import ai_budget_from_settings
     from workflow.findings_bedrock import configured_findings_composer
     from workflow.stages import (
         DatabaseStages,
@@ -349,6 +350,8 @@ def _stages(
         ),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
+        # What the AI readers may spend on a drawing set, grown by its pages (#1206).
+        ai_budget=ai_budget_from_settings(settings),
     )
 
 
@@ -748,6 +751,7 @@ def _consume(
     whichever worker does consume it.
     """
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
+    from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW
     from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
 
     revision_id = UUID(str(payload["package_revision_id"]))
@@ -785,6 +789,10 @@ def _consume(
             else {}
         )
         return _run_checks(session, revision_id, idempotency_key, stated, sources)
+    if workflow == READ_UNREAD_PAGES_WORKFLOW:
+        # A person asked to read the pages the AI budget stopped (#1206), on the same revision.
+        stages = _stages(timings=timings)
+        return stages.read_unread_pages(session, revision_id)  # type: ignore[attr-defined]
     if workflow == CUT_PART_PICTURES_WORKFLOW:
         # A person added a part (#897): cut its picture, and any other still missing.
         return _cut_part_pictures(session, revision_id)

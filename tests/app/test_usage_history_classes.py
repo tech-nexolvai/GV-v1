@@ -64,6 +64,9 @@ RATES = ModelRates(
 def test_only_a_failed_call_with_no_tokens_is_free() -> None:
     assert charged_cost("m", None, "failed", 0, 0) == ChargedCost(0)
     assert charged_cost("m", None, "failed", 1, 0) == ChargedCost(None)
+    # #1206: a question the budget refused, or the provider refused for the account, was not charged.
+    assert charged_cost("m", None, "budget_refused", 0, 0) == ChargedCost(0)
+    assert charged_cost("m", None, "account_refused", 0, 0) == ChargedCost(0)
     assert charged_cost("m", None, "timeout", 0, 0) == ChargedCost(None)
     assert charged_cost("m", None, "ok", 0, 0) == ChargedCost(None)
     assert charged_cost("m", 12, "failed", 0, 0) == ChargedCost(12)

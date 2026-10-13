@@ -43,7 +43,8 @@ model calls and half-written evidence is not a shrug.
   refusal no retry can change (`_permanent`: the lifecycle table has no such move), and only
   after `max_refused_attempts` of those refusals (`refused_attempts`, counted apart from other
   failures), recording `abandoned_at` and the reason (`abandoned_entries()` lists them)
-  (#1182). Every other failure is retried on the next poll, as before.
+  (#1182). A failure only a person can fix (the AI account out of credit, #1206) is parked at
+  once with its plain reason. Every other failure is retried on the next poll, as before.
 
 Source: `docs/DESIGN_PLATFORM.md` §6.1; backend proposal §9.2–§9.4; `AGENTS.md` §6.
 Verification: `tests/workflow/test_outbox.py`.
@@ -103,6 +104,17 @@ def _permanent(failure: BaseException) -> bool:
         seen.add(id(current))
         current = current.__cause__ or current.__context__
     return False
+
+
+def _waits_for_a_person(failure: BaseException) -> str | None:
+    """The plain reason when `failure` is one only a person can fix (#1206), else `None`.
+
+    Asked of the error itself (`app.lifecycle.side_states.plain_stop_reason`), so this module
+    never imports the reader that raised it."""
+    # Imported here: `app.lifecycle` imports this module.
+    from app.lifecycle.side_states import plain_stop_reason
+
+    return plain_stop_reason(failure)
 
 
 class WorkflowStarter(Protocol):
@@ -281,6 +293,14 @@ def dispatch_committed(
                     )
             except Exception as failure:  # noqa: BLE001 - re-raised below, after the commit
                 failures.append((entry.id, failure))
+                waits_for = _waits_for_a_person(failure)
+                if waits_for is not None:
+                    # Only a person can fix it (#1206: the AI account is out of credit): parked at
+                    # once with the plain reason, never redelivered every poll. The person's
+                    # "Run the reading again" enqueues new work.
+                    entry.abandoned_at = utc_now()
+                    entry.abandoned_reason = waits_for[:1000]
+                    continue
                 if _permanent(failure):
                     entry.refused_attempts += 1
                     if entry.refused_attempts >= max_refused_attempts:
