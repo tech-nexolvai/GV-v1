@@ -666,3 +666,32 @@ def test_a_pending_invalid_row_still_raises_its_own_error_in_the_stage(
 
     with pytest.raises(IntegrityError):
         recorder.write_pending()
+
+
+@pytest.mark.parametrize("prompt_id", ["layout-discriminator-v2", "reading-assignment-v3"])
+def test_a_later_version_of_an_unmetered_prompt_stays_out_of_the_reading_budget(
+    session: Session, store: LocalStore, prompt_id: str
+) -> None:
+    """**Outcome: the exclusion follows the prompt family, not one version's exact id.**"""
+    from time import monotonic_ns
+
+    from app.runs.invocations import BedrockConverseInvocationRecorder
+    from workflow.stages import stage_spend_so_far
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    DatabaseStages(
+        store, layout_readers=[_AnsweringReader()], missing_space=MISSING_SPACE
+    ).extract_pages(session, revision.id)
+    [run_id] = _layout_run_ids(session)
+    BedrockConverseInvocationRecorder(session, None, extraction_run_id=run_id).record(
+        model_id=LAYOUT_MODEL,
+        prompt_id=prompt_id,
+        template_id="made-up",
+        started_ns=monotonic_ns(),
+        response={"usage": {"inputTokens": 100, "outputTokens": 0}},
+        error=None,
+    )
+    session.commit()
+
+    assert stage_spend_so_far(session, _extract_task_run(session, revision)) == (0, 0)

@@ -883,3 +883,34 @@ def test_a_failed_proposal_call_is_committed_as_failed_and_the_answer_is_unchang
 
     totals = _client(session).get(f"/api/v1/projects/{PROJECT}/usage").json()["totals"]
     assert (totals["calls"], totals["failed_calls"]) == (1, 1)
+
+
+def test_a_failed_commit_of_the_call_row_leaves_the_stream_as_it_was(
+    session: Session, postgres_engine: Engine, rates: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**Outcome: the reviewer sees exactly what they saw before #1221; the row is lost, logged.**
+
+    Committing the call's row is the one new write on this path. If the database cannot commit
+    (an infrastructure error), the stream must still end with its result, as it did before.
+    """
+    from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+    from sqlalchemy.exc import OperationalError
+
+    _publish_rulebook(session)
+    package, _ = _package_with_readings(session, readings=(("25 1/2", 51, 2, None, None),))
+    error = ClientError(
+        {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}}, "Converse"
+    )
+
+    def broken_commit() -> None:
+        raise OperationalError("COMMIT", {}, Exception("the database went away"))
+
+    monkeypatch.setattr(session, "commit", broken_commit)
+    frames = _stream(session, package, _bedrock_model(_FakeBedrock(error=error)))
+    result = next(frame["result"] for frame in frames if frame["event"] == "result")
+
+    assert result["fields_filled"] == 0
+    assert result["unfilled_reason"] == (
+        "Bedrock throttled the call: the account's request quota for this model was used up"
+    )
+    assert _committed_rows(postgres_engine) == []
