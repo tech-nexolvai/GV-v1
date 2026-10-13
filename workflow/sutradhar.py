@@ -4,8 +4,9 @@ Two runners used to build the pipeline each in their own way. The local outbox c
 (`scripts/drain_outbox.py`, the one every kit and demo starts) built `DatabaseStages` with every
 route and setting the deployment states, ran extraction stage by stage with a commit at each boundary,
 carried a person's answers forward, filled the form and handed the revision to the reviewer. The
-Hatchet worker (`workflow/entrypoints.py:run_worker`, set up but not run) built it with 7 of those 19
-arguments. A setting added to one and forgotten in the other is exactly how they drifted.
+Hatchet worker (`workflow/entrypoints.py:run_worker`, set up but not run) had fallen 12 arguments
+behind: it passed the store and 6 of those 19 (the one other it left out, `operands=None`, is the
+default). A setting added to one and forgotten in the other is exactly how they drifted.
 
 So both now build the stages here, with `build_stages`, and the local consumer runs its work here,
 with `run_extraction` and `consume`. **Everything below was moved word for word** from

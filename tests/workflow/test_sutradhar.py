@@ -2,7 +2,7 @@
 
 The local outbox consumer (`scripts/drain_outbox.py`) and the Hatchet worker
 (`workflow/entrypoints.py:run_worker`) used to build `DatabaseStages` each in their own way, and the
-Hatchet one had fallen 11 arguments behind. Both now build it in one place, `workflow/sutradhar.py`.
+Hatchet one had fallen 12 arguments behind. Both now build it in one place, `workflow/sutradhar.py`.
 
 What these tests pin:
 
@@ -317,8 +317,9 @@ def _run_worker(monkeypatch: pytest.MonkeyPatch) -> int:
 def test_the_hatchet_worker_builds_the_local_worker_s_stage_arguments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stated: dict[str, str]
 ) -> None:
-    """Fails on main: `run_worker` passed 7 of the 19 arguments, so it read without the localized
-    reader, the automatic types, the vision gate, the sharper pictures and the part pictures."""
+    """Fails on main: `run_worker` had fallen 12 arguments behind (the store and 6 of the 19), so it
+    read without the localized reader, the automatic types, the glyph route, the reading agent, the
+    vision gate, the fraction parts, the sharper pictures and the part pictures."""
     import scripts.drain_outbox as worker
     from storage.local import LocalStore
     from workflow.entrypoints import EXIT_OK
@@ -388,17 +389,48 @@ def _constructs_database_stages(source: str) -> bool:
     return False
 
 
+#: The folders that hold the product's code. Only these are read: a checkout also holds worktrees,
+#: scratch output and data, which are not this checkout's code.
+CODE_FOLDERS = (
+    "app",
+    "workflow",
+    "scripts",
+    "eval",
+    "extraction",
+    "retrieval",
+    "evidence",
+    "reports",
+    "storage",
+    "verdict",
+    "rules",
+    "units",
+    "vocabulary",
+    "deploy",
+)
+
+
+def _code_files(root: Path) -> list[Path]:
+    """Every Python file in the code folders, leaving out any hidden folder or file."""
+    return [
+        path
+        for folder in CODE_FOLDERS
+        for path in sorted((root / folder).rglob("*.py"))
+        if not any(part.startswith(".") for part in path.relative_to(root).parts)
+    ]
+
+
+def _constructors(root: Path) -> set[str]:
+    return {
+        path.relative_to(root).as_posix()
+        for path in _code_files(root)
+        if _constructs_database_stages(path.read_text(encoding="utf-8"))
+    }
+
+
 def test_only_the_factory_constructs_database_stages() -> None:
     """Fails on main: the local worker and the Hatchet worker each built their own."""
-    constructors = set()
-    for path in REPOSITORY.rglob("*.py"):
-        relative = path.relative_to(REPOSITORY).as_posix()
-        if relative.startswith(("tests/", "frontend/", ".venv/", "alembic/")) or "/." in relative:
-            continue
-        if _constructs_database_stages(path.read_text(encoding="utf-8")):
-            constructors.add(relative)
-
-    assert constructors - OFFLINE_TOOLS == {"workflow/sutradhar.py"}
+    assert _code_files(REPOSITORY), "the check found no code to read"
+    assert _constructors(REPOSITORY) - OFFLINE_TOOLS == {"workflow/sutradhar.py"}
 
 
 # ---------------------------------------------------------------------------

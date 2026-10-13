@@ -278,8 +278,8 @@ def run_worker(settings: Settings, *, factory: sessionmaker[Session]) -> int:
 
     # **The worker gets the real stages, built as the local worker builds them (#1227).** One factory,
     # `workflow/sutradhar.py:build_stages`, so every route and setting the deployment states reaches
-    # this worker too; before, it was given 7 of the 19 arguments and read without the rest. Only the
-    # store is its own. A partial reader or picture configuration is refused here as it is there.
+    # this worker too; before, it had fallen 12 arguments behind (the store and 6 of the 19) and read
+    # without the rest. Only the store is its own. A partial reader or picture configuration is refused here as it is there.
     try:
         stages = build_stages(store=LocalStore(Path(storage_root)), settings=settings)
     except ValueError as error:

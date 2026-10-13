@@ -1,4 +1,5 @@
-"""Do the work the API accepted but may not perform itself.
+"""Do the work the API accepted but may not perform itself: loop over the outbox and hand each row
+to `workflow.sutradhar.consume`, which runs it (#1227).
 
 `POST .../checks` writes an outbox row and commits. It cannot run the checks: every import under
 `app/api/` is walked by `tests/api/test_no_heavy_work.py`, and `workflow/stages.py` reaches
@@ -22,9 +23,10 @@ Usage:
 
 **The work itself lives in `workflow/sutradhar.py` (#1227)**, where the Hatchet worker builds its
 stages too, so the two cannot drift. This file is the local runner's shell: it reads the settings,
-loops over the outbox and hands each row to `sutradhar.consume`. The private names below are kept,
-as thin delegates or aliases, because tests and local launchers call and patch them: patching
-`_stages` here still changes the stages every workflow gets.
+loops over the outbox and hands each row to `sutradhar.consume`. A few private names are kept, as
+thin delegates or aliases, because tests and local launchers call them. **Only `_stages` changes
+what the flow does:** patching it here changes the stages every workflow gets. Every other step is
+looked up in `workflow.sutradhar`, so patch it there.
 
 **Never run two consumers on one outbox.** This consumer (`make worker`) and the Hatchet dispatcher
 (`make dispatch`) both take rows with `FOR UPDATE SKIP LOCKED`; started together they compete for
@@ -64,14 +66,10 @@ _part_picture_configuration = sutradhar.part_picture_configuration
 _automatic_typing_configuration = sutradhar.automatic_typing_configuration
 _phrase_grouping = sutradhar.phrase_grouping
 
-# The steps of the work, kept under their old names. To change what the flow calls, patch them in
-# `workflow.sutradhar`, where the flow looks them up.
+# The steps tests call directly, kept under their old names. Patching one of these changes nothing
+# the flow does: the flow looks its steps up in `workflow.sutradhar`, so patch them there.
 _build_package_text = sutradhar.build_package_text
-_hunt_values = sutradhar.hunt_package_values
-_drop_closed_revision = sutradhar.drop_closed_revision
 _resume_from_reviewer_input = sutradhar.resume_from_reviewer_input
-_ensure_workflow_run = sutradhar.ensure_workflow_run
-_propose_measurements = sutradhar.propose_measurements
 _carry_forward = sutradhar.carry_forward
 
 
@@ -109,20 +107,6 @@ def _run_checks(
         discriminators,
         discriminator_sources,
         stages_factory=_stages_factory,
-    )
-
-
-def _cut_part_pictures(session: object, package_revision_id: UUID) -> Mapping[str, object]:
-    """Cut the pictures still missing on one revision's drawings (#897)."""
-    return sutradhar.cut_part_pictures(session, package_revision_id, stages_factory=_stages_factory)
-
-
-def _render_vendor_page_pictures(
-    session: object, package_revision_id: UUID
-) -> Mapping[str, object]:
-    """Prepare stored vendor-only pages for click-to-place, without invoking any reader."""
-    return sutradhar.render_vendor_page_pictures(
-        session, package_revision_id, stages_factory=_stages_factory
     )
 
 
