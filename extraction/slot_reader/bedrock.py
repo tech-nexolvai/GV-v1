@@ -22,7 +22,11 @@ picture the API would resize is refused before the call, and that question absta
 reason recorded. A span whose label is drawn sideways also gets an upright copy of its close-up as
 a third picture, and the prompt says which picture that is.
 
-Source: issues #987, #992, #1051 · Verification: `tests/extraction/slot_reader/test_bedrock.py`
+**The Gemini pair (#1211)** is asked exactly the Claude readers' questions, pictures, answer schemas
+and effort key; only its route differs (`gemini.py`, OpenRouter's chat completions).
+
+Source: issues #987, #992, #1051, #1211 · Verification:
+`tests/extraction/slot_reader/test_bedrock.py`, `tests/extraction/slot_reader/test_gemini.py`
 """
 
 from __future__ import annotations
@@ -71,8 +75,8 @@ from extraction.slot_reader.claude_output import (
     RowKind,
     arch_match_schema,
     arch_pair_schema,
+    asks_with_schema,
     claude_answer,
-    is_claude_model,
     output_config,
     require_picture_fits,
 )
@@ -648,8 +652,9 @@ def _base_model_id(model_id: str) -> str:
 def _with_claude_output(
     request: dict[str, Any], schema: Mapping[str, object], effort: ClaudeEffort
 ) -> dict[str, Any]:
-    """A Claude request also states its answer schema and effort; any other reader's is unchanged."""
-    if is_claude_model(request["modelId"]):
+    """A Claude or Gemini request also states its answer schema and effort (#1051, #1211); any
+    other reader's is unchanged."""
+    if asks_with_schema(request["modelId"]):
         request[OUTPUT_CONFIG_KEY] = output_config(schema, effort)
     return request
 
@@ -657,8 +662,9 @@ def _with_claude_output(
 def _parsed_answer(
     model_id: str, response: Mapping[str, Any], raw: str, schema: Mapping[str, Any]
 ) -> Mapping[str, Any]:
-    """A Claude reply is checked strictly against its schema; any other reader's as before."""
-    if is_claude_model(model_id):
+    """A Claude or Gemini reply is checked strictly against its schema; any other reader's as
+    before."""
+    if asks_with_schema(model_id):
         return claude_answer(response, schema)
     return _extract_json_object(raw)
 
@@ -2017,8 +2023,9 @@ def read_crops_parallel(
     the calling thread, so the worker can say how many pages are done. It sees nothing of the answer
     and changes nothing about it.
 
-    A Claude job whose picture the API would resize is not sent: it abstains, and its attempt is
-    recorded with that failure and no tokens (#1051).
+    A Claude job whose picture the API would resize, or a Gemini job whose picture is past its
+    model's limits, is not sent: it abstains, and its attempt is recorded with that failure and no
+    tokens (#1051, #1211).
 
     Label crops and wall questions share one pool, one pacer and one concurrency cap, so asking
     both never doubles a model's request rate.
@@ -2067,7 +2074,7 @@ def read_crops_parallel(
         if reading_stop.stopped:
             reading_stop.not_asked(job)
             return (job.key, job.model_id), None
-        if is_claude_model(job.model_id):
+        if asks_with_schema(job.model_id):
             try:
                 require_picture_fits(job.pictures, job.model_id)
             except PictureWouldBeResized:

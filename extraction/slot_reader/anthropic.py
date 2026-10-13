@@ -33,9 +33,9 @@ from urllib.request import Request, urlopen
 from extraction.slot_reader.claude_output import (
     CLAUDE_EFFORTS,
     OUTPUT_CONFIG_KEY,
+    picture_token_bound,
     png_size,
     require_picture_fits,
-    visual_tokens,
 )
 
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
@@ -240,10 +240,13 @@ def refused_unserved(error: AnthropicRequestError) -> bool:
 def input_token_upper_bound(request: Mapping[str, Any]) -> int:
     """An upper bound on a request's input tokens, from what it carries.
 
-    Each picture costs exactly its documented tile count (a picture whose size cannot be read is
-    counted at the largest any picture may cost); each text and the answer schema at most one token
-    per UTF-8 byte; plus a fixed allowance for the API's own framing.
+    Each picture costs exactly its documented tile count, and a Gemini picture never less than its
+    fixed per-picture budget (#1211); a picture whose size cannot be read is counted at the largest
+    any picture may cost. Each text and the answer schema at most one token per UTF-8 byte; plus a
+    fixed allowance for the API's own framing.
     """
+    model_id = request.get("modelId")
+    model = model_id if isinstance(model_id, str) else ""
     total = _REQUEST_OVERHEAD_TOKENS
     for message in request.get("messages") or ():
         content = message.get("content") if isinstance(message, Mapping) else None
@@ -258,7 +261,7 @@ def input_token_upper_bound(request: Mapping[str, Any]) -> int:
             raw = source.get("bytes") if isinstance(source, Mapping) else None
             if isinstance(raw, bytes):
                 try:
-                    total += visual_tokens(*png_size(raw))
+                    total += picture_token_bound(*png_size(raw), model)
                 except ValueError:
                     total += 4784
     for block in request.get("system") or ():
@@ -507,28 +510,42 @@ def post_json(
         in_flight = status == 402 and b"in_flight_budget" in _error_body(error)
         retry_after = _retry_after_seconds(error.headers) if in_flight else None
         error.close()
-        if in_flight:
-            # OpenRouter's in-flight budget (#1206): too many calls at once for the balance. A
-            # bounded retry, then "credit too low" (`ProviderInFlightLimited`).
-            raise ProviderInFlightLimited(api=api, retry_after_seconds=retry_after) from None
-        if status == 402:
-            # Payment required, out of credit (#1206): named for what it is, never retried.
-            raise ProviderAccountRefused(api=api) from None
-        error_type = (
-            "TooManyRequestsException"
-            if status == 429
-            else (
-                "ModelOverloadedException"
-                if status == 529
-                else ("ServiceUnavailableException" if status >= 500 else "ProviderRequestRejected")
-            )
-        )
-        raise AnthropicRequestError(status, error_type, api=api) from None
+        raise status_error(
+            status, api=api, in_flight=in_flight, retry_after_seconds=retry_after
+        ) from None
     except (URLError, TimeoutError, OSError):
         raise AnthropicRequestError(503, "ProviderTransportError", api=api) from None
     if not isinstance(payload, Mapping):
         raise AnthropicRequestError(502, "ProviderResponseMalformed", api=api)
     return payload
+
+
+def status_error(
+    status: int,
+    *,
+    api: str,
+    in_flight: bool = False,
+    retry_after_seconds: int | None = None,
+) -> AnthropicRequestError:
+    """The sanitized error for a provider's refusal with this status, carrying only its retry
+    class: the same classes on every route (#1206, #1211)."""
+    if status == 402 and in_flight:
+        # OpenRouter's in-flight budget (#1206): too many calls at once for the balance. A
+        # bounded retry, then "credit too low" (`ProviderInFlightLimited`).
+        return ProviderInFlightLimited(api=api, retry_after_seconds=retry_after_seconds)
+    if status == 402:
+        # Payment required, out of credit (#1206): named for what it is, never retried.
+        return ProviderAccountRefused(api=api)
+    error_type = (
+        "TooManyRequestsException"
+        if status == 429
+        else (
+            "ModelOverloadedException"
+            if status == 529
+            else ("ServiceUnavailableException" if status >= 500 else "ProviderRequestRejected")
+        )
+    )
+    return AnthropicRequestError(status, error_type, api=api)
 
 
 def _error_body(error: HTTPError) -> bytes:

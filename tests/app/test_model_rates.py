@@ -43,7 +43,7 @@ def test_the_shipped_price_file_is_usd_dated_and_covers_every_reader() -> None:
     shipped = load_model_rates(SHIPPED)
 
     assert shipped.currency == "USD"
-    assert shipped.retrieved == date(2026, 10, 8)
+    assert shipped.retrieved == date(2026, 10, 13)
     assert "price list" in shipped.source
     # Every reader a deployment or the agent can run: a measured space, or no rectangle asked (#907).
     runnable = [reader for reader in VISION_READERS if reader.answers_readably]

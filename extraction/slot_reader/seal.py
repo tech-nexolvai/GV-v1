@@ -41,6 +41,7 @@ from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.form_reader.mapping import REVIEWER_MARKUP_REASON
 from extraction.ink import InkAt, InkClass
 from extraction.slot_reader.labels import expand_label, odd_fraction, plain_dimension, row_hold
+from extraction.slot_reader.reader_pairs import is_named_pair
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
 from units.normalise import fold_fractions
@@ -83,7 +84,6 @@ _QUOTES: Final = {
 #: 32 or 64 (#1199). Always the person's, with `labels.odd_fraction`'s reason. Text that is no
 #: plain dimension anyway (`457 / 18"`, a bare `24/36`) stays "not plain".
 _ODD_FRACTION: Final = "fraction-not-drawn"
-_CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
 def normalise_text(text: str) -> str:
@@ -168,7 +168,8 @@ class LabelState(StrEnum):
     SEALED = "sealed"
     """Two different sources gave the identical text, it is a plain dimension, no guard fired."""
     PROVISIONAL = "provisional"
-    """The approved Claude pair agrees; workflow still needs a drawn-length witness."""
+    """A listed reader pair (Claude or Gemini, #1211) agrees; workflow still needs a drawn-length
+    witness."""
     NOT_A_DIMENSION = "not_a_dimension"
     """A word, a tag or a symbol: both sources say there is no dimension here."""
     REVIEW = "review"
@@ -222,7 +223,7 @@ def seal_label(
     stacked_by_bar: bool,
     allow_stacked: bool,
     row_ambiguity: str | None,
-    allow_claude_pair: bool = False,
+    allow_named_pair: bool = False,
     held_before_reading: str | None = None,
 ) -> LabelOutcome:
     """Seal one label's reading, or say why the person decides.
@@ -230,7 +231,10 @@ def seal_label(
     `answers` holds the readers' answers present for this crop: for a text label, the one reader
     shown the crop (the file's text is the other source); for a glyph label, the two readers. A
     reader that abstained is simply absent. Two answers from readers of one maker are refused —
-    same-maker agreement never seals (Measurements 2026-10-06: Kimi × 2 agreed on wrong values).
+    same-maker agreement never seals (Measurements 2026-10-06: Kimi × 2 agreed on wrong values),
+    except as one of the listed reader pairs (`reader_pairs.is_named_pair`, #1211) when
+    `allow_named_pair` is set: two different named models, whose agreement is only provisional
+    until the drawn length witnesses it.
     `ink` is `None` when the page's ink could not be read, which holds a reading back.
 
     `held_before_reading` is the page's own hold reason when the whole row was held before any
@@ -238,16 +242,16 @@ def seal_label(
     with that reason, never "only one reader" — and never what is held or sealed.
     """
     sources: list[tuple[str, str, bool]] = []  # (source, text, usable)
-    claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
+    named_pair = allow_named_pair and is_named_pair(answer.model_id for answer in answers)
     if label.lane is Lane.TEXT:
-        if len(answers) > 1 and not claude_pair:
+        if len(answers) > 1 and not named_pair:
             raise ValueError("a text label is read by the file's text and one reader")
         if label.text is None:
             raise ValueError("a text-lane label has the file's text")
         sources.append((TEXT_LAYER, label.text, True))
     elif len(answers) == 2:
         makers = {_maker(answer.model_id) for answer in answers}
-        if not claude_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
+        if not named_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
             raise ValueError(
                 "a glyph label is sealed only by two readers of known, different makers"
             )
@@ -306,7 +310,7 @@ def seal_label(
     second = sources[-1] if sources else None
     suggestion = None
     if hard is None and second is not None and second[2]:
-        suggestion = plain_dimension(normalise_text(second[1]), allow_explicit_mm=claude_pair)
+        suggestion = plain_dimension(normalise_text(second[1]), allow_explicit_mm=named_pair)
 
     def review(code: str, reason: str, keep_suggestion: bool = True) -> LabelOutcome:
         return LabelOutcome(
@@ -341,8 +345,8 @@ def seal_label(
         return review(*soft[0])
     if label.lane is Lane.TEXT and not answers:
         printed = normalise_text(label.text or "")
-        if plain_dimension(printed, allow_explicit_mm=claude_pair) is None:
-            refusal = odd_fraction(printed, allow_explicit_mm=claude_pair)
+        if plain_dimension(printed, allow_explicit_mm=named_pair) is None:
+            refusal = odd_fraction(printed, allow_explicit_mm=named_pair)
             if refusal is not None:
                 return review(_ODD_FRACTION, refusal, keep_suggestion=False)
             return review("not-plain", "the label has words or a sum; review the value")
@@ -365,16 +369,16 @@ def seal_label(
     # A fraction no drawing prints, even written identically by both sources: `163/8"` read as
     # written is 20 3/8", and splitting the digits would be a guess (#1199). The agreed text is the
     # spelled-out form (`½` folded to `1/2`); each reader's own text stays in `reader_texts`.
-    refusal = odd_fraction(agreed, allow_explicit_mm=claude_pair)
+    refusal = odd_fraction(agreed, allow_explicit_mm=named_pair)
     if refusal is not None:
         return review(_ODD_FRACTION, refusal, keep_suggestion=False)
-    if claude_pair and mm_corroborates_inch(agreed) is False:
+    if named_pair and mm_corroborates_inch(agreed) is False:
         return review("mm-inch-disagree", "the label's millimetre and inch halves disagree")
-    value = plain_dimension(agreed, allow_explicit_mm=claude_pair)
+    value = plain_dimension(agreed, allow_explicit_mm=named_pair)
     if (
         value is not None
         and any(answer.combined for answer in answers)
-        and not (claude_pair and _is_explicit_mm_dual(agreed))
+        and not (named_pair and _is_explicit_mm_dual(agreed))
     ):
         # A reader saw words or a sum the agreed text does not show: the crop holds more than the
         # label both copied, and which is the piece's width is the person's call.
@@ -389,9 +393,9 @@ def seal_label(
     if value is None:
         return review("not-plain", "the label has words or a sum; review the value")
     return LabelOutcome(
-        state=LabelState.PROVISIONAL if claude_pair else LabelState.SEALED,
-        value=None if claude_pair else value,
-        suggestion=value if claude_pair else None,
+        state=LabelState.PROVISIONAL if named_pair else LabelState.SEALED,
+        value=None if named_pair else value,
+        suggestion=value if named_pair else None,
         sealed_text=agreed,
         reason_code=None,
         reason=None,

@@ -47,6 +47,7 @@ from typing import Final, Literal
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.geometry.rows import Box, CountertopRowCandidate, PageInk
+from extraction.slot_reader.reader_pairs import is_named_pair
 from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE, READERS_WALL_SOURCE
 
 __all__ = [
@@ -215,9 +216,6 @@ def _maker(model_id: str) -> str:
     return independence_key("bedrock-slot-reader", model_id)
 
 
-_CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
-
-
 def _agreed(first: Side, second: Side) -> Side | None:
     return first if first == second and first is not Side.UNSURE else None
 
@@ -228,9 +226,11 @@ def seal_walls(
     ink: WallInkSeen | None,
     row_ambiguity: str | None,
     stone_meets_walls: bool = False,
-    allow_claude_pair: bool = False,
+    allow_named_pair: bool = False,
 ) -> WallOutcome:
     """The row's wall layout when two makers agree and nothing objects; otherwise why not.
+    `allow_named_pair` lets one listed reader pair's two models stand for two makers
+    (`reader_pairs.is_named_pair`, #1211: the Claude or the Gemini pair).
 
     `answers` holds the readers that answered (an abstention is absent). `ink` is code's wall-ink
     check at the two ends, `None` when it could not run (which objects to nothing and makes
@@ -255,8 +255,8 @@ def seal_walls(
 
     if len(answers) == 2:
         makers = {_maker(answer.model_id) for answer in answers}
-        claude_pair = allow_claude_pair and {answer.model_id for answer in answers} == _CLAUDE_PAIR
-        if not claude_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
+        named_pair = allow_named_pair and is_named_pair(answer.model_id for answer in answers)
+        if not named_pair and (UNKNOWN_MODEL_VENDOR in makers or len(makers) != 2):
             return held(
                 "reader-independence",
                 "the wall answers are not from two known, different makers; reviewer must choose",
