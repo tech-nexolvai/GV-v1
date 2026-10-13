@@ -3337,3 +3337,204 @@ def test_a_reading_with_the_files_own_text_is_never_flagged_without_a_witness() 
     assert all(owner.outcome.state is LabelState.SEALED for owner in held)
     assert "no-drawn-length-witness" not in _flags(held[0])
     assert "no-drawn-length-witness" in _flags(held[1])
+
+
+# ---------------------------------------------------------------------------------------------
+# #1211: the reader pair is a setting; Gemini 3.8 Flash + Gemini 3.1 Pro under every guard
+# ---------------------------------------------------------------------------------------------
+
+FLASH = "google.gemini-3-8-flash"
+PRO = "google.gemini-3-1-pro-preview"
+#: The default pair's run label before #1211, byte for byte: switching nothing changes nothing.
+CLAUDE_RUN_LABEL = (
+    "dpi=300;readers=anthropic.claude-opus-5-5|anthropic.claude-sonnet-5-5;"
+    "prompt=claude-slot-span-v4+slot-walls-v3;stacked_agreement=True;question_packets=True;"
+    "spend_cap_usd=25.00;detail=4b1610bde73de8ec"
+)
+
+
+class _ReadersOn:
+    slot_reader_enabled = True
+    slot_reader_stacked_agreement = False
+    claude_reader_enabled = True
+    openrouter_api_key = SecretStr("private-test-key")
+    claude_reader_model_rpm: ClassVar[dict[str, int]] = {OPUS: 60, SONNET: 60}
+    claude_reader_timeout_seconds = 90
+
+
+class _GeminiOn(_ReadersOn):
+    reader_pair = "gemini-flash-pro"
+    claude_reader_model_rpm: ClassVar[dict[str, int]] = {FLASH: 60, PRO: 60}
+
+
+def test_the_reader_pair_setting_defaults_to_claude_and_lists_only_known_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    monkeypatch.delenv("GV_READER_PAIR", raising=False)
+    url = "postgresql+psycopg://x@localhost/x"
+    assert Settings(_env_file=None, database_url=url).reader_pair == "claude-opus-sonnet"
+    chosen = Settings(_env_file=None, database_url=url, reader_pair="gemini-flash-pro")
+    assert chosen.reader_pair == "gemini-flash-pro"
+    with pytest.raises(ValidationError, match="reader_pair"):
+        Settings(_env_file=None, database_url=url, reader_pair="gemini-flash-sonnet")
+    # Gemini is called only through OpenRouter (Vertex, no data kept): never Anthropic's API.
+    with pytest.raises(ValueError, match="GV_READER_PAIR=gemini-flash-pro"):
+        Settings(
+            _env_file=None,
+            database_url=url,
+            reader_pair="gemini-flash-pro",
+            claude_reader_provider="anthropic",
+        )
+    monkeypatch.setenv("GV_READER_PAIR", "gemini-flash-pro")
+    assert Settings(_env_file=None, database_url=url).reader_pair == "gemini-flash-pro"
+
+
+def test_with_no_pair_stated_the_runtime_is_the_claude_pair_exactly_as_before() -> None:
+    form = runtime(FakeReaders(lambda _m, _p: "")).form
+
+    configured = configured_slot_reader(_ReadersOn(), form, environ=FRACTION_ENV)
+
+    assert configured is not None
+    assert configured.form.reader_ids == (OPUS, SONNET)
+    assert configured.reader_pair == "claude-opus-sonnet"
+    assert configured.run_label(300) == CLAUDE_RUN_LABEL
+
+
+def test_the_gemini_setting_selects_flash_and_pro_through_openrouter_chat() -> None:
+    from extraction.slot_reader.gemini import ThreadLocalGeminiClients
+
+    form = replace(runtime(FakeReaders(lambda _m, _p: "")).form)
+
+    configured = configured_slot_reader(_GeminiOn(), form, environ=FRACTION_ENV)
+
+    assert configured is not None
+    assert configured.reader_pair == "gemini-flash-pro"
+    assert configured.form.reader_ids == (FLASH, PRO)
+    assert isinstance(configured.form.clients, ThreadLocalGeminiClients)
+    assert "private-test-key" not in repr(configured.form.clients)
+    assert configured.form.calls_per_minute == {FLASH: 60, PRO: 60}
+    assert configured.form.max_tokens == 3000 and configured.form.max_concurrent_calls == 8
+    # Every guard of the grounded route, unchanged.
+    assert configured.claude_row_reader is True
+    assert configured.question_packets is True and configured.reuse_answers is True
+    assert configured.allow_stacked is True
+    assert configured.spend_cap_usd == Decimal("25.00")
+    # Gemini's effort is the pair's own, stated: GV_CLAUDE_READER_EFFORT is Claude's alone.
+    assert configured.claude_effort == "low"
+    assert configured.claude_route == "openrouter-chat:google-vertex/global"
+    assert "gemini=effort:low" in configured.config_detail
+    assert "route=openrouter-chat:google-vertex/global" in configured.config_detail
+
+
+def test_the_gemini_run_label_names_both_models_and_fits_its_column() -> None:
+    from vocabulary.semantic_types import ProductType
+    from workflow.form_reader import RUN_LABEL_CHARACTERS
+
+    form = runtime(FakeReaders(lambda _m, _p: "")).form
+    gemini = configured_slot_reader(_GeminiOn(), form, environ=FRACTION_ENV)
+    claude = configured_slot_reader(_ReadersOn(), form, environ=FRACTION_ENV)
+    assert gemini is not None and claude is not None
+
+    label = gemini.run_label(300)
+    assert len(label) <= RUN_LABEL_CHARACTERS
+    assert "readers=google.gemini-3-8-flash|google.gemini-3-1-pro-preview;" in label
+    assert label != claude.run_label(300)
+    # A product named on the package: still fits, never cut short.
+    assert len(replace(gemini, product=next(iter(ProductType))).run_label(300)) <= 200
+
+
+def test_the_gemini_pair_needs_its_own_pacing_and_prices_and_never_anthropics_api() -> None:
+    form = runtime(FakeReaders(lambda _m, _p: "")).form
+
+    class Unpaced(_GeminiOn):
+        claude_reader_model_rpm: ClassVar[dict[str, int]] = {OPUS: 60, SONNET: 60}
+
+    with pytest.raises(ValueError, match="google.gemini-3-1-pro-preview"):
+        configured_slot_reader(Unpaced(), form, environ=FRACTION_ENV)
+
+    class Direct(_GeminiOn):
+        claude_reader_provider = "anthropic"
+        anthropic_api_key = SecretStr("private-test-key")
+
+    with pytest.raises(ValueError, match="GV_READER_PAIR=gemini-flash-pro"):
+        configured_slot_reader(Direct(), form, environ=FRACTION_ENV)
+
+    class Unlisted(_GeminiOn):
+        reader_pair = "gemini-flash-sonnet"
+
+    with pytest.raises(ValueError, match="GV_READER_PAIR"):
+        configured_slot_reader(Unlisted(), form, environ=FRACTION_ENV)
+
+    class Unpriced:
+        def rate_for(self, model_id: str) -> object | None:
+            return None if model_id.startswith("google.") else object()
+
+    with pytest.raises(ValueError, match="google.gemini"):
+        configured_slot_reader(_GeminiOn(), replace(form, rates=Unpriced()), environ=FRACTION_ENV)
+
+
+def gemini_runtime(readers: FakeReaders, **changes: Any) -> SlotReaderRuntime:
+    base = claude_runtime(readers)
+    return replace(
+        base,
+        form=replace(base.form, reader_ids=(FLASH, PRO), calls_per_minute={FLASH: 6000, PRO: 6000}),
+        reader_pair="gemini-flash-pro",
+        claude_effort="low",
+        **changes,
+    )
+
+
+def test_the_gemini_pair_reads_a_page_by_role_and_offers_what_both_agree_on() -> None:
+    page = slot_page(named_sheet())
+    lookup = claude_crops_to_texts(page, TEXTS)
+    readers = FakeReaders(lambda _model, png: lookup.get(png, '2"'))
+    asked: list[Mapping[str, Any]] = []
+    answer = readers.converse
+
+    def converse(**kwargs: Any) -> Mapping[str, Any]:
+        with readers.lock:
+            asked.append(kwargs)
+        return answer(**kwargs)
+
+    readers.converse = converse  # type: ignore[method-assign]
+
+    (result,) = read_slot_pages(
+        [page], runtime=gemini_runtime(readers), record_attempt=lambda _a: None
+    )
+
+    assert sorted(model for model, _png in readers.row_requests) == sorted([FLASH, PRO])
+    assert result.row_choice_number == 1
+    assert result.mapping.proposals, "the two Gemini models agreed and code's checks passed"
+    assert {request["modelId"] for request in asked} == {FLASH, PRO}
+    # Every Gemini question states its answer schema and the pair's effort.
+    assert all(request["anthropicOutputConfig"]["effort"] == "low" for request in asked)
+    assert all(
+        request["anthropicOutputConfig"]["format"]["type"] == "json_schema" for request in asked
+    )
+
+
+def test_the_grounded_route_reads_only_with_the_configured_pair() -> None:
+    readers = FakeReaders(lambda _model, _png: '2"')
+    page = slot_page(named_sheet())
+
+    with pytest.raises(ValueError, match="configured reader pair"):
+        read_slot_pages(
+            [page],
+            runtime=replace(gemini_runtime(readers), reader_pair="claude-opus-sonnet"),
+            record_attempt=lambda _a: None,
+        )
+    with pytest.raises(ValueError, match="configured reader pair"):
+        read_slot_pages(
+            [page],
+            runtime=replace(claude_runtime(readers), reader_pair="gemini-flash-pro"),
+            record_attempt=lambda _a: None,
+        )
+    swapped = gemini_runtime(readers)
+    with pytest.raises(ValueError, match="configured reader pair"):
+        read_slot_pages(
+            [page],
+            runtime=replace(swapped, form=replace(swapped.form, reader_ids=(PRO, FLASH))),
+            record_attempt=lambda _a: None,
+        )

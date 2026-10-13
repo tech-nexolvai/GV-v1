@@ -135,7 +135,7 @@ def test_two_readers_of_one_maker_are_refused() -> None:
 def test_the_approved_claude_pair_can_only_propose_after_exact_agreement() -> None:
     pair = (answer(OPUS, YES, YES), answer(SONNET, YES, YES))
     held = seal_walls(pair, ink=None, row_ambiguity=None)
-    proposed = seal_walls(pair, ink=None, row_ambiguity=None, allow_claude_pair=True)
+    proposed = seal_walls(pair, ink=None, row_ambiguity=None, allow_named_pair=True)
 
     assert held.code == "reader-independence"
     assert proposed.config == BACK_LEFT_RIGHT and proposed.source == "readers"
@@ -156,7 +156,7 @@ def _sealed(
         ink=ink,
         row_ambiguity=None,
         stone_meets_walls=stone_meets_walls,
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
     return outcome.config, outcome.source
 

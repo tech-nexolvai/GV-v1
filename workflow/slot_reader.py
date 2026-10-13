@@ -24,6 +24,13 @@ the run's configuration and on every question packet), with a fixed answer shape
 picture the API would resize. A span whose label is drawn sideways (a label run at least twice as
 tall as wide that is not a stacked fraction) is also shown its close-up turned upright.
 
+**The reader pair is a setting (#1211, `GV_READER_PAIR`).** The grounded route reads with one
+listed pair (`extraction/slot_reader/reader_pairs.py`): Opus 5.5 + Sonnet 5.5 by default, or
+Gemini 3.8 Flash + Gemini 3.1 Pro through OpenRouter's chat completions on Google Vertex with no
+data kept (`extraction/slot_reader/gemini.py`). The questions, pictures, answer schemas, spend
+guard, page budget, stored-answer reuse (keyed by model), pacing and every two-judgment rule are
+the same for both; the run's identity names the two models and the route.
+
 **Equal-share chains (#1086).** When the readers' chosen row has nothing printed on any piece and
 code finds exactly one other candidate for the same run (same ends within the row finder's end
 tolerance, same pasted drawing, an overall), that row is read too, in one more batch; its sealed
@@ -90,6 +97,7 @@ from extraction.slot_reader.labels import (
     row_hold,
 )
 from extraction.slot_reader.mapping import PieceReading, SlotMapping, map_row
+from extraction.slot_reader.reader_pairs import DEFAULT_READER_PAIR, reader_pair
 from extraction.slot_reader.runs import (
     E2_CROP_SETTINGS,
     CropSettings,
@@ -224,13 +232,19 @@ class SlotReaderRuntime:
     is stated; the extraction stage then sets each reading's cap from the page-scaled budget for
     the pages it sends, never above this or what the drawing set has left (#1206)."""
     claude_row_reader: bool = False
-    """Ask Claude Opus to select one of the first six code-ranked rows before reading labels."""
+    """The grounded AI-reader route (#1001 onward): both readers of the configured pair choose one
+    of the first six code-ranked rows, then read every label span with a full view and a close-up.
+    Named for the Claude pair it began with; the Gemini pair (#1211) takes the same route."""
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT
-    """The effort every Claude question is asked at (`GV_CLAUDE_READER_EFFORT`, #1051)."""
+    """The effort every question on the grounded route is asked at: `GV_CLAUDE_READER_EFFORT` for
+    the Claude pair (#1051), the pair's own stated effort for the Gemini pair (#1211)."""
     claude_route: str | None = None
-    """Where the Claude readers are called (#1094), in the run's identity: OpenRouter and its host
-    (`openrouter:google-vertex/global`). `None` is Anthropic's own API, whose identity is exactly
-    as before."""
+    """Where the readers are called (#1094), in the run's identity: OpenRouter and its host
+    (`openrouter:google-vertex/global`; `openrouter-chat:...` for Gemini, #1211). `None` is
+    Anthropic's own API, whose identity is exactly as before."""
+    reader_pair: str = DEFAULT_READER_PAIR
+    """Which listed pair reads on the grounded route (`GV_READER_PAIR`, #1211): its two models are
+    `form.reader_ids`, main reader first. The Claude pair unless the admin switches."""
     architect_pairing: str | None = None
     """The architect pairing's prompt and settings when it runs beside this reading (#1053), so
     the run's identity says so; `None` leaves the identity exactly as before."""
@@ -261,12 +275,20 @@ class SlotReaderRuntime:
             "rules=drawn-length-veto,label-expansion,counter-break,fraction-fold"
             f"{',claude-span-v2,reject-only,max_concurrent=8,max_tokens=3000' if self.claude_row_reader else ''}"
             + (
+                # The Gemini pair (#1211): its own effort and route; no image `transformations`.
+                f";gemini=effort:{self.claude_effort},structured-output-v1,"
+                + f"upright-sideways:height>={_SIDEWAYS_HEIGHT_TO_WIDTH}xwidth"
+                + f",route={self.claude_route}"
+                if self.claude_row_reader and self.reader_pair != DEFAULT_READER_PAIR
+                else ""
+            )
+            + (
                 f";claude=effort:{self.claude_effort},structured-output-v1,"
                 # OpenRouter takes no `oversized_image: "error"`; the local size check runs on both.
                 + ("oversized-image-error," if self.claude_route is None else "")
                 + f"upright-sideways:height>={_SIDEWAYS_HEIGHT_TO_WIDTH}xwidth"
                 + ("" if self.claude_route is None else f",route={self.claude_route}")
-                if self.claude_row_reader
+                if self.claude_row_reader and self.reader_pair == DEFAULT_READER_PAIR
                 else ""
             )
             + ("" if self.architect_pairing is None else f";arch-pair={self.architect_pairing}")
@@ -349,18 +371,19 @@ def configured_slot_reader(
             "reader's readers, prices and limits, and its whole-page reading for pages with no row"
         )
     claude_enabled = bool(getattr(settings, "claude_reader_enabled", False))
+    pair = reader_pair(str(getattr(settings, "reader_pair", DEFAULT_READER_PAIR)))
+    route: str | None = None
     if claude_enabled:
         from extraction.form_reader.pricing import require_priced_readers
         from extraction.slot_reader.anthropic import ThreadLocalAnthropicClients
+        from extraction.slot_reader.gemini import GEMINI_ROUTE, ThreadLocalGeminiClients
         from extraction.slot_reader.openrouter import (
             OPENROUTER_ROUTE,
             ThreadLocalOpenRouterClients,
         )
 
-        model_ids = (
-            "anthropic.claude-opus-5-5",
-            "anthropic.claude-sonnet-5-5",
-        )
+        # The configured pair (`GV_READER_PAIR`, #1211): the Claude pair unless the admin switches.
+        model_ids = pair.models
         rates = getattr(form, "rates", None)
         require_priced_readers(model_ids, rates)
         rpm = getattr(settings, "claude_reader_model_rpm", {})
@@ -376,6 +399,11 @@ def configured_slot_reader(
             raise ValueError(
                 f"GV_CLAUDE_READER_PROVIDER must be openrouter or anthropic: {provider!r}"
             )
+        if provider not in pair.providers:
+            raise ValueError(
+                f"GV_READER_PAIR={pair.name} is called only through "
+                f"{' or '.join(pair.providers)}, not GV_CLAUDE_READER_PROVIDER={provider}"
+            )
         key_name = "OPENROUTER_API_KEY" if provider == "openrouter" else "ANTHROPIC_API_KEY"
         key = getattr(settings, f"{provider}_api_key", None)
         if key is None or not hasattr(key, "get_secret_value"):
@@ -384,16 +412,26 @@ def configured_slot_reader(
         if not isinstance(key_value, str) or not key_value.strip():
             raise ValueError(f"GV_CLAUDE_READER_ENABLED requires {key_name}")
         timeout_seconds = int(getattr(settings, "claude_reader_timeout_seconds", 180))
-        clients: ThreadLocalOpenRouterClients | ThreadLocalAnthropicClients = (
-            ThreadLocalOpenRouterClients(key_value, timeout_seconds=timeout_seconds)
-            if provider == "openrouter"
-            else ThreadLocalAnthropicClients(key_value, timeout_seconds=timeout_seconds)
+        clients: (
+            ThreadLocalOpenRouterClients | ThreadLocalAnthropicClients | ThreadLocalGeminiClients
         )
+        if pair.name != DEFAULT_READER_PAIR:
+            # Gemini: OpenRouter's chat completions, the same Vertex host, no data kept (#1211).
+            clients = ThreadLocalGeminiClients(key_value, timeout_seconds=timeout_seconds)
+            route = GEMINI_ROUTE
+        elif provider == "openrouter":
+            clients = ThreadLocalOpenRouterClients(key_value, timeout_seconds=timeout_seconds)
+            route = OPENROUTER_ROUTE
+        else:
+            clients = ThreadLocalAnthropicClients(key_value, timeout_seconds=timeout_seconds)
         effort = getattr(settings, "claude_reader_effort", DEFAULT_CLAUDE_EFFORT)
         if effort not in CLAUDE_EFFORTS:
             raise ValueError(
                 f"GV_CLAUDE_READER_EFFORT must be one of {', '.join(CLAUDE_EFFORTS)}: {effort!r}"
             )
+        if pair.effort is not None:
+            # The pair states its own effort; GV_CLAUDE_READER_EFFORT is the Claude pair's.
+            effort = pair.effort
         form = replace(
             form,
             reader_ids=model_ids,
@@ -420,8 +458,9 @@ def configured_slot_reader(
         ),
         claude_row_reader=claude_enabled,
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
-        claude_route=(OPENROUTER_ROUTE if claude_enabled and provider == "openrouter" else None),
+        claude_route=route,
         reuse_answers=bool(getattr(settings, "reader_reuse_answers", True)),
+        reader_pair=pair.name,
     )
 
 
@@ -1128,8 +1167,11 @@ def read_slot_pages(
     row_ids: dict[int, tuple[UUID, ...]] = {}
     row_jobs: list[CropJob] = []
     if runtime.claude_row_reader:
-        if not readers or readers[0] != "anthropic.claude-opus-5-5":
-            raise ValueError("Claude row selection requires Opus as the first configured reader")
+        if tuple(readers) != reader_pair(runtime.reader_pair).models:
+            raise ValueError(
+                "the grounded route reads only with the configured reader pair "
+                f"({runtime.reader_pair}), its main reader first"
+            )
         for page in pages:
             candidates = page_rows[page.page_index].candidates[:6]
             if not candidates:
@@ -1733,7 +1775,7 @@ def read_slot_pages(
                 ink=asked.ink,
                 row_ambiguity=plan.ambiguity,
                 stone_meets_walls=stone_meets_walls,
-                allow_claude_pair=runtime.claude_row_reader,
+                allow_named_pair=runtime.claude_row_reader,
             )
             walls = PageWalls(
                 row_png=row_png,
@@ -2305,7 +2347,7 @@ def _owner_result(
             and _stacked_by_bar(label, height, runtime.fraction_bar),
             allow_stacked=runtime.allow_stacked,
             row_ambiguity=plan.ambiguity,
-            allow_claude_pair=runtime.claude_row_reader,
+            allow_named_pair=runtime.claude_row_reader,
             held_before_reading=held_before_reading,
         )
         labels.append(LabelResult(label, sealed, box_px, crop_px))
@@ -2708,7 +2750,8 @@ def _row_also_flags(result: PageSlotResult) -> list[str]:
 
 
 def _short_model(model_id: str) -> str:
-    return model_id.removeprefix("anthropic.").removeprefix("claude-")
+    """A reader's name in a flag: `opus-5-5`, `sonnet-5-5`, `gemini-3-8-flash` (#1211)."""
+    return model_id.removeprefix("anthropic.").removeprefix("google.").removeprefix("claude-")
 
 
 def _persist_unselected_row_choice(

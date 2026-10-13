@@ -285,7 +285,7 @@ def _piece_from_answers(belongs: str, *, no_dimension: bool) -> OwnerOutcome:
         stacked_by_bar=False,
         allow_stacked=False,
         row_ambiguity=None,
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
     return owner_outcome([outcome])
 

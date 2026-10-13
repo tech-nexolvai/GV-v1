@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # Who the two Claude readers are called through (#1094): OpenRouter (the admin's choice,
     # 2026-10-09: same models, keep-no-data account) or Anthropic's own API. Each needs its key.
     claude_reader_provider: Literal["openrouter", "anthropic"] = "openrouter"
+    # Which two AI models read on that route (#1211, `GV_READER_PAIR`), from a closed list kept in
+    # step with `extraction/slot_reader/reader_pairs.py` `READER_PAIRS`: `claude-opus-sonnet` (Opus
+    # 5.5 + Sonnet 5.5, the default) or `gemini-flash-pro` (Gemini 3.8 Flash + Gemini 3.1 Pro,
+    # through OpenRouter only, on Google Vertex with no data kept, both at low effort). Switching is
+    # the admin's call after the measured bake-off; each pair's models need their RPM entries.
+    reader_pair: Literal["claude-opus-sonnet", "gemini-flash-pro"] = "claude-opus-sonnet"
     openrouter_api_key: SecretStr | None = Field(
         default=None, validation_alias="OPENROUTER_API_KEY", repr=False
     )
@@ -253,6 +259,11 @@ class Settings(BaseSettings):
                     f"GV_CLAUDE_READER_ENABLED with GV_CLAUDE_READER_PROVIDER="
                     f"{self.claude_reader_provider} requires {name}"
                 )
+        if self.reader_pair == "gemini-flash-pro" and self.claude_reader_provider != "openrouter":
+            raise ValueError(
+                "GV_READER_PAIR=gemini-flash-pro is called only through OpenRouter (Google Vertex, "
+                "no data kept): set GV_CLAUDE_READER_PROVIDER=openrouter"
+            )
         if self.ai_budget_maximum_usd < self.ai_budget_minimum_usd:
             raise ValueError("GV_AI_BUDGET_MAXIMUM_USD must not be below GV_AI_BUDGET_MINIMUM_USD")
         if (

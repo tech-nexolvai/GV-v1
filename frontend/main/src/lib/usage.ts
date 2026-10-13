@@ -204,6 +204,8 @@ const MODEL_NAMES: readonly [RegExp, string][] = [
   [/claude-opus-5-5/, 'Claude Opus 5.5'],
   [/claude-sonnet-5-5/, 'Claude Sonnet 5.5'],
   [/claude-haiku-4-5/, 'Claude Haiku 4.5'],
+  [/gemini-3-8-flash/, 'Gemini 3.8 Flash'],
+  [/gemini-3-1-pro/, 'Gemini 3.1 Pro'],
   [/nova-2-lite/, 'Amazon Nova 2 Lite'],
   [/nova-pro/, 'Amazon Nova Pro'],
   [/nova-lite/, 'Amazon Nova Lite'],

@@ -661,3 +661,66 @@ def test_a_stored_reply_is_read_by_the_live_code_and_a_bad_one_is_asked_again() 
     assert replay_stored_answer(span, old_span, reused_from="x", max_tokens=400) is None
     old_row = json.dumps({"row": 2, "why": "the second box"})
     assert replay_stored_answer(row, old_row, reused_from="x", max_tokens=400) is None
+
+
+def test_a_claude_answer_never_stands_in_for_a_gemini_question(session: Any) -> None:
+    """#1211: the same questions, the same pictures and packets, asked of the Gemini pair after the
+    Claude pair answered them: every question is asked again, and no row points at a Claude call."""
+    from tests.workflow.test_slot_reader import FLASH, PRO
+
+    revision, version, page_row, first_run = _scaffold(session)
+    page = _page(version.id, page_row.id)
+    claude_readers = _readers(page)
+    _read_and_record(session, page, claude_readers, first_run)
+
+    gemini_readers = _readers(page)
+    gemini_run = _new_run(session, revision.id)
+    configured = _runtime(gemini_readers)
+    gemini = replace(
+        configured,
+        form=replace(
+            configured.form,
+            reader_ids=(FLASH, PRO),
+            calls_per_minute={FLASH: 6000, PRO: 6000},
+        ),
+        reader_pair="gemini-flash-pro",
+    )
+    attempts: list[AttemptUsage] = []
+    read_slot_pages(
+        [page],
+        runtime=gemini,
+        record_attempt=attempts.append,
+        store=MemoryStore(),  # type: ignore[arg-type]
+        stored_answers=StoredReaderAnswers(session),
+    )
+
+    assert _calls(gemini_readers) == _calls(claude_readers), "every question asked again"
+    assert attempts and all(attempt.reused_from is None for attempt in attempts)
+    assert {attempt.model_id for attempt in attempts} == {FLASH, PRO}
+    assert gemini_run is not None
+
+    # Stored Claude answers to the identical packets are found for Claude only.
+    png = _tiny_png()
+    from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_ID
+
+    spans = [
+        row
+        for row in _rows(session, first_run)
+        if row.model_id == OPUS and row.prompt_id == CLAUDE_SPAN_PROMPT_ID
+    ]
+    assert spans
+    stored = StoredReaderAnswers(session)
+    for model in (FLASH, PRO):
+        jobs = [
+            CropJob(
+                f"q{index}",
+                model,
+                0,
+                png,
+                png,
+                grounded_claude=True,
+                question_packet=row.reader_question_packet,
+            )
+            for index, row in enumerate(spans)
+        ]
+        assert stored.find(jobs, product=None) == {}

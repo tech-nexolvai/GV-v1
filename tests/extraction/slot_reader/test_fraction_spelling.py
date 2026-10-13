@@ -78,7 +78,7 @@ def _claude_pair(first: str, second: str) -> LabelOutcome:
         stacked_by_bar=False,
         allow_stacked=False,
         row_ambiguity=None,
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
 

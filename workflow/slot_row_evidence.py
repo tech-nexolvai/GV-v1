@@ -48,7 +48,8 @@ from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
 from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS, parse_stored_reader_answer
 from extraction.slot_reader.labels import expand_label, plain_dimension
-from extraction.slot_reader.seal import _CLAUDE_PAIR, TEXT_LAYER, normalise_text
+from extraction.slot_reader.reader_pairs import is_named_pair
+from extraction.slot_reader.seal import TEXT_LAYER, normalise_text
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.finding import Finding
@@ -591,7 +592,7 @@ def _canonical_for_candidate(
         or (
             independence_key("bedrock-slot-reader", raw_by_reader[0][0])
             == independence_key("bedrock-slot-reader", raw_by_reader[1][0])
-            and frozenset(reader_id for reader_id, _support in raw_by_reader) != _CLAUDE_PAIR
+            and not is_named_pair(reader_id for reader_id, _support in raw_by_reader)
         )
     ):
         return None

@@ -329,6 +329,8 @@ describe('spend so far words', () => {
     expect(modelName('qwen.qwen3-vl-235b-a22b')).toBe('Qwen3 VL 235B');
     expect(modelName('us.moonshotai.kimi-k3')).toBe('Kimi K3');
     expect(modelName('mistral.mistral-large-3-675b-instruct')).toBe('Mistral Large 3');
+    expect(modelName('google.gemini-3-8-flash')).toBe('Gemini 3.8 Flash');
+    expect(modelName('google.gemini-3-1-pro-preview')).toBe('Gemini 3.1 Pro');
     expect(modelName('synthetic.unknown-model-v9')).toBeNull();
     expect(routeWord('unknown')).toBe('Not recorded');
     expect(routeWord('bedrock')).toBe('Amazon Bedrock');

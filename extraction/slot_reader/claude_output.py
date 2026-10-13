@@ -1,4 +1,4 @@
-"""The fixed answer shapes, effort and picture limits for the two Claude readers (#1051).
+"""The fixed answer shapes, effort and picture limits for the AI readers (#1051, #1211).
 
 **Why this exists.** The Claude readers used to answer in free text that the slot reader then
 searched for a JSON object, at the API's default effort (`medium` on Opus 5.5), with pictures the
@@ -20,9 +20,18 @@ This module states, once:
   resize is refused here, before any call, and the question abstains with that reason. The sizes
   the slot reader draws are not changed by this module.
 
+**The Gemini pair (#1211)** is asked with the same answer schemas, carried under the same key and
+checked by the same strict check (`claude_answer`), through its own route (`gemini.py`). Its
+pictures are held to the same limits as the Claude pair's, so the two pairs are always shown
+exactly the same pictures. Gemini 3 does not refuse a large picture; it reads every picture at a
+fixed token budget (1,120 tokens at its default, high resolution), so the spend guard counts a
+Gemini picture at no less than that (`picture_token_bound`).
+
 Sources: https://platform.claude.com/docs/en/build-with-claude/structured-outputs ,
-.../effort , .../vision , .../vision-coordinates (read 2026-10-09).
-Verification: `tests/extraction/slot_reader/test_claude_output.py`.
+.../effort , .../vision , .../vision-coordinates (read 2026-10-09);
+https://ai.google.dev/gemini-api/docs/media-resolution (read 2026-10-13).
+Verification: `tests/extraction/slot_reader/test_claude_output.py`,
+`tests/extraction/slot_reader/test_gemini.py`.
 """
 
 from __future__ import annotations
@@ -45,6 +54,7 @@ __all__ = [
     "COUNTER_BREAK_SCHEMA",
     "CROP_SCHEMA",
     "DEFAULT_CLAUDE_EFFORT",
+    "GEMINI_PICTURE_TOKENS",
     "OUTPUT_CONFIG_KEY",
     "ROW_CHOICE_SCHEMA",
     "ROW_KINDS",
@@ -55,10 +65,13 @@ __all__ = [
     "RowKind",
     "arch_match_schema",
     "arch_pair_schema",
+    "asks_with_schema",
     "claude_answer",
     "is_claude_model",
+    "is_gemini_model",
     "output_config",
     "picture_fits",
+    "picture_token_bound",
     "png_size",
     "require_picture_fits",
     "visual_tokens",
@@ -82,6 +95,15 @@ _HIGH_RESOLUTION_MODELS: Final = frozenset({"claude-opus-5-5", "claude-sonnet-5-
 _TILE_PX: Final = 28
 _HIGH_RESOLUTION_LIMITS: Final = (2576, 4784)
 _STANDARD_LIMITS: Final = (1568, 1568)
+#: The Gemini reader ids (#1211): `google.gemini-...`, called through `gemini.py`.
+_GEMINI_PREFIX: Final = "google.gemini-"
+#: The Gemini pair's picture limits: the Claude pair's high-resolution tier, so both pairs are shown
+#: the very same pictures (a bake-off compares readers, not picture sizes). Gemini documents no
+#: pixel limit of its own; it reads any picture at a fixed token budget.
+_GEMINI_LIMITS: Final = _HIGH_RESOLUTION_LIMITS
+#: What one picture costs Gemini 3 at its default (high) media resolution, whatever its size
+#: (ai.google.dev/gemini-api/docs/media-resolution, read 2026-10-13).
+GEMINI_PICTURE_TOKENS: Final = 1120
 #: The Messages API's per-image limit, base64-encoded (Claude API direct).
 _MAX_BASE64_BYTES: Final = 10 * 1024 * 1024
 _PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
@@ -90,6 +112,18 @@ _PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
 def is_claude_model(model_id: str) -> bool:
     """Whether a reader id names one of Anthropic's models, called through the Messages API."""
     return model_id.startswith(_MODEL_PREFIX)
+
+
+def is_gemini_model(model_id: str) -> bool:
+    """Whether a reader id names one of Google's Gemini models, called through chat completions
+    (#1211)."""
+    return model_id.startswith(_GEMINI_PREFIX)
+
+
+def asks_with_schema(model_id: str) -> bool:
+    """Whether a reader is asked with a fixed answer schema and stated effort, checked strictly,
+    with its pictures checked against its limits first: the Claude and the Gemini readers."""
+    return is_claude_model(model_id) or is_gemini_model(model_id)
 
 
 def _object(properties: Mapping[str, Mapping[str, object]]) -> dict[str, object]:
@@ -361,8 +395,17 @@ def visual_tokens(width: int, height: int) -> int:
 
 
 def _limits(model_id: str) -> tuple[int, int]:
+    if is_gemini_model(model_id):
+        return _GEMINI_LIMITS
     model = model_id.removeprefix(_MODEL_PREFIX)
     return _HIGH_RESOLUTION_LIMITS if model in _HIGH_RESOLUTION_MODELS else _STANDARD_LIMITS
+
+
+def picture_token_bound(width: int, height: int, model_id: str) -> int:
+    """At least what one picture costs the model: its 28 px tiles, and for Gemini never less than
+    its fixed per-picture budget."""
+    tiles = visual_tokens(width, height)
+    return max(tiles, GEMINI_PICTURE_TOKENS) if is_gemini_model(model_id) else tiles
 
 
 def picture_fits(width: int, height: int, model_id: str) -> bool:

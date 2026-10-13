@@ -68,7 +68,7 @@ def seal(
     stacked_by_bar: bool = False,
     allow_stacked: bool = False,
     row_ambiguity: str | None = None,
-    allow_claude_pair: bool = False,
+    allow_named_pair: bool = False,
     held_before_reading: str | None = None,
 ) -> LabelOutcome:
     return seal_label(
@@ -78,7 +78,7 @@ def seal(
         stacked_by_bar=stacked_by_bar,
         allow_stacked=allow_stacked,
         row_ambiguity=row_ambiguity,
-        allow_claude_pair=allow_claude_pair,
+        allow_named_pair=allow_named_pair,
         held_before_reading=held_before_reading,
     )
 
@@ -124,7 +124,7 @@ def test_same_maker_agreement_never_seals() -> None:
 def test_approved_claude_pair_is_provisional_until_the_drawing_witness_runs() -> None:
     outcome = seal(
         answers=(answer(OPUS, '2"'), answer(SONNET, '2"')),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.PROVISIONAL
@@ -140,7 +140,7 @@ def test_claude_pair_parses_explicit_mm_inch_label_but_legacy_does_not() -> None
     legacy = seal(answers=(answer(KIMI, "305 mm [12]"), answer(QWEN, "305 mm [12]")))
     assert legacy.state is LabelState.REVIEW and legacy.reason_code == "not-plain"
 
-    claude = seal(answers=answers, allow_claude_pair=True)
+    claude = seal(answers=answers, allow_named_pair=True)
     assert claude.state is LabelState.PROVISIONAL
     assert claude.suggestion is not None and claude.suggestion.exact == Fraction(12)
 
@@ -156,14 +156,14 @@ def test_claude_pair_parses_the_bare_mm_inch_form_even_when_both_call_it_combine
     because both readers ticked "combined" (two numbers) and only the `mm`-spelt form was allowed.
     """
     answers = (answer(OPUS, text, combined=True), answer(SONNET, text, combined=True))
-    outcome = seal(answers=answers, allow_claude_pair=True)
+    outcome = seal(answers=answers, allow_named_pair=True)
     assert outcome.state is LabelState.PROVISIONAL
     assert outcome.suggestion is not None and outcome.suggestion.exact == inches
 
 
 def test_claude_pair_holds_a_dual_label_whose_mm_and_inch_halves_disagree() -> None:
     answers = (answer(OPUS, "305 [10]"), answer(SONNET, "305 [10]"))
-    outcome = seal(answers=answers, allow_claude_pair=True)
+    outcome = seal(answers=answers, allow_named_pair=True)
     assert outcome.state is LabelState.REVIEW
     assert outcome.reason_code == "mm-inch-disagree"
 
@@ -184,7 +184,7 @@ def test_claude_pair_expands_only_the_approved_exact_label_forms(
             answer(OPUS, text, combined=True),
             answer(SONNET, text, combined=True),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.PROVISIONAL
@@ -195,7 +195,7 @@ def test_claude_pair_expands_only_the_approved_exact_label_forms(
 def test_claude_pair_disagreement_stays_with_the_reviewer() -> None:
     outcome = seal(
         answers=(answer(OPUS, '2"'), answer(SONNET, '3"')),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.REVIEW
@@ -209,11 +209,11 @@ def test_claude_pair_requires_both_readers_to_claim_span_ownership() -> None:
             answer(OPUS, "", belongs=False, readable=False, no_dimension=True),
             answer(SONNET, "", belongs=False, readable=False, no_dimension=True),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
     disputed = seal(
         answers=(answer(OPUS, "", belongs=False, readable=False), answer(SONNET, '2"')),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert absent.state is LabelState.NOT_A_DIMENSION
@@ -391,7 +391,7 @@ def test_two_readers_unsure_about_a_label_send_it_to_the_reviewer_never_no_label
             answer(OPUS, "", belongs=Belongs.UNSURE, readable=False),
             answer(SONNET, "", belongs=Belongs.UNSURE, readable=False),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.REVIEW
@@ -414,7 +414,7 @@ def test_one_unsure_reader_holds_the_label_whatever_the_other_says(
     )
     outcome = seal(
         answers=(answer(OPUS, "", belongs=Belongs.UNSURE, readable=False), other),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.REVIEW and outcome.reason_code == "unsure"
@@ -427,7 +427,7 @@ def test_unsure_holds_even_when_the_unsure_reader_also_ticked_no_dimension() -> 
             answer(OPUS, "", belongs=Belongs.UNSURE, readable=False, no_dimension=True),
             answer(SONNET, "", belongs=Belongs.NO, readable=False, no_dimension=True),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.REVIEW and outcome.reason_code == "unsure"
@@ -439,14 +439,14 @@ def test_two_explicit_no_dimension_answers_are_still_not_a_dimension() -> None:
             answer(OPUS, "", belongs=Belongs.NO, readable=False, no_dimension=True),
             answer(SONNET, "", belongs=Belongs.NO, readable=False, no_dimension=True),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
     by_no = seal(
         answers=(
             answer(OPUS, "", belongs=Belongs.NO, readable=False),
             answer(SONNET, "", belongs=Belongs.NO, readable=False),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert by_flag.state is LabelState.NOT_A_DIMENSION
@@ -461,7 +461,7 @@ def test_a_no_that_still_copies_a_text_is_not_an_explicit_no_dimension() -> None
             answer(OPUS, '2"', belongs=Belongs.NO),
             answer(SONNET, "", belongs=Belongs.NO, readable=False),
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
 
     assert outcome.state is LabelState.REVIEW
@@ -487,7 +487,7 @@ def test_v3_boolean_answers_read_as_they_always_did() -> None:
             ReaderAnswer(OPUS, "", False, False, False, False, False),  # type: ignore[arg-type]
             ReaderAnswer(SONNET, "", False, False, False, False, False),  # type: ignore[arg-type]
         ),
-        allow_claude_pair=True,
+        allow_named_pair=True,
     )
     assert both_false.state is LabelState.NOT_A_DIMENSION
 
