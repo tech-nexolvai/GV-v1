@@ -18,7 +18,8 @@ This module states, once:
 - **the documented picture limits** (long edge 2576 px and 4784 visual tokens of 28 x 28 px on the
   high-resolution tier, which both readers are on; 1568/1568 otherwise). A picture the API would
   resize is refused here, before any call, and the question abstains with that reason. The sizes
-  the slot reader draws are not changed by this module.
+  the slot reader draws are not changed by this module; it reads `long_edge_limit` to shrink a
+  label close-up that would not fit (#1213).
 
 Sources: https://platform.claude.com/docs/en/build-with-claude/structured-outputs ,
 .../effort , .../vision , .../vision-coordinates (read 2026-10-09).
@@ -57,6 +58,7 @@ __all__ = [
     "arch_pair_schema",
     "claude_answer",
     "is_claude_model",
+    "long_edge_limit",
     "output_config",
     "picture_fits",
     "png_size",
@@ -363,6 +365,14 @@ def visual_tokens(width: int, height: int) -> int:
 def _limits(model_id: str) -> tuple[int, int]:
     model = model_id.removeprefix(_MODEL_PREFIX)
     return _HIGH_RESOLUTION_LIMITS if model in _HIGH_RESOLUTION_MODELS else _STANDARD_LIMITS
+
+
+def long_edge_limit(model_id: str) -> int:
+    """The longest side, in pixels, a picture may have for `model_id` to read it unresized.
+
+    The slot reader shrinks a label close-up wider than this to fit (#1213) rather than have it
+    refused; `require_picture_fits` stays the guard."""
+    return _limits(model_id)[0]
 
 
 def picture_fits(width: int, height: int, model_id: str) -> bool:
