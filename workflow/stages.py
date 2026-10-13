@@ -2214,18 +2214,18 @@ class DatabaseStages:
             # Never silent (#1163): each page's architect notes — views found without a role,
             # views refused, why no view was found — travel with that page's result.
             results = _with_architect_notes(results, architect)
-        if self._form_reader is not None and not ai_reading_used(
-            _revision_product(session, package_revision_id)
-        ):
-            # **A cabinet package is not read by the AI (#1205).** The readers ask countertop
-            # questions, and no cabinet check can use a reading (`app/review/cabinet_reading.py`).
-            # Never silent: the skip is a run of its own on this revision, and the results say it.
+        product = _revision_product(session, package_revision_id)
+        if self._form_reader is not None and product is not None and not ai_reading_used(product):
+            # **A package whose checks include no countertop is not read by the AI (#1205).** The
+            # readers ask countertop questions, and no cabinet check can use a reading
+            # (`app/review/cabinet_reading.py`). Never silent: the skip is a run of its own on this
+            # revision, and the results say it.
             open_extraction_run(
                 session,
                 task_run_id=task_run.id,
                 extractor=AI_READING_SKIPPED,
                 extractor_version=AI_READING_SKIPPED_VERSION,
-                config_hash=f"product={ProductType.CABINET.value}",
+                config_hash=f"product={product.value}",
             )
         elif self._form_reader is not None:
             for version in _shop_document_versions_for(session, package_revision_id):

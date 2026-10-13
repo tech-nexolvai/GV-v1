@@ -186,10 +186,38 @@ def test_a_cabinet_package_read_before_the_change_gets_the_plain_line(
     assert results_note(session, revision.id, None) is None
 
 
-def test_only_a_cabinet_package_skips_the_reading() -> None:
+def test_only_a_package_whose_checks_include_countertops_is_read() -> None:
+    """The reading asks countertop questions, so it runs exactly where countertops are checked
+    (`countertops_checked`, the same test sign-off uses): never for cabinets, and never for a
+    product added later, which would otherwise be read with countertop questions while its
+    countertop pages blocked nothing (#1205 review)."""
+    from enum import StrEnum
+
+    from app.review.no_countertop import countertops_checked
+
+    class Later(StrEnum):
+        """A stand-in for a product the rulebook does not publish yet."""
+
+        VANITY = "vanity"
+
     assert not ai_reading_used(ProductType.CABINET)
     assert ai_reading_used(ProductType.COUNTERTOP)
     assert ai_reading_used(None)
+    for product in ProductType:
+        assert ai_reading_used(product) is countertops_checked(product.value)
+    assert not ai_reading_used(Later.VANITY)  # type: ignore[arg-type]
+    assert results_note_for_later(Later.VANITY.value) is not None
+
+
+def results_note_for_later(product: str) -> str | None:
+    """A later product's results still say plainly where its checks take their values from."""
+    from uuid import uuid4
+
+    class _NoSkipOnRecord:
+        def scalar(self, *_args: object) -> bool:
+            return False
+
+    return results_note(_NoSkipOnRecord(), uuid4(), product)  # type: ignore[arg-type]
 
 
 def _rules() -> Iterator[Rule]:

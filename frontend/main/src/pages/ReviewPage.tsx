@@ -1291,11 +1291,11 @@ function RunChecksDialog({ ask, reviewFirst, onConfirm, onReview, onCancel }: {
   );
 }
 
-/** "15 items need you": the review's blocking count always carries its noun (#1179). */
 /**
- * The results screen's countertop state from the countertop-results API. A cabinet package
- * (`countertops_checked: false`, #1205) is asked no countertop question, so nothing countertop-shaped
- * reaches the dashboard, the "Needs you" queue or the assistant: only its plain line.
+ * The results screen's countertop state from the countertop-results API. A package whose checks
+ * include no countertop (`countertops_checked: false`, cabinets, #1205) is asked no countertop
+ * question, so nothing countertop-shaped reaches the dashboard, the "Needs you" queue or the
+ * assistant: only its plain line.
  */
 function readyCountertops(answer: CountertopResults): Extract<CountertopsState, { status: 'ready' }> {
   if (answer.countertops_checked === false) {
@@ -1312,6 +1312,7 @@ function readyCountertops(answer: CountertopResults): Extract<CountertopsState, 
   };
 }
 
+/** "15 items need you": the review's blocking count always carries its noun (#1179). */
 function itemsNeedYou(count: number): string {
   return `${count} ${count === 1 ? 'item needs' : 'items need'} you`;
 }

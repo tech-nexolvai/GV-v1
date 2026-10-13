@@ -181,15 +181,16 @@ export function ResultsDashboard({
     onShowArchitectView,
   };
 
-  // A cabinet package (#1205): its checks use the cabinet lists on Measurements, so the countertop
-  // rows, the pages "with no countertop" and their questions are not this review's. Said once instead.
+  // A package whose checks include no countertop (cabinets, #1205): its checks use the values on
+  // Measurements, so countertop rows, pages "with no countertop" and their questions are not this
+  // review's. The server's own line is said once instead.
   const cabinetOnly = countertops.countertopsChecked === false;
 
   return (
     <section data-tw data-slot="results-dashboard" aria-label="Results" className="flex flex-col gap-4 p-4 font-sans sm:p-6">
       {cabinetOnly ? (
         <p data-slot="cabinet-reading-note" role="note" className="rounded-xl border border-dashed p-4 text-sm">
-          {countertops.readingNote ?? 'Cabinet checks use the cabinet lists on Measurements.'}
+          {countertops.readingNote ?? "This package's checks use the values entered on Measurements."}
         </p>
       ) : rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed p-6">

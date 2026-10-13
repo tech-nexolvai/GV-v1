@@ -507,18 +507,19 @@ class CountertopResultsOut(BaseModel):
         json_schema_extra=optional_in_schema,
         description=(
             "Whether this package's checks include the countertop checks: false for a package made "
-            "for cabinets. Then nothing below is a question for this review: no page listed here "
-            "blocks sign-off, and the screen shows `reading_note` in place of countertop wording "
-            "(#1205)."
+            "for cabinets (or any product other than countertops). Then no countertop is a question "
+            "for this review: `items` and the three lists are empty, nothing here blocks sign-off, "
+            "and the screen, the assistant and the signed files say `reading_note` instead (#1205)."
         ),
     )
     reading_note: str | None = Field(
         default=None,
         json_schema_extra=optional_in_schema,
         description=(
-            "For a cabinet package, one plain line saying where its checks take their values from "
-            "(the cabinet lists on Measurements), and that the AI did not read its drawings when "
-            "that is on record. Null for a countertop package (#1205)."
+            "For a package whose checks include no countertop, one plain line saying where its "
+            "checks take their values from (for cabinets, the cabinet lists on Measurements), and "
+            "that the AI did not read its drawings when that is on record. Null for a countertop "
+            "package (#1205)."
         ),
     )
     pages_without_countertop: tuple[PageWithoutCountertopOut, ...] = Field(

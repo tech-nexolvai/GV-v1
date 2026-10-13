@@ -906,7 +906,26 @@ def _countertop_results_for_revision(
     (`effective_architect_pairings`), so the statement count does not grow with the rows.
     When the architect's drawings are their own indexed file (#1168), every row's match with one
     of its views is read once per revision, with the matches waiting for a run and the views.
+
+    **A package whose checks include no countertop** (cabinets, #1205) gets no countertop item,
+    listed page, second row or unread drawing: none is a question for its review. Its results carry
+    the product, `countertops_checked=False` and the one plain line instead, and every reader of
+    this projection — the screen, the review assistant, the frozen signed files — takes them from
+    here, so none of them can list a countertop page for a cabinet review.
     """
+    # The package's product (#1205). Read from the identity map when the caller already loaded the
+    # package (the read endpoint does).
+    package = session.get(Package, package_id)
+    product = None if package is None else package.product_type
+    if not countertops_checked(product):
+        return CountertopResultsOut(
+            package_id=package_id,
+            revision_id=revision.id,
+            items=(),
+            product_type=product,
+            countertops_checked=False,
+            reading_note=results_note(session, revision.id, product),
+        )
     # With the pages whose countertop row was not chosen (#1093), except where a reviewer-owned run
     # is the source: the check asks nothing there, so neither does this list.
     rows, unchosen = slot_rows_and_unchosen_pages(session, revision.id)
@@ -997,16 +1016,8 @@ def _countertop_results_for_revision(
     )
     # The decision standing on each result: the reviewer's own latest, or the one it carried over an
     # unchanged re-run (#1073). Read once, with sign-off readiness, so the two cannot disagree.
-    # The package's product (#1205): a cabinet package is asked no countertop question. Read from
-    # the identity map when the caller already loaded the package (the read endpoint does).
-    package = session.get(Package, package_id)
-    product = None if package is None else package.product_type
-    checked = countertops_checked(product)
     pages_blocking = blocking_pages(
-        unchosen,
-        page_answers,
-        {row for row in finding_by_row if row is not None},
-        countertops_checked=checked,
+        unchosen, page_answers, {row for row in finding_by_row if row is not None}
     )
     readiness, records = readiness_and_decisions(session, revision.id, pages=pages_blocking)
     decisions = records.decisions
@@ -1185,8 +1196,8 @@ def _countertop_results_for_revision(
         # Stable: rows on one page keep their order; a split page sits among them by page number.
         items=tuple(sorted(items, key=lambda item: item.page_number)),
         product_type=product,
-        countertops_checked=checked,
-        reading_note=results_note(session, revision.id, product),
+        countertops_checked=True,
+        reading_note=None,
         pages_without_countertop=tuple(
             PageWithoutCountertopOut(
                 page_number=page.page_number,
