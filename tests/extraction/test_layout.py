@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 from evidence.crop import CropSpec, CropStatus, RenderedPage, generate_crop
@@ -356,3 +357,18 @@ def test_with_call_recorder_leaves_the_original_reader_unrecorded() -> None:
     reader.read(_rendered(), _question())
 
     assert calls == []
+
+
+def test_an_interrupted_layout_call_is_handed_over_as_an_error_and_still_raises() -> None:
+    """**Outcome: Ctrl-C is never recorded as an `ok` call with zero tokens.**"""
+    calls: list[LayoutCall] = []
+    reader = BedrockClosedQuestionReader(
+        _LAYOUT_CONFIG, _RaisingBedrock(KeyboardInterrupt())
+    ).with_call_recorder(calls.append)
+
+    with pytest.raises(KeyboardInterrupt):
+        reader.read(_rendered(), _question())
+
+    assert len(calls) == 1
+    assert calls[0].response is None
+    assert isinstance(calls[0].error, KeyboardInterrupt)

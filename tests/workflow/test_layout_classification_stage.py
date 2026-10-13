@@ -546,3 +546,123 @@ def test_usage_counts_the_layout_calls(session: Session, store: LocalStore, rate
     assert layout.input_tokens == 1000 * client.calls
     assert layout.cost_usd == f"{1.2 * client.calls:.6f}"
     assert usage.groups[0].package_id == package.id
+
+
+# ---------------------------------------------------------------------------
+# #1221 review: recording a layout call must not change the AI reading budget
+# ---------------------------------------------------------------------------
+
+UNPRICED_LAYOUT_MODEL = "test-layout-model-without-a-price"
+
+
+def _extract_task_run(session: Session, revision: PackageRevision) -> TaskRun:
+    return session.execute(
+        select(TaskRun).where(
+            TaskRun.idempotency_key
+            == stage_idempotency_key(
+                package_revision_id=revision.id,
+                stage="extract_pages",
+                engine_version=ENGINE_VERSION,
+            )
+        )
+    ).scalar_one()
+
+
+def test_committed_layout_rows_leave_the_reading_budget_where_it_was(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    """**Outcome: `stage_spend_so_far` and the room it gives the readers ignore layout rows.**
+
+    "Read the unread pages" rebuilds the meter from the stage's committed rows. Counting a layout
+    row there would shrink the readers' room (a priced row) or close it to $0 (an unpriced row, which
+    `_remaining_claude_budget` treats as unknown spend). Phase 1 changes no behaviour, so layout and
+    assignment rows stay out of the reading meter until the shared budget (Sutra step 3).
+    """
+    from decimal import Decimal
+    from time import monotonic_ns
+
+    from app.runs.invocations import BedrockConverseInvocationRecorder
+    from workflow.stages import _remaining_claude_budget, stage_spend_so_far
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    priced, unpriced = _AnsweringBedrock(), _AnsweringBedrock()
+    unpriced_reader = BedrockClosedQuestionReader(
+        BedrockClosedQuestionConfig(
+            model_id=UNPRICED_LAYOUT_MODEL,
+            prompt_id=LAYOUT_PROMPT_ID,
+            template_id=LAYOUT_TEMPLATE_ID,
+        ),
+        unpriced,
+    )
+    DatabaseStages(
+        store,
+        layout_readers=[_bedrock_reader(priced), unpriced_reader],
+        missing_space=MISSING_SPACE,
+    ).extract_pages(session, revision.id)
+    rows = _layout_rows(session)
+    assert {row.cost_micros for row in rows} == {1_200_000, None}, "one priced, one unpriced"
+    [run_id] = _layout_run_ids(session)
+    # A reader's own call under the same run still counts, as before.
+    BedrockConverseInvocationRecorder(session, None, extraction_run_id=run_id).record(
+        model_id=LAYOUT_MODEL,
+        prompt_id="claude-slot-span-v5",
+        template_id="slot-span",
+        started_ns=monotonic_ns(),
+        response={"usage": {"inputTokens": 100, "outputTokens": 0}},
+        error=None,
+    )
+    session.commit()
+
+    spent, unpriced_calls = stage_spend_so_far(session, _extract_task_run(session, revision))
+
+    assert (spent, unpriced_calls) == (100_000, 0), "only the reader's call is reading spend"
+    room = _remaining_claude_budget(
+        Decimal(5), cap_micros=3_000_000, spent_micros=spent, unpriced_calls=unpriced_calls
+    )
+    assert room == _remaining_claude_budget(
+        Decimal(5), cap_micros=3_000_000, spent_micros=100_000, unpriced_calls=0
+    )
+    assert room == Decimal("2.9")
+
+
+def test_a_pending_invalid_row_still_raises_its_own_error_in_the_stage(
+    session: Session, store: LocalStore, rates: None
+) -> None:
+    """**Outcome: the layout recorder never swallows someone else's database error.**
+
+    The recorder writes after `classify_layout` returns and flushes the session outside its own
+    guard, so a refused write that is not its own surfaces exactly as before.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from workflow.model_call_recorder import ModelCallRecorder
+
+    _publish_rulebook(session)
+    revision = _revision(session, store)
+    session.flush()
+    recorder = ModelCallRecorder(session, package_revision_id=revision.id)
+    recorder.record(
+        model_id=LAYOUT_MODEL,
+        prompt_id=LAYOUT_PROMPT_ID,
+        template_id=LAYOUT_TEMPLATE_ID,
+        started_ns=1,
+        response={"usage": {"inputTokens": 1, "outputTokens": 1}},
+        error=None,
+    )
+    # Someone else's pending row, refused by the table's own check (a blank model id).
+    session.add(
+        ModelInvocation(
+            package_revision_id=revision.id,
+            model_id="",
+            prompt_id="someone-else",
+            template_id="someone-else",
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=0,
+            outcome="ok",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        recorder.write_pending()

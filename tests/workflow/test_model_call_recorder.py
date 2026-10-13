@@ -280,7 +280,8 @@ def test_the_committing_recorder_keeps_its_row_when_the_request_rolls_back(
     from time import monotonic_ns
 
     revision_id, _ = _revision(session)
-    ModelCallRecorder(session, package_revision_id=revision_id, commit=True).record(
+    recorder = ModelCallRecorder(session, package_revision_id=revision_id, commit=True)
+    recorder.record(
         model_id=MODEL,
         prompt_id=PROMPT_ID,
         template_id=TEMPLATE_ID,
@@ -288,6 +289,7 @@ def test_the_committing_recorder_keeps_its_row_when_the_request_rolls_back(
         response=_answer(),
         error=None,
     )
+    recorder.write_pending()
     session.rollback()
 
     with session_factory(postgres_engine)() as other:
@@ -301,3 +303,105 @@ def test_the_recorder_needs_exactly_one_scope() -> None:
         ModelCallRecorder(object(), package_revision_id=uuid4(), extraction_run_id=uuid4())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="exactly one"):
         ModelCallRecorder(object())  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# #1221 review: the recorder never hides or commits anybody else's work
+# ---------------------------------------------------------------------------
+
+
+def _blank_model_row(revision_id: UUID) -> ModelInvocation:
+    """Someone else's pending row, refused by the table's own check (a blank model id)."""
+    return ModelInvocation(
+        package_revision_id=revision_id,
+        model_id="",
+        prompt_id="someone-else",
+        template_id="someone-else",
+        input_tokens=0,
+        output_tokens=0,
+        latency_ms=0,
+        outcome="ok",
+    )
+
+
+def test_a_pending_invalid_row_still_raises_its_own_error_in_the_worker(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**Outcome: the error that belongs to other pending work surfaces as itself.**
+
+    The recorder used to write inside a savepoint whose opening flushed the whole session, so a
+    refused row that was not its own was caught, logged as "not recorded", and left the session
+    unusable for the work after it.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from workflow import propose
+
+    revision_id, context = _revision(session)
+    monkeypatch.setattr(propose, "assignment_context", lambda _session, _revision: (context, 1))
+
+    class _AddsPendingWork(_Client):
+        """Other work becomes pending while the model is asked, as on a busy session."""
+
+        def converse(self, **request: Any) -> dict[str, Any]:
+            session.add(_blank_model_row(revision_id))
+            return super().converse(**request)
+
+    with pytest.raises(IntegrityError):
+        propose.propose_for_revision(session, revision_id, _model(_AddsPendingWork(_answer())))
+
+
+def test_the_committing_recorder_does_not_commit_other_pending_work(
+    session: Session, postgres_engine: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**Outcome: with other work pending, nothing is committed and a warning says so.**"""
+    from time import monotonic_ns
+
+    from app.models import Project
+
+    revision_id, _ = _revision(session)
+    recorder = ModelCallRecorder(session, package_revision_id=revision_id, commit=True)
+    recorder.record(
+        model_id=MODEL,
+        prompt_id=PROMPT_ID,
+        template_id=TEMPLATE_ID,
+        started_ns=monotonic_ns(),
+        response=_answer(),
+        error=None,
+    )
+    session.add(Project(name="pending work that is not the recorder's"))
+
+    with caplog.at_level(logging.WARNING, logger="gv.workflow.model_call_recorder"):
+        recorder.write_pending()
+    session.rollback()
+
+    assert "not committed" in caplog.text
+    assert _committed_rows(postgres_engine) == []
+
+
+def test_a_call_with_neither_answer_nor_error_writes_no_row(
+    session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**Outcome: no `ok` row with zero tokens for a call that never ended normally.**"""
+    from time import monotonic_ns
+
+    revision_id, _ = _revision(session)
+    recorder = ModelCallRecorder(session, package_revision_id=revision_id)
+    recorder.record(
+        model_id=MODEL,
+        prompt_id=PROMPT_ID,
+        template_id=TEMPLATE_ID,
+        started_ns=monotonic_ns(),
+        response=None,
+        error=None,
+    )
+    with caplog.at_level(logging.WARNING, logger="gv.workflow.model_call_recorder"):
+        recorder.write_pending()
+
+    assert _rows(session) == []
+    assert "neither an answer nor an error" in caplog.text
+
+
+def _committed_rows(engine: Engine) -> list[ModelInvocation]:
+    with session_factory(engine)() as other:
+        return list(other.execute(select(ModelInvocation)).scalars())

@@ -993,3 +993,16 @@ def test_with_invocation_recorder_leaves_the_original_model_unrecorded() -> None
     propose_and_guard(_context(), model)
 
     assert recorder.records == []
+
+
+def test_an_interrupted_call_is_recorded_as_an_error_and_still_raises() -> None:
+    """**Outcome: Ctrl-C is never recorded as an `ok` call with zero tokens.**"""
+    recorder = _Recorder()
+    model = _model_with(_Raises(KeyboardInterrupt())).with_invocation_recorder(recorder)
+
+    with pytest.raises(KeyboardInterrupt):
+        propose_and_guard(_context(), model)
+
+    assert len(recorder.records) == 1
+    assert recorder.records[0]["response"] is None
+    assert isinstance(recorder.records[0]["error"], KeyboardInterrupt)
