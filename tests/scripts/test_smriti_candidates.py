@@ -51,6 +51,19 @@ def session(engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
+@pytest.fixture(autouse=True)
+def _known_reviewer(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The local real-reviewer list (#1267), naming the invented reviewer of `build_world`."""
+    from eval.smriti.actors import REVIEWERS_ENV, REVIEWERS_FORMAT
+    from tests.eval.test_smriti_export import REVIEWER
+
+    people = tmp_path_factory.mktemp("local") / "people.json"
+    people.write_text(json.dumps({"format": REVIEWERS_FORMAT, "reviewers": [REVIEWER]}))
+    monkeypatch.setenv(REVIEWERS_ENV, str(people))
+
+
 def _url(engine: Engine) -> str:
     return engine.url.render_as_string(hide_password=False)
 
