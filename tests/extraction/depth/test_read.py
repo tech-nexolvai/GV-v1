@@ -916,3 +916,14 @@ def test_a_depth_drawn_as_a_chains_overall_asks_its_links_and_the_sum_confirms_i
     assert found.usable and found.confirmed_by == "chain", found.reason
     numbers('10"', '13"')
     assert not values(read(view, readers))[CT010].usable
+
+
+def test_a_short_run_from_the_wall_is_not_a_second_stone() -> None:
+    from extraction.depth.read import two_stones
+
+    # A 30 pt run from the wall to an edge (a cabinet part) beside the 96 pt depth: one stone.
+    part = [line(420, 130, 560, 130)] + vertical_dimension(440, 100, 130)
+    lines = [s for s in plan_lines() if s not in wall_hatch(90, 100, 60, 400)]
+    lines += wall_hatch(90, 100, 60, 560) + [line(400, 100, 560, 100), line(400, 90, 560, 90)]
+    view = prepared(lines=lines + part)
+    assert two_stones(view, MEASURED_SPAN_SETTINGS) is None

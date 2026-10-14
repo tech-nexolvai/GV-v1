@@ -605,7 +605,15 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
     bands = wall_bands(ink, view, dimension_strokes=dimension_strokes, settings=settings)
     # The span's own witness lines and the dimension lines themselves are not an edge of the
     # drawing; a stroke collinear with a witness line can be (a witness is drawn from the edge).
-    own = {_key(*stroke) for stroke in dimension_strokes}
+    # A "witness" that runs well past its dimension line on both sides is a drawing edge the line
+    # happens to cross (#1265 review: a stone's front edge crossed by another dimension), and
+    # stays an edge.
+    own = {
+        _key(*stroke)
+        for found in every
+        for stroke in (found.stroke, *found.witnesses)
+        if not _crossed_edge(found, stroke, settings)
+    }
     others = [
         stroke
         for stroke in strokes
@@ -649,6 +657,17 @@ class _Raw:
     stroke_ends: tuple[Decimal, Decimal]
     stroke: tuple[Decimal, Decimal, Decimal, Decimal]
     witnesses: tuple[tuple[Decimal, Decimal, Decimal, Decimal], ...]
+
+
+def _crossed_edge(found: _Raw, stroke: _Quad, settings: SpanSettings) -> bool:
+    """Whether one of a dimension line's witnesses runs more than twice `witness_tolerance_pt` past
+    the line on both sides: an edge the line crosses, not a witness drawn to it."""
+    if stroke == found.stroke:
+        return False
+    x0, y0, x1, y1 = stroke
+    low, high = (y0, y1) if found.axis is Axis.HORIZONTAL else (x0, x1)
+    margin = 2 * settings.witness_tolerance_pt
+    return found.offset - low > margin and high - found.offset > margin
 
 
 def _raw(line: DimensionLine) -> _Raw:
@@ -1172,8 +1191,10 @@ def _own_bracket(number: PrintedPhrase, phrases: Sequence[PrintedPhrase]) -> Pri
             continue
         o_low, o_high, o_top, o_bottom = _along_across(other)
         overlap = min(high, o_high) - max(low, o_low)
+        # Right under or over it: the two boxes may touch or overlap a little across (half a
+        # character), never more.
         stacked = overlap * 2 >= min(high - low, o_high - o_low) and (
-            Decimal(0) <= o_top - bottom <= height or Decimal(0) <= top - o_bottom <= height
+            -height / 2 <= o_top - bottom <= height or -height / 2 <= top - o_bottom <= height
         )
         inline = abs((o_top + o_bottom) / 2 - (top + bottom) / 2) * 2 <= height and Decimal(
             0

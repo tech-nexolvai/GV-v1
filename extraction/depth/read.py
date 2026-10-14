@@ -1271,7 +1271,8 @@ def _depth_place(kind: ViewKind, span: Span) -> str | None:
 
 def two_stones(view: PreparedView, settings: SpanSettings) -> str | None:
     """Why a plan holds every depth on it, or `None`: two dimensions each run from the wall band to
-    a front edge, with different lengths, and neither is a link of a chain (#1265 review: one plan
+    a front edge, with different lengths, each at least half the deepest, and neither is a link of
+    a chain (#1265 review: one plan
     draws two stones, 24" and 28" deep; reading "the" depth there could take the wrong one)."""
     links = {part.number for chain in view.found.chains for part in chain.parts}
     depths = [
@@ -1281,8 +1282,13 @@ def two_stones(view: PreparedView, settings: SpanSettings) -> str | None:
         and span.number not in links
         and {span.low_end.kind, span.high_end.kind} == {EndKind.WALL_BAND, EndKind.OUTLINE}
     ]
+    # A stone is at least half as deep as the deepest: a short run from the wall to an edge (a
+    # cabinet part, a sink's back rim) is not a second stone.
+    longest = max((span.length_pt for span in depths), default=Decimal(0))
     lengths: list[Decimal] = []
     for span in depths:
+        if span.length_pt * 2 < longest:
+            continue
         if all(abs(span.length_pt - length) > 2 * settings.end_meet_pt for length in lengths):
             lengths.append(span.length_pt)
     if len(lengths) < 2:

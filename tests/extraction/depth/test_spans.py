@@ -519,3 +519,27 @@ def test_a_number_whose_bracket_is_not_its_millimetres_still_holds() -> None:
     bracket = phrase("[3/4]", 1001, 167.5, Orientation.UPRIGHT, size=3)
     lanes = text_lanes([line_span], [own_mm, own_in, stray, bracket], S, chars=[])
     assert lanes[1].inches is None and "not its millimetres" in lanes[1].reason
+
+
+def test_an_edge_crossed_by_another_dimension_is_still_an_edge() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(93, 196, 400, 196)]  # the stone's front edge
+        + vertical_dimension(50, 100, 196)
+        + [line(200, 140, 200, 199)]  # another dimension line at x 200, crossing the front edge
+        + [line(197, 143, 240, 143)]  # its other witness
+    )
+    spans = find_spans(ink(lines), VIEW, S).spans
+    (depth,) = [s for s in spans if s.axis is Axis.VERTICAL and s.offset_pt == d(50)]
+    assert depth.high_end.kind is EndKind.OUTLINE
+
+
+def test_a_bracket_touching_its_number_from_below_is_its_pair() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    other_mm = phrase("20", 1001, 161, Orientation.UPRIGHT, size=3)
+    other_in = phrase("[3/4]", 1001, 166.8, Orientation.UPRIGHT, size=3)  # overlaps by 0.2 pt
+    lanes = text_lanes([line_span], [own_mm, own_in, other_mm, other_in], S, chars=[])
+    assert lanes[1].inches == 22, lanes[1].reason
