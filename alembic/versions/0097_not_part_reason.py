@@ -58,7 +58,10 @@ REASON_CHECK = (
 
 def upgrade() -> None:
     """Add the nullable reason and its CHECK. Existing decisions stay NULL."""
-    op.add_column(TABLE, sa.Column(COLUMN, sa.String(length=24), nullable=True))
+    # Written literally: `tests/app/test_migration_matches_models.py` reads migrations as text.
+    op.add_column(
+        "part_confirmations", sa.Column("not_part_reason", sa.String(length=24), nullable=True)
+    )
     op.create_check_constraint(CONSTRAINT, TABLE, REASON_CHECK)
 
 
