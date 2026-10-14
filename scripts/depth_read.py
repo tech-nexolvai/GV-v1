@@ -296,9 +296,21 @@ def _containing(views: Sequence[ViewReading], region: Sequence[float]) -> ViewRe
         for view in views
         if view.extent.x0 <= x <= view.extent.x1 and view.extent.top <= y <= view.extent.bottom
     ]
-    if not holding:
-        return None
-    return min(holding, key=lambda view: view.extent.width * view.extent.height)
+    if holding:
+        return min(holding, key=lambda view: view.extent.width * view.extent.height)
+    # The key's place is drawn by hand: failing that, the one view at least half of whose own
+    # drawing (or half of the key's place) lies in it.
+    x0, y0, x1, y1 = (Decimal(str(value)) for value in region)
+    overlapping = []
+    for view in views:
+        width = min(x1, view.extent.x1) - max(x0, view.extent.x0)
+        height = min(y1, view.extent.bottom) - max(y0, view.extent.top)
+        if width <= 0 or height <= 0:
+            continue
+        smaller = min((x1 - x0) * (y1 - y0), view.extent.width * view.extent.height)
+        if smaller > 0 and width * height * 2 >= smaller:
+            overlapping.append(view)
+    return overlapping[0] if len(overlapping) == 1 else None
 
 
 def answers_for_keys(
