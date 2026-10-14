@@ -799,3 +799,71 @@ def test_a_damaged_vendor_errors_file_is_refused_cleanly_and_nothing_is_written(
     # Refused before anything is written: no key, no library, the vendor file untouched.
     assert not (tmp_path / "keys").exists() and not library.exists()
     assert vendor.read_text() == damage
+
+
+# --- review of #1287: swapped AI names, app names --------------------------------------------------
+
+
+def test_a_swapped_ai_name_on_the_confirmers_list_is_refused_and_writes_no_key(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    swapped = tmp_path / "local" / "confirmers.json"
+    swapped.parent.mkdir()
+    swapped.write_text(json.dumps({"format": CONFIRMERS_FORMAT, "confirmers": ["c1aude"]}))
+    monkeypatch.setenv(CONFIRMERS_ENV, str(swapped))
+    candidates = _one_yes(engine, session, tmp_path, confirmed_by="c1aude")
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "c1aude" in err and "claude" in err
+    assert not (tmp_path / "keys").exists() and not (tmp_path / "library.json").exists()
+
+
+def test_a_confirmer_never_confirms_a_decision_made_under_their_app_name(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    # The confirmer signs in to the app as the reviewer who decided (another spelling).
+    listed = tmp_path / "local" / "confirmers.json"
+    listed.parent.mkdir()
+    listed.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMERS_FORMAT,
+                "confirmers": [{"name": CONFIRMER, "app_names": [REVIEWER.upper()]}],
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIRMERS_ENV, str(listed))
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "their own decision" in capsys.readouterr().err
+    assert not (tmp_path / "keys").exists()

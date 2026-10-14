@@ -26,20 +26,41 @@ to `export_candidates` directly. Its format:
 
     {"format": "smriti-reviewers/1", "reviewers": ["<name as the product records it>", ...]}
 
-Names are compared without case or surrounding spaces. A name that is not a person's is refused
-(`not_a_person`): a `code:` name; an AI or agent name, even inside a word ("claudebot",
-"ClaudeCode", "gptreviewer", "opus"); and a name that is not plain ASCII, where a look-alike letter
-could pass for another name.
+Names are compared without case or surrounding spaces. A name that is not a plain person's name is
+refused (`not_a_person`), on both lists and as the confirmer typed on the review page:
+
+* a `code:` name;
+* **anything but letters** with single spaces, hyphens or apostrophes between them (#1287 review):
+  no digit, dot, underscore, "@" or non-ASCII letter, so "c1aude", "G.P.T" or a Cyrillic look-alike
+  cannot pass for another name;
+* **an AI or model name.** The name is first normalised: the usual swaps are undone (0→o, 1→l or i,
+  3→e, 4→a, 5→s, 7→t, @→a), everything but letters is dropped, and it is lower-cased; runs of single
+  letters ("c l a u d e", "A.I.") are joined. Then the long, distinctive names (`_AI_NAMES`:
+  "claude", "anthropic", "openai", "gemini", "sonnet", "deepseek", ...) are refused anywhere, even
+  inside a word ("claudebot", "ClaudeCode", "cla-ude"); "gpt" is also matched inside a word
+  ("gptreviewer"), since no person's name holds it. Short tokens (`_MACHINE_WORDS`: "ai", "bot",
+  "llm", "glm", "kimi", "agent", ...) are refused only as whole words (split at spaces, hyphens and
+  capitals: "ReviewBot", "AIReviewer"), so "Allman", "Hillman", "Kai" and "Abbott" pass.
+
+**Known cost:** a few real names hold a distinctive model name and are refused: "Claudette",
+"Haikuo", "Gemma", "Kimi". Such a person is listed under a plain-letters variant of their name (for
+example a nickname, or a surname alone), the same one they type on the review page.
 
 **Who confirms is a separate list (#1282).** Reviewers DECIDE in the app; a confirmer CONFIRMS a
 decision into a key case on the Smriti review page. Anant decided (2026-10-15) that he confirms,
 never Claude. The confirmers list is its own local file, named by `GV_SMRITI_CONFIRMERS`, with no
 default and refused inside a git working tree, like the reviewers list:
 
-    {"format": "smriti-confirmers/1", "confirmers": ["<name typed on the review page>", ...]}
+    {"format": "smriti-confirmers/1",
+     "confirmers": ["<name typed on the review page>",
+                    {"name": "<name typed on the review page>",
+                     "app_names": ["<a name the product records for this person>", ...]}]}
 
-The same name check applies. Being on one list says nothing about the other, and nobody confirms
-a case they decided themselves (`eval/smriti/confirm.py`).
+The same name check applies to each `name`. Being on one list says nothing about the other, and
+nobody confirms a case they decided themselves (`eval/smriti/confirm.py`). A person may sign in to
+the app under other names (an e-mail, a short id): `app_names` lists them, so a decision recorded
+under any of them is still theirs (`Confirmers.decided`; compared without case or spaces). The
+app names only ever refuse, so they are not name-checked.
 
 Source: issues #1267, #1282 · Verification: `tests/eval/test_smriti_actors.py`
 """
@@ -49,7 +70,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -92,27 +114,42 @@ REVIEWERS_FORMAT: Final = "smriti-reviewers/1"
 CONFIRMERS_ENV: Final = "GV_SMRITI_CONFIRMERS"
 CONFIRMERS_FORMAT: Final = "smriti-confirmers/1"
 
-#: AI and agent names, refused anywhere in a name, even inside a word ("claudebot",
-#: "ClaudeCode", "gptreviewer"). None of them is part of a plain person's name.
+#: AI and model names, refused anywhere in the normalised name, even inside a word ("claudebot",
+#: "ClaudeCode", "gptreviewer"). Each is long or distinctive enough that no plain person's name
+#: holds it by chance (the few that do are listed under a variant; see the module docstring).
 _AI_NAMES: Final = (
     "anthropic",
+    "argon",
     "chatgpt",
     "claude",
     "codex",
     "copilot",
+    "deepseek",
+    "fable",
     "gemini",
+    "gemma",
     "gpt",
+    "grok",
     "haiku",
-    "llm",
+    "llama",
+    "mistral",
+    "mythos",
     "openai",
     "opus",
+    "qwen",
     "sonnet",
 )
-#: Words that name an AI, an agent or a program, refused as whole words only (split at spaces,
-#: punctuation and capitals: "ReviewBot", "AIReviewer"), since they sit inside real names
-#: ("Abbott", "Kailash").
-_MACHINE_WORDS: Final = frozenset({"ai", "agent", "assistant", "bot", "model", "robot", "script"})
-_WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+#: Short tokens that name an AI, an agent or a program, refused as whole words only (after the
+#: normalisation; split at spaces, hyphens, apostrophes and capitals: "ReviewBot", "AIReviewer"),
+#: since they sit inside real names ("Allman", "Hillman", "Kai", "Abbott").
+_MACHINE_WORDS: Final = frozenset(
+    {"agent", "ai", "assistant", "bot", "glm", "kimi", "llm", "model", "robot", "script"}
+)
+#: A plain person's name: letters, with single spaces, hyphens or apostrophes between them.
+_PLAIN_NAME: Final = re.compile(r"[A-Za-z]+(?:[ '-][A-Za-z]+)*")
+#: The usual digit and symbol swaps for letters ("c1aude", "0pus", "4I"); "1" is tried as l and i.
+_SWAPS: Final = str.maketrans({"0": "o", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a"})
+_WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 
 #: A candidate's `actor_status`: a name on the list; a name not on it (or no list); code (never a
 #: candidate, so only seen when asking); or a v1 file, made before anyone was checked.
@@ -144,26 +181,68 @@ def _folded(name: str) -> str:
     return name.strip().casefold()
 
 
+def _spellings(name: str) -> set[str]:
+    """The name with the usual swaps undone; each "1" as an "l" and as an "i" (every mix, up to a
+    bound beyond which both uniform readings are tried)."""
+    base = name.translate(_SWAPS)
+    ones = [index for index, char in enumerate(base) if char == "1"]
+    if not ones:
+        return {base}
+    if len(ones) > 8:
+        return {base.replace("1", "l"), base.replace("1", "i")}
+    spellings = set()
+    for mask in range(1 << len(ones)):
+        chars = list(base)
+        for bit, index in enumerate(ones):
+            chars[index] = "i" if mask >> bit & 1 else "l"
+        spellings.add("".join(chars))
+    return spellings
+
+
+def _words(spelling: str) -> set[str]:
+    """The whole words of one spelling, lower-cased, with runs of single letters joined ("c l a u
+    d e", "G.P.T", "A.I." each read as one word)."""
+    tokens = [token.casefold() for token in _WORDS.findall(spelling)]
+    found = set(tokens)
+    run: list[str] = []
+    for token in [*tokens, ""]:
+        if len(token) == 1:
+            run.append(token)
+            continue
+        if len(run) > 1:
+            found.add("".join(run))
+        run = []
+    return found
+
+
+def _ai_inside(name: str) -> list[str]:
+    """The AI, model or machine names this name holds after the normalisation, sorted."""
+    found: set[str] = set()
+    for spelling in _spellings(name):
+        compact = re.sub(r"[^a-z]", "", spelling.casefold())
+        found.update(ai for ai in _AI_NAMES if ai in compact)
+        found.update(_words(spelling) & _MACHINE_WORDS)
+    return sorted(found)
+
+
 def not_a_person(name: str) -> str | None:
     """Why this name is not a plain person's name, or `None` when it is.
 
-    Refused: a `code:` name; a name that is not plain printable ASCII (a look-alike letter, such
-    as a Cyrillic "а", or an invisible character could pass for another name); an AI or agent
-    name anywhere in it, even inside a word; and a machine word standing as a word of its own."""
+    Refused: a `code:` name; an AI, model or machine name, once the usual swaps are undone and
+    everything but letters is dropped (long, distinctive names anywhere, even inside a word; short
+    tokens as whole words only); and anything but letters with single spaces, hyphens or
+    apostrophes between them (a digit, a symbol, a look-alike or invisible letter could pass for
+    another name)."""
     if is_code_actor(name):
         return "names code"
-    if not name.isascii() or not name.isprintable():
-        return (
-            "is not plain ASCII letters (a look-alike or invisible letter could pass for another "
-            "name)"
-        )
-    folded = name.casefold()
-    inside = sorted(ai for ai in _AI_NAMES if ai in folded)
+    inside = _ai_inside(name)
     if inside:
-        return f"names an AI or an agent ({', '.join(inside)})"
-    words = {word.casefold() for word in _WORDS.findall(name)} & _MACHINE_WORDS
-    if words:
-        return f"names an AI, an agent or a program ({', '.join(sorted(words))})"
+        return f"names an AI, a model or a program ({', '.join(inside)})"
+    if _PLAIN_NAME.fullmatch(name.strip()) is None:
+        return (
+            "is not a plain name: only letters, with single spaces, hyphens or apostrophes between "
+            "them (no digits or other characters, so a look-alike cannot pass for another name)"
+        )
     return None
 
 
@@ -205,11 +284,30 @@ def _inside_git(path: Path) -> bool:
     return any((folder / ".git").exists() for folder in (path, *path.parents))
 
 
+def _app_names(entry: dict[str, object], where: str, error: type[ReviewersFileError]) -> list[str]:
+    extra = sorted(set(entry) - {"name", "app_names"})
+    if extra:
+        raise error(f"{where}: unknown field(s) in a confirmer: {', '.join(extra)}")
+    others = entry.get("app_names", [])
+    if not isinstance(others, list) or not all(
+        isinstance(other, str) and other.strip() for other in others
+    ):
+        raise error(f"{where}: app_names is a list of non-empty names")
+    return list(others)
+
+
 def _load_names(
-    path: Path, *, fmt: str, field: str, what: str, error: type[ReviewersFileError]
-) -> tuple[frozenset[str], str]:
+    path: Path,
+    *,
+    fmt: str,
+    key: str,
+    what: str,
+    error: type[ReviewersFileError],
+    with_app_names: bool = False,
+) -> tuple[frozenset[str], dict[str, frozenset[str]], str]:
     """Read one local list of people's names, refusing one inside a repository, not in the
-    format, or naming anyone who is not plainly a person (`not_a_person`)."""
+    format, or naming anyone who is not plainly a person (`not_a_person`). With `with_app_names`,
+    an entry may also be `{"name": ..., "app_names": [...]}` (the confirmers list)."""
     resolved = path.expanduser().resolve()
     if _inside_git(resolved.parent):
         raise error(
@@ -224,14 +322,26 @@ def _load_names(
         raise error(f"{resolved.name} is not JSON: {damaged}") from damaged
     if not isinstance(document, dict) or document.get("format") != fmt:
         raise error(f"{resolved.name} is not a {fmt} file")
-    extra = sorted(set(document) - {"format", field})
+    extra = sorted(set(document) - {"format", key})
     if extra:
         raise error(f"unknown field(s) in {resolved.name}: {', '.join(extra)}")
-    names = document.get(field)
-    if not isinstance(names, list) or not all(
-        isinstance(name, str) and name.strip() for name in names
-    ):
-        raise error(f"{resolved.name}: {field} is a list of non-empty names")
+    entries = document.get(key)
+    if not isinstance(entries, list):
+        raise error(f"{resolved.name}: {key} is a list of non-empty names")
+    names: list[str] = []
+    app_names: dict[str, frozenset[str]] = {}
+    for entry in entries:
+        others: list[str] = []
+        if with_app_names and isinstance(entry, dict):
+            name = entry.get("name")
+            others = _app_names(entry, resolved.name, error)
+        else:
+            name = entry
+        if not isinstance(name, str) or not name.strip():
+            raise error(f"{resolved.name}: {key} is a list of non-empty names")
+        names.append(name)
+        if others:
+            app_names[_folded(name)] = frozenset(others)
     coded = [name for name in names if is_code_actor(name)]
     if coded:
         raise error(
@@ -243,15 +353,15 @@ def _load_names(
             raise error(
                 f"{resolved.name}: {name!r} {why}; only a plain person's name belongs in the {what}"
             )
-    return frozenset(names), str(resolved)
+    return frozenset(names), app_names, str(resolved)
 
 
 def load_reviewers(path: Path) -> Reviewers:
     """Read the local real-reviewer list, refusing one inside a repository or not in the format."""
-    names, source = _load_names(
+    names, _none, source = _load_names(
         path,
         fmt=REVIEWERS_FORMAT,
-        field="reviewers",
+        key="reviewers",
         what="real-reviewer list",
         error=ReviewersFileError,
     )
@@ -266,6 +376,10 @@ def reviewers_from_environment() -> Reviewers:
     return load_reviewers(Path(configured))
 
 
+def _spaceless(name: str) -> str:
+    return "".join(name.split()).casefold()
+
+
 @dataclass(frozen=True, slots=True)
 class Confirmers:
     """The names that may confirm a case into a key, or `None` when no list was given."""
@@ -273,6 +387,9 @@ class Confirmers:
     names: frozenset[str] | None
     source: str | None
     """Where the list came from, for the record (`None` with no list)."""
+    app_names: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """Per confirmer (by name, without case or surrounding spaces): the other names the product
+    records for this person in the app. They only ever refuse (`decided`)."""
 
     def knows(self, name: str | None) -> bool:
         """Whether this name is on the list (without case or surrounding spaces)."""
@@ -280,17 +397,26 @@ class Confirmers:
             return False
         return _folded(name) in {_folded(known) for known in self.names}
 
+    def decided(self, confirmer: str, decided_by: str | None) -> bool:
+        """Whether `decided_by` is this confirmer: their own name or one of their app names,
+        compared without case or any spaces. Such a decision is never theirs to confirm."""
+        if not isinstance(decided_by, str):
+            return False
+        own = {confirmer, *self.app_names.get(_folded(confirmer), frozenset())}
+        return _spaceless(decided_by) in {_spaceless(name) for name in own}
+
 
 def load_confirmers(path: Path) -> Confirmers:
     """Read the local confirmers list, refusing one inside a repository or not in the format."""
-    names, source = _load_names(
+    names, app_names, source = _load_names(
         path,
         fmt=CONFIRMERS_FORMAT,
-        field="confirmers",
+        key="confirmers",
         what="confirmers list",
         error=ConfirmersFileError,
+        with_app_names=True,
     )
-    return Confirmers(names=names, source=source)
+    return Confirmers(names=names, source=source, app_names=app_names)
 
 
 def confirmers_from_environment() -> Confirmers:

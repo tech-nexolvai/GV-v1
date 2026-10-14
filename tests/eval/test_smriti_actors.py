@@ -224,3 +224,129 @@ def test_a_malformed_confirmers_list_is_refused(tmp_path: Path, content: str) ->
     path.write_text(content)
     with pytest.raises(ConfirmersFileError):
         load_confirmers(path)
+
+
+# --- review of #1287: swapped digits and separators, more model names, app names ------------------
+
+#: Every AI name the review of #1287 found getting through, and the model names it asked to add.
+SWAPPED_OR_SPLIT = (
+    "c1aude",
+    "cl4ude",
+    "0pus",
+    "s0nnet",
+    "g3mini",
+    "c0dex",
+    "anthr0pic",
+    "copi1ot",
+    "c l a u d e",
+    "cla-ude",
+    "G.P.T",
+    "A.I.",
+    "A I",
+    "cl@ude",
+    "50nnet",
+    "gr0k",
+)
+MODEL_NAMES = (
+    "llama",
+    "mistral",
+    "grok",
+    "deepseek",
+    "qwen",
+    "gemma",
+    "fable",
+    "mythos",
+    "argon",
+    "haiku",
+    "opus",
+    "sonnet",
+    "gpt",
+    "kimi",
+    "glm",
+    "Kimi Reviewer",
+    "the GLM desk",
+    "Deep-Seek",
+    "MyLlamaChecker",
+    "Claudette",
+    "Haikuo",
+)
+
+
+@pytest.mark.parametrize("name", [*SWAPPED_OR_SPLIT, *MODEL_NAMES])
+def test_a_swapped_split_or_model_name_is_not_a_person(name: str) -> None:
+    assert not_a_person(name) is not None
+
+
+@pytest.mark.parametrize(
+    "name", ["reviewer2", "a_b", "a  b", "a--b", "-ab", "ab-", "o'", "a.b", "a@b", "a/b"]
+)
+def test_only_letters_with_single_spaces_hyphens_or_apostrophes_are_a_name(name: str) -> None:
+    assert "plain name" in (not_a_person(name) or "")
+
+
+@pytest.mark.parametrize(
+    "name", ["Allman", "Hillman", "Spillman", "Mary O'Brien", "Anne-Marie Allman", "Kai", "Abbott"]
+)
+def test_a_short_token_inside_a_real_name_is_not_refused(name: str) -> None:
+    assert not_a_person(name) is None
+
+
+@pytest.mark.parametrize("name", [*SWAPPED_OR_SPLIT, "deepseek", "kimi", "glm"])
+@pytest.mark.parametrize("which", ["reviewers", "confirmers"])
+def test_both_lists_refuse_swapped_split_and_model_names(
+    tmp_path: Path, name: str, which: str
+) -> None:
+    path = tmp_path / f"{which}.json"
+    fmt = REVIEWERS_FORMAT if which == "reviewers" else CONFIRMERS_FORMAT
+    path.write_text(json.dumps({"format": fmt, which: ["reviewer-a", name]}))
+    load = load_reviewers if which == "reviewers" else load_confirmers
+    with pytest.raises(ReviewersFileError, match="person"):
+        load(path)
+
+
+def test_a_confirmer_may_list_the_names_they_use_in_the_app(tmp_path: Path) -> None:
+    path = tmp_path / "confirmers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMERS_FORMAT,
+                "confirmers": [
+                    {"name": "confirmer-b", "app_names": ["cb@example.test", "user 7"]},
+                    "confirmer-c",
+                ],
+            }
+        )
+    )
+    confirmers = load_confirmers(path)
+    assert confirmers.knows("confirmer-b") and confirmers.knows("confirmer-c")
+    # An app name is not a confirmer name: it only ever refuses.
+    assert not confirmers.knows("cb@example.test")
+    for decided_by in ("confirmer-b", " Confirmer-B", "CB@example.test", "user7", "USER  7"):
+        assert confirmers.decided("Confirmer-B", decided_by), decided_by
+    assert not confirmers.decided("confirmer-b", "reviewer-a")
+    assert not confirmers.decided("confirmer-c", "cb@example.test")
+    assert confirmers.decided("confirmer-c", "confirmer - c".replace(" - ", "-"))
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "confirmer-b", "app_names": "cb"},
+        {"name": "confirmer-b", "app_names": [""]},
+        {"name": "confirmer-b", "app_names": ["cb"], "extra": 1},
+        {"app_names": ["cb"]},
+        {"name": "c1aude", "app_names": ["cb"]},
+    ],
+)
+def test_a_malformed_confirmer_entry_is_refused(tmp_path: Path, entry: dict[str, object]) -> None:
+    path = tmp_path / "confirmers.json"
+    path.write_text(json.dumps({"format": CONFIRMERS_FORMAT, "confirmers": [entry]}))
+    with pytest.raises(ConfirmersFileError):
+        load_confirmers(path)
+
+
+def test_the_reviewers_list_takes_plain_names_only(tmp_path: Path) -> None:
+    path = tmp_path / "people.json"
+    path.write_text(json.dumps({"format": REVIEWERS_FORMAT, "reviewers": [{"name": "reviewer-a"}]}))
+    with pytest.raises(ReviewersFileError, match="non-empty names"):
+        load_reviewers(path)

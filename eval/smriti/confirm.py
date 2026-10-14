@@ -18,8 +18,11 @@ The confirmations file (`smriti-confirmations/2`):
 (`GV_SMRITI_CONFIRMERS`, `eval/smriti/actors.py`), which is apart from the reviewers list: reviewers
 decide in the app, confirmers confirm here. It is never an AI, an agent or code, even when listed:
 an AI name inside a word ("claudebot") or a name that is not plain ASCII (a look-alike letter) is
-refused too (`who_confirms`). **Nobody confirms a case they decided themselves**: any answer to a
-case whose `decided_by` is the confirmer is refused, so the decision always gets a second person.
+refused too, as are digits and any character but letters with single spaces, hyphens or
+apostrophes ("c1aude", "G.P.T"; `who_confirms`, `actors.not_a_person`). **Nobody confirms a case
+they decided themselves**: any answer to a case whose `decided_by` is the confirmer's name, or one
+of the `app_names` the confirmers list gives for them (the names they sign in to the app with),
+compared without case or spaces, is refused, so the decision always gets a second person.
 
 **What was seen.** A Yes names the stored pictures its card showed. They must be exactly the
 pictures the candidate's stored question showed the AI (`stored_questions`, read from the
@@ -296,10 +299,6 @@ def _layout(candidate: Candidate) -> str:
             f"{dict(candidate.recorded)}"
         )
     return values[0]
-
-
-def _same_name(first: str, second: str) -> bool:
-    return first.strip().casefold() == second.strip().casefold()
 
 
 def who_confirms(name: object, confirmers: Confirmers) -> str:
@@ -979,11 +978,11 @@ def confirm_candidates(
         why = not_ready(candidate)
         if why is not None:
             raise ConfirmationRefused(f"{candidate_id} cannot be confirmed: {why}")
-        if _same_name(candidate.decided_by, confirmed_by):
+        if confirmers.decided(confirmed_by, candidate.decided_by):
             raise ConfirmationRefused(
-                f"{candidate_id} was decided by {candidate.decided_by!r}, who is also the confirmer; "
-                "nobody confirms their own decision: another person on the confirmers list answers "
-                "this case"
+                f"{candidate_id} was decided by {candidate.decided_by!r}, who is also the confirmer "
+                "(by name or app name); nobody confirms their own decision: another person on the "
+                "confirmers list answers this case"
             )
         kind = question_type(candidate)
         assert kind is not None

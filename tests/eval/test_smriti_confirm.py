@@ -622,6 +622,20 @@ def test_a_person_never_confirms_a_case_they_decided_themselves(verdict: str) ->
         "opus",
         "\u0441laude",
         "a pers\u043en",
+        "c1aude",
+        "cl4ude",
+        "0pus",
+        "s0nnet",
+        "g3mini",
+        "c0dex",
+        "anthr0pic",
+        "copi1ot",
+        "c l a u d e",
+        "cla-ude",
+        "G.P.T",
+        "A.I.",
+        "deepseek",
+        "kimi",
     ],
 )
 def test_an_ai_an_agent_or_code_never_confirms_even_when_listed(name: str) -> None:
@@ -696,3 +710,20 @@ def test_a_box_must_be_one_the_stored_picture_numbers() -> None:
         _confirm(export, _yes("no_countertop_answers:2", box=1), boxes={})
     among = _confirm(export, _yes("no_countertop_answers:2", not_among_boxes=True), boxes={})
     assert among.keys["rekha"].cases[0].truth == RowTruth(box=None, kind="not_among_boxes")
+
+
+@pytest.mark.parametrize("decided_by", ["cb@example.test", "CB@Example.Test", "user 7", "User7"])
+def test_a_confirmer_never_confirms_a_decision_made_under_one_of_their_app_names(
+    decided_by: str,
+) -> None:
+    export = _export(replace(_no_countertop(), decided_by=decided_by))
+    known = Confirmers(
+        names=frozenset({"a person"}),
+        source="test",
+        app_names={"a person": frozenset({"cb@example.test", "user 7"})},
+    )
+    with pytest.raises(ConfirmationRefused, match="their own decision"):
+        _confirm(export, _yes("no_countertop_answers:1"), confirmers=known)
+    # Someone else's decision is still theirs to confirm.
+    other = _export(replace(_no_countertop(), decided_by="reviewer-a"))
+    assert _confirm(other, _yes("no_countertop_answers:1"), confirmers=known).keys
