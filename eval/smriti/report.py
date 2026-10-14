@@ -375,19 +375,32 @@ def _ai_answers(
     return agents, unmapped
 
 
-def _corrections(candidates: Sequence[Candidate]) -> Corrections:
-    found: Counter[str] = Counter()
+def _decisions(candidates: Sequence[Candidate]) -> list[list[Candidate]]:
+    """The current candidates grouped into decisions, as the exporter's `agent_counts` counts them:
+    one decision however many parts it has (a row's walls and widths, a run and its walls)."""
+    grouped: dict[tuple[str, str], list[Candidate]] = defaultdict(list)
     for candidate in candidates:
-        if candidate.kind != "corrected":
-            continue
-        answer = candidate.mistake_needed
-        found[
-            (
-                "not_asked"
-                if answer is None
-                else "unanswered" if answer == MISTAKE_UNANSWERED else answer
-            )
-        ] += 1
+        grouped[(candidate.table, candidate.decision_id)].append(candidate)
+    return list(grouped.values())
+
+
+def _mistake(parts: Sequence[Candidate]) -> str:
+    """The person's misread-or-vendor answer on one corrected decision (`not_asked` if never asked)."""
+    answers = [part.mistake_needed for part in parts if part.mistake_needed is not None]
+    if not answers:
+        return "not_asked"
+    given = sorted({answer for answer in answers if answer != MISTAKE_UNANSWERED})
+    if not given:
+        return "unanswered"
+    return given[0] if len(given) == 1 else "unsure"
+
+
+def _corrections(decisions: Sequence[Sequence[Candidate]]) -> Corrections:
+    """An agent's corrected decisions by the answer to "AI misread, or the vendor drew it?". A
+    decision is corrected when its kind is (the kind `agent_counts` counts: its first part's)."""
+    found: Counter[str] = Counter(
+        _mistake(parts) for parts in decisions if parts[0].kind == "corrected"
+    )
     return Corrections(
         ai_misread=found["ai_misread"],
         vendor_drew_it=found["vendor_drew_it"],
@@ -449,7 +462,7 @@ def build_report(
     ]
     agents = []
     for name in names:
-        mine = [c for c in people if c.agent == name]
+        mine = _decisions([c for c in people if c.agent == name])
         count = counts.get(name, DecisionCount())
         corrections = _corrections(mine)
         judged = count.corrected + count.confirmed
@@ -459,7 +472,7 @@ def build_report(
                 agent=name,
                 ai=ai.get(name, AiAnswers()),
                 decisions=count,
-                by_reviewer=sum(1 for c in mine if c.actor_status == REVIEWER),
+                by_reviewer=sum(1 for parts in mine if parts[0].actor_status == REVIEWER),
                 corrections=corrections,
                 correction_rate=Rate(
                     numerator=count.corrected,

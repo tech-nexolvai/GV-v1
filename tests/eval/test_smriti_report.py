@@ -547,3 +547,25 @@ def test_a_stop_in_a_reading_that_never_finished_is_not_judged(session: Session)
         session.rollback()
     assert report.gates == ()
     assert report.unfinished_stops == 1
+
+
+def test_a_decision_with_several_parts_is_one_decision_and_one_correction() -> None:
+    """Per-agent counts count decisions, not parts (the exporter's `agent_counts`), and so do the
+    misread/vendor split and the count by real reviewers."""
+    decision = str(uuid4())
+    parts = [
+        _candidate(
+            candidate_id=f"slot_row_review_decisions:{decision}:{key}",
+            table="slot_row_review_decisions",
+            decision_id=decision,
+            mistake_needed="unanswered",
+        )
+        for key in ("piece_widths:0", "piece_widths:1")
+    ]
+    report = build_report(
+        export=_export(*parts), invocations=[], stops=[], reviewed={}, window="test"
+    )
+    akshara = _agent(report, "akshara")
+    assert akshara.decisions.decisions == akshara.decisions.corrected == 1
+    assert akshara.corrections.total == akshara.corrections.unanswered == 1
+    assert akshara.by_reviewer == 1
