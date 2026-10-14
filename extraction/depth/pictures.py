@@ -9,7 +9,7 @@ inputs give the same bytes.
 * **`view_picture`**: one view with its heading painted out. The readers name the view's kind from
   the drawing alone, so their judgment stays independent of code's, which reads the heading.
 * **`numbered_spans_picture`**: every span code found in the view, each drawn along its own axis in
-  its own colour with its number at its middle, on both axes. The width reader's numbered-rows
+  its own colour with its number beside it, on both axes. The width reader's numbered-rows
   picture (`workflow/slot_reader._numbered_rows_png`) draws boxes round horizontal rows only and is
   left as it is; this is a new function.
 * **`upright_closeup`** / **`both_turns`**: a sideways label turned to read left to right with
@@ -192,10 +192,11 @@ def numbered_spans_picture(
     badge: int,
     max_side: int,
 ) -> bytes:
-    """Every span drawn along its own axis in its colour, its number on a badge at its middle.
+    """Every span drawn along its own axis in its colour, its number on a badge beside it.
 
-    The badge sits beside the line (above a horizontal span, left of a vertical one) so it does not
-    cover the span's own printed number, which sits on the other side or on the line.
+    The badge sits beside the line (above a horizontal span, left of a vertical one) a quarter of
+    the way along from its top or left end, not at its middle: a vendor prints a dimension's number
+    at the middle, and a badge there would cover the very number the reader is asked about.
     """
     canvas = _Canvas(rendered, view)
     half = thickness // 2
@@ -205,11 +206,11 @@ def numbered_spans_picture(
         if span.axis is Axis.HORIZONTAL:
             y = (y0 + y1) // 2
             canvas.fill(min(x0, x1), y - half, max(x0, x1) + 1, y - half + thickness, colour)
-            centre = ((x0 + x1) // 2, y - half - badge // 2 - 1)
+            centre = (min(x0, x1) + abs(x1 - x0) // 4, y - half - badge // 2 - 1)
         else:
             x = (x0 + x1) // 2
             canvas.fill(x - half, min(y0, y1), x - half + thickness, max(y0, y1) + 1, colour)
-            centre = (x - half - badge // 2 - 1, (y0 + y1) // 2)
+            centre = (x - half - badge // 2 - 1, min(y0, y1) + abs(y1 - y0) // 4)
         canvas.badge(str(span.number), centre, colour, badge)
     return canvas.png(max_side)
 

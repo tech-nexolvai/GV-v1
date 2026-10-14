@@ -133,3 +133,13 @@ def test_pictures_are_the_same_bytes_every_time_and_shrink_to_the_limit() -> Non
     again = view_picture(rendered, (0, 0, WIDTH, HEIGHT), [], pad=0, max_side=100)
     assert first == again
     assert max(size(first)) <= 100
+
+
+def test_a_badge_never_covers_the_middle_where_the_vendor_prints_the_number() -> None:
+    # The vendor's label for a vertical dimension sits left of the line at its middle.
+    rendered = page([(130, 55, 146, 65)])
+    span = MarkedSpan(1, Axis.VERTICAL, (150, 20), (150, 100))
+    png = numbered_spans_picture(
+        rendered, (0, 0, WIDTH, HEIGHT), [span], thickness=3, badge=12, max_side=1000
+    )
+    assert pixel(png, 138, 60) == BLACK
