@@ -119,11 +119,12 @@ jobs:
     name: tests (shard ${{ matrix.group }}/4)
     if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
-    # About 5 minutes each today; 15 stops a hung test long before it drains the quota.
-    timeout-minutes: 15
-    # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about a minute
-    # of fixed cost (database server, checkout, install). Three shards of ~6 minutes bill more than
-    # four of ~5, and two would double the wait for a result.
+    # About 3-4.5 minutes each on four workers (#1289); a single-process recording run (below) takes
+    # up to about 9. 12 leaves that run room and still stops a hung test before it drains the quota.
+    timeout-minutes: 12
+    # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about half a
+    # minute of fixed cost (database server, checkout, install). Two shards would bill a little less
+    # and double the wait for a result.
     strategy:
       fail-fast: false
       matrix:
