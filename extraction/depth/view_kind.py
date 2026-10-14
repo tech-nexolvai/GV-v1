@@ -27,7 +27,11 @@ from its words alone and says so in its reason.
 their extents, so it is reused unchanged. Some vendors print only a caption under each drawing
 (`ELEVATION`, `SECTION AT ...`, `PLAN`) with no scale note; then the captions are found by their
 words and size, and each caption owns the part of the panel above it, columns split halfway
-between captions on one row. A stroke that crosses from one view's part into another's marks both
+between captions on one row. The captions are also used when `page_views` leaves drawing out (it
+rejects a title for having no drawing above it, or takes drawing joined to the sheet's frame for
+the border, as on a vendor's own full sheet); then a title printed right over a scale note counts
+as a caption too, whatever its size. A stroke that crosses from one view's part into another's
+marks both
 views not separated, as `page_views` does. Nothing is silent: ink below every caption, a caption
 with no drawing and a panel with no view each leave a note.
 
