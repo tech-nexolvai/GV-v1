@@ -39,6 +39,7 @@ from app.models.verdicts import Finding
 from eval.pariksha.keys import FAMILIES
 from eval.pariksha.stored import prompt_family
 from eval.smriti.candidates import Candidate, CandidateExport
+from vocabulary.semantic_types import SemanticType
 
 __all__ = ["export_candidates"]
 
@@ -428,7 +429,7 @@ def _slot_rows(reader: _Reader) -> list[Candidate]:
                     agent="rekha",
                     corrects="the walls at the row's ends",
                     kind="decided",
-                    recorded={"wall_config": decision.wall_config},
+                    recorded={SemanticType.WALL_CONFIG.value: decision.wall_config},
                     question=None,
                     answer_needed=None,
                     why=NO_WALLS_KEY,
