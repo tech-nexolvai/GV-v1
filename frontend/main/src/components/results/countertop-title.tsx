@@ -39,7 +39,7 @@ export function CountertopName({ row, rows }: { row: Row; rows: Siblings }) {
 }
 
 /**
- * A countertop a person confirmed (#1245), as the heading its results are grouped under:
+ * A live countertop item (#1245), as the heading its results are grouped under:
  * "Countertop 2 · page 5". The API's whole label stays in the title.
  */
 export function CountertopItemTitle({ item }: { item: CountertopItem }) {

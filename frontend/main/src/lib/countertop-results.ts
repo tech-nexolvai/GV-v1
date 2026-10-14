@@ -409,7 +409,7 @@ export function confirmManyWords(count: number): string {
   return count === 1 ? 'Confirm this page' : `Confirm these ${count} pages`;
 }
 
-/** A countertop a person confirmed (#1245), as the results name it under a row. */
+/** A live countertop item (#1245), as the results name it under a row. */
 export type CountertopItem = NonNullable<CountertopResult['countertop_item']>;
 
 /**

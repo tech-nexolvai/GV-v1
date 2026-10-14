@@ -78,7 +78,7 @@ export function CountertopTable({
   /** The line under a "Not checked" row (#1179): what to do, or why the last run made no result. */
   notCheckedHint?: string | null;
   /**
-   * The countertops a person confirmed (#1245): each one's rows are shown under its heading, in
+   * The live countertop items (#1245): each one's rows are shown under its heading, in
    * group order, and the rows no countertop was confirmed from follow. Empty: no headings.
    */
   groups?: readonly CountertopGroup[];
