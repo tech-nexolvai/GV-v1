@@ -88,6 +88,7 @@ __all__ = [
     "glyph_runs",
     "page_box_polygon",
     "read_annotation_layers",
+    "read_drawing_segments",
     "read_markup_layer",
 ]
 
@@ -1117,6 +1118,40 @@ def read_annotation_layers(
     )
 
 
+def read_drawing_segments(
+    data: bytes,
+    page_index: int,
+    *,
+    document_version_id: UUID,
+    dpi: int,
+    line_minimum_pt: Decimal,
+) -> tuple[DimensionExtent, ...]:
+    """The vendor's line-work on one page, and nothing else: exactly the `drawing_segments`
+    `read_annotation_layers` gives with the same `line_minimum_pt`, without reading text regions,
+    glyph runs or stacked fractions, which can take minutes on a dense sheet.
+
+    For code's geometry-only part finder, run in memory as Bala's second judgment (#1236), which
+    asks only where the dimension lines are.
+    """
+    if isinstance(line_minimum_pt, float):
+        raise TypeError("line_minimum_pt must be a Decimal, never a float")
+    if (
+        not isinstance(line_minimum_pt, Decimal)
+        or not line_minimum_pt.is_finite()
+        or line_minimum_pt <= 0
+    ):
+        raise ValueError("line_minimum_pt must be a finite positive Decimal")
+    return _read_layers(
+        data,
+        page_index,
+        document_version_id=document_version_id,
+        dpi=dpi,
+        # Only the first length is read with `segments_only`; the others are never used.
+        geometry=(line_minimum_pt, line_minimum_pt, line_minimum_pt, None),
+        segments_only=True,
+    ).drawing_segments
+
+
 def _drawings_in_squares(data: bytes, page_index: int) -> frozenset[int]:
     """The `/Annots` indices of this page's `/Square` annotations that hold a pasted drawing
     (`stamp_text.carries_drawing`): a drawing pasted as a rectangle annotation is the same drawing
@@ -1141,8 +1176,12 @@ def _read_layers(
     document_version_id: UUID,
     dpi: int,
     geometry: tuple[Decimal, Decimal, Decimal, FractionBarGeometry | None] | None,
+    segments_only: bool = False,
 ) -> PageLayers:
     """The annotation walk both entry points share.
+
+    `segments_only` reads the vendor's line-work and nothing else from its paths: no text regions,
+    no stacked fractions, no glyph paths (`read_drawing_segments`, #1236).
 
     `geometry` carries the three lengths and the optional fraction-bar detector, or `None` to skip
     the vendor's path geometry entirely. One
@@ -1270,6 +1309,7 @@ def _read_layers(
                         glyph_gap_pt=glyph_gap_pt,
                         fraction_bar=fraction_bar,
                         baseline_rotation_degrees=baseline_rotation_degrees,
+                        segments_only=segments_only,
                     )
                     segments.extend(found[0])
                     regions.extend(found[1])
@@ -1361,6 +1401,7 @@ def _drawing_geometry(
     glyph_gap_pt: Decimal,
     fraction_bar: FractionBarGeometry | None,
     baseline_rotation_degrees: int,
+    segments_only: bool = False,
 ) -> tuple[
     tuple[
         tuple[DimensionExtent, ...],
@@ -1401,6 +1442,8 @@ def _drawing_geometry(
             # Geometry outside the visible crop box. A `/Rect` may legally extend past it, and a
             # line nobody can see is not a line this can associate a reading with.
             ignored_segments += 1
+    if segments_only:
+        return ((tuple(segments), (), (), ()), ignored_segments, 0)
 
     small: list[tuple[Decimal, Decimal, Decimal, Decimal]] = []
     small_paths: list[tuple[tuple[Decimal, Decimal], ...]] = []

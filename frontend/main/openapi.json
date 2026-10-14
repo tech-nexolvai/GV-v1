@@ -6009,6 +6009,16 @@
       "PackageOut": {
         "description": "One package, and the revision documents currently attach to.\n\n`current_revision_number` is returned rather than left to be inferred. A package has several\nrevisions and a client that assumed \"the latest\" would eventually register a document against a\nsuperseded one (`docs/DESIGN_PLATFORM.md` \u00a75).",
         "properties": {
+          "activity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadingActivityOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "budget_limit": {
             "anyOf": [
               {
@@ -6809,6 +6819,11 @@
             ],
             "description": "The decision nothing has replaced, or null while nobody has decided."
           },
+          "from_countertop_line": {
+            "description": "True when code suggested it from a countertop row the AI readers read (Bala, #1236): the countertop itself or one of its pieces, with its kind already suggested.",
+            "title": "From Countertop Line",
+            "type": "boolean"
+          },
           "has_crop": {
             "description": "Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.",
             "title": "Has Crop",
@@ -6817,6 +6832,11 @@
           "has_picture": {
             "description": "Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.",
             "title": "Has Picture",
+            "type": "boolean"
+          },
+          "kind_named": {
+            "description": "For a suggestion from the countertop line: whether the drawing names its kind (the countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). Only then is it confirmed as suggested in one click; otherwise the person says what it is. False for every other suggestion.",
+            "title": "Kind Named",
             "type": "boolean"
           },
           "left_end": {
@@ -6844,6 +6864,11 @@
               }
             ],
             "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
+          },
+          "picture_pending": {
+            "description": "True while its picture is being made: none is stored yet and the worker's job to cut it is queued.",
+            "title": "Picture Pending",
+            "type": "boolean"
           },
           "position": {
             "description": "Its place on its drawing, 1 for the leftmost.",
@@ -6900,6 +6925,9 @@
           "suggested_code",
           "reason",
           "added_by_a_person",
+          "kind_named",
+          "picture_pending",
+          "from_countertop_line",
           "left_end",
           "right_end",
           "has_picture",
@@ -7415,6 +7443,190 @@
         "title": "PublicationTarget",
         "type": "string"
       },
+      "ReadingActivityItemOut": {
+        "description": "One item of the reading's activity, in the state its newest event gives it (#1238).",
+        "properties": {
+          "agent": {
+            "description": "The agent's own name (Rekha, Akshara, ...), for the screen's hover only; the sentence names its plain role instead.",
+            "title": "Agent",
+            "type": "string"
+          },
+          "at": {
+            "description": "When the item's newest event happened.",
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which try (1 to 3) when the item's newest event is a try-again event (trying again, or how a try went); null otherwise.",
+            "title": "Attempt"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a try-again changed, or null. The number reader: closer-look-2x, closer-look-3x-upright, tighter-crop; the line finder: tie-break-disputed-lines, other-numbered-lines, each-line-alone.",
+            "title": "Change"
+          },
+          "code": {
+            "description": "Why, as a short code, e.g. `readers-differ`; for how a try went: helped, not-helped, allowance-used or cannot-zoom.",
+            "title": "Code",
+            "type": "string"
+          },
+          "item": {
+            "description": "A code question id, e.g. `p11:row-choice` (page index 11, so page 12).",
+            "title": "Item",
+            "type": "string"
+          },
+          "line": {
+            "description": "The plain sentence for the screen, made from the codes.",
+            "title": "Line",
+            "type": "string"
+          },
+          "page": {
+            "description": "The page's number (1 is the first page).",
+            "title": "Page",
+            "type": "integer"
+          },
+          "role": {
+            "description": "The agent's plain role, e.g. \"the line finder\".",
+            "title": "Role",
+            "type": "string"
+          },
+          "state": {
+            "description": "answered: the agent's AIs answered; stopped: its inspector stopped the item, which waits for a person; trying_again: it is being asked again; helped: trying again settled it; waiting: trying again did not help (or was not allowed), so it waits for a person. Passes are never listed, only counted.",
+            "enum": [
+              "answered",
+              "stopped",
+              "trying_again",
+              "helped",
+              "waiting"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "page",
+          "agent",
+          "role",
+          "item",
+          "state",
+          "code",
+          "change",
+          "attempt",
+          "line",
+          "at"
+        ],
+        "title": "ReadingActivityItemOut",
+        "type": "object"
+      },
+      "ReadingActivityOut": {
+        "description": "What each agent's AIs answered and what its inspector did, in the newest reading (#1238).\n\nWhile the revision is read: the running attempt only, from its first event. After: the newest\nreading, still present (unlike `reading`). An earlier attempt's events are never mixed in, and\na reading whose stage failed is never shown as the result (`finished` false, no items, `now`\nsays it did not finish). Everything here is made from stored codes; no drawing text is ever in\nit. The screen shows `line`, `now` and `summary.sentence` as they are.",
+        "properties": {
+          "finished": {
+            "description": "Whether this reading's stage finished and its results are the stored ones. False while it runs, and for a reading that failed (then `items` is empty).",
+            "title": "Finished",
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Up to 20 items, newest first: those stopped, trying again, helped or waiting; then, only if room is left, pages whose AIs answered and nothing more happened yet. Passes are only counted.",
+            "items": {
+              "$ref": "#/components/schemas/ReadingActivityItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "now": {
+            "description": "One plain sentence: while reading, the newest item that is not a pass; after the reading, its summary (or that it did not finish).",
+            "title": "Now",
+            "type": "string"
+          },
+          "reading_id": {
+            "description": "The reading (one stage attempt) these events belong to.",
+            "format": "uuid",
+            "title": "Reading Id",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ReadingActivitySummaryOut"
+          },
+          "updated_at": {
+            "description": "When the newest event happened.",
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reading_id",
+          "finished",
+          "updated_at",
+          "now",
+          "items",
+          "summary"
+        ],
+        "title": "ReadingActivityOut",
+        "type": "object"
+      },
+      "ReadingActivitySummaryOut": {
+        "description": "The reading's activity, counted per item (#1238).",
+        "properties": {
+          "helped": {
+            "description": "Items trying again settled.",
+            "title": "Helped",
+            "type": "integer"
+          },
+          "passed": {
+            "description": "Items an inspector passed on (never listed).",
+            "title": "Passed",
+            "type": "integer"
+          },
+          "sentence": {
+            "description": "The reading's summary in one plain sentence.",
+            "title": "Sentence",
+            "type": "string"
+          },
+          "stopped": {
+            "description": "Items an inspector stopped, whatever happened next.",
+            "title": "Stopped",
+            "type": "integer"
+          },
+          "tried_again": {
+            "description": "Items asked again.",
+            "title": "Tried Again",
+            "type": "integer"
+          },
+          "waiting": {
+            "description": "Items that wait for a person: tried and not helped, plus stopped and never tried.",
+            "title": "Waiting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "passed",
+          "stopped",
+          "tried_again",
+          "helped",
+          "waiting",
+          "sentence"
+        ],
+        "title": "ReadingActivitySummaryOut",
+        "type": "object"
+      },
       "ReadingAgainOut": {
         "description": "What was asked for: the whole reading resumed, or only the pages the budget stopped.",
         "properties": {
@@ -7537,7 +7749,7 @@
             "type": "boolean"
           },
           "stage": {
-            "description": "Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate or form.",
+            "description": "Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate, form or try_again.",
             "title": "Stage",
             "type": "string"
           },

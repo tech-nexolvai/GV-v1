@@ -47,6 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover - annotations only, keeps this module ligh
     from workflow.timing import TimingRecorder
 
 __all__ = [
+    "ASSOCIATION_VARIABLES",
+    "PART_FINDER_VARIABLE",
     "PART_PICTURE_DPI_VARIABLE",
     "PART_PICTURE_MARGIN_VARIABLE",
     "PHRASE_GAP_VARIABLE",
@@ -60,6 +62,7 @@ __all__ = [
     "drop_closed_revision",
     "ensure_workflow_run",
     "hunt_package_values",
+    "part_finder_configuration",
     "part_picture_configuration",
     "phrase_grouping",
     "propose_measurements",
@@ -75,6 +78,89 @@ __all__ = [
 StagesFactory = Callable[..., object]
 
 
+#: Code's geometry-only part finder (#1236, decision 3 of 2026-10-14): on, it runs in memory in the
+#: match stage as Bala's second judgment for each piece, with the reader's line and detector settings
+#: (`ASSOCIATION_VARIABLES`) and without turning on the localized reader.
+PART_FINDER_VARIABLE = "GV_PART_FINDER_ENABLED"
+
+#: The settings the line-work reader and the dimension-line detector take (`AssociationSettings`).
+#: Required for the same reason as the rest: each decides which strokes a reading may attach to,
+#: and a default would be this machine's guess shipped as every deployment's.
+ASSOCIATION_VARIABLES: tuple[str, ...] = (
+    "GV_READER_LINE_MINIMUM_PT",
+    "GV_READER_GLYPH_MAXIMUM_PT",
+    "GV_READER_GLYPH_GAP_PT",
+    "GV_READER_PROXIMITY_LIMIT",
+    "GV_READER_AMBIGUITY_MARGIN",
+    # The dimension-line detector (#179).
+    "GV_READER_WITNESS_TOLERANCE",
+    "GV_READER_MINIMUM_SPAN",
+    "GV_READER_STRAIGHTNESS",
+    "GV_READER_CROSSING_MARGIN",
+    # The stacked-fraction detector (#735). Required with the rest because the rule it enforces —
+    # a stacked fraction always goes to a reviewer (#726) — cannot run without it, and the guard
+    # it replaced was optional and was never once supplied.
+    "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT",
+    "GV_READER_FRACTION_BAR_LENGTH_MIN_PT",
+    "GV_READER_FRACTION_REACH_PT",
+    "GV_READER_FRACTION_GLYPH_MIN_PT",
+    "GV_READER_FRACTION_GLYPH_MAX_PT",
+    "GV_READER_FRACTION_PROPORTION_MAX",
+    # Where each part of a stacked label was drawn (#834), which a reading of it must match.
+    "GV_READER_FRACTION_CHARACTER_GAP_PT",
+    # Which bars across a stamp's baseline are a turned label's fraction (#869).
+    "GV_READER_FRACTION_TURNED_ASPECT_MIN",
+)
+
+#: The localized reader's own three, on top of `ASSOCIATION_VARIABLES`.
+LOCALIZED_VARIABLES: tuple[str, ...] = (
+    "GV_READER_LOCALIZED_MINIMUM_PATHS",
+    "GV_READER_LOCALIZED_MAXIMUM_SPAN",
+    "GV_READER_LOCALIZED_CROP_MARGIN_PT",
+)
+
+
+def _switched_on(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes"}
+
+
+def _stated(names: tuple[str, ...], route: str) -> dict[str, str]:
+    """Every named setting, or an error naming the missing ones: a partial configuration is refused,
+    because silently filling one value would change which drawing region gets read."""
+    required = {name: os.environ.get(name) or "" for name in names}
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"{route} is enabled but missing " + ", ".join(missing))
+    return required
+
+
+def _association(required: Mapping[str, str]) -> object:
+    from extraction.glyph_bands import FractionBarGeometry
+    from workflow.association import AssociationSettings
+
+    return AssociationSettings(
+        line_minimum_pt=Decimal(required["GV_READER_LINE_MINIMUM_PT"]),
+        glyph_maximum_pt=Decimal(required["GV_READER_GLYPH_MAXIMUM_PT"]),
+        glyph_gap_pt=Decimal(required["GV_READER_GLYPH_GAP_PT"]),
+        proximity_limit=Decimal(required["GV_READER_PROXIMITY_LIMIT"]),
+        ambiguity_margin=Decimal(required["GV_READER_AMBIGUITY_MARGIN"]),
+        witness_tolerance=Decimal(required["GV_READER_WITNESS_TOLERANCE"]),
+        minimum_span=Decimal(required["GV_READER_MINIMUM_SPAN"]),
+        straightness=Decimal(required["GV_READER_STRAIGHTNESS"]),
+        crossing_margin=Decimal(required["GV_READER_CROSSING_MARGIN"]),
+        fraction_bar=FractionBarGeometry(
+            bar_thickness_max_pt=Decimal(required["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"]),
+            bar_length_min_pt=Decimal(required["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"]),
+            reach_pt=Decimal(required["GV_READER_FRACTION_REACH_PT"]),
+            glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"]),
+            glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"]),
+            proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"]),
+            character_gap_pt=Decimal(required["GV_READER_FRACTION_CHARACTER_GAP_PT"]),
+            turned_aspect_min=Decimal(required["GV_READER_FRACTION_TURNED_ASPECT_MIN"]),
+        ),
+    )
+
+
 def reader_configuration() -> tuple[object | None, object | None]:
     """Read explicitly supplied localized-reader settings, or leave that optional route off.
 
@@ -82,82 +168,35 @@ def reader_configuration() -> tuple[object | None, object | None]:
     defaults.  A partial configuration is refused; silently filling one value would change which
     drawing region gets read.  The demo launcher supplies its documented synthetic-fixture values.
     """
-    if os.environ.get("GV_LOCALIZED_OCR_ENABLED", "").lower() not in {"1", "true", "yes"}:
+    if not _switched_on("GV_LOCALIZED_OCR_ENABLED"):
         return None, None
-    required = {
-        "GV_READER_LINE_MINIMUM_PT": os.environ.get("GV_READER_LINE_MINIMUM_PT"),
-        "GV_READER_GLYPH_MAXIMUM_PT": os.environ.get("GV_READER_GLYPH_MAXIMUM_PT"),
-        "GV_READER_GLYPH_GAP_PT": os.environ.get("GV_READER_GLYPH_GAP_PT"),
-        "GV_READER_PROXIMITY_LIMIT": os.environ.get("GV_READER_PROXIMITY_LIMIT"),
-        "GV_READER_AMBIGUITY_MARGIN": os.environ.get("GV_READER_AMBIGUITY_MARGIN"),
-        # The dimension-line detector (#179). Required for the same reason as the rest: each
-        # decides which strokes a reading may attach to, and a default would be this machine's
-        # guess shipped as every deployment's.
-        "GV_READER_WITNESS_TOLERANCE": os.environ.get("GV_READER_WITNESS_TOLERANCE"),
-        "GV_READER_MINIMUM_SPAN": os.environ.get("GV_READER_MINIMUM_SPAN"),
-        "GV_READER_STRAIGHTNESS": os.environ.get("GV_READER_STRAIGHTNESS"),
-        "GV_READER_CROSSING_MARGIN": os.environ.get("GV_READER_CROSSING_MARGIN"),
-        "GV_READER_LOCALIZED_MINIMUM_PATHS": os.environ.get("GV_READER_LOCALIZED_MINIMUM_PATHS"),
-        "GV_READER_LOCALIZED_MAXIMUM_SPAN": os.environ.get("GV_READER_LOCALIZED_MAXIMUM_SPAN"),
-        "GV_READER_LOCALIZED_CROP_MARGIN_PT": os.environ.get("GV_READER_LOCALIZED_CROP_MARGIN_PT"),
-        # The stacked-fraction detector (#735). Required with the rest because the rule it enforces —
-        # a stacked fraction always goes to a reviewer (#726) — cannot run without it, and the guard
-        # it replaced was optional and was never once supplied.
-        "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT": os.environ.get(
-            "GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"
-        ),
-        "GV_READER_FRACTION_BAR_LENGTH_MIN_PT": os.environ.get(
-            "GV_READER_FRACTION_BAR_LENGTH_MIN_PT"
-        ),
-        "GV_READER_FRACTION_REACH_PT": os.environ.get("GV_READER_FRACTION_REACH_PT"),
-        "GV_READER_FRACTION_GLYPH_MIN_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MIN_PT"),
-        "GV_READER_FRACTION_GLYPH_MAX_PT": os.environ.get("GV_READER_FRACTION_GLYPH_MAX_PT"),
-        "GV_READER_FRACTION_PROPORTION_MAX": os.environ.get("GV_READER_FRACTION_PROPORTION_MAX"),
-        # Where each part of a stacked label was drawn (#834), which a reading of it must match.
-        "GV_READER_FRACTION_CHARACTER_GAP_PT": os.environ.get(
-            "GV_READER_FRACTION_CHARACTER_GAP_PT"
-        ),
-        # Which bars across a stamp's baseline are a turned label's fraction (#869).
-        "GV_READER_FRACTION_TURNED_ASPECT_MIN": os.environ.get(
-            "GV_READER_FRACTION_TURNED_ASPECT_MIN"
-        ),
-    }
-    missing = [name for name, value in required.items() if not value]
-    if missing:
-        raise ValueError("localized OCR is enabled but missing " + ", ".join(missing))
-    from extraction.glyph_bands import FractionBarGeometry
-    from workflow.association import AssociationSettings, LocalizedOcrSettings
+    # In the order the error has always named them: the detector's four, the localized three, then
+    # the fraction detector's.
+    required = _stated(
+        ASSOCIATION_VARIABLES[:9] + LOCALIZED_VARIABLES + ASSOCIATION_VARIABLES[9:], "localized OCR"
+    )
+    from workflow.association import LocalizedOcrSettings
 
     return (
-        AssociationSettings(
-            line_minimum_pt=Decimal(required["GV_READER_LINE_MINIMUM_PT"] or ""),
-            glyph_maximum_pt=Decimal(required["GV_READER_GLYPH_MAXIMUM_PT"] or ""),
-            glyph_gap_pt=Decimal(required["GV_READER_GLYPH_GAP_PT"] or ""),
-            proximity_limit=Decimal(required["GV_READER_PROXIMITY_LIMIT"] or ""),
-            ambiguity_margin=Decimal(required["GV_READER_AMBIGUITY_MARGIN"] or ""),
-            witness_tolerance=Decimal(required["GV_READER_WITNESS_TOLERANCE"] or ""),
-            minimum_span=Decimal(required["GV_READER_MINIMUM_SPAN"] or ""),
-            straightness=Decimal(required["GV_READER_STRAIGHTNESS"] or ""),
-            crossing_margin=Decimal(required["GV_READER_CROSSING_MARGIN"] or ""),
-            fraction_bar=FractionBarGeometry(
-                bar_thickness_max_pt=Decimal(
-                    required["GV_READER_FRACTION_BAR_THICKNESS_MAX_PT"] or ""
-                ),
-                bar_length_min_pt=Decimal(required["GV_READER_FRACTION_BAR_LENGTH_MIN_PT"] or ""),
-                reach_pt=Decimal(required["GV_READER_FRACTION_REACH_PT"] or ""),
-                glyph_min_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MIN_PT"] or ""),
-                glyph_max_pt=Decimal(required["GV_READER_FRACTION_GLYPH_MAX_PT"] or ""),
-                proportion_max=Decimal(required["GV_READER_FRACTION_PROPORTION_MAX"] or ""),
-                character_gap_pt=Decimal(required["GV_READER_FRACTION_CHARACTER_GAP_PT"] or ""),
-                turned_aspect_min=Decimal(required["GV_READER_FRACTION_TURNED_ASPECT_MIN"] or ""),
-            ),
-        ),
+        _association(required),
         LocalizedOcrSettings(
-            minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"] or ""),
-            maximum_span=Decimal(required["GV_READER_LOCALIZED_MAXIMUM_SPAN"] or ""),
-            crop_margin_pt=Decimal(required["GV_READER_LOCALIZED_CROP_MARGIN_PT"] or ""),
+            minimum_paths=int(required["GV_READER_LOCALIZED_MINIMUM_PATHS"]),
+            maximum_span=Decimal(required["GV_READER_LOCALIZED_MAXIMUM_SPAN"]),
+            crop_margin_pt=Decimal(required["GV_READER_LOCALIZED_CROP_MARGIN_PT"]),
         ),
     )
+
+
+def part_finder_configuration() -> object | None:
+    """Code's part finder's settings when `GV_PART_FINDER_ENABLED` is on, else `None` (#1236).
+
+    The same line-work and detector settings as the localized reader's (`ASSOCIATION_VARIABLES`),
+    all required, and nothing else: turning the finder on reads no page's pixels and changes no
+    reading. Where the localized reader is on, the stages use its settings instead.
+    """
+    if not _switched_on(PART_FINDER_VARIABLE):
+        return None
+    return _association(_stated(ASSOCIATION_VARIABLES, "code's part finder"))
 
 
 #: How a suggested part's picture is cut (#897): how far past the part's outline it reaches, in PDF
@@ -341,6 +380,7 @@ def build_stages(
             ticket_secret=b"local-review-worker-never-issues-tickets",
         )
     association, localized = reader_configuration()
+    part_finder = part_finder_configuration()
     automatic_typing = automatic_typing_configuration()
     from app.config import Settings
     from workflow.form_reader import configured_form_reader
@@ -381,11 +421,14 @@ def build_stages(
         missing_space=missing_space_from_environment(),
         form_reader=form_reader,
         # Off unless GV_SLOT_READER_ENABLED, and then only beside the form reader (#987).
-        slot_reader=configured_slot_reader(settings, form_reader),
-        # Required wherever parts are suggested, which is wherever the reader's settings are (#897).
+        slot_reader=(slot_reader := configured_slot_reader(settings, form_reader)),
+        # Required wherever parts are suggested (#897): wherever the reader's settings are, and
+        # wherever the slot reader runs, because Bala suggests a part for every row it reads (#1236).
         part_pictures=part_picture_configuration(  # type: ignore[arg-type]
-            required=association is not None
+            required=association is not None or slot_reader is not None
         ),
+        # Code's geometry-only part finder, in memory, as Bala's second judgment (#1236).
+        part_finder=part_finder,  # type: ignore[arg-type]
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).

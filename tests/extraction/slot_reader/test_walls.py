@@ -270,15 +270,17 @@ def test_a_strokes_direction_is_binned_without_trigonometry(dx: str, dy: str, de
 
 
 def _hatch_lines(
-    x_end: int, top: int, count: int, step: int, slope: int = 1
+    x_end: int, top: int, count: int, step: int, slope: int = 1, width: int = 14
 ) -> tuple[InkLine, ...]:
-    """`count` parallel 8-point diagonals just left of `x_end`, `step` points apart down the page."""
+    """`count` parallel diagonals, `width` points wide, just left of `x_end`, `step` points apart
+    down the page. 14 points is a wall's hatch band; the narrowest real one measured is about 12.6
+    (#1204). A band only a panel wide is an end panel's hatch, not a wall's."""
     return tuple(
         InkLine(
-            Decimal(x_end - 12),
+            Decimal(x_end - 6 - width),
             Decimal(top + index * step),
             Decimal(x_end - 6),
-            Decimal(top + index * step + 6 * slope),
+            Decimal(top + index * step + width * slope),
         )
         for index in range(count)
     )
@@ -596,6 +598,250 @@ def test_a_tall_cabinet_or_fridge_beside_the_end_is_not_a_wall() -> None:
     )
     seen, why = _tall(lines)
     assert not seen and "things drawn in it" in why
+
+
+# ---------------------------------------------------------------------------------------------
+# #1204: the shapes that still read as wall ink after #1202 — panels, frames and fillers
+# ---------------------------------------------------------------------------------------------
+
+
+def _double_frame(x_inner: int, x_outer: int, *, joined: bool) -> tuple[InkLine, ...]:
+    """Two frame lines round the elevation (left side shown at the row's left end, the right
+    side past its right end), `x_inner - x_outer` points apart, their level sides spanning the
+    row. Not joined: every side stops 3 points short of the corners."""
+    gap = x_inner - x_outer
+    inner = (x_inner, 45, 400 - x_inner, 205)
+    outer = (x_outer, 45 - gap, 400 - x_outer, 205 + gap)
+    short = 0 if joined else 3
+    lines: list[InkLine] = []
+    for x0, top, x1, bottom in (inner, outer):
+        lines += [
+            _line(x0, top + short, x0, bottom - short),
+            _line(x1, top + short, x1, bottom - short),
+            _line(x0 + short, top, x1 - short, top),
+            _line(x0 + short, bottom, x1 - short, bottom),
+        ]
+    return tuple(lines)
+
+
+@pytest.mark.parametrize("joined", [True, False])
+@pytest.mark.parametrize(("x_inner", "x_outer"), [(97, 94), (96, 86)])
+def test_a_double_frame_line_round_the_elevation_is_not_a_wall(
+    joined: bool, x_inner: int, x_outer: int
+) -> None:
+    """A double line whose level sides span the row is the elevation's frame, at either end,
+    whether the frame lines are panel-thin apart or a wall's thickness apart."""
+    lines = _double_frame(x_inner, x_outer, joined=joined)
+    seen, _ = _tall(lines)
+    assert not seen
+    right = tall_line_at(
+        PageInk(
+            width=Decimal(600),
+            height=Decimal(400),
+            lines=lines,
+            curves=(RIGHT_CABINET,),
+            characters=(),
+            drawing_boxes=(),
+        ),
+        x_end=Decimal(300),
+        side="right",
+        row_width=Decimal(200),
+        y_low=Decimal(40),
+        y_high=Decimal(200),
+        frame_height=Decimal(400),
+        settings=E3_WALL_SETTINGS,
+    )
+    assert not right[0]
+
+
+def test_a_wall_in_section_standing_on_a_floor_line_across_the_drawing_is_still_a_wall() -> None:
+    """One floor line under the row and both wall faces, and one ceiling line from the inner
+    face: single lines, not a double frame. The wall is still seen (#1204 is stricter only)."""
+    floor = _line(60, 200, 340, 200)
+    ceiling = _line(98, 50, 320, 50)
+    seen, why = _tall((*WALL_IN_SECTION, floor, ceiling))
+    assert seen and "wall drawn in section" in why
+
+
+def test_a_tall_cabinet_side_drawn_panel_thick_is_not_a_wall() -> None:
+    """A tall cabinet beside the end whose side is two lines 3 points apart (the panel), its top
+    meeting only the outer line, with doors drawn beyond it."""
+    lines = (
+        _line(98, 50, 98, 200),
+        _line(95, 50, 95, 200),
+        _line(40, 50, 95, 50),
+        _line(40, 50, 40, 200),
+        _line(68, 60, 68, 190),
+        _line(60, 110, 64, 110),
+    )
+    assert not _tall(lines)[0]
+
+
+def test_a_full_height_end_panel_drawn_as_two_lines_is_not_a_wall() -> None:
+    """An end panel two points thick, rising full height beside the end: a panel, not a wall."""
+    seen, why = _tall((_line(98, 50, 98, 200), _line(96, 50, 96, 200), _line(96, 50, 98, 50)))
+    assert not seen and "single tall line" in why
+
+
+def _wall_in_section(gap: str, between: tuple[InkLine, ...] = ()) -> tuple[bool, str]:
+    """A wall drawn in section at the left end: its inner face at 98, its outer face `gap` points
+    further out, a cap joining them, nothing else between but `between`."""
+    outer = 98 - float(gap)
+    return _tall(
+        (_line(98, 50, 98, 200), _line(outer, 50, outer, 200), _line(outer, 50, 98, 50), *between)
+    )
+
+
+@pytest.mark.parametrize(
+    ("gap", "wall"),
+    [
+        ("4.81", False),  # the closest panel pair measured: a cabinet seen from the side
+        ("5.5", False),  # just under the minimum
+        ("6", True),  # just over it
+        ("6.75", True),  # a 4.5-inch wall at 1:48, the thinnest wall to keep
+        ("18.6", True),  # the real walls in section measured
+    ],
+)
+def test_a_wall_in_section_must_be_thicker_than_a_panel(gap: str, wall: bool) -> None:
+    assert _wall_in_section(gap)[0] is wall
+
+
+def test_an_upright_inside_the_wall_no_longer_than_its_faces_is_still_a_wall() -> None:
+    """A finish line drawn inside the wall, as tall as its faces (or within `join_slack_pt` of
+    it): still an empty wall section. One running on past them is a panel's other face."""
+    assert _wall_in_section("18", (_line(89, 50, 89, 200),))[0]
+    # Shorter uprights (neither a face nor a wall line themselves) crossing the faces' ends.
+    assert _wall_in_section("18", (_line(89, 49, 89, 140),))[0]
+    assert not _wall_in_section("18", (_line(89, 47, 89, 140),))[0]
+    assert _wall_in_section("18", (_line(89, 120, 89, 201),))[0]
+    assert not _wall_in_section("18", (_line(89, 120, 89, 203),))[0]
+
+
+@pytest.mark.parametrize(("open_pt", "frame"), [("5.5", True), ("6.5", False)])
+def test_a_double_frame_may_leave_its_corners_open_up_to_the_setting(
+    open_pt: str, frame: bool
+) -> None:
+    """The frame's upright lines stop `open_pt` short of their level lines: up to
+    `frame_open_pt` (6 points) it is still the frame; further open, the frame rule says nothing."""
+    gap = Decimal(open_pt)
+    lines: list[InkLine] = []
+    for x0, top, x1, bottom in ((96, 45, 304, 205), (86, 35, 314, 215)):
+        lines += [
+            InkLine(Decimal(x0), top + gap, Decimal(x0), bottom - gap),
+            InkLine(Decimal(x1), top + gap, Decimal(x1), bottom - gap),
+            _line(x0, top, x1, top),
+            _line(x0, bottom, x1, bottom),
+        ]
+    seen, why = _tall(tuple(lines))
+    assert (not seen and "double frame" in why) if frame else seen
+
+
+def test_a_narrow_wall_hatch_below_the_cabinets_reference_is_still_a_wall() -> None:
+    """#1237 review, rebuilt from a real wall-to-wall kitchenette: walls hatched only about 6
+    points wide, whose top sits below the cabinets' reference height (a dimension line inside
+    the end reaches higher). Real walls: a hatched end panel cannot be told from them by width or
+    rise, so neither refuses a hatch."""
+    wall = _hatch_lines(100, 121, 25, 3, width=6)
+    dimension = _line(110, 110, 110, 200)
+    seen, _ = hatch_at(
+        _ink_with((*wall, dimension), (LEFT_CABINET,)), **_hatch(100)  # type: ignore[arg-type]
+    )
+    assert seen
+
+
+def test_a_narrow_hatch_rising_above_the_cabinets_is_still_a_wall() -> None:
+    """A wall seen from the side (its section in a side view) is hatched only a panel wide, and
+    rises past the cabinets beside the end: a wall."""
+    wall = _hatch_lines(100, 105, 30, 3, width=6)
+    seen, _ = hatch_at(_ink_with(wall, (LEFT_CABINET,)), **_hatch(100))  # type: ignore[arg-type]
+    assert seen
+
+
+def test_a_wall_hatch_band_stopping_below_the_wall_cabinets_top_is_still_a_wall() -> None:
+    """Real front-view wall hatch often stops below the wall cabinets' top. The wall cabinet here
+    stands inside the measured height, so the cabinets' top really is above the hatch's top."""
+    from extraction.slot_reader.walls import _casework_top, _shape_boxes
+
+    band = _hatch_lines(100, 110, 14, 5)
+    wall_cabinet = _band(102, 130, 100, 140, None)
+    ink = _ink_with(band, (LEFT_CABINET, wall_cabinet))
+    cabinets_top = _casework_top(
+        _shape_boxes(ink),
+        x_end=Decimal(100),
+        side="left",
+        row_width=Decimal(200),
+        y_low=Decimal(100),
+        y_high=Decimal(200),
+        settings=E3_WALL_SETTINGS,
+    )
+    assert cabinets_top == Decimal(100)
+    assert min(min(line.y0, line.y1) for line in band) > cabinets_top
+    seen, _ = hatch_at(ink, **_hatch(100))  # type: ignore[arg-type]
+    assert seen
+
+
+@pytest.mark.parametrize("width", [4, 9, 11, "11.9"])
+def test_a_shaded_filler_strip_drawn_full_height_is_not_a_wall_band(width: int | str) -> None:
+    """A filler strip shaded grey, full height and rising above the cabinets: a filler's width
+    (1 to 3 inches at the usual scales), not a wall's."""
+    box = Box(Decimal(100) - Decimal(width), Decimal(50), Decimal(100), Decimal(200))
+    strip = InkCurve(
+        box=box,
+        points=((box.x0, box.top), (box.x1, box.top), (box.x1, box.bottom), (box.x0, box.bottom)),
+        closed=True,
+        fill_lightness=Decimal("0.6"),
+    )
+    seen, why = _band_at((strip,))
+    assert not seen and "filler" in why
+
+
+def test_a_shaded_band_twelve_points_wide_is_a_wall_band() -> None:
+    """The band minimum, pinned from above: 12 points is a wall band (the real one is 18)."""
+    assert _band_at((_band(88, 100, 50, 200, "0.6"),))[0]
+
+
+def test_the_1204_thresholds_are_the_measured_ones() -> None:
+    """Pinned: each was chosen from the stored drawings' margins (see the settings' notes)."""
+    assert E3_WALL_SETTINGS.wall_body_min_pt == Decimal("5.75")
+    assert E3_WALL_SETTINGS.band_min_width_pt == Decimal(12)
+    assert E3_WALL_SETTINGS.frame_open_pt == Decimal(6)
+
+
+def test_a_page_framed_twice_with_a_filler_strip_reads_no_wall_and_says_why() -> None:
+    """The whole page: a row under an elevation drawn in a double frame, with a shaded filler
+    strip at its left end. Code sees no wall at either end, and the left end's recorded reason
+    names the refused filler strip."""
+    from extraction.geometry.rows import CountertopRowCandidate, TickSource
+    from extraction.slot_reader.walls import wall_pictures
+
+    row = CountertopRowCandidate(
+        y=Decimal(212),
+        ticks=(Decimal(100), Decimal(200), Decimal(300)),
+        tick_source=TickSource.SLASH,
+        slots=(),
+        overall=None,
+        findings=(),
+        labelled=0,
+        rank=1,
+        rejected_because=None,
+    )
+    ink = PageInk(
+        width=Decimal(600),
+        height=Decimal(400),
+        lines=_double_frame(96, 86, joined=True),
+        curves=(
+            LEFT_CABINET,
+            RIGHT_CABINET,
+            _band(130, 270, 150, 205, None),
+            _band(91, 100, 50, 200, "0.6"),
+        ),
+        characters=(),
+        drawing_boxes=(),
+    )
+    seen = wall_pictures(row, ink, settings=E3_WALL_SETTINGS).ink
+    assert not seen.left and not seen.right
+    assert "filler" in seen.why_left
+    assert "double frame" in seen.why_right
 
 
 def test_wall_settings_refuse_a_float() -> None:

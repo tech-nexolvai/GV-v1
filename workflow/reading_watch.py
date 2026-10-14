@@ -83,9 +83,12 @@ def ledger_key_prefix(stage_key: str) -> str:
 class ProgressReporter:
     """Says which part of one revision's reading is running. Never raises."""
 
-    def __init__(self, engine: Engine | None, package_revision_id: UUID) -> None:
+    def __init__(
+        self, engine: Engine | None, package_revision_id: UUID, reading_id: UUID | None = None
+    ) -> None:
         self._engine = engine
         self._revision = package_revision_id
+        self._reading_id = reading_id
 
     def stage(
         self, stage: str, *, pages_done: int | None = None, pages_total: int | None = None
@@ -96,6 +99,7 @@ class ProgressReporter:
             stage,
             pages_done=pages_done,
             pages_total=pages_total,
+            reading_id=self._reading_id,
         )
 
 
