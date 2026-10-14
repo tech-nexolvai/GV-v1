@@ -347,15 +347,15 @@ describe('measurements: the live reading activity while reading (#1239)', () => 
     });
     const activity = {
       reading_id: 'r1', updated_at: null, now: null,
-      items: [{ page: 2, agent: 'Akshara', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look', line: null, at: null }],
-      summary: { stopped: 1, tried_again: 1, helped: 0, waiting: 0 },
+      items: [{ page: 2, agent: 'Akshara', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look-2x', attempt: 1, line: 'Trying again on a number on page 2 with a 2× close-up (try 1 of 3).', at: null }],
+      summary: { stopped: 1, tried_again: 1, helped: 0, waiting: 0, sentence: null },
     };
     const view = render(<MeasurementPanel packageId="pkg" readingActivity={activity} readingPages={{ pagesDone: 1, pagesTotal: 4 }} />);
     await screen.findAllByText('Reading these drawings');
     const panel = document.querySelector('[data-slot="reading-activity"]') as HTMLElement;
     expect(panel).not.toBeNull();
     expect(within(panel).getByText('Reading page 2 of 4…')).toBeTruthy();
-    expect(within(panel).getByText('Trying again on a number on page 2 with a closer look.')).toBeTruthy();
+    expect(within(panel).getByText('Trying again on a number on page 2 with a 2× close-up (try 1 of 3).')).toBeTruthy();
     expect(within(panel).getByText('Number reader')).toBeTruthy();
     // Its own live region, never nested in the reading block's.
     expect(panel.closest('[data-slot="reading-progress"]')).toBeNull();

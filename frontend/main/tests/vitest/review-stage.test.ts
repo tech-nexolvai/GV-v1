@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { RAISE_THE_LIMIT_FIRST, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { RAISE_THE_LIMIT_FIRST, RESTARTING_WORDS, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { packageStatusLabel } from '@/components/ui/StatusBadge';
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -50,6 +51,11 @@ describe('reviewStage: one step per state', () => {
     // Without a retry line, a failed package still says it hit a problem.
     const failed = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null });
     expect(failed.steps.find((step) => step.state === 'current')?.note).toBe('Processing hit a problem and will retry');
+  });
+
+  it('the package badge says the same restart words, never "Retrying" (#1239)', () => {
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Starting the reading again after a problem');
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe(RESTARTING_WORDS);
   });
 
   it('reading: a worker quiet for too long is said, from the recorded time only', () => {

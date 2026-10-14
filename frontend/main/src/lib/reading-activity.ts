@@ -2,11 +2,11 @@
  * The live reading activity (#1239): what each AI is doing while a package is read, when its
  * inspector stops it, and when it tries again, in plain words.
  *
- * The API sends codes only (`PackageOut.activity`, #1238): an agent, a page, a state and a reason
- * code. The words a reviewer reads are made here, from those codes, so the screen never shows
- * drawing text and never shows an agent's name in a sentence (Anant, phase 3 decision 1: plain role
- * names, the agent's name only on hover). A code this screen does not know yet falls back to the
- * server's own plain line, so a new kind of stop is never shown as a blank.
+ * **The server owns every sentence** (#1238, orchestrator 2026-10-14): each item carries `line` (a
+ * plain sentence with role names, never an agent's name), and the activity carries `now` and
+ * `summary.sentence`. The screen shows them word for word and adds only the role tag (the agent's
+ * name on hover, Anant's phase 3 decision 1), a glyph by state and the links to Decisions. The
+ * wording table below is a fallback for a sentence that is missing, so nothing is ever blank.
  *
  * It decides nothing. "Passed" here means an inspector let the work go on; it is not a PASS result,
  * and nothing on this panel is an outcome.
@@ -28,9 +28,15 @@ export interface ReadingActivityItemOut {
   state: string;
   /** Why: `readers-differ`, `no-printed-numbers`, `helped`, `not-helped`, `allowance-used`, … */
   code: string | null;
-  /** What changed on a try-again: `tie-break`, `closer-look`, …; null otherwise. */
+  /**
+   * What changed on a try-again (fixed codes): the number reader `closer-look-2x`,
+   * `closer-look-3x-upright`, `tighter-crop`; the line finder `tie-break-disputed-lines`,
+   * `other-numbered-lines`, `each-line-alone`. Null otherwise.
+   */
   change: string | null;
-  /** The server's own plain sentence; used only for a code this screen does not know. */
+  /** Which try this is, 1 to 3 (Anant: up to 3 tries per item); null when not a try-again. */
+  attempt: number | null;
+  /** The server's plain sentence for this happening: what the screen shows. */
   line: string | null;
   at: string | null;
 }
@@ -39,13 +45,16 @@ export interface ReadingActivitySummaryOut {
   stopped: number;
   tried_again: number;
   helped: number;
+  /** Every item waiting for a person (stopped and not tried, or tried and not helped). */
   waiting: number;
+  /** The server's summary sentence, e.g. "Tried again on 5 items: 3 now agree, 4 wait for you." */
+  sentence: string | null;
 }
 
 export interface ReadingActivityOut {
   reading_id: string;
   updated_at: string | null;
-  /** The server's line for what is happening now; used when no page count is known. */
+  /** The server's sentence for what is happening now ("Reading page 12 of 40…"). */
   now: string | null;
   /** The newest happenings that are not passes (passes are only counted). */
   items: ReadingActivityItemOut[];
@@ -92,12 +101,18 @@ function stopWords(item: ReadingActivityItemOut): string | null {
   return null;
 }
 
-/** What a try-again changed, as the end of a sentence; null for a change not known here. */
+/** What a try-again changed, as the end of a sentence (the fixed change codes); null otherwise. */
+const CHANGE_WORDS: Record<string, string> = {
+  'closer-look-2x': 'with a 2× close-up',
+  'closer-look-3x-upright': 'with a 3× close-up, turned upright',
+  'tighter-crop': 'with a tighter crop',
+  'tie-break-disputed-lines': 'with a closer look at the disputed lines',
+  'other-numbered-lines': 'by showing the other numbered lines',
+  'each-line-alone': 'by showing each line alone',
+};
+
 function changeWords(change: string | null): string | null {
-  if (change === 'tie-break' || change === 'closer-look') return 'with a closer look';
-  const zoom = change ? /(\d)x/.exec(change) : null;
-  if (zoom) return `with a ${zoom[1]}× close-up`;
-  return null;
+  return change ? (CHANGE_WORDS[change] ?? null) : null;
 }
 
 /** The outcome of a try-again (or why there was none); null for a code not known here. */
@@ -119,13 +134,14 @@ function resultWords(item: ReadingActivityItemOut): string | null {
   return null;
 }
 
-/** The server's plain line, or a generic sentence that still names the page and the role. */
-function fallback(item: ReadingActivityItemOut, generic: string): string {
-  return item.line?.trim() ? item.line.trim() : generic;
+/** One happening as the reviewer reads it: the server's sentence, else the fallback wording. */
+export function activityLine(item: ReadingActivityItemOut): string {
+  const line = item.line?.trim();
+  return line ? line : fallbackLine(item);
 }
 
-/** One happening in plain words (design §(c)). */
-export function activityLine(item: ReadingActivityItemOut): string {
+/** The screen's own words for a happening whose sentence is missing (design §(c)). */
+export function fallbackLine(item: ReadingActivityItemOut): string {
   const page = `Page ${item.page}`;
   const role = roleInSentence(item.agent);
   switch (item.state) {
@@ -134,29 +150,29 @@ export function activityLine(item: ReadingActivityItemOut): string {
     case 'passed':
       if (item.agent === 'Rekha') return `${page}: countertop line found.`;
       if (item.agent === 'Akshara') return `${page}: numbers read and agreed.`;
-      return fallback(item, `${page}: ${role} passed its check.`);
+      return `${page}: ${role} passed its check.`;
     case 'stopped':
-      return stopWords(item) ?? fallback(item, `${page}: ${role} stopped on one item. ${WAITING}`);
+      return stopWords(item) ?? `${page}: ${role} stopped on one item. ${WAITING}`;
     case 'trying_again': {
       const how = changeWords(item.change);
       if (item.agent === 'Rekha') {
-        return how ? `Couldn't settle the countertop line on page ${item.page} — trying again ${how}.` : fallback(item, `Couldn't settle the countertop line on page ${item.page} — trying again.`);
+        return how ? `Couldn't settle the countertop line on page ${item.page} — trying again ${how}.` : `Couldn't settle the countertop line on page ${item.page} — trying again.`;
       }
       if (item.agent === 'Akshara') {
-        return how ? `Trying again on a number on page ${item.page} ${how}.` : fallback(item, `Trying again on a number on page ${item.page}.`);
+        return how ? `Trying again on a number on page ${item.page} ${how}.` : `Trying again on a number on page ${item.page}.`;
       }
-      return how ? `Trying again on page ${item.page} ${how}.` : fallback(item, `Trying again on page ${item.page}.`);
+      return how ? `Trying again on page ${item.page} ${how}.` : `Trying again on page ${item.page}.`;
     }
     case 'try_again_result':
-      return resultWords(item) ?? fallback(item, `${page}: ${role} tried again.`);
+      return resultWords(item) ?? `${page}: ${role} tried again.`;
     case 'waiting': {
       const result = resultWords(item);
       if (result) return result;
       const stop = stopWords(item);
-      return stop ? `${stop} ${WAITING}` : fallback(item, `${page}: ${role} stopped on one item. ${WAITING}`);
+      return stop ? `${stop} ${WAITING}` : `${page}: ${role} stopped on one item. ${WAITING}`;
     }
     default:
-      return fallback(item, `${page}: ${role} is working.`);
+      return `${page}: ${role} is working.`;
   }
 }
 
@@ -167,48 +183,47 @@ export function needsYou(item: ReadingActivityItemOut): boolean {
 }
 
 /**
- * The panel's first line while reading: "Reading page 12 of 40…" from the worker's progress line;
- * without a page count, the server's own line; else just "Reading…".
+ * The panel's first line while reading: the server's `now`; without it, "Reading page 12 of 40…"
+ * from the worker's progress line; else just "Reading…".
  */
 export function readingHeadline(
   progress: { pagesDone: number | null; pagesTotal: number | null } | null | undefined,
   now: string | null | undefined,
 ): string {
+  const said = now?.trim();
+  if (said) return said;
   const pages = progress ? pageWords(progress) : null;
-  if (pages?.startsWith('page ')) return `Reading ${pages}…`;
-  const said = now?.trim().replace(/[.…]+$/, '');
-  return said ? `${said}…` : 'Reading…';
-}
-
-/** The summary after reading, as its parts: the two counts are links to Decisions. */
-export interface SummaryParts {
-  lead: string;
-  /** "3 now agree"; null when none did. */
-  agreed: string | null;
-  /** "2 wait for you"; null when none do. */
-  waiting: string | null;
+  return pages?.startsWith('page ') ? `Reading ${pages}…` : 'Reading…';
 }
 
 /**
- * "Tried again on 5 items: 3 now agree, 2 wait for you." — or, with no try-again, "Reading
- * finished: 4 items wait for you." Null when nothing stopped (nothing to say).
+ * The line after reading: the server's `summary.sentence`; without it, "Tried again on 5 items: 3
+ * now agree, 4 wait for you." or "Reading finished: 4 items wait for you." from the counts, with
+ * `waiting` used as it is (every item waiting for a person). Null when there is nothing to say.
  */
-export function summaryParts(summary: ReadingActivitySummaryOut | null | undefined): SummaryParts | null {
+export function summarySentence(summary: ReadingActivitySummaryOut | null | undefined): string | null {
   if (!summary) return null;
-  if (summary.tried_again > 0) {
-    const tried = summary.tried_again;
-    const helped = Math.min(Math.max(summary.helped, 0), tried);
-    const notHelped = tried - helped;
-    return {
-      lead: `Tried again on ${tried} ${tried === 1 ? 'item' : 'items'}: `,
-      agreed: helped > 0 ? `${helped} now ${helped === 1 ? 'agrees' : 'agree'}` : null,
-      waiting: notHelped > 0 ? `${notHelped} ${notHelped === 1 ? 'waits' : 'wait'} for you` : null,
-    };
+  const said = summary.sentence?.trim();
+  if (said) return said;
+  const { tried_again: tried, helped, waiting } = summary;
+  const waits = (n: number, items: boolean) => `${n} ${items ? (n === 1 ? 'item ' : 'items ') : ''}${n === 1 ? 'waits' : 'wait'} for you`;
+  if (tried > 0) {
+    const parts = [helped > 0 ? `${helped} now ${helped === 1 ? 'agrees' : 'agree'}` : null, waiting > 0 ? waits(waiting, false) : null].filter(Boolean);
+    return `Tried again on ${tried} ${tried === 1 ? 'item' : 'items'}${parts.length ? `: ${parts.join(', ')}` : ''}.`;
   }
-  if (summary.waiting > 0) {
-    return { lead: 'Reading finished: ', agreed: null, waiting: `${summary.waiting} ${summary.waiting === 1 ? 'item waits' : 'items wait'} for you` };
-  }
-  return null;
+  return waiting > 0 ? `Reading finished: ${waits(waiting, true)}.` : null;
+}
+
+/** A count a reviewer can act on: "3 now agree", "4 wait for you", "1 item waits for you". */
+const DECISION_COUNT = /(\d+ (?:items? )?(?:now agrees?|waits? for you))/;
+
+/** A sentence cut into plain text and the counts that link to Decisions. */
+export function linkedParts(sentence: string): { text: string; link: boolean }[] {
+  // Split on a capturing group: the counts land at the odd positions.
+  return sentence
+    .split(DECISION_COUNT)
+    .map((part, index) => ({ text: part, link: index % 2 === 1 }))
+    .filter((part) => part.text !== '');
 }
 
 function text(value: unknown): string | null {
@@ -239,6 +254,7 @@ export function readActivity(value: unknown): ReadingActivityOut | null {
       state: it.state,
       code: text(it.code),
       change: text(it.change),
+      attempt: typeof it.attempt === 'number' && Number.isFinite(it.attempt) ? it.attempt : null,
       line: text(it.line),
       at: text(it.at),
     });
@@ -249,6 +265,6 @@ export function readActivity(value: unknown): ReadingActivityOut | null {
     updated_at: text(raw.updated_at),
     now: text(raw.now),
     items,
-    summary: s ? { stopped: count(s.stopped), tried_again: count(s.tried_again), helped: count(s.helped), waiting: count(s.waiting) } : null,
+    summary: s ? { stopped: count(s.stopped), tried_again: count(s.tried_again), helped: count(s.helped), waiting: count(s.waiting), sentence: text(s.sentence) } : null,
   };
 }

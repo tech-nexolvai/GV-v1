@@ -4,10 +4,11 @@ import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   activityLine,
+  linkedParts,
   needsYou,
   readingHeadline,
   roleName,
-  summaryParts,
+  summarySentence,
   type ReadingActivityItemOut,
   type ReadingActivityOut,
 } from '@/lib/reading-activity';
@@ -19,10 +20,13 @@ export const SHOWN_ITEMS = 4;
 /**
  * The live reading activity (#1239), under the review stepper and on the Measurements tab.
  *
- * While reading: the page being read, then the newest happenings — an inspector stopping an AI, the
- * AI trying again and what changed, and whether that helped — each with the role that did it ("Line
- * finder"; the agent's name on hover). After reading: one line, "Tried again on 5 items: 3 now
- * agree, 2 wait for you.", whose counts open Decisions.
+ * While reading: the server's `now`, then the newest happenings — an inspector stopping an AI, the
+ * AI trying again and what changed, and whether that helped — each with a glyph by state and the
+ * role that did it ("Line finder"; the agent's name on hover). After reading: the server's summary
+ * sentence ("Tried again on 5 items: 3 now agree, 4 wait for you."), whose counts open Decisions.
+ *
+ * Every sentence is the server's (#1238); the screen's own wording in `lib/reading-activity.ts` is
+ * only a fallback for a sentence that is missing.
  *
  * One `aria-live="polite"` region that stays mounted, so a screen reader hears each new line without
  * being interrupted. With no activity (absent, null, or nothing to say) it renders nothing at all.
@@ -46,7 +50,7 @@ export function ReadingActivity({
   className?: string;
 }) {
   if (!activity) return null;
-  const summary = reading ? null : summaryParts(activity.summary);
+  const summary = reading ? null : summarySentence(activity.summary);
   if (!reading && !summary) return null;
 
   const newest = [...activity.items].sort(byNewest).slice(0, SHOWN_ITEMS);
@@ -69,19 +73,15 @@ export function ReadingActivity({
               // Its own provider, so the panel works wherever it is placed (the Measurements tab too).
               <TooltipProvider delayDuration={250}>
                 <ul className="flex flex-col gap-1">
-                  {newest.map((item) => <ActivityRow key={`${item.item}|${item.state}|${item.at ?? ''}`} item={item} />)}
+                  {newest.map((item) => <ActivityRow key={`${item.item}|${item.state}|${item.attempt ?? ''}|${item.at ?? ''}`} item={item} />)}
                 </ul>
               </TooltipProvider>
             )}
           </>
         ) : summary && (
           <p>
-            {summary.waiting && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mr-1.5 inline-block align-[-3px] text-outcome-review-fg" />}
-            {summary.lead}
-            {summary.agreed && <DecisionsLink text={summary.agreed} onOpen={onOpenDecisions} />}
-            {summary.agreed && summary.waiting && ', '}
-            {summary.waiting && <DecisionsLink text={summary.waiting} onOpen={onOpenDecisions} />}
-            .
+            {activity.summary && activity.summary.waiting > 0 && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mr-1.5 inline-block align-[-3px] text-outcome-review-fg" />}
+            <SummaryWithLinks sentence={summary} onOpen={onOpenDecisions} />
           </p>
         )}
       </div>
@@ -94,14 +94,28 @@ function byNewest(a: ReadingActivityItemOut, b: ReadingActivityItemOut): number 
   return at(b) - at(a);
 }
 
-/** A count in the summary ("3 now agree"): a link to Decisions where the screen has one. The number is mono. */
-function DecisionsLink({ text, onOpen }: { text: string; onOpen?: () => void }) {
+/**
+ * The server's summary sentence, its counts ("3 now agree", "4 wait for you") made links to
+ * Decisions. A sentence with no count to link gets one "Open Decisions" link after it.
+ */
+function SummaryWithLinks({ sentence, onOpen }: { sentence: string; onOpen?: () => void }) {
+  const parts = linkedParts(sentence);
+  if (!onOpen) return <>{sentence}</>;
+  const linked = parts.some((part) => part.link);
+  return (
+    <>
+      {parts.map((part, index) => (part.link ? <DecisionsLink key={index} text={part.text} onOpen={onOpen} /> : <span key={index}>{part.text}</span>))}
+      {!linked && <> <DecisionsLink text="Open Decisions" onOpen={onOpen} /></>}
+    </>
+  );
+}
+
+/** A link to Decisions; a count's number is mono. */
+function DecisionsLink({ text, onOpen }: { text: string; onOpen: () => void }) {
   const [, number = '', words = text] = /^(\d+)(.*)$/.exec(text) ?? [];
-  const content = <><span className="num">{number}</span>{words}</>;
-  if (!onOpen) return <span>{content}</span>;
   return (
     <button type="button" onClick={onOpen} className="cursor-pointer rounded-sm font-medium underline underline-offset-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-      {content}
+      {number && <span className="num">{number}</span>}{words}
     </button>
   );
 }
@@ -132,6 +146,6 @@ function ActivityRow({ item }: { item: ReadingActivityItemOut }) {
 
 function RowGlyph({ item }: { item: ReadingActivityItemOut }) {
   if (needsYou(item)) return <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mt-0.5 shrink-0 text-outcome-review-fg" />;
-  if (item.state === 'trying_again') return <RotateCw className="mt-0.5 size-[15px] shrink-0 animate-spin [animation-duration:2s] motion-reduce:animate-none" aria-hidden="true" />;
-  return <Check className="mt-0.5 size-[15px] shrink-0 text-muted-foreground" aria-hidden="true" />;
+  if (item.state === 'trying_again') return <RotateCw data-glyph="trying-again" className="mt-0.5 size-[15px] shrink-0 animate-spin [animation-duration:2s] motion-reduce:animate-none" aria-hidden="true" />;
+  return <Check data-glyph="done" className="mt-0.5 size-[15px] shrink-0 text-muted-foreground" aria-hidden="true" />;
 }

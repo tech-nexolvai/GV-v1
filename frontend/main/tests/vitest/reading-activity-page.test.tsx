@@ -18,7 +18,7 @@ vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-const STOPPED = { page: 3, agent: 'Rekha', item: 'p2:row-choice', state: 'stopped', code: 'readers-differ', change: null, line: 'server line', at: '2026-10-14T10:00:01Z' };
+const STOPPED = { page: 3, agent: 'Rekha', item: 'p2:row-choice', state: 'stopped', code: 'readers-differ', change: null, attempt: null, line: 'Page 3: the two AIs picked different lines.', at: '2026-10-14T10:00:01Z' };
 
 describe('ReviewPage: the live reading activity (#1239)', () => {
   let pkg: Record<string, unknown>;
@@ -54,7 +54,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
 
   it('while reading: the page and what stopped, under the stepper', async () => {
     pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 2, pages_total: 9, calls: 4, cost_usd: '0.040000', unpriced_calls: 0, retrying: false, updated_at: null };
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 1, tried_again: 0, helped: 0, waiting: 1 } };
+    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 1, tried_again: 0, helped: 0, waiting: 1, sentence: null } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
@@ -71,7 +71,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
   it('after reading: the summary, whose counts open Decisions', async () => {
     const user = userEvent.setup();
     pkg.state = 'AWAITING_REVIEW';
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 3, tried_again: 2, helped: 1, waiting: 2 } };
+    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 3, tried_again: 2, helped: 1, waiting: 2, sentence: 'Tried again on 2 items: 1 now agrees, 1 waits for you.' } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
