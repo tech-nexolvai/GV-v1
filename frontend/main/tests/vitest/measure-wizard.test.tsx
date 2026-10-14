@@ -13,7 +13,7 @@ vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
 
 const REQUIRED = {
   quantities: [
-    { key: 'SHOP:countertop_width', semantic_type: 'countertop_width', source: 'SHOP', many: false, consumers: [{ rule_id: 'CT-WIDTH-001', name: 'width' }], categories: [] },
+    { key: 'USER_INPUT:countertop_width', semantic_type: 'countertop_width', source: 'USER_INPUT', many: false, consumers: [{ rule_id: 'CT-WIDTH-001', name: 'width' }], categories: [] },
     { key: 'SHOP:sink_width', semantic_type: 'sink_width', source: 'SHOP', many: false, consumers: [{ rule_id: 'CT-SINK-001', name: 'sink' }], categories: [] },
   ],
   page_numbers: [1],
@@ -194,7 +194,7 @@ describe('measurements wizard: on screen', { timeout: 15_000 }, () => {
     const user = userEvent.setup();
     await openPanel();
     await user.click(stepButton(/Values/));
-    const input = () => document.getElementById('q-SHOP:countertop_width') as HTMLInputElement;
+    const input = () => document.getElementById('q-USER_INPUT:countertop_width') as HTMLInputElement;
     await waitFor(() => expect(input()).not.toBeNull(), { timeout: 5000 });
     await user.type(input(), '42"');
     await user.click(stepButton(/Settings/));

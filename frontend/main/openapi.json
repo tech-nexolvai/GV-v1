@@ -11615,6 +11615,18 @@
             "title": "Categories",
             "type": "array"
           },
+          "confirm_only": {
+            "title": "Confirm Only",
+            "type": "boolean"
+          },
+          "confirmed_pages": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Confirmed Pages",
+            "type": "array"
+          },
           "consumers": {
             "items": {
               "additionalProperties": {
@@ -11640,6 +11652,17 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "where_to_find": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where To Find"
           }
         },
         "required": [
@@ -11647,6 +11670,7 @@
           "semantic_type",
           "source",
           "many",
+          "confirm_only",
           "consumers"
         ],
         "title": "QuantityOut",
