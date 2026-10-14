@@ -1101,6 +1101,9 @@ RUN_AWARE: frozenset[str] = frozenset(
         # Sign-off reads only when a run decision was recorded, never its run, to tell whether the
         # checks have seen it yet (#1137).
         "app/review/approval.py",
+        # Code never takes back its own countertop item a person decided a run beneath (re-review
+        # of #1248): it asks only whether such a decision exists, never reads a run's members.
+        "workflow/parts.py",
     }
 )
 

@@ -51,12 +51,14 @@ from app.models import (
 )
 from app.models.runs import ExtractionRun, WorkflowRun
 from app.models.verdicts import Finding
+from app.verdicts.rulebook import snapshot_store
 from storage.local import LocalStore
 from tests.workflow.test_bala_items import _links, _Revision
 from tests.workflow.test_part_operands import Assembly, form_widths
 from tests.workflow.test_part_proposals_route import _upgrade
 from tests.workflow.test_reading_parts import REGION as PARTS_REGION
 from tests.workflow.test_reading_parts import _box as _parts_box
+from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.part_kinds import PartKind
 from vocabulary.semantic_types import SemanticType
 from workflow.bala_items import (
@@ -183,6 +185,7 @@ def test_switched_off_code_makes_no_item(session: Session) -> None:
         "confirmed": [],
         "left_to_a_person": [],
         "released": [],
+        "kept": [],
     }
     # It qualifies, and is still only reported.
     assert bala["would_be_automatic"] == {"countertops": 1, "pieces": 0}
@@ -1010,3 +1013,127 @@ def test_code_withdraws_nothing_but_its_own_current_confirmation(session: Sessio
     with pytest.raises(ValueError, match="only its own"):
         withdraw_part(session, proposal=countertop, actor=BALA_CONFIRMER)
     assert len(_live_items(session)) == 1
+
+
+# -- re-review of #1248: a person's run beneath code's item keeps it ---------------------------------
+
+
+def _persons_run_on_codes_item(session: Session) -> tuple[_Revision, UUID, PartConfirmation]:
+    """Code made the countertop; a person confirmed its three pieces and the run beneath it."""
+    if snapshot_store(session).latest("CT-WIDTH-001") is None:
+        _publish_rulebook(session)
+    built, anchor = _qualifying(session)
+    _match(session, built)
+    codes = current_decision(session, _countertop(session, anchor))
+    assert codes is not None and codes.confirmed_by == BALA_CONFIRMER
+    assert codes.drawing_item_id is not None
+    members: list[UUID] = []
+    for slot in range(3):
+        made = confirm_listed_part(
+            session,
+            package_revision_id=built.revision.id,
+            proposal_id=_links(session)[(anchor, slot)].id,
+            kind=PartKind.CABINET,
+            code=None,
+            actor=PERSON,
+        )
+        assert isinstance(made, PartConfirmation) and made.drawing_item_id is not None
+        members.append(made.drawing_item_id)
+    confirm_countertop_run(
+        session,
+        countertop_item_id=codes.drawing_item_id,
+        member_item_ids=members,
+        edge_tolerance=Decimal(0),
+        actor=PERSON,
+        wall_config="back_left_right",
+    )
+    return built, anchor, codes
+
+
+def _scoped(session: Session, built: _Revision) -> list[UUID] | None:
+    scopes = countertop_scopes(session, built.revision.id)
+    return None if scopes is None else [scope.item_id for scope in scopes]
+
+
+def _countertop_findings(
+    session: Session, store: LocalStore, built: _Revision
+) -> list[tuple[str, ...]]:
+    """The checks' results about the countertop item, after a check run."""
+    DatabaseStages(store, operands={}).run_checks(session, built.revision.id)
+    return [
+        finding
+        for finding in _live_findings(session, built.revision.id)
+        if finding[1].startswith("Countertop on page")
+    ]
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["switched-on", "switched-off"])
+def test_a_newer_reading_keeps_codes_item_beneath_a_persons_run(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    built, anchor, codes = _persons_run_on_codes_item(session)
+    assert _scoped(session, built) == [codes.drawing_item_id]
+    before = _countertop_findings(session, store, built)
+    assert before and all("No live confirmed countertop run" not in f[4] for f in before)
+
+    reread = built.row(built.run(), pieces=3)
+    bala = _match(session, built, on=on)
+
+    automatic = bala["automatic"]
+    assert isinstance(automatic, dict)
+    assert automatic["released"] == []
+    assert automatic["kept"] == [
+        (
+            "Countertop row on page 1 (an earlier reading): kept: a person confirmed a run "
+            "beneath it (a newer reading of the countertop rows replaced it)"
+        )
+    ]
+    assert automatic["confirmed"] == []
+    if on:
+        assert automatic["left_to_a_person"] == [
+            "Countertop row on page 1: a person confirmed a run beneath the countertop here"
+        ]
+    assert current_decision(session, _countertop(session, reread)) is None
+    still = current_decision(session, _countertop(session, anchor))
+    assert still is not None and still.id == codes.id
+    assert _scoped(session, built) == [codes.drawing_item_id]
+    assert _countertop_findings(session, store, built) == before
+
+
+def test_a_row_that_stops_agreeing_keeps_codes_item_beneath_a_persons_run(
+    session: Session,
+) -> None:
+    built, anchor, codes = _persons_run_on_codes_item(session)
+    session.add(
+        SlotRowReviewDecision(
+            row_candidate_id=anchor,
+            measurements={"piece_1": {"numerator": 20, "denominator": 1, "unit": "in"}},
+            confirmed_by=PERSON,
+        )
+    )
+    session.flush()
+
+    bala = _match(session, built, on=False)
+
+    automatic = bala["automatic"]
+    assert isinstance(automatic, dict)
+    assert automatic["released"] == []
+    (kept,) = automatic["kept"]  # type: ignore[misc]
+    assert kept.startswith("Countertop row on page 1: kept: a person confirmed a run beneath it")
+    assert _scoped(session, built) == [codes.drawing_item_id]
+
+
+def test_code_never_withdraws_its_item_beneath_a_persons_run(session: Session) -> None:
+    built, anchor, _codes = _persons_run_on_codes_item(session)
+    countertop = _countertop(session, anchor)
+
+    assert (
+        release_contradicted_code_part(session, proposal=countertop, judgments_agree=False) is None
+    )
+    with pytest.raises(ValueError, match="run beneath"):
+        withdraw_part(session, proposal=countertop, actor=BALA_CONFIRMER)
+    # A person's Undo is still a person's decision.
+    undone = withdraw_listed_part(
+        session, package_revision_id=built.revision.id, proposal_id=countertop.id, actor=PERSON
+    )
+    assert isinstance(undone, PartConfirmation)

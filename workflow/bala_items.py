@@ -34,7 +34,8 @@ Either judgment missing leaves a suggestion for a person's one click, with the r
 later read that no longer agrees, a newer reading, or a person's later decision on a countertop at
 the same place takes back only code's own item (`release_contradicted_code_part`), and only one
 this revision's reading made: never another revision's, on a drawing the two share (review of
-#1248). Where any live countertop already stands, code makes none. **Pieces are never automatic**
+#1248), and never one a person confirmed or withdrew a run beneath (re-review of #1248). Where a
+live countertop's outline overlaps, code makes none. **Pieces are never automatic**
 (decision 2): nothing printed names 130 of every 131 of them, and even a named one stays a person's
 click in this version. Automatic items cannot create a PASS or change a finding: the countertop
 checks are scoped only to a countertop a person confirmed or confirmed a run beneath
@@ -99,12 +100,14 @@ from vocabulary.part_kinds import PartKind
 from workflow.pariksha_gates import stopped_by_rekha
 from workflow.parts import (
     A_PERSON_DECIDED_HERE,
+    A_PERSONS_RUN_BENEATH,
     ALREADY_DECIDED,
     BALA_CONFIRMER,
     CODE_ACTOR_PREFIX,
     confirm_part_by_code,
     outline_box,
     person_decided_countertop_here,
+    person_run_beneath,
     record_part_proposal,
     release_contradicted_code_part,
     why_code_may_not_confirm,
@@ -438,6 +441,9 @@ class AutomaticOutcome:
     """Rows whose two judgments agree but a decision already stands (a person always wins)."""
     released: list[str] = field(default_factory=list)
     """Code's own items taken back, by row, with why."""
+    kept: list[str] = field(default_factory=list)
+    """Code's own items it would have taken back but kept, because a person confirmed or withdrew
+    a run beneath them (re-review of #1248), by row, with why it would have."""
 
     def as_payload(self) -> dict[str, object]:
         return {
@@ -446,6 +452,7 @@ class AutomaticOutcome:
             "confirmed": self.confirmed,
             "left_to_a_person": self.left_to_a_person,
             "released": self.released,
+            "kept": self.kept,
         }
 
 
@@ -459,7 +466,9 @@ def confirm_automatic_countertops(
     of #1248): an item of code's whose link names a slot-reader run of this revision is withdrawn as
     `BALA_CONFIRMER` (`release_contradicted_code_part`) when a newer run of this revision replaced
     its row, when the newest read no longer gives both judgments, or when a person has since
-    decided a countertop at the same place on the same drawing (a person always wins). A person's
+    decided a countertop at the same place on the same drawing (a person always wins). **Never one a
+    person confirmed or withdrew a run beneath** (re-review of #1248): that run is a person's
+    decision about this countertop, so the item stays, and `kept` says why. A person's
     decision is never touched, and an item another revision's reading made is never this
     revision's to take back, even on a drawing the two share: that revision may be signed off.
     **Making items needs `switched_on`** (`GV_BALA_AUTO_ITEMS`, off by default): for each row whose
@@ -475,7 +484,7 @@ def confirm_automatic_countertops(
         return result
     later = aliased(PartConfirmation)
     held_by_code = session.execute(
-        select(PartProposal, PartProposalRow)
+        select(PartProposal, PartProposalRow, PartConfirmation)
         .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
         .join(PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id)
         .join(ExtractionRun, ExtractionRun.id == PartProposalRow.extraction_run_id)
@@ -490,7 +499,7 @@ def confirm_automatic_countertops(
         )
         .order_by(PartProposal.created_at, PartProposal.id)
     ).all()
-    for proposal, link in held_by_code:
+    for proposal, link, decision in held_by_code:
         row = rows.get(link.row_candidate_id)
         if link.extraction_run_id != plan.run_id:
             why = "a newer reading of the countertop rows replaced it"
@@ -502,7 +511,9 @@ def confirm_automatic_countertops(
             why = A_PERSON_DECIDED_HERE
         else:
             continue
-        if release_contradicted_code_part(session, proposal=proposal, judgments_agree=False):
+        if person_run_beneath(session, decision):
+            result.kept.append(f"{_label(session, row, link)}: {A_PERSONS_RUN_BENEATH} ({why})")
+        elif release_contradicted_code_part(session, proposal=proposal, judgments_agree=False):
             result.released.append(f"{_label(session, row, link)}: {why}")
     if not switched_on:
         return result
