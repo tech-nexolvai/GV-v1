@@ -49,6 +49,7 @@ from app.schemas.visual_ui import CountertopResultsOut
 from reports.spreadsheet import architect_line
 from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
+from tests.workflow.stored_pairings import stored_pairings
 from tests.workflow.test_architect_row_evidence import _sealed_rows
 from workflow.architect_match_contract import EffectiveMatch, MatchedView, compared_with_text
 from workflow.architect_match_records import ARCHITECT_FILE_NAME, effective_architect_matches
@@ -216,7 +217,7 @@ def _run(
     found = pairings or {}
     DatabaseStages(
         store=LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test"),
-        architect_pairing=lambda _session, anchor: found.get(anchor),
+        architect_pairing=stored_pairings(lambda _session, anchor: found.get(anchor)),
     ).run_checks(session, _revision(session, package_id).id)
     session.flush()
 

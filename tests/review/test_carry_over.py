@@ -1630,3 +1630,16 @@ def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:
         "slot:0",
         "supports:<id>",
     ]
+
+
+def test_only_rekhas_row_gate_flag_is_left_out_of_a_readings_fingerprint() -> None:
+    """#1228 review: Rekha's row-gate record on a row's anchor says the row was handed on, not what
+    was read, so a reading from before the gate keeps matching; any other gate flag still counts."""
+    from app.review.carry_over import _stable_flags
+
+    reading = ["slot:0", "row-rank:1"]
+    rekha = "pariksha:rekha:row-has-printed-numbers:pass:printed-numbers"
+    other = "pariksha:akshara:seal:stop:not-sealed"
+
+    assert _stable_flags([*reading, rekha]) == _stable_flags(reading)
+    assert _stable_flags([*reading, other]) != _stable_flags(reading)

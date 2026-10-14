@@ -213,6 +213,44 @@ def test_text_with_letters_is_a_code_unless_it_carries_a_dimension_mark(
     assert rekha_row_gate(_only_first_piece(label)).decision is expected
 
 
+def _sliver_band() -> Any:
+    """A material-tag band with one sliver piece, as both readers chose on an acceptance set
+    (#1230 review): the tags stand over the wide pieces; over the 2.4 pt sliver stands a stroke
+    3 pt wide, its middle 0.2 pt from the sliver's (well inside 11% of 2.4 pt)."""
+    row = _row(slot_page(_number_sheet()))
+    first, second, third = row.slots
+    sliver = replace(
+        second,
+        x0=second.x0,
+        x1=second.x0 + Decimal("2.4"),
+        labels=(_label(second.x0 + Decimal("1.4"), half=Decimal("1.5")),),
+    )
+    tags = [
+        replace(slot, labels=(_label((slot.x0 + slot.x1) / 2, text="XQ-07"),))
+        for slot in (first, third)
+    ]
+    return replace(row, overall=None, slots=(tags[0], sliver, tags[1]))
+
+
+def test_a_tag_band_is_not_passed_by_a_stroke_over_a_sliver_piece() -> None:
+    gate = rekha_row_gate(_sliver_band())
+
+    assert gate.decision is GateDecision.STOP
+    assert gate.code == REKHA_NO_NUMBERS
+
+
+def test_a_label_wider_than_its_sliver_piece_never_counts_but_the_others_still_do() -> None:
+    band = _sliver_band()
+    first, sliver, third = band.slots
+    numbered = replace(third, labels=(_label((third.x0 + third.x1) / 2, text='12"'),))
+
+    gate = rekha_row_gate(replace(band, slots=(first, sliver, numbered)))
+
+    assert gate.decision is GateDecision.PASS
+    narrow = replace(sliver, labels=(_label(sliver.x0 + Decimal("1.2"), half=Decimal("1.0")),))
+    assert rekha_row_gate(replace(band, slots=(first, narrow, third))).decision is GateDecision.PASS
+
+
 def test_an_overall_with_a_printed_number_is_recorded_not_stopped() -> None:
     """No information is lost: the overall's reading is offered today."""
     row = _row(slot_page(_number_sheet()))
@@ -338,6 +376,8 @@ def test_a_stopped_row_is_kept_as_a_page_the_reviewer_picks_the_row_on(session: 
     assert page.split, "it blocks sign-off like a page the readers split on"
     assert page.reason.startswith(REKHA_NO_NUMBERS_REASON)
     assert "Both AIs chose line 1" in page.reason
+    assert "on the Measurements screen" in page.reason, "the reason says where to act"
+    assert "Pariksha" not in page.reason and "code sees" not in page.reason
 
 
 def test_a_passed_row_keeps_its_gate_result_on_its_anchor(session: Any) -> None:
