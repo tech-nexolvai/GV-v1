@@ -145,7 +145,11 @@ def test_ai_answers_without_any_person_decision_are_still_not_measured() -> None
 def test_a_family_no_agent_is_named_for_is_listed_not_dropped() -> None:
     report = build_report(
         export=_export(),
-        invocations=[("invented-prompt-v1", "ok", 3), ("invented-prompt-v1", "failed", 1)],
+        invocations=[
+            ("invented-prompt-v1", "ok", 2),
+            ("invented-prompt-v2+0123abcd", "ok", 1),
+            ("invented-prompt-v1", "failed", 1),
+        ],
         stops=[],
         reviewed={},
         window="test",

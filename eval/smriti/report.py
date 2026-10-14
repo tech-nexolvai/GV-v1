@@ -346,7 +346,9 @@ def _ai_answers(
     calls: dict[str, Counter[str]] = defaultdict(Counter)
     answered: Counter[str] = Counter()
     for prompt_id, outcome, count in invocations:
-        family = prompt_family(prompt_id)
+        # A prompt id may carry a `+...` suffix (the product context, a teaching hash): its
+        # family is the id before it, without the version.
+        family = prompt_family(prompt_id.split("+", 1)[0])
         calls[family]["calls"] += count
         if outcome == "ok":
             answered[family] += count
