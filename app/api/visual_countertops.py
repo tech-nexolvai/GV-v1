@@ -67,13 +67,18 @@ from app.schemas.visual_ui import (
     ArchitectComparedOut,
     ArchitectResultOut,
     BlankPageProofOut,
+    CheckPlanOut,
+    CountertopItemRefOut,
     CountertopPieceOut,
     CountertopResultOut,
     CountertopResultsOut,
     ExactValueOut,
     HoldOut,
+    ItemPlanOut,
     NoCountertopConfirmationOut,
     PageWithoutCountertopOut,
+    PlannedFindingOut,
+    PlannedRuleOut,
     ReviewerDecisionOut,
     RowNotCheckedOut,
     WallCasesOut,
@@ -112,6 +117,7 @@ from workflow.architect_row_plan import (
     pairing_source_from_notes,
     plan_architect_row,
 )
+from workflow.item_plan import LiveCountertop, PlannedFinding, check_plan_for, countertops_by_row
 from workflow.pariksha_gates import stopped_by_rekha
 from workflow.part_operands import reviewer_owned_pages
 from workflow.slot_row_scope import (
@@ -983,6 +989,9 @@ def _countertop_results_for_revision(
     # once. A combined sheet asks nothing more, and its architect blocks are as before.
     indexed = separate_architect and architect_file_indexed(session, revision.id)
     row_anchor_ids = [row.anchor.id for row in rows]
+    # The live countertop confirmed from each row (#1245): the screen groups the row's results under
+    # it. One statement, or a fixed few after a re-read. Asked only when there are rows.
+    countertop_by_row = countertops_by_row(session, revision.id) if rows else {}
     matches = effective_architect_matches(session, row_anchor_ids) if indexed else {}
     waiting = architect_matches_waiting_for_run(
         session, revision.id, {match.record_id for match in matches.values() if match is not None}
@@ -1155,6 +1164,7 @@ def _countertop_results_for_revision(
                     )
                 ),
                 field_cut_in_force=in_force,
+                countertop_item=_countertop_ref(countertop_by_row.get(row.anchor.id)),
                 agreement=AgreementFactsOut(
                     both_readers_agreed_on_row=any(
                         flag.startswith("row-choice:")
@@ -1230,6 +1240,99 @@ def _countertop_results_for_revision(
             revision.id,
             {row.page_number for row in rows}
             | {page.page_number for page in unchosen if not page.found_by_code},
+        ),
+    )
+
+
+def _countertop_ref(countertop: LiveCountertop | None) -> CountertopItemRefOut | None:
+    if countertop is None:
+        return None
+    return CountertopItemRefOut(
+        item_id=countertop.item_id,
+        page_number=countertop.page_number,
+        number=countertop.number,
+        label=countertop.label,
+    )
+
+
+@router.get(
+    "/projects/{project_id}/packages/{package_id}/countertop-items/plan",
+    response_model=CheckPlanOut,
+    summary="Read each confirmed countertop's check plan: its rules, its results, what they wait on",
+)
+def countertop_item_plan(
+    principal: Annotated[Principal, Depends(require_project_access)],
+    _: Annotated[Principal, Depends(require_action(Action.READ_PACKAGE))],
+    session: Annotated[Session, Depends(get_session)],
+    project_id: UUID,
+    package_id: UUID,
+    revision_number: Annotated[
+        int | None,
+        Query(
+            alias="revision",
+            ge=1,
+            description="An earlier revision's number. Default: the newest revision.",
+        ),
+    ] = None,
+) -> CheckPlanOut:
+    """For each live countertop item (one whose current decision confirms it), the published rules
+    for the package's product and where each stands, the results its row or the item itself has,
+    and what each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
+
+    **Read-only, and it decides nothing**: no check runs, no result changes. A countertop with no
+    countertop row linked to it says so in `note`.
+    """
+    del principal
+    chosen = (
+        select(PackageRevision)
+        .join(Package, Package.id == PackageRevision.package_id)
+        .where(Package.id == package_id, Package.project_id == project_id)
+    )
+    if revision_number is not None:
+        chosen = chosen.where(PackageRevision.revision_number == revision_number)
+    revision = session.scalars(
+        chosen.order_by(PackageRevision.revision_number.desc()).limit(1)
+    ).first()
+    if revision is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    plan = check_plan_for(session, revision.id)
+
+    def found(entry: PlannedFinding) -> PlannedFindingOut:
+        return PlannedFindingOut(
+            finding_id=entry.finding_id,
+            rule_id=entry.rule_id,
+            outcome=entry.outcome,
+            scope="item" if entry.scope == "item" else "row",
+        )
+
+    return CheckPlanOut(
+        package_id=package_id,
+        revision_id=revision.id,
+        items=tuple(
+            ItemPlanOut(
+                countertop=CountertopItemRefOut(
+                    item_id=item.countertop.item_id,
+                    page_number=item.countertop.page_number,
+                    number=item.countertop.number,
+                    label=item.countertop.label,
+                ),
+                row_id=item.countertop.row_candidate_id,
+                rules=tuple(
+                    PlannedRuleOut(
+                        rule_id=rule.rule_id,
+                        resolved=rule.resolved,
+                        waits_for=rule.waits_for,
+                        version=rule.version,
+                        variant=rule.variant,
+                        findings=tuple(found(entry) for entry in rule.findings),
+                        missing=rule.missing,
+                    )
+                    for rule in item.rules
+                ),
+                findings=tuple(found(entry) for entry in item.findings),
+                note=item.note,
+            )
+            for item in plan.items
         ),
     )
 

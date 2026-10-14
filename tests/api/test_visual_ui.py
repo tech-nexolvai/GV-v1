@@ -354,7 +354,9 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
     # when no stored setting holds it and the rulebook's default is read); same for any row count.
     # 15 since #1241: a reviewer's wall answer an earlier reading could not carry is asked for
     # once; still the same for any number of rows.
-    assert statements <= 15
+    # 16 since #1245: the live countertops are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert statements <= 16
 
 
 def test_a_cabinet_package_s_results_cost_one_statement_more_at_most(session: Session) -> None:
