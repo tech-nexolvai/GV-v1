@@ -3,7 +3,7 @@
 
 Reads only, inside a read-only transaction, and calls no model. It lists every place the run's
 safety rules did not hold (`eval/run_check.py`), with the agent each points to and the suggested
-action; it changes nothing.
+action, and counts every gate result the run kept per agent (#1228); it changes nothing.
 
     DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5434/<database> \\
         .venv/bin/python scripts/run_check.py <revision-id> [--json report.json]
@@ -52,6 +52,13 @@ def render(report: RunCheckReport) -> str:
             lines.append("   " + "; ".join(f"{kind} {value}" for kind, value in item.ids))
     for entry in report.not_computable:
         lines.extend(("", f"Not computable yet ({entry.check.value}): {entry.reason}"))
+    if report.gates:
+        lines.extend(("", "Gates (#1228), per agent: pass / stop / recorded without stopping"))
+        lines.extend(
+            f"  {count.agent.value} {count.gate}: {count.passed} / {count.stopped} / "
+            f"{count.recorded}"
+            for count in report.gates
+        )
     return "\n".join(lines)
 
 

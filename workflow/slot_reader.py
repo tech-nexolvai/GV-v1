@@ -143,6 +143,8 @@ from workflow.layout_proposals import (
     WALLS_HELD_FLAG,
     WALLS_SEALED_FLAG,
 )
+from workflow.pariksha_gates import GateResult
+from workflow.rekha_gate import rekha_row_gate
 
 if TYPE_CHECKING:
     from storage.store import ArtifactStore
@@ -529,6 +531,10 @@ class PageSlotResult:
     row_choice_also: tuple[tuple[str, int], ...] = ()
     """`(model id, box number)` for each other numbered box a row reader named as a second
     countertop's piece row (#1108). V1 reads one row per page; these are listed, never read."""
+    row_gate: GateResult | None = None
+    """Rekha's gate on the row both readers chose (#1228, `workflow/pariksha_gates.py`): `None`
+    when no row was chosen or the readers were not asked. A stopped row is not read: `plan.row` is
+    `None` and the page is kept as a row-choice record carrying the gate's flag and reason."""
     row_candidate_ids: tuple[UUID, ...] = ()
     row_choice_png: bytes | None = None
     row_choice_box_px: tuple[int, int, int, int] | None = None
@@ -1534,6 +1540,7 @@ def read_slot_pages(
     row_picks: dict[int, tuple[tuple[str, int | None], ...]] = {}
     row_kinds: dict[int, tuple[tuple[str, str], ...]] = {}
     row_also: dict[int, tuple[tuple[str, int], ...]] = {}
+    row_gates: dict[int, GateResult] = {}
     for page in pages:
         if runtime.question_packets and page.transform is None:
             raise ValueError("reader question packets require the published PageTransform")
@@ -1558,6 +1565,35 @@ def read_slot_pages(
             if row_number is not None and 0 < row_number <= len(candidates)
             else None
         )
+        if runtime.claude_row_reader and selected_row is not None:
+            # **Rekha's gate (#1228)**, before any label, walls or counter-break question is
+            # planned for the row: the line both readers chose must carry a printed number on its
+            # pieces, as code sees them. A line with none (the stone top's own outline, a band of
+            # material tags) is stopped: the page goes to the reviewer exactly as a page whose row
+            # the readers did not agree on, and nothing more is asked about it. Code only; it can
+            # only stop. When the vendor's equal-shares line could give the widths (#1086), the
+            # issue is recorded and the row is read as before (nothing the reviewer gets is lost).
+            gate = rekha_row_gate(
+                selected_row,
+                read_through_possible=equal_share_partner(
+                    selected_row,
+                    candidates,
+                    page.rows.ink.drawing_boxes,
+                    end_tolerance_pt=runtime.row_settings.overall_end_pt,
+                    frame_slack_pt=runtime.wall_settings.frame_slack_pt,
+                )
+                is not None,
+                page_number=page.page_index + 1,
+            )
+            row_gates[page.page_index] = gate
+            if gate.stopped:
+                row_choice = RowChoiceAnswer(
+                    " + ".join(readers),
+                    0,
+                    f"{gate.reason} (Both AIs chose line {row_number}.)",
+                )
+                row_number = 0
+                selected_row = None
         source_plan = plan_slots(
             page.rows.candidates.rows,
             page.rows.ink,
@@ -1937,6 +1973,7 @@ def read_slot_pages(
                 row_choice_picks=row_picks.get(page.page_index, ()),
                 row_choice_kinds=row_kinds.get(page.page_index, ()),
                 row_choice_also=row_also.get(page.page_index, ()),
+                row_gate=row_gates.get(page.page_index),
                 row_candidate_ids=row_ids.get(page.page_index, ()),
                 row_choice_png=row_images.get(page.page_index),
                 row_choice_box_px=(
@@ -2648,6 +2685,9 @@ def persist_slot_readings(
                     flags.append(
                         f"row-choice-candidate:{result.row_candidate_ids[result.row_choice_number - 1]}"
                     )
+            if result.row_gate is not None and index == 0:
+                # Rekha's gate result (#1228), kept once per row, on the row's anchor.
+                flags.append(result.row_gate.flag)
             if result.plan.ambiguity is not None:
                 flags.append("row-ambiguous")
             if result.row_hold is not None:
@@ -2932,6 +2972,9 @@ def _persist_unselected_row_choice(
             # the page be listed without blocking; "not_among_boxes" or "unsure" reaches a person.
             *(f"row-kind:{_short_model(model)}:{kind}" for model, kind in result.row_choice_kinds),
             *_row_also_flags(result),
+            # Rekha's gate stopped the row both readers chose (#1228): the page waits for the
+            # reviewer to pick the row, with the gate's reason.
+            *(() if result.row_gate is None else (result.row_gate.flag,)),
             *(
                 f"row-candidate:{i}:{candidate_id}"
                 for i, candidate_id in enumerate(result.row_candidate_ids, start=1)

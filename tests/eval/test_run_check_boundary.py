@@ -1,7 +1,8 @@
-"""The run check is a report only: nothing in `app/` or `workflow/` imports `eval/` (#1220, #1222).
+"""Production never imports `eval/` (#1220, #1222, #1228).
 
-A production path that reached `eval/run_check.py` could start acting on its report. Phase 1 adds no
-such path, and this guard keeps it that way until a later phase adds one on purpose.
+Since #1228 the run check's logic lives in `workflow/pariksha_run_check.py`, because Nina's gate
+(production) enforces it; `eval/run_check.py` only re-exports it. This guard keeps every production
+package (not tests or scripts) from reaching `eval/`.
 """
 
 from __future__ import annotations
@@ -28,10 +29,25 @@ def _imports_eval(path: Path) -> list[str]:
     return found
 
 
-def test_app_and_workflow_never_import_eval() -> None:
+PRODUCTION: tuple[str, ...] = (
+    "app",
+    "workflow",
+    "verdict",
+    "extraction",
+    "evidence",
+    "rules",
+    "reports",
+    "retrieval",
+    "units",
+    "vocabulary",
+    "storage",
+)
+
+
+def test_production_never_imports_eval() -> None:
     offenders = {
         str(path.relative_to(REPO_ROOT)): names
-        for package in ("app", "workflow")
+        for package in PRODUCTION
         for path in sorted((REPO_ROOT / package).rglob("*.py"))
         if (names := _imports_eval(path))
     }
@@ -42,3 +58,11 @@ def test_the_guard_sees_an_import_of_eval(tmp_path: Path) -> None:
     probe = tmp_path / "probe.py"
     probe.write_text("from eval.run_check import run_check\nimport eval.release_gates\n")
     assert _imports_eval(probe) == ["eval.run_check", "eval.release_gates"]
+
+
+def test_the_run_check_moved_to_production_and_eval_re_exports_it() -> None:
+    import eval.run_check as reexport
+    import workflow.pariksha_run_check as production
+
+    assert reexport.run_check is production.run_check
+    assert reexport.decision_faults is production.decision_faults

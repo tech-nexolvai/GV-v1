@@ -48,6 +48,7 @@ from tests.api.test_slot_rows import (
 from tests.app.postgres_fixture import alembic_config
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import pairing_source_note
+from workflow.nina_gate import NinaGateOutcome
 from workflow.slot_row_scope import latest_slot_reader_run
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -415,11 +416,23 @@ def test_a_revision_whose_checks_never_ran_asks_for_nina(session: Session, tmp_p
 # --- (b) two judgments ----------------------------------------------------------------------------
 
 
+def _nina_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Since #1228 Nina's gate holds what this report finds at the end of the check stage; a test
+    of the report on a seeded fault switches the gate off too (`tests/workflow/test_nina_gate.py`
+    shows the gate holding the same faults)."""
+    monkeypatch.setattr(
+        stages_module,
+        "hold_unsafe_decisions",
+        lambda _session, _revision: NinaGateOutcome(checked=0, held=()),
+    )
+
+
 def test_a_pass_on_a_reading_with_no_drawn_length_witness_points_to_akshara(
     session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Seeded fault: the step that turns such a PASS into REVIEW_REQUIRED is switched off."""
     monkeypatch.setattr(stages_module, "confirm_unwitnessed_pass", lambda finding, _u: finding)
+    _nina_gate_off(monkeypatch)
     revision_id, anchors = _rows(session, tmp_path, slot_flags=_unwitnessed_on_first_page)
     finding, _run = _live_for(session, revision_id, "CT-WIDTH-001", row=anchors[0])
     assert finding.outcome == "PASS"
@@ -478,6 +491,7 @@ def test_a_pass_on_walls_set_automatically_points_to_rekha(
         "confirm_vendor_walls_pass",
         lambda finding, *, walls_automatic, unwitnessed=(): finding,
     )
+    _nina_gate_off(monkeypatch)
     revision_id, anchors = _rows(
         session, tmp_path, wall_source="code-ink-and-both-ais", walls_confirmed=False
     )

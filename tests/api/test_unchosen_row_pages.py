@@ -660,3 +660,39 @@ def test_a_drawing_not_read_on_a_read_page_is_listed_with_its_place_and_reason(
             "The right drawing was not read for a countertop: synthetic: no label of its own.",
         )
     ]
+
+
+def test_a_page_rekhas_gate_stopped_is_a_page_to_pick_the_row_on_where_both_agreed(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1228: both AIs chose line 2, Rekha's gate stopped it (no printed numbers). The screen gets
+    the same "pick the row" item as a split page, saying truthfully that both readers agreed."""
+    from workflow.pariksha_gates import REKHA_NO_NUMBERS_REASON
+
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session,
+        revision.id,
+        page_index=2,
+        flags=(
+            "row-pick:opus-5-5:2",
+            "row-pick:sonnet-5-5:2",
+            "row-kind:opus-5-5:row",
+            "row-kind:sonnet-5-5:row",
+            "pariksha:rekha:row-has-printed-numbers:stop:no-printed-numbers",
+        ),
+        reason=REKHA_NO_NUMBERS_REASON,
+    )
+
+    _run_current_checks(session, package_id, tmp_path)
+    (finding,) = [f for f in _live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert finding.outcome == "REVIEW_REQUIRED"
+    assert (finding.reason or "").startswith(REKHA_NO_NUMBERS_REASON)
+
+    (item,) = [i for i in _results(session, package_id).items if i.row_id == record_id]
+    assert item.hold is not None and item.hold.code == "row-choice-split"
+    assert item.hold.reason == finding.reason
+    assert "on the Measurements screen" in item.hold.reason
+    assert item.agreement.both_readers_agreed_on_row is True
+    assert item.pieces == () and item.needs_decision
