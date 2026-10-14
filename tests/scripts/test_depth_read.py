@@ -177,7 +177,7 @@ def _key(agent: str, cases: list[dict[str, object]]) -> dict[str, object]:
     return {"format": "pariksha-key/1", "agent": agent, "cases": cases}
 
 
-def test_a_keyed_value_with_no_view_found_is_written_as_a_hold() -> None:
+def test_a_keyed_value_with_no_view_found_is_written_with_no_answer() -> None:
     from extraction.depth.read import DepthReading
 
     other = "c" * 64
@@ -208,12 +208,12 @@ def test_a_keyed_value_with_no_view_found_is_written_as_a_hold() -> None:
         {SHA},
     )
     final = files[f"{script.DEPTH_AGENT}-final"]["answers"]
-    # The page that was read but had no view is a hold; the page not in this run is left out.
+    # The page that was read but had no view has no answer (never a hold); the page not in this run is left out.
     assert [entry["question_id"] for entry in final] == ["p0:plan:CT010:x"]
-    assert all("no view found" in reader["held"] for reader in final[0]["readers"])
+    assert all("no view found" in reader["invalid"] for reader in final[0]["readers"])
     assert len(missed) == 1
     loaded = load_depth_answers(files[f"{script.DEPTH_AGENT}-final"])
-    assert {r.says for r in loaded.answers[(SHA, "p0:plan:CT010:x", CT010)]} == {"held"}
+    assert {r.says for r in loaded.answers[(SHA, "p0:plan:CT010:x", CT010)]} == {"invalid"}
 
 
 def _view_reading(number: int, heading: str, extent: tuple[int, int, int, int]) -> object:
@@ -267,3 +267,36 @@ def test_the_key_is_found_in_an_env_file_whatever_its_case(
     env = tmp_path / ".env"
     env.write_text("# made up\nanthropic_api_key=made-up-key\n")
     assert script._env_key(env) == "made-up-key"
+
+
+def test_captions_match_on_whole_words_only() -> None:
+    views = [_view_reading(1, "PLANTER VIEW", (0, 0, 100, 100))]
+    found, why = script.match_view(views, [10, 10, 90, 90], "PLAN")  # type: ignore[arg-type]
+    assert found is None and "captioned" in why
+
+
+def test_the_key_is_found_after_an_export_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("export ANTHROPIC_API_KEY=made-up-key\n")
+    assert script._env_key(env) == "made-up-key"
+
+
+def test_a_sink_case_with_no_place_takes_the_one_plan_on_its_page() -> None:
+    plan = (5, "plan", [300.0, 110.0, 820.0, 370.0], "A PLAN VIEW")
+    front = (5, "elevation", [300.0, 400.0, 820.0, 700.0], "B FRONT VIEW")
+    sink = {"statement_id": 29, "view": "plan"}
+    assert script.depth_place(sink, [plan, front]) == (plan[2], plan[3])
+    # The same statement names two views (a swapped heading): the one of the case's kind wins.
+    swapped = [
+        (10, "plan", [1.0, 2.0, 3.0, 4.0], "B FRONT VIEW"),
+        (10, "elevation", [5.0, 6.0, 7.0, 8.0], "A PLAN VIEW"),
+    ]
+    assert script.depth_place({"statement_id": 10, "view": "plan"}, swapped) == (
+        [1.0, 2.0, 3.0, 4.0],
+        "B FRONT VIEW",
+    )
+    two_plans = [plan, (6, "plan", [0.0, 0.0, 10.0, 10.0], "PLAN")]
+    assert script.depth_place(sink, two_plans) is None

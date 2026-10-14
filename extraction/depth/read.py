@@ -986,6 +986,11 @@ _KIND_WORDS: Final[Mapping[ViewKind, str]] = {
     ViewKind.OTHER: "drawing of another kind",
 }
 _NOTHING_READ: Final = "so nothing on this view is read"
+_PROJECTION_ONLY: Final = (
+    "code sees a plan here only by its heading and a projection from a front view, with no wall "
+    "band drawn; that cue cannot tell a plan from a front view drawn under it, so nothing on this "
+    "view is read"
+)
 
 
 def _kind_says(answer: DepthReply | NoAnswer | None, model_id: str) -> ReaderSays:
@@ -1658,9 +1663,20 @@ def read_depth(
         asked += len(jobs)
         return ask(jobs) if jobs else {}
 
+    for state in states:
+        if not state.view.view.cut_apart:
+            # Held by code already, whatever the readers would say: not paid for.
+            state.kind_reason = f"{state.view.code_kind.reason}; {_NOTHING_READ}"
+            state.kinds = tuple(
+                ReaderSays(
+                    model, "held", "not asked: the view is not cut apart from its neighbours"
+                )
+                for model in readers
+            )
     kind_questions = [
         (state, f"{state.view.key}:kind", _view_kind_question(state.page, state.view, settings))
         for state in states
+        if state.view.view.cut_apart
     ]
     answers = round_of(kind_questions)
     for state, key, _question in kind_questions:
@@ -1674,6 +1690,9 @@ def read_depth(
     role_questions = []
     for state in states:
         if state.kind not in (ViewKind.PLAN, ViewKind.SECTION):
+            continue
+        if state.view.code_kind.by_projection:
+            state.roles_reason = _PROJECTION_ONLY
             continue
         if not state.view.found.spans:
             state.roles_reason = "code found no dimension line on this view"

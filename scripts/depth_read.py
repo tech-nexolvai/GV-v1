@@ -42,6 +42,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -89,7 +90,7 @@ _KIND_WORD = {
     "detail": "detail",
     "other": "other",
 }
-NO_VIEW = "no view found: nothing was read for this place"
+NO_VIEW = "no view found: the reader gave no answer for this place"
 
 
 #: Attempts refused before anything was sent or charged: the spend cap, a picture the API would
@@ -306,8 +307,17 @@ def kind_entries(view: ViewReading) -> tuple[list[dict[str, Any]], list[dict[str
     return ai, ai
 
 
-def _caption(text: str | None) -> str:
-    return "".join(character for character in (text or "").upper() if character.isalnum())
+def _caption(text: str | None) -> tuple[str, ...]:
+    """A caption's words, upper-cased; punctuation and spacing ignored (`B - PLAN VIEW` is
+    `B PLAN VIEW`)."""
+    return tuple(re.findall(r"[A-Z0-9]+", (text or "").upper()))
+
+
+def _within(words: tuple[str, ...], other: tuple[str, ...]) -> bool:
+    """Whether `words` appear in `other` as whole words, in order and side by side."""
+    return any(
+        other[start : start + len(words)] == words for start in range(len(other) - len(words) + 1)
+    )
 
 
 def match_view(
@@ -333,9 +343,36 @@ def match_view(
         return None, f"the key's place lies mostly inside {len(inside)} reader views, not one"
     (view,) = inside
     wanted, found = _caption(heading), _caption(view.heading)
-    if wanted and not (wanted in found or (found and found in wanted)):
+    if wanted and not (_within(wanted, found) or (found and _within(found, wanted))):
         return None, f"the view there is captioned {view.heading!r}, not {heading!r}"
     return view, ""
+
+
+#: The view kinds a key's view cases name, as the classes a depth case's `view` names.
+_KIND_CLASS = {
+    "plan": "plan",
+    "section": "section_or_side",
+    "side": "section_or_side",
+    "elevation": "elevation",
+    "detail": "detail",
+    "other": "other",
+}
+
+
+def depth_place(
+    case: Mapping[str, Any], view_cases: Sequence[tuple[int, str, list[float], str | None]]
+) -> tuple[list[float] | None, str | None] | None:
+    """Where a depth or sink key value is: the key's own view case for the same statement and of
+    the same kind, or else the one view case on the page of that kind (#1265 re-review: the sink
+    and strip cases name no place of their own). `None` when that is not exactly one."""
+    kind = _KIND_CLASS.get(str(case.get("view")), "")
+    same_kind = [entry for entry in view_cases if entry[1] == kind]
+    own = [entry for entry in same_kind if entry[0] == case.get("statement_id")]
+    chosen = own if own else same_kind
+    if len(chosen) != 1:
+        return None
+    _statement, _kind, region, heading = chosen[0]
+    return region, heading
 
 
 def answers_for_keys(
@@ -348,14 +385,18 @@ def answers_for_keys(
     by_page: dict[str, list[ViewReading]] = {}
     for view in reading.views:
         by_page.setdefault(view.page_sha256, []).append(view)
-    places: dict[tuple[str, int], tuple[list[float] | None, str | None]] = {}
+    view_cases: dict[str, list[tuple[int, str, list[float], str | None]]] = {}
     for key in keys:
         if key.get("agent") == VIEW_AGENT:
             for case in key["cases"]:
                 if case.get("region_pt") is not None:
-                    places[(case["page_sha256"], case["statement_id"])] = (
-                        case["region_pt"],
-                        case.get("heading_printed"),
+                    view_cases.setdefault(case["page_sha256"], []).append(
+                        (
+                            case["statement_id"],
+                            _KIND_CLASS.get(str(case.get("answer", {}).get("kind")), ""),
+                            case["region_pt"],
+                            case.get("heading_printed"),
+                        )
                     )
     files: dict[str, dict[str, Any]] = {}
     missed: list[str] = []
@@ -369,18 +410,23 @@ def answers_for_keys(
                 continue  # a page of a PDF this run was not given
             views = by_page.get(page, [])
             where = f"{case.get('set')} p{case.get('page')} {case['question_id']}"
-            place = places.get((page, case["statement_id"]))
+            place: tuple[list[float] | None, str | None] | None
             if agent == VIEW_AGENT:
                 place = (case.get("region_pt"), case.get("heading_printed"))
+            else:
+                place = depth_place(case, view_cases.get(page, []))
             if place is None or place[0] is None:
                 found, why = None, "the key names no place for it"
             else:
                 found, why = match_view(views, place[0], place[1])
             if found is None:
-                # Never left out: a value the reader never reached is a hold, so its coverage
-                # cannot look better than it is.
+                # Never left out: a value the reader never reached is written with no answer, so
+                # its coverage cannot look better than it is.
                 missed.append(f"{where}: no view found ({why})")
-                held = [{"model_id": model, "held": f"{NO_VIEW} ({why})"} for model in CLAUDE_PAIR]
+                # No answer, never a hold: a hold where the key holds would score as right.
+                held = [
+                    {"model_id": model, "invalid": f"{NO_VIEW} ({why})"} for model in CLAUDE_PAIR
+                ]
                 identity = {"page_sha256": page, "question_id": case["question_id"]}
                 if agent == VIEW_AGENT:
                     for entries in (ai_entries, final_entries):
@@ -489,7 +535,6 @@ def under_local_root(path: Path) -> Path:
 def fraction_bar_settings(path: Path) -> FractionBarGeometry:
     """The fraction-bar detector's eight lengths, as stated in `path`; refused when one is missing
     (they have no default, as for the width reader)."""
-    import re
 
     from workflow.slot_reader import FRACTION_BAR_ENV, fraction_bar_from_environment
 
@@ -512,7 +557,7 @@ def _env_key(env_file: Path | None) -> str | None:
     if env_file is None or not env_file.exists():
         return None
     for line in env_file.read_text().splitlines():
-        name, _, value = line.strip().partition("=")
+        name, _, value = line.strip().removeprefix("export ").partition("=")
         if name.strip().upper() == "ANTHROPIC_API_KEY" and value.strip():
             return value.strip().strip('"').strip("'")
     return None

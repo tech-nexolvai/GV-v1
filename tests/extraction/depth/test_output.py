@@ -275,19 +275,19 @@ def test_code_never_marks_in_a_colour_the_readers_are_told_to_ignore() -> None:
 
     names = {name for name, _colour in SPAN_COLOURS}
     assert not names & set(GV_MARK_COLOURS)
-    assert not names & {"purple", "violet", "teal", "olive", "pink"}
+    assert names == {"magenta", "teal", "violet"}
     gv_hues = {"red": 0.0, "yellow": 60.0, "green": 120.0, "blue": 240.0}
     for name, colour in SPAN_COLOURS:
         for gv, hue in gv_hues.items():
             distance = abs(_hue(colour) - hue) % 360
-            assert min(distance, 360 - distance) >= 25, (name, gv)
+            assert min(distance, 360 - distance) >= 40, (name, gv)
     for prompt in (
         VIEW_KIND_PROMPT,
         span_role_prompt(spans=2, outlines=1, plan=True),
         depth_span_prompt(direction="down_the_plan", turned=True),
     ):
         lowered = prompt.lower()
-        for word in ("purple", "violet", "teal", "olive"):
+        for word in ("purple", "orange", "brown", "olive"):
             assert word not in lowered, word
         for name in names:
             # Code's own colours are named only as code's marks, never as ones to ignore.

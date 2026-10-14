@@ -135,7 +135,14 @@ _FROM_PAGE_TYPE: Final[dict[PageType, ViewKind]] = {
 HEADING_WORDS: Final[dict[str, ViewKind]] = {
     **{word: _FROM_PAGE_TYPE[page_type] for word, page_type in TYPE_WORDS.items()},
     "TOP PLAN": ViewKind.PLAN,
-    "FLOOR PLAN": ViewKind.PLAN,
+    # Plans of something other than the countertop (#1265 review): a view of another kind for
+    # the depth reader, so code never calls them a countertop plan.
+    "FLOOR PLAN": ViewKind.OTHER,
+    "WALL CABINET PLAN": ViewKind.OTHER,
+    "BASE CABINET PLAN": ViewKind.OTHER,
+    "CABINET PLAN": ViewKind.OTHER,
+    "REFLECTED CEILING PLAN": ViewKind.OTHER,
+    "CEILING PLAN": ViewKind.OTHER,
     "TOP VIEW": ViewKind.PLAN,
     "SECTION VIEW": ViewKind.SECTION,
     "SECTION AT": ViewKind.SECTION,
@@ -191,6 +198,14 @@ def kind_from_heading(heading: str | None) -> HeadingKind:
             heading, None, words, f"the heading {heading!r} names more than one kind ({named})"
         )
     (kind,) = kinds
+    if kind is ViewKind.OTHER and any(word.endswith("PLAN") for word in words):
+        return HeadingKind(
+            heading,
+            kind,
+            words,
+            f"the heading {heading!r} names a plan of cabinets, a floor or a ceiling "
+            f"({', '.join(words)}), not a plan of the countertop",
+        )
     return HeadingKind(
         heading, kind, words, f"the heading {heading!r} says {kind.value} ({', '.join(words)})"
     )
@@ -208,6 +223,10 @@ class CodeViewKind:
     """Whether a wall band runs along a long edge of the drawing, with nothing beyond it."""
     reason: str
     judged_by: Literal["code"] = "code"
+    by_projection: bool = False
+    """A plan only by `plan_by_projection` (the heading and a projection, no wall band). That cue
+    cannot tell a plan from a front view drawn under it, so such a view's kind is reported but
+    nothing on it is read (#1265 re-review)."""
 
 
 def code_view_kind(heading: HeadingKind, bands: Sequence[WallBand]) -> CodeViewKind:
@@ -270,16 +289,18 @@ def plan_by_projection(
     *,
     reach: Decimal,
 ) -> CodeViewKind:
-    """A second, independent plan cue for a view headed plan with no wall band drawn (#1265
-    review): it draws the **same stone width at the same place** as a view code judges a front
-    view, i.e. it is projected straight from that front view, as a plan is drawn above or below
-    it. Its horizontal overall starts and ends where the front view's does (within `reach`) on
-    another line. `fronts` are `(view number, horizontal overall)` of the views code calls front
-    views, cut apart from this one.
+    """A weak plan cue for a view headed plan with no wall band drawn (#1265 review): it draws the
+    same stone width at the same place as a view code judges a front view (its horizontal overall
+    starts and ends where the front view's does, within `reach`, on another line), as a plan
+    projected from that front view does. `fronts` are `(view number, horizontal overall)` of the
+    views code calls front views, cut apart from this one.
 
-    Never the heading alone: a heading that says plan with no band and no such projection stays
-    "code cannot say". A heading that says front view is never turned into a plan here, so a front
-    view headed plan next to a plan headed front view (the swapped headings) still holds."""
+    **It is not independent of the heading.** The projection is symmetric: a front view drawn
+    under a plan shares its overall too, so with swapped headings and no wall band (a front view
+    headed plan, a plan headed front view) code calls the front view a plan. So a plan judged this
+    way is marked `by_projection`: its kind is reported, and the reader reads nothing on it. Only a
+    wall band makes a plan whose values can be read. A heading that does not say plan is never
+    turned into a plan here."""
     if (
         judged.kind is not None
         or judged.heading.kind is not ViewKind.PLAN
@@ -299,7 +320,8 @@ def plan_by_projection(
                 judged.plan_band,
                 f"{judged.heading.reason}; no wall band is drawn, but the view draws the same "
                 f"stone width at the same place as front view {number} (projected from it, as a "
-                "plan is)",
+                "plan is; a weak cue, so nothing on it is read)",
+                by_projection=True,
             )
     return judged
 

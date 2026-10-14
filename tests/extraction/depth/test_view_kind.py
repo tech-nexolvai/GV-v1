@@ -317,3 +317,62 @@ def test_a_sliver_of_shared_border_is_not_one_drawing_taking_in_another() -> Non
     wide = _vendor_view(1, "PLAN VIEW", (0, 0, 420, 200), (100, 190, 200, 200))
     survey = separate_views(ViewSurvey((wide, right), ()))
     assert [v.cut_apart for v in survey.views] == [False, False]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "WALL CABINET PLAN",
+        "BASE CABINET PLAN 1:15",
+        "FLOOR PLAN",
+        "REFLECTED CEILING PLAN",
+        "A - CABINET PLAN",
+    ],
+)
+def test_a_plan_of_something_other_than_the_countertop_is_never_a_countertop_plan(
+    heading: str,
+) -> None:
+    named = kind_from_heading(heading)
+    assert named.kind is ViewKind.OTHER and "not a plan of the countertop" in named.reason
+    assert kind_from_heading("A - PLAN VIEW").kind is ViewKind.PLAN
+    assert kind_from_heading("TOP PLAN").kind is ViewKind.PLAN
+
+
+def test_drawings_that_overlap_without_touching_a_caption_hold_both() -> None:
+    from extraction.depth.view_kind import ViewSurvey, separate_views
+
+    # Captions printed outside both extents; the drawings share a third of their area.
+    left = _vendor_view(1, "PLAN VIEW", (0, 0, 300, 200), (100, 260, 200, 270))
+    right = _vendor_view(2, "FRONT VIEW", (200, 0, 500, 200), (300, 260, 400, 270))
+    survey = separate_views(ViewSurvey((left, right), ()))
+    assert [view.cut_apart for view in survey.views] == [False, False]
+    assert all("overlaps the other's drawing" in view.reason for view in survey.views)
+
+
+def test_finding_views_always_checks_they_are_cut_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    import extraction.depth.view_kind as module
+
+    front = _vendor_view(1, "FRONT VIEW", (16, 213, 552, 592), (240, 580, 330, 592))
+    plan = _vendor_view(2, "TOP PLAN", (147, 518, 473, 527), (280, 518, 340, 527))
+    monkeypatch.setattr(
+        module, "_find_vendor_views", lambda *_args: module.ViewSurvey((front, plan), ())
+    )
+    survey = module.find_vendor_views(
+        [], PageInk(Decimal(600), Decimal(600), (), (), (), ()), Box(Decimal(0), Decimal(0), Decimal(600), Decimal(600)), MEASURED_VIEW_SETTINGS  # type: ignore[arg-type]
+    )
+    assert [view.cut_apart for view in survey.views] == [False, False]
+
+
+def test_projection_needs_a_heading_that_says_plan_and_another_line() -> None:
+    from extraction.depth.view_kind import plan_by_projection
+
+    reach = Decimal("1.5")
+    front = [(2, _overall(100, 400, 300))]
+    unheaded = code_view_kind(kind_from_heading(None), [])
+    assert unheaded.kind is None
+    assert plan_by_projection(unheaded, _overall(100, 400, 50), front, reach=reach) is unheaded
+    headed = code_view_kind(kind_from_heading("PLAN VIEW"), [])
+    # The same line as the front view's overall: not another view projected from it.
+    assert plan_by_projection(headed, _overall(100, 400, 300), front, reach=reach) is headed
+    projected = plan_by_projection(headed, _overall(100, 400, 50), front, reach=reach)
+    assert projected.kind is ViewKind.PLAN and projected.by_projection

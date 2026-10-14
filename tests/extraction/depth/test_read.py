@@ -718,25 +718,111 @@ def test_a_view_not_cut_apart_from_its_neighbours_is_never_read() -> None:
     assert only.kind is None and only.values == ()
 
 
-def test_a_plan_without_a_wall_band_is_read_when_projected_from_the_front_view() -> None:
-    from extraction.depth.read import with_projected_plans
-
-    # The plan's wall is not drawn; a front view below draws the same 340 pt overall at the same x.
+def _projection_pair() -> tuple[PreparedView, PreparedView]:
+    """A plan headed plan with its wall not drawn, and a front view below drawing the same 340 pt
+    overall at the same x."""
     plan_extent = Box(d(0), d(0), d(440), d(300))
     lines = [stroke for stroke in plan_lines() if stroke not in wall_hatch(90, 100, 60, 400)]
     plan = prepared(lines=lines, extent=plan_extent)
-    assert plan.code_kind.kind is None
-    front_extent = Box(d(0), d(305), d(440), d(400))
     front = prepared(
         heading="FRONT VIEW",
         lines=horizontal_dimension(330, 60, 400),
         outlines=(),
-        extent=front_extent,
+        extent=Box(d(0), d(305), d(440), d(400)),
         number=2,
     )
+    return plan, front
+
+
+def test_a_projected_plan_is_reported_but_nothing_on_it_is_read() -> None:
+    from extraction.depth.read import with_projected_plans
+
+    plan, front = _projection_pair()
+    assert plan.code_kind.kind is None
     assert front.code_kind.kind is ViewKind.ELEVATION
     judged, _front = with_projected_plans([plan, front], MEASURED_DEPTH_READER_SETTINGS)
-    assert judged.code_kind.kind is ViewKind.PLAN
+    assert judged.code_kind.kind is ViewKind.PLAN and judged.code_kind.by_projection
+    readers = FakeReaders(plan)
+    reading = read_depth(
+        [page_of(judged)], ask=readers, fraction_bar=GEOMETRY  # type: ignore[arg-type]
+    )
+    (only,) = reading.views
+    assert only.kind is ViewKind.PLAN and only.values == ()
+    assert "only by its heading and a projection" in only.values_reason
+    assert readers.prompts() == [VIEW_KIND_PROMPT_ID] * 2  # no role or number paid for
     # Without the front view, the heading alone never makes it a plan.
     (alone,) = with_projected_plans([plan], MEASURED_DEPTH_READER_SETTINGS)
     assert alone.code_kind.kind is None
+
+
+def test_swapped_headings_without_a_band_read_nothing() -> None:
+    from extraction.depth.read import with_projected_plans
+
+    # The real front view is headed "PLAN VIEW"; the real plan (no wall band) "FRONT VIEW".
+    real_front = prepared(
+        heading="PLAN VIEW",
+        lines=horizontal_dimension(330, 60, 400),
+        outlines=(),
+        extent=Box(d(0), d(305), d(440), d(400)),
+        number=2,
+    )
+    lines = [stroke for stroke in plan_lines() if stroke not in wall_hatch(90, 100, 60, 400)]
+    real_plan = prepared(heading="FRONT VIEW", lines=lines, extent=Box(d(0), d(0), d(440), d(300)))
+    plan_view, front_view = with_projected_plans(
+        [real_plan, real_front], MEASURED_DEPTH_READER_SETTINGS
+    )
+    # Code's projection cue follows the headings here (it cannot tell), so it is never enough to
+    # read anything: even if both readers agreed with it, nothing is read.
+    assert front_view.code_kind.kind is ViewKind.PLAN and front_view.code_kind.by_projection
+    readers_any = lambda questions: {
+        (q.key, q.model_id): ViewKindAnswer(q.model_id, "plan", "") for q in questions
+    }
+    reading = read_depth(
+        [page_of(front_view, also=(plan_view,))], ask=readers_any, fraction_bar=GEOMETRY
+    )
+    assert all(view.values == () for view in reading.views)
+
+
+def test_projection_needs_a_front_view_cut_apart_on_the_same_panel() -> None:
+    from extraction.depth.read import with_projected_plans
+
+    plan, front = _projection_pair()
+    S = MEASURED_DEPTH_READER_SETTINGS
+    not_apart = replace(front, view=replace(front.view, cut_apart=False))
+    assert with_projected_plans([plan, not_apart], S)[0].code_kind.kind is None
+    other_panel = replace(front, panel=2)
+    assert with_projected_plans([plan, other_panel], S)[0].code_kind.kind is None
+    section_like = replace(front, code_kind=replace(front.code_kind, kind=ViewKind.SECTION))
+    assert with_projected_plans([plan, section_like], S)[0].code_kind.kind is None
+    # A plan-headed view that is itself not cut apart is never made a plan by projection.
+    swallowing = replace(plan, view=replace(plan.view, cut_apart=False))
+    assert with_projected_plans([swallowing, front], S)[0].code_kind.kind is None
+
+
+def test_the_number_close_up_hides_every_heading_on_the_panel() -> None:
+    view = replace(prepared(), panel_headings=(Box(d(30), d(140), d(45), d(150)),))
+    page = page_of(view)
+    rgb = bytearray(page.rendered.rgb_bytes)
+    for y in range(140, 150):
+        for x in range(30, 45):
+            rgb[(y * 600 + x) * 3 : (y * 600 + x) * 3 + 3] = b"\x00\x00\x00"
+    page = replace(page, rendered=replace(page.rendered, rgb_bytes=bytes(rgb)))
+    readers = FakeReaders(view)
+    read_depth([page], ask=readers, fraction_bar=GEOMETRY)  # type: ignore[arg-type]
+    depth = readers.spans["depth"]
+    (asked,) = [a for a in readers.asked if a.key.endswith(f":n{depth}") and a.model_id == OPUS]
+    from evidence.crop import decode_rgb_png
+
+    width, _height, pixels = decode_rgb_png(asked.question.pictures[1])
+    # The close-up starts 24 pt left of the line (x 26) and 12 pt above the span (y 88).
+    x, y = 37 - 26, 145 - 88
+    assert pixels[(y * width + x) * 3 : (y * width + x) * 3 + 3] == b"\xff\xff\xff"
+
+
+def test_no_question_is_paid_for_a_view_not_cut_apart() -> None:
+    view = prepared()
+    held = replace(view, view=replace(view.view, cut_apart=False, reason="made up"))
+    readers = FakeReaders(view)
+    (only,) = read(held, readers).views
+    assert readers.asked == []
+    assert only.kind is None and [says.says for says in only.kinds] == ["held", "held"]
