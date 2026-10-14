@@ -856,42 +856,46 @@ CONFIRM_PART_CALLERS: frozenset[tuple[str, str]] = frozenset(
 
 
 def _confirm_part_uses(root: Path) -> list[tuple[str, str, int]]:
-    """Every use of `workflow.parts.confirm_part` outside `tests/`, other than importing or defining
-    it: a call, or the function passed on as a value, under any name it was imported as.
+    """Every use of `confirm_part` outside `tests/`, other than importing or defining it.
 
-    As `(file, enclosing function, line)`."""
+    As `(file, enclosing function, line)`. **By the name, not by where it was imported from**
+    (review of #1248): a module that re-exports it (`app/evidence/parts.py` imports it), a relative
+    import, or any module object carries the same function under the same name. So a use is:
+
+    - the name `confirm_part`, or any name an import bound it to (`... import confirm_part as x`,
+      from any module, relative or not), read anywhere;
+    - an attribute `.confirm_part` of anything (`parts.confirm_part`,
+      `importlib.import_module(...).confirm_part`);
+    - the text `"confirm_part"` anywhere but `__all__` (`getattr(module, "confirm_part")`).
+    """
     found: list[tuple[str, str, int]] = []
     for path in _source_files(root):
         relative = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        names: set[str] = {"confirm_part"} if relative == "workflow/parts.py" else set()
-        modules: set[str] = set()
+        names: set[str] = {"confirm_part"}
+        exported: set[int] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "workflow.parts":
+            if isinstance(node, (ast.ImportFrom, ast.Import)):
                 names.update(
-                    alias.asname or alias.name
+                    alias.asname
                     for alias in node.names
-                    if alias.name in {"confirm_part", "*"}
+                    if alias.name.rsplit(".", 1)[-1] == "confirm_part" and alias.asname
                 )
-            elif isinstance(node, ast.ImportFrom) and node.module == "workflow":
-                modules.update(
-                    alias.asname or alias.name for alias in node.names if alias.name == "parts"
-                )
-            elif isinstance(node, ast.Import):
-                modules.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if alias.name == "workflow.parts"
-                )
-        if "*" in names:
-            names.add("confirm_part")
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(
+                    isinstance(target, ast.Name) and target.id == "__all__" for target in targets
+                ):
+                    exported.update(id(inner) for inner in ast.walk(node))
         for function, node in _nodes_by_function(tree):
             used = (
-                isinstance(node, ast.Name) and node.id in names and isinstance(node.ctx, ast.Load)
-            ) or (
-                isinstance(node, ast.Attribute)
-                and node.attr == "confirm_part"
-                and ast.unparse(node.value) in modules
+                (isinstance(node, ast.Name) and node.id in names and isinstance(node.ctx, ast.Load))
+                or (isinstance(node, ast.Attribute) and node.attr == "confirm_part")
+                or (
+                    isinstance(node, ast.Constant)
+                    and node.value == "confirm_part"
+                    and id(node) not in exported
+                )
             )
             if used:
                 found.append((relative, function, getattr(node, "lineno", 0)))
@@ -937,6 +941,38 @@ CONFIRM_PART_FORMS: dict[str, str] = {
         "from workflow.parts import confirm_part\n"
         "def go(run):\n"
         "    return run(confirm_part)\n"
+    ),
+    # Review of #1248 (L2): the name reached some other way than from `workflow.parts` itself.
+    "re-exported": (
+        "from app.evidence.parts import confirm_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "re-exported-and-renamed": (
+        "from app.evidence.parts import confirm_part as make\n"
+        "def go(session, proposal):\n"
+        "    make(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "relative": (
+        "from .parts import confirm_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "another-module-attribute": (
+        "import app.evidence.parts as page\n"
+        "def go(session, proposal):\n"
+        "    page.confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "getattr": (
+        "from workflow import parts\n"
+        "def go(session, proposal):\n"
+        "    return getattr(parts, 'confirm_part')\n"
+    ),
+    "importlib": (
+        "import importlib\n"
+        "def go(session, proposal):\n"
+        "    module = importlib.import_module('workflow.parts')\n"
+        "    return module.confirm_part\n"
     ),
 }
 
