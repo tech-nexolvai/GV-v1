@@ -16,7 +16,7 @@ import pytest
 from eval.pariksha.keys import AnswerKey, LabelTruth, RowTruth, dump_key, load_key
 from eval.pariksha.kinds import KindsKey, dump_kinds_key, load_kinds_key
 from eval.pariksha.walls import WallsKey, dump_walls_key, load_walls_key
-from eval.smriti.actors import REVIEWER, UNCHECKED, UNKNOWN, Reviewers
+from eval.smriti.actors import REVIEWER, UNCHECKED, UNKNOWN, Confirmers
 from eval.smriti.candidates import (
     CANDIDATES_FORMAT,
     MISTAKE_UNANSWERED,
@@ -40,8 +40,8 @@ PICTURE = "c" * 64
 FILE_SHA = "f" * 64
 #: The stored picture every invented question showed.
 PIC = "d" * 64
-#: The local real-reviewer list: the invented person who confirms.
-PEOPLE = Reviewers(names=frozenset({"a person"}), source="test")
+#: The local confirmers list: the invented person who confirms (never the reviewer who decided).
+PEOPLE = Confirmers(names=frozenset({"a person"}), source="test")
 
 
 def _candidate(candidate_id: str, **fields: Any) -> Candidate:
@@ -215,7 +215,9 @@ def _given(export: CandidateExport, **kwargs: Any) -> dict[str, Any]:
             if (c.question or {}).get("family") == "slot-row-choice"
         },
     )
-    kwargs.setdefault("reviewers", PEOPLE)
+    kwargs.setdefault("confirmers", PEOPLE)
+    # Every stored picture's bytes were read from the artifact store and matched its fingerprint.
+    kwargs.setdefault("store", {PIC: None})
     return {"candidates_sha256": FILE_SHA, **kwargs}
 
 
@@ -574,25 +576,116 @@ def test_the_candidates_file_is_written_once_and_refused_when_edited(tmp_path: P
 # --- review of #1278: who confirms, which pictures, which boxes -----------------------------------
 
 
-def test_the_confirmer_must_be_on_the_local_real_reviewer_list() -> None:
+def test_the_confirmer_must_be_on_the_local_confirmers_list() -> None:
     export = _export(_no_countertop())
     stranger = {**_answers(_yes("no_countertop_answers:1")), "confirmed_by": "someone else"}
-    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
+    with pytest.raises(ConfirmationRefused, match="confirmers list"):
         confirm_candidates(export, stranger, **_given(export))
-    nobody_listed = Reviewers(names=None, source=None)
-    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
-        _confirm(export, _yes("no_countertop_answers:1"), reviewers=nobody_listed)
+    nobody_listed = Confirmers(names=None, source=None)
+    with pytest.raises(ConfirmationRefused, match="GV_SMRITI_CONFIRMERS"):
+        _confirm(export, _yes("no_countertop_answers:1"), confirmers=nobody_listed)
+
+
+def test_a_reviewer_who_decides_is_not_a_confirmer_unless_on_the_confirmers_list() -> None:
+    # Another reviewer (one who decides in the app) is not on the confirmers list: refused.
+    export = _export(_no_countertop())
+    reviewer = {**_answers(_yes("no_countertop_answers:1")), "confirmed_by": "reviewer-b"}
+    with pytest.raises(ConfirmationRefused, match="not on the local confirmers list"):
+        confirm_candidates(export, reviewer, **_given(export))
+
+
+@pytest.mark.parametrize("verdict", ["yes", "no", "unsure"])
+def test_a_person_never_confirms_a_case_they_decided_themselves(verdict: str) -> None:
+    export = _export(_no_countertop())  # decided by "reviewer-a"
+    both = Confirmers(names=frozenset({"reviewer-a"}), source="test")
+    answers = {
+        **_answers({**_yes("no_countertop_answers:1"), "verdict": verdict}),
+        "confirmed_by": " Reviewer-A ",
+    }
+    with pytest.raises(ConfirmationRefused, match="their own decision"):
+        confirm_candidates(export, answers, **_given(export, confirmers=both))
 
 
 @pytest.mark.parametrize(
-    "name", ["claude", "Claude Opus", "code:bot", "codex agent", "gpt-5", "an AI", "review-bot"]
+    "name",
+    [
+        "claude",
+        "Claude Opus",
+        "code:bot",
+        "codex agent",
+        "gpt-5",
+        "an AI",
+        "review-bot",
+        "claudebot",
+        "ClaudeCode",
+        "gptreviewer",
+        "opus",
+        "\u0441laude",
+        "a pers\u043en",
+        "c1aude",
+        "cl4ude",
+        "0pus",
+        "s0nnet",
+        "g3mini",
+        "c0dex",
+        "anthr0pic",
+        "copi1ot",
+        "c l a u d e",
+        "cla-ude",
+        "G.P.T",
+        "A.I.",
+        "deepseek",
+        "kimi",
+    ],
 )
 def test_an_ai_an_agent_or_code_never_confirms_even_when_listed(name: str) -> None:
     export = _export(_no_countertop())
-    listed = Reviewers(names=frozenset({name}), source="test")
+    listed = Confirmers(names=frozenset({name}), source="test")
     answers = {**_answers(_yes("no_countertop_answers:1")), "confirmed_by": name}
     with pytest.raises(ConfirmationRefused, match="a person"):
-        confirm_candidates(export, answers, **_given(export, reviewers=listed))
+        confirm_candidates(export, answers, **_given(export, confirmers=listed))
+
+
+@pytest.mark.parametrize(
+    ("store", "why"),
+    [
+        ({PIC: "the picture is not in the store (FileNotFoundError)"}, "not in the store"),
+        ({PIC: "the stored picture is not the one the question recorded"}, "not the one"),
+        ({}, "not checked in the artifact store"),
+    ],
+)
+def test_a_yes_is_refused_when_its_picture_bytes_are_missing_or_differ_in_the_store(
+    store: dict[str, str | None], why: str
+) -> None:
+    export = _export(_no_countertop())
+    with pytest.raises(ConfirmationRefused, match=why):
+        _confirm(export, _yes("no_countertop_answers:1"), store=store)
+    # A No joins nothing, so its picture is not needed.
+    no = _confirm(export, {"candidate": "no_countertop_answers:1", "verdict": "no"}, store=store)
+    assert no.keys == {}
+
+
+def test_the_store_check_reads_the_bytes_and_compares_them_with_the_fingerprint(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import io
+
+    from eval.smriti.confirm import read_stored_picture
+    from storage.local import LocalStore
+
+    picture = b"an invented picture"
+    sha = hashlib.sha256(picture).hexdigest()
+    store = LocalStore(root=tmp_path)
+    store.put("q/right.png", io.BytesIO(picture), content_type="image/png")
+    store.put("q/other.png", io.BytesIO(b"another invented picture"), content_type="image/png")
+    assert read_stored_picture(tmp_path, sha, "q/right.png") == (picture, None)
+    data, problem = read_stored_picture(tmp_path, sha, "q/other.png")
+    assert data is None and "not the one the question recorded" in (problem or "")
+    data, problem = read_stored_picture(tmp_path, sha, "q/missing.png")
+    assert data is None and "not in the store" in (problem or "")
+    data, problem = read_stored_picture(tmp_path, sha, None)
+    assert data is None and "not stored" in (problem or "")
 
 
 def test_a_yes_needs_the_stored_pictures_the_page_showed() -> None:
@@ -617,3 +710,20 @@ def test_a_box_must_be_one_the_stored_picture_numbers() -> None:
         _confirm(export, _yes("no_countertop_answers:2", box=1), boxes={})
     among = _confirm(export, _yes("no_countertop_answers:2", not_among_boxes=True), boxes={})
     assert among.keys["rekha"].cases[0].truth == RowTruth(box=None, kind="not_among_boxes")
+
+
+@pytest.mark.parametrize("decided_by", ["cb@example.test", "CB@Example.Test", "user 7", "User7"])
+def test_a_confirmer_never_confirms_a_decision_made_under_one_of_their_app_names(
+    decided_by: str,
+) -> None:
+    export = _export(replace(_no_countertop(), decided_by=decided_by))
+    known = Confirmers(
+        names=frozenset({"a person"}),
+        source="test",
+        app_names={"a person": frozenset({"cb@example.test", "user 7"})},
+    )
+    with pytest.raises(ConfirmationRefused, match="their own decision"):
+        _confirm(export, _yes("no_countertop_answers:1"), confirmers=known)
+    # Someone else's decision is still theirs to confirm.
+    other = _export(replace(_no_countertop(), decided_by="reviewer-a"))
+    assert _confirm(other, _yes("no_countertop_answers:1"), confirmers=known).keys

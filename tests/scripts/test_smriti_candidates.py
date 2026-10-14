@@ -18,6 +18,7 @@ from eval.pariksha.keys import AnswerKey, read_key
 from eval.smriti.confirm import CONFIRMATIONS_FORMAT
 from tests.eval.test_pariksha_stored import PAGE_HASH, slot_box_of, synthetic_run
 from tests.eval.test_smriti_export import REVIEWER, build_world
+from tests.scripts.test_smriti_review_page import PNG_SHA, store_pictures
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
@@ -51,17 +52,38 @@ def session(engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
+#: The invented person on the local confirmers list (#1282): never the reviewer who decided.
+CONFIRMER = "confirmer-b"
+
+
 @pytest.fixture(autouse=True)
 def _known_reviewer(
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The local real-reviewer list (#1267), naming the invented reviewer of `build_world`."""
-    from eval.smriti.actors import REVIEWERS_ENV, REVIEWERS_FORMAT
+    """The local real-reviewer list (#1267), naming the invented reviewer of `build_world`, and
+    the separate local confirmers list (#1282), naming the invented confirmer."""
+    from eval.smriti.actors import (
+        CONFIRMERS_ENV,
+        CONFIRMERS_FORMAT,
+        REVIEWERS_ENV,
+        REVIEWERS_FORMAT,
+    )
     from tests.eval.test_smriti_export import REVIEWER
 
-    people = tmp_path_factory.mktemp("local") / "people.json"
+    local = tmp_path_factory.mktemp("local")
+    people = local / "people.json"
     people.write_text(json.dumps({"format": REVIEWERS_FORMAT, "reviewers": [REVIEWER]}))
     monkeypatch.setenv(REVIEWERS_ENV, str(people))
+    confirmers = local / "confirmers.json"
+    confirmers.write_text(json.dumps({"format": CONFIRMERS_FORMAT, "confirmers": [CONFIRMER]}))
+    monkeypatch.setenv(CONFIRMERS_ENV, str(confirmers))
+
+
+@pytest.fixture(autouse=True)
+def _pictures_in_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every question the synthetic world asks shows one invented PNG, kept in a local store at
+    `<tmp>/store`, which `_confirm_args` names (`confirm --store`)."""
+    store_pictures(monkeypatch, tmp_path / "store")
 
 
 def _url(engine: Engine) -> str:
@@ -83,7 +105,6 @@ def _write_answers(
     showed (read here from the database, as the page reads them)."""
     from eval.smriti.candidates import read_candidates
     from eval.smriti.confirm import stored_questions
-    from tests.eval.test_smriti_export import REVIEWER
 
     shown: dict[str, list[str]] = {}
     if session is not None:
@@ -93,7 +114,7 @@ def _write_answers(
         json.dumps(
             {
                 "format": CONFIRMATIONS_FORMAT,
-                "confirmed_by": confirmed_by or REVIEWER,
+                "confirmed_by": confirmed_by or CONFIRMER,
                 "candidates_sha256": _sha(candidates),
                 "answers": [
                     {"pictures": shown.get(str(answer["candidate"]), []), **answer}
@@ -121,6 +142,8 @@ def _confirm_args(
         str(library),
         "--vendor-file",
         str(library.parent / "vendor-errors.jsonl"),
+        "--store",
+        str(library.parent / "store"),
         *extra,
     ]
 
@@ -144,8 +167,8 @@ def test_export_list_and_confirm_write_a_local_key_and_register_it(
     assert f"- no_countertop_answers:{world.no_countertop_reader}" in listed
     assert "- architect_pairing_records" not in listed
 
-    # Exporting wrote no key: a candidate is only a candidate.
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["candidates.json"]
+    # Exporting wrote no key: a candidate is only a candidate (`store` holds the invented pictures).
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["candidates.json", "store"]
 
     answers = _write_answers(
         tmp_path / "confirmations.json",
@@ -165,7 +188,7 @@ def test_export_list_and_confirm_write_a_local_key_and_register_it(
     # Registered in the key library, with who confirmed it.
     entries = read_library(library).entries
     assert [(entry.agent, entry.sha256, entry.confirmed_by) for entry in entries] == [
-        ("rekha", key.sha256, REVIEWER)
+        ("rekha", key.sha256, CONFIRMER)
     ]
     # The database was only read.
     assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 4
@@ -576,7 +599,7 @@ def test_a_confirmer_who_is_not_a_listed_person_is_refused(
     capsys.readouterr()
     assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
     err = capsys.readouterr().err
-    assert ("only a person" if who == "claude" else "real-reviewer list") in err
+    assert ("only a person" if who == "claude" else "confirmers list") in err
     assert not out_dir.exists()
 
 
@@ -606,3 +629,278 @@ def test_a_vendor_error_is_saved_locally_with_its_printed_text(
     # The same answers again add nothing.
     assert smriti_candidates.main(arguments) == 0
     assert len(vendor.read_text().splitlines()) == 1
+
+
+# --- review of #1278: confirmers, picture bytes, a damaged vendor-errors file (#1282) -------------
+
+
+def _one_yes(engine: Engine, session: Session, tmp_path: Path, **answer: object) -> Path:
+    """Candidates from the synthetic world, and the path of their candidates file."""
+    world = build_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": f"no_countertop_answers:{world.no_countertop_reader}", "verdict": "yes"},
+        session=session,
+        **answer,  # type: ignore[arg-type]
+    )
+    return candidates
+
+
+def test_confirm_without_the_store_is_refused_and_writes_nothing(
+    engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    at = arguments.index("--store")
+    del arguments[at : at + 2]
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "--store" in err
+    assert not (tmp_path / "keys").exists() and not (tmp_path / "library.json").exists()
+
+
+@pytest.mark.parametrize("problem", ["missing", "different"])
+def test_a_yes_whose_picture_bytes_are_missing_or_differ_in_the_store_is_refused(
+    problem: str,
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import io
+
+    from storage.local import LocalStore
+
+    candidates = _one_yes(engine, session, tmp_path)
+    # The database still lists the right picture; only the bytes in this store are wrong.
+    store = tmp_path / "another-store"
+    store.mkdir()
+    if problem == "different":
+        LocalStore(root=store).put(
+            f"reader-questions/invented/{PNG_SHA}.png",
+            io.BytesIO(b"an invented picture that is not the one the AI saw"),
+            content_type="image/png",
+        )
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    arguments[arguments.index("--store") + 1] = str(store)
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "Traceback" not in err
+    assert ("not in the store" if problem == "missing" else "not the one") in err
+    assert not (tmp_path / "keys").exists() and not (tmp_path / "library.json").exists()
+
+
+def test_a_reviewer_never_confirms_their_own_decision_even_on_the_confirmers_list(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    both = tmp_path / "local" / "confirmers.json"
+    both.parent.mkdir()
+    both.write_text(json.dumps({"format": CONFIRMERS_FORMAT, "confirmers": [REVIEWER, CONFIRMER]}))
+    monkeypatch.setenv(CONFIRMERS_ENV, str(both))
+    candidates = _one_yes(engine, session, tmp_path, confirmed_by=REVIEWER)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "their own decision" in capsys.readouterr().err
+    assert not (tmp_path / "keys").exists()
+
+
+def test_with_no_confirmers_list_nobody_confirms(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV
+
+    monkeypatch.delenv(CONFIRMERS_ENV, raising=False)
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert CONFIRMERS_ENV in capsys.readouterr().err
+    assert not (tmp_path / "keys").exists()
+
+
+@pytest.mark.parametrize(
+    "damage", ["not json at all\n", "[1, 2]\n", '{"format": "something-else"}\n']
+)
+def test_a_damaged_vendor_errors_file_is_refused_cleanly_and_nothing_is_written(
+    damage: str,
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    world = build_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": f"no_countertop_answers:{world.no_countertop_reader}", "verdict": "yes"},
+        {
+            "candidate": f"correction_ledger:{world.ledger_slot}",
+            "verdict": "yes",
+            "mistake": "vendor_drew_it",
+            "texts": ['1/3"'],
+        },
+        session=session,
+    )
+    library = tmp_path / "library.json"
+    vendor = tmp_path / "vendor-errors.jsonl"
+    vendor.write_text(damage)
+    arguments = _confirm_args(candidates, answers, tmp_path / "keys", library, "--db", _url(engine))
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "Traceback" not in err
+    assert "vendor-errors.jsonl" in err and "line 1" in err
+    # Refused before anything is written: no key, no library, the vendor file untouched.
+    assert not (tmp_path / "keys").exists() and not library.exists()
+    assert vendor.read_text() == damage
+
+
+# --- review of #1287: swapped AI names, app names --------------------------------------------------
+
+
+def test_a_swapped_ai_name_on_the_confirmers_list_is_refused_and_writes_no_key(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    swapped = tmp_path / "local" / "confirmers.json"
+    swapped.parent.mkdir()
+    swapped.write_text(json.dumps({"format": CONFIRMERS_FORMAT, "confirmers": ["c1aude"]}))
+    monkeypatch.setenv(CONFIRMERS_ENV, str(swapped))
+    candidates = _one_yes(engine, session, tmp_path, confirmed_by="c1aude")
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "c1aude" in err and "claude" in err
+    assert not (tmp_path / "keys").exists() and not (tmp_path / "library.json").exists()
+
+
+def test_a_confirmer_never_confirms_a_decision_made_under_their_app_name(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    # The confirmer signs in to the app as the reviewer who decided (another spelling).
+    listed = tmp_path / "local" / "confirmers.json"
+    listed.parent.mkdir()
+    listed.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMERS_FORMAT,
+                "confirmers": [{"name": CONFIRMER, "app_names": [REVIEWER.upper()]}],
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIRMERS_ENV, str(listed))
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "their own decision" in capsys.readouterr().err
+    assert not (tmp_path / "keys").exists()
+
+
+def test_a_confirmers_list_naming_one_person_twice_is_refused_cleanly(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    # The second entry would otherwise drop the first one's app names (the reviewer's own name).
+    twice = tmp_path / "local" / "confirmers.json"
+    twice.parent.mkdir()
+    twice.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMERS_FORMAT,
+                "confirmers": [{"name": CONFIRMER, "app_names": [REVIEWER]}, CONFIRMER.upper()],
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIRMERS_ENV, str(twice))
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "same person twice" in err and "Traceback" not in err
+    assert not (tmp_path / "keys").exists()
