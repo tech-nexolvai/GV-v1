@@ -1,11 +1,15 @@
 import { useState, type ReactNode } from 'react';
 
 import {
+  FROM_COUNTERTOP_LINE,
   KIND_LABEL,
   PART_KINDS,
+  askWhatItIs,
   codeToSend,
   decisionLabel,
   drawingLabel,
+  oneClickKind,
+  reasonToShow,
   startingCode,
   stillToDecide,
   type PartDrawing,
@@ -45,6 +49,14 @@ export interface NewPart {
  *
  * **A picture that shows GV's own coloured marks says so under it (#921)**, because the marks are
  * baked into the vendor's drawing there and the picture cannot leave them out.
+ *
+ * **Bala's suggestions (#1236)** say they came from the countertop line the AI readers found. Where
+ * the drawing names the kind (the countertop, or a printed FILLER or cabinet tag) one button
+ * confirms it in one click; the other kinds and "Not a part" stay beside it. Where nothing printed
+ * names a piece (most of them), nothing is filled in: the person says what it is, a cabinet, a
+ * filler, an appliance space or something else (the last two are not parts).
+ *
+ * **A picture being made says so**: Bala's pictures are the worker's next job after the match stage.
  */
 export function DrawingPartsList({
   drawings,
@@ -153,6 +165,7 @@ function PartRow({
   const confirmedKind = part.decision?.decision === 'confirmed' ? part.decision.kind : null;
   const pending = saving || feedback?.kind === 'saving';
   const codeId = `part-code-${part.proposal_id}`;
+  const quickKind = oneClickKind(part);
   return (
     <li
       data-slot="drawing-part"
@@ -160,11 +173,14 @@ function PartRow({
       className="flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-3 data-[decided=true]:bg-muted/40"
     >
       <div className="flex flex-col gap-2">
-        {picture ?? (
-          <Hint className="rounded-lg border border-dashed p-3">
-            No picture of this part is stored yet. Find it on page {page}: it is number {part.position} from the left in this drawing.
-          </Hint>
-        )}
+        {picture ??
+          (part.picture_pending ? (
+            <Hint className="rounded-lg border border-dashed p-3">Its picture is being made. Reload in a moment to see it.</Hint>
+          ) : (
+            <Hint className="rounded-lg border border-dashed p-3">
+              No picture of this part is stored yet. Find it on page {page}: it is number {part.position} from the left in this drawing.
+            </Hint>
+          ))}
         {picture && <GvMarksWarning marks={part.picture_gv_marks} />}
         {crop && (
           <figure className="flex flex-col gap-1">
@@ -178,7 +194,12 @@ function PartRow({
           {part.position}. Suggested as a {KIND_LABEL[part.suggested_kind].toLowerCase()}
           {part.added_by_a_person ? ' (added by a person)' : ''}
         </p>
-        <Hint>{part.reason}</Hint>
+        {part.from_countertop_line && (
+          <p data-slot="from-countertop-line" className="text-xs font-medium text-muted-foreground">
+            {FROM_COUNTERTOP_LINE}
+          </p>
+        )}
+        <Hint>{reasonToShow(part)}</Hint>
         <Hint>{part.suggested_code ? `Code read on the drawing: “${part.suggested_code}”` : 'No code read.'}</Hint>
         <p className="text-xs font-medium">{decisionLabel(part)}</p>
       </div>
@@ -196,37 +217,76 @@ function PartRow({
           onChange={(event) => setCode(event.target.value)}
         />
       </div>
-      <div
-        className="flex flex-wrap gap-1.5"
-        role="group"
-        aria-label={`Part ${part.position} on page ${page}, drawing ${drawing.tag}`}
-      >
-        {PART_KINDS.map((kind) => (
-          <Button
-            key={kind}
-            type="button"
-            size="sm"
-            variant={choiceVariant(confirmedKind === kind)}
-            aria-pressed={confirmedKind === kind}
-            disabled={!drawing.can_confirm || pending}
-            onClick={() => onConfirm(part, kind, codeToSend(code))}
-          >
-            <ChoiceMark chosen={confirmedKind === kind} />
-            {KIND_LABEL[kind]}
-          </Button>
-        ))}
+      {quickKind && (
         <Button
           type="button"
           size="sm"
-          variant={part.decision?.decision === 'withdrawn' ? 'default' : 'ghost'}
-          aria-pressed={part.decision?.decision === 'withdrawn'}
-          disabled={pending}
-          onClick={() => onWithdraw(part)}
+          disabled={!drawing.can_confirm || pending}
+          onClick={() => onConfirm(part, quickKind, codeToSend(code))}
         >
-          <ChoiceMark chosen={part.decision?.decision === 'withdrawn'} />
-          Not a part
+          Confirm: {KIND_LABEL[quickKind].toLowerCase()}
         </Button>
-      </div>
+      )}
+      {askWhatItIs(part) ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium">Nothing printed names this piece. What is it?</p>
+          <div
+            className="flex flex-wrap gap-1.5"
+            role="group"
+            aria-label={`What is part ${part.position} on page ${page}, drawing ${drawing.tag}?`}
+          >
+            {(['cabinet', 'filler'] as const).map((kind) => (
+              <Button
+                key={kind}
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!drawing.can_confirm || pending}
+                onClick={() => onConfirm(part, kind, codeToSend(code))}
+              >
+                {KIND_LABEL[kind]}
+              </Button>
+            ))}
+            {['Appliance space (not a part)', 'Something else (not a part)'].map((label) => (
+              <Button key={label} type="button" size="sm" variant="outline" disabled={pending} onClick={() => onWithdraw(part)}>
+                {label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div
+          className="flex flex-wrap gap-1.5"
+          role="group"
+          aria-label={`Part ${part.position} on page ${page}, drawing ${drawing.tag}`}
+        >
+          {PART_KINDS.map((kind) => (
+            <Button
+              key={kind}
+              type="button"
+              size="sm"
+              variant={choiceVariant(confirmedKind === kind)}
+              aria-pressed={confirmedKind === kind}
+              disabled={!drawing.can_confirm || pending}
+              onClick={() => onConfirm(part, kind, codeToSend(code))}
+            >
+              <ChoiceMark chosen={confirmedKind === kind} />
+              {KIND_LABEL[kind]}
+            </Button>
+          ))}
+          <Button
+            type="button"
+            size="sm"
+            variant={part.decision?.decision === 'withdrawn' ? 'default' : 'ghost'}
+            aria-pressed={part.decision?.decision === 'withdrawn'}
+            disabled={pending}
+            onClick={() => onWithdraw(part)}
+          >
+            <ChoiceMark chosen={part.decision?.decision === 'withdrawn'} />
+            Not a part
+          </Button>
+        </div>
+      )}
       <DecisionLine feedback={feedback} />
     </li>
   );

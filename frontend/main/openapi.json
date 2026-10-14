@@ -6809,6 +6809,11 @@
             ],
             "description": "The decision nothing has replaced, or null while nobody has decided."
           },
+          "from_countertop_line": {
+            "description": "True when code suggested it from a countertop row the AI readers read (Bala, #1236): the countertop itself or one of its pieces, with its kind already suggested.",
+            "title": "From Countertop Line",
+            "type": "boolean"
+          },
           "has_crop": {
             "description": "Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.",
             "title": "Has Crop",
@@ -6817,6 +6822,11 @@
           "has_picture": {
             "description": "Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.",
             "title": "Has Picture",
+            "type": "boolean"
+          },
+          "kind_named": {
+            "description": "For a suggestion from the countertop line: whether the drawing names its kind (the countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). Only then is it confirmed as suggested in one click; otherwise the person says what it is. False for every other suggestion.",
+            "title": "Kind Named",
             "type": "boolean"
           },
           "left_end": {
@@ -6844,6 +6854,11 @@
               }
             ],
             "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
+          },
+          "picture_pending": {
+            "description": "True while its picture is being made: none is stored yet and the worker's job to cut it is queued.",
+            "title": "Picture Pending",
+            "type": "boolean"
           },
           "position": {
             "description": "Its place on its drawing, 1 for the leftmost.",
@@ -6900,6 +6915,9 @@
           "suggested_code",
           "reason",
           "added_by_a_person",
+          "kind_named",
+          "picture_pending",
+          "from_countertop_line",
           "left_end",
           "right_end",
           "has_picture",

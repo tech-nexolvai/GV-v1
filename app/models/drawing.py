@@ -904,6 +904,63 @@ class PartPicture(Base, TimestampedUUID, Immutable):
     )
 
 
+class PartProposalRow(Base, TimestampedUUID, Immutable):
+    """Which countertop row, and which piece of it, one of Bala's suggestions was made from (#1236).
+
+    Bala (`workflow/bala_items.py`) suggests one countertop for each countertop row the slot reader
+    read, and one part for each piece of that row. This row says where each suggestion came from:
+    the row's anchor reading (`row_candidate_id`, the `slot:0` reading of its newest slot-reader run)
+    and the piece's place along it (`slot_index`, `0` from the left), or `NULL` for the countertop
+    itself. So a later step can find the suggestion for a row, and the row for a suggestion, without
+    matching outlines.
+
+    **A link, never a part.** It writes no `drawing_items` row, and a suggestion with a link is still
+    only a suggestion until a person confirms it (`workflow/parts.py:confirm_part`).
+
+    **One suggestion per row and piece, and one row and piece per suggestion**, held by the schema:
+    `part_proposal_id` is unique, and so is `(row_candidate_id, coalesce(slot_index, -1))`. A re-read
+    is a new slot-reader run with new anchor readings, so it gets new suggestions and new links;
+    asking again for the same run finds the links already there. Append-only.
+    """
+
+    __tablename__ = "part_proposal_rows"
+
+    part_proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("part_proposals.id", ondelete="RESTRICT")
+    )
+    row_candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("observation_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    """The row's anchor: its `slot:0` reading in the slot-reader run it was read in."""
+
+    slot_index: Mapped[int | None] = mapped_column(default=None)
+    """The piece's place along the row, `0` from the left; `NULL` for the countertop itself."""
+
+    extraction_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True
+    )
+    """The slot-reader run the row was read in."""
+
+    kind_named: Mapped[bool] = mapped_column()
+    """Whether the drawing names the suggested kind: always for the countertop (the row is the
+    countertop's), and for a piece only where printed words name it (a printed `FILLER`, a cabinet
+    tag). The Measure page offers one-click confirmation only then; otherwise the person says what
+    the piece is."""
+
+    __table_args__ = (
+        UniqueConstraint("part_proposal_id", name="uq_part_proposal_rows_part_proposal_id"),
+        CheckConstraint(
+            "slot_index IS NULL OR slot_index >= 0", name="part_proposal_row_slot_not_negative"
+        ),
+        Index(
+            "uq_part_proposal_rows_row_slot",
+            "row_candidate_id",
+            text("coalesce(slot_index, -1)"),
+            unique=True,
+        ),
+    )
+
+
 class VendorPagePicture(Base, TimestampedUUID, Immutable):
     """A full vendor-only page image prepared for reviewer placement (#948).
 

@@ -79,6 +79,7 @@ def record_part_proposal(
     reason: str,
     source: str,
     source_version: str,
+    find_existing: bool = True,
 ) -> PartProposal:
     """File one suggested part, or find the same suggestion already filed. **Writes no item.**
 
@@ -86,6 +87,10 @@ def record_part_proposal(
     re-read that suggests it again finds the existing row rather than adding a second one for a
     person to decide on. Which reading the code came from is not part of that: the same code read
     again is a different reading, and the earlier suggestion already names one that holds it.
+
+    `find_existing=False` files a new row every time, for a suggester that keeps its own record of
+    what it filed: Bala links each suggestion to one countertop row and piece (`part_proposal_rows`,
+    #1236), and finds its own earlier suggestions through that link instead.
 
     Coordinates are stored as text, as a view's region is, so they stay exact.
     """
@@ -99,23 +104,24 @@ def record_part_proposal(
         "space": "stored",
         "points": [[str(x), str(y)] for x, y in defining_line],
     }
-    existing = session.execute(
-        select(PartProposal)
-        .where(
-            PartProposal.drawing_view_id == drawing_view_id,
-            PartProposal.kind == kind.value,
-            PartProposal.extent == stored_extent,
-            PartProposal.defining_line == stored_line,
-            PartProposal.code_as_printed.is_not_distinct_from(code_as_printed),
-            PartProposal.reason == reason,
-            PartProposal.source == source,
-            PartProposal.source_version == source_version,
-        )
-        .order_by(PartProposal.created_at, PartProposal.id)
-        .limit(1)
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing
+    if find_existing:
+        existing = session.execute(
+            select(PartProposal)
+            .where(
+                PartProposal.drawing_view_id == drawing_view_id,
+                PartProposal.kind == kind.value,
+                PartProposal.extent == stored_extent,
+                PartProposal.defining_line == stored_line,
+                PartProposal.code_as_printed.is_not_distinct_from(code_as_printed),
+                PartProposal.reason == reason,
+                PartProposal.source == source,
+                PartProposal.source_version == source_version,
+            )
+            .order_by(PartProposal.created_at, PartProposal.id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
     proposal = PartProposal(
         drawing_view_id=drawing_view_id,
         kind=kind.value,
