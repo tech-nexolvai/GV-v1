@@ -7,12 +7,18 @@ and each key is judged by that agent's own compare (`eval/pariksha/compare.py`; 
 kinds by theirs, which know their extra reasons to reject). No model is called and both runs are
 only read, in read-only transactions.
 
-**Per key**, one of:
+**The rule: better somewhere, worse nowhere** (Anant's "better with 0 new wrong", across a library;
+decided 2026-10-15). **Per key**, one of:
 
-* **ACCEPT** or **REJECT**: the key's own compare verdict (better, 0 new wrong, nothing no longer
-  asked, no fall in `asked`). A case the older run never asked counts: its first answer can be the
-  new wrong one. So a run that read nothing of this kind is scored as one that asked nothing, and
-  a run that stopped reading a page is rejected: not asking is never a way to stop being wrong.
+* **ACCEPT**: the key's own compare accepts (better, 0 new wrong).
+* **NEUTRAL**: nothing got worse and nothing got better: 0 new wrong, nothing no longer asked, no
+  fall in `asked`, no metric worse. A key the change did not touch says this, so a change aimed at
+  one key (the walls question, say) is not rejected by the rows keys it left alone.
+* **REJECT**: any new wrong, anything no longer asked, a fall in `asked`, the agent's own extra
+  reasons (new wrong wall ink, a new wrong automatic layout), or not better with any metric worse
+  (named). A case the older run never asked counts: its first answer can be the new wrong one. So
+  a run that read nothing of this kind is scored as one that asked nothing, and a run that stopped
+  reading a page is rejected: not asking is never a way to stop being wrong.
 * **NOT MEASURED, never a pass**: neither run read any of the key's pages (the pages needed are
   listed), neither run stored anything of its kind, the pages were read but none of its questions
   asked, or the key is scored from an answers file rather than a stored run (the phase-5 depths).
@@ -20,11 +26,12 @@ only read, in read-only transactions.
 * **REFUSED**: the compare will not judge the two (unreadable stored answers, another document).
 
 **Overall**, exit code in brackets: **REJECT** (1) when any key rejects; else **REFUSED** (2) when
-any key was refused; else **NOT MEASURED** (3) when no key was measured; else **ACCEPT** (0): every
-measured key accepts, and the keys and pages that were not measured are named beside it. The
-verdict is printed; nothing here writes a setting, a prompt id or an environment value, and no
-product code imports this (`tests/eval/test_smriti_library_guard.py`). Switching stays a person's
-decision.
+any key was refused; else **NOT MEASURED** (3) when no key was measured; else **ACCEPT** (0) when at
+least one measured key is better (the rest unchanged); else **NEUTRAL** (4): nothing better, nothing
+worse, so no reason to switch. The keys and pages that were not measured are named beside every
+verdict. The verdict is printed; nothing here writes a setting, a prompt id or an environment
+value, and no product code imports this (`tests/eval/test_smriti_library_guard.py`). Switching
+stays a person's decision.
 
 Source: issue #1268 · Verification: `tests/eval/test_smriti_library_compare.py`,
 `tests/scripts/test_pariksha_library.py`
@@ -76,6 +83,7 @@ __all__ = [
     "ACCEPT",
     "COMPARES",
     "EXIT_CODES",
+    "NEUTRAL",
     "NOT_MEASURED",
     "REFUSED",
     "REJECT",
@@ -95,7 +103,14 @@ ACCEPT: Final = "ACCEPT"
 REJECT: Final = "REJECT"
 NOT_MEASURED: Final = "NOT MEASURED"
 REFUSED: Final = "REFUSED"
-EXIT_CODES: Final[Mapping[str, int]] = {ACCEPT: 0, REJECT: 1, REFUSED: 2, NOT_MEASURED: 3}
+NEUTRAL: Final = "NEUTRAL"
+EXIT_CODES: Final[Mapping[str, int]] = {
+    ACCEPT: 0,
+    REJECT: 1,
+    REFUSED: 2,
+    NOT_MEASURED: 3,
+    NEUTRAL: 4,
+}
 
 #: Each agent's own compare: walls and piece kinds have extra reasons to reject that the general
 #: compare does not know (new wrong wall ink, a new wrong automatic layout, an unverified row).
@@ -117,6 +132,8 @@ _FROM_ANSWERS: Final = (
     "not from a stored run: reading its answers from a stored run waits for the reader"
 )
 _SHOWN_PAGES: Final = 6
+#: The one reason Pariksha's compare gives when nothing got worse and nothing got better.
+_NOT_BETTER: Final = "REJECT (not better:"
 
 
 def nothing_stored(error: StoredRunError) -> bool:
@@ -171,7 +188,7 @@ class KeyResult:
 
     @property
     def measured(self) -> bool:
-        return self.status in (ACCEPT, REJECT)
+        return self.status in (ACCEPT, REJECT, NEUTRAL)
 
 
 def _pages(pages: Sequence[str]) -> str:
@@ -224,8 +241,18 @@ def judge_key(
         comparison = COMPARES[entry.agent](before_card, after_card)
     except IncomparableRuns as error:
         return KeyResult(entry, REFUSED, str(error), pages, unread)
-    status = ACCEPT if comparison.accepted else REJECT
-    return KeyResult(entry, status, comparison.verdict, pages, unread, comparison)
+    if comparison.accepted:
+        return KeyResult(entry, ACCEPT, comparison.verdict, pages, unread, comparison)
+    worse = [delta.metric for delta in comparison.metrics if delta.regressed]
+    only_not_better = comparison.verdict.startswith(_NOT_BETTER) and "; " not in comparison.verdict
+    if only_not_better and not worse:
+        # 0 new wrong, nothing no longer asked, no fall in `asked`, no metric worse: not a loss.
+        reason = "NEUTRAL (" + comparison.verdict.removeprefix("REJECT (")
+        return KeyResult(entry, NEUTRAL, reason, pages, unread, comparison)
+    reason = comparison.verdict
+    if only_not_better:
+        reason = f"{reason[:-1]}; worse: {', '.join(worse)})"
+    return KeyResult(entry, REJECT, reason, pages, unread, comparison)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,17 +324,28 @@ def judge_library(agent: str, results: Sequence[KeyResult]) -> LibraryVerdict:
             "never a pass)"
         )
     else:
-        status = ACCEPT
-        verdict = (
-            f"ACCEPT (every measured key accepts, 0 new wrong: {len(measured)} of "
-            f"{len(results)} keys measured"
+        better = [result for result in measured if result.status == ACCEPT]
+        neutral = len(measured) - len(better)
+        unmeasured_note = (
+            f"; NOT MEASURED: {len(unmeasured)} key(s) and {pages_unread} page(s) of measured "
+            "keys, listed above, never counted as a pass"
+            if unmeasured or pages_unread
+            else ""
         )
-        if unmeasured or pages_unread:
-            verdict += (
-                f"; NOT MEASURED: {len(unmeasured)} key(s) and {pages_unread} page(s) of measured "
-                "keys, listed above, never counted as a pass"
+        if better:
+            status = ACCEPT
+            verdict = (
+                f"ACCEPT (better on {len(better)} key(s), worse on none: {len(better)} accept "
+                f"and {neutral} unchanged of {len(measured)} measured, 0 new wrong; "
+                f"{len(measured)} of {len(results)} keys measured{unmeasured_note})"
             )
-        verdict += ")"
+        else:
+            status = NEUTRAL
+            verdict = (
+                f"NEUTRAL (nothing better, nothing worse: all {len(measured)} measured key(s) "
+                f"unchanged; {len(measured)} of {len(results)} keys measured{unmeasured_note}). "
+                "Not a reason to switch"
+            )
     return LibraryVerdict(agent=agent, results=tuple(results), status=status, verdict=verdict)
 
 

@@ -12,7 +12,7 @@ of an agent, with Pariksha's own loaders, scorers and compares (`eval/smriti/lib
 
     python scripts/pariksha_library.py list --library ~/gv-local/keys/library.json
 
-    # judge a change: exits 0 ACCEPT, 1 REJECT, 2 refused, 3 NOT MEASURED (nothing measured)
+    # judge a change: exits 0 ACCEPT, 1 REJECT, 2 refused, 3 NOT MEASURED, 4 NEUTRAL
     python scripts/pariksha_library.py compare --library ~/gv-local/keys/library.json \\
         --agent rekha \\
         --before-db <name or URL> [--before-run [AGENT=]<run id>]... --before-code <commit> \\
@@ -26,6 +26,10 @@ read: a bare id for every key, or `AGENT=<id>` for one key agent (the pieces of 
 another extraction run than its reader questions). Without one, a database with a single run of
 that kind is read, and one with several is refused with the list. `--db` names work as in
 `scripts/pariksha_scorecard.py` (a full URL, or a name on the server `DATABASE_URL` points at).
+
+A change is accepted only when it is better on at least one key and worse on none: a key the change
+left alone is NEUTRAL (0 new wrong, nothing lost, no metric worse, not better), and a library where
+every measured key is NEUTRAL exits 4 (nothing better, nothing worse: no reason to switch).
 
 Every verdict names, per key, who confirmed it and its label, and lists every key and page that was
 NOT MEASURED (never counted as a pass). `--cards` also writes each scorecard (outside git). The
@@ -249,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         MissingProvenanceError,
         FileExistsError,
     ) as error:
-        # A refusal is not a verdict: 0 ACCEPT, 1 REJECT, 3 NOT MEASURED, 2 "will not judge this".
+        # A refusal is not a verdict: 0 ACCEPT, 1 REJECT, 3 NOT MEASURED, 4 NEUTRAL, 2 refused.
         print(f"pariksha library: {error}", file=sys.stderr)
         return REFUSED
 

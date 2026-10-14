@@ -211,6 +211,9 @@ def test_compare_judges_every_key_of_the_agent_and_names_the_unmeasured(
     assert "REJECT" in printed
     assert "read labels" in printed
 
+    assert _compare(engine, library, fixed, fixed) == 4
+    assert "NEUTRAL (nothing better, nothing worse" in capsys.readouterr().out
+
 
 def test_compare_with_nothing_measured_exits_3_and_never_accepts(
     engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -240,7 +243,7 @@ def test_compare_writes_the_scorecards_only_outside_git(
     assert not (REPO / "cards").exists()
 
     cards = tmp_path / "cards"
-    assert _compare(engine, library, old, new, "--cards", str(cards)) == 1  # not better
+    assert _compare(engine, library, old, new, "--cards", str(cards)) == 4  # unchanged: neutral
     assert len(list(cards.glob("*.json"))) == 2
 
 

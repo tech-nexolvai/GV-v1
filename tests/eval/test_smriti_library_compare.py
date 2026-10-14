@@ -6,10 +6,13 @@ entries only; no database, no model call, no client value.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from fractions import Fraction
 from uuid import uuid4
 
 import pytest
 
+from eval.metrics import MetricResult
 from eval.pariksha.compare import compare_scorecards
 from eval.pariksha.kinds import KINDS_AGENT, compare_kinds
 from eval.pariksha.score import AGREED_RIGHT, AGREED_WRONG, HELD, NOT_ASKED
@@ -19,6 +22,8 @@ from eval.smriti.library import KEY_KINDS, LibraryEntry
 from eval.smriti.library_compare import (
     ACCEPT,
     COMPARES,
+    EXIT_CODES,
+    NEUTRAL,
     NOT_MEASURED,
     REFUSED,
     REJECT,
@@ -48,8 +53,13 @@ def _entry(name: str = "made-up key", agent: str = "akshara") -> LibraryEntry:
     )
 
 
-def _side(outcomes: dict[str, str], *, pages: frozenset[str] = frozenset({PAGE_A})) -> Side:
-    return Side(card=_card(outcomes), pages=pages)
+def _side(
+    outcomes: dict[str, str],
+    *,
+    pages: frozenset[str] = frozenset({PAGE_A}),
+    agent: str = "akshara",
+) -> Side:
+    return Side(card=_card(outcomes, agent=agent), pages=pages)
 
 
 def _judge(
@@ -58,8 +68,9 @@ def _judge(
     *,
     name: str = "made-up key",
     pages: frozenset[str] = frozenset({PAGE_A}),
+    agent: str = "akshara",
 ) -> KeyResult:
-    return judge_key(_entry(name), pages, before, after)
+    return judge_key(_entry(name, agent=agent), pages, before, after)
 
 
 ACCEPTING = (
@@ -208,3 +219,87 @@ def test_the_nothing_stored_refusal_is_told_apart_from_other_refusals() -> None:
     with pytest.raises(StoredRunError) as several:
         _choose_run({uuid4(): 1, uuid4(): 2}, None, "made-up questions")
     assert not nothing_stored(several.value)
+
+
+# --- better somewhere, worse nowhere (orchestrator decision 2026-10-15) ----------------------
+
+UNCHANGED = (
+    _side({Q1: AGREED_RIGHT, Q2: HELD}),
+    _side({Q1: AGREED_RIGHT, Q2: HELD}),
+)
+
+
+def _walls(outcomes: dict[str, str]) -> Side:
+    return _side(outcomes, agent=WALLS_AGENT)
+
+
+def test_an_unchanged_key_is_neutral_not_rejected() -> None:
+    result = _judge(*UNCHANGED)
+    assert result.status == NEUTRAL
+    assert result.measured
+    assert "not better" in result.reason
+
+
+def test_a_walls_only_improvement_with_the_rows_keys_unchanged_is_accepted() -> None:
+    walls = _judge(
+        _walls({Q1: AGREED_RIGHT, Q2: HELD}),
+        _walls({Q1: AGREED_RIGHT, Q2: AGREED_RIGHT}),
+        name="walls",
+        agent=WALLS_AGENT,
+    )
+    rows = [_judge(*UNCHANGED, name="rows one"), _judge(*UNCHANGED, name="rows two")]
+    assert walls.status == ACCEPT
+    assert [row.status for row in rows] == [NEUTRAL, NEUTRAL]
+
+    verdict = judge_library("rekha", [*rows, walls])
+    assert verdict.status == ACCEPT
+    assert verdict.exit_code == 0
+    assert "better on 1" in verdict.verdict
+
+
+def test_one_new_wrong_anywhere_rejects_even_beside_an_improvement() -> None:
+    walls = _judge(
+        _walls({Q1: AGREED_RIGHT, Q2: HELD}),
+        _walls({Q1: AGREED_RIGHT, Q2: AGREED_RIGHT}),
+        name="walls",
+        agent=WALLS_AGENT,
+    )
+    rows = _judge(*REJECTING, name="rows")
+    verdict = judge_library("rekha", [_judge(*UNCHANGED, name="other rows"), walls, rows])
+    assert verdict.status == REJECT
+    assert verdict.exit_code == 1
+
+
+def test_everything_unchanged_is_neutral_with_its_own_exit_code() -> None:
+    verdict = judge_library("akshara", [_judge(*UNCHANGED, name="one"), _judge(*UNCHANGED)])
+    assert verdict.status == NEUTRAL
+    assert verdict.exit_code == EXIT_CODES[NEUTRAL] == 4
+    assert verdict.verdict.startswith("NEUTRAL")
+    assert not verdict.verdict.startswith("ACCEPT")
+
+
+def test_not_better_with_a_metric_worse_is_rejected_not_neutral() -> None:
+    before, after = UNCHANGED
+    assert after.card is not None
+    costlier = MetricResult(
+        key="cost_micros_per_question", value=Fraction(5000, 3), numerator=5000, denominator=3
+    )
+    worse = Side(
+        card=replace(after.card, metrics={**after.card.metrics, costlier.key: costlier}),
+        pages=after.pages,
+    )
+    result = _judge(before, worse)
+    assert result.status == REJECT
+    assert "worse: cost_micros_per_question" in result.reason
+
+
+def test_a_real_loss_stays_rejected() -> None:
+    lost_one = _judge(
+        _side({Q1: AGREED_RIGHT, Q2: AGREED_RIGHT}), _side({Q1: AGREED_RIGHT, Q2: HELD})
+    )
+    assert lost_one.status == REJECT
+    no_longer = _judge(
+        _side({Q1: AGREED_RIGHT, Q2: HELD}), _side({Q1: AGREED_RIGHT, Q2: NOT_ASKED})
+    )
+    assert no_longer.status == REJECT
+    assert "no longer asked" in no_longer.reason
