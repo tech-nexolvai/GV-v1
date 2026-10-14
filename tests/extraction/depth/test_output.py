@@ -75,7 +75,7 @@ def test_three_pinned_ids() -> None:
 )
 def test_every_question_allows_unsure_and_ignores_gvs_marks(prompt: str) -> None:
     assert "unsure" in prompt
-    assert "Ignore GV's yellow, red and green marks" in prompt
+    assert "Ignore GV's yellow, red, green and blue marks" in prompt
 
 
 def test_span_role_choices_are_only_what_the_picture_shows() -> None:
@@ -257,3 +257,59 @@ def test_a_number_question_shows_both_turns_for_a_sideways_label() -> None:
     content = request["messages"][0]["content"]
     assert sum("image" in part for part in content) == 4
     assert "Picture 4" in content[-1]["text"]
+
+
+# --- review #1274: code's marks never in GV's colours; a changed question never replays -------
+
+
+def _hue(colour: tuple[int, int, int]) -> float:
+    import colorsys
+
+    hue, _light, _saturation = colorsys.rgb_to_hls(*(channel / 255 for channel in colour))
+    return hue * 360
+
+
+def test_code_never_marks_in_a_colour_the_readers_are_told_to_ignore() -> None:
+    from extraction.depth.pictures import SPAN_COLOURS
+    from extraction.depth.prompts import GV_MARK_COLOURS
+
+    names = {name for name, _colour in SPAN_COLOURS}
+    assert not names & set(GV_MARK_COLOURS)
+    assert not names & {"purple", "violet", "teal", "olive", "pink"}
+    gv_hues = {"red": 0.0, "yellow": 60.0, "green": 120.0, "blue": 240.0}
+    for name, colour in SPAN_COLOURS:
+        for gv, hue in gv_hues.items():
+            distance = abs(_hue(colour) - hue) % 360
+            assert min(distance, 360 - distance) >= 25, (name, gv)
+    for prompt in (
+        VIEW_KIND_PROMPT,
+        span_role_prompt(spans=2, outlines=1, plan=True),
+        depth_span_prompt(direction="down_the_plan", turned=True),
+    ):
+        lowered = prompt.lower()
+        for word in ("purple", "violet", "teal", "olive"):
+            assert word not in lowered, word
+        for name in names:
+            # Code's own colours are named only as code's marks, never as ones to ignore.
+            ignore = lowered.split("ignore", 1)[1].split(".", 1)[0]
+            assert name not in ignore
+
+
+def test_a_changed_wording_or_answer_shape_never_replays_an_old_answer() -> None:
+    from extraction.depth.read import PreparedPage, question_packet
+    from workflow.reader_reuse import question_identity
+
+    page = PreparedPage(0, "c" * 64, "doc", None, lambda box: (0, 0, 0, 0), (), None)  # type: ignore[arg-type]
+    base = DepthQuestion(VIEW_KIND_PROMPT_ID, (PNG,), VIEW_KIND_PROMPT, VIEW_KIND_SCHEMA)
+    reworded = DepthQuestion(VIEW_KIND_PROMPT_ID, (PNG,), VIEW_KIND_PROMPT + " ", VIEW_KIND_SCHEMA)
+    reshaped = DepthQuestion(
+        VIEW_KIND_PROMPT_ID,
+        (PNG,),
+        VIEW_KIND_PROMPT,
+        {**VIEW_KIND_SCHEMA, "required": ["kind"]},
+    )
+    identities = {
+        question_identity(question_packet(page, "k", question, "high"))
+        for question in (base, reworded, reshaped)
+    }
+    assert len(identities) == 3 and None not in identities

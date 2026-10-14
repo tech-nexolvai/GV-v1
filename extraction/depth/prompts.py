@@ -21,7 +21,7 @@ a stored answer is reused only for the identical question (`workflow/reader_reus
 
 Every example value in these questions is invented.
 
-Source: issue #1265 · Verification: `tests/extraction/depth/test_prompts.py`
+Source: issue #1265 · Verification: `tests/extraction/depth/test_output.py`
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ __all__ = [
     "DEPTH_PROMPT_IDS",
     "DEPTH_SPAN_PROMPT_ID",
     "DEPTH_SPAN_SCHEMA",
+    "GV_MARK_COLOURS",
     "OFFSET_STARTS",
     "PICK_NONE",
     "PICK_UNSURE",
@@ -75,9 +76,13 @@ PICK_UNSURE: Final = "unsure"
 #: Where the strip in front of the sink hole is measured from, or that there is no such strip.
 OFFSET_STARTS: Final[tuple[str, ...]] = ("stone_front_edge", "cabinet_face", "unsure", "none")
 
+#: GV's reviewer marks in these colours; the readers are told to ignore them. Code's own marks
+#: (`pictures.SPAN_COLOURS`: magenta, orange, brown) never use them.
+GV_MARK_COLOURS: Final = ("yellow", "red", "green", "blue")
 _MARKS: Final = (
-    "Ignore GV's yellow, red and green marks, and any blue or purple ones: yellow boxes, red or "
-    "blue writing, clouds and ticks are the reviewer's, never the vendor's drawing."
+    "Ignore GV's yellow, red, green and blue marks: boxes, clouds, ticks, hatching and writing in "
+    "those colours are the reviewer's, never the vendor's drawing. Code's own marks are magenta, "
+    "orange or brown, with white numbers or letters on small squares."
 )
 
 
@@ -168,7 +173,7 @@ def span_role_prompt(*, spans: int, outlines: int, plan: bool) -> str:
         if not outlines
         else (
             " Picture 2 is the same drawing with each closed outline drawn round the sink framed "
-            f"in colour and lettered {letters[0]}"
+            f"in magenta, orange or brown and lettered {letters[0]}"
             + ("" if len(letters) == 1 else f" to {letters[-1]}")
             + "."
         )
@@ -182,7 +187,7 @@ def span_role_prompt(*, spans: int, outlines: int, plan: bool) -> str:
     return (
         f"Picture 1 is one drawing cut from a vendor's shop drawing of a stone countertop: {view}. "
         "Its printed title has been painted over. Code has drawn every dimension line it found in "
-        "its own colour, with a number on a small square beside the line, numbered 1 to "
+        "magenta, orange or brown, with a number on a small square beside the line, numbered 1 to "
         f"{spans}.{lettered}\n"
         "Which numbered dimension measures each of these? Judge from what is drawn.\n"
         '- "depth": the stone\'s full depth, from its front edge to the wall behind it.\n'
@@ -231,7 +236,7 @@ def depth_span_prompt(*, direction: SpanDirection, turned: bool) -> str:
     )
     return (
         "Picture 1 shows one drawing from a vendor's shop drawing of a stone countertop. One "
-        "dimension line is drawn over in magenta (pink-purple) with a number beside it; magenta is "
+        "dimension line is drawn over in magenta (bright pink) with a number beside it; magenta is "
         "never the reviewer's colour. Picture 2 is a sharper close-up of that dimension: two short "
         "magenta bars across its line show where it starts and ends, and the dimension is the "
         f"stretch between them. {runs}{pictures}\n"

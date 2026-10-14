@@ -675,6 +675,12 @@ def question_packet(
         "source_page_sha256": page.page_sha256,
         "question_id": key,
         "prompt_id": question.prompt_id,
+        # The exact wording and answer shape: a changed question never replays an old answer,
+        # even under the same prompt id (#1265 review).
+        "prompt_sha256": hashlib.sha256(question.prompt.encode()).hexdigest(),
+        "schema_sha256": hashlib.sha256(
+            json.dumps(question.schema, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
         "effort": effort,
         "spans": question.spans,
         "outlines": question.outlines,

@@ -58,16 +58,14 @@ type PixelBox = tuple[int, int, int, int]
 
 type _Colour = tuple[int, int, int]
 
-#: The spans' colours, span 1 first, with the words a question can use for them. None is the
-#: reviewer's red, yellow or blue, or the vendor's black, and each is dark enough for a white
-#: number on it.
+#: The spans' colours, span 1 first, with the words a question can use for them (#1265 review:
+#: one palette that never overlaps GV's red, yellow, blue and green, which the readers are told to
+#: ignore, and is not the vendor's black). Each is dark enough for a white number on it; the
+#: numbers and letters, not the colours, tell the marks apart.
 SPAN_COLOURS: Final[tuple[tuple[str, _Colour], ...]] = (
     ("magenta", (200, 0, 160)),
-    ("brown", (140, 85, 20)),
-    ("purple", (120, 50, 170)),
-    ("teal", (0, 125, 125)),
     ("orange", (210, 95, 0)),
-    ("olive", (105, 110, 0)),
+    ("brown", (140, 85, 20)),
 )
 _WHITE: Final[_Colour] = (255, 255, 255)
 _MARK: Final[_Colour] = (200, 0, 160)
