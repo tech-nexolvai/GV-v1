@@ -23,9 +23,11 @@ from sqlalchemy.orm import Session
 from alembic import command
 from app.db.session import session_factory
 from app.models import (
+    CountertopRunDecision,
     Document,
     DocumentKind,
     DocumentVersion,
+    DrawingItem,
     DrawingView,
     ObservationCandidate,
     Package,
@@ -39,6 +41,7 @@ from app.models.document import Page
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.review.drawings_not_read import drawings_not_read
 from tests.app.postgres_fixture import alembic_config
+from vocabulary.part_kinds import PartKind
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -145,7 +148,7 @@ class Sheet:
         role: str | None = None,
         suggested: str | None = None,
         why: str = "synthetic: its own vendor heading",
-    ) -> None:
+    ) -> DrawingView:
         """A pasted drawing at `box` (left, top, right, bottom, from 0 to 1 of the page), with a
         role a person confirmed (`role`) and the role its heading suggests (`suggested`)."""
         left, top, right, bottom = box
@@ -167,6 +170,25 @@ class Sheet:
                 heading=None,
                 reason=why,
                 source="test",
+            )
+        )
+        self.session.flush()
+        return view
+
+    def reviewer_countertop(self, view: DrawingView) -> None:
+        """A countertop a reviewer marked by hand in `view`, with a decision on its run: the page is
+        then reviewer-owned (`workflow.part_operands.reviewer_owned_pages`), and the check uses the
+        reviewer's countertops there, never the row an AI read. A withdrawal is enough to own it."""
+        item = DrawingItem(
+            drawing_view_id=view.id,
+            item_type=PartKind.COUNTERTOP.item_type.value,
+            extent=view.region,
+        )
+        self.session.add(item)
+        self.session.flush()
+        self.session.add(
+            CountertopRunDecision(
+                countertop_item_id=item.id, decision="withdrawn", confirmed_by="synthetic reviewer"
             )
         )
         self.session.flush()
@@ -257,8 +279,9 @@ def test_the_drawing_listed_is_whichever_one_the_row_read_is_not_in(session: Ses
 
 
 def test_a_drawing_only_its_heading_says_is_the_vendors_is_listed_too(session: Session) -> None:
-    """Nobody confirmed either drawing; both headings say vendor. The reader reads the vendor's
-    drawings by their headings as well (`workflow/stages.py` `_view_role`), so the same gap."""
+    """Nobody confirmed either drawing; both headings say vendor. The reader keeps the rows in a
+    drawing its heading says is the vendor's as well (`workflow/stages.py`
+    `_architect_candidate_filter_boxes_by_page`), so the same gap."""
     sheet = Sheet(session)
     sheet.drawing(1, "panel-1", ("0.05", "0.02", "0.95", "0.46"), suggested="shop")
     sheet.drawing(1, "panel-2", ("0.05", "0.54", "0.95", "0.98"), suggested="shop")
@@ -336,7 +359,7 @@ def test_a_row_read_outside_every_drawing_lists_each_vendor_drawing_when_there_a
 
     reason = (
         "{} is a vendor drawing that may not have been read for a countertop: "
-        f"{ONE_PER_PAGE}, and the one read could not be placed in any drawing on the page."
+        f"{ONE_PER_PAGE}, and the one read could not be placed in any vendor drawing on the page."
     )
     assert sheet.listed({1, 2}) == [
         (1, "the left drawing", reason.format("The left drawing")),
@@ -382,4 +405,86 @@ def test_a_drawing_with_no_role_keeps_its_own_reason_beside_a_vendor_drawing_not
             "the right drawing",
             _not_read("right", "left"),
         ),
+    ]
+
+
+def _may_not(place: str, why: str) -> str:
+    return (
+        f"The {place} drawing is a vendor drawing that may not have been read for a countertop: "
+        f"{ONE_PER_PAGE}, and {why}."
+    )
+
+
+def test_a_page_a_reviewer_took_over_lists_no_vendor_drawing_by_the_ais_row(
+    session: Session,
+) -> None:
+    """Review of #1252 (Medium). Where a reviewer marked the countertops by hand, the check uses only
+    theirs and ignores the AI's row (`workflow/stages.py`, the reviewer-owned pages), so naming the
+    drawing the AI's row lies in would be wrong: here the reviewer's countertop is in the right
+    drawing, which is the one checked, yet the AI's row is in the left one. Nothing is listed by
+    the AI's row on that page, as for the rows not checked; another page still is."""
+    sheet = Sheet(session)
+    sheet.drawing(1, "panel-1", LEFT, role="shop")
+    right = sheet.drawing(1, "panel-2", RIGHT, role="shop")
+    sheet.row(1, (0.25, 0.5))
+    sheet.reviewer_countertop(right)
+    sheet.drawing(2, "panel-1", LEFT, role="shop")
+    sheet.drawing(2, "panel-2", RIGHT, role="shop")
+    sheet.row(2, (0.25, 0.5))
+
+    assert sheet.listed({1, 2}) == [(2, "the right drawing", _not_read("right", "left"))]
+
+
+def test_a_page_where_a_reviewer_marked_both_drawings_lists_neither(session: Session) -> None:
+    """Both drawings hold a countertop the reviewer marked: both are checked, so neither is "not
+    read", whichever drawing the AI's row lies in."""
+    sheet = Sheet(session)
+    left = sheet.drawing(1, "panel-1", LEFT, role="shop")
+    right = sheet.drawing(1, "panel-2", RIGHT, role="shop")
+    sheet.row(1, (0.25, 0.5))
+    sheet.reviewer_countertop(left)
+    sheet.reviewer_countertop(right)
+
+    assert sheet.listed({1}) == []
+
+
+def test_a_drawing_with_no_role_the_row_lies_in_is_never_named_as_the_one_read(
+    session: Session,
+) -> None:
+    """Review of #1252 (Low 1). A drawing with no role is listed as not read (#1193), so it is never
+    named as the drawing read too: the report would say both. With two vendor drawings beside it,
+    the drawing read cannot be named, and each is listed with "may not have been read"; with one,
+    nothing is, as for a row that lies in no drawing."""
+    sheet = Sheet(session)
+    sheet.drawing(1, "panel-1", ("0.02", "0.1", "0.3", "0.9"), why="synthetic: no label")
+    sheet.drawing(1, "panel-2", ("0.35", "0.1", "0.65", "0.9"), role="shop")
+    sheet.drawing(1, "panel-3", ("0.7", "0.1", "0.98", "0.9"), role="shop")
+    sheet.row(1, (0.15, 0.5))
+    sheet.drawing(2, "panel-1", LEFT, why="synthetic: no label")
+    sheet.drawing(2, "panel-2", RIGHT, role="shop")
+    sheet.row(2, (0.25, 0.5))
+
+    unplaced = "the one read could not be placed in any vendor drawing on the page"
+    no_label = "was not read for a countertop: synthetic: no label."
+    assert sheet.listed({1, 2}) == [
+        (1, "the left drawing", f"The left drawing {no_label}"),
+        (1, "the middle drawing", _may_not("middle", unplaced)),
+        (1, "the right drawing", _may_not("right", unplaced)),
+        (2, "the left drawing", f"The left drawing {no_label}"),
+    ]
+
+
+def test_a_row_read_across_two_drawings_lists_each_vendor_drawing(session: Session) -> None:
+    """Review of #1252 (Low 2). The row read has one box in each drawing: which one was read cannot
+    be said, so both are listed with "may not have been read", never neither."""
+    sheet = Sheet(session)
+    sheet.drawing(1, "panel-1", LEFT, role="shop")
+    sheet.drawing(1, "panel-2", RIGHT, role="shop")
+    # The row's two boxes sit 60 pixels apart, either side of the gap between the drawings.
+    sheet.row(1, (0.5, 0.5))
+
+    across = "the one read lies across more than one drawing on the page"
+    assert sheet.listed({1}) == [
+        (1, "the left drawing", _may_not("left", across)),
+        (1, "the right drawing", _may_not("right", across)),
     ]

@@ -11,11 +11,16 @@ beside the first-set one, or a second vendor drawing under another.
 On a page with two vendor drawings — the first-round and second-round drawings side by side, or a
 second drawing a reviewer confirmed as the vendor's — the row read lies in one of them, and the other
 is not read. Its role is the vendor's, so the rule above does not list it; without this it would be
-silent. It is listed, naming the drawing the row read lies in. When that row lies in no drawing, or
-cannot be placed on the sheet, the drawing read cannot be named: on a page with two or more vendor
-drawings each is listed then (at least one was not read), and on a page with one, none is. A page
-where no row was read lists none of its vendor drawings: it is listed already with the pages with no
-countertop. **Which round counts is not decided here** (#1197 phase 2 waits for that decision).
+silent. It is listed, naming the drawing the row read lies in. The drawing read cannot be named when
+the row lies in no drawing, cannot be placed on the sheet, lies across more than one drawing,
+or lies in a drawing listed above as having no role (never named as read and as not read at once):
+on a page with two or more vendor drawings each is listed then with "may not have been read" (at
+least one was not read), and on a page with one, none is. A page where no row was read lists none of
+its vendor drawings: it is listed already with the pages with no countertop. Nor does a page a
+reviewer took over (`workflow.part_operands.reviewer_owned_pages`): the check uses the reviewer's
+countertops there, never the AI's row, so the row cannot say which drawing was checked; the
+countertop results leave out its rows not checked the same way. **Which round counts is not decided
+here** (#1197 phase 2 waits for that decision).
 
 **Listed, never blocking** (the #1108 "second row" pattern): the countertop that was read on the page is
 checked as usual; this drawing is named with its place on the page and the reason, on the screen, in
@@ -53,6 +58,7 @@ from app.models.runs import ExtractionRun
 from app.schemas.visual_ui import DrawingNotReadOut
 from evidence.coordinates import ImagePoint
 from vocabulary.panel_headings import NO_HEADINGS_ON_PAGE, Box, place_words
+from workflow.part_operands import reviewer_owned_pages
 from workflow.slot_row_scope import latest_slot_reader_run
 
 __all__ = ["ONE_ROW_PER_PAGE", "drawings_not_read"]
@@ -91,9 +97,23 @@ def _covers(box: Box, point: Point) -> bool:
     return box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3]
 
 
+def _unlabelled(view: DrawingView, suggestion: ViewRoleProposal | None) -> str | None:
+    """Why a drawing with no role and no role suggested, on a page that prints headings, was not
+    read (#1193); None for any other drawing."""
+    if (
+        view.role is None
+        and suggestion is not None
+        and suggestion.proposed_role is None
+        and suggestion.reason != NO_HEADINGS_ON_PAGE
+    ):
+        return suggestion.reason
+    return None
+
+
 def _is_vendors(view: DrawingView, suggestion: ViewRoleProposal | None) -> bool:
-    """The role a person confirmed, or else the one its heading suggests: the drawings the reader
-    reads as the vendor's (`workflow/stages.py` `_view_role`)."""
+    """The role a person confirmed, or else the one its heading suggests: the drawings whose rows
+    the reader keeps as the vendor's (`workflow/stages.py`
+    `_architect_candidate_filter_boxes_by_page`, which removes the rows in every other drawing)."""
     role = view.role if view.role is not None else (suggestion and suggestion.proposed_role)
     return role == ViewRole.SHOP.value
 
@@ -180,6 +200,7 @@ def drawings_not_read(
         box = _box(view.region)
         if box is not None:
             by_page.setdefault(page.index, []).append((view, box))
+    owned: set[int] | None = None
     listed: list[DrawingNotReadOut] = []
     for index, views in sorted(by_page.items()):
         drawings = [
@@ -194,28 +215,39 @@ def drawings_not_read(
             if page_id in read_rows
         ]
         centres = None if not found else tuple(centre for row in found for centre in row)
-        vendors = sum(_is_vendors(view, latest.get(view.id)) for view, _box_ in drawings)
-        read_in = next(
-            (
-                place
-                for (_view, box), place in zip(drawings, places, strict=True)
-                if centres and any(_covers(box, centre) for centre in centres)
-            ),
-            None,
+        unlabelled = [_unlabelled(view, latest.get(view.id)) for view, _box_ in drawings]
+        vendors = [
+            reason is None and _is_vendors(view, latest.get(view.id))
+            for (view, _box_), reason in zip(drawings, unlabelled, strict=True)
+        ]
+        if centres is not None and any(vendors) and owned is None:
+            owned = reviewer_owned_pages(session, revision_id)  # looked up only when needed
+        holding = [
+            number
+            for number, (_view, box) in enumerate(drawings)
+            if centres and any(_covers(box, centre) for centre in centres)
+        ]
+        # The drawing the row read lies in, named only when the row lies in exactly one and that
+        # one is not listed as not read for having no role (review of #1252: never both).
+        read_in = (
+            places[holding[0]] if len(holding) == 1 and unlabelled[holding[0]] is None else None
         )
-        for (view, box), place in zip(drawings, places, strict=True):
-            suggestion = latest.get(view.id)
-            if (
-                view.role is None
-                and suggestion is not None
-                and suggestion.proposed_role is None
-                and suggestion.reason != NO_HEADINGS_ON_PAGE
-            ):
-                why = f"was not read for a countertop: {suggestion.reason}"
+        unplaced = (
+            "the one read lies across more than one drawing on the page"
+            if len(holding) > 1
+            else "the one read could not be placed in any vendor drawing on the page"
+        )
+        for number, (place, reason, vendor) in enumerate(
+            zip(places, unlabelled, vendors, strict=True)
+        ):
+            if reason is not None:
+                why = f"was not read for a countertop: {reason}"
             elif (
                 centres is None
-                or not _is_vendors(view, suggestion)
-                or any(_covers(box, centre) for centre in centres)
+                or not vendor
+                or (read_in is not None and holding == [number])
+                # The reviewer's countertops are the source here, never the AI's row.
+                or index in (owned or ())
             ):
                 continue
             elif read_in is not None:
@@ -223,11 +255,10 @@ def drawings_not_read(
                     "is a vendor drawing that was not read for a countertop: "
                     f"{ONE_ROW_PER_PAGE}, and the one read is in {read_in}"
                 )
-            elif vendors >= 2:
+            elif sum(vendors) >= 2:
                 why = (
                     "is a vendor drawing that may not have been read for a countertop: "
-                    f"{ONE_ROW_PER_PAGE}, and the one read could not be placed in any drawing on "
-                    "the page"
+                    f"{ONE_ROW_PER_PAGE}, and {unplaced}"
                 )
             else:
                 continue
