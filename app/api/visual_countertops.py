@@ -553,7 +553,12 @@ def _wall(
                 else NOT_NEEDED_PASS_LINE
             ),
         )
-    if config is None:
+    wall_hold = getattr(row, "wall_hold", None)
+    if config is None and wall_hold is not None:
+        # A reviewer's earlier wall answer could not be carried to this reading (#1241): no walls
+        # were used, so the sealed proposal is never shown as this result's walls.
+        line = f"Walls asked again: {wall_hold}"
+    elif config is None:
         sealed = next(
             (
                 flag.removeprefix("walls-sealed:")

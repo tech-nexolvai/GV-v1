@@ -136,6 +136,14 @@ class SlotRowOut(BaseModel):
             "result is hidden when it differs from the one the recorded result used."
         ),
     )
+    wall_hold_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why this row's walls are asked again (#1241): a reviewer's wall answer on this page in "
+            "an earlier reading could not be carried to this reading. Until this row has its own "
+            "wall answer no automatic wall is used, and `wall_proposal` is empty."
+        ),
+    )
     wall_evidence: list[str] = Field(
         default_factory=list,
         description=(
@@ -281,6 +289,11 @@ def _row_out(
     if held_flag is not None:
         wall_proposal_value = None
         reason = reason or "The readers did not agree on this row's wall layout."
+    if row.wall_hold is not None:
+        # A reviewer's earlier answer could not be carried here (#1241): nothing is proposed, and
+        # the reason is that answer, never the automatic walls' words.
+        wall_proposal_value = None
+        reason = row.wall_hold
 
     if row.wall_confirmation_allowed and any(
         is_between_panels(candidate.ambiguity_flags or ()) for candidate in row.candidates
@@ -348,6 +361,7 @@ def _row_out(
         walls_needed=walls_needed,
         field_cut_in_force=field_cut_text(field_cut),
         wall_evidence=_wall_evidence(wall_flags),
+        wall_hold_reason=row.wall_hold,
     )
 
 
