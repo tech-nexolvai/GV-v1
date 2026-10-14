@@ -119,6 +119,7 @@ from eval.release_metrics import Direction
 from extraction.slot_reader.labels import plain_dimension
 from extraction.slot_reader.seal import normalise_text
 from units.measurement import Unit
+from vocabulary.semantic_types import SemanticType
 
 __all__ = [
     "AGREED_RIGHT",
@@ -174,15 +175,22 @@ SINGLE_READ: Final = "claude-single-read"
 OPEN: Final = "open"
 STATUSES: Final = (DOUBLE_READ, SINGLE_READ, OPEN)
 
+#: The field codes, from the shared vocabulary (never written out as text here).
+CT010: Final = SemanticType.CT010.value
+CT012: Final = SemanticType.CT012.value
+CT008: Final = SemanticType.CT008.value
+CT007: Final = SemanticType.CT007.value
+#: The key's one case for the cut-out's two values.
+CUTOUT: Final = f"{CT012}+{CT008}"
 #: The values each agent's answers name; a CT012+CT008 key case is two of them.
 FIELDS: Final[Mapping[str, tuple[str, ...]]] = {
     VIEW_AGENT: ("view",),
-    DEPTH_AGENT: ("CT010", "CT012", "CT008", "CT007"),
+    DEPTH_AGENT: (CT010, CT012, CT008, CT007),
 }
 _KEY_FIELDS: Final[Mapping[str, tuple[str, ...]]] = {
-    "CT010": ("CT010",),
-    "CT012+CT008": ("CT012", "CT008"),
-    "CT007": ("CT007",),
+    CT010: (CT010,),
+    CUTOUT: (CT012, CT008),
+    CT007: (CT007,),
 }
 #: A key's view kinds and the class the reader's question answers with (`view-kind-v1` has one
 #: answer, SECTION/SIDE, for both).
@@ -389,8 +397,8 @@ def _depth_truths(field: str, answer: Mapping[str, object], where: str) -> dict[
     hold = _hold(answer, where)
     if hold is not None:
         return dict.fromkeys(_KEY_FIELDS[field], hold)
-    if field == "CT012+CT008":
-        if set(answer) - {"outline"} != {"CT012", "CT008"}:
+    if field == CUTOUT:
+        if set(answer) - {"outline"} != {CT012, CT008}:
             raise KeyFormatError(
                 f"{where}: a CT012+CT008 answer gives both CT012 and CT008 ({{'texts': [...]}} "
                 f"each, and the outline) or a hold, not {sorted(answer)}"
@@ -400,15 +408,15 @@ def _depth_truths(field: str, answer: Mapping[str, object], where: str) -> dict[
         return {
             name: _value_truth(answer[name], f"{where} {name}", note) for name in _KEY_FIELDS[field]
         }
-    if field == "CT007":
+    if field == CT007:
         _unknown(answer, frozenset({"texts", "start_edge"}), f"{where} answer")
         edge = answer.get("start_edge")
         note = "" if edge is None else f"from: {_text(edge, f'{where} start_edge')}"
         texts = {"texts": answer.get("texts")}
-        return {"CT007": _value_truth(texts, f"{where} CT007", note)}
+        return {CT007: _value_truth(texts, f"{where} {CT007}", note)}
     if set(answer) != {"texts"}:
         raise KeyFormatError(f"{where}: a CT010 answer is {{'texts': [...]}} or a hold")
-    return {"CT010": _value_truth(answer, f"{where} CT010")}
+    return {CT010: _value_truth(answer, f"{where} {CT010}")}
 
 
 def _int(value: object, field: str) -> int:
