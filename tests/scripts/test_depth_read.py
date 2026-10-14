@@ -214,3 +214,47 @@ def test_a_keyed_value_with_no_view_found_is_written_as_a_hold() -> None:
     assert len(missed) == 1
     loaded = load_depth_answers(files[f"{script.DEPTH_AGENT}-final"])
     assert {r.says for r in loaded.answers[(SHA, "p0:plan:CT010:x", CT010)]} == {"held"}
+
+
+def _view_reading(number: int, heading: str, extent: tuple[int, int, int, int]) -> object:
+    from decimal import Decimal
+
+    from extraction.depth.read import ViewReading
+    from extraction.depth.view_kind import code_view_kind, kind_from_heading
+    from extraction.geometry.rows import Box
+
+    return ViewReading(
+        page_index=0,
+        page_sha256=SHA,
+        panel=1,
+        view_number=number,
+        extent=Box(*(Decimal(value) for value in extent)),
+        heading=heading,
+        code_kind=code_view_kind(kind_from_heading(heading), []),
+        kinds=(),
+        kind=None,
+        kind_reason="",
+        values=(),
+        values_reason="",
+    )
+
+
+def test_a_key_place_matches_only_one_view_with_its_caption() -> None:
+    front = _view_reading(1, "FRONT VIEW", (16, 213, 552, 592))
+    plan = _view_reading(2, "TOP PLAN", (147, 518, 473, 527))
+    views = [front, plan]
+    # The key's plan lies inside the front view's (too large) extent: the captions differ, so it
+    # is never scored against the front view.
+    found, why = script.match_view(views, [355, 405, 550, 535], "TOP PLAN")  # type: ignore[arg-type]
+    assert found is None and "captioned 'FRONT VIEW'" in why
+    found, _why = script.match_view(views, [30, 230, 500, 500], "FRONT VIEW")  # type: ignore[arg-type]
+    assert found is front
+    found, why = script.match_view(views, [600, 600, 700, 700], "FRONT VIEW")  # type: ignore[arg-type]
+    assert found is None and "0 reader views" in why
+    overlapping = [front, _view_reading(3, "FRONT VIEW", (16, 213, 552, 592))]
+    found, why = script.match_view(overlapping, [30, 230, 500, 500], None)  # type: ignore[arg-type]
+    assert found is None and "2 reader views" in why
+    # Same words, different punctuation and a scale note: the same caption.
+    labelled = [_view_reading(1, "B - PLAN VIEW 1:15", (0, 0, 100, 100))]
+    found, _why = script.match_view(labelled, [10, 10, 90, 90], "B PLAN VIEW")  # type: ignore[arg-type]
+    assert found is labelled[0]

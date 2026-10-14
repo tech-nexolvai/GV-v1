@@ -696,3 +696,47 @@ def test_a_zero_reading_holds_and_never_raises() -> None:
     overall = number_of(view, Axis.HORIZONTAL, 60, 400)
     readers.numbers = {model: {**readers.numbers[model], overall: '0"'} for model in CLAUDE_PAIR}
     assert not values(read(view, readers))[CT010].usable
+
+
+def test_a_view_not_cut_apart_from_its_neighbours_is_never_read() -> None:
+    view = prepared()
+    unseparated = replace(view, view=replace(view.view, cut_apart=False, reason="made up"))
+    from extraction.depth.read import prepare_view
+
+    again = prepare_view(
+        ink=ink(plan_lines(), (rectangle_path(150, 120, 260, 170),)),
+        chars=[],
+        panel_phrase_chars=[],
+        view=unseparated.view,
+        page_index=0,
+        panel=1,
+        panel_headings=[],
+        settings=MEASURED_DEPTH_READER_SETTINGS,
+    )
+    assert again.code_kind.kind is None and "not cut apart" in again.code_kind.reason
+    (only,) = read(again, FakeReaders(view)).views
+    assert only.kind is None and only.values == ()
+
+
+def test_a_plan_without_a_wall_band_is_read_when_projected_from_the_front_view() -> None:
+    from extraction.depth.read import with_projected_plans
+
+    # The plan's wall is not drawn; a front view below draws the same 340 pt overall at the same x.
+    plan_extent = Box(d(0), d(0), d(440), d(300))
+    lines = [stroke for stroke in plan_lines() if stroke not in wall_hatch(90, 100, 60, 400)]
+    plan = prepared(lines=lines, extent=plan_extent)
+    assert plan.code_kind.kind is None
+    front_extent = Box(d(0), d(305), d(440), d(400))
+    front = prepared(
+        heading="FRONT VIEW",
+        lines=horizontal_dimension(330, 60, 400),
+        outlines=(),
+        extent=front_extent,
+        number=2,
+    )
+    assert front.code_kind.kind is ViewKind.ELEVATION
+    judged, _front = with_projected_plans([plan, front], MEASURED_DEPTH_READER_SETTINGS)
+    assert judged.code_kind.kind is ViewKind.PLAN
+    # Without the front view, the heading alone never makes it a plan.
+    (alone,) = with_projected_plans([plan], MEASURED_DEPTH_READER_SETTINGS)
+    assert alone.code_kind.kind is None

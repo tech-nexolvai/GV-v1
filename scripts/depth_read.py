@@ -89,8 +89,7 @@ _KIND_WORD = {
     "detail": "detail",
     "other": "other",
 }
-NO_VIEW = "no view found: code found no drawing view at this place, so nothing was read here"
-_KEY_VIEW = {"plan": ViewKind.PLAN, "section": ViewKind.SECTION, "side": ViewKind.SECTION}
+NO_VIEW = "no view found: nothing was read for this place"
 
 
 #: Attempts refused before anything was sent or charged: the spend cap, a picture the API would
@@ -307,29 +306,36 @@ def kind_entries(view: ViewReading) -> tuple[list[dict[str, Any]], list[dict[str
     return ai, ai
 
 
-def _containing(views: Sequence[ViewReading], region: Sequence[float]) -> ViewReading | None:
-    x = Decimal(str((region[0] + region[2]) / 2))
-    y = Decimal(str((region[1] + region[3]) / 2))
-    holding = [
-        view
-        for view in views
-        if view.extent.x0 <= x <= view.extent.x1 and view.extent.top <= y <= view.extent.bottom
-    ]
-    if holding:
-        return min(holding, key=lambda view: view.extent.width * view.extent.height)
-    # The key's place is drawn by hand: failing that, the one view at least half of whose own
-    # drawing (or half of the key's place) lies in it.
+def _caption(text: str | None) -> str:
+    return "".join(character for character in (text or "").upper() if character.isalnum())
+
+
+def match_view(
+    views: Sequence[ViewReading], region: Sequence[float], heading: str | None
+) -> tuple[ViewReading | None, str]:
+    """The one reader view a key's place names, or `None` and why (#1265 review).
+
+    The key's place must lie mostly (at least half its area) inside exactly one reader view, and
+    where the key gives the printed caption, that view's caption must be the same words. Anything
+    else is "no view found": a key value is never scored against a neighbouring view.
+    """
     x0, y0, x1, y1 = (Decimal(str(value)) for value in region)
-    overlapping = []
+    area = (x1 - x0) * (y1 - y0)
+    if area <= 0:
+        return None, "the key's place has no area"
+    inside = []
     for view in views:
         width = min(x1, view.extent.x1) - max(x0, view.extent.x0)
         height = min(y1, view.extent.bottom) - max(y0, view.extent.top)
-        if width <= 0 or height <= 0:
-            continue
-        smaller = min((x1 - x0) * (y1 - y0), view.extent.width * view.extent.height)
-        if smaller > 0 and width * height * 2 >= smaller:
-            overlapping.append(view)
-    return overlapping[0] if len(overlapping) == 1 else None
+        if width > 0 and height > 0 and width * height * 2 >= area:
+            inside.append(view)
+    if len(inside) != 1:
+        return None, f"the key's place lies mostly inside {len(inside)} reader views, not one"
+    (view,) = inside
+    wanted, found = _caption(heading), _caption(view.heading)
+    if wanted and not (wanted in found or (found and found in wanted)):
+        return None, f"the view there is captioned {view.heading!r}, not {heading!r}"
+    return view, ""
 
 
 def answers_for_keys(
@@ -342,12 +348,15 @@ def answers_for_keys(
     by_page: dict[str, list[ViewReading]] = {}
     for view in reading.views:
         by_page.setdefault(view.page_sha256, []).append(view)
-    regions: dict[tuple[str, int], list[float]] = {}
+    places: dict[tuple[str, int], tuple[list[float] | None, str | None]] = {}
     for key in keys:
         if key.get("agent") == VIEW_AGENT:
             for case in key["cases"]:
                 if case.get("region_pt") is not None:
-                    regions[(case["page_sha256"], case["statement_id"])] = case["region_pt"]
+                    places[(case["page_sha256"], case["statement_id"])] = (
+                        case["region_pt"],
+                        case.get("heading_printed"),
+                    )
     files: dict[str, dict[str, Any]] = {}
     missed: list[str] = []
     for key in keys:
@@ -360,19 +369,18 @@ def answers_for_keys(
                 continue  # a page of a PDF this run was not given
             views = by_page.get(page, [])
             where = f"{case.get('set')} p{case.get('page')} {case['question_id']}"
-            region = case.get("region_pt") or regions.get((page, case["statement_id"]))
-            found = _containing(views, region) if region is not None else None
-            if found is None and agent == DEPTH_AGENT:
-                wanted = _KEY_VIEW.get(str(case.get("view")))
-                candidates = [
-                    view for view in views if (view.kind or view.code_kind.kind) is wanted
-                ]
-                found = candidates[0] if len(candidates) == 1 else None
+            place = places.get((page, case["statement_id"]))
+            if agent == VIEW_AGENT:
+                place = (case.get("region_pt"), case.get("heading_printed"))
+            if place is None or place[0] is None:
+                found, why = None, "the key names no place for it"
+            else:
+                found, why = match_view(views, place[0], place[1])
             if found is None:
                 # Never left out: a value the reader never reached is a hold, so its coverage
                 # cannot look better than it is.
-                missed.append(f"{where}: no view the reader read is at this place")
-                held = [{"model_id": model, "held": NO_VIEW} for model in CLAUDE_PAIR]
+                missed.append(f"{where}: no view found ({why})")
+                held = [{"model_id": model, "held": f"{NO_VIEW} ({why})"} for model in CLAUDE_PAIR]
                 identity = {"page_sha256": page, "question_id": case["question_id"]}
                 if agent == VIEW_AGENT:
                     for entries in (ai_entries, final_entries):

@@ -47,7 +47,7 @@ from __future__ import annotations
 import re
 import statistics
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final, Literal
@@ -66,7 +66,7 @@ from extraction.architect.text import (
     find_phrases,
     find_printed,
 )
-from extraction.depth.spans import WallBand
+from extraction.depth.spans import Span, WallBand
 from extraction.geometry.dimension_lines import Axis
 from extraction.geometry.rows import Box, InkLine, PageInk
 from extraction.page_type import TYPE_WORDS
@@ -85,6 +85,8 @@ __all__ = [
     "find_vendor_views",
     "kind_from_heading",
     "panel_ink",
+    "plan_by_projection",
+    "separate_views",
 ]
 
 _TWO: Final = Decimal(2)
@@ -261,6 +263,47 @@ def code_view_kind(heading: HeadingKind, bands: Sequence[WallBand]) -> CodeViewK
     )
 
 
+def plan_by_projection(
+    judged: CodeViewKind,
+    overall: Span | None,
+    fronts: Sequence[tuple[int, Span]],
+    *,
+    reach: Decimal,
+) -> CodeViewKind:
+    """A second, independent plan cue for a view headed plan with no wall band drawn (#1265
+    review): it draws the **same stone width at the same place** as a view code judges a front
+    view, i.e. it is projected straight from that front view, as a plan is drawn above or below
+    it. Its horizontal overall starts and ends where the front view's does (within `reach`) on
+    another line. `fronts` are `(view number, horizontal overall)` of the views code calls front
+    views, cut apart from this one.
+
+    Never the heading alone: a heading that says plan with no band and no such projection stays
+    "code cannot say". A heading that says front view is never turned into a plan here, so a front
+    view headed plan next to a plan headed front view (the swapped headings) still holds."""
+    if (
+        judged.kind is not None
+        or judged.heading.kind is not ViewKind.PLAN
+        or judged.plan_band
+        or overall is None
+    ):
+        return judged
+    for number, front in fronts:
+        if (
+            abs(front.start_pt - overall.start_pt) <= reach
+            and abs(front.end_pt - overall.end_pt) <= reach
+            and abs(front.offset_pt - overall.offset_pt) > reach
+        ):
+            return CodeViewKind(
+                ViewKind.PLAN,
+                judged.heading,
+                judged.plan_band,
+                f"{judged.heading.reason}; no wall band is drawn, but the view draws the same "
+                f"stone width at the same place as front view {number} (projected from it, as a "
+                "plan is)",
+            )
+    return judged
+
+
 # ---------------------------------------------------------------------------
 # Finding the views on a vendor panel
 # ---------------------------------------------------------------------------
@@ -293,6 +336,11 @@ class VendorView:
     separated: bool
     reason: str
     found_by: Literal["title over scale", "heading words"]
+    cut_apart: bool = True
+    """False when this view's extent overlaps another view's, or takes in another view's caption
+    (`separate_views`): the cut could not keep them apart, and nothing on either is read. Unlike
+    `separated` (a stroke crossing between views, common where a leader line runs across), this
+    always holds."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,8 +382,82 @@ def find_vendor_views(
     """The drawing views on one vendor panel, each with its heading and extent.
 
     `chars` and `ink` are the page's black and grey text and ink (pdfplumber's frame); only what lies
-    in `panel` (the vendor's pasted drawing) is looked at.
+    in `panel` (the vendor's pasted drawing) is looked at. Views the cut could not keep apart are
+    marked not separated (`separate_views`), and the reader reads nothing on them.
     """
+    return separate_views(_find_vendor_views(chars, ink, panel, settings))
+
+
+#: Two views' extents may share this much along each side and still be apart (a shared border).
+_SHARED_EDGE_PT: Final = Decimal(1)
+#: Two views' drawings overlap when their extents share more than this part of the smaller one's
+#: area. Extents are the boxes round each view's ink, so a stroke reaching a few points past the
+#: line between two captions makes a sliver of overlap, which is not one drawing taking in another.
+_SHARED_AREA_FRACTION: Final = Decimal("0.1")
+
+
+def _shared(first: Box, second: Box) -> tuple[Decimal, Decimal]:
+    return (
+        min(first.x1, second.x1) - max(first.x0, second.x0),
+        min(first.bottom, second.bottom) - max(first.top, second.top),
+    )
+
+
+def _overlap(first: Box, second: Box) -> bool:
+    """Whether a view's extent reaches into a caption (more than a shared border)."""
+    width, height = _shared(first, second)
+    return width > _SHARED_EDGE_PT and height > _SHARED_EDGE_PT
+
+
+def _drawings_overlap(first: Box, second: Box) -> bool:
+    width, height = _shared(first, second)
+    if width <= 0 or height <= 0:
+        return False
+    smaller = min(first.width * first.height, second.width * second.height)
+    return width * height > _SHARED_AREA_FRACTION * smaller
+
+
+def separate_views(survey: ViewSurvey) -> ViewSurvey:
+    """A view's extent must never take in another view's caption or another view's drawing (#1265
+    review: a front view's extent swallowed the plan on one sheet, which then got a sliver). Where
+    two views' extents overlap, or one holds the other's heading, the cut could not keep them
+    apart: **both** are marked not cut apart, with the reason, and nothing on either is read."""
+    clashes: dict[int, list[str]] = {view.number: [] for view in survey.views}
+    for view in survey.views:
+        for other in survey.views:
+            if other.number <= view.number:
+                continue
+            caption = (
+                other.heading_box is not None and _overlap(view.extent, other.heading_box)
+            ) or (view.heading_box is not None and _overlap(other.extent, view.heading_box))
+            if caption or _drawings_overlap(view.extent, other.extent):
+                what = "takes in the other's caption" if caption else "overlaps the other's drawing"
+                clashes[view.number].append(f"view {other.number} ({what})")
+                clashes[other.number].append(f"view {view.number} ({what})")
+    if not any(clashes.values()):
+        return survey
+    views = tuple(
+        (
+            replace(
+                view,
+                cut_apart=False,
+                reason=(
+                    f"{view.reason}; not cut apart from "
+                    + ", ".join(clashes[view.number])
+                    + ": both views are held, nothing on them is read"
+                ),
+            )
+            if clashes[view.number]
+            else view
+        )
+        for view in survey.views
+    )
+    return ViewSurvey(views, survey.notes)
+
+
+def _find_vendor_views(
+    chars: Sequence[TextChar], ink: PageInk, panel: Box, settings: ViewFinderSettings
+) -> ViewSurvey:
     inside_chars = [char for char in chars if _inside(char.box.centre_x, char.box.centre_y, panel)]
     inside_ink = panel_ink(ink, panel)
     survey = survey_page_views(

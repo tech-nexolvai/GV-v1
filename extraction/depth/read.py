@@ -132,6 +132,7 @@ from extraction.depth.view_kind import (
     ViewKind,
     code_view_kind,
     kind_from_heading,
+    plan_by_projection,
 )
 from extraction.form_reader.bedrock import (
     AttemptUsage,
@@ -185,6 +186,7 @@ __all__ = [
     "question_packet",
     "read_depth",
     "stacked_by_bar",
+    "with_projected_plans",
 ]
 
 #: The switch. Off unless set to a yes word; anything unrecognised is refused, never read as on.
@@ -325,6 +327,14 @@ def prepare_view(
 
     found = find_spans(ink, view.extent, settings.spans)
     judged = code_view_kind(kind_from_heading(view.heading), found.bands)
+    if not view.cut_apart:
+        judged = CodeViewKind(
+            None,
+            judged.heading,
+            judged.plan_band,
+            f"the view is not cut apart from the drawing round it ({view.reason}), so code "
+            "cannot say what it is",
+        )
     inside = [char for char in chars if _inside(char.box.centre_x, char.box.centre_y, view.extent)]
     phrases = find_phrases(inside, settings.views.text)
     lanes = text_lanes(found.spans, phrases, settings.spans, chars=inside)
@@ -465,7 +475,7 @@ def prepare_pdf_page(
         document_version_id=document_version_id,
         rendered=rendered,
         pixels=page.pixels,
-        views=tuple(views),
+        views=with_projected_plans(views, settings),
         ink_at=ink_at,
         notes=tuple(notes),
     )
@@ -520,6 +530,32 @@ def stacked_by_bar(
         )
         for turn in (0, 90, 270)
     )
+
+
+def with_projected_plans(
+    views: Sequence[PreparedView], settings: DepthReaderSettings
+) -> tuple[PreparedView, ...]:
+    """Each view headed plan with no wall band, re-judged by its projection from a front view on
+    the same panel (`view_kind.plan_by_projection`): a second plan cue that is code's own."""
+    out: list[PreparedView] = []
+    for view in views:
+        fronts = [
+            (other.view.number, front)
+            for other in views
+            if other is not view
+            and other.panel == view.panel
+            and other.view.cut_apart
+            and other.code_kind.kind is ViewKind.ELEVATION
+            and (front := overall_horizontal(other.found.spans)) is not None
+        ]
+        judged = plan_by_projection(
+            view.code_kind,
+            overall_horizontal(view.found.spans) if view.view.cut_apart else None,
+            fronts,
+            reach=settings.spans.end_meet_pt,
+        )
+        out.append(view if judged is view.code_kind else replace(view, code_kind=judged))
+    return tuple(out)
 
 
 # ---------------------------------------------------------------------------
