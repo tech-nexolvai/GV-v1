@@ -264,10 +264,7 @@ def survey_page(
     for panel_number, panel in enumerate(vendor, start=1):
         survey = find_vendor_views(page.chars, page.ink, panel, MEASURED_VIEW_SETTINGS)
         report.notes.extend(f"panel {panel_number}: {note}" for note in survey.notes)
-        panel_phrases = [
-            phrase.text
-            for phrase in find_phrases(_chars_in(page.chars, panel), MEASURED_VIEW_SETTINGS.text)
-        ]
+        panel_phrases = find_phrases(_chars_in(page.chars, panel), MEASURED_VIEW_SETTINGS.text)
         for view in survey.views:
             found = find_spans(page.ink, view.extent, MEASURED_SPAN_SETTINGS)
             heading = kind_from_heading(view.heading)

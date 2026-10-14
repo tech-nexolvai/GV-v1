@@ -1213,11 +1213,25 @@ def sink_outlines(
     return tuple(groups)
 
 
-def cutout_judgment(sink: SinkOutlines, panel_phrases: Sequence[str]) -> CutoutJudgment:
+def cutout_judgment(sink: SinkOutlines, panel_phrases: Sequence[PrintedPhrase]) -> CutoutJudgment:
     """Code's half of the cut-out rule: automatic only when printed words name the cut-out or one
     outline is drawn (Decision log 2026-10-14). Two outlines and no word is a hold: a person picks
-    the hole with one click."""
-    words = tuple(text for text in panel_phrases if CUTOUT_WORDS.search(text))
+    the hole with one click.
+
+    **Words name this sink's cut-out** only when a phrase says cut-out or opening (`CUTOUT_WORDS`)
+    and either also says sink (`SINK OPENING ...`) or is printed inside the sink's outer outline. A
+    panel's "TRASH CUTOUT" note names another hole, and must not make a sink's cut-out automatic.
+    """
+    outer = sink.outlines[0].box
+    words = tuple(
+        phrase.text
+        for phrase in panel_phrases
+        if CUTOUT_WORDS.search(phrase.text)
+        and (
+            _SINK_WORDS.search(phrase.text)
+            or _inside(phrase.box.centre_x, phrase.box.centre_y, outer)
+        )
+    )
     if words:
         return CutoutJudgment(
             True, words, "printed words name the cut-out: " + "; ".join(repr(w) for w in words)

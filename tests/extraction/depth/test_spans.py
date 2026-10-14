@@ -368,7 +368,7 @@ def test_one_outline_drawn_round_a_sink_may_be_automatic() -> None:
     page = ink([], (rectangle_path(150, 150, 260, 240),))
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
     assert [outline.letter for outline in sink.outlines] == ["A"]
-    judgment = cutout_judgment(sink, ["SINK BY OTHERS"])
+    judgment = cutout_judgment(sink, [phrase("SINK BY OTHERS", 400, 300, Orientation.UPRIGHT)])
     assert judgment.automatic
 
 
@@ -377,7 +377,7 @@ def test_two_outlines_and_no_word_is_held_for_a_person() -> None:
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
     assert [outline.letter for outline in sink.outlines] == ["A", "B"]
     assert sink.outlines[0].box.width > sink.outlines[1].box.width  # outer first
-    judgment = cutout_judgment(sink, ["SINK BY OTHERS"])
+    judgment = cutout_judgment(sink, [phrase("SINK BY OTHERS", 400, 300, Orientation.UPRIGHT)])
     assert not judgment.automatic
     assert "person" in judgment.reason
 
@@ -395,7 +395,9 @@ def test_a_dashed_bowl_counts_as_a_second_outline() -> None:
 def test_two_outlines_with_printed_words_naming_the_cut_out_may_be_automatic() -> None:
     page = ink(rectangle_strokes(160, 160, 250, 230), (rectangle_path(150, 150, 260, 240),))
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
-    judgment = cutout_judgment(sink, ['SINK OPENING 22" x 16"'])
+    judgment = cutout_judgment(
+        sink, [phrase('SINK OPENING 22" x 16"', 400, 300, Orientation.UPRIGHT)]
+    )
     assert judgment.automatic
     assert judgment.naming_words
 
@@ -410,3 +412,12 @@ def test_a_span_on_an_outlines_edges() -> None:
     assert span_on_outline(span(1, Axis.HORIZONTAL, 150, 260, offset=140), outline, S)
     assert span_on_outline(span(2, Axis.VERTICAL, 150, 240, offset=140), outline, S)
     assert not span_on_outline(span(3, Axis.HORIZONTAL, 140, 260, offset=140), outline, S)
+
+
+def test_cut_out_words_about_another_hole_do_not_name_the_sinks_cut_out() -> None:
+    page = ink(rectangle_strokes(160, 160, 250, 230), (rectangle_path(150, 150, 260, 240),))
+    (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
+    elsewhere = phrase("TRASH CUTOUT", 450, 300, Orientation.UPRIGHT)
+    assert not cutout_judgment(sink, [elsewhere]).automatic
+    inside = phrase("CUT-OUT", 200, 220, Orientation.UPRIGHT)
+    assert cutout_judgment(sink, [inside]).automatic
