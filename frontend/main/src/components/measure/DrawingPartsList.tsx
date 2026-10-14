@@ -4,6 +4,8 @@ import {
   FOUND_BY_CODE,
   FROM_COUNTERTOP_LINE,
   KIND_LABEL,
+  NOT_PART_REASONS,
+  NOT_PART_REASON_LABEL,
   PART_KINDS,
   askWhatItIs,
   codeToSend,
@@ -14,6 +16,7 @@ import {
   reasonToShow,
   startingCode,
   stillToDecide,
+  type NotPartReason,
   type PartDrawing,
   type PartKind,
   type PartPoint,
@@ -56,7 +59,8 @@ export interface NewPart {
  * the drawing names the kind (the countertop, or a printed FILLER or cabinet tag) one button
  * confirms it in one click; the other kinds and "Not a part" stay beside it. Where nothing printed
  * names a piece (most of them), nothing is filled in: the person says what it is, a cabinet, a
- * filler, an appliance space or something else (the last two are not parts).
+ * filler, an appliance space, a side panel or something else. The last three are not parts, and each
+ * keeps which one the person chose, shown again after a reload (#1246).
  *
  * **A picture being made says so**: Bala's pictures are the worker's next job after the match stage.
  *
@@ -85,7 +89,7 @@ export function DrawingPartsList({
   /** The crop of the reading a part's code came from, for a part that has one. */
   renderCrop: (drawing: PartDrawing, part: SuggestedPart) => ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
-  onWithdraw: (part: SuggestedPart) => void;
+  onWithdraw: (part: SuggestedPart, reason?: NotPartReason) => void;
   onAdd: (drawing: PartDrawing, part: NewPart) => void;
 }) {
   const open = stillToDecide(drawings);
@@ -164,7 +168,7 @@ function PartRow({
   picture: ReactNode;
   crop: ReactNode;
   onConfirm: (part: SuggestedPart, kind: PartKind, code: string | null) => void;
-  onWithdraw: (part: SuggestedPart) => void;
+  onWithdraw: (part: SuggestedPart, reason?: NotPartReason) => void;
 }) {
   const [code, setCode] = useState(() => startingCode(part));
   const page = drawing.page_index + 1;
@@ -262,9 +266,16 @@ function PartRow({
                 {KIND_LABEL[kind]}
               </Button>
             ))}
-            {['Appliance space (not a part)', 'Something else (not a part)'].map((label) => (
-              <Button key={label} type="button" size="sm" variant="outline" disabled={pending} onClick={() => onWithdraw(part)}>
-                {label}
+            {NOT_PART_REASONS.map((reason) => (
+              <Button
+                key={reason}
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pending}
+                onClick={() => onWithdraw(part, reason)}
+              >
+                {NOT_PART_REASON_LABEL[reason]} (not a part)
               </Button>
             ))}
           </div>

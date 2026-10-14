@@ -871,11 +871,25 @@ export function confirmDrawingPart(
   );
 }
 
-/** Say one suggestion is not a part (#882). */
-export function withdrawDrawingPart(projectId: string, packageId: string, proposalId: string) {
+/**
+ * Say one suggestion is not a part (#882), and why when the person said why (#1246): an appliance
+ * space, a side panel or something else. "Not a part" and Undo send no reason.
+ */
+export function withdrawDrawingPart(
+  projectId: string,
+  packageId: string,
+  proposalId: string,
+  reason: NotPartReason | null = null,
+) {
   return request<DrawingPartOut>(
     `/projects/${projectId}/packages/${packageId}/parts/${proposalId}/withdraw`,
-    { method: 'POST' },
+    reason === null
+      ? { method: 'POST' }
+      : {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        },
   );
 }
 
@@ -1211,6 +1225,7 @@ export type DrawingViewOut = DrawingViewsOut['views'][number];
 export type DrawingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/parts'>;
 export type DrawingPartOut = DrawingPartsOut['drawings'][number]['parts'][number];
 export type PartKind = components['schemas']['PartKind'];
+export type NotPartReason = components['schemas']['NotPartReason'];
 export type CountertopRunsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/countertop-runs'>;
 export type CountertopRunOut = CountertopRunsOut['drawings'][number]['countertops'][number];
 export type ReadingPartsOut = Get<'/api/v1/projects/{project_id}/packages/{package_id}/reading-parts'>;

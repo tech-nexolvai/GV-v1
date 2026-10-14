@@ -1315,7 +1315,8 @@ export interface paths {
         put?: never;
         /**
          * Say one suggestion is not a part
-         * @description Record that it is not a part. Makes nothing; a part it had made stops being read.
+         * @description Record that it is not a part, and why when the person said why. Makes nothing; a part it had
+         *     made stops being read.
          */
         post: operations["withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post"];
         delete?: never;
@@ -3739,6 +3740,8 @@ export interface components {
             /** Decision */
             decision: string;
             kind: components["schemas"]["PartKind"] | null;
+            /** @description Why the person said it is not a part, when they said why (#1246): an appliance space, a side panel or something else. Null on a confirmation, on a withdrawal without a reason, and on code's decision. */
+            not_part_reason?: components["schemas"]["NotPartReason"] | null;
         };
         /**
          * DiscriminatorOut
@@ -4913,6 +4916,16 @@ export interface components {
             /** Pages */
             pages: components["schemas"]["NoCountertopPageIn"][];
         };
+        /**
+         * NotPartReason
+         * @description Why a person said a suggested piece is not a part (#1246, phase 5 decision 6).
+         *
+         *     The person's own answer to "what is it?", kept so the page can show it back after a reload.
+         *     Nothing reads it to decide anything. Stored on `part_confirmations`, so the strings are part of
+         *     the data contract: treat them as fixed.
+         * @enum {string}
+         */
+        NotPartReason: "appliance-space" | "side-panel" | "other";
         /**
          * OpaqueTraceOut
          * @description A trace this API does not recognise, handed over intact.
@@ -7741,6 +7754,14 @@ export interface components {
             value: string;
         };
         /**
+         * WithdrawPartIn
+         * @description Why a person says a suggestion is not a part, when they say why (#1246).
+         */
+        WithdrawPartIn: {
+            /** @description `appliance-space`, `side-panel` or `other`; null or left out for a plain "Not a part" or an Undo. Kept on the decision and shown again after a reload; nothing reads it to decide anything. */
+            reason?: components["schemas"]["NotPartReason"] | null;
+        };
+        /**
          * QuantityOut
          * @description One exact dimension, rendered without a JSON float.
          */
@@ -9663,7 +9684,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WithdrawPartIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {

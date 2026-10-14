@@ -1104,6 +1104,9 @@ RUN_AWARE: frozenset[str] = frozenset(
         # Code never takes back its own countertop item a person decided a run beneath (re-review
         # of #1248): it asks only whether such a decision exists, never reads a run's members.
         "workflow/parts.py",
+        # Smriti only reads, in a read-only transaction, to list a person's run decision as a
+        # candidate key case (#1267); nothing in the product or the rules imports it.
+        "eval/smriti/export.py",
     }
 )
 
@@ -1296,6 +1299,9 @@ LINK_AWARE: frozenset[str] = frozenset(
         # Sign-off reads only when a link was recorded, never what it links, to tell whether the
         # checks have seen it yet (#1137).
         "app/review/approval.py",
+        # Smriti only reads, in a read-only transaction, to list a person's link as a candidate
+        # key case (#1267); nothing in the product or the rules imports it.
+        "eval/smriti/export.py",
     }
 )
 

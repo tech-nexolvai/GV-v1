@@ -101,45 +101,87 @@ jobs:
     # About 5 minutes each today; 15 stops a hung test long before it drains the quota.
     timeout-minutes: 15
     # Four shards, kept. Billing rounds each job up to the minute, and each shard pays about a minute
-    # of fixed cost (database container, checkout, install). Three shards of ~6 minutes bill more than
+    # of fixed cost (database server, checkout, install). Three shards of ~6 minutes bill more than
     # four of ~5, and two would double the wait for a result.
     strategy:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4]
-    services:
-      postgres:
-        # Every shard owns an isolated PostgreSQL service and database.
-        #
-        # **Not from Docker Hub (#1156).** The pgvector image was pulled anonymously from Docker Hub,
-        # and GitHub's shared runners hit its unauthenticated pull limit on 2026-10-09/10: every shard
-        # failed at "Initialize containers" before a test ran. The official Postgres image comes from
-        # Amazon's public mirror instead (no such limit, no account or secret), and pgvector is added
-        # to the running service by the first step below. Local development (docker-compose.yml) keeps
-        # the pgvector image.
-        image: public.ecr.aws/docker/library/postgres:17-bookworm
-        env:
-          POSTGRES_USER: gv_test
-          POSTGRES_PASSWORD: gv_test
-          POSTGRES_DB: gv_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U gv_test -d gv_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
-      # The official image has no pgvector; the migrations need it (`CREATE EXTENSION vector`). It
-      # comes from the PostgreSQL project's own apt repository, which the official image already
-      # trusts. No restart is needed: the extension's files only have to exist when it is created.
-      - name: Add pgvector to the test database
-        run: >-
-          docker exec ${{ job.services.postgres.id }} bash -c
-          "apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-17-pgvector"
+      # Every shard runs its own PostgreSQL 17 server and database, installed on the runner itself.
+      #
+      # **No container image, so no registry pull limit (#1260).** The database used to be a service
+      # container. Docker Hub's anonymous pull limit failed every shard on 2026-10-09/10 (#1156), so it
+      # moved to Amazon's public mirror of the official image, and that mirror has an anonymous limit
+      # too: on 2026-10-14 five shards died with "toomanyrequests: Data limit exceeded" before a test
+      # ran, and a re-run passed. Instead of trading one registry's limit for another's, nothing is
+      # pulled: PostgreSQL 17 and pgvector come from the PostgreSQL project's own apt repository, the
+      # same place the official image and the runner's preinstalled PostgreSQL got theirs.
+      #
+      # The test database looks exactly as it did to the tests: same user, password, database name
+      # and port, so DATABASE_URL above did not change. Local development (docker-compose.yml) keeps
+      # the pgvector image.
+      #
+      # What is pinned: the major version (17, in the package names), and the repository's signing key
+      # by its full fingerprint, so a swapped key fails here rather than installing from anyone. The
+      # exact minor release is not pinned on purpose: the repository only serves the current one, so a
+      # pin would break on the next security release. The step prints what it installed.
+      #
+      # apt downloads are retried (three times, a short wait between) because a mirror blip should cost
+      # seconds, not a red shard and a ten-minute re-run.
+      - name: Start PostgreSQL 17 with pgvector
+        env:
+          PGDG_KEY: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          PGDG_FINGERPRINT: B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
+          PGDATA: ${{ runner.temp }}/pgdata
+        run: |
+          set -euo pipefail
+          retry() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              echo "::warning::attempt $attempt of 3 failed: $*"
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
+          # The runner's own PostgreSQL install leaves the repository key behind but not the
+          # repository. Fetch the key only if it is missing; check its fingerprint either way.
+          if [ ! -f "$PGDG_KEY" ]; then
+            sudo install -d "$(dirname "$PGDG_KEY")"
+            retry sudo curl -fsSL -o "$PGDG_KEY" https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          fi
+          gpg --show-keys --with-colons "$PGDG_KEY" | awk -F: '$1 == "fpr" { print $10 }' \
+            | grep -qx "$PGDG_FINGERPRINT" \
+            || { echo "::error::PostgreSQL apt key fingerprint is not $PGDG_FINGERPRINT"; exit 1; }
+          codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=$PGDG_KEY] https://apt.postgresql.org/pub/repos/apt $codename-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+
+          # Install the programs only. Debian's packaging would otherwise create and start a default
+          # server of its own; this job starts exactly one, below, as the runner user.
+          echo "create_main_cluster = false" | sudo tee -a /etc/postgresql-common/createcluster.conf
+          retry sudo apt-get update -qq -o Acquire::Retries=3
+          retry sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            -o Acquire::Retries=3 postgresql-17 postgresql-17-pgvector
+          sudo systemctl stop postgresql.service
+          dpkg-query -W postgresql-17 postgresql-17-pgvector
+
+          # The same server the service container gave: UTF-8 with the en_US locale, UTC, password
+          # login (scram-sha-256) over TCP, and gv_test as the superuser that owns the gv_test database.
+          bin=/usr/lib/postgresql/17/bin
+          echo gv_test > "$RUNNER_TEMP/pgpass"
+          "$bin/initdb" --pgdata="$PGDATA" --username=gv_test --pwfile="$RUNNER_TEMP/pgpass" \
+            --auth-host=scram-sha-256 --auth-local=trust --encoding=UTF8 --locale=en_US.UTF-8 \
+            --set timezone=UTC --set port=5432 --set listen_addresses=localhost \
+            --set unix_socket_directories="$RUNNER_TEMP" > /dev/null
+          "$bin/pg_ctl" start --wait --timeout=60 --log="$RUNNER_TEMP/postgres.log" \
+            || { cat "$RUNNER_TEMP/postgres.log"; exit 1; }
+          PGPASSWORD=gv_test "$bin/createdb" --host=localhost --port=5432 --username=gv_test gv_test
+          "$bin/pg_isready" --host=localhost --port=5432 --username=gv_test --dbname=gv_test --timeout=30
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
