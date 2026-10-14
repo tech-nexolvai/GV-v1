@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,6 +31,7 @@ from app.runs.reading_activity import (
     record_events,
 )
 from app.runs.reading_progress import READING_STAGE_LABELS
+from extraction.blank_page import BlankPageFacts
 from tests.extraction.slot_reader import sheets
 from tests.workflow.test_pariksha_gates import _claude, _number_sheet, _tag_sheet
 from tests.workflow.test_slot_reader import (
@@ -42,6 +44,7 @@ from tests.workflow.test_slot_reader import (
 )
 from workflow.pariksha_gates import Agent
 from workflow.slot_reader import PageSlotResult, SlotPage, read_slot_pages
+from workflow.unread_pages import BLANK_PAGE, UnreadPage
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -655,3 +658,106 @@ def test_an_event_write_is_bounded_in_time_as_well_as_in_lock_waits(engine: Any)
         event.remove(engine, "before_cursor_execute", seen)
     assert any("SET LOCAL lock_timeout" in statement for statement in statements)
     assert any("SET LOCAL statement_timeout" in statement for statement in statements)
+
+
+# --- #1249: a page code proved blank is nothing to read, not "waiting for you" ---------------------
+
+#: A title page's facts: a frame, white paint and a short typed title, nothing drawn (made up).
+_TITLE_PAGE = BlankPageFacts(frames=1, white_paint=1, typed_texts=1, typed_characters=12)
+_FILE = uuid4()
+
+
+def _unread(index: int, code: str, *, blank: bool = False) -> UnreadPage:
+    """One page the page sorter left unread, as the reading stage lists it (made-up sizes)."""
+    return UnreadPage(
+        page_id=uuid4(),
+        page_index=index,
+        document_version_id=_FILE,
+        width_pt=Decimal(612),
+        height_pt=Decimal(792),
+        code=code,
+        reason="A made-up reason.",
+        blank_proof=_TITLE_PAGE if blank else None,
+    )
+
+
+def _summary_after(engine: Any, *pages: UnreadPage, reading: bool = False) -> Any:
+    """The reading's activity after the page sorter told the stage's own `stopped` events."""
+    from sqlalchemy.orm import Session
+
+    from app.runs.reading_activity import mark_reading_finished, reading_activity_for
+    from workflow.stages import _tell_unread
+
+    revision, reading_id = uuid4(), uuid4()
+    recorder = ActivityRecorder(engine, revision, reading_id)
+    _tell_unread(recorder, pages)
+    assert recorder.wrote
+    with Session(engine) as session:
+        if not reading:
+            mark_reading_finished(session, revision, reading_id)
+            session.commit()
+        snapshot = reading_activity_for(
+            session, revision, reading=reading, running=reading_id if reading else None
+        )
+    assert snapshot is not None
+    return snapshot
+
+
+def test_the_blank_code_is_the_page_sorters_proven_blank_code() -> None:
+    from app.runs.reading_activity import PROVEN_BLANK
+
+    assert PROVEN_BLANK == BLANK_PAGE[0], "the event's code is the unread page's code"
+    with pytest.raises(ValueError, match="only a blank page"):
+        _unread(0, BLANK_PAGE[0])  # a blank-page code always carries its full proof
+    with pytest.raises(ValueError, match="only a blank page"):
+        _unread(0, "no-drawing", blank=True)
+
+
+def test_a_page_proven_blank_is_nothing_to_read_not_waiting_for_you(engine: Any) -> None:
+    snapshot = _summary_after(engine, _unread(4, BLANK_PAGE[0], blank=True))
+
+    assert snapshot.summary.waiting == 0
+    assert (
+        snapshot.summary.stopped == 1
+    ), "the page sorter's stop is still counted (Pariksha's tally)"
+    assert snapshot.summary.passed == 1, "counted with the pages passed on: nothing to read"
+    assert snapshot.summary.sentence == "From the reading, nothing waits for you."
+    assert snapshot.now == "From the reading, nothing waits for you."
+    assert snapshot.items == (), "never listed among the items that need you"
+
+
+@pytest.mark.parametrize(
+    "code", ["no-row-found", "budget-reached", "unreadable", "no-drawing", "no-vendor-drawing"]
+)
+def test_a_page_that_needs_a_reviewer_still_waits_beside_a_blank_one(
+    engine: Any, code: str
+) -> None:
+    snapshot = _summary_after(
+        engine, _unread(4, BLANK_PAGE[0], blank=True), _unread(6, code), _unread(8, code)
+    )
+
+    assert snapshot.summary.waiting == 2
+    assert snapshot.summary.stopped == 3
+    assert snapshot.summary.passed == 1
+    assert snapshot.summary.sentence == "From the reading, 2 items wait for you."
+    assert [(item.page, item.state, item.code) for item in snapshot.items] == [
+        (9, "stopped", code),
+        (7, "stopped", code),
+    ]
+
+
+def test_while_reading_a_blank_page_is_not_the_line_that_needs_you(engine: Any) -> None:
+    snapshot = _summary_after(
+        engine, _unread(2, "no-row-found"), _unread(4, BLANK_PAGE[0], blank=True), reading=True
+    )
+
+    assert snapshot.summary.waiting == 1
+    assert snapshot.now == "Page 3: the page sorter found no countertop line to read on this page."
+    assert [item.page for item in snapshot.items] == [3]
+
+
+def test_the_blank_pages_line_still_says_what_the_page_sorter_found() -> None:
+    assert (
+        event_line(Agent.BALA, EventKind.STOPPED, "blank-page", None, 5)
+        == "Page 5: the page sorter found this page blank."
+    )

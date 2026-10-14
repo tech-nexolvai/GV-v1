@@ -390,3 +390,40 @@ def test_the_same_page_of_two_files_is_two_items(session: Session, store: Any) -
 
     assert [item["state"] for item in body["items"]] == ["stopped"]
     assert body["summary"]["passed"] == 1 and body["summary"]["stopped"] == 1
+
+
+def test_a_page_code_proved_blank_is_not_counted_as_waiting_for_you(
+    session: Session, store: Any
+) -> None:
+    """#1249: the page sorter's `blank-page` stop is nothing to read; a page it could not read
+    still waits for the reviewer, and its line is the one listed."""
+    package_id, revision = _reading(session)
+    reading = uuid4()
+    _write(
+        session,
+        revision.id,
+        reading,
+        ActivityEvent(2, Agent.BALA, "p1:page", EventKind.STOPPED, "blank-page"),
+        ActivityEvent(5, Agent.BALA, "p4:page", EventKind.STOPPED, "no-row-found"),
+        ActivityEvent(7, Agent.REKHA, "p6:row-choice", EventKind.PASSED, "printed-numbers"),
+    )
+    _finished(session, revision.id, reading)
+    stored = session.get(PackageRevision, revision.id)
+    assert stored is not None
+    stored.state = PackageState.AWAITING_REVIEW
+    session.commit()
+
+    activity = _get(session, store, package_id)["activity"]
+
+    assert activity["summary"] == {
+        "passed": 2,
+        "stopped": 2,
+        "tried_again": 0,
+        "helped": 0,
+        "waiting": 1,
+        "sentence": "From the reading, 1 item waits for you.",
+    }
+    assert activity["now"] == "From the reading, 1 item waits for you."
+    assert [(item["page"], item["state"], item["line"]) for item in activity["items"]] == [
+        (5, "stopped", "Page 5: the page sorter found no countertop line to read on this page.")
+    ]

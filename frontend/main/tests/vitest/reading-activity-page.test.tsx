@@ -105,6 +105,24 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="needs-you-queue"]')).not.toBeNull(), { timeout: 5000 });
   });
 
+  it('the header badge agrees with the Reading step while a failed reading restarts (#1249)', async () => {
+    pkg.state = 'FAILED_RETRYABLE';
+    pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 0, pages_total: 9, calls: 0, cost_usd: '0', unpriced_calls: 0, retrying: true, updated_at: null };
+    render(<Page />);
+    await waitFor(() => expect(document.querySelector('[data-slot="review-stepper"] [data-slot="reading-progress"]')?.textContent).toContain('Starting the reading again after a problem'));
+    const badge = screen.getByTestId('header-title').querySelector('[data-slot="package-status-badge"]');
+    expect(badge?.textContent).toBe('Restarting after a problem');
+  });
+
+  it('the header badge says "Stopped" when nothing restarts (#1249)', async () => {
+    pkg.state = 'FAILED_RETRYABLE';
+    render(<Page />);
+    await waitFor(() => expect(screen.getByTestId('header-title').querySelector('[data-slot="package-status-badge"]')?.getAttribute('data-status')).toBe('FAILED_RETRYABLE'));
+    const badge = screen.getByTestId('header-title').querySelector('[data-slot="package-status-badge"]');
+    expect(badge?.textContent).toBe('Stopped after a problem');
+    expect(document.body.textContent).not.toContain('Restarting');
+  });
+
   it('activity null while reading (before the attempt\'s first event): no panel, the progress line stays', async () => {
     pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 2, pages_total: 9, calls: 4, cost_usd: '0.040000', unpriced_calls: 0, retrying: false, updated_at: null };
     render(<Page />);

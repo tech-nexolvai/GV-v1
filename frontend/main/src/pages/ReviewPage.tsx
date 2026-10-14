@@ -966,7 +966,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     <div className="@container/review flex h-full min-h-0 w-full min-w-0">
     <div className="review-page min-w-0 flex-1">
       <HeaderTitleExtra>
-        <PackageStatusBadge status={pkg.status} />
+        <PackageStatusBadge status={pkg.status} restarting={readingLine?.retrying === true} />
         {switcher}
       </HeaderTitleExtra>
       {newRevisionDialog}
