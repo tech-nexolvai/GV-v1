@@ -24,7 +24,9 @@ it holds what client drawings print. The agents and their families are registere
 
 * **`answer`**, by field: CT010 `{"texts": ['25 1/2"', ...]}` (the printed texts the value may be);
   CT012+CT008 `{"CT012": {"texts": [...]}, "CT008": {"texts": [...]}, "outline": "..."}` (one case,
-  two values); CT007 `{"texts": [...], "start_edge": "..."}`. Any field may instead expect a
+  two values); CT007 `{"texts": [...], "start_edge": "cabinet_face" | "stone_front_edge"}` (the
+  start edge is part of the value: the same number from the other edge is another measurement, so
+  a CT007 value without one of these two is refused). Any field may instead expect a
   **hold**: `{"held": "<reason>"}` or `{"hold": "<reason>", "start_edge": "..."}` (two sink
   outlines and no word naming the hole; a front offset printed from the stone's edge). An open
   case's answer is kept as written and never read.
@@ -59,10 +61,17 @@ per value asked, naming it by the key's own identity (page hash, question id, fi
 
 Each reader says exactly one of: `value` (a printed text, `akshara-depth`), `kind` (`rekha-view`:
 plan, section_or_side, section, side, elevation, detail, other), `unsure: true`, `held` (the reason
-it would not give a value) or `invalid` (it has no accepted answer, and why). `start_edge` and
-`outline` may go with a value; they are shown, never scored. A value that is not an exact inch value
-(`648 mm`) is no usable answer: it scores `invalid`. The pair is exactly two readers, the same two in
-every entry; one value answered twice is refused.
+it would not give a value) or `invalid` (it has no accepted answer, and why). A CT007 value carries
+its `start_edge` (`cabinet_face` or `stone_front_edge`; on no other field); it is scored with the
+value: a CT007 value from another edge, or with none, is wrong, and two readers agree only on the
+same number from the same edge. `outline` may go with a value and is shown, never scored. A value
+that is not an exact inch value (`648 mm`) is no usable answer: it scores `invalid`. Values are
+compared exactly, with no tolerance: a sixty-fourth off is another value.
+
+**Every entry names both readers, the same two in every entry**; a file that leaves a reader out of
+an entry, or names another reader, is refused (exit 2 in the script), never scored: a dropped reader
+would turn an agreed-wrong into "no answer" and let a compare accept it. One value answered twice
+is refused too.
 
 **What is scored, per value.** The pair: **agreed-right** (both give the same exact value, or the
 same kind, and the key accepts it), **agreed-wrong** (both give the same one and the key does not,
@@ -72,6 +81,15 @@ with a reason), **one-unsure**, **both-unsure** and **no-answer** (a reader has 
 Each reader: right (a hold where the key holds is right), wrong, held, unsure or invalid. Metrics
 per field (`<metric>:CT010`, ...) and in total, over the double-read values asked; a key value the
 file does not answer is `not_asked`, and an answer the key does not name is `unkeyed_answers`.
+
+Two choices, made on purpose:
+
+* **A hold is right where the key expects one, whatever its reason.** The reasons are free text on
+  both sides, so they are shown beside each other for a person, not compared. A hold can never
+  become an automatic value, so a hold for another reason is safe, just not explained the same way.
+* **One reader's value where the key expects a hold** shows in that reader's `wrong` count (and the
+  pair is `held`), not as agreed-wrong. One reader alone never produces an automatic answer: only
+  two readers agreeing on a value do, and that is agreed-wrong, which rejects.
 
 **Compare.** `compare_depth`: the Pariksha compare, with agreed-right and held-as-key as its right
 outcomes and agreed-wrong as its wrong one, so a seeded agreed-wrong rejects. Single-read and open
@@ -89,7 +107,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Final
@@ -141,6 +159,7 @@ __all__ = [
     "ONE_UNSURE",
     "OPEN",
     "SINGLE_READ",
+    "START_EDGES",
     "STATUSES",
     "VIEW_AGENT",
     "DepthAnswers",
@@ -180,6 +199,9 @@ CT010: Final = SemanticType.CT010.value
 CT012: Final = SemanticType.CT012.value
 CT008: Final = SemanticType.CT008.value
 CT007: Final = SemanticType.CT007.value
+#: Where a front offset (CT007) is measured from. The same number from the stone's front edge is
+#: another measurement (it includes the overhang), so the start edge is part of the value.
+START_EDGES: Final = ("cabinet_face", "stone_front_edge")
 #: The key's one case for the cut-out's two values.
 CUTOUT: Final = f"{CT012}+{CT008}"
 #: The values each agent's answers name; a CT012+CT008 key case is two of them.
@@ -275,9 +297,13 @@ class ValueTruth:
     values: tuple[Fraction, ...]
     texts: tuple[str, ...]
     note: str = ""
+    start_edge: str | None = None
+    """CT007 only: the edge the value is measured from; a reading from another edge is wrong."""
 
     def __str__(self) -> str:
         shown = " | ".join(self.texts)
+        if self.start_edge is not None:
+            shown += f" from {self.start_edge}"
         return f"{shown} ({self.note})" if self.note else shown
 
 
@@ -411,9 +437,13 @@ def _depth_truths(field: str, answer: Mapping[str, object], where: str) -> dict[
     if field == CT007:
         _unknown(answer, frozenset({"texts", "start_edge"}), f"{where} answer")
         edge = answer.get("start_edge")
-        note = "" if edge is None else f"from: {_text(edge, f'{where} start_edge')}"
-        texts = {"texts": answer.get("texts")}
-        return {CT007: _value_truth(texts, f"{where} {CT007}", note)}
+        if edge not in START_EDGES:
+            raise KeyFormatError(
+                f"{where}: a {CT007} value needs its start_edge, one of {START_EDGES}, not "
+                f"{edge!r}: the same number from another edge is another measurement"
+            )
+        truth = _value_truth({"texts": answer.get("texts")}, f"{where} {CT007}")
+        return {CT007: replace(truth, start_edge=str(edge))}
     if set(answer) != {"texts"}:
         raise KeyFormatError(f"{where}: a CT010 answer is {{'texts': [...]}} or a hold")
     return {CT010: _value_truth(answer, f"{where} {CT010}")}
@@ -603,16 +633,18 @@ class Reading:
     value: Fraction | None = None
     """A `value`'s exact inches (`None`: no inch value, so `says` is `invalid`)."""
     extra: str = ""
-    """`start_edge` and `outline`, shown only."""
+    """`outline` (shown only) and `start_edge`."""
+    start_edge: str | None = None
+    """CT007: the edge the reader says the value starts at (`None`: not said, which is wrong)."""
 
     @property
     def usable(self) -> bool:
         return self.says in ("value", "kind")
 
     @property
-    def same(self) -> Fraction | str | None:
-        """What two usable answers agree on: exact inches, or the kind class."""
-        return self.value if self.says == "value" else self.text
+    def same(self) -> tuple[Fraction | None, str | None] | str:
+        """What two usable answers agree on: exact inches with the start edge, or the kind."""
+        return (self.value, self.start_edge) if self.says == "value" else self.text
 
     def __str__(self) -> str:
         if self.says in ("value", "kind"):
@@ -641,7 +673,7 @@ def _answers_text(value: object, field: str) -> str:
     return value
 
 
-def _reading(agent: str, data: object, where: str) -> Reading:
+def _reading(agent: str, field: str, data: object, where: str) -> Reading:
     if not isinstance(data, Mapping):
         raise DepthAnswersError(f"{where}: a reader's answer is an object")
     extra = sorted(set(data) - _READER)
@@ -661,6 +693,12 @@ def _reading(agent: str, data: object, where: str) -> Reading:
     ]
     if shown and says != "value":
         raise DepthAnswersError(f"{where}: start_edge and outline go with a value only")
+    edge = data.get("start_edge")
+    if edge is not None and (field != CT007 or edge not in START_EDGES):
+        raise DepthAnswersError(
+            f"{where}: start_edge goes with a {CT007} value only, and is one of {START_EDGES}, "
+            f"not {edge!r}"
+        )
     if says == "unsure":
         if data["unsure"] is not True:
             raise DepthAnswersError(f"{where}: unsure is true or absent")
@@ -687,7 +725,12 @@ def _reading(agent: str, data: object, where: str) -> Reading:
             extra="; ".join(shown),
         )
     return Reading(
-        model_id=model, says="value", text=normalise_text(text), value=value, extra="; ".join(shown)
+        model_id=model,
+        says="value",
+        text=normalise_text(text),
+        value=value,
+        extra="; ".join(shown),
+        start_edge=None if edge is None else str(edge),
     )
 
 
@@ -711,6 +754,7 @@ def load_depth_answers(data: Mapping[str, object]) -> DepthAnswers:
     if not isinstance(entries, list) or not entries:
         raise DepthAnswersError("answers must be a non-empty list")
     readings: dict[tuple[str, str, str], dict[str, Reading]] = {}
+    pair: frozenset[str] | None = None
     for index, item in enumerate(entries):
         where = f"answer {index + 1}"
         if not isinstance(item, Mapping):
@@ -735,30 +779,33 @@ def load_depth_answers(data: Mapping[str, object]) -> DepthAnswers:
             raise DepthAnswersError(f"{where}: readers must be a non-empty list")
         said: dict[str, Reading] = {}
         for number, reader in enumerate(readers):
-            reading = _reading(str(agent), reader, f"{where} reader {number + 1}")
+            reading = _reading(str(agent), str(field), reader, f"{where} reader {number + 1}")
             if reading.model_id in said:
                 raise DepthAnswersError(f"{where}: {reading.model_id} answers twice")
             said[reading.model_id] = reading
+        # Every entry names both readers, the same two in every entry: a reader left out would
+        # otherwise turn an agreed-wrong into "no answer", and a compare would accept it.
+        names = frozenset(said)
+        if len(names) != 2:
+            raise DepthAnswersError(
+                f"{where}: an entry gives both readers' answers (the pair is exactly two readers); "
+                f"it names {len(names)}: {', '.join(sorted(names))}"
+            )
+        if pair is not None and names != pair:
+            raise DepthAnswersError(
+                f"{where}: names readers {', '.join(sorted(names))}; the file's other entries name "
+                f"{', '.join(sorted(pair))}: every entry gives the same pair, both readers"
+            )
+        pair = names
         readings[identity] = said
-    models = sorted({model for said in readings.values() for model in said})
-    if len(models) != 2:
-        raise DepthAnswersError(
-            f"the pair needs exactly two readers; the file has {len(models)}: {', '.join(models)}"
-        )
-    first, second = models
+    assert pair is not None
+    first, second = sorted(pair)
     return DepthAnswers(
         agent=str(agent),
         run=run,
         prompt_ids=tuple(prompts),
         readers=(first, second),
-        answers={
-            identity: tuple(
-                said.get(model)
-                or Reading(model_id=model, says="invalid", text="no answer in the file")
-                for model in (first, second)
-            )
-            for identity, said in readings.items()
-        },
+        answers={identity: (said[first], said[second]) for identity, said in readings.items()},
         sha256=canonical_hash(data),
     )
 
@@ -776,7 +823,11 @@ def read_depth_answers(path: Path) -> DepthAnswers:
 
 def _accepts(truth: Truth, reading: Reading) -> bool:
     if isinstance(truth, ValueTruth):
-        return reading.says == "value" and reading.value in truth.values
+        return (
+            reading.says == "value"
+            and reading.value in truth.values
+            and reading.start_edge == truth.start_edge
+        )
     if isinstance(truth, KindTruth):
         return reading.says == "kind" and reading.text == truth.kind
     return False  # the key expects a hold: no value is right
