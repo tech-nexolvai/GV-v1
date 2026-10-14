@@ -312,7 +312,9 @@ def test_pick_then_re_read_carries_the_match_and_pairs_by_code_and_both_ais_to_a
     session.commit()
     _publish_rulebook(session)
     readers = Readers()
-    plain = runtime(readers, claude_row_reader=True)
+    # As production builds it: the Claude readers always store their question packets, which bind
+    # each answer to its label (#1225).
+    plain = replace(runtime(readers, claude_row_reader=True), question_packets=True)
     # Priced, so every call is metered as in production.
     slot_runtime = replace(plain, form=replace(plain.form, rates=PricedRates()))  # type: ignore[arg-type]
     slot = DatabaseStages(
