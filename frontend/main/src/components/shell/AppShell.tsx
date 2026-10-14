@@ -18,6 +18,8 @@ interface AppShellProps {
   sidebarRefreshKey: number;
   /** The open review's newest "need you" count, so the sidebar never shows a stale one for it. */
   liveNeedYou: { packageId: string; count: number } | null;
+  /** Whether the open review's failed reading is restarting now, so its sidebar badge says so (#1249). */
+  liveRestarting?: { packageId: string; restarting: boolean } | null;
   /** The evidence for the finding the reviewer opened, or nothing. Never open on its own. */
   evidencePanel?: React.ReactNode;
   onNavigate: (page: Page) => void;
@@ -53,6 +55,7 @@ export function AppShell({
   theme,
   sidebarRefreshKey,
   liveNeedYou,
+  liveRestarting = null,
   evidencePanel,
   onNavigate,
   onOpenPackage,
@@ -91,6 +94,7 @@ export function AppShell({
           theme={theme}
           refreshKey={sidebarRefreshKey}
           liveNeedYou={liveNeedYou}
+          liveRestarting={liveRestarting}
           onNavigate={onNavigate}
           onOpenPackage={onOpenPackage}
           onNewReview={onNewReview}

@@ -288,16 +288,20 @@ def test_two_packages_in_one_project_are_each_checked_on_their_own_values(
     session: Session,
 ) -> None:
     """**#801, the one that matters most.** Two packages, one project, each with its own sink and its
-    own typed cabinet width; the first also gives a sink depth the second does not. Before #801 both
+    own typed site width; the first also gives a sink depth the second does not. Before #801 both
     were judged on whichever was saved last — package A on package B's sink. Outcome: each package's
-    checks see only its own numbers, and the second never inherits the first one's depth."""
+    checks see only its own numbers, and the second never inherits the first one's depth.
+
+    The typed value is the site width (`USER_INPUT`): a number drawn on the drawing is confirmed,
+    never typed (#1251), and only an input a published check declares is accepted (#1253 review)."""
     from workflow.measurements import operands_for, run_parameters_for
 
+    _publish_cabinet_rule(session)
     first, second = _package(session), _package(session)
     client = _client(session)
     entries = {
-        first: ([("sink_interior_width", '28"'), ("sink_interior_depth", '16"')], '30"'),
-        second: ([("sink_interior_width", '33"')], '36"'),
+        first: ([("sink_interior_width", '28"'), ("sink_interior_depth", '16"')], '130"'),
+        second: ([("sink_interior_width", '33"')], '136"'),
     }
     for package, (parameters, cabinet) in entries.items():
         response = client.post(
@@ -308,8 +312,8 @@ def test_two_packages_in_one_project_are_each_checked_on_their_own_values(
                 ],
                 "measurements": [
                     {
-                        "rule_id": "CT-SINK-CABINET-WIDTH-001",
-                        "name": "sink_cabinet_width",
+                        "rule_id": "CAB-FILLER-001",
+                        "name": "field_width",
                         "value": cabinet,
                     }
                 ],
@@ -318,16 +322,16 @@ def test_two_packages_in_one_project_are_each_checked_on_their_own_values(
         assert response.status_code == 201, response.text
 
     expected = {
-        first: ({"sink_interior_width": "28", "sink_interior_depth": "16"}, "30"),
-        second: ({"sink_interior_width": "33"}, "36"),
+        first: ({"sink_interior_width": "28", "sink_interior_depth": "16"}, "130"),
+        second: ({"sink_interior_width": "33"}, "136"),
     }
     for package, (run_values, cabinet) in expected.items():
         revision = _revision_of(session, package)
         run = run_parameters_for(session, revision.id)
         assert run is not None
         assert {n: str(v.value.value) for n, v in run.parameters.items()} == run_values
-        typed = operands_for(session, revision.id)["CT-SINK-CABINET-WIDTH-001"]
-        assert str(typed["sink_cabinet_width"].value.exact) == cabinet  # type: ignore[union-attr]
+        typed = operands_for(session, revision.id)["CAB-FILLER-001"]
+        assert str(typed["field_width"].value.exact) == cabinet  # type: ignore[union-attr]
 
 
 def test_asking_for_checks_enqueues_and_runs_nothing(session: Session) -> None:
