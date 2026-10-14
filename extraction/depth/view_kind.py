@@ -47,13 +47,19 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Final, Literal
 
-from extraction.architect.page_views import PageViewSettings, survey_page_views
+from extraction.architect.page_views import (
+    INK_OUTSIDE_VIEWS,
+    TITLE_NOT_VIEW,
+    PageViewSettings,
+    survey_page_views,
+)
 from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
 from extraction.architect.text import (
     Orientation,
     TextChar,
     TextSettings,
     find_phrases,
+    find_printed,
 )
 from extraction.depth.spans import WallBand
 from extraction.geometry.dimension_lines import Axis
@@ -330,7 +336,13 @@ def find_vendor_views(
     survey = survey_page_views(
         inside_chars, inside_ink, text=settings.text, settings=settings.views
     )
-    if survey.views:
+    trouble = [
+        note
+        for note in survey.notes
+        if note.kind == TITLE_NOT_VIEW
+        or (note.kind == INK_OUTSIDE_VIEWS and note.startswith("left out as the sheet's border"))
+    ]
+    if survey.views and not trouble:
         views = tuple(
             VendorView(
                 number=view.number,
@@ -344,7 +356,18 @@ def find_vendor_views(
             for view in survey.views
         )
         return ViewSurvey(views, tuple(str(note) for note in survey.notes))
-    return _views_by_heading_words(inside_chars, inside_ink, panel, settings)
+    fallback = _views_by_heading_words(inside_chars, inside_ink, panel, settings)
+    if not trouble:
+        return fallback
+    return ViewSurvey(
+        fallback.views,
+        (
+            "the title-over-scale finder left drawing out ("
+            + "; ".join(str(note) for note in trouble)
+            + "), so the panel was cut by its captions instead",
+            *fallback.notes,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +377,9 @@ class _Caption:
 
 
 def _captions(chars: Sequence[TextChar], settings: ViewFinderSettings) -> list[_Caption]:
+    """Each view's caption: a phrase naming a kind of view that is printed tall (at least
+    `heading_height_ratio` times the panel's median phrase), with any second line right under it;
+    or one printed right over a scale note, as `page_views` reads a title, with the note."""
     phrases = find_phrases(chars, settings.text)
     if not phrases:
         return []
@@ -385,6 +411,29 @@ def _captions(chars: Sequence[TextChar], settings: ViewFinderSettings) -> list[_
                     text, box = f"{text} {other.text}", box.union(other.box)
                     grew = True
         captions.append(_Caption(text, box))
+    views = settings.views
+    for scale in find_printed(chars, settings.text).scales:
+        em = scale.box.height
+        reach = Box(
+            scale.box.x0 - views.title_reach_em * em,
+            scale.box.top,
+            scale.box.x1 + views.title_reach_em * em,
+            scale.box.bottom,
+        )
+        above = [
+            phrase
+            for phrase in phrases
+            if phrase.orientation is Orientation.UPRIGHT
+            and kind_from_heading(phrase.text).words
+            and Decimal(0) <= scale.box.top - phrase.box.bottom <= views.title_gap_em * em
+            and phrase.box.overlaps_x(reach)
+        ]
+        if not above:
+            continue
+        title = max(above, key=lambda phrase: phrase.box.bottom)
+        if any(caption.box.meets(title.box) for caption in captions):
+            continue
+        captions.append(_Caption(title.text, title.box.union(scale.box)))
     return captions
 
 

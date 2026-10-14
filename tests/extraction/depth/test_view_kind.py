@@ -219,3 +219,18 @@ def test_ink_below_every_caption_is_noted() -> None:
     survey = find_vendor_views(chars, ink(lines), PANEL, MEASURED_VIEW_SETTINGS)
     assert len(survey.views) == 1
     assert any("below every caption" in note for note in survey.notes)
+
+
+def test_a_title_over_a_scale_note_is_a_caption_when_the_title_finder_leaves_drawing_out() -> None:
+    """A short title over its scale note (`PLAN VIEW` over `1:10`, printed no taller than the
+    dimensions) still cuts the panel when `page_views` cannot use it: here its drawing has too few
+    strokes for `page_views`, which says so, and the panel is cut by its captions instead."""
+    chars = word("PLAN VIEW", 100, 250, height=5) + word("1:10", 110, 256, height=5)
+    chars += small_text(8, 20, 30)
+    lines = [line(60, 60, 300, 60), line(60, 200, 300, 200), line(60, 60, 60, 200)]
+    survey = find_vendor_views(chars, ink(lines), PANEL, MEASURED_VIEW_SETTINGS)
+    (view,) = survey.views
+    assert view.heading == "PLAN VIEW"
+    assert view.found_by == "heading words"
+    assert view.heading_box is not None and view.heading_box.bottom > d(256)
+    assert any("cut by its captions" in note for note in survey.notes)

@@ -11,9 +11,10 @@ page (the drawing GV's heading names the vendor's, `extraction/panels.py`), it p
 * the sink outlines on plan views, and whether a cut-out could be automatic.
 
     .venv/bin/python scripts/depth_dry_run.py --pdf <set.pdf> [--pages 7 15 ...] \\
-        --out ~/gv-local/<folder> [--pictures] [--database <URL>]
+        --out ~/gv-local/<folder> [--pictures] [--vendor-file] [--database <URL>]
 
-`--database` (optional) narrows the pages to those the stored document's own vendor views are on,
+`--vendor-file` says the PDF is the vendor's own file (uploaded in the vendor's slot), so every
+pasted drawing is a vendor panel. `--database` (optional) narrows the pages to those the stored document's own vendor views are on,
 read inside a read-only transaction (`eval/pariksha/stored._read_only`); the stored document is the
 one whose sha256 is the PDF's. `--pictures` also writes each view's pictures (heading hidden,
 numbered spans, lettered sink outlines) as the readers would see them.
@@ -200,20 +201,46 @@ def survey_page(
     *,
     pictures: Path | None,
     content_hash: str,
+    vendor_file: bool = False,
 ) -> PageReport:
-    """Everything the code skills find on one page's vendor panels."""
+    """Everything the code skills find on one page's vendor panels.
+
+    With `vendor_file`, the file is the vendor's own (uploaded in the vendor's slot), so every
+    pasted drawing that is not inside another is a vendor panel; otherwise a panel is the vendor's
+    only when GV's heading names it so.
+    """
     index = page_number - 1
     layers = read_markup_layer(data, index, document_version_id=_UNSTORED, dpi=_PICTURE_DPI)
     proposals = propose_panel_roles(layers.vendor_stamps, layers.markup)
     stamps, _pictures = _stamps(data, index)
-    vendor = [
-        stamps[proposal.annotation_index][0]
-        for proposal in proposals
-        if proposal.role == "shop" and proposal.annotation_index in stamps
-    ]
+    if vendor_file:
+        boxes = [box for box, _factor in stamps.values()]
+        vendor = [
+            box
+            for box in boxes
+            if not any(
+                other != box
+                and other.x0 <= box.x0
+                and box.x1 <= other.x1
+                and other.top <= box.top
+                and box.bottom <= other.bottom
+                for other in boxes
+            )
+        ]
+    else:
+        vendor = [
+            stamps[proposal.annotation_index][0]
+            for proposal in proposals
+            if proposal.role == "shop" and proposal.annotation_index in stamps
+        ]
     report = PageReport(page=page_number, panels=len(vendor))
     if not vendor:
-        report.notes.append("no vendor panel: no drawing on this page has the vendor's heading")
+        report.notes.append(
+            "no vendor panel: no pasted drawing"
+            if vendor_file
+            else "no vendor panel: no drawing on this page has the vendor's heading "
+            "(use --vendor-file for the vendor's own file)"
+        )
         return report
     page = _open_page(
         stamps_only(data, index),
@@ -412,6 +439,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="a folder outside any repository")
     parser.add_argument("--pictures", action="store_true")
     parser.add_argument("--database", help="SQLAlchemy URL of a stored run (read-only)")
+    parser.add_argument(
+        "--vendor-file",
+        action="store_true",
+        help="the PDF is the vendor's own file: every pasted drawing is a vendor panel",
+    )
     args = parser.parse_args(argv)
     try:
         out = outside_git(args.out)
@@ -436,7 +468,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         pictures.mkdir(exist_ok=True)
     reports = []
     for number in pages:
-        report = survey_page(data, number, pictures=pictures, content_hash=sha256)
+        report = survey_page(
+            data, number, pictures=pictures, content_hash=sha256, vendor_file=args.vendor_file
+        )
         reports.append(report)
         print(summary(report), flush=True)
     stem = args.pdf.stem
