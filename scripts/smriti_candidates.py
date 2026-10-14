@@ -14,19 +14,24 @@ No model call, no cost, nothing changed: the database is only read (read-only tr
     # they answered Yes into one new local key per agent, registered in the key library
     python scripts/smriti_candidates.py confirm ~/gv-local/<candidates>.json \\
         --confirmations ~/gv-local/<confirmations>.json --out-dir ~/gv-local/keys/smriti/ \\
-        --version <v> --db <database> [--name smriti] [--base ~/gv-local/<existing key>.json ...] \\
-        [--library ~/gv-local/keys/library.json] [--vendor-file ~/gv-local/smriti/vendor-errors.jsonl]
+        --version <v> --db <database> --store <artifact store root> [--name smriti] \\
+        [--base ~/gv-local/<existing key>.json ...] [--library ~/gv-local/keys/library.json] \\
+        [--vendor-file ~/gv-local/smriti/vendor-errors.jsonl]
 
 The confirmations file (`smriti-confirmations/2`) is what the review page's "Copy answers" gives;
 its format is in `eval/smriti/confirm.py`. Each key is `<out-dir>/<agent>-<name>-<version>.json`,
 checked by its Pariksha loader and registered in the key library (`--library`, else the
 `GV_KEY_LIBRARY` setting; there is no default). `--db` is the database the candidates came from:
 each Yes is checked against the stored pictures of its question, a box against the rows its
-picture numbers, and a piece kind's row widths are read from the stored row. The confirmer must be
-on the local real-reviewer list (`GV_SMRITI_REVIEWERS`), and never an AI, an agent or code. A
-conflict with a base key or with any key already registered for that agent is refused before
-anything is written. Corrections the person says the vendor drew wrong never enter a key: they are
-appended once each, with the printed text the person read, to the local vendor-errors file.
+picture numbers, and a piece kind's row widths are read from the stored row. `--store` is the
+artifact store's root: each of those pictures is read there and its bytes checked against the
+fingerprint the question recorded; a missing or different picture refuses the Yes. The confirmer
+must be on the local confirmers list (`GV_SMRITI_CONFIRMERS`, apart from the reviewers list), never
+an AI, an agent or code, and never the reviewer who decided the case. A conflict with a base key or
+with any key already registered for that agent is refused before anything is written. Corrections
+the person says the vendor drew wrong never enter a key: they are appended once each, with the
+printed text the person read, to the local vendor-errors file. A damaged vendor-errors file is
+refused cleanly before anything is written.
 
 Candidates, confirmations, keys and the library hold client values (pages, what the reviewer
 decided): keep them outside any repository. Every output (the keys folder and each key, the
@@ -54,10 +59,11 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import KeyFormatError
-from eval.smriti.actors import ReviewersFileError, reviewers_from_environment
+from eval.smriti.actors import ReviewersFileError, confirmers_from_environment
 from eval.smriti.candidates import (
     AGENT_ORDER,
     Candidate,
+    CandidateExport,
     CandidatesFileError,
     read_candidates,
     render_counts,
@@ -67,7 +73,9 @@ from eval.smriti.confirm import (
     ConfirmationRefused,
     Confirmed,
     VendorError,
+    check_store,
     confirm_candidates,
+    ready_candidates,
     stored_questions,
     stored_row_widths,
     who_confirms,
@@ -183,35 +191,76 @@ def default_vendor_file() -> Path:
 
 
 def _stored(
-    url: str, candidates: tuple[Candidate, ...]
-) -> tuple[dict[str, list[str]], dict[str, int], dict[str, list[str | None]]]:
-    """Read-only: each candidate's stored pictures and box count, and each piece's row widths."""
+    url: str, export: CandidateExport, store_root: Path
+) -> tuple[
+    dict[str, list[str]], dict[str, int], dict[str, list[str | None]], dict[str, str | None]
+]:
+    """Read-only: each candidate's stored pictures and box count, each piece's row widths, and,
+    for every picture a ready candidate's question showed, whether its bytes in the artifact store
+    match the fingerprint the question recorded."""
     engine = create_engine(_database_url(url))
     try:
         with Session(engine) as session:
             try:
                 session.execute(text("SET TRANSACTION READ ONLY"))
-                questions = stored_questions(session, candidates)
-                widths = stored_row_widths(session, candidates)
+                questions = stored_questions(session, export.candidates)
+                widths = stored_row_widths(session, export.candidates)
             finally:
                 session.rollback()
     finally:
         engine.dispose()
     pictures = {cid: [sha for _n, sha, _k in q.pictures] for cid, q in questions.items()}
     boxes = {cid: q.boxes for cid, q in questions.items() if q.boxes is not None}
-    return pictures, boxes, widths
+    ready = [candidate.candidate_id for candidate in ready_candidates(export)]
+    return pictures, boxes, widths, check_store(store_root, questions, ready)
+
+
+def _vendor_seen(path: Path) -> set[tuple[str, str]]:
+    """The vendor errors already kept, by (candidate, candidates file), or a clean refusal when
+    the file is damaged. Read before anything is written, so a damaged file writes nothing."""
+    seen: set[tuple[str, str]] = set()
+    if not path.exists():
+        return seen
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        raise Refused(
+            f"the vendor-errors file {path} cannot be read ({type(error).__name__}); nothing was "
+            "written. Fix or move that local file, then confirm again"
+        ) from error
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            known = json.loads(line)
+        except json.JSONDecodeError:
+            known = None
+            why = "not JSON"
+        else:
+            why = (
+                f"not a {VENDOR_ERRORS_FORMAT} line"
+                if not isinstance(known, dict) or known.get("format") != VENDOR_ERRORS_FORMAT
+                else ""
+            )
+        if why:
+            raise Refused(
+                f"the vendor-errors file {path} is damaged: line {number} is {why}; nothing was "
+                "written. Fix or move that local file, then confirm again"
+            )
+        assert isinstance(known, dict)
+        seen.add((str(known.get("candidate_id")), str(known.get("candidates_sha256"))))
+    return seen
 
 
 def _save_vendor_errors(
-    errors: tuple[VendorError, ...], path: Path, *, database: str, candidates_sha256: str
+    errors: tuple[VendorError, ...],
+    path: Path,
+    *,
+    seen: set[tuple[str, str]],
+    database: str,
+    candidates_sha256: str,
 ) -> int:
     """Append each vendor error once (one JSON line) to the local file the vendor report reads."""
-    seen: set[tuple[str, str]] = set()
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                known = json.loads(line)
-                seen.add((str(known.get("candidate_id")), str(known.get("candidates_sha256"))))
     fresh = [error for error in errors if (error.candidate_id, candidates_sha256) not in seen]
     if not fresh:
         return 0
@@ -289,7 +338,15 @@ def _confirm(args: argparse.Namespace) -> int:
             "give --db, the database the candidates came from: each Yes is checked against the "
             "stored pictures of its question, and a piece kind's row widths come from there"
         )
-    reviewers = reviewers_from_environment()
+    if args.store is None:
+        raise Refused(
+            "give --store, the artifact store's root: each Yes is checked against the picture "
+            "bytes kept there, not only against the database's list of pictures"
+        )
+    store_root = args.store.expanduser().resolve()
+    if not store_root.is_dir():
+        raise Refused(f"the artifact store {store_root} does not exist; give the store's root")
+    confirmers = confirmers_from_environment()
     candidates_path = args.candidates.expanduser()
     export = read_candidates(candidates_path)
     try:
@@ -297,20 +354,23 @@ def _confirm(args: argparse.Namespace) -> int:
     except json.JSONDecodeError as error:
         raise Refused(f"{args.confirmations.name} is not JSON: {error}") from error
     bases = [read_any_key(path.expanduser()) for path in args.base or ()]
-    pictures, boxes, widths = _stored(args.db, export.candidates)
+    pictures, boxes, widths, store = _stored(args.db, export, store_root)
     candidates_sha256 = _candidates_sha256(candidates_path)
     confirmed = confirm_candidates(
         export,
         confirmations,
         candidates_sha256=candidates_sha256,
-        reviewers=reviewers,
+        confirmers=confirmers,
         pictures=pictures,
+        store=store,
         boxes=boxes,
         row_widths=widths,
         bases=bases,
         name=args.name,
         version=args.version,
     )
+    # A damaged vendor-errors file is refused before any key is written.
+    seen = _vendor_seen(vendor_file) if confirmed.vendor else set()
     print(
         f"Smriti confirmations for {export.database}: {len(confirmed.joined)} answered Yes and "
         f"written, {len(confirmed.vendor)} vendor error(s) kept out of the AI's keys, "
@@ -318,7 +378,7 @@ def _confirm(args: argparse.Namespace) -> int:
     )
     for candidate_id, why in confirmed.kept_out:
         print(f"  kept out: {candidate_id}: {why}")
-    confirmed_by = who_confirms(confirmations["confirmed_by"], reviewers)
+    confirmed_by = who_confirms(confirmations["confirmed_by"], confirmers)
     if confirmed.keys:
         source = f"smriti candidates of {export.database} exported {export.exported_at}"
         for line in _write_keys(
@@ -331,6 +391,7 @@ def _confirm(args: argparse.Namespace) -> int:
         saved = _save_vendor_errors(
             confirmed.vendor,
             vendor_file,
+            seen=seen,
             database=export.database,
             candidates_sha256=candidates_sha256,
         )
@@ -367,6 +428,11 @@ def build_parser() -> argparse.ArgumentParser:
     confirm.add_argument("--name", default="smriti", help="the new keys' name (default smriti)")
     confirm.add_argument(
         "--db", help="the database the candidates came from (stored pictures, row widths)"
+    )
+    confirm.add_argument(
+        "--store",
+        type=Path,
+        help="the artifact store's root: each Yes's picture bytes are checked there",
     )
     confirm.add_argument(
         "--base",

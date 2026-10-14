@@ -25,11 +25,15 @@ order:
    page's own answer, and for a correction "AI misread / vendor drew it wrong" with the printed text.
    The text box is pre-filled ONLY from the file's own text under the label, where there is exactly
    one run; otherwise it is empty. The reviewer's typed or corrected value is never pre-filled: it
-   is GV's site value, shown only in the decision sentence as "site value, not the drawing". There
-   is never a Yes/No under a person's own answer (Anant, 2026-10-15).
+   is GV's value, shown only in the decision sentence as "GV's value; may differ from what is
+   printed" (#1282: a label that says neither "the site" nor "not the drawing", so it does not
+   suggest the answer). There is never a Yes/No under a person's own answer (Anant, 2026-10-15).
+   A walls card whose layout settles no end says the ends are "left undecided for now", never
+   "open", since "Open, no wall" is one of its buttons.
 
 Each card carries the hashes of the pictures it showed, and its answer names them; `confirm`
-refuses a Yes whose pictures are not its question's stored pictures. A card with no usable picture
+refuses a Yes whose pictures are not its question's stored pictures, or whose bytes in the store
+are missing or differ (the same `read_stored_picture` check this page uses). A card with no usable picture
 gives no answer, whatever the browser saved. Toggle buttons say `aria-pressed`, "Still needed" is
 announced (`aria-live`), and each picture has a plain alt text.
 
@@ -55,7 +59,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import html
 import json
 import re
@@ -87,6 +90,7 @@ from eval.smriti.confirm import (
     CONFIRMATIONS_FORMAT,
     QuestionType,
     question_type,
+    read_stored_picture,
     ready_candidates,
     site_ends,
     stored_questions,
@@ -117,6 +121,9 @@ DRAWN_WORDS: Final[Mapping[str, str]] = {
     "not_shown": "Not shown",
     "key_unsure": "Can't tell",
 }
+#: How the reviewer's corrected or typed value is labelled: GV's, without saying whether the
+#: drawing is right (#1282). "Site value, not the drawing" suggested the drawing was wrong.
+GV_VALUE: Final = "GV's value; may differ from what is printed"
 TYPE_WORDS: Final[Mapping[str, str]] = {
     QuestionType.LABEL_PROPOSED: "printed number",
     QuestionType.LABEL_STATED: "corrected number",
@@ -142,20 +149,9 @@ class Picture:
 
 
 def _read(root: Path, name: str, sha: str, key: str | None) -> Picture:
-    from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
-    from storage.local import LocalStore
-
-    if key is None:
-        return Picture(name, sha, None, "the question's picture was not stored (no storage key)")
-    try:
-        with LocalStore(root=root).get(key) as stored:
-            data = stored.read()
-    except (OSError, ValueError, ArtifactCorrupt, IntegrityRecordMissing) as error:
-        # Shown on the card, never hidden: a case without its picture cannot be answered.
-        return Picture(name, sha, None, f"the picture is not in the store ({type(error).__name__})")
-    if hashlib.sha256(data).hexdigest() != sha:
-        return Picture(name, sha, None, "the stored picture is not the one the question recorded")
-    return Picture(name, sha, data, None)
+    # Shown on the card, never hidden: a case without its picture cannot be answered.
+    data, problem = read_stored_picture(root, sha, key)
+    return Picture(name, sha, data, problem)
 
 
 def _pdf_text(session: Session, page_sha256: str, slot_box: str) -> list[str]:
@@ -187,8 +183,8 @@ def _pdf_text(session: Session, page_sha256: str, slot_box: str) -> list[str]:
 def prefill_text(candidate: Candidate, pdf_texts: Sequence[str]) -> str:
     """The text a stated label's box starts with: ONLY the file's own text under the span, when it
     holds exactly one run; otherwise empty. The reviewer's typed or corrected value is never
-    pre-filled: it is GV's site value, and as printed text it would grade the AI against GV's
-    markup (circularity rule 2)."""
+    pre-filled: it is GV's value, and as printed text it would grade the AI against GV's markup
+    (circularity rule 2)."""
     if question_type(candidate) != QuestionType.LABEL_STATED or len(pdf_texts) != 1:
         return ""
     return pdf_texts[0]
@@ -457,12 +453,12 @@ def _sentences(candidate: Candidate, kind: str) -> tuple[str, str]:
         if "corrected" in recorded:
             decision = (
                 f"The reviewer corrected the value from {recorded.get('original')} (the AI's "
-                f"reading) to {recorded.get('corrected')} (site value, not the drawing)."
+                f"reading) to {recorded.get('corrected')} ({GV_VALUE})."
             )
         elif "typed" in recorded or "inches" in recorded:
             decision = (
                 "The readers held this width; the reviewer typed "
-                f"{recorded.get('typed') or recorded.get('inches')} (site value, not the drawing)."
+                f"{recorded.get('typed') or recorded.get('inches')} ({GV_VALUE})."
             )
         else:
             decision = "The reviewer confirmed this reading, but it holds no text."
@@ -516,9 +512,9 @@ def _site_words(layout: str) -> str:
     words = {"wall": "a wall", "open": "no wall"}
     left, right = site_ends(layout)
     if layout == "back_only":
-        return "This row shows only the back wall, so the ends are left open for now."
+        return "This row shows only the back wall, so the ends are left undecided for now."
     if left not in words or right not in words:
-        return "The layout does not say what is at the ends, so they are left open for now."
+        return "The layout does not say what is at the ends, so they are left undecided for now."
     return f"On site there is {words[left]} at the left end and {words[right]} at the right end."
 
 
@@ -732,7 +728,9 @@ def build_page(
         f'<p class="intro">{len(ready)} case(s) from {_e(export.database)} (candidates file '
         f"<code>{_e(candidates_path)}</code>, exported {_e(export.exported_at[:19])}). Only a Yes "
         "joins an answer key; No and Unsure are recorded and never join. Look at the picture "
-        "first. Then press Copy answers and save the text as the confirmations file.</p>"
+        "first. Then press Copy answers and save the text as the confirmations file. Only a name "
+        "on the local confirmers list counts, and you never confirm a case you decided "
+        "yourself.</p>"
         f'{cards}<textarea id="out" readonly></textarea></main>'
         f'<script type="application/json" id="meta">{meta}</script>'
         f"<script>{_SCRIPT}</script></body></html>\n"

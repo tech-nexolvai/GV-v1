@@ -8,12 +8,12 @@ No model call, no cost, nothing changed: the database is only read (read-only tr
         [--vendors] [--out ~/gv-local/<report>.txt]
 
 `NOT MEASURED` is shown wherever there is nothing to divide by, never 0%. The real-reviewer list is
-the local file `GV_SMRITI_REVIEWERS` names (see `eval/smriti/actors.py`); without it, every name
-counts as "other". `--vendors` adds, per recorded vendor, the FAILs a person confirmed or signed
-beside every FAIL (`reports/vendor_patterns.py`, `confirmed_only`), counting only names on the
-same local list: report only. The report holds
-client values (pages, names): `--out` inside a git working tree is refused, and a file is written
-once, never overwritten.
+the local file `GV_SMRITI_REVIEWERS` names (see `eval/smriti/actors.py`); only decisions by names on
+it count, and without it, no decision is counted at all (other names are listed apart, never
+counted). `--vendors` adds, per recorded vendor, the FAILs a reviewer on the list confirmed or
+signed beside every FAIL (`reports/vendor_patterns.py`, `confirmed_only`): report only. The report
+holds client values (pages, names): `--out` inside a git working tree is refused, and a file is
+written once, never overwritten.
 
 Exit codes: 0 done, 2 refused.
 """
@@ -56,7 +56,7 @@ def vendor_lines(
     lines = [
         (
             f"Vendor report (reports/vendor_patterns.py, the last {window.days} days; report only, "
-            "never a rule key): only FAILs a person confirmed or signed count"
+            "never a rule key): only FAILs a reviewer on the list confirmed or signed count"
         )
     ]
     if not vendors:
