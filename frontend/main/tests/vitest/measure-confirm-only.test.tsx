@@ -18,16 +18,22 @@ const saved = (text: string, numerator: string) => ({
 
 const REQUIRED = {
   quantities: [
-    { key: 'SHOP:CT010', semantic_type: 'CT010', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-DEPTH', input_name: 'countertop_depth' }], categories: [] },
+    { key: 'SHOP:CT010', semantic_type: 'CT010', source: 'SHOP', many: false, confirm_only: true, where_to_find: 'The vendor’s plan view: a synthetic place.', confirmed_pages: [], consumers: [{ rule_id: 'R-DEPTH', input_name: 'countertop_depth' }], categories: [] },
+    // Confirmed on another page only: not empty, and the field says which page (#1253 review).
+    { key: 'SHOP:CT008', semantic_type: 'CT008', source: 'SHOP', many: false, confirm_only: true, where_to_find: 'The vendor’s drawing.', confirmed_pages: [2], consumers: [{ rule_id: 'R-CUTDEPTH', input_name: 'cutout_depth' }], categories: [] },
+    // Two readings confirmed on this page: the field shows neither, and says so.
+    { key: 'SHOP:CT004', semantic_type: 'CT004', source: 'SHOP', many: false, confirm_only: true, where_to_find: 'The vendor’s elevation.', confirmed_pages: [1], consumers: [{ rule_id: 'R-SINKCAB', input_name: 'sink_cabinet_width' }], categories: [] },
     { key: 'SHOP:CT007', semantic_type: 'CT007', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-OFFSET', input_name: 'front_offset' }], categories: [] },
     { key: 'SHOP:CT012', semantic_type: 'CT012', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-CUTOUT', input_name: 'cutout_width' }], categories: [] },
     { key: 'SHOP:cabinet_width', semantic_type: 'cabinet_width', source: 'SHOP', many: true, confirm_only: false, consumers: [{ rule_id: 'R-CABS', input_name: 'shop_cabinets' }], categories: [] },
     { key: 'USER_INPUT:field_dimension', semantic_type: 'field_dimension', source: 'USER_INPUT', many: false, confirm_only: false, consumers: [{ rule_id: 'R-FILLER', input_name: 'field_width' }], categories: [] },
   ],
-  page_numbers: [1],
+  page_numbers: [1, 2],
   // A reading the reviewer already confirmed: it reaches the checks as a reading, never as a typed value.
   confirmed_readings: [
     { key: 'SHOP:CT012', source: 'SHOP', semantic_type: 'CT012', value: '16 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
+    { key: 'SHOP:CT004', source: 'SHOP', semantic_type: 'CT004', value: '24 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
+    { key: 'SHOP:CT004', source: 'SHOP', semantic_type: 'CT004', value: '25 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
   ],
   proposed_readings: [],
   parameters: [],
@@ -43,10 +49,14 @@ const REQUIRED = {
 };
 
 const calls: { method: string; url: string; body?: string }[] = [];
+/** The AI readings offered on page 1; none unless a test says so. */
+let offered: unknown[] = [];
+const READING = { candidate_id: 'c-1', source: 'SHOP', value: '5 in', raw_text: '5', page_index: 0 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 beforeEach(() => {
   calls.length = 0;
+  offered = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? 'GET';
@@ -56,7 +66,8 @@ beforeEach(() => {
     if (method === 'POST' && url.endsWith('/measurements')) {
       return json({ parameter_set_version: null, measurement_set_version: 2, parameters: [], measurements: [], lists: [] }, 201);
     }
-    if (url.includes('/candidates')) return json({ candidates: [], page_number: 1, total: 0 });
+    if (method === 'POST' && url.endsWith('/confirm')) return json({ semantic_type: 'CT007', status: 'HUMAN_CONFIRMED' }, 201);
+    if (url.includes('/candidates')) return json({ candidates: offered, page_number: 1, total: offered.length });
     if (url.endsWith('/semantic-types')) return json([]);
     if (url.endsWith('/views')) return json({ views: [] });
     if (url.endsWith('/parts')) return json({ drawings: [] });
@@ -93,7 +104,9 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     for (const key of ['SHOP:CT010', 'SHOP:CT007', 'SHOP:CT012']) expect(box(key)).toBeNull();
     const depth = field('SHOP:CT010')!;
     expect(depth).not.toBeNull();
-    expect(depth.textContent).toContain('Needs the section drawing (not supplied)');
+    expect(depth.textContent).toContain('No reading confirmed yet');
+    expect(depth.textContent).toContain('Drawn on: The vendor’s plan view: a synthetic place.');
+    expect(depth.textContent).not.toContain('not supplied');
     expect(within(depth).queryByRole('textbox')).toBeNull();
   });
 
@@ -111,7 +124,7 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     expect(offset.textContent).toContain('4"');
     expect(offset.textContent).toContain('Typed before 2026-10-14');
     expect(offset.textContent).toContain('still counts');
-    expect(offset.textContent).not.toContain('Needs the section drawing');
+    expect(offset.textContent).not.toContain('No reading confirmed yet');
   });
 
   it('shows a confirmed reading as the value, and Save never sends a drawn value as typed', async () => {
@@ -119,7 +132,7 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
 
     const cutout = field('SHOP:CT012')!;
     expect(cutout.textContent).toContain('16 in');
-    expect(cutout.textContent).not.toContain('Needs the section drawing');
+    expect(cutout.textContent).not.toContain('No reading confirmed yet');
 
     await user.type(box('USER_INPUT:field_dimension') as HTMLInputElement, '120"');
     await user.click(screen.getByRole('button', { name: 'Save values' }));
@@ -127,5 +140,54 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
     expect(JSON.parse(postsTo('/measurements')[0].body!).measurements).toEqual([
       { rule_id: 'R-FILLER', name: 'field_width', value: '120"' },
     ]);
+  });
+
+  it('keeps showing a value typed before, and that it still counts, after a reading is confirmed', async () => {
+    offered = [READING];
+    const user = await openValues();
+
+    const offset = field('SHOP:CT007')!;
+    await user.click(within(offset).getByRole('button', { name: /1 reading from/ }));
+    await user.click(within(offset).getByTitle('Confirm 5 in as Front offset'));
+    await waitFor(() => expect(postsTo('/confirm')).toHaveLength(1));
+
+    // The checks still use the typed 4" (it outranks the reading), so the screen shows that one.
+    await waitFor(() => expect(field('SHOP:CT007')!.textContent).toContain('does not replace it'));
+    const after = field('SHOP:CT007')!;
+    expect(after.textContent).toContain('4"');
+    expect(after.textContent).toContain('still counts');
+    expect(after.textContent).not.toContain('5 in');
+    // Save never sends a drawn value, so nothing on a confirm-only field may say Save replaces it.
+    expect(after.textContent).not.toContain('replaces it');
+    expect(after.querySelector('[data-part="saved-replaced"]')).toBeNull();
+  });
+});
+
+describe('a drawn field with no value says only what the screen knows (#1253 review)', { timeout: 15_000 }, () => {
+  it('names the page a reading is confirmed on when it is not the one in view', async () => {
+    await openValues();
+
+    const depth = field('SHOP:CT008')!;
+    expect(depth.textContent).toContain('A reading is confirmed on page 2');
+    expect(depth.textContent).not.toContain('No reading confirmed yet');
+    expect(depth.textContent).not.toContain('not supplied');
+  });
+
+  it('says two readings confirmed on this page clear the field, naming both', async () => {
+    await openValues();
+
+    const width = field('SHOP:CT004')!;
+    expect(width.textContent).toContain('2 readings are confirmed on this page: 24 in, 25 in');
+    expect(width.textContent).not.toContain('not supplied');
+  });
+
+  it('points at the AI readings listed under the field rather than saying none exist', async () => {
+    offered = [READING];
+    await openValues();
+
+    const depth = field('SHOP:CT010')!;
+    expect(depth.textContent).toContain('Confirm one of the AI readings listed below');
+    expect(depth.textContent).not.toContain('not supplied');
+    expect(within(depth).getByRole('button', { name: /1 reading from/ })).toBeTruthy();
   });
 });
