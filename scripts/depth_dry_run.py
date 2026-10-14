@@ -8,7 +8,7 @@ page (the drawing GV's heading names the vendor's, `extraction/panels.py`), it p
 * the candidate spans per axis, with what each end meets;
 * the view's scale from its horizontal overall, where the overall's value is real text;
 * chains and whether they close exactly, where every value is real text;
-* the sink outlines on plan views, and whether a cut-out could be automatic.
+* the sink outlines on plan views, and whether code's half of the cut-out rule allows or holds.
 
     .venv/bin/python scripts/depth_dry_run.py --pdf <set.pdf> [--pages 7 15 ...] \\
         --out ~/gv-local/<folder> [--pictures] [--vendor-file] [--database <URL>]
@@ -265,12 +265,20 @@ def survey_page(
         survey = find_vendor_views(page.chars, page.ink, panel, MEASURED_VIEW_SETTINGS)
         report.notes.extend(f"panel {panel_number}: {note}" for note in survey.notes)
         panel_phrases = find_phrases(_chars_in(page.chars, panel), MEASURED_VIEW_SETTINGS.text)
+        panel_headings = [
+            page.pixels(view.heading_box) for view in survey.views if view.heading_box is not None
+        ]
         for view in survey.views:
             found = find_spans(page.ink, view.extent, MEASURED_SPAN_SETTINGS)
             heading = kind_from_heading(view.heading)
             judged = code_view_kind(heading, found.bands)
             phrases = find_phrases(_chars_in(page.chars, view.extent), MEASURED_VIEW_SETTINGS.text)
-            lanes = text_lanes(found.spans, phrases, MEASURED_SPAN_SETTINGS)
+            lanes = text_lanes(
+                found.spans,
+                phrases,
+                MEASURED_SPAN_SETTINGS,
+                chars=_chars_in(page.chars, view.extent),
+            )
             values = {
                 number: lane.inches for number, lane in lanes.items() if lane.inches is not None
             }
@@ -333,7 +341,7 @@ def survey_page(
                                 }
                                 for outline in sink.outlines
                             ],
-                            "automatic": judgment.automatic,
+                            "code_allows": judgment.code_allows,
                             "reason": judgment.reason,
                         }
                     )
@@ -347,7 +355,13 @@ def survey_page(
                             / f"p{page_number}-v{panel_number}.{view.number}-sink{sink_number}.png"
                         ).write_bytes(
                             lettered_outlines_picture(
-                                rendered, crop, outlines, thickness=2, badge=14, max_side=1400
+                                rendered,
+                                crop,
+                                outlines,
+                                headings=panel_headings,
+                                thickness=2,
+                                badge=14,
+                                max_side=1400,
                             )
                         )
             report.views.append(
@@ -373,16 +387,16 @@ def survey_page(
             )
             if rendered is not None and pictures is not None:
                 crop = page.pixels(view.extent)
-                headings = [] if view.heading_box is None else [page.pixels(view.heading_box)]
                 stem = pictures / f"p{page_number}-v{panel_number}.{view.number}"
                 stem.with_name(stem.name + "-view.png").write_bytes(
-                    view_picture(rendered, crop, headings, pad=3, max_side=1400)
+                    view_picture(rendered, crop, panel_headings, pad=3, max_side=1400)
                 )
                 stem.with_name(stem.name + "-spans.png").write_bytes(
                     numbered_spans_picture(
                         rendered,
                         crop,
                         [_marked(span, page.pixels) for span in found.spans],
+                        headings=panel_headings,
                         thickness=3,
                         badge=16,
                         max_side=1400,
@@ -423,7 +437,7 @@ def summary(report: PageReport) -> str:
         for sink in view.sinks:
             lines.append(
                 f"    sink ({sink['marker']}): {len(sink['outlines'])} outline(s); "
-                + ("automatic" if sink["automatic"] else "held")
+                + ("code allows" if sink["code_allows"] else "held")
                 + f": {sink['reason']}"
             )
     return "\n".join(lines)

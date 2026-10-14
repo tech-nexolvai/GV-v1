@@ -265,7 +265,7 @@ def test_the_scale_comes_only_from_a_horizontal_overall_with_a_positive_value() 
 def test_a_label_reads_its_inches_and_a_bracketed_inch_wins_over_mm(
     text: str, inches: Fraction
 ) -> None:
-    label = read_depth_label(text)
+    label = read_depth_label(text, mm_tolerance=S.mm_corroboration_mm)
     assert label.inches == inches
     assert label.held_reason is None
 
@@ -275,13 +275,13 @@ def test_a_label_reads_its_inches_and_a_bracketed_inch_wins_over_mm(
     ["635", "635 mm", "[1 1/2] [1/4]", "ABOUT [25]", '213/8"'],
 )
 def test_a_label_with_mm_only_two_values_words_or_a_lost_space_is_held(text: str) -> None:
-    label = read_depth_label(text)
+    label = read_depth_label(text, mm_tolerance=S.mm_corroboration_mm)
     assert label.inches is None
     assert label.held_reason
 
 
 def test_mm_only_is_held_with_the_mm_reason() -> None:
-    assert read_depth_label("635").held_reason == MM_ONLY
+    assert read_depth_label("635", mm_tolerance=S.mm_corroboration_mm).held_reason == MM_ONLY
 
 
 # --- the vector-text lane, rotated labels -------------------------------------------------------
@@ -291,7 +291,7 @@ def test_mm_only_is_held_with_the_mm_reason() -> None:
 def test_a_rotated_label_belongs_to_its_vertical_span(orientation: Orientation) -> None:
     depth = span(1, Axis.VERTICAL, 100, 196, offset=50)
     phrases = [phrase("635", 44, 140, orientation), phrase("[25]", 38, 140, orientation)]
-    lane = text_lanes([depth], phrases, S)[1]
+    lane = text_lanes([depth], phrases, S, chars=())[1]
     assert lane.inches == Fraction(25)
     assert text_lane_agrees(lane, Fraction(25)) is True
     assert text_lane_agrees(lane, Fraction(25) + Fraction(1, 16)) is False
@@ -299,14 +299,14 @@ def test_a_rotated_label_belongs_to_its_vertical_span(orientation: Orientation) 
 
 def test_an_upright_label_is_not_a_vertical_spans_text() -> None:
     depth = span(1, Axis.VERTICAL, 100, 196, offset=50)
-    lane = text_lanes([depth], [phrase('24"', 44, 140, Orientation.UPRIGHT)], S)[1]
+    lane = text_lanes([depth], [phrase('24"', 44, 140, Orientation.UPRIGHT)], S, chars=())[1]
     assert lane.inches is None
     assert text_lane_agrees(lane, Fraction(24)) is None
 
 
 def test_a_vertical_span_with_only_mm_printed_is_held() -> None:
     depth = span(1, Axis.VERTICAL, 100, 196, offset=50)
-    lane = text_lanes([depth], [phrase("635", 44, 140, Orientation.UP)], S)[1]
+    lane = text_lanes([depth], [phrase("635", 44, 140, Orientation.UP)], S, chars=())[1]
     assert lane.inches is None
     assert lane.reason == MM_ONLY
 
@@ -314,14 +314,14 @@ def test_a_vertical_span_with_only_mm_printed_is_held() -> None:
 def test_two_different_inch_values_at_one_span_are_held() -> None:
     depth = span(1, Axis.VERTICAL, 100, 196, offset=50)
     phrases = [phrase("[25]", 44, 120, Orientation.UP), phrase("[23]", 44, 170, Orientation.UP)]
-    lane = text_lanes([depth], phrases, S)[1]
+    lane = text_lanes([depth], phrases, S, chars=())[1]
     assert lane.inches is None
 
 
 def test_a_label_equally_near_two_spans_belongs_to_neither() -> None:
     first = span(1, Axis.VERTICAL, 100, 196, offset=40)
     second = span(2, Axis.VERTICAL, 100, 196, offset=60)
-    lanes = text_lanes([first, second], [phrase("[25]", 50, 140, Orientation.UP)], S)
+    lanes = text_lanes([first, second], [phrase("[25]", 50, 140, Orientation.UP)], S, chars=())
     assert lanes[1].inches is None and lanes[2].inches is None
     assert "neither" in lanes[1].reason
 
@@ -369,7 +369,7 @@ def test_one_outline_drawn_round_a_sink_may_be_automatic() -> None:
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
     assert [outline.letter for outline in sink.outlines] == ["A"]
     judgment = cutout_judgment(sink, [phrase("SINK BY OTHERS", 400, 300, Orientation.UPRIGHT)])
-    assert judgment.automatic
+    assert judgment.code_allows
 
 
 def test_two_outlines_and_no_word_is_held_for_a_person() -> None:
@@ -378,7 +378,7 @@ def test_two_outlines_and_no_word_is_held_for_a_person() -> None:
     assert [outline.letter for outline in sink.outlines] == ["A", "B"]
     assert sink.outlines[0].box.width > sink.outlines[1].box.width  # outer first
     judgment = cutout_judgment(sink, [phrase("SINK BY OTHERS", 400, 300, Orientation.UPRIGHT)])
-    assert not judgment.automatic
+    assert not judgment.code_allows
     assert "person" in judgment.reason
 
 
@@ -389,7 +389,7 @@ def test_a_dashed_bowl_counts_as_a_second_outline() -> None:
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
     assert len(sink.outlines) == 2
     assert sink.outlines[1].drawn_as == "dashed strokes"
-    assert not cutout_judgment(sink, []).automatic
+    assert not cutout_judgment(sink, []).code_allows
 
 
 def test_two_outlines_with_printed_words_naming_the_cut_out_may_be_automatic() -> None:
@@ -398,7 +398,7 @@ def test_two_outlines_with_printed_words_naming_the_cut_out_may_be_automatic() -
     judgment = cutout_judgment(
         sink, [phrase('SINK OPENING 22" x 16"', 400, 300, Orientation.UPRIGHT)]
     )
-    assert judgment.automatic
+    assert judgment.code_allows
     assert judgment.naming_words
 
 
@@ -418,6 +418,6 @@ def test_cut_out_words_about_another_hole_do_not_name_the_sinks_cut_out() -> Non
     page = ink(rectangle_strokes(160, 160, 250, 230), (rectangle_path(150, 150, 260, 240),))
     (sink,) = sink_outlines(page, VIEW, SINK_WORDS, S)
     elsewhere = phrase("TRASH CUTOUT", 450, 300, Orientation.UPRIGHT)
-    assert not cutout_judgment(sink, [elsewhere]).automatic
+    assert not cutout_judgment(sink, [elsewhere]).code_allows
     inside = phrase("CUT-OUT", 200, 220, Orientation.UPRIGHT)
-    assert cutout_judgment(sink, [inside]).automatic
+    assert cutout_judgment(sink, [inside]).code_allows

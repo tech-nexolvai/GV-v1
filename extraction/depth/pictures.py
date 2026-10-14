@@ -1,12 +1,17 @@
 """The pictures the depth and sink reader shows its two AI readers (#1256, design §5).
 
 Every picture is cut and marked by code; no model chooses a zoom. All of them start from one
-`evidence.crop.RenderedPage` (the page rendered with the vendor's drawing only, so GV's marks are
-never in a reader's picture) and take pixel boxes in that page's pixels. They come out as PNG bytes
+`evidence.crop.RenderedPage` and take pixel boxes in that page's pixels. Render it with the
+vendor's drawing only (`render_page(vendor_only=True)`): GV's separate notes are then left out,
+**but marks GV made inside an earlier round's drawing are part of that pasted drawing and do reach
+the picture** (red outlines and yellow tags on second-round sheets). The readers' questions must
+keep telling them to ignore GV's yellow, red and green marks. They come out as PNG bytes
 through `evidence.crop.encode_png`, the encoder every other crop in the product uses, so the same
 inputs give the same bytes.
 
-* **`view_picture`**: one view with its heading painted out. The readers name the view's kind from
+* **`view_picture`**: one view with its heading painted out. Every picture also paints out every
+  heading on the panel it is given (`headings`), so no picture tells a reader the vendor's name for
+  a view. The readers name the view's kind from
   the drawing alone, so their judgment stays independent of code's, which reads the heading.
 * **`numbered_spans_picture`**: every span code found in the view, each drawn along its own axis in
   its own colour with its number beside it, on both axes. The width reader's numbered-rows
@@ -178,9 +183,13 @@ def view_picture(
 ) -> bytes:
     """The view with every heading box (grown by `pad` pixels) painted white."""
     canvas = _Canvas(rendered, view)
-    for x0, y0, x1, y1 in headings:
-        canvas.fill(x0 - pad, y0 - pad, x1 + pad, y1 + pad, _WHITE)
+    _mask(canvas, [(x0 - pad, y0 - pad, x1 + pad, y1 + pad) for x0, y0, x1, y1 in headings])
     return canvas.png(max_side)
+
+
+def _mask(canvas: _Canvas, headings: Sequence[PixelBox]) -> None:
+    for x0, y0, x1, y1 in headings:
+        canvas.fill(x0, y0, x1, y1, _WHITE)
 
 
 def numbered_spans_picture(
@@ -188,6 +197,7 @@ def numbered_spans_picture(
     view: PixelBox,
     spans: Sequence[MarkedSpan],
     *,
+    headings: Sequence[PixelBox],
     thickness: int,
     badge: int,
     max_side: int,
@@ -199,6 +209,7 @@ def numbered_spans_picture(
     at the middle, and a badge there would cover the very number the reader is asked about.
     """
     canvas = _Canvas(rendered, view)
+    _mask(canvas, headings)
     half = thickness // 2
     for index, span in enumerate(spans):
         colour = SPAN_COLOURS[index % len(SPAN_COLOURS)][1]
@@ -261,6 +272,7 @@ def lettered_outlines_picture(
     crop: PixelBox,
     outlines: Sequence[tuple[str, PixelBox]],
     *,
+    headings: Sequence[PixelBox],
     thickness: int,
     badge: int,
     max_side: int,
@@ -268,6 +280,7 @@ def lettered_outlines_picture(
     """Each outline framed in its colour, its letter on a badge at its top-left corner, outside it
     for the first (outer) outline and inside for the others, so nested letters do not overlap."""
     canvas = _Canvas(rendered, crop)
+    _mask(canvas, headings)
     for index, (letter, box) in enumerate(outlines):
         colour = SPAN_COLOURS[index % len(SPAN_COLOURS)][1]
         canvas.frame(box, colour, thickness)

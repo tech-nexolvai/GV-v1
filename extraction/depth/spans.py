@@ -70,7 +70,7 @@ from extraction.architect.outline import (
     slanted_strokes,
 )
 from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS
-from extraction.architect.text import Orientation, PrintedPhrase
+from extraction.architect.text import Orientation, PrintedPhrase, TextChar
 from extraction.geometry.containment import DimensionExtent
 from extraction.geometry.dimension_lines import Axis, DimensionLine, detect
 from extraction.geometry.rows import Box, InkCurve, PageInk
@@ -85,6 +85,8 @@ __all__ = [
     "DepthLabel",
     "DrawnLength",
     "EndKind",
+    "FrontOffsetStart",
+    "OffsetStart",
     "Outline",
     "SinkOutlines",
     "Span",
@@ -99,6 +101,7 @@ __all__ = [
     "cutout_judgment",
     "drawn_length_check",
     "find_spans",
+    "front_offset_start",
     "overall_horizontal",
     "read_depth_label",
     "sink_outlines",
@@ -167,6 +170,23 @@ class SpanSettings:
     """A sink's round drain is at most this fraction of its outline's width."""
     drawn_length_tolerance: Fraction
     """The drawn length at the view's scale is within this fraction of the value (design: 1/10)."""
+    mm_corroboration_mm: Fraction
+    """Millimetres printed with an inch value corroborate it only within this many millimetres of
+    25.4 times the inches; further off, the label holds. Millimetres never decide (CLAUDE.md)."""
+    same_size_fraction: Decimal
+    """A label's characters differ in height by at most this fraction of the tallest..."""
+    baseline_drift_em: Decimal
+    """...and their middles across the line by at most this many character heights; otherwise
+    the label is a stacked fraction (or parts of two labels) and holds."""
+    tie_margin_pt: Decimal
+    """A label within this distance of being as near one span as another belongs to neither."""
+    same_outline_pt: Decimal
+    """Two rectangles this close on every side are the same outline drawn twice. Small on purpose: a
+    sink's rim and its bowl can be a point or two apart."""
+    outline_search_fraction: Decimal
+    """The second outline count looks this fraction of the outer outline's shorter side beyond it."""
+    drain_minimum_pt: Decimal
+    """A sink's drain is at least this wide: a corner dot is not a drain."""
 
 
 # ---------------------------------------------------------------------------
@@ -598,8 +618,8 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
             end_pt=found.end,
             stroke_ends=found.stroke_ends,
             witnesses=found.witnesses,
-            low_end=_end(found.axis, found.start, bands, others, settings),
-            high_end=_end(found.axis, found.end, bands, others, settings),
+            low_end=_end(found.axis, found.start, found.witnesses, bands, others, settings),
+            high_end=_end(found.axis, found.end, found.witnesses, bands, others, settings),
         )
         for number, found in enumerate(ordered, start=1)
     )
@@ -677,33 +697,56 @@ def _deduplicated(found: Sequence[_Raw], settings: SpanSettings) -> list[_Raw]:
 def _end(
     axis: Axis,
     at: Decimal,
+    witnesses: Sequence[_Quad],
     bands: Sequence[WallBand],
     others: Sequence[_Stroke],
     settings: SpanSettings,
 ) -> SpanEnd:
-    """What the span's end at `at` (along its axis) meets."""
+    """What the span's end at `at` (along its axis) meets.
+
+    Only what **reaches the end's own witness line** counts: a band edge or a solid edge on the same
+    line as the end (within `end_meet_pt`) whose extent across comes within `end_meet_pt` of the
+    witness line's. An edge on the same line far along it measures something else.
+    """
     reach = settings.end_meet_pt
+    if axis is Axis.VERTICAL:
+        own = [(x0, x1) for x0, y0, x1, y1 in witnesses if abs(y0 - at) <= reach and y0 == y1]
+    else:
+        own = [(y0, y1) for x0, y0, x1, y1 in witnesses if abs(x0 - at) <= reach and x0 == x1]
+    if not own:
+        return SpanEnd(at, EndKind.NOTHING, "no witness line found at this end")
+
+    def touches(low: Decimal, high: Decimal) -> bool:
+        return any(low <= w_high + reach and high >= w_low - reach for w_low, w_high in own)
+
     for band in bands:
         if band.axis is axis:
             continue
-        low, high = (
-            (band.box.top, band.box.bottom)
-            if band.axis is Axis.HORIZONTAL
-            else (band.box.x0, band.box.x1)
-        )
-        if abs(low - at) <= reach or abs(high - at) <= reach:
+        if band.axis is Axis.HORIZONTAL:
+            edges, extent = (band.box.top, band.box.bottom), (band.box.x0, band.box.x1)
+        else:
+            edges, extent = (band.box.x0, band.box.x1), (band.box.top, band.box.bottom)
+        if any(abs(edge - at) <= reach for edge in edges) and touches(*extent):
             return SpanEnd(
                 at, EndKind.WALL_BAND, f"the end lies on the edge of a {band.source} wall band"
             )
     for stroke in others:
-        if stroke.axis is not axis and abs(stroke.at - at) <= reach:
+        if (
+            stroke.axis is not axis
+            and abs(stroke.at - at) <= reach
+            and touches(stroke.start, stroke.end)
+        ):
             return SpanEnd(
                 at,
                 EndKind.OUTLINE,
-                "the end lies on a solid edge of the drawing "
+                "the end lies on a solid edge of the drawing that reaches its witness line "
                 f"({stroke.length:.1f} pt long, not a dimension's own line)",
             )
-    return SpanEnd(at, EndKind.NOTHING, "no wall band and no solid edge of the drawing at the end")
+    return SpanEnd(
+        at,
+        EndKind.NOTHING,
+        "no wall band and no solid edge of the drawing reaches the end's witness line",
+    )
 
 
 def _chains(spans: Sequence[Span], settings: SpanSettings) -> tuple[SpanChain, ...]:
@@ -738,6 +781,72 @@ def _closures(
             ):
                 found.append(ChainClosure(span, chain.parts))
     return tuple(found)
+
+
+# ---------------------------------------------------------------------------
+# Where a front offset starts (CT007)
+# ---------------------------------------------------------------------------
+
+
+class OffsetStart(StrEnum):
+    """Where a span in front of a sink starts, as code can see it."""
+
+    STONE_EDGE = "stone edge"
+    """It ends where the depth ends at the stone's front edge: it measures from the stone's edge,
+    which includes the overhang, so it is never the front offset (Raj's slide-8 formula)."""
+    INSIDE = "inside the stone"
+    """It stops short of the stone's front edge: it may start at the cabinet face; the readers say."""
+    UNKNOWN = "unknown"
+    """Code cannot tell where the stone's front edge is, or the span is not along the depth."""
+
+
+@dataclass(frozen=True, slots=True)
+class FrontOffsetStart:
+    kind: OffsetStart
+    reason: str
+
+    @property
+    def code_allows(self) -> bool:
+        """Only a span code sees stopping short of the stone's front edge; an unknown start holds."""
+        return self.kind is OffsetStart.INSIDE
+
+
+def front_offset_start(span: Span, depth: Span, settings: SpanSettings) -> FrontOffsetStart:
+    """Where a candidate front-offset span starts, from the depth span of the same view.
+
+    The depth runs from the wall band to the stone's front edge, so its front edge is the end that
+    does **not** meet the wall band. A span on the same axis that ends there (within `end_meet_pt`)
+    starts at the stone's edge and is never CT007 (Decision log 2026-10-14: held for a person, never
+    adjusted). With no wall band at exactly one end of the depth, the front edge is unknown and the
+    span holds.
+    """
+    if span.axis is not depth.axis:
+        return FrontOffsetStart(OffsetStart.UNKNOWN, "the span does not run along the depth")
+    low_wall = depth.low_end.kind is EndKind.WALL_BAND
+    high_wall = depth.high_end.kind is EndKind.WALL_BAND
+    if low_wall == high_wall:
+        return FrontOffsetStart(
+            OffsetStart.UNKNOWN,
+            "the depth does not run from a wall band at exactly one end, so the stone's front "
+            "edge is not known: held",
+        )
+    front = depth.end_pt if low_wall else depth.start_pt
+    back = depth.start_pt if low_wall else depth.end_pt
+    reach = settings.end_meet_pt
+    if abs(span.start_pt - front) <= reach or abs(span.end_pt - front) <= reach:
+        return FrontOffsetStart(
+            OffsetStart.STONE_EDGE,
+            "the span ends on the stone's front edge, where the depth ends: it measures from the "
+            "stone's edge (overhang included), never the front offset; held for a person",
+        )
+    low, high = min(front, back), max(front, back)
+    if low < span.start_pt and span.end_pt < high:
+        return FrontOffsetStart(
+            OffsetStart.INSIDE,
+            "the span stops short of the stone's front edge; whether it starts at the cabinet "
+            "face is the readers' to say",
+        )
+    return FrontOffsetStart(OffsetStart.UNKNOWN, "the span is not inside the depth's extent: held")
 
 
 # ---------------------------------------------------------------------------
@@ -854,22 +963,32 @@ class DepthLabel:
     inches: Fraction | None
     held_reason: str | None
     bracketed: bool
-    """The inch value came from brackets (`635 [25]`): the millimetres beside it are ignored."""
+    """The inch value came from brackets (`635 [25]`); millimetres beside it only corroborate."""
 
 
 _BRACKETED: Final = re.compile(r"\[([^\[\]]*)\]")
-_BARE_NUMBER: Final = re.compile(r"\d+(?:\.\d+)?\s*(?:mm|MM)?")
+_BARE_NUMBER: Final = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mm|MM)?")
+_MM_PER_INCH: Final = Fraction(254, 10)
 MM_ONLY: Final = (
     "only millimetres (or a number with no unit) are printed: inches are authoritative and "
     "millimetres are never used, so it is held"
 )
 
 
-def read_depth_label(text: str) -> DepthLabel:
+def _corroborates(millimetres: str, inches: Fraction, tolerance: Fraction) -> bool:
+    """Whether a printed millimetre number is the inch value's, within `tolerance` mm, exactly."""
+    found = _BARE_NUMBER.fullmatch(millimetres.strip())
+    if found is None:
+        return False
+    return abs(Fraction(found.group(1)) - _MM_PER_INCH * inches) <= tolerance
+
+
+def read_depth_label(text: str, *, mm_tolerance: Fraction) -> DepthLabel:
     """A vendor's dimension label in inches.
 
-    * `635 [25]`, `452 [17 13/16]`: the bracketed value is the inches and wins; the millimetres
-      outside are never read.
+    * `635 [25]`, `452 [17 13/16]`: the bracketed value is the inches. The millimetres outside may
+      only corroborate it: they must be within `mm_tolerance` mm of 25.4 times the inches, or the
+      label holds (`25 [635]` is a swapped or misread pair, never 635 inches).
     * `24"`, `21 5/8"`, `2'-0"`: read exactly (`architect.labels.read_label`, which also holds a
       fraction a drawing never prints, such as `163/8"`).
     * `635`, `635 mm`: millimetres only, or no unit: held.
@@ -887,6 +1006,18 @@ def read_depth_label(text: str) -> DepthLabel:
             )
         inner = brackets[0].strip()
         reading = read_label(inner if '"' in inner or "'" in inner else f'{inner}"')
+        if (
+            reading.inches is not None
+            and outside
+            and not _corroborates(outside, reading.inches, mm_tolerance)
+        ):
+            return DepthLabel(
+                text,
+                None,
+                f"the millimetres printed ({outside}) are not the inches' ({brackets[0]}): "
+                "the pair does not corroborate, so it is held",
+                True,
+            )
         return DepthLabel(text, reading.inches, reading.held_reason, True)
     if _BARE_NUMBER.fullmatch(plain):
         return DepthLabel(text, None, MM_ONLY, False)
@@ -911,14 +1042,20 @@ def _reads_along(phrase: PrintedPhrase, axis: Axis) -> bool:
 
 
 def text_lanes(
-    spans: Sequence[Span], phrases: Sequence[PrintedPhrase], settings: SpanSettings
+    spans: Sequence[Span],
+    phrases: Sequence[PrintedPhrase],
+    settings: SpanSettings,
+    *,
+    chars: Sequence[TextChar],
 ) -> dict[int, TextLane]:
     """Each span's vector-text value.
 
     A phrase belongs to the span it reads along (upright text for a horizontal span, sideways text
     for a vertical one) whose extent holds the phrase's middle and whose line is nearest across,
-    within `label_reach_pt`. A phrase equally near two spans belongs to neither and both say so. A
-    phrase with no digit is not a label.
+    within `label_reach_pt`. A phrase within `tie_margin_pt` of being as near another span belongs
+    to neither, and both say so. A phrase with no digit is not a label. `chars` are the characters
+    the phrases were built from: a label whose characters are not one size on one line is a stacked
+    fraction and holds (`_lane`).
     """
     owned: dict[int, list[PrintedPhrase]] = {span.number: [] for span in spans}
     shared: dict[int, list[str]] = {span.number: [] for span in spans}
@@ -939,26 +1076,59 @@ def text_lanes(
         if not near:
             continue
         near.sort(key=lambda item: (item[0], item[1].number))
-        if len(near) > 1 and near[0][0] == near[1][0]:
-            for _distance, span in near:
-                if _distance == near[0][0]:
+        if len(near) > 1 and near[1][0] - near[0][0] <= settings.tie_margin_pt:
+            for distance, span in near:
+                if distance - near[0][0] <= settings.tie_margin_pt:
                     shared[span.number].append(phrase.text)
             continue
         owned[near[0][1].number].append(phrase)
     lanes: dict[int, TextLane] = {}
     for span in spans:
-        lanes[span.number] = _lane(span.number, owned[span.number], shared[span.number])
+        lanes[span.number] = _lane(
+            span.number, owned[span.number], shared[span.number], chars, settings
+        )
     return lanes
 
 
-def _lane(number: int, phrases: Sequence[PrintedPhrase], shared: Sequence[str]) -> TextLane:
+def _stacked(phrase: PrintedPhrase, chars: Sequence[TextChar], settings: SpanSettings) -> bool:
+    """Whether the phrase's characters differ in size, or in where they sit across the line: the
+    pieces of a stacked fraction read into one run (`24 3/4` printed stacked reads as `244`)."""
+    box = phrase.box
+    inside = [
+        char
+        for char in chars
+        if box.x0 <= char.box.centre_x <= box.x1 and box.top <= char.box.centre_y <= box.bottom
+    ]
+    if len(inside) < 2:
+        return False
+    upright = phrase.orientation is Orientation.UPRIGHT
+    sizes = [char.box.height if upright else char.box.width for char in inside]
+    middles = [char.box.centre_y if upright else char.box.centre_x for char in inside]
+    tallest = max(sizes)
+    return (
+        tallest - min(sizes) > settings.same_size_fraction * tallest
+        or max(middles) - min(middles) > settings.baseline_drift_em * tallest
+    )
+
+
+def _lane(
+    number: int,
+    phrases: Sequence[PrintedPhrase],
+    shared: Sequence[str],
+    chars: Sequence[TextChar],
+    settings: SpanSettings,
+) -> TextLane:
+    """One span's value from the phrases it owns. **Every doubt holds**: another label near enough
+    to share, characters of two sizes (a stacked fraction), two inch values, a number beside the
+    inch value that is not its millimetres (a stacked fraction's lone digit), or a label that does
+    not read."""
     printed = tuple(phrase.text for phrase in phrases)
     if shared:
         return TextLane(
             number,
             printed + tuple(shared),
             None,
-            "a label sits equally near this span and another ("
+            "a label sits (almost) equally near this span and another ("
             + ", ".join(repr(text) for text in shared)
             + "): it belongs to neither",
         )
@@ -970,27 +1140,45 @@ def _lane(number: int, phrases: Sequence[PrintedPhrase], shared: Sequence[str]) 
             "no text is printed at this span (where the numbers are pen strokes, the drawn length "
             "at the view's scale is the code check)",
         )
-    labels = [read_depth_label(phrase.text) for phrase in phrases]
+    stacked = [phrase.text for phrase in phrases if _stacked(phrase, chars, settings)]
+    if stacked:
+        return TextLane(
+            number,
+            printed,
+            None,
+            f"the label {stacked[0]!r} is printed in characters of different sizes or heights: a "
+            "stacked fraction, held",
+        )
+    labels = [
+        read_depth_label(phrase.text, mm_tolerance=settings.mm_corroboration_mm)
+        for phrase in phrases
+    ]
     values = {label.inches for label in labels if label.inches is not None}
+    bare = [label.text for label in labels if label.held_reason == MM_ONLY]
     other_holds = [
         label.held_reason
         for label in labels
         if label.inches is None and label.held_reason not in (None, MM_ONLY)
     ]
+    if other_holds:
+        return TextLane(
+            number, printed, None, f"a label at this span cannot be read: {other_holds[0]}"
+        )
     if len(values) > 1:
         return TextLane(number, printed, None, "two different inch values are printed at this span")
-    if values and other_holds:
+    if not values:
+        return TextLane(number, printed, None, MM_ONLY)
+    (value,) = values
+    strays = [text for text in bare if not _corroborates(text, value, settings.mm_corroboration_mm)]
+    if strays:
         return TextLane(
             number,
             printed,
             None,
-            f"another label at this span cannot be read: {other_holds[0]}",
+            f"the number {strays[0]!r} beside the inch value is not its millimetres (a stacked "
+            "fraction's digit, or another label): held",
         )
-    if values:
-        (value,) = values
-        return TextLane(number, printed, value, "the vector text at this span reads exactly")
-    reason = other_holds[0] if other_holds else MM_ONLY
-    return TextLane(number, printed, None, reason or MM_ONLY)
+    return TextLane(number, printed, value, "the vector text at this span reads exactly")
 
 
 def text_lane_agrees(lane: TextLane, sealed_inches: Fraction) -> bool | None:
@@ -1027,13 +1215,20 @@ class SinkOutlines:
     outlines: tuple[Outline, ...]
     marker: str
     """Why these are a sink's: its words or its drain inside."""
+    crossings: tuple[int, int, int, int]
+    """The second, shape-independent count: how many separate lines are crossed going left, right,
+    up and down from the sink's mark, out to `outline_search_fraction` of the outer outline's
+    shorter side beyond it. One outline drawn gives one crossing each way, whatever its corners."""
+    shares_outline: bool
+    """Another mark's group has an outline in common with this one: one sink seen twice, with
+    possibly different counts. Such a sink holds as a whole."""
 
 
 @dataclass(frozen=True, slots=True)
 class CutoutJudgment:
-    """Whether a sink's cut-out may be read automatically (code's half of the rule)."""
+    """Code's half of the cut-out rule for one sink: one judgment, never a decision."""
 
-    automatic: bool
+    code_allows: bool
     naming_words: tuple[str, ...]
     reason: str
 
@@ -1124,6 +1319,8 @@ def _rectangles_round(
                 for east in right:
                     if not (side(east, top.at, bottom.at) and abs(east.at - top.end) <= reach):
                         continue
+                    if not _corners_agree(top, bottom, west, east, settings):
+                        continue
                     box = Box(west.at, top.at, east.at, bottom.at)
                     if not _sized(box, settings):
                         continue
@@ -1131,9 +1328,38 @@ def _rectangles_round(
                     found.append((box, "dashed strokes" if dashed else "four strokes"))
     kept: list[tuple[Box, _DrawnAs]] = []
     for box, drawn_as in found:
-        if not any(_same_box(box, other, reach) for other, _drawn in kept):
+        if not any(_same_box(box, other, settings.same_outline_pt) for other, _drawn in kept):
             kept.append((box, drawn_as))
     return kept
+
+
+def _corners_agree(
+    top: _Stroke, bottom: _Stroke, west: _Stroke, east: _Stroke, settings: SpanSettings
+) -> bool:
+    """Whether four sides are one rectangle's: at each corner the horizontal side stops as far
+    short of the vertical side as the vertical side stops short of the horizontal one (a sharp
+    corner: both nothing; a rounded one: both its radius), within `same_outline_pt` (plus
+    `dash_gap_pt` where a side is dashed). Solid sides taken from two outlines drawn close together
+    do not agree, so they never make a third outline; a mix with a dashed side can, which only
+    adds an outline, and more outlines only ever hold."""
+    pairs = (
+        (top.start - west.at, west.start - top.at, top, west),
+        (east.at - top.end, east.start - top.at, top, east),
+        (bottom.start - west.at, bottom.at - west.end, bottom, west),
+        (east.at - bottom.end, bottom.at - east.end, bottom, east),
+    )
+
+    def tight(first: _Stroke, second: _Stroke) -> Decimal:
+        # A dashed side stops wherever its last dash ends, up to one gap short of the corner.
+        dashed = first.pieces > 1 or second.pieces > 1
+        return settings.same_outline_pt + (settings.dash_gap_pt if dashed else Decimal(0))
+
+    return all(
+        abs(along - across) <= tight(first, second)
+        and along >= -tight(first, second)
+        and across >= -tight(first, second)
+        for along, across, first, second in pairs
+    )
 
 
 def _same_box(first: Box, second: Box, reach: Decimal) -> bool:
@@ -1145,14 +1371,15 @@ def _same_box(first: Box, second: Box, reach: Decimal) -> bool:
     )
 
 
-def _drains(ink: PageInk, view: Box) -> list[Box]:
-    """Small round marks: curves with many points, about as wide as tall (within a fifth)."""
+def _drains(ink: PageInk, view: Box, settings: SpanSettings) -> list[Box]:
+    """Round marks: curves with many points, about as wide as tall (within a fifth), and at least
+    `drain_minimum_pt` wide (a corner dot is not a drain)."""
     found: list[Box] = []
     for curve in ink.curves:
         box = curve.box
         if not (_inside(box.x0, box.top, view) and _inside(box.x1, box.bottom, view)):
             continue
-        if len(curve.points) < 8 or box.width <= 0 or box.height <= 0:
+        if len(curve.points) < 8 or box.width < settings.drain_minimum_pt or box.height <= 0:
             continue
         if abs(box.width - box.height) * 5 <= max(box.width, box.height):
             found.append(box)
@@ -1178,10 +1405,9 @@ def sink_outlines(
     ]
     marks.extend(
         (drain.centre_x, drain.centre_y, "a round drain inside", drain)
-        for drain in _drains(ink, view)
+        for drain in _drains(ink, view, settings)
     )
-    groups: list[SinkOutlines] = []
-    seen: list[tuple[Box, ...]] = []
+    found: list[tuple[tuple[Box, ...], tuple[Outline, ...], str, tuple[int, int, int, int]]] = []
     for x, y, why, drain in marks:
         holding = [
             (box, drawn)
@@ -1195,33 +1421,89 @@ def sink_outlines(
         if any(
             len(key) == len(other)
             and all(
-                _same_box(a, b, settings.corner_reach_pt) for a, b in zip(key, other, strict=True)
+                _same_box(a, b, settings.same_outline_pt) for a, b in zip(key, other, strict=True)
             )
-            for other in seen
+            for other, _outlines, _why, _crossings in found
         ):
             continue
-        seen.append(key)
-        groups.append(
-            SinkOutlines(
-                tuple(
-                    Outline(chr(ord("A") + index), box, drawn)
-                    for index, (box, drawn) in enumerate(holding)
-                ),
-                why,
-            )
+        outlines = tuple(
+            Outline(chr(ord("A") + index), box, drawn) for index, (box, drawn) in enumerate(holding)
         )
+        found.append((key, outlines, why, _crossings(ink, view, x, y, key[0], settings)))
+    groups: list[SinkOutlines] = []
+    for index, (key, outlines, why, crossings) in enumerate(found):
+        shares = any(
+            _same_box(box, theirs, settings.same_outline_pt)
+            for other, (their_key, _o, _w, _c) in enumerate(found)
+            if other != index
+            for box in key
+            for theirs in their_key
+        )
+        groups.append(SinkOutlines(outlines, why, crossings, shares))
     return tuple(groups)
 
 
+def _crossings(
+    ink: PageInk, view: Box, x: Decimal, y: Decimal, outer: Box, settings: SpanSettings
+) -> tuple[int, int, int, int]:
+    """How many separate lines are crossed going left, right, up and down from `(x, y)`, out to
+    `outline_search_fraction` of `outer`'s shorter side beyond `outer`. Lines are strokes as drawn
+    and dashed pieces joined, at least half `cutout_minimum_pt` long; two within `same_outline_pt`
+    of each other are one line."""
+    raw = _strokes(ink, view, settings)
+    lines = [
+        stroke
+        for stroke in (*raw, *(joined for joined in _joined(raw, settings) if joined.pieces > 1))
+        if stroke.length >= settings.cutout_minimum_pt / 2
+    ]
+    beyond = settings.outline_search_fraction * min(outer.width, outer.height)
+
+    def count(axis: Axis, low: Decimal, high: Decimal, through: Decimal) -> int:
+        positions = sorted(
+            stroke.at
+            for stroke in lines
+            if stroke.axis is axis
+            and low <= stroke.at <= high
+            and stroke.start <= through <= stroke.end
+        )
+        distinct = 0
+        last: Decimal | None = None
+        for position in positions:
+            if last is None or position - last > settings.same_outline_pt:
+                distinct += 1
+            last = position
+        return distinct
+
+    return (
+        count(Axis.VERTICAL, outer.x0 - beyond, x, y),
+        count(Axis.VERTICAL, x, outer.x1 + beyond, y),
+        count(Axis.HORIZONTAL, outer.top - beyond, y, x),
+        count(Axis.HORIZONTAL, y, outer.bottom + beyond, x),
+    )
+
+
 def cutout_judgment(sink: SinkOutlines, panel_phrases: Sequence[PrintedPhrase]) -> CutoutJudgment:
-    """Code's half of the cut-out rule: automatic only when printed words name the cut-out or one
-    outline is drawn (Decision log 2026-10-14). Two outlines and no word is a hold: a person picks
-    the hole with one click.
+    """Code's half of the cut-out rule: it allows only when printed words name the cut-out or one
+    outline is drawn (Decision log 2026-10-14). **Every doubt holds**, and a person picks the hole
+    with one click:
+
+    * the sink shares an outline with another mark's group (one sink seen twice);
+    * two or more outlines and no naming word;
+    * one outline found, but the second count (`SinkOutlines.crossings`) does not cross exactly one
+      line every way: a second outline code could not see as a rectangle (rounded corners drawn
+      apart, sides running on) is still there.
 
     **Words name this sink's cut-out** only when a phrase says cut-out or opening (`CUTOUT_WORDS`)
     and either also says sink (`SINK OPENING ...`) or is printed inside the sink's outer outline. A
-    panel's "TRASH CUTOUT" note names another hole, and must not make a sink's cut-out automatic.
+    panel's "TRASH CUTOUT" note names another hole, and must not let a sink's cut-out through.
     """
+    if sink.shares_outline:
+        return CutoutJudgment(
+            False,
+            (),
+            "this sink shares an outline with another mark's outlines: one sink seen twice, held "
+            "as a whole for a person",
+        )
     outer = sink.outlines[0].box
     words = tuple(
         phrase.text
@@ -1236,14 +1518,23 @@ def cutout_judgment(sink: SinkOutlines, panel_phrases: Sequence[PrintedPhrase]) 
         return CutoutJudgment(
             True, words, "printed words name the cut-out: " + "; ".join(repr(w) for w in words)
         )
-    if len(sink.outlines) == 1:
-        return CutoutJudgment(True, (), "one sink outline is drawn")
-    return CutoutJudgment(
-        False,
-        (),
-        f"{len(sink.outlines)} outlines are drawn round the sink and no printed word names the "
-        "cut-out: a person picks the hole with one click",
-    )
+    if len(sink.outlines) > 1:
+        return CutoutJudgment(
+            False,
+            (),
+            f"{len(sink.outlines)} outlines are drawn round the sink and no printed word names the "
+            "cut-out: a person picks the hole with one click",
+        )
+    if sink.crossings != (1, 1, 1, 1):
+        return CutoutJudgment(
+            False,
+            (),
+            "one outline was found, but the second count crosses "
+            + "/".join(str(count) for count in sink.crossings)
+            + " lines (left/right/up/down) round the sink, not one each way: another outline may "
+            "be drawn, so a person picks the hole",
+        )
+    return CutoutJudgment(True, (), "one sink outline is drawn, and the second count agrees")
 
 
 def span_on_outline(span: Span, outline: Outline, settings: SpanSettings) -> bool:
@@ -1279,4 +1570,11 @@ MEASURED_SPAN_SETTINGS: Final = SpanSettings(
     dash_minimum_pt=Decimal(2),
     drain_maximum_fraction=Decimal("0.4"),
     drawn_length_tolerance=Fraction(1, 10),
+    mm_corroboration_mm=Fraction(2),
+    same_size_fraction=Decimal("0.1"),
+    baseline_drift_em=Decimal("0.3"),
+    tie_margin_pt=Decimal(1),
+    same_outline_pt=Decimal("0.5"),
+    outline_search_fraction=Decimal("0.35"),
+    drain_minimum_pt=Decimal(4),
 )

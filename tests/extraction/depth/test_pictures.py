@@ -69,6 +69,7 @@ def test_numbered_spans_are_drawn_along_their_own_axis_in_their_colours() -> Non
         rendered,
         (0, 0, WIDTH, HEIGHT),
         [vertical, horizontal],
+        headings=[],
         thickness=3,
         badge=12,
         max_side=1000,
@@ -118,6 +119,7 @@ def test_lettered_outlines_are_framed_in_their_colours() -> None:
         rendered,
         (0, 0, WIDTH, HEIGHT),
         [("A", (40, 20, 160, 100)), ("B", (60, 40, 140, 80))],
+        headings=[],
         thickness=2,
         badge=12,
         max_side=1000,
@@ -140,6 +142,19 @@ def test_a_badge_never_covers_the_middle_where_the_vendor_prints_the_number() ->
     rendered = page([(130, 55, 146, 65)])
     span = MarkedSpan(1, Axis.VERTICAL, (150, 20), (150, 100))
     png = numbered_spans_picture(
-        rendered, (0, 0, WIDTH, HEIGHT), [span], thickness=3, badge=12, max_side=1000
+        rendered, (0, 0, WIDTH, HEIGHT), [span], headings=[], thickness=3, badge=12, max_side=1000
     )
     assert pixel(png, 138, 60) == BLACK
+
+
+def test_the_spans_and_outlines_pictures_hide_every_heading_too() -> None:
+    rendered = page([(20, 100, 60, 110)])  # a heading under the drawing
+    heading = [(20, 100, 60, 110)]
+    spans = numbered_spans_picture(
+        rendered, (0, 0, WIDTH, HEIGHT), [], headings=heading, thickness=3, badge=12, max_side=1000
+    )
+    outlines = lettered_outlines_picture(
+        rendered, (0, 0, WIDTH, HEIGHT), [], headings=heading, thickness=2, badge=12, max_side=1000
+    )
+    assert pixel(spans, 40, 105) == WHITE
+    assert pixel(outlines, 40, 105) == WHITE
