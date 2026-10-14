@@ -23,6 +23,7 @@ from vocabulary.check_holds import (
 )
 from vocabulary.reviewer_reasons import reviewer_reason
 from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE, READERS_WALL_SOURCE
+from workflow.pariksha_gates import REKHA_NO_NUMBERS_REASON, stopped_by_rekha
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +478,19 @@ def _split_reason(
     )
 
 
+def _rekha_stop_reason(picks: tuple[tuple[str, int | None], ...]) -> str:
+    """Why a page whose chosen line Rekha's gate stopped waits for the reviewer (#1228), and where
+    to act, as `_split_reason` says it."""
+    lines = sorted({pick for _, pick in picks if pick})
+    chose = f"Both AIs chose line {lines[0]}" if len(lines) == 1 else "The AIs chose a line"
+    return (
+        f"{REKHA_NO_NUMBERS_REASON} {chose}, but no printed dimension stands on any of its pieces "
+        "(it may be the outline of the stone top, or a band of material tags), so nothing on it "
+        "was read or checked. The reviewer sets up this page's countertop line on the "
+        "Measurements screen, or decides this page."
+    )
+
+
 def unchosen_page(
     page_index: int,
     record: ObservationCandidate,
@@ -487,7 +501,12 @@ def unchosen_page(
     """One reader's row-choice record as the page it describes (#1093, #1108, #1191)."""
     flags = frozenset(record.ambiguity_flags or ())
     kind, picks, kinds = _classify(flags, record.review_reason)
-    if kind == "none":
+    if stopped_by_rekha(record.ambiguity_flags):
+        # Rekha's gate stopped the line both readers chose (#1228): it blocks like a split page,
+        # and the reviewer picks the row with the same flow.
+        kind = "split"
+        reason = _rekha_stop_reason(picks)
+    elif kind == "none":
         reason = record.review_reason or "Both AIs found no countertop line on this page."
     elif kind == "older":
         reason = _older_reading_reason(record.review_reason)

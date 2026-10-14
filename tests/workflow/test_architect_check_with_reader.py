@@ -26,6 +26,7 @@ from storage.local import LocalStore
 from tests.api.test_slot_rows import _reader_support
 from tests.app.postgres_fixture import alembic_config
 from tests.extraction.architect.combined_sheet import combined_sheet
+from tests.workflow.stored_pairings import stored_pairings
 from tests.workflow.test_architect_reader import _architect_rows, _by_text, _extract, _upload
 from tests.workflow.test_architect_row_evidence import ARCH_RULE, _overall, _pairing, _piece
 from tests.workflow.test_stages import _publish_rulebook
@@ -158,7 +159,8 @@ def _check(
     from app.models.verdicts import CheckRun, Finding
 
     DatabaseStages(
-        store, architect_pairing=lambda _s, row: pairing if row == anchor else None
+        store,
+        architect_pairing=stored_pairings(lambda _s, row: pairing if row == anchor else None),
     ).run_checks(session, revision.id)
     finding = session.execute(
         select(Finding)

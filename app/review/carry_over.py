@@ -80,7 +80,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import select
@@ -105,6 +105,7 @@ from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.requirements import needs_note
 from vocabulary.semantic_types import SemanticType
 from workflow.measurements import run_layer
+from workflow.pariksha_gates import GATE_FLAG, REKHA_ROW_GATE
 from workflow.slot_row_scope import effective_row_wall
 
 __all__ = [
@@ -549,10 +550,23 @@ def _stable_trace(trace: object) -> object:
     return stable
 
 
+#: The prefix of Rekha's row-gate flags (`workflow.pariksha_gates.GateResult.flag`).
+REKHA_ROW_FLAG: Final = f"{GATE_FLAG}rekha:{REKHA_ROW_GATE}:"
+
+
 def _stable_flags(flags: Iterable[str] | None) -> list[str]:
     """A reading's flags with every id inside one (`supports:<uuid>`, minted per reading run)
-    replaced by `<id>`: the flag still counts, the id never does."""
-    return sorted({_ID_IN_TEXT.sub("<id>", flag) for flag in flags or ()})
+    replaced by `<id>`: the flag still counts, the id never does. Rekha's row-gate record on a
+    row's anchor (#1228, `REKHA_ROW_FLAG`) is left out: it says the row was handed on, not what was
+    read, and a reading from before the gate must keep matching the same reading after it. Any
+    other gate flag still counts."""
+    return sorted(
+        {
+            _ID_IN_TEXT.sub("<id>", flag)
+            for flag in flags or ()
+            if not flag.startswith(REKHA_ROW_FLAG)
+        }
+    )
 
 
 def _polygon(points: object, space: str | None) -> object:
