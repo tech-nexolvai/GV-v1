@@ -128,3 +128,89 @@ def test_a_stored_answer_is_reused_and_costs_nothing(tmp_path: Path) -> None:
     answers = ask([asked])
     assert answers[("v1:kind", OPUS)] == ViewKindAnswer(OPUS, "plan", "made up")
     assert ledger.reused == 1 and ledger.calls == 0 and ask.not_sent == [0]
+
+
+# --- review #1274 ---------------------------------------------------------------------------
+
+
+def test_the_output_stays_under_gv_local(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = script.main(["--pdf", "x.pdf", "--out", str(tmp_path / "elsewhere")])
+    assert code == script.REFUSED
+    assert "gv-local" in capsys.readouterr().err
+
+
+def test_a_paid_run_needs_the_switch_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GV_DEPTH_READER", raising=False)
+    code = script.main(
+        ["--pdf", "x.pdf", "--out", str(tmp_path / "o"), "--allow-paid", "--cap-usd", "1"]
+    )
+    assert code == script.REFUSED
+    assert "GV_DEPTH_READER" in capsys.readouterr().err
+
+
+def test_the_fraction_bar_lengths_are_read_and_never_defaulted(tmp_path: Path) -> None:
+    geometry = script.fraction_bar_settings(script.DEFAULT_READER_SETTINGS)
+    assert geometry.bar_thickness_max_pt > 0
+    partial = tmp_path / "settings.sh"
+    partial.write_text("GV_READER_FRACTION_BAR_THICKNESS_MAX_PT=0.3 \\\n")
+    with pytest.raises(ValueError):
+        script.fraction_bar_settings(partial)
+
+
+def test_a_call_refused_by_the_cap_is_not_counted_as_paid(tmp_path: Path) -> None:
+    ledger = script.Ledger(tmp_path / "calls.jsonl", None)
+    ledger.record(
+        AttemptUsage(
+            OPUS, VIEW_KIND_PROMPT_ID, VIEW_KIND_PROMPT_ID, None, None, 0, False, "SpendCapExceeded"
+        )
+    )
+    assert (ledger.calls, ledger.refused) == (0, 1)
+    ledger.record(AttemptUsage(OPUS, VIEW_KIND_PROMPT_ID, VIEW_KIND_PROMPT_ID, 10, 5, 3, False))
+    assert (ledger.calls, ledger.refused) == (1, 1)
+
+
+def _key(agent: str, cases: list[dict[str, object]]) -> dict[str, object]:
+    return {"format": "pariksha-key/1", "agent": agent, "cases": cases}
+
+
+def test_a_keyed_value_with_no_view_found_is_written_as_a_hold() -> None:
+    from extraction.depth.read import DepthReading
+
+    other = "c" * 64
+    cases: list[dict[str, object]] = [
+        {
+            "page_sha256": SHA,
+            "question_id": "p0:plan:CT010:x",
+            "field": CT010,
+            "view": "plan",
+            "statement_id": 1,
+            "set": "s",
+            "page": 1,
+        },
+        {
+            "page_sha256": other,
+            "question_id": "p0:plan:CT010:y",
+            "field": CT010,
+            "view": "plan",
+            "statement_id": 2,
+            "set": "s",
+            "page": 1,
+        },
+    ]
+    files, missed = script.answers_for_keys(
+        DepthReading(views=(), questions_asked=0),
+        [_key(script.DEPTH_AGENT, cases)],
+        "made up",
+        {SHA},
+    )
+    final = files[f"{script.DEPTH_AGENT}-final"]["answers"]
+    # The page that was read but had no view is a hold; the page not in this run is left out.
+    assert [entry["question_id"] for entry in final] == ["p0:plan:CT010:x"]
+    assert all("no view found" in reader["held"] for reader in final[0]["readers"])
+    assert len(missed) == 1
+    loaded = load_depth_answers(files[f"{script.DEPTH_AGENT}-final"])
+    assert {r.says for r in loaded.answers[(SHA, "p0:plan:CT010:x", CT010)]} == {"held"}

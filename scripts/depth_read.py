@@ -46,6 +46,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict
 from decimal import Decimal
 from fractions import Fraction
@@ -73,6 +74,7 @@ from extraction.depth.read import (
 from extraction.depth.view_kind import ViewKind
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.geometry.rows import Box
+from extraction.glyph_bands import FractionBarGeometry
 
 REFUSED = 2
 DEFAULT_RATES = REPO / "deploy" / "model_rates.us-east-1.json"
@@ -87,7 +89,20 @@ _KIND_WORD = {
     "detail": "detail",
     "other": "other",
 }
+NO_VIEW = "no view found: code found no drawing view at this place, so nothing was read here"
 _KEY_VIEW = {"plan": ViewKind.PLAN, "section": ViewKind.SECTION, "side": ViewKind.SECTION}
+
+
+#: Attempts refused before anything was sent or charged: the spend cap, a picture the API would
+#: resize, and the provider refusing the account (HTTP 402). Never counted as paid calls.
+NOT_SENT = frozenset(
+    {
+        "SpendCapExceeded",
+        "PictureWouldBeResized",
+        "ProviderAccountRefused",
+        "ProviderInFlightLimited",
+    }
+)
 
 
 class Refused(Exception):
@@ -107,6 +122,7 @@ class Ledger:
         self.spent = Decimal(0)
         self.calls = 0
         self.reused = 0
+        self.refused = 0
         self.stored: dict[tuple[str, str, str], tuple[str, str]] = {}
         if path.exists():
             from workflow.reader_reuse import question_identity
@@ -134,10 +150,11 @@ class Ledger:
         rate = self.rates.rate_for(attempt.model_id)
         if rate is None:
             return None
-        return (
-            Decimal(attempt.input_tokens) * rate.input_per_1k_tokens
-            + Decimal(attempt.output_tokens) * rate.output_per_1k_tokens
+        cost: Decimal = (
+            Decimal(attempt.input_tokens) * Decimal(rate.input_per_1k_tokens)
+            + Decimal(attempt.output_tokens) * Decimal(rate.output_per_1k_tokens)
         ) / 1000
+        return cost
 
     def record(self, attempt: AttemptUsage) -> None:
         cost = None if attempt.reused_from is not None else self.cost(attempt)
@@ -150,11 +167,13 @@ class Ledger:
             "cost_usd": None if cost is None else str(cost),
         }
         with self.lock:
-            if attempt.reused_from is None:
+            if attempt.reused_from is not None:
+                self.reused += 1
+            elif attempt.failure_kind in NOT_SENT:
+                self.refused += 1  # refused before sending: no call was made, nothing charged
+            else:
                 self.calls += 1
                 self.spent += cost or Decimal(0)
-            else:
-                self.reused += 1
             with self.path.open("a") as out:
                 out.write(json.dumps(row, default=str) + "\n")
 
@@ -212,10 +231,10 @@ def make_asker(
         got = read_crops_parallel(live, record_attempt=ledger.record, **paid)
         stop = paid["stop"]
         for job in live:
-            answer = got.get((job.key, job.model_id))
+            got_answer = got.get((job.key, job.model_id))
             answers[(job.key, job.model_id)] = (
-                answer
-                if answer is not None
+                got_answer
+                if got_answer is not None
                 else NoAnswer(
                     "no accepted answer: "
                     + (
@@ -314,7 +333,10 @@ def _containing(views: Sequence[ViewReading], region: Sequence[float]) -> ViewRe
 
 
 def answers_for_keys(
-    reading: DepthReading, keys: Sequence[Mapping[str, Any]], run: str
+    reading: DepthReading,
+    keys: Sequence[Mapping[str, Any]],
+    run: str,
+    pages_read: AbstractSet[str],
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Each key's answers files (`<agent>-ai`, `<agent>-final`), and every key value not answered."""
     by_page: dict[str, list[ViewReading]] = {}
@@ -334,16 +356,32 @@ def answers_for_keys(
         final_entries: list[dict[str, Any]] = []
         for case in key["cases"]:
             page = case["page_sha256"]
+            if page not in pages_read:
+                continue  # a page of a PDF this run was not given
             views = by_page.get(page, [])
             where = f"{case.get('set')} p{case.get('page')} {case['question_id']}"
             region = case.get("region_pt") or regions.get((page, case["statement_id"]))
             found = _containing(views, region) if region is not None else None
             if found is None and agent == DEPTH_AGENT:
-                kind = _KEY_VIEW.get(str(case.get("view")))
-                candidates = [view for view in views if (view.kind or view.code_kind.kind) is kind]
+                wanted = _KEY_VIEW.get(str(case.get("view")))
+                candidates = [
+                    view for view in views if (view.kind or view.code_kind.kind) is wanted
+                ]
                 found = candidates[0] if len(candidates) == 1 else None
             if found is None:
+                # Never left out: a value the reader never reached is a hold, so its coverage
+                # cannot look better than it is.
                 missed.append(f"{where}: no view the reader read is at this place")
+                held = [{"model_id": model, "held": NO_VIEW} for model in CLAUDE_PAIR]
+                identity = {"page_sha256": page, "question_id": case["question_id"]}
+                if agent == VIEW_AGENT:
+                    for entries in (ai_entries, final_entries):
+                        entries.append({**identity, "field": "view", "readers": held})
+                    continue
+                fields = (CT012, CT008) if case["field"] == f"{CT012}+{CT008}" else (case["field"],)
+                for field_name in fields:
+                    for entries in (ai_entries, final_entries):
+                        entries.append({**identity, "field": field_name, "readers": held})
                 continue
             if agent == VIEW_AGENT:
                 ai, final = kind_entries(found)
@@ -426,6 +464,38 @@ def reading_rows(reading: DepthReading) -> list[dict[str, Any]]:
 
 # --- main ---------------------------------------------------------------------------------
 
+#: Every output of this script stays under here: it holds a client's drawing values.
+LOCAL_ROOT = Path.home() / "gv-local"
+#: Where the deployment states the fraction-bar detector's lengths (as the demo run does).
+DEFAULT_READER_SETTINGS = REPO / "scripts" / "demo.sh"
+
+
+def under_local_root(path: Path) -> Path:
+    """`path`, or a refusal when it is not under `~/gv-local` (client values stay local)."""
+    root = LOCAL_ROOT.expanduser().resolve()
+    if path != root and root not in path.parents:
+        raise Refused(f"{path} is not under {root}: the readings hold a client's drawing values")
+    return path
+
+
+def fraction_bar_settings(path: Path) -> FractionBarGeometry:
+    """The fraction-bar detector's eight lengths, as stated in `path`; refused when one is missing
+    (they have no default, as for the width reader)."""
+    import re
+
+    from workflow.slot_reader import FRACTION_BAR_ENV, fraction_bar_from_environment
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise Refused(f"could not read the reader settings in {path}: {error}") from error
+    stated = {}
+    for name in FRACTION_BAR_ENV:
+        match = re.search(rf"^\s*{name}=(\S+)", text, flags=re.MULTILINE)
+        if match is not None:
+            stated[name] = match.group(1).rstrip("\\").strip()
+    return fraction_bar_from_environment(stated)
+
 
 def _env_key(env_file: Path | None) -> str | None:
     key = os.environ.get("ANTHROPIC_API_KEY")
@@ -454,20 +524,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--rpm", type=int, default=30, help="calls per minute per reader")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--run", default="depth-reader measuring run")
+    parser.add_argument(
+        "--reader-settings",
+        type=Path,
+        default=DEFAULT_READER_SETTINGS,
+        help="where the fraction-bar detector's lengths are stated (NAME=value lines)",
+    )
     args = parser.parse_args(argv)
 
+    from extraction.depth.read import depth_reader_enabled
     from scripts.depth_dry_run import Refused as DryRefused
     from scripts.depth_dry_run import outside_git
 
     try:
-        out = outside_git(args.out)
         if args.allow_paid and (args.cap_usd is None or args.cap_usd <= 0):
             raise Refused("--allow-paid needs a spend cap: --cap-usd X (more than 0)")
         if args.cap_usd is not None and not args.allow_paid:
             raise Refused("--cap-usd is only for a paid run: add --allow-paid")
+        if args.allow_paid and not depth_reader_enabled(os.environ):
+            raise Refused(
+                "the depth reader is off: a paid run needs GV_DEPTH_READER=true (off by default)"
+            )
         if args.pages and len(args.pdf) != 1:
             raise Refused("--pages is for one PDF only")
-    except (Refused, DryRefused) as refusal:
+        out = under_local_root(outside_git(args.out))
+        fraction_bar = fraction_bar_settings(args.reader_settings)
+    except (Refused, DryRefused, ValueError) as refusal:
         print(f"refused: {refusal}", file=sys.stderr)
         return REFUSED
 
@@ -537,7 +619,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "claude_effort": settings.effort,
         }
     ask = make_asker(ledger, allow_paid=args.allow_paid, paid=paid, max_tokens=settings.max_tokens)
-    reading = read_depth(pages, ask=ask, settings=settings)
+    reading = read_depth(pages, ask=ask, settings=settings, fraction_bar=fraction_bar)
     (out / "readings.json").write_text(json.dumps(reading_rows(reading), indent=1))
 
     usable = sum(value.usable for view in reading.views for value in view.values)
@@ -547,11 +629,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"questions {reading.questions_asked}: paid calls {ledger.calls} (${ledger.spent:.4f}), "
-        f"reused {ledger.reused}, not sent {ask.not_sent[0]}"
+        f"reused {ledger.reused}, refused before sending {ledger.refused}, "
+        f"not sent {ask.not_sent[0]}"
         + (f"; cap ${args.cap_usd}" if args.allow_paid else " (no paid calls allowed)")
     )
     if keys:
-        files, missed = answers_for_keys(reading, keys, args.run)
+        files, missed = answers_for_keys(
+            reading, keys, args.run, {page.page_sha256 for page in pages}
+        )
         for name, document_ in files.items():
             (out / f"answers-{name}.json").write_text(json.dumps(document_, indent=1))
             print(f"wrote answers-{name}.json ({len(document_['answers'])} answers)")
