@@ -27,7 +27,7 @@ Source: issue #1245; phase 4 design §3 and §5 PR 3. Verification: `tests/workf
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
@@ -60,7 +60,9 @@ from rules.project import ProjectScope
 from rules.semantic_types import ProductType
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
+from workflow.bala_items import plan_items
 from workflow.parts import outline_box
+from workflow.slot_row_scope import latest_slot_reader_run
 
 __all__ = [
     "NO_ROW_LINKED",
@@ -100,8 +102,12 @@ class LiveCountertop:
     number: int
     """Its place among the live countertops on its page, `1` from the left."""
     row_candidate_id: UUID | None
-    """The anchor of the countertop row Bala suggested it from (`part_proposal_rows`); `None` when
-    it was confirmed from another suggestion."""
+    """The anchor of its countertop row in the newest reading: the row Bala suggested it from
+    (`part_proposal_rows`), or, after a re-read, the newest row Bala matched to it by drawing and
+    outline (`row_followed`); `None` when it was confirmed from another suggestion or no newest
+    row matches it."""
+    row_followed: bool = False
+    """Whether `row_candidate_id` was found by following an older reading's link (a re-read)."""
 
     @property
     def page_number(self) -> int:
@@ -113,13 +119,23 @@ class LiveCountertop:
         return f"Countertop {self.number} on page {self.page_number}"
 
 
-def live_countertops(session: Session, package_revision_id: UUID) -> tuple[LiveCountertop, ...]:
+def live_countertops(
+    session: Session, package_revision_id: UUID, *, follow_rows: bool = True
+) -> tuple[LiveCountertop, ...]:
     """Every live countertop item on this revision's drawings, in page order, left to right.
 
     **Live** means a person's current decision confirmed it as a countertop: a withdrawn or corrected
     item keeps its row (no role holds `DELETE`) and is not here. The row it came from is read through
     its confirmation's suggestion (`part_proposal_rows`, the countertop's own link: `slot_index` is
-    `NULL`). One statement, whatever the number of items.
+    `NULL`).
+
+    **After a re-read** the newest slot-reader run has new rows, and Bala does not suggest again a
+    countertop a person already decided (same drawing, same outline): the new row has no link of its
+    own, and the item's link names the older reading's row. With `follow_rows`, such an item is
+    followed to the newest run's row the same way Bala matched it (`_follow_to_newest_rows`), so its
+    results, which are keyed by the newest row, are still its own. `follow_rows=False` (the evidence
+    step, which needs only the drawings) leaves `row_candidate_id` as the link says, and costs one
+    statement.
     """
     later = aliased(PartConfirmation)
     rows = session.execute(
@@ -130,6 +146,7 @@ def live_countertops(session: Session, package_revision_id: UUID) -> tuple[LiveC
             Page.id,
             Page.index,
             PartProposalRow.row_candidate_id,
+            PartProposalRow.extraction_run_id,
         )
         .join(PartConfirmation, PartConfirmation.drawing_item_id == DrawingItem.id)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
@@ -150,6 +167,24 @@ def live_countertops(session: Session, package_revision_id: UUID) -> tuple[LiveC
             ~exists().where(later.supersedes_id == PartConfirmation.id),
         )
     ).all()
+    if not rows:
+        return ()
+    current: dict[UUID, UUID | None] = {row[0]: row[5] for row in rows}
+    followed: set[UUID] = set()
+    if follow_rows and any(row[6] is not None for row in rows):
+        newest = latest_slot_reader_run(session, package_revision_id)
+        stale = [row for row in rows if row[6] is not None and row[6] != newest]
+        if stale and newest is not None:
+            for item_id in (row[0] for row in stale):
+                current[item_id] = None
+            found = _follow_to_newest_rows(
+                session,
+                package_revision_id,
+                newest,
+                [(row[0], row[1], row[2]) for row in stale],
+            )
+            current.update(found)
+            followed.update(found)
 
     def place(extent: Mapping[str, object]) -> tuple[Decimal, Decimal]:
         try:
@@ -161,7 +196,7 @@ def live_countertops(session: Session, package_revision_id: UUID) -> tuple[LiveC
     ordered = sorted(rows, key=lambda row: (row[4], *place(row[2]), str(row[0])))
     counts: dict[UUID, int] = {}
     countertops: list[LiveCountertop] = []
-    for item_id, view_id, _extent, page_id, page_index, row_candidate_id in ordered:
+    for item_id, view_id, _extent, page_id, page_index, _link, _run in ordered:
         counts[page_id] = counts.get(page_id, 0) + 1
         countertops.append(
             LiveCountertop(
@@ -170,10 +205,71 @@ def live_countertops(session: Session, package_revision_id: UUID) -> tuple[LiveC
                 page_id=page_id,
                 page_index=page_index,
                 number=counts[page_id],
-                row_candidate_id=row_candidate_id,
+                row_candidate_id=current[item_id],
+                row_followed=item_id in followed,
             )
         )
     return tuple(countertops)
+
+
+def _follow_to_newest_rows(
+    session: Session,
+    package_revision_id: UUID,
+    newest: UUID,
+    stale: Sequence[tuple[UUID, UUID, Mapping[str, object]]],
+) -> dict[UUID, UUID]:
+    """Each countertop confirmed from an older reading's row, followed to the newest run's row Bala
+    skipped for it (review of #1243): the item's anchor in the newest run, by item.
+
+    Bala skips a re-read countertop when a person's decision stands on a suggestion **on the same
+    drawing** with **the same outline** (`bala_items.propose_items`). So a newest row is followed to
+    only when it has no countertop link of its own in the newest run (Bala filed nothing for it),
+    Bala outlines it on the same drawing as the item, and the two outlines overlap along the row; of
+    those, the nearest outline wins, each item and each row at most once. A row Bala outlined
+    differently got a suggestion of its own and is never taken over. Anything else stays unlinked,
+    which the plan says (`NO_ROW_LINKED`) and the run check reports.
+    """
+    linked = set(
+        session.scalars(
+            select(PartProposalRow.row_candidate_id).where(
+                PartProposalRow.extraction_run_id == newest,
+                PartProposalRow.slot_index.is_(None),
+            )
+        )
+    )
+    boxes: list[tuple[UUID, UUID, tuple[Decimal, Decimal, Decimal, Decimal]]] = []
+    for row in plan_items(session, package_revision_id).rows:
+        if row.not_proposed is not None or row.view_id is None:
+            continue
+        if row.row_candidate_id in linked:
+            continue
+        for part in row.parts:
+            if part.slot_index is None:
+                box = part.box
+                boxes.append(
+                    (row.row_candidate_id, row.view_id, (box.left, box.top, box.right, box.bottom))
+                )
+    pairs: list[tuple[Decimal, str, str, UUID, UUID]] = []
+    for item_id, view_id, extent in stale:
+        try:
+            item_box = outline_box(extent)
+        except ValueError:
+            continue
+        for anchor, row_view, row_box in boxes:
+            if row_view != view_id:
+                continue
+            if item_box[2] < row_box[0] or row_box[2] < item_box[0]:
+                continue
+            distance = max(abs(a - b) for a, b in zip(item_box, row_box, strict=True))
+            pairs.append((distance, str(anchor), str(item_id), anchor, item_id))
+    followed: dict[UUID, UUID] = {}
+    taken: set[UUID] = set()
+    for _distance, _a, _i, anchor, item_id in sorted(pairs):
+        if item_id in followed or anchor in taken:
+            continue
+        followed[item_id] = anchor
+        taken.add(anchor)
+    return followed
 
 
 def countertops_by_view(
@@ -181,7 +277,7 @@ def countertops_by_view(
 ) -> dict[UUID, tuple[UUID, ...]]:
     """Each drawing view of the revision that holds a live countertop item, with those items."""
     held: dict[UUID, list[UUID]] = {}
-    for countertop in live_countertops(session, package_revision_id):
+    for countertop in live_countertops(session, package_revision_id, follow_rows=False):
         held.setdefault(countertop.view_id, []).append(countertop.item_id)
     return {view_id: tuple(items) for view_id, items in held.items()}
 

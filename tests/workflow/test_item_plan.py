@@ -279,3 +279,61 @@ def test_match_with_no_items_reports_zero(session: Session, store: LocalStore) -
     summary = DatabaseStages(store).match(session, built.revision.id)
 
     assert summary["live_items"] == {"count": 0, "countertops": 0, "unmatched": []}
+
+
+# -- a re-read: Bala does not suggest a decided countertop again, so the newest row has no link ---
+
+
+def test_after_a_re_read_the_countertop_follows_its_row_by_drawing_and_outline(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1243: a re-read makes new rows, and Bala skips the countertop a person already
+    decided (same drawing, same outline), so the newest row has no link of its own. The countertop
+    still owns that row's results: it is followed to it by drawing and outline, and the run check
+    finds its width result."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _confirm_bala_countertop(session, first)
+
+    newest = built.row(built.run(), page=0)
+    outcome = propose_items(session, built.revision.id)
+    assert outcome.already_decided >= 1
+    assert not session.scalars(
+        select(PartProposalRow).where(
+            PartProposalRow.row_candidate_id == newest, PartProposalRow.slot_index.is_(None)
+        )
+    ).all()
+    _checked(session, store, built)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+    assert entry.countertop.item_id == item
+    assert entry.countertop.row_candidate_id == newest
+    assert entry.countertop.row_followed
+    width = next(rule for rule in entry.rules if rule.rule_id == WIDTH)
+    assert [finding.scope for finding in width.findings] == ["row"]
+    assert set(countertops_by_row(session, built.revision.id)) == {newest}
+    codes = [code for code, _ids in _codes(session, built.revision.id)]
+    assert "countertop-item-without-width-result" not in codes
+
+
+def test_after_a_re_read_a_row_on_another_drawing_is_never_followed_to(
+    session: Session, store: LocalStore
+) -> None:
+    """The newest reading has its row on the other page's drawing only: nothing on the countertop's
+    own drawing matches, so it stays unlinked, its plan says so, and the run check reports it."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _confirm_bala_countertop(session, first)
+
+    built.row(built.run(), page=1)
+    propose_items(session, built.revision.id)
+    _checked(session, store, built)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+    assert entry.countertop.item_id == item
+    assert entry.countertop.row_candidate_id is None
+    assert entry.note == NO_ROW_LINKED
+    codes = [code for code, _ids in _codes(session, built.revision.id)]
+    assert "countertop-item-without-width-result" in codes
