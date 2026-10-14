@@ -288,7 +288,8 @@ record new times **on CI** (a laptop runs the suite at a different speed, so its
    ```
 
 2. When that run is green, join the four files. The shards never share a test, so this is a plain
-   union; the script stops if any test appears twice or a shard file is missing.
+   union; the script stops if a shard file is missing, a test appears twice, or a test name does not
+   start with `tests/`.
 
    ```bash
    run=<id of the green run>
@@ -301,6 +302,7 @@ record new times **on CI** (a laptop runs the suite at a different speed, so its
    merged = {}
    for path in files:
        shard = json.loads(path.read_text())
+       assert all(name.startswith("tests/") for name in shard), f"{path.name}: odd names"
        assert not merged.keys() & shard.keys(), f"{path.name} repeats a test"
        merged.update(shard)
    text = json.dumps(merged, sort_keys=True, indent=4) + "\n"

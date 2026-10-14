@@ -246,11 +246,24 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$STORE_DURATIONS" = true ]; then
-            cp .test_durations "$RUNNER_TEMP/test-durations-shard-$GROUP.json"
+            # `--durations-path=FILE`, one word, on purpose. Written as two words, pytest takes a file
+            # outside the checkout as a path to test, moves its root directory up to the common parent,
+            # and every test name gains a prefix: no recorded time then matches a test, the split falls
+            # back to equal counts, and the recorded names are useless. The check after it makes sure.
+            recorded="$RUNNER_TEMP/test-durations-shard-$GROUP.json"
+            cp .test_durations "$recorded"
             pytest -q --splits 4 --group "$GROUP" \
               --splitting-algorithm least_duration \
-              --durations-path "$RUNNER_TEMP/test-durations-shard-$GROUP.json" \
+              --durations-path="$recorded" \
               --store-durations --clean-durations
+            python - "$recorded" <<'PY'
+          import json, sys
+          names = json.load(open(sys.argv[1]))
+          wrong = [name for name in names if not name.startswith("tests/")]
+          if not names or wrong:
+              sys.exit(f"recorded test names are not tests/...: {len(wrong)} of {len(names)}, e.g. {wrong[:3]}")
+          print(f"recorded the times of {len(names)} tests")
+          PY
           else
             pytest -q --splits 4 --group "$GROUP" \
               --splitting-algorithm least_duration \
