@@ -444,6 +444,12 @@ class SavedQuantityOut(BaseModel):
     #: True only when every rule input this quantity feeds holds exactly these values. False means at
     #: least one check would read nothing, or a different number, so the field is not done yet.
     complete: bool
+    #: The checks (rule ids, in the form's order) whose input holds exactly `values` (#1262). With
+    #: `complete` false, the screen names these as the checks that still use the typed value.
+    held_by: tuple[str, ...] = ()
+    #: The checks whose input holds a different typed value (#1262). A check in neither list holds
+    #: nothing typed, so it uses a confirmed reading of the field, or waits for one.
+    differs_for: tuple[str, ...] = ()
 
 
 class SavedParameterOut(BaseModel):
