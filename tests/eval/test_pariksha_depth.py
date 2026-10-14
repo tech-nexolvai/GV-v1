@@ -623,3 +623,80 @@ def test_the_depth_compare_refuses_cards_of_another_agent() -> None:
     # The generic compare refuses two different agents too.
     with pytest.raises(IncomparableRuns):
         compare_scorecards(depth, view)
+
+
+# --- review of #1261: a missing reader, the start edge, exactness --------------------------
+
+
+def test_an_entry_that_does_not_name_both_readers_is_refused() -> None:
+    # A reader dropped from one entry must never turn an agreed-wrong into "no answer" (or
+    # "unsure"): the file is refused.
+    given = good_depth_answers()
+    given["answers"][0]["readers"] = given["answers"][0]["readers"][:1]
+    with pytest.raises(DepthAnswersError, match="both readers"):
+        load_depth_answers(given)
+
+
+def test_a_file_whose_reader_names_differ_between_entries_is_refused() -> None:
+    given = good_depth_answers()
+    given["answers"][1]["readers"][1]["model_id"] = "reader-c"
+    with pytest.raises(DepthAnswersError, match="both readers"):
+        load_depth_answers(given)
+
+
+def _front_key(edge: str = "cabinet_face") -> dict:
+    return depth_key(
+        _depth_case("p3:plan:CT007:front", "CT007", {"texts": ['4 1/2"'], "start_edge": edge})
+    )
+
+
+def _front(first: dict, second: dict):
+    return _card(
+        _front_key(), answers(DEPTH_AGENT, entry("p3:plan:CT007:front", "CT007", first, second))
+    )
+
+
+def test_a_front_offset_is_right_only_from_the_keyed_start_edge() -> None:
+    from_face = {"value": '4 1/2"', "start_edge": "cabinet_face"}
+    from_stone = {"value": '4 1/2"', "start_edge": "stone_front_edge"}
+    no_edge = {"value": '4 1/2"'}
+
+    assert _outcomes(_front(from_face, from_face))["p3:plan:CT007:front#CT007"] == AGREED_RIGHT
+    # The same number from the stone's edge is another measurement: wrong, never right.
+    wrong = _front(from_stone, from_stone)
+    assert _outcomes(wrong)["p3:plan:CT007:front#CT007"] == AGREED_WRONG
+    assert {reader.verdict for reader in wrong.cases[0].readers} == {"wrong"}
+    # A value with no start edge is wrong too.
+    assert _outcomes(_front(no_edge, no_edge))["p3:plan:CT007:front#CT007"] == AGREED_WRONG
+    # The same number from two different edges is no agreement.
+    assert _outcomes(_front(from_face, from_stone))["p3:plan:CT007:front#CT007"] == DISAGREED
+
+
+def test_a_start_edge_outside_the_vocabulary_is_refused() -> None:
+    with pytest.raises(KeyFormatError, match="start_edge"):
+        load_depth_key(_front_key("the stone front"))
+    given = answers(
+        DEPTH_AGENT,
+        entry(
+            "p3:plan:CT007:front",
+            "CT007",
+            {"value": '4 1/2"', "start_edge": "front"},
+            UNSURE,
+        ),
+    )
+    with pytest.raises(DepthAnswersError, match="start_edge"):
+        load_depth_answers(given)
+    # A start edge belongs to a front offset only.
+    edged = good_depth_answers(depth=({"value": '25 1/2"', "start_edge": "cabinet_face"}, UNSURE))
+    with pytest.raises(DepthAnswersError, match="CT007"):
+        load_depth_answers(edged)
+
+
+def test_values_are_exact_a_near_miss_never_matches() -> None:
+    # No tolerance: a sixty-fourth off is another value.
+    for near in ('25 33/64"', '25 9/16"', '25 31/64"', '25.51"'):
+        card = _card(depth_key(), good_depth_answers(depth=(value(near), value(near))))
+        assert _outcomes(card)["p3:plan:CT010:depth#CT010"] == AGREED_WRONG, near
+    # And two readers a sixty-fourth apart do not agree.
+    card = _card(depth_key(), good_depth_answers(depth=(value('25 1/2"'), value('25 33/64"'))))
+    assert _outcomes(card)["p3:plan:CT010:depth#CT010"] == DISAGREED

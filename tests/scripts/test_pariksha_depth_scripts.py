@@ -139,3 +139,13 @@ def test_refusals_exit_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
     inside[-1] = str(Path(__file__).resolve().parent / "never-written.json")
     assert pariksha_scorecard.main(inside) == 2
     assert not (Path(__file__).resolve().parent / "never-written.json").exists()
+
+
+def test_an_answers_file_missing_a_reader_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    given = good_depth_answers()
+    given["answers"][0]["readers"] = given["answers"][0]["readers"][1:]
+    assert pariksha_scorecard.main(_score(tmp_path, DEPTH_AGENT, depth_key(), given, "one")) == 2
+    assert "both readers" in capsys.readouterr().err
+    assert not (tmp_path / "one.json").exists()
