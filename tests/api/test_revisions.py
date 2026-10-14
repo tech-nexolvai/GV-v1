@@ -1017,7 +1017,11 @@ def test_the_carry_forward_migration_is_the_single_head() -> None:
     assert found is not None and found.down_revision == "0088_outbox_abandoned"
     # #1191 added 0090 on top, #1193 0091, #1195 0092, #1206 0093, #1215 0094 and #1236 0095;
     # 0089 is still in the chain below them.
-    assert script.get_heads() == ["0095_part_proposal_rows"]
+    # Later migrations (#1238's 0096) may follow, on one line of history to the single head.
+    (head,) = script.get_heads()
+    assert "0095_part_proposal_rows" in {
+        rev.revision for rev in script.walk_revisions("base", head)
+    }
     above = script.get_revision("0090_no_countertop_answers")
     assert above is not None and above.down_revision == found.revision
     reference = script.get_revision("0091_reference_view_suggestion")
