@@ -47,6 +47,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import KeyFormatError
+from eval.smriti.actors import ReviewersFileError
 from eval.smriti.candidates import (
     AGENT_ORDER,
     Candidate,
@@ -299,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         CandidatesFileError,
         KeyFormatError,
         LibraryError,
+        ReviewersFileError,
         FileExistsError,
         FileNotFoundError,
     ) as error:

@@ -402,8 +402,37 @@ def test_answers_with_no_yes_make_no_key() -> None:
 def test_an_unlisted_actor_is_never_written_even_when_convertible(status: str) -> None:
     stranger = replace(_no_countertop(), actor_status=status, decided_by="ui reviewer")
     assert ready_candidates(_export(stranger)) == ()
-    with pytest.raises(ConfirmationRefused, match="real reviewers"):
+    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
         _confirm(_export(stranger), _yes("no_countertop_answers:1"))
+
+
+def test_a_v1_file_with_a_scripted_reviewer_is_refused(tmp_path: Path) -> None:
+    from eval.smriti.candidates import _candidate_document, _digest
+
+    entry = {
+        name: value
+        for name, value in _candidate_document(
+            replace(_no_countertop(), decided_by="ui reviewer")
+        ).items()
+        if name not in {"overturned", "mistake_needed", "actor_status", "answer_source"}
+    }
+    document: dict[str, Any] = {
+        "format": "smriti-candidates/1",
+        "database": "synthetic",
+        "exported_at": "2026-10-14T00:00:00+00:00",
+        "code_version": "test",
+        "candidates": [entry],
+        "counts": {},
+    }
+    document["sha256"] = _digest(document)
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps(document))
+    export = read_candidates(path)
+    (only,) = export.candidates
+    assert only.actor_status == UNCHECKED and not only.convertible
+    assert ready_candidates(export) == ()
+    with pytest.raises(ConfirmationRefused, match="cannot be confirmed"):
+        _confirm(export, _yes(only.candidate_id))
 
 
 def test_nothing_answered_is_refused() -> None:

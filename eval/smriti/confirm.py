@@ -226,8 +226,8 @@ def not_ready(candidate: Candidate) -> str | None:
     if candidate.actor_status != REVIEWER:
         return (
             f"it was decided by {candidate.decided_by!r} (actor status "
-            f"{candidate.actor_status!r}), who is not on the local list of real reviewers; only "
-            "a real reviewer's decision is ever written into a key"
+            f"{candidate.actor_status!r}), who is not on the local real-reviewer list; only a "
+            "real reviewer's decision is ever written into a key (#1267)"
         )
     return None
 
