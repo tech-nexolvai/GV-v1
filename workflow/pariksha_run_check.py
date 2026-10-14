@@ -18,7 +18,8 @@ kept, per agent (`gate_tally`, #1228).
 **What it checks, on the revision's live results** (the check runs not superseded):
 
 * (a) coverage: every published rule for the package's product has a result; every abstention says
-  why; every countertop row (and every confirmed countertop) has its width result.
+  why; every countertop row (and every confirmed countertop) has its width result; every live
+  countertop item has a width result, its row's or its own (#1245; report only).
 * (b) two judgments: no PASS or FAIL rests on a one-judgment architect pairing (the pairing the
   result recorded in its own note, checked against the record it names; `AUTOMATIC_SOURCES`) or
   on a value with only one reading on record; no PASS rests on a reading flagged
@@ -91,6 +92,7 @@ from workflow.architect_row_plan import (
     AUTOMATIC_SOURCES,
     pairing_source_from_notes,
 )
+from workflow.item_plan import LiveCountertop, live_countertops
 from workflow.pariksha_gates import (
     Agent,
     GateDecision,
@@ -618,6 +620,41 @@ def _width_coverage(
                     (("item", str(subject.item_id)), ("page", str(subject.page_index + 1))),
                 )
             )
+    return items
+
+
+def _item_width_coverage(
+    countertops: Sequence[LiveCountertop],
+    manual: Sequence[CountertopScope] | None,
+    *,
+    width_rows: set[UUID],
+    width_items: set[UUID],
+) -> list[RunCheckItem]:
+    """Every live countertop item has a width result: its row's (the row it was confirmed from,
+    `part_proposal_rows`) or its own (#1245).
+
+    **Report only**: nothing is held or changed (Nina's gate reads `decision_faults`, not this). A
+    countertop with a confirmed run is already named by `countertop-without-width-result`, so it is
+    not named twice.
+    """
+    reported = {subject.item_id for subject in manual or ()}
+    items: list[RunCheckItem] = []
+    for countertop in countertops:
+        if countertop.item_id in reported or countertop.item_id in width_items:
+            continue
+        if countertop.row_candidate_id is not None and countertop.row_candidate_id in width_rows:
+            continue
+        items.append(
+            RunCheckItem(
+                Check.COVERAGE,
+                "countertop-item-without-width-result",
+                Agent.KAUTILYA,
+                Action.HOLD,
+                f"{countertop.label} has no live width result: no countertop row's width check, "
+                "and no width check of its own, belongs to it.",
+                (("item", str(countertop.item_id)), ("page", str(countertop.page_number))),
+            )
+        )
     return items
 
 
@@ -1497,15 +1534,20 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
             for finding in widths
             if finding.scope_row_candidate_id is not None
         }
+        width_items = {
+            finding.scope_item_id for finding in widths if finding.scope_item_id is not None
+        }
         items += _width_coverage(
             rows,
             manual,
             shop_versions={page.document_version_id for page in shop_pages},
             manual_pages=manual_pages,
             width_rows=width_rows,
-            width_items={
-                finding.scope_item_id for finding in widths if finding.scope_item_id is not None
-            },
+            width_items=width_items,
+        )
+        countertop_items = live_countertops(session, package_revision_id)
+        items += _item_width_coverage(
+            countertop_items, manual, width_rows=width_rows, width_items=width_items
         )
         if latest_slot_reader_run(session, package_revision_id) is not None:
             items += _unread_pages(
@@ -1521,6 +1563,7 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
             {
                 "countertop rows": len(rows),
                 "confirmed countertops": len(manual or ()),
+                "live countertop items": len(countertop_items),
                 "vendor pages": len(shop_pages),
                 "pages not read": len(unchosen),
             }

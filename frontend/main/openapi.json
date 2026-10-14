@@ -2408,6 +2408,35 @@
         "title": "ChatModelsOut",
         "type": "object"
       },
+      "CheckPlanOut": {
+        "description": "Each live countertop item of a revision and its plan, in page order (#1245). Read-only.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemPlanOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "items"
+        ],
+        "title": "CheckPlanOut",
+        "type": "object"
+      },
       "CheckRequest": {
         "additionalProperties": false,
         "description": "Asking for the checks, and what the reviewer says about the layout.\n\n**Discriminators travel with the request rather than being stored as evidence**, because that is\nwhat they are: a statement about how to read this package on this run. A rule with a discriminator\nnobody stated abstains with REVIEW_REQUIRED however complete the measurements are, so without\nthese two `CT-WIDTH-001` and `CAB-FILLER-001` could never reach a verdict.",
@@ -2932,6 +2961,38 @@
         "title": "CountertopChangeOut",
         "type": "object"
       },
+      "CountertopItemRefOut": {
+        "description": "A countertop a person confirmed (a live countertop item, #1245): which one, and where.",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "label": {
+            "description": "\"Countertop 1 on page 3\".",
+            "title": "Label",
+            "type": "string"
+          },
+          "number": {
+            "description": "Its place among the page's live countertops, 1 from the left.",
+            "title": "Number",
+            "type": "integer"
+          },
+          "page_number": {
+            "title": "Page Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "item_id",
+          "page_number",
+          "number",
+          "label"
+        ],
+        "title": "CountertopItemRefOut",
+        "type": "object"
+      },
       "CountertopOut": {
         "description": "One confirmed countertop and its run.",
         "properties": {
@@ -3081,6 +3142,17 @@
           "architect": {
             "$ref": "#/components/schemas/ArchitectResultOut",
             "description": "Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001)."
+          },
+          "countertop_item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountertopItemRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The countertop a person confirmed from this row (#1245), through Bala's link (`part_proposal_rows`): the screen groups the row's results under it. The results stay keyed by the row. Null while no live countertop item was confirmed from it."
           },
           "delta": {
             "anyOf": [
@@ -5136,6 +5208,61 @@
         "title": "InForceOut",
         "type": "object"
       },
+      "ItemPlanOut": {
+        "description": "What is checked for one live countertop item (#1245): the seed of the per-item plan.",
+        "properties": {
+          "countertop": {
+            "$ref": "#/components/schemas/CountertopItemRefOut"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedFindingOut"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The countertop row it was confirmed from (`row_id` on the results); null if none.",
+            "title": "Row Id"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedRuleOut"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "countertop",
+          "row_id",
+          "rules",
+          "findings",
+          "note"
+        ],
+        "title": "ItemPlanOut",
+        "type": "object"
+      },
       "LayoutProposalOut": {
         "description": "A model-proposed discriminator answer, still waiting for reviewer confirmation.",
         "properties": {
@@ -6942,6 +7069,89 @@
           "drawings"
         ],
         "title": "PartsOut",
+        "type": "object"
+      },
+      "PlannedFindingOut": {
+        "description": "One live result that belongs to a countertop: its row's, or the countertop's own.",
+        "properties": {
+          "finding_id": {
+            "format": "uuid",
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "row",
+              "item"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "rule_id",
+          "outcome",
+          "scope"
+        ],
+        "title": "PlannedFindingOut",
+        "type": "object"
+      },
+      "PlannedRuleOut": {
+        "description": "One published rule for a countertop, and where it stands for that countertop (#1245).",
+        "properties": {
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedFindingOut"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "missing": {
+            "description": "What the rule's whole-package result is waiting on; empty when nothing.",
+            "items": {
+              "$ref": "#/components/schemas/MissingInputOut"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "resolved": {
+            "description": "Whether the rulebook says which version of the rule applies from what is stated alone. False for a rule chosen by the walls, which the checks resolve per row.",
+            "title": "Resolved",
+            "type": "boolean"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "waits_for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why it could not be resolved; null when it was.",
+            "title": "Waits For"
+          }
+        },
+        "required": [
+          "rule_id",
+          "resolved",
+          "waits_for",
+          "findings",
+          "missing"
+        ],
+        "title": "PlannedRuleOut",
         "type": "object"
       },
       "PointOut": {
@@ -12988,6 +13198,79 @@
         "summary": "Ask for the checks to be run against this package",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/plan": {
+      "get": {
+        "description": "For each live countertop item (one a person confirmed and still stands by), the published\ncountertop rules and where each stands, the results its row or the item itself has, and what\neach rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).\n\n**Read-only, and it decides nothing**: no check runs, no result changes. A countertop with no\ncountertop row linked to it says so in `note`.",
+        "operationId": "countertop_item_plan_api_v1_projects__project_id__packages__package_id__countertop_items_plan_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "An earlier revision's number. Default: the newest revision.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number. Default: the newest revision.",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckPlanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read each confirmed countertop's check plan: its rules, its results, what they wait on",
+        "tags": [
+          "visual reviewer"
         ]
       }
     },

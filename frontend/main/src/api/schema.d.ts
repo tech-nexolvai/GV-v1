@@ -599,6 +599,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read each confirmed countertop's check plan: its rules, its results, what they wait on
+         * @description For each live countertop item (one a person confirmed and still stands by), the published
+         *     countertop rules and where each stands, the results its row or the item itself has, and what
+         *     each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
+         *
+         *     **Read-only, and it decides nothing**: no check runs, no result changes. A countertop with no
+         *     countertop row linked to it says so in `note`.
+         */
+        get: operations["countertop_item_plan_api_v1_projects__project_id__packages__package_id__countertop_items_plan_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/countertop-results": {
         parameters: {
             query?: never;
@@ -3177,6 +3202,24 @@ export interface components {
             models: components["schemas"]["ChatModelChoice"][];
         };
         /**
+         * CheckPlanOut
+         * @description Each live countertop item of a revision and its plan, in page order (#1245). Read-only.
+         */
+        CheckPlanOut: {
+            /** Items */
+            items: components["schemas"]["ItemPlanOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+        };
+        /**
          * CheckRequest
          * @description Asking for the checks, and what the reviewer says about the layout.
          *
@@ -3423,6 +3466,29 @@ export interface components {
             page_number: number;
         };
         /**
+         * CountertopItemRefOut
+         * @description A countertop a person confirmed (a live countertop item, #1245): which one, and where.
+         */
+        CountertopItemRefOut: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /**
+             * Label
+             * @description "Countertop 1 on page 3".
+             */
+            label: string;
+            /**
+             * Number
+             * @description Its place among the page's live countertops, 1 from the left.
+             */
+            number: number;
+            /** Page Number */
+            page_number: number;
+        };
+        /**
          * CountertopOut
          * @description One confirmed countertop and its run.
          */
@@ -3466,6 +3532,8 @@ export interface components {
             agreement: components["schemas"]["AgreementFactsOut"];
             /** @description Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001). */
             architect?: components["schemas"]["ArchitectResultOut"];
+            /** @description The countertop a person confirmed from this row (#1245), through Bala's link (`part_proposal_rows`): the screen groups the row's results under it. The results stay keyed by the row. Null while no live countertop item was confirmed from it. */
+            countertop_item?: components["schemas"]["CountertopItemRefOut"] | null;
             delta: components["schemas"]["ExactValueOut"] | null;
             /**
              * Drawn Length Note
@@ -4368,6 +4436,24 @@ export interface components {
             text: string;
         };
         /**
+         * ItemPlanOut
+         * @description What is checked for one live countertop item (#1245): the seed of the per-item plan.
+         */
+        ItemPlanOut: {
+            countertop: components["schemas"]["CountertopItemRefOut"];
+            /** Findings */
+            findings: components["schemas"]["PlannedFindingOut"][];
+            /** Note */
+            note: string | null;
+            /**
+             * Row Id
+             * @description The countertop row it was confirmed from (`row_id` on the results); null if none.
+             */
+            row_id: string | null;
+            /** Rules */
+            rules: components["schemas"]["PlannedRuleOut"][];
+        };
+        /**
          * LayoutProposalOut
          * @description A model-proposed discriminator answer, still waiting for reviewer confirmation.
          */
@@ -5261,6 +5347,50 @@ export interface components {
         PartsOut: {
             /** Drawings */
             drawings: components["schemas"]["DrawingOut"][];
+        };
+        /**
+         * PlannedFindingOut
+         * @description One live result that belongs to a countertop: its row's, or the countertop's own.
+         */
+        PlannedFindingOut: {
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            outcome: components["schemas"]["Outcome"];
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "row" | "item";
+        };
+        /**
+         * PlannedRuleOut
+         * @description One published rule for a countertop, and where it stands for that countertop (#1245).
+         */
+        PlannedRuleOut: {
+            /** Findings */
+            findings: components["schemas"]["PlannedFindingOut"][];
+            /**
+             * Missing
+             * @description What the rule's whole-package result is waiting on; empty when nothing.
+             */
+            missing: components["schemas"]["MissingInputOut"][];
+            /**
+             * Resolved
+             * @description Whether the rulebook says which version of the rule applies from what is stated alone. False for a rule chosen by the walls, which the checks resolve per row.
+             */
+            resolved: boolean;
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Waits For
+             * @description Why it could not be resolved; null when it was.
+             */
+            waits_for: string | null;
         };
         /**
          * PointOut
@@ -8229,6 +8359,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    countertop_item_plan_api_v1_projects__project_id__packages__package_id__countertop_items_plan_get: {
+        parameters: {
+            query?: {
+                /** @description An earlier revision's number. Default: the newest revision. */
+                revision?: number | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckPlanOut"];
                 };
             };
             /** @description Validation Error */

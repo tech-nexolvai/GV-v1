@@ -8,6 +8,7 @@ import {
   bucketCounts,
   defaultFilter,
   failsNeedingYou,
+  groupByCountertop,
   isSplitPage,
   kpis as computeKpis,
   matchesFilter,
@@ -31,6 +32,7 @@ import { OtherChecks, type BulkResult } from './other-checks';
 import { ListedPages, type AnswerNoCountertop, type ConfirmNoCountertopPages, type DrawingNotRead, type RowNotChecked } from './no-countertop-pages';
 import { ArchitectNotice } from './architect-line';
 import { useSignedOff } from '@/lib/signed-off';
+import { OutcomeBadge } from '@/components/ui/outcome-badge';
 
 // The chart library is fetched only when a review has results to draw.
 const OutcomeChart = lazy(() => import('./outcome-chart'));
@@ -155,6 +157,9 @@ export function ResultsDashboard({
   // shown on its row, so neither is listed again under "Other checks".
   const countertopIds = new Set([...rows.map((r) => r.finding_id).filter(Boolean), ...architectFindingIds(rows)]);
   const others = findings.filter((f) => !countertopIds.has(f.id));
+  // Grouped per confirmed countertop on screen (#1245): a countertop's other results go under it,
+  // and "Whole package" holds the rest. Results stay keyed by the row.
+  const { groups, wholePackage } = groupByCountertop(rows, others);
   const blocking = signedOff ? new Set<string>() : (blockingIds ?? new Set<string>());
   // Said once above the table when every countertop shares it (#1126); per row otherwise.
   const sharedReason = sharedNotComparedReason(rows);
@@ -269,7 +274,27 @@ export function ResultsDashboard({
                   : 'No countertops in this group.'}
             </p>
           ) : (
-            <CountertopTable rows={visible} allRows={rows} actions={actions} architectNotice={sharedReason !== null} notCheckedHint={notCheckedHint(situation)} />
+            <CountertopTable
+              rows={visible}
+              allRows={rows}
+              actions={actions}
+              architectNotice={sharedReason !== null}
+              notCheckedHint={notCheckedHint(situation)}
+              groups={groups}
+              groupFindings={(group) => (
+                <ul data-slot="countertop-group-findings" className="flex flex-col gap-1">
+                  {group.findings.map((finding) => (
+                    <li key={finding.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                      <OutcomeBadge outcome={finding.outcome} />
+                      <span className="min-w-0 flex-1 truncate">{ruleNames.get(finding.check_id) ?? finding.name}</span>
+                      {blocking.has(finding.id) && (
+                        <Button size="sm" variant="ghost" onClick={() => setDeciding({ finding, title: finding.scope_label ?? finding.name })}>Decide</Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            />
           )}
         </>
       )}
@@ -286,7 +311,8 @@ export function ResultsDashboard({
       )}
 
       <OtherChecks
-        findings={others}
+        findings={wholePackage}
+        title={groups.length > 0 ? 'Whole package' : undefined}
         ruleNames={ruleNames}
         blocking={blocking}
         onDecide={(finding) => setDeciding({ finding, title: finding.scope_label ?? finding.name })}

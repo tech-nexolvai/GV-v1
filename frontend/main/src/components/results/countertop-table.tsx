@@ -1,11 +1,11 @@
-import { Fragment, useRef, useState } from 'react';
+import { Fragment, useRef, useState, type ReactNode } from 'react';
 import { getCoreRowModel, getSortedRowModel, useReactTable, type ColumnDef, type SortingState } from '@tanstack/react-table';
 import { ChevronRight, CircleDashed, FileSearch, Hourglass, LayoutPanelTop, Lock, PencilLine } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import type { CountertopResult } from '@/api/client';
 import type { Finding } from '@/data/types';
-import { decisionWords, formatDelta, initials, isNotChecked, isSplitPage, rowNeedsYou, sortValue, widthNeedsYou } from '@/lib/countertop-results';
+import { decisionWords, formatDelta, initials, isNotChecked, isSplitPage, rowNeedsYou, sectionRows, sortValue, widthNeedsYou, type CountertopGroup } from '@/lib/countertop-results';
 import { architectState, neutralNumbers, headlinePair, pairLabel, pairedByWords } from '@/lib/architect';
 import { SortableHeader } from '@/components/data-table/data-table';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
@@ -22,7 +22,7 @@ import { ArchitectMatchDetails } from './architect-match-details';
 import { SplitPageNote } from './split-page-note';
 import { CarriedOver } from './carried-over';
 import { DrawnLengthNote } from './drawn-length-note';
-import { CountertopName, CountertopTitle } from './countertop-title';
+import { CountertopItemTitle, CountertopName, CountertopTitle } from './countertop-title';
 
 export interface RowActions {
   onShowDrawing: (row: CountertopResult) => void;
@@ -60,6 +60,8 @@ export function CountertopTable({
   actions,
   architectNotice = false,
   notCheckedHint = null,
+  groups = [],
+  groupFindings,
 }: {
   rows: CountertopResult[];
   /**
@@ -75,6 +77,13 @@ export function CountertopTable({
   architectNotice?: boolean;
   /** The line under a "Not checked" row (#1179): what to do, or why the last run made no result. */
   notCheckedHint?: string | null;
+  /**
+   * The countertops a person confirmed (#1245): each one's rows are shown under its heading, in
+   * group order, and the rows no countertop was confirmed from follow. Empty: no headings.
+   */
+  groups?: readonly CountertopGroup[];
+  /** A countertop's other results, shown under its heading. */
+  groupFindings?: (group: CountertopGroup) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const body = useRef<HTMLTableSectionElement>(null);
@@ -91,7 +100,9 @@ export function CountertopTable({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
   });
-  const ordered = table.getRowModel().rows.map((r) => r.original);
+  // Grouped per confirmed countertop (#1245): sorting orders rows within each countertop.
+  const sections = sectionRows(table.getRowModel().rows.map((r) => r.original), groups);
+  const grouped = groups.length > 0;
   const header = (id: string, label: string, right = false) => {
     const column = table.getColumn(id);
     return column ? <SortableHeader compact column={column} className={right ? 'ml-auto' : undefined}>{label}</SortableHeader> : label;
@@ -143,7 +154,16 @@ export function CountertopTable({
             </TableRow>
           </TableHeader>
           <TableBody ref={body}>
-            {ordered.map((row) => {
+            {sections.map((section) => (
+              <Fragment key={section.group?.item.item_id ?? 'not-grouped'}>
+                {grouped && (
+                  <TableRow data-slot="countertop-group" data-item-id={section.group?.item.item_id} className="bg-muted/30 hover:bg-muted/30">
+                    <TableCell colSpan={10} className="py-2 whitespace-normal">
+                      <GroupHeading group={section.group} findings={groupFindings} />
+                    </TableCell>
+                  </TableRow>
+                )}
+            {section.rows.map((row) => {
               const open = expanded.has(row.row_id);
               return (
                 <Fragment key={row.row_id}>
@@ -191,13 +211,22 @@ export function CountertopTable({
                 </Fragment>
               );
             })}
+              </Fragment>
+            ))}
           </TableBody>
         </Table>
       </div>
 
       {/* Phones: the same rows, stacked. */}
       <ul className="flex flex-col gap-2 md:hidden" aria-label="Countertops">
-        {ordered.map((row) => {
+        {sections.map((section) => (
+          <Fragment key={section.group?.item.item_id ?? 'not-grouped'}>
+            {grouped && (
+              <li data-slot="countertop-group" data-item-id={section.group?.item.item_id} className="px-1 pt-2 text-sm">
+                <GroupHeading group={section.group} findings={groupFindings} />
+              </li>
+            )}
+        {section.rows.map((row) => {
           const open = expanded.has(row.row_id);
           return (
             <li key={row.row_id} className={cn('rounded-xl border bg-card p-3', rowNeedsYou(row) && 'border-outcome-review-fg/40')}>
@@ -240,9 +269,27 @@ export function CountertopTable({
             </li>
           );
         })}
+          </Fragment>
+        ))}
       </ul>
     </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * A confirmed countertop's heading (#1245), with its other results under it; or, after them, the
+ * heading of the rows no countertop was confirmed from.
+ */
+function GroupHeading({ group, findings }: { group: CountertopGroup | null; findings?: (group: CountertopGroup) => ReactNode }) {
+  if (group === null) {
+    return <span className="font-medium text-muted-foreground">Not confirmed as a countertop yet</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-medium"><CountertopItemTitle item={group.item} /></span>
+      {group.findings.length > 0 && findings?.(group)}
+    </div>
   );
 }
 

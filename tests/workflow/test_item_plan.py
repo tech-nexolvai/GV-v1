@@ -1,0 +1,281 @@
+"""Each live countertop item, its plan, its line in the run check, and `match` reporting it (#1245).
+
+Verification for `workflow/item_plan.py` (`check_plan_for`, `live_countertops`,
+`countertops_by_row`), the run-check line "every live countertop item has a width finding"
+(`workflow/pariksha_run_check.py`) and the items in `DatabaseStages.match`'s summary.
+
+The countertops here are made the way a reviewer makes them: Bala suggests one from the countertop
+row the slot reader read (`workflow/bala_items.py`), and a person confirms it with one click
+(`workflow/parts.py:confirm_part`). Every value is made up.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
+
+from app.db.session import session_factory
+from app.models import PartProposal, PartProposalRow
+from app.verdicts.rulebook import snapshot_store
+from rules.semantic_types import ProductType
+from storage.local import LocalStore
+from tests.workflow.test_bala_items import _Revision
+from tests.workflow.test_part_proposals_route import _upgrade
+from tests.workflow.test_stages import _publish_rulebook
+from vocabulary.part_kinds import PartKind
+from workflow.bala_items import propose_items
+from workflow.item_plan import (
+    NO_ROW_LINKED,
+    check_plan_for,
+    countertops_by_row,
+    live_countertops,
+)
+from workflow.pariksha_run_check import run_check
+from workflow.parts import confirm_part, record_part_proposal, withdraw_part
+from workflow.stages import DatabaseStages
+
+pytest_plugins = ("tests.app.postgres_fixture",)
+
+PERSON = "reviewer@example.com"
+WIDTH = "CT-WIDTH-001"
+
+
+@pytest.fixture
+def session(postgres_engine: Engine) -> Iterator[Session]:
+    _upgrade(postgres_engine)
+    opened = session_factory(postgres_engine)()
+    try:
+        yield opened
+    finally:
+        opened.close()
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> LocalStore:
+    return LocalStore(root=tmp_path, ticket_secret=b"synthetic-test-only")
+
+
+def _confirm_bala_countertop(session: Session, anchor: UUID) -> UUID:
+    """A person confirms Bala's countertop suggestion for the row anchored at `anchor`."""
+    proposal = session.scalars(
+        select(PartProposal)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .where(PartProposalRow.row_candidate_id == anchor, PartProposalRow.slot_index.is_(None))
+    ).one()
+    confirmation = confirm_part(
+        session, proposal=proposal, kind=PartKind.COUNTERTOP, code=None, actor=PERSON
+    )
+    assert confirmation.drawing_item_id is not None
+    return confirmation.drawing_item_id
+
+
+def _unlinked_countertop(session: Session, built: _Revision, page: int) -> UUID:
+    """A countertop a person confirmed from a suggestion that is not Bala's: it has no row."""
+    box = [
+        (Decimal("0.10"), Decimal("0.20")),
+        (Decimal("0.30"), Decimal("0.20")),
+        (Decimal("0.30"), Decimal("0.25")),
+        (Decimal("0.10"), Decimal("0.25")),
+    ]
+    proposal = record_part_proposal(
+        session,
+        drawing_view_id=built.views[page].id,
+        kind=PartKind.COUNTERTOP,
+        extent=box,
+        defining_line=(box[0], box[1]),
+        code_as_printed=None,
+        code_candidate_id=None,
+        reason="a dimension on the vendor's drawing",
+        source="test",
+        source_version="1",
+    )
+    confirmation = confirm_part(
+        session, proposal=proposal, kind=PartKind.COUNTERTOP, code=None, actor=PERSON
+    )
+    assert confirmation.drawing_item_id is not None
+    return confirmation.drawing_item_id
+
+
+def _checked(session: Session, store: LocalStore, built: _Revision) -> None:
+    _publish_rulebook(session)
+    DatabaseStages(store).run_checks(session, built.revision.id)
+
+
+def _countertop_rules(session: Session) -> set[str]:
+    store = snapshot_store(session)
+    return {
+        rule_id
+        for rule_id in store.rule_ids()
+        if (latest := store.latest(rule_id)) is not None
+        and latest.rule.product_type is ProductType.COUNTERTOP
+    }
+
+
+def test_no_items_no_plan(session: Session, store: LocalStore) -> None:
+    """Rows read, suggestions filed, nothing confirmed: there is no countertop item, so no plan."""
+    built = _Revision(session)
+    built.row(built.run())
+    propose_items(session, built.revision.id)
+    _checked(session, store, built)
+
+    assert live_countertops(session, built.revision.id) == ()
+    assert check_plan_for(session, built.revision.id).items == ()
+
+
+def test_the_plan_lists_the_rules_its_row_s_results_and_what_they_wait_on(
+    session: Session, store: LocalStore
+) -> None:
+    """One countertop confirmed from Bala's suggestion: its plan lists every published countertop
+    rule, the width result of its row (still keyed by the row), and nothing it does not own."""
+    built = _Revision(session)
+    run = built.run()
+    anchor = built.row(run, page=0)
+    other = built.row(run, page=1)
+    propose_items(session, built.revision.id)
+    item = _confirm_bala_countertop(session, anchor)
+    _checked(session, store, built)
+
+    plan = check_plan_for(session, built.revision.id)
+
+    (entry,) = plan.items
+    assert entry.countertop.item_id == item
+    assert entry.countertop.row_candidate_id == anchor
+    assert entry.countertop.label == "Countertop 1 on page 1"
+    assert entry.note is None
+    assert {rule.rule_id for rule in entry.rules} == _countertop_rules(session)
+    assert {"CT-WIDTH-001", "CT-DEPTH-001"} <= {rule.rule_id for rule in entry.rules}
+    width = next(rule for rule in entry.rules if rule.rule_id == WIDTH)
+    (row_width,) = width.findings
+    assert row_width.scope == "row"
+    # The other row's result is not this countertop's.
+    assert all(finding.scope == "row" for finding in entry.findings)
+    assert countertops_by_row(session, built.revision.id) == {anchor: entry.countertop}
+    assert other not in countertops_by_row(session, built.revision.id)
+    # A rule whose whole-package result waits on values lists them; a rule that does not, none.
+    depth = next(rule for rule in entry.rules if rule.rule_id == "CT-DEPTH-001")
+    assert depth.resolved and depth.findings == ()
+    assert "countertop_overhang" in {missing.key for missing in depth.missing}
+    assert width.missing == ()
+    # The width rule's variant is chosen per row from that row's walls, so the plan says it waits.
+    assert not width.resolved and width.waits_for is not None and "wall_config" in width.waits_for
+
+
+def test_a_countertop_with_no_row_says_so_and_lists_no_row_s_results(
+    session: Session, store: LocalStore
+) -> None:
+    built = _Revision(session)
+    built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _unlinked_countertop(session, built, page=1)
+    _checked(session, store, built)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+
+    assert entry.countertop.item_id == item
+    assert entry.countertop.row_candidate_id is None
+    assert entry.note == NO_ROW_LINKED
+    assert entry.findings == ()
+    assert {rule.rule_id for rule in entry.rules} == _countertop_rules(session)
+
+
+def test_a_withdrawn_countertop_has_no_plan(session: Session, store: LocalStore) -> None:
+    built = _Revision(session)
+    anchor = built.row(built.run())
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, anchor)
+    proposal = session.scalars(
+        select(PartProposal)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .where(PartProposalRow.row_candidate_id == anchor, PartProposalRow.slot_index.is_(None))
+    ).one()
+    withdraw_part(session, proposal=proposal, actor=PERSON)
+
+    assert check_plan_for(session, built.revision.id).items == ()
+
+
+# -- the run-check line: every live countertop item has a width finding ----------------------------
+
+
+def _codes(session: Session, revision: UUID) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+    return [(item.code, item.ids) for item in run_check(session, revision).items]
+
+
+def test_the_run_check_says_when_a_countertop_has_no_width_finding(
+    session: Session, store: LocalStore
+) -> None:
+    """A countertop with no row has no width result: the run check says so, naming the countertop,
+    for a person (report only: no result is held or changed)."""
+    built = _Revision(session)
+    built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _unlinked_countertop(session, built, page=1)
+    _checked(session, store, built)
+
+    found = [
+        ids
+        for code, ids in _codes(session, built.revision.id)
+        if code == "countertop-item-without-width-result"
+    ]
+
+    assert found == [(("item", str(item)), ("page", "2"))]
+    report = run_check(session, built.revision.id)
+    line = next(i for i in report.items if i.code == "countertop-item-without-width-result")
+    assert line.found == (
+        "Countertop 1 on page 2 has no live width result: no countertop row's width check, and "
+        "no width check of its own, belongs to it."
+    )
+    assert dict(report.examined)["live countertop items"] == 1
+
+
+def test_the_run_check_line_stays_quiet_when_the_row_has_its_width_finding(
+    session: Session, store: LocalStore
+) -> None:
+    built = _Revision(session)
+    anchor = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, anchor)
+    _checked(session, store, built)
+
+    codes = [code for code, _ids in _codes(session, built.revision.id)]
+
+    assert "countertop-item-without-width-result" not in codes
+
+
+# -- match reports the items -----------------------------------------------------------------------
+
+
+def test_match_reports_the_items_each_unmatched_with_its_reason(
+    session: Session, store: LocalStore
+) -> None:
+    """`match` now sees the countertops a person confirmed: it counts them and lists each one it
+    could not match, with why (a countertop carries no tag the matcher uses)."""
+    built = _Revision(session)
+    anchor = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _confirm_bala_countertop(session, anchor)
+
+    summary = DatabaseStages(store).match(session, built.revision.id)
+
+    report = summary["live_items"]
+    assert isinstance(report, dict)
+    assert report["count"] == 1
+    assert report["countertops"] == 1
+    (unmatched,) = report["unmatched"]
+    assert unmatched["item_id"] == str(item)
+    assert unmatched["kind"] == PartKind.COUNTERTOP.value
+    assert unmatched["reason"]
+
+
+def test_match_with_no_items_reports_zero(session: Session, store: LocalStore) -> None:
+    built = _Revision(session)
+    built.row(built.run(), page=0)
+
+    summary = DatabaseStages(store).match(session, built.revision.id)
+
+    assert summary["live_items"] == {"count": 0, "countertops": 0, "unmatched": []}

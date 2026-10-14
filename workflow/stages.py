@@ -6641,6 +6641,11 @@ class DatabaseStages:
         reader read, and a part for each of its pieces, each with its picture, for a person to
         confirm (`_bala_items`). Suggestions only: no item is written, so the matching below sees
         exactly what it saw before.
+
+        **It reports the live items (#1245)** under `live_items`: how many, how many are
+        countertops, and each one it did not match with why. Bala's items carry only a catalogue
+        code, which names a model rather than one unit, so today every one of them is "unmatched,
+        with a reason", which is the honest answer.
         """
         self._watch(session, package_revision_id, "match")
         bala = self._bala_items(session, package_revision_id)
@@ -6649,15 +6654,19 @@ class DatabaseStages:
         if not items:
             if role_summary.total_items:
                 missing = _missing_role_names(role_summary.roles)
+                reason = (
+                    f"matching needs confirmed architectural and shop views; missing: {missing}"
+                )
                 return {
                     "implemented": True,
                     "ran": True,
                     "items": role_summary.total_items,
                     "candidates": 0,
-                    "reason": (
-                        f"matching needs confirmed architectural and shop views; missing: {missing}"
-                    ),
+                    "reason": reason,
                     "bala": bala,
+                    "live_items": _live_item_report(
+                        session, package_revision_id, items, set(), not_run=reason
+                    ),
                 }
             views = revision_views(session, package_revision_id)
             confirmed = [entry.view.role for entry in views if entry.view.role]
@@ -6673,22 +6682,26 @@ class DatabaseStages:
                     f"{confirmed.count('shop')} vendor"
                 ),
                 "bala": bala,
+                "live_items": _live_item_report(session, package_revision_id, items, set()),
             }
         missing = _missing_role_names(role_summary.roles)
         if missing:
+            reason = f"matching needs confirmed architectural and shop views; missing: {missing}"
             return {
                 "implemented": True,
                 "ran": True,
                 "items": len({item.item_id for item, _ in items}),
                 "candidates": 0,
-                "reason": (
-                    f"matching needs confirmed architectural and shop views; missing: {missing}"
-                ),
+                "reason": reason,
                 "bala": bala,
+                "live_items": _live_item_report(
+                    session, package_revision_id, items, set(), not_run=reason
+                ),
             }
 
         written = 0
         proposed = 0
+        matched: set[UUID] = set()
         for kind in MATCHABLE_IDENTIFIER_KINDS:
             architectural = [
                 item
@@ -6705,6 +6718,7 @@ class DatabaseStages:
             for result in exact_match(architectural, shop):
                 for candidate in result.candidates:
                     proposed += 1
+                    matched.update((candidate.left_item_id, candidate.right_item_id))
                     # The pair is unique on (left, right, lane), and a re-run proposes the same pair
                     # again. Checked rather than caught: an IntegrityError would abort the whole
                     # transaction, taking the rows that were fine with it.
@@ -6735,6 +6749,7 @@ class DatabaseStages:
             "proposed": proposed,
             "candidates": written,
             "bala": bala,
+            "live_items": _live_item_report(session, package_revision_id, items, matched),
         }
 
     def validate_evidence(
@@ -9749,6 +9764,63 @@ def _match_role_summary(session: Session, package_revision_id: UUID) -> _MatchRo
     return _MatchRoleSummary(
         total_items=len({item_id for item_id, _, _ in rows}), roles=frozenset(roles)
     )
+
+
+#: Why `match` left a live item unmatched (#1245), in plain words for the stage's summary.
+_NO_ROLE: Final = "its drawing has no established role (the architect's or the vendor's)"
+_NO_TAG: Final = (
+    "it carries no tag or vendor code the matcher uses (a catalogue code names a model, not one unit)"
+)
+_NO_COUNTERPART: Final = "no item on the other side carries the same tag or vendor code"
+
+
+def _live_item_report(
+    session: Session,
+    package_revision_id: UUID,
+    items: Sequence[tuple[MatchableItem, str]],
+    matched: set[UUID],
+    *,
+    not_run: str | None = None,
+) -> dict[str, object]:
+    """The live items `match` saw (#1245): how many, how many are countertops, and each one it did
+    not match with why. Reads only; one statement."""
+    kinds = {kind.item_type.value: kind.value for kind in PartKind}
+    live = [
+        (item_id, kinds.get(item_type, item_type))
+        for item_id, item_type in session.execute(
+            select(DrawingItem.id, DrawingItem.item_type)
+            .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
+            .join(Page, Page.id == DrawingView.page_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+                DrawingItem.id.in_(live_part_item_ids()),
+            )
+            .order_by(DrawingItem.created_at, DrawingItem.id)
+        )
+    ]
+    tagged: dict[UUID, bool] = {}
+    for item, identifier_kind in items:
+        tagged[item.item_id] = tagged.get(item.item_id, False) or bool(identifier_kind)
+    unmatched: list[dict[str, str]] = []
+    for item_id, kind in live:
+        if item_id in matched:
+            continue
+        if item_id not in tagged:
+            reason = _NO_ROLE
+        elif not tagged[item_id]:
+            reason = _NO_TAG
+        else:
+            reason = not_run or _NO_COUNTERPART
+        unmatched.append({"item_id": str(item_id), "kind": str(kind), "reason": reason})
+    return {
+        "count": len(live),
+        "countertops": sum(kind == PartKind.COUNTERTOP.value for _item, kind in live),
+        "unmatched": unmatched,
+    }
 
 
 def _matchable_items(
