@@ -321,15 +321,34 @@ def _read_at_rank(
     rank: int,
     texts: dict[int | None, str] | None = None,
     reader_version: str | None = None,
+    dx_px: int = 0,
 ) -> None:
     """A newer reading whose chosen row is recorded at `rank` (the readers picked another of the
     page's ranked rows, or code ranked the page's rows differently), read with `texts` and recorded
-    under `reader_version` when given."""
+    under `reader_version` when given. `dx_px` moves every piece and label of the row sideways by
+    that many pixels: an identical run drawn beside the paired one, at the same height (#1210
+    review: mirrored elevations side by side)."""
     from workflow import stages as stages_module
     from workflow.slot_reader import persist_slot_readings as original
 
     if reader_version is not None:
         monkeypatch.setattr(stages_module, "SLOT_READER_VERSION", reader_version)
+
+    def beside(owner: Any) -> Any:
+        if owner is None or not dx_px:
+            return owner
+
+        def moved(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+            return (box[0] + dx_px, box[1], box[2] + dx_px, box[3])
+
+        return replace(
+            owner,
+            band_px=moved(owner.band_px),
+            labels=tuple(
+                replace(label, box_px=moved(label.box_px), crop_px=moved(label.crop_px))
+                for label in owner.labels
+            ),
+        )
 
     def at_rank(target: Session, *, results: Any, **kwargs: Any) -> int:
         moved = [
@@ -337,7 +356,10 @@ def _read_at_rank(
                 result
                 if result.plan.row is None
                 else replace(
-                    result, plan=replace(result.plan, row=replace(result.plan.row, rank=rank))
+                    result,
+                    plan=replace(result.plan, row=replace(result.plan.row, rank=rank)),
+                    slots=tuple(beside(owner) for owner in result.slots),
+                    overall=beside(result.overall),
                 )
             )
             for result in results
@@ -495,3 +517,183 @@ def test_a_page_with_no_row_now_counts_the_pairing_as_not_placed(
     assert len(earlier) == 1
 
     assert _carry_reviewer_pairings(session, revision.id, earlier, ()) == (0, 0, 1)
+
+
+# --- #1210 review: a run beside it, a second reading, answers with no row --------------------------
+
+
+def _wall_answer(session: Session, anchor: Any) -> Any:
+    from app.models.evidence import SlotRowReviewDecision
+
+    wall = SlotRowReviewDecision(
+        row_candidate_id=anchor.id,
+        supersedes_id=None,
+        wall_config="back_only",
+        measurements={},
+        confirmed_by=REVIEWER,
+    )
+    session.add(wall)
+    session.commit()
+    return wall
+
+
+def _not_carried(session: Session, target_id: Any) -> list[str]:
+    """The plain reasons the audit trail gives for an answer that could not be carried."""
+    return [
+        event.actor
+        for event in session.scalars(select(AuditEvent).where(AuditEvent.target_id == target_id))
+        if "not carried" in event.actor
+    ]
+
+
+def test_an_identical_run_beside_the_paired_one_is_another_line(
+    session: Session,
+    store: LocalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirrored elevations side by side: the newer reading chose an identical run (same values,
+    pieces and height) drawn far to the side, at another rank. It is not the row the reviewer
+    answered: the pairing holds the new row ("picked a different line"), the wall answer is not
+    carried (the wall is asked again) and the audit trail says why. Before the review fix both
+    answers landed on the other line, silently."""
+    revision, slot, readers, decision = _reviewed_row(session, store, pairs="none")
+    earlier = latest_slot_reader_run(session, revision.id)
+    assert earlier is not None
+    old = chain._anchor(session)
+    wall = _wall_answer(session, old)
+
+    _read_at_rank(monkeypatch, session, slot, revision, readers, rank=2, dx_px=900)
+    carried = carry_row_answers_within_revision(session, revision.id, earlier)
+    session.commit()
+    anchor = chain._anchor(session)
+    assert min(p[0] for p in anchor.polygon) > max(p[0] for p in old.polygon) + 500
+
+    now = latest_architect_pairing(session, anchor.id)
+    assert now is not None and (now.source, now.pairs) == ("none", ())
+    assert any("picked a different line" in reason for reason in now.reasons), now.reasons
+    record = session.get_one(ArchitectPairingRecord, now.record_id)
+    assert record.details["earlier_reviewer_record_id"] == str(decision.id)
+    (row,) = slot_rows(session, revision.id)
+    assert row.decision is None
+    assert (carried.decisions, carried.pairings, carried.pairings_held) == (0, 0, 1)
+    (reason,) = _not_carried(session, wall.id)
+    assert "page 1" in reason and "asked again" in reason
+
+
+@pytest.mark.parametrize("second_dx", [0, 900], ids=["same-row-again", "another-line-again"])
+def test_a_hold_survives_a_second_read_of_the_unread_pages(
+    session: Session,
+    store: LocalStore,
+    monkeypatch: pytest.MonkeyPatch,
+    second_dx: int,
+) -> None:
+    """A second "Read the unread pages" after the hold: the hold is still in force on the newest
+    row, naming the reviewer's original decision, and the result still waits for the reviewer.
+    Before the review fix only `source == reviewer` was carried, so the hold (source `none`) gave
+    way to the new automatic pairing and the result was a PASS."""
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from app.models.verdicts import CheckRun, Finding
+    from app.review.approval import approval_readiness
+    from tests.workflow.test_stages import _publish_rulebook
+    from workflow.architect_row_plan import ARCHITECT_CHECK_RULE_ID
+
+    revision, slot, readers, decision = _reviewed_row(session, store, pairs="none", packets=True)
+    newer = "slot-reader-v1-newer"
+    first = latest_slot_reader_run(session, revision.id)
+    assert first is not None
+    _read_at_rank(monkeypatch, session, slot, revision, readers, rank=2, reader_version=newer)
+    assert carry_row_answers_within_revision(session, revision.id, first).pairings_held == 1
+    session.commit()
+    held_anchor = chain._anchor(session)
+
+    second = latest_slot_reader_run(session, revision.id)
+    assert second is not None
+    _read_at_rank(
+        monkeypatch,
+        session,
+        slot,
+        revision,
+        readers,
+        rank=2,
+        reader_version=newer,
+        dx_px=second_dx,
+    )
+    carried = carry_row_answers_within_revision(session, revision.id, second)
+    session.commit()
+    anchor = chain._anchor(session)
+    assert anchor.id != held_anchor.id
+
+    now = latest_architect_pairing(session, anchor.id)
+    assert now is not None and (now.source, now.pairs) == ("none", ())
+    record = session.get_one(ArchitectPairingRecord, now.record_id)
+    assert record.details["earlier_reviewer_record_id"] == str(decision.id)
+    assert any(reason.startswith(f"{REVIEWER} paired") for reason in now.reasons), now.reasons
+    assert (carried.pairings, carried.pairings_held) == (0, 1)
+
+    if second_dx:
+        return  # a run moved sideways has no matching evidence crop; the hold is what is tested
+    _publish_rulebook(session)
+    DatabaseStages(store).run_checks(session, revision.id)
+    session.commit()
+    (finding,) = session.scalars(
+        select(Finding)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        .where(
+            Finding.package_revision_id == revision.id,
+            CheckRun.superseded_at.is_(None),
+            RuleDefinition.rule_id == ARCHITECT_CHECK_RULE_ID,
+            Finding.scope_row_candidate_id == anchor.id,
+        )
+    ).all()
+    assert finding.outcome == "REVIEW_REQUIRED", (finding.reason, finding.notes)
+    assert finding.id in approval_readiness(session, revision.id).blocking_finding_ids
+
+
+def test_answers_with_no_row_left_are_audited_with_a_plain_reason(
+    session: Session,
+    store: LocalStore,
+) -> None:
+    """No countertop row on the page in the new reading: the reviewer's pairing and wall answer
+    cannot be placed anywhere. Each gets an audit event naming it and the page, with the reason."""
+    from app.lifecycle.carry_forward import _carry_reviewer_pairings, _carry_row_answers
+
+    revision, _slot_stage, _readers, decision = _reviewed_row(session, store, pairs="none")
+    wall = _wall_answer(session, chain._anchor(session))
+    earlier = slot_rows(session, revision.id)
+
+    assert _carry_reviewer_pairings(session, revision.id, earlier, ()) == (0, 0, 1)
+    assert _carry_row_answers(session, earlier, (), within_revision=True) == 0
+    session.commit()
+    (pairing_reason,) = _not_carried(session, decision.id)
+    assert "page 1" in pairing_reason and "no countertop row" in pairing_reason
+    (wall_reason,) = _not_carried(session, wall.id)
+    assert "page 1" in wall_reason and "no countertop row" in wall_reason
+
+
+def test_a_row_is_held_once_however_many_pairings_point_at_it(
+    session: Session,
+    store: LocalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.lifecycle.carry_forward import _carry_reviewer_pairings
+
+    revision, slot, readers, _decision = _reviewed_row(session, store, pairs="none")
+    earlier = slot_rows(session, revision.id)
+    _read_at_rank(monkeypatch, session, slot, revision, readers, rank=2, dx_px=900)
+    current = slot_rows(session, revision.id)
+
+    assert _carry_reviewer_pairings(session, revision.id, (*earlier, *earlier), current) == (
+        0,
+        1,
+        0,
+    )
+    (row,) = current
+    holds = session.scalars(
+        select(ArchitectPairingRecord).where(
+            ArchitectPairingRecord.row_anchor_candidate_id == row.anchor.id,
+            ArchitectPairingRecord.source == "none",
+        )
+    ).all()
+    assert [hold.details.get("earlier_reviewer_record_id") for hold in holds] == [str(_decision.id)]
