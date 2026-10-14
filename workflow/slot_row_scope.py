@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from fractions import Fraction
 from typing import Final, Literal
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from app.lifecycle.closed import CLOSED_STATES
@@ -22,7 +23,11 @@ from vocabulary.check_holds import (
     with_no_stone_note,
 )
 from vocabulary.reviewer_reasons import reviewer_reason
-from vocabulary.wall_layouts import AUTOMATIC_WALL_SOURCE, READERS_WALL_SOURCE
+from vocabulary.wall_layouts import (
+    AUTOMATIC_WALL_SOURCE,
+    READERS_WALL_SOURCE,
+    wall_layout_words,
+)
 from workflow.pariksha_gates import REKHA_NO_NUMBERS_REASON, stopped_by_rekha
 
 
@@ -60,6 +65,11 @@ class SlotRow:
     """`(short model name, box number)` for each other numbered box a row reader named as a
     second countertop's piece row on this vendor page (#1108). V1 reads one row per page, so these
     are listed as not checked; empty on any other page and on a record from before #1108."""
+    wall_hold: str | None = None
+    """Why this row's walls are asked again (#1241): a reviewer's wall answer on this page in an
+    earlier reading of this revision could not be carried to this reading
+    (`uncarried_wall_answers`). Set only on a vendor row with no wall answer of its own; its walls
+    are then never automatic (`effective_row_wall`), and its own answer clears it."""
 
     @property
     def label(self) -> str:
@@ -175,6 +185,10 @@ class UnchosenRowPage:
     closed: bool = False
     """The revision can no longer change (signed off, or closed): a blank-page proof made under an
     earlier rule still stands, so a signed review keeps its words (#1195 review)."""
+    wall_hold: str | None = None
+    """A reviewer's wall answer on this page in an earlier reading that could not be carried to this
+    one, which has no row on the page (#1241). Its words end `reason`, and the page is in doubt, so
+    it waits for the reviewer even with a blank-page proof."""
 
     @property
     def listed(self) -> bool:
@@ -220,6 +234,7 @@ class UnchosenRowPage:
         flags = frozenset(self.record.ambiguity_flags or ())
         return (
             self.kind == "older"
+            or self.wall_hold is not None
             or UNNAMED_DRAWING_FLAG in flags
             or INK_FOUND_FLAG in flags
             or any(f"{NO_ROW_FLAG}{code}" in flags for code in _DOUBTFUL_CODES)
@@ -575,6 +590,103 @@ def latest_row_decision(session: Session, row_candidate_id: UUID) -> SlotRowRevi
     ).scalar_one_or_none()
 
 
+@dataclass(frozen=True, slots=True)
+class UncarriedWallAnswer:
+    """A reviewer's wall answer on a row of an earlier reading of this revision that was never
+    carried to a later reading (#1241). The newest reading's row on the same page is asked again."""
+
+    decision_id: UUID
+    confirmed_by: str
+    wall_config: str
+    page_number: int
+
+    def _given(self) -> str:
+        return (
+            f"{self.confirmed_by} chose the walls ({wall_layout_words(self.wall_config)}) for the "
+            f"countertop row on page {self.page_number} on an earlier reading"
+        )
+
+    @property
+    def row_hold(self) -> str:
+        """The row's plain reason: the walls are asked again, never automatic."""
+        return (
+            f"{self._given()}, but that answer could not be carried to the new reading because its "
+            "row is not provably the same row. Please choose the walls again for this row."
+        )
+
+    @property
+    def page_hold(self) -> str:
+        """The listed page's plain reason, when the newest reading has no row on the page."""
+        return (
+            f"{self._given()}, but that answer could not be carried to the new reading, which has "
+            "no countertop row on this page. Please answer this page; if it has a countertop, "
+            "choose the walls again."
+        )
+
+
+def uncarried_wall_answers(
+    session: Session, revision_id: UUID, run_id: UUID, *, at: datetime | None = None
+) -> dict[UUID, UncarriedWallAnswer]:
+    """`{page id: answer}`: reviewer wall answers that hold the walls of `run_id`'s rows (#1241).
+
+    An answer counts when it is all of these:
+
+    * a person's wall answer (`wall_config` set; never one `confirmed_by` code) that is the tip of
+      its chain (no later decision supersedes it);
+    * on a row of an **earlier** slot-reader reading of **this** revision than `run_id` (an answer
+      on another revision carries only by the revision rule, #1180, and never holds here);
+    * not named by any decision as `carried_from_id`: it was never carried to a later row.
+
+    Carrying looks one reading back (`carry_row_answers_within_revision`), so an answer a re-read
+    could not carry stays uncarried through every later reading, until a person answers the row
+    the newest reading chose on that page. Derived, never stored: no table, no migration. `at`
+    sees only what was recorded by then, so carry-over can ask what a check run saw. With two
+    answers on a page, the newest is named.
+    """
+    answer = aliased(SlotRowReviewDecision)
+    later = aliased(SlotRowReviewDecision)
+    copy = aliased(SlotRowReviewDecision)
+    this_run = aliased(ExtractionRun)
+    superseded = exists().where(later.supersedes_id == answer.id)
+    carried = exists().where(copy.carried_from_id == answer.id)
+    query = (
+        select(answer, ObservationCandidate.page_id, Page.index)
+        .join(ObservationCandidate, ObservationCandidate.id == answer.row_candidate_id)
+        .join(Page, Page.id == ObservationCandidate.page_id)
+        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(
+            WorkflowRun.package_revision_id == revision_id,
+            ExtractionRun.extractor_version.like("slot-reader%"),
+            # Earlier in the order `latest_slot_reader_run` reads them (one statement: the run's
+            # own time is read in it, never by a separate lookup).
+            exists().where(
+                this_run.id == run_id,
+                tuple_(ExtractionRun.created_at, ExtractionRun.id)
+                < tuple_(this_run.created_at, this_run.id),
+            ),
+            answer.wall_config.is_not(None),
+            ~answer.confirmed_by.startswith("code:"),
+        )
+        .order_by(answer.created_at, answer.id)
+    )
+    if at is not None:
+        superseded = superseded.where(later.created_at <= at)
+        carried = carried.where(copy.created_at <= at)
+        query = query.where(answer.created_at <= at)
+    found: dict[UUID, UncarriedWallAnswer] = {}
+    for decision, page_id, page_index in session.execute(query.where(~superseded, ~carried)).all():
+        assert decision.wall_config is not None
+        found[page_id] = UncarriedWallAnswer(
+            decision_id=decision.id,
+            confirmed_by=decision.confirmed_by,
+            wall_config=decision.wall_config,
+            page_number=page_index + 1,
+        )
+    return found
+
+
 def slot_rows(session: Session, revision_id: UUID) -> tuple[SlotRow, ...]:
     """Return rows from only the newest slot-reader run; never combine pages or row ranks."""
     return slot_rows_and_unchosen_pages(session, revision_id)[0]
@@ -617,6 +729,7 @@ def slot_rows_and_unchosen_pages(
     ).all()
     revision = session.get(PackageRevision, revision_id)
     closed = revision is not None and revision.state in CLOSED_STATES
+    uncarried = uncarried_wall_answers(session, revision_id, run_id)
     grouped: dict[tuple[int, str], list[ObservationCandidate]] = {}
     roles: dict[tuple[int, str], str] = {}
     walls: dict[tuple[UUID, str], ObservationCandidate] = {}
@@ -625,7 +738,13 @@ def slot_rows_and_unchosen_pages(
         flags = set(candidate.ambiguity_flags or [])
         if "slot-reader-row-choice" in flags:
             if role == "shop":
-                unchosen.append(unchosen_page(page_index, candidate, content_hash, closed=closed))
+                page = unchosen_page(page_index, candidate, content_hash, closed=closed)
+                lost = uncarried.get(candidate.page_id)
+                if lost is not None:
+                    page = replace(
+                        page, wall_hold=lost.page_hold, reason=f"{page.reason} {lost.page_hold}"
+                    )
+                unchosen.append(page)
             continue
         rank = next(
             (flag.removeprefix("row-rank:") for flag in flags if flag.startswith("row-rank:")), None
@@ -763,6 +882,14 @@ def slot_rows_and_unchosen_pages(
             (flag for candidate in candidates for flag in candidate.ambiguity_flags or ()),
         )
         is_vendor = roles[(page_index, rank)] == "shop"
+        # A reviewer's wall answer on this page that a re-read could not carry (#1241): the walls
+        # are asked again until this row has a wall answer of its own.
+        lost = uncarried.get(anchor.page_id)
+        wall_hold = (
+            lost.row_hold
+            if lost is not None and is_vendor and (decision is None or decision.wall_config is None)
+            else None
+        )
         also = (
             tuple(
                 sorted(
@@ -788,6 +915,7 @@ def slot_rows_and_unchosen_pages(
                 held_reason=held if is_vendor else "This is not the vendor drawing.",
                 wall_confirmation_allowed=is_vendor and (held is None or between_panels),
                 also=also,
+                wall_hold=wall_hold,
             )
         )
     counts = {
@@ -877,6 +1005,7 @@ def effective_row_wall(
     source: str | None,
     held: bool,
     reviewer_confirmed: str | None,
+    wall_hold: str | None = None,
 ) -> tuple[str | None, str | None]:
     """The row's walls, from two judgments or the reviewer; never from one judgment (#1202).
 
@@ -884,9 +1013,14 @@ def effective_row_wall(
     wall ink at both ends together with both AIs (`AUTOMATIC_WALL_SOURCE`) is used without a click.
     A layout the readers agreed, and one an older run took from the vendor's drawing clues alone
     (`vendor-drawing-clues`, before #1202), is a proposal the reviewer confirms.
+    `wall_hold` (#1241, `SlotRow.wall_hold`): a reviewer's earlier answer on this page could not be
+    carried to this reading, so no wall is used without this row's own answer, and the hold's words
+    are the reason.
     """
     if reviewer_confirmed is not None:
         return reviewer_confirmed, None
+    if wall_hold is not None:
+        return None, wall_hold
     if held:
         return None, "The wall layout is held for reviewer input."
     if layout is None:

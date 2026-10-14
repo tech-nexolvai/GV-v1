@@ -476,8 +476,9 @@ def test_following_after_a_re_read_asks_the_database_a_fixed_number_of_times(
     assert statements == FOLLOW_STATEMENTS
 
 
-#: What following after a re-read costs, whatever the number of rows.
-FOLLOW_STATEMENTS = 11
+#: What following after a re-read costs, whatever the number of rows (12 since #1241: reading the
+#: newest run's rows asks once for the wall answers an earlier reading could not carry).
+FOLLOW_STATEMENTS = 12
 
 
 def test_the_plan_lists_only_the_package_s_product_s_rules(

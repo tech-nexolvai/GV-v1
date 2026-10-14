@@ -10324,6 +10324,18 @@
             "title": "Wall Evidence",
             "type": "array"
           },
+          "wall_hold_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why this row's walls are asked again (#1241): a reviewer's wall answer on this page in an earlier reading could not be carried to this reading. Until this row has its own wall answer no automatic wall is used, and `wall_proposal` is empty.",
+            "title": "Wall Hold Reason"
+          },
           "wall_layout_choices": {
             "items": {
               "type": "string"
