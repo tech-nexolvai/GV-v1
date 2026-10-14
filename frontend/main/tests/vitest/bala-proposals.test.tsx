@@ -100,7 +100,7 @@ describe("Bala's suggestions on the Measure page (#1236)", () => {
   it('offers no one-click confirmation once a person has decided', () => {
     renderList([
       part({
-        decision: { decision: 'confirmed', kind: 'countertop', code: null, decided_by: 'reviewer', decided_at: '2026-10-14T10:00:00Z' },
+        decision: { decision: 'confirmed', kind: 'countertop', code: null, decided_by: 'reviewer', decided_at: '2026-10-14T10:00:00Z', by_code: false },
       }),
     ]);
     expect(screen.queryByRole('button', { name: /^Confirm: / })).toBeNull();

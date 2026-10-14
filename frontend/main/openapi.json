@@ -3505,6 +3505,12 @@
       "DecisionOut": {
         "description": "What a person last said about one suggestion.",
         "properties": {
+          "by_code": {
+            "default": false,
+            "description": "True when code confirmed it, not a person: a countertop whose two judgments agreed (both AI readers named its row, and code found the row wholly inside one drawing confirmed as the vendor's; #1244). The page says so and offers Undo, a person's withdrawal.",
+            "title": "By Code",
+            "type": "boolean"
+          },
           "code": {
             "anyOf": [
               {

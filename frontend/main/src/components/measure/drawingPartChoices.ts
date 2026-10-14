@@ -44,6 +44,18 @@ export const KIND_LABEL: Record<PartKind, string> = {
  */
 export const FROM_COUNTERTOP_LINE = 'Suggested by code from the countertop line';
 
+/**
+ * What a countertop code confirmed with no click says (#1244, ADR-0021 amendment): both AI readers
+ * named its row, and code found the row wholly inside one drawing confirmed as the vendor's. A
+ * person can always undo it, and a person's decision always wins.
+ */
+export const FOUND_BY_CODE = 'Found by code: two checks agreed';
+
+/** Whether code, not a person, confirmed this part and that decision still stands (#1244). */
+export function foundByCode(part: SuggestedPart): boolean {
+  return part.decision?.decision === 'confirmed' && part.decision.by_code === true;
+}
+
 /** The reason, less the words the card already shows above it. */
 export function reasonToShow(part: SuggestedPart): string {
   const prefix = `${FROM_COUNTERTOP_LINE}: `;
@@ -98,6 +110,10 @@ export function decisionLabel(part: SuggestedPart): string {
   const decision = part.decision;
   if (!decision) return 'Not decided yet.';
   if (decision.decision === 'withdrawn') return `Not a part, said ${decision.decided_by}.`;
+  if (decision.by_code) {
+    const found = decision.kind ? KIND_LABEL[decision.kind].toLowerCase() : 'part';
+    return `Confirmed as a ${found} by code, not by a person.`;
+  }
   const kind = decision.kind ? KIND_LABEL[decision.kind].toLowerCase() : 'part';
   const code = decision.code === null ? 'no code' : `code “${decision.code}”`;
   return `Confirmed as a ${kind}, ${code}, by ${decision.decided_by}.`;
