@@ -408,3 +408,91 @@ export function waitingPages<T extends { confirmation?: unknown; needs_answer?: 
 export function confirmManyWords(count: number): string {
   return count === 1 ? 'Confirm this page' : `Confirm these ${count} pages`;
 }
+
+/** A live countertop item (#1245), as the results name it under a row. */
+export type CountertopItem = NonNullable<CountertopResult['countertop_item']>;
+
+/**
+ * One confirmed countertop's results on screen (#1245): its rows (the row it was confirmed from)
+ * and its other results that are not shown on those rows. Results stay keyed by the row; this is
+ * only how the screen groups them.
+ */
+export interface CountertopGroup {
+  item: CountertopItem;
+  rowIds: readonly string[];
+  /** Results that belong to this countertop (its row's or its own) and are not on its rows. */
+  findings: Finding[];
+}
+
+/**
+ * Groups the results by confirmed countertop (#1245; Anant: results stay keyed by row and are
+ * grouped per countertop on screen). `others` are the findings not shown on any row; one scoped to a
+ * grouped row, or to the countertop itself, goes under that countertop, and "Whole package" holds
+ * the rest. No row has a countertop: no groups, and `wholePackage` is `others` unchanged.
+ */
+export function groupByCountertop(
+  rows: readonly Pick<CountertopResult, 'row_id' | 'countertop_item'>[],
+  others: readonly Finding[],
+): { groups: CountertopGroup[]; wholePackage: Finding[] } {
+  const byItem = new Map<string, { item: CountertopItem; rowIds: string[] }>();
+  for (const row of rows) {
+    const item = row.countertop_item;
+    if (!item) continue;
+    const entry = byItem.get(item.item_id) ?? { item, rowIds: [] };
+    entry.rowIds.push(row.row_id);
+    byItem.set(item.item_id, entry);
+  }
+  if (byItem.size === 0) return { groups: [], wholePackage: [...others] };
+  const itemOfRow = new Map<string, string>();
+  for (const { item, rowIds } of byItem.values()) for (const id of rowIds) itemOfRow.set(id, item.item_id);
+  const found = new Map<string, Finding[]>();
+  const wholePackage: Finding[] = [];
+  for (const finding of others) {
+    const itemId =
+      (finding.scope_item_id && byItem.has(finding.scope_item_id) ? finding.scope_item_id : undefined) ??
+      (finding.scope_row_candidate_id ? itemOfRow.get(finding.scope_row_candidate_id) : undefined);
+    if (itemId) found.set(itemId, [...(found.get(itemId) ?? []), finding]);
+    else wholePackage.push(finding);
+  }
+  const groups = [...byItem.values()]
+    .sort((a, b) => a.item.page_number - b.item.page_number || a.item.number - b.item.number)
+    .map(({ item, rowIds }) => ({ item, rowIds, findings: found.get(item.item_id) ?? [] }));
+  return { groups, wholePackage };
+}
+
+/**
+ * The groups the table can show, and the whole package with every other group's results put back
+ * (#1247 review). A countertop's results are drawn under its heading, and its heading only above its
+ * rows; when a filter, a search or a package with no countertop table leaves none of its rows on
+ * screen, its results go back to "Whole package", so a result that needs the reviewer is never
+ * hidden. `others` keeps its order; nothing is listed twice.
+ */
+export function keepShownGroups(
+  groups: readonly CountertopGroup[],
+  others: readonly Finding[],
+  shownRows: readonly Pick<CountertopResult, 'row_id'>[],
+): { groups: CountertopGroup[]; wholePackage: Finding[] } {
+  const shownIds = new Set(shownRows.map((row) => row.row_id));
+  const kept = groups.filter((group) => group.rowIds.some((id) => shownIds.has(id)));
+  const underHeadings = new Set(kept.flatMap((group) => group.findings.map((finding) => finding.id)));
+  return { groups: kept, wholePackage: others.filter((finding) => !underHeadings.has(finding.id)) };
+}
+
+/**
+ * The table's rows in sections (#1245): each countertop's rows under it, in group order, keeping
+ * the order they came in, then the rows no countertop was confirmed from (`group: null`). With no
+ * groups, one section of every row, unchanged.
+ */
+export function sectionRows<T extends Pick<CountertopResult, 'row_id'>>(
+  rows: readonly T[],
+  groups: readonly CountertopGroup[],
+): { group: CountertopGroup | null; rows: T[] }[] {
+  if (groups.length === 0) return [{ group: null, rows: [...rows] }];
+  const groupOf = new Map<string, CountertopGroup>();
+  for (const group of groups) for (const id of group.rowIds) groupOf.set(id, group);
+  const sections = groups
+    .map((group) => ({ group, rows: rows.filter((row) => groupOf.get(row.row_id) === group) }))
+    .filter((section) => section.rows.length > 0);
+  const rest = rows.filter((row) => !groupOf.has(row.row_id));
+  return rest.length > 0 ? [...sections, { group: null, rows: rest }] : sections;
+}
