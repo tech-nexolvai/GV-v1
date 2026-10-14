@@ -258,3 +258,12 @@ def test_a_key_place_matches_only_one_view_with_its_caption() -> None:
     labelled = [_view_reading(1, "B - PLAN VIEW 1:15", (0, 0, 100, 100))]
     found, _why = script.match_view(labelled, [10, 10, 90, 90], "B PLAN VIEW")  # type: ignore[arg-type]
     assert found is labelled[0]
+
+
+def test_the_key_is_found_in_an_env_file_whatever_its_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("# made up\nanthropic_api_key=made-up-key\n")
+    assert script._env_key(env) == "made-up-key"

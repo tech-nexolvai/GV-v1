@@ -513,7 +513,7 @@ def _env_key(env_file: Path | None) -> str | None:
         return None
     for line in env_file.read_text().splitlines():
         name, _, value = line.strip().partition("=")
-        if name.strip() == "ANTHROPIC_API_KEY" and value.strip():
+        if name.strip().upper() == "ANTHROPIC_API_KEY" and value.strip():
             return value.strip().strip('"').strip("'")
     return None
 
