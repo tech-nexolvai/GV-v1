@@ -116,13 +116,59 @@ def _drop_and_create(base: URL, own: URL, *, create: bool) -> None:
         admin.dispose()
 
 
-def create_worker_database(base: URL, own: URL) -> None:
-    """Create the worker's database empty, replacing any leftover of the same name from an earlier run.
+#: The advisory lock that lets one worker at a time create the cluster-wide objects below. Any fixed
+#: number works; it is taken on the base database, which every worker of a run shares.
+CLUSTER_SETUP_LOCK = 1289
 
-    Only the database: the tests migrate it themselves, exactly as they migrate `DATABASE_URL` today (the
-    session schema below, and the modules that run their own `command.upgrade`).
+
+def _create_cluster_wide_objects(base: URL, own: URL) -> None:
+    """Run every migration once, in a throwaway schema of the worker's database, one worker at a time.
+
+    **Why (found on the first CI run of #1289).** Almost everything a migration makes lives in one
+    database, so four workers with four databases never meet. Roles do not: they belong to the whole
+    server. Migration 0025 creates its four roles if they are missing, and two workers migrating at the
+    same moment both found them missing; the loser failed on `pg_authid_rolname_index`, a unique
+    violation that 0025's `duplicate_object` handler does not catch. Every database test in that worker
+    then errored at setup.
+
+    So before any test runs, each worker migrates a throwaway schema while holding an advisory lock on
+    the shared base database: the first creates the roles, the others find them. Running the real
+    migrations rather than creating the roles here means a later migration's cluster-wide object is
+    covered too, with nothing to keep in step. The schema is dropped again; what stays is exactly what a
+    single-process run leaves after its first migration (the roles, and the extensions in `public`).
+    """
+    schema = f"gv_worker_setup_{uuid4().hex}"
+    lock_engine = create_engine(base, isolation_level="AUTOCOMMIT")
+    admin = create_engine(own, isolation_level="AUTOCOMMIT")
+    try:
+        with lock_engine.connect() as lock:
+            lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+            try:
+                with admin.connect() as connection:
+                    connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+                schema_url = own.update_query_dict({"options": f"-csearch_path={schema},public"})
+                config = alembic_config()
+                config.attributes["database_url"] = schema_url.render_as_string(hide_password=False)
+                command.upgrade(config, "head")
+                with admin.connect() as connection:
+                    connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            finally:
+                lock.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+    finally:
+        admin.dispose()
+        lock_engine.dispose()
+
+
+def create_worker_database(base: URL, own: URL) -> None:
+    """Create the worker's database, replacing any leftover of the same name from an earlier run.
+
+    It starts with no tables: the tests migrate it themselves, exactly as they migrate `DATABASE_URL`
+    today (the session schema below, and the modules that run their own `command.upgrade`). Only the
+    server-wide objects the migrations need are made first, one worker at a time (see
+    `_create_cluster_wide_objects`).
     """
     _drop_and_create(base, own, create=True)
+    _create_cluster_wide_objects(base, own)
 
 
 def drop_worker_database(base: URL, own: URL) -> None:

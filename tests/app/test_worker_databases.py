@@ -20,9 +20,12 @@ every other database test, and run on CI.
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import pytest
 from postgres_fixture import (
+    CLUSTER_SETUP_LOCK,
     create_worker_database,
     drop_worker_database,
     worker_database_for,
@@ -155,12 +158,79 @@ def test_a_worker_database_is_created_replaced_and_dropped(postgres_engine: Engi
                 tables = connection.execute(
                     text("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
                 ).scalar_one()
+                # The throwaway schema the cluster-wide setup migrated is gone again.
+                schemas = connection.execute(
+                    text(
+                        "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' "
+                        "AND nspname <> 'information_schema' ORDER BY nspname"
+                    )
+                ).scalars()
+                schemas = list(schemas)
         finally:
             fresh.dispose()
         assert tables == 0
+        assert schemas == ["public"]
 
         drop_worker_database(base, own)
         assert not _exists(admin, own.database)
     finally:
+        drop_worker_database(base, own)
+        admin.dispose()
+
+
+def test_the_server_wide_setup_waits_for_the_other_workers(postgres_engine: Engine) -> None:
+    """Two workers must never create the server's roles at the same moment (#1289's first CI run).
+
+    The test holds the setup lock as another worker would, starts a worker's setup, and sees it wait
+    on that lock; released, the setup finishes and the roles the migrations need exist.
+    """
+    from app.db.roles import Role
+
+    base = make_url(os.environ["DATABASE_URL"])
+    own = worker_database_url(base, "gw98")
+    admin = create_engine(base, isolation_level="AUTOCOMMIT")
+    failure: list[BaseException] = []
+
+    def setup() -> None:
+        try:
+            create_worker_database(base, own)
+        except BaseException as error:  # noqa: BLE001 - re-raised in the test thread below
+            failure.append(error)
+
+    worker = threading.Thread(target=setup)
+    try:
+        with admin.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+            try:
+                worker.start()
+                deadline = time.monotonic() + 60
+                waiting = 0
+                while not waiting and time.monotonic() < deadline and worker.is_alive():
+                    waiting = holder.execute(
+                        text(
+                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                            "AND NOT granted AND objid = :key"
+                        ),
+                        {"key": CLUSTER_SETUP_LOCK},
+                    ).scalar_one()
+                    time.sleep(0.05)
+                assert waiting == 1, "the setup did not wait for the lock another worker held"
+                assert worker.is_alive()
+            finally:
+                holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+        worker.join(timeout=120)
+        assert not worker.is_alive()
+        assert not failure, failure
+
+        with admin.connect() as connection:
+            roles = set(
+                connection.execute(
+                    text("SELECT rolname FROM pg_roles WHERE rolname = ANY(:names)"),
+                    {"names": [role.value for role in Role]},
+                ).scalars()
+            )
+        assert roles == {role.value for role in Role}
+    finally:
+        worker.join(timeout=120)
         drop_worker_database(base, own)
         admin.dispose()
