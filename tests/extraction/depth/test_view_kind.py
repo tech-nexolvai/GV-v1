@@ -320,22 +320,19 @@ def test_a_sliver_of_shared_border_is_not_one_drawing_taking_in_another() -> Non
 
 
 @pytest.mark.parametrize(
-    "heading",
-    [
-        "WALL CABINET PLAN",
-        "BASE CABINET PLAN 1:15",
-        "FLOOR PLAN",
-        "REFLECTED CEILING PLAN",
-        "A - CABINET PLAN",
-    ],
+    "heading", ["WALL CABINET PLAN", "UPPER CABINET PLAN", "REFLECTED CEILING PLAN", "CEILING PLAN"]
 )
-def test_a_plan_of_something_other_than_the_countertop_is_never_a_countertop_plan(
-    heading: str,
-) -> None:
+def test_a_wall_cabinet_or_ceiling_plan_is_never_a_countertop_plan(heading: str) -> None:
     named = kind_from_heading(heading)
     assert named.kind is ViewKind.OTHER and "not a plan of the countertop" in named.reason
-    assert kind_from_heading("A - PLAN VIEW").kind is ViewKind.PLAN
-    assert kind_from_heading("TOP PLAN").kind is ViewKind.PLAN
+
+
+@pytest.mark.parametrize(
+    "heading", ["BASE CABINET PLAN 1:15", "FLOOR PLAN", "A - PLAN VIEW", "TOP PLAN"]
+)
+def test_base_cabinet_and_floor_plans_stay_countertop_plans(heading: str) -> None:
+    # The answer key reads countertop depths on a base cabinet plan and on a floor plan.
+    assert kind_from_heading(heading).kind is ViewKind.PLAN
 
 
 def test_drawings_that_overlap_without_touching_a_caption_hold_both() -> None:

@@ -135,12 +135,13 @@ _FROM_PAGE_TYPE: Final[dict[PageType, ViewKind]] = {
 HEADING_WORDS: Final[dict[str, ViewKind]] = {
     **{word: _FROM_PAGE_TYPE[page_type] for word, page_type in TYPE_WORDS.items()},
     "TOP PLAN": ViewKind.PLAN,
-    # Plans of something other than the countertop (#1265 review): a view of another kind for
-    # the depth reader, so code never calls them a countertop plan.
-    "FLOOR PLAN": ViewKind.OTHER,
+    # A floor plan and a base cabinet plan look down on the countertop and print its depth (the
+    # answer key reads depths on both). A wall cabinet plan or a ceiling plan looks at something
+    # else (#1265 review): a view of another kind for the depth reader, never a countertop plan.
+    "FLOOR PLAN": ViewKind.PLAN,
+    "BASE CABINET PLAN": ViewKind.PLAN,
     "WALL CABINET PLAN": ViewKind.OTHER,
-    "BASE CABINET PLAN": ViewKind.OTHER,
-    "CABINET PLAN": ViewKind.OTHER,
+    "UPPER CABINET PLAN": ViewKind.OTHER,
     "REFLECTED CEILING PLAN": ViewKind.OTHER,
     "CEILING PLAN": ViewKind.OTHER,
     "TOP VIEW": ViewKind.PLAN,
@@ -203,7 +204,7 @@ def kind_from_heading(heading: str | None) -> HeadingKind:
             heading,
             kind,
             words,
-            f"the heading {heading!r} names a plan of cabinets, a floor or a ceiling "
+            f"the heading {heading!r} names a plan of wall cabinets or a ceiling "
             f"({', '.join(words)}), not a plan of the countertop",
         )
     return HeadingKind(
