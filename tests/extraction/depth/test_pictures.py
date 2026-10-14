@@ -158,3 +158,19 @@ def test_the_spans_and_outlines_pictures_hide_every_heading_too() -> None:
     )
     assert pixel(spans, 40, 105) == WHITE
     assert pixel(outlines, 40, 105) == WHITE
+
+
+def test_the_number_close_up_hides_every_heading_too() -> None:
+    # Review #1274: a heading inside a dimension's close-up must not reach the number question.
+    rendered = page([(20, 90, 60, 100)])
+    span = MarkedSpan(1, Axis.VERTICAL, (100, 20), (100, 80))
+    png = end_marks_picture(
+        rendered,
+        (0, 0, WIDTH, HEIGHT),
+        span,
+        thickness=2,
+        reach=8,
+        max_side=1000,
+        headings=[(20, 90, 60, 100)],
+    )
+    assert pixel(png, 40, 95) == (255, 255, 255)

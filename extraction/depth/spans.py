@@ -33,7 +33,7 @@ are on `Fraction`s, and each is named here and tested at its boundary:
 
 * `view_scale`: points per inch from the view's own horizontal overall and its printed value. A
   plan is drawn to one scale both ways, so a vertical span's drawn length can be checked with it.
-* `drawn_length_check`: the drawn length at that scale is within ±1/10 of the value, inclusive.
+* `drawn_length_check`: the drawn length at that scale is within ±1/10 of the value, and (when asked) within a stated number of inches, inclusive.
 * `closure_check`: the parts' printed values sum exactly to the overall's.
 * `text_lanes` / `text_lane_agrees`: on a page whose numbers are real text, the vector text at a
   span must **equal** the two readers' sealed reading exactly. Inches only: a bracketed inch value
@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
@@ -170,6 +170,13 @@ class SpanSettings:
     """A sink's round drain is at most this fraction of its outline's width."""
     drawn_length_tolerance: Fraction
     """The drawn length at the view's scale is within this fraction of the value (design: 1/10)."""
+    drawn_length_within_in: Fraction
+    """...and strictly less than this many inches from it (#1265 review: the measured lengths were
+    exact to about a fiftieth; a tenth cannot tell 24" from 23 3/4", and even 1/4" let 24 1/4"
+    through). Both must hold."""
+    witness_gap_pt: Decimal
+    """How far along a witness line the edge it is drawn from may stop short of it: CAD draws a
+    witness line from a small gap off the edge (measured 2.3 pt on a vendor plan)."""
     mm_corroboration_mm: Fraction
     """Millimetres printed with an inch value corroborate it only within this many millimetres of
     25.4 times the inches; further off, the label holds. Millimetres never decide (CLAUDE.md)."""
@@ -599,7 +606,21 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
     bands = wall_bands(ink, view, dimension_strokes=dimension_strokes, settings=settings)
     # The span's own witness lines and the dimension lines themselves are not an edge of the
     # drawing; a stroke collinear with a witness line can be (a witness is drawn from the edge).
-    own = {_key(*stroke) for stroke in dimension_strokes}
+    # A "witness" that runs well past its dimension line on both sides is a drawing edge the line
+    # happens to cross (#1265 review: a stone's front edge crossed by another dimension), and
+    # stays an edge.
+    own = {
+        _key(*stroke)
+        for found in every
+        for stroke in (found.stroke, *found.witnesses)
+        if not _crossed_edge(found, stroke, settings)
+    }
+    crossed = frozenset(
+        _key(*stroke)
+        for found in every
+        for stroke in found.witnesses
+        if _crossed_edge(found, stroke, settings)
+    )
     others = [
         stroke
         for stroke in strokes
@@ -618,11 +639,14 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
             end_pt=found.end,
             stroke_ends=found.stroke_ends,
             witnesses=found.witnesses,
-            low_end=_end(found.axis, found.start, found.witnesses, bands, others, settings),
-            high_end=_end(found.axis, found.end, found.witnesses, bands, others, settings),
+            low_end=_end(
+                found.axis, found.start, found.witnesses, bands, others, settings, crossed
+            ),
+            high_end=_end(found.axis, found.end, found.witnesses, bands, others, settings, crossed),
         )
         for number, found in enumerate(ordered, start=1)
     )
+    spans = tuple(_side_edge_corners(span, others, settings) for span in spans)
     chains = _chains(spans, settings)
     return ViewSpans(
         spans=spans,
@@ -642,6 +666,17 @@ class _Raw:
     stroke_ends: tuple[Decimal, Decimal]
     stroke: tuple[Decimal, Decimal, Decimal, Decimal]
     witnesses: tuple[tuple[Decimal, Decimal, Decimal, Decimal], ...]
+
+
+def _crossed_edge(found: _Raw, stroke: _Quad, settings: SpanSettings) -> bool:
+    """Whether one of a dimension line's witnesses runs more than twice `witness_tolerance_pt` past
+    the line on both sides: an edge the line crosses, not a witness drawn to it."""
+    if stroke == found.stroke:
+        return False
+    x0, y0, x1, y1 = stroke
+    low, high = (y0, y1) if found.axis is Axis.HORIZONTAL else (x0, x1)
+    margin = 2 * settings.witness_tolerance_pt
+    return found.offset - low > margin and high - found.offset > margin
 
 
 def _raw(line: DimensionLine) -> _Raw:
@@ -701,12 +736,19 @@ def _end(
     bands: Sequence[WallBand],
     others: Sequence[_Stroke],
     settings: SpanSettings,
+    crossed: frozenset[_Quad] = frozenset(),
 ) -> SpanEnd:
     """What the span's end at `at` (along its axis) meets.
 
+    **The span's own witness lines are never its edge** (#1265 review: a witness drawn well past its
+    line is ordinary drafting, and taking it for an edge made any dimension "meet" one). Another
+    dimension's witness that runs well past its line on both sides (`crossed`) is an edge that
+    line crosses, and may be.
+
     Only what **reaches the end's own witness line** counts: a band edge or a solid edge on the same
-    line as the end (within `end_meet_pt`) whose extent across comes within `end_meet_pt` of the
-    witness line's. An edge on the same line far along it measures something else.
+    line as the end (within `end_meet_pt`) whose extent across comes within `witness_gap_pt` of the
+    witness line's (the gap CAD leaves between an edge and its witness line). An edge on the same
+    line far along it measures something else.
     """
     reach = settings.end_meet_pt
     if axis is Axis.VERTICAL:
@@ -716,8 +758,10 @@ def _end(
     if not own:
         return SpanEnd(at, EndKind.NOTHING, "no witness line found at this end")
 
+    gap = settings.witness_gap_pt
+
     def touches(low: Decimal, high: Decimal) -> bool:
-        return any(low <= w_high + reach and high >= w_low - reach for w_low, w_high in own)
+        return any(low <= w_high + gap and high >= w_low - gap for w_low, w_high in own)
 
     for band in bands:
         if band.axis is axis:
@@ -730,23 +774,84 @@ def _end(
             return SpanEnd(
                 at, EndKind.WALL_BAND, f"the end lies on the edge of a {band.source} wall band"
             )
+    mine = {_key(*witness) for witness in witnesses}
     for stroke in others:
+        key = _stroke_key(stroke)
         if (
             stroke.axis is not axis
+            and key not in mine
             and abs(stroke.at - at) <= reach
             and touches(stroke.start, stroke.end)
         ):
+            what = (
+                "a line another dimension crosses, running well past it both ways"
+                if key in crossed
+                else "not a line of any dimension"
+            )
             return SpanEnd(
                 at,
                 EndKind.OUTLINE,
                 "the end lies on a solid edge of the drawing that reaches its witness line "
-                f"({stroke.length:.1f} pt long, not a dimension's own line)",
+                f"({stroke.length:.1f} pt long, {what})",
             )
     return SpanEnd(
         at,
         EndKind.NOTHING,
         "no wall band and no solid edge of the drawing reaches the end's witness line",
     )
+
+
+def _side_edge_corners(span: Span, others: Sequence[_Stroke], settings: SpanSettings) -> Span:
+    """An end that met nothing lies on the outline when a solid edge **parallel** to the span runs
+    exactly the span's whole extent (both ends within `end_meet_pt`) and the end's own witness line
+    runs out to it: the stone's side edge, drawn from the wall to the front, whose corner is this
+    end (#1265 review: a plan whose front edge is
+    not drawn across, only its side edge down to the front corner)."""
+    if EndKind.NOTHING not in (span.low_end.kind, span.high_end.kind):
+        return span
+    reach = settings.end_meet_pt
+    gap = settings.witness_gap_pt
+    loose = [end.at_pt for end in (span.low_end, span.high_end) if end.kind is EndKind.NOTHING]
+
+    def reached(stroke: _Stroke) -> bool:
+        # Every loose end's own witness line runs out to the side edge (#1265 review: a parallel
+        # edge far along, which no witness of this span reaches, is another part's edge).
+        for at in loose:
+            if not any(
+                (
+                    (abs(y0 - at) <= reach and y0 == y1 and x0 - gap <= stroke.at <= x1 + gap)
+                    if span.axis is Axis.VERTICAL
+                    else (abs(x0 - at) <= reach and x0 == x1 and y0 - gap <= stroke.at <= y1 + gap)
+                )
+                for x0, y0, x1, y1 in span.witnesses
+            ):
+                return False
+        return True
+
+    side = next(
+        (
+            stroke
+            for stroke in others
+            if stroke.axis is span.axis
+            and abs(stroke.start - span.start_pt) <= reach
+            and abs(stroke.end - span.end_pt) <= reach
+            and reached(stroke)
+        ),
+        None,
+    )
+    if side is None:
+        return span
+    reason = (
+        "the end is a corner of the outline: a solid edge parallel to the span runs its whole "
+        f"length ({side.length:.1f} pt), from one end to the other"
+    )
+
+    def corner(end: SpanEnd) -> SpanEnd:
+        return (
+            end if end.kind is not EndKind.NOTHING else SpanEnd(end.at_pt, EndKind.OUTLINE, reason)
+        )
+
+    return replace(span, low_end=corner(span.low_end), high_end=corner(span.high_end))
 
 
 def _chains(spans: Sequence[Span], settings: SpanSettings) -> tuple[SpanChain, ...]:
@@ -896,23 +1001,35 @@ class DrawnLength:
 
 
 def drawn_length_check(
-    span: Span, value_inches: Fraction, scale: ViewScale, *, tolerance: Fraction
+    span: Span,
+    value_inches: Fraction,
+    scale: ViewScale,
+    *,
+    tolerance: Fraction,
+    within_inches: Fraction | None = None,
 ) -> DrawnLength:
     """The span's drawn length at `scale`, against `value_inches`.
 
     **The decision, exactly:** `|drawn − value| ≤ tolerance × value`, on `Fraction`s, inclusive at
-    the boundary. The design's tolerance is 1/10: a scale taken from one overall and a drawing
+    the boundary; with `within_inches`, also `|drawn − value| < within_inches`, strictly (both
+    must hold). The design's tolerance is 1/10: a scale taken from one overall and a drawing
     traced by hand are not exact, and the check is there to catch a reading of the wrong span or a
     misread digit (24 read as 34 is 42% off), not to grade the drafting.
     """
     if value_inches <= 0:
         raise ValueError("a value checked against a drawn length must be greater than zero")
     drawn = Fraction(span.length_pt) / scale.points_per_inch
-    agrees = abs(drawn - value_inches) <= tolerance * value_inches
+    off = abs(drawn - value_inches)
+    agrees = off <= tolerance * value_inches and (within_inches is None or off < within_inches)
+    limit = (
+        f"{tolerance} of the value"
+        if within_inches is None
+        else f"{tolerance} of the value and under {within_inches} in"
+    )
     reason = (
         f"span {span.number} is drawn {float(drawn):.2f} in long at the view's scale, "
         + ("within" if agrees else "outside")
-        + f" {tolerance} of the value"
+        + f" {limit}"
     )
     return DrawnLength(span.number, drawn, value_inches, agrees, reason)
 
@@ -1033,6 +1150,8 @@ class TextLane:
     printed: tuple[str, ...]
     inches: Fraction | None
     reason: str
+    boxes: tuple[Box, ...] = field(default=())
+    """Where the span's own label is printed (its phrases): the reviewer-ink check looks here."""
 
 
 def _reads_along(phrase: PrintedPhrase, axis: Axis) -> bool:
@@ -1084,10 +1203,75 @@ def text_lanes(
         owned[near[0][1].number].append(phrase)
     lanes: dict[int, TextLane] = {}
     for span in spans:
-        lanes[span.number] = _lane(
-            span.number, owned[span.number], shared[span.number], chars, settings
-        )
+        kept, ignored = _others_pairs(owned[span.number], phrases, settings)
+        lane = _lane(span.number, kept, shared[span.number], chars, settings)
+        if ignored and lane.inches is not None:
+            lane = replace(
+                lane,
+                reason=lane.reason
+                + " (not counted: "
+                + ", ".join(repr(text) for text in ignored)
+                + ", each printed with its own bracketed inches: another label)",
+            )
+        lanes[span.number] = replace(lane, boxes=tuple(phrase.box for phrase in kept))
     return lanes
+
+
+def _along_across(phrase: PrintedPhrase) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """The phrase's extent along its own reading direction, and across it."""
+    box = phrase.box
+    if phrase.orientation is Orientation.UPRIGHT:
+        return box.x0, box.x1, box.top, box.bottom
+    return box.top, box.bottom, box.x0, box.x1
+
+
+def _own_bracket(number: PrintedPhrase, phrases: Sequence[PrintedPhrase]) -> PrintedPhrase | None:
+    """The bracketed inches printed as this millimetre number's own pair: right under or over it
+    (overlapping it along, within one character height across), or right after it on its line."""
+    low, high, top, bottom = _along_across(number)
+    height = number.height
+    for other in phrases:
+        if other is number or other.orientation is not number.orientation:
+            continue
+        if not _BRACKETED.fullmatch(plain_marks(other.text.strip())):
+            continue
+        o_low, o_high, o_top, o_bottom = _along_across(other)
+        overlap = min(high, o_high) - max(low, o_low)
+        # Right under or over it: the two boxes may touch or overlap a little across (half a
+        # character), never more.
+        stacked = overlap * 2 >= min(high - low, o_high - o_low) and (
+            -height / 2 <= o_top - bottom <= height or -height / 2 <= top - o_bottom <= height
+        )
+        inline = abs((o_top + o_bottom) / 2 - (top + bottom) / 2) * 2 <= height and Decimal(
+            0
+        ) <= o_low - high <= height * Decimal("1.5")
+        if stacked or inline:
+            return other
+    return None
+
+
+def _others_pairs(
+    owned: Sequence[PrintedPhrase], phrases: Sequence[PrintedPhrase], settings: SpanSettings
+) -> tuple[list[PrintedPhrase], list[str]]:
+    """The span's own phrases, less every millimetre number printed as a pair with a bracketed
+    inch value this span does not own, when the two corroborate (`20` over `[3/4]`): that pair is
+    another label whose number reached this span (#1265 review). A number whose pair does not
+    corroborate, or that has no pair, stays, and holds the lane as before."""
+    kept: list[PrintedPhrase] = []
+    ignored: list[str] = []
+    for phrase in owned:
+        label = read_depth_label(phrase.text, mm_tolerance=settings.mm_corroboration_mm)
+        if label.held_reason == MM_ONLY:
+            bracket = _own_bracket(phrase, phrases)
+            if bracket is not None and bracket not in owned:
+                pair = read_depth_label(
+                    f"{phrase.text} {bracket.text}", mm_tolerance=settings.mm_corroboration_mm
+                )
+                if pair.inches is not None:
+                    ignored.append(phrase.text)
+                    continue
+        kept.append(phrase)
+    return kept, ignored
 
 
 def _stacked(phrase: PrintedPhrase, chars: Sequence[TextChar], settings: SpanSettings) -> bool:
@@ -1570,6 +1754,8 @@ MEASURED_SPAN_SETTINGS: Final = SpanSettings(
     dash_minimum_pt=Decimal(2),
     drain_maximum_fraction=Decimal("0.4"),
     drawn_length_tolerance=Fraction(1, 10),
+    drawn_length_within_in=Fraction(1, 8),
+    witness_gap_pt=Decimal(4),
     mm_corroboration_mm=Fraction(2),
     same_size_fraction=Decimal("0.1"),
     baseline_drift_em=Decimal("0.3"),

@@ -421,3 +421,145 @@ def test_cut_out_words_about_another_hole_do_not_name_the_sinks_cut_out() -> Non
     assert not cutout_judgment(sink, [elsewhere]).code_allows
     inside = phrase("CUT-OUT", 200, 220, Orientation.UPRIGHT)
     assert cutout_judgment(sink, [inside]).code_allows
+
+
+# --- review #1274, round 4: $0 fixes ---------------------------------------------------------
+
+
+def test_a_witness_line_a_cad_gap_short_of_the_stone_edge_still_meets_it() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(93, 196, 400, 196)]  # the front edge stops 3 pt short of the witness line (47..90)
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.OUTLINE
+    far = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(96, 196, 400, 196)]  # 6 pt short: something else
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(far), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_an_end_at_the_corner_of_a_side_edge_running_the_whole_span_is_on_the_outline() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(90, 100, 90, 196)]  # the stone's side edge, wall to front; no front edge drawn
+        + vertical_dimension(50, 100, 196)  # its witness lines end on it, at x 90
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.low_end.kind is EndKind.WALL_BAND
+    assert depth.high_end.kind is EndKind.OUTLINE and "corner" in depth.high_end.reason
+    far = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 100, 400, 196)]  # a parallel edge far along: no witness of the span reaches it
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(far), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+    shorter = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 100, 400, 180)]  # stops short of the span's end: not its corner
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(shorter), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_drawn_length_strictly_under_an_eighth_and_within_a_tenth() -> None:
+    depth = span(1, Axis.VERTICAL, 0, 96)
+    scale = view_scale(span(2, Axis.HORIZONTAL, 0, 340), Fraction(85))  # 4 pt per inch
+    eighth = Fraction(1, 8)
+
+    def agrees(value: Fraction) -> bool:
+        return drawn_length_check(
+            depth, value, scale, tolerance=Fraction(1, 10), within_inches=eighth
+        ).agrees
+
+    assert agrees(Fraction(24)) and agrees(Fraction(385, 16)) and agrees(Fraction(383, 16))
+    assert not agrees(Fraction(193, 8))  # 24 1/8": exactly an eighth off is another value
+    assert not agrees(Fraction(191, 8))  # 23 7/8"
+    assert not agrees(Fraction(97, 4)) and not agrees(Fraction(95, 4))  # a quarter either way
+    # A tenth alone lets 22" through.
+    assert drawn_length_check(depth, Fraction(22), scale, tolerance=Fraction(1, 10)).agrees
+
+
+def test_a_millimetre_number_printed_with_its_own_bracket_elsewhere_is_another_label() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    other_mm = phrase("20", 1001, 161, Orientation.UPRIGHT, size=3)
+    other_in = phrase("[3/4]", 1001, 167.5, Orientation.UPRIGHT, size=3)  # beyond the reach
+    lanes = text_lanes([line_span], [own_mm, own_in, other_mm, other_in], S, chars=[])
+    assert lanes[1].inches == 22, lanes[1].reason
+    assert "'20'" in lanes[1].reason
+    assert set(lanes[1].boxes) == {own_mm.box, own_in.box}
+    # A lone number with no bracket of its own still holds (a stacked fraction's digit).
+    lone = text_lanes([line_span], [own_mm, own_in, other_mm], S, chars=[])
+    assert lone[1].inches is None and "not its millimetres" in lone[1].reason
+
+
+def test_a_side_edge_must_run_the_whole_span_from_end_to_end() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(90, 150, 90, 196)]  # ends at the span's end but starts half-way: not the stone
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_a_number_whose_bracket_is_not_its_millimetres_still_holds() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    stray = phrase("90", 1001, 161, Orientation.UPRIGHT, size=3)
+    bracket = phrase("[3/4]", 1001, 167.5, Orientation.UPRIGHT, size=3)
+    lanes = text_lanes([line_span], [own_mm, own_in, stray, bracket], S, chars=[])
+    assert lanes[1].inches is None and "not its millimetres" in lanes[1].reason
+
+
+def test_an_edge_crossed_by_another_dimension_is_still_an_edge() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(93, 196, 400, 196)]  # the stone's front edge
+        + vertical_dimension(50, 100, 196)
+        + [line(200, 140, 200, 199)]  # another dimension line at x 200, crossing the front edge
+        + [line(197, 143, 240, 143)]  # its other witness
+    )
+    spans = find_spans(ink(lines), VIEW, S).spans
+    (depth,) = [s for s in spans if s.axis is Axis.VERTICAL and s.offset_pt == d(50)]
+    assert depth.high_end.kind is EndKind.OUTLINE
+
+
+def test_a_bracket_touching_its_number_from_below_is_its_pair() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    other_mm = phrase("20", 1001, 161, Orientation.UPRIGHT, size=3)
+    other_in = phrase("[3/4]", 1001, 166.8, Orientation.UPRIGHT, size=3)  # overlaps by 0.2 pt
+    lanes = text_lanes([line_span], [own_mm, own_in, other_mm, other_in], S, chars=[])
+    assert lanes[1].inches == 22, lanes[1].reason
+
+
+def test_a_spans_own_witness_drawn_well_past_its_line_is_never_its_edge() -> None:
+    # The only depth runs from the wall to a dashed cabinet face; its witness there overshoots the
+    # line by 8 pt on one side and runs 40 pt on the other. Nothing solid is at that end.
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(x, 186, x + 3, 186) for x in range(100, 400, 6)]  # a dashed cabinet face
+        + [line(50, 97.5, 50, 188.5), line(42, 100, 90, 100), line(42, 186, 90, 186)]
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.low_end.kind is EndKind.WALL_BAND
+    assert depth.high_end.kind is EndKind.NOTHING

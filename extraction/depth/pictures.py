@@ -58,16 +58,14 @@ type PixelBox = tuple[int, int, int, int]
 
 type _Colour = tuple[int, int, int]
 
-#: The spans' colours, span 1 first, with the words a question can use for them. None is the
-#: reviewer's red, yellow or blue, or the vendor's black, and each is dark enough for a white
-#: number on it.
+#: The spans' colours, span 1 first, with the words a question can use for them (#1265 review:
+#: one palette at least 40 degrees of hue from GV's red, yellow, green and blue, which the readers
+#: are told to ignore, and not the vendor's black). Each is dark enough for a white number on it; the
+#: numbers and letters, not the colours, tell the marks apart.
 SPAN_COLOURS: Final[tuple[tuple[str, _Colour], ...]] = (
     ("magenta", (200, 0, 160)),
-    ("brown", (140, 85, 20)),
-    ("purple", (120, 50, 170)),
-    ("teal", (0, 125, 125)),
-    ("orange", (210, 95, 0)),
-    ("olive", (105, 110, 0)),
+    ("teal", (0, 130, 130)),
+    ("violet", (170, 0, 220)),
 )
 _WHITE: Final[_Colour] = (255, 255, 255)
 _MARK: Final[_Colour] = (200, 0, 160)
@@ -253,11 +251,13 @@ def end_marks_picture(
     thickness: int,
     reach: int,
     max_side: int,
+    headings: Sequence[PixelBox] = (),
 ) -> bytes:
     """The span's two ends marked across its own axis, each mark `reach` pixels either side of the
     line: vertical bars at a horizontal span's left and right ends, horizontal bars at a vertical
-    span's top and bottom ends."""
+    span's top and bottom ends. Every heading box in `headings` is painted out first."""
     canvas = _Canvas(rendered, crop)
+    _mask(canvas, headings)
     half = thickness // 2
     for x, y in (span.start, span.end):
         if span.axis is Axis.HORIZONTAL:

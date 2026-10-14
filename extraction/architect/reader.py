@@ -120,6 +120,9 @@ __all__ = [
     "ArchitectSettings",
     "ArchitectSpan",
     "ArchitectView",
+    "OpenedPage",
+    "open_page",
+    "page_stamps",
     "read_architect_page",
 ]
 
@@ -428,7 +431,7 @@ def _page_box(annotation: Any, left_edge: Decimal, top_edge: Decimal) -> Box:
     )
 
 
-def _stamps(
+def page_stamps(
     data: bytes, page_index: int
 ) -> tuple[dict[int, tuple[Box, Decimal | None]], tuple[ArchitectPicture, ...]]:
     """Each pasted drawing's rectangle in pdfplumber's frame and its paste factor, by `/Annots`
@@ -841,7 +844,7 @@ class _Page:
     dtop: Decimal
 
 
-def _open_page(
+def open_page(
     data: bytes,
     page_index: int,
     *,
@@ -901,6 +904,13 @@ def _open_page(
         dx=dx,
         dtop=dtop,
     )
+
+
+#: The old private names, kept for every caller written before they were public (#1265).
+_open_page = open_page
+_stamps = page_stamps
+OpenedPage = _Page
+"""What `open_page` returns: the page's text and ink, its rows, and where things land."""
 
 
 #: One drawing still being read: where its view sits in the list, its rows and their spans.
