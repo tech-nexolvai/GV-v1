@@ -91,7 +91,7 @@ class ReadingProgressOut(BaseModel):
         description=(
             "Which part of the reading is running, as a code: waiting, ingest, pages, architect, "
             "preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, "
-            "validate or form."
+            "validate, form or try_again."
         )
     )
     label: str = Field(description="The same part in plain words, for the screen.")
@@ -127,6 +127,98 @@ class ReadingProgressOut(BaseModel):
     )
 
 
+class ReadingActivityItemOut(BaseModel):
+    """One item of the reading's activity, in the state its newest event gives it (#1238)."""
+
+    page: int = Field(description="The page's number (1 is the first page).")
+    agent: str = Field(
+        description=(
+            "The agent's own name (Rekha, Akshara, ...), for the screen's hover only; the sentence "
+            "names its plain role instead."
+        )
+    )
+    role: str = Field(description='The agent\'s plain role, e.g. "the line finder".')
+    item: str = Field(
+        description="A code question id, e.g. `p11:row-choice` (page index 11, so page 12)."
+    )
+    state: Literal["answered", "stopped", "trying_again", "helped", "waiting"] = Field(
+        description=(
+            "answered: the agent's AIs answered; stopped: its inspector stopped the item, which "
+            "waits for a person; trying_again: it is being asked again; helped: trying again "
+            "settled it; waiting: trying again did not help (or was not allowed), so it waits for "
+            "a person. Passes are never listed, only counted."
+        )
+    )
+    code: str = Field(
+        description=(
+            "Why, as a short code, e.g. `readers-differ`; for how a try went: helped, not-helped, "
+            "allowance-used or cannot-zoom."
+        )
+    )
+    change: str | None = Field(
+        description=(
+            "What a try-again changed, or null. The number reader: closer-look-2x, "
+            "closer-look-3x-upright, tighter-crop; the line finder: tie-break-disputed-lines, "
+            "other-numbered-lines, each-line-alone."
+        )
+    )
+    attempt: int | None = Field(
+        description=(
+            "Which try (1 to 3) when the item's newest event is a try-again event (trying again, "
+            "or how a try went); null otherwise."
+        )
+    )
+    line: str = Field(description="The plain sentence for the screen, made from the codes.")
+    at: datetime = Field(description="When the item's newest event happened.")
+
+
+class ReadingActivitySummaryOut(BaseModel):
+    """The reading's activity, counted per item (#1238)."""
+
+    passed: int = Field(description="Items an inspector passed on (never listed).")
+    stopped: int = Field(description="Items an inspector stopped, whatever happened next.")
+    tried_again: int = Field(description="Items asked again.")
+    helped: int = Field(description="Items trying again settled.")
+    waiting: int = Field(
+        description="Items that wait for a person: tried and not helped, plus stopped and never tried."
+    )
+    sentence: str = Field(description="The reading's summary in one plain sentence.")
+
+
+class ReadingActivityOut(BaseModel):
+    """What each agent's AIs answered and what its inspector did, in the newest reading (#1238).
+
+    While the revision is read: the running attempt only, from its first event. After: the newest
+    reading, still present (unlike `reading`). An earlier attempt's events are never mixed in, and
+    a reading whose stage failed is never shown as the result (`finished` false, no items, `now`
+    says it did not finish). Everything here is made from stored codes; no drawing text is ever in
+    it. The screen shows `line`, `now` and `summary.sentence` as they are.
+    """
+
+    reading_id: UUID = Field(description="The reading (one stage attempt) these events belong to.")
+    finished: bool = Field(
+        description=(
+            "Whether this reading's stage finished and its results are the stored ones. False "
+            "while it runs, and for a reading that failed (then `items` is empty)."
+        )
+    )
+    updated_at: datetime = Field(description="When the newest event happened.")
+    now: str = Field(
+        description=(
+            "One plain sentence: while reading, the newest item that is not a pass; after the "
+            "reading, its summary (or that it did not finish)."
+        )
+    )
+    items: list[ReadingActivityItemOut] = Field(
+        description=(
+            "Up to 20 items, newest first: those stopped, trying again, helped or waiting; then, "
+            "only if room is left, pages whose AIs answered and nothing more happened yet. Passes "
+            "are only counted."
+        )
+    )
+    summary: ReadingActivitySummaryOut
+
+
 class PackageOut(BaseModel):
     """One package, and the revision documents currently attach to.
 
@@ -152,6 +244,10 @@ class PackageOut(BaseModel):
     reading: ReadingProgressOut | None = None
     """Where the reading is while it runs (#1178). Filled by `GET .../packages/{id}` only, and only
     while the revision is being read; `null` otherwise and on the package list."""
+    activity: ReadingActivityOut | None = None
+    """What each agent's AIs answered and what its inspector did in the newest reading (#1238):
+    present during the reading and after it ends. Filled by `GET .../packages/{id}` only; `null`
+    before any event and on the package list."""
     stop_reason: str | None = None
     """Why the current revision's reading stopped, in plain words a person can act on (#1206):
     today only "The AI provider account is out of credit. Top it up, then run the reading again."

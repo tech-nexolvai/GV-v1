@@ -4919,6 +4919,7 @@ export interface components {
          *     superseded one (`docs/DESIGN_PLATFORM.md` §5).
          */
         PackageOut: {
+            activity?: components["schemas"]["ReadingActivityOut"] | null;
             /** Budget Limit */
             budget_limit?: ("unpriced" | "fixed" | "maximum") | null;
             /**
@@ -5660,6 +5661,140 @@ export interface components {
          */
         PublicationTarget: "development" | "production";
         /**
+         * ReadingActivityItemOut
+         * @description One item of the reading's activity, in the state its newest event gives it (#1238).
+         */
+        ReadingActivityItemOut: {
+            /**
+             * Agent
+             * @description The agent's own name (Rekha, Akshara, ...), for the screen's hover only; the sentence names its plain role instead.
+             */
+            agent: string;
+            /**
+             * At
+             * Format: date-time
+             * @description When the item's newest event happened.
+             */
+            at: string;
+            /**
+             * Attempt
+             * @description Which try (1 to 3) when the item's newest event is a try-again event (trying again, or how a try went); null otherwise.
+             */
+            attempt: number | null;
+            /**
+             * Change
+             * @description What a try-again changed, or null. The number reader: closer-look-2x, closer-look-3x-upright, tighter-crop; the line finder: tie-break-disputed-lines, other-numbered-lines, each-line-alone.
+             */
+            change: string | null;
+            /**
+             * Code
+             * @description Why, as a short code, e.g. `readers-differ`; for how a try went: helped, not-helped, allowance-used or cannot-zoom.
+             */
+            code: string;
+            /**
+             * Item
+             * @description A code question id, e.g. `p11:row-choice` (page index 11, so page 12).
+             */
+            item: string;
+            /**
+             * Line
+             * @description The plain sentence for the screen, made from the codes.
+             */
+            line: string;
+            /**
+             * Page
+             * @description The page's number (1 is the first page).
+             */
+            page: number;
+            /**
+             * Role
+             * @description The agent's plain role, e.g. "the line finder".
+             */
+            role: string;
+            /**
+             * State
+             * @description answered: the agent's AIs answered; stopped: its inspector stopped the item, which waits for a person; trying_again: it is being asked again; helped: trying again settled it; waiting: trying again did not help (or was not allowed), so it waits for a person. Passes are never listed, only counted.
+             * @enum {string}
+             */
+            state: "answered" | "stopped" | "trying_again" | "helped" | "waiting";
+        };
+        /**
+         * ReadingActivityOut
+         * @description What each agent's AIs answered and what its inspector did, in the newest reading (#1238).
+         *
+         *     While the revision is read: the running attempt only, from its first event. After: the newest
+         *     reading, still present (unlike `reading`). An earlier attempt's events are never mixed in, and
+         *     a reading whose stage failed is never shown as the result (`finished` false, no items, `now`
+         *     says it did not finish). Everything here is made from stored codes; no drawing text is ever in
+         *     it. The screen shows `line`, `now` and `summary.sentence` as they are.
+         */
+        ReadingActivityOut: {
+            /**
+             * Finished
+             * @description Whether this reading's stage finished and its results are the stored ones. False while it runs, and for a reading that failed (then `items` is empty).
+             */
+            finished: boolean;
+            /**
+             * Items
+             * @description Up to 20 items, newest first: those stopped, trying again, helped or waiting; then, only if room is left, pages whose AIs answered and nothing more happened yet. Passes are only counted.
+             */
+            items: components["schemas"]["ReadingActivityItemOut"][];
+            /**
+             * Now
+             * @description One plain sentence: while reading, the newest item that is not a pass; after the reading, its summary (or that it did not finish).
+             */
+            now: string;
+            /**
+             * Reading Id
+             * Format: uuid
+             * @description The reading (one stage attempt) these events belong to.
+             */
+            reading_id: string;
+            summary: components["schemas"]["ReadingActivitySummaryOut"];
+            /**
+             * Updated At
+             * Format: date-time
+             * @description When the newest event happened.
+             */
+            updated_at: string;
+        };
+        /**
+         * ReadingActivitySummaryOut
+         * @description The reading's activity, counted per item (#1238).
+         */
+        ReadingActivitySummaryOut: {
+            /**
+             * Helped
+             * @description Items trying again settled.
+             */
+            helped: number;
+            /**
+             * Passed
+             * @description Items an inspector passed on (never listed).
+             */
+            passed: number;
+            /**
+             * Sentence
+             * @description The reading's summary in one plain sentence.
+             */
+            sentence: string;
+            /**
+             * Stopped
+             * @description Items an inspector stopped, whatever happened next.
+             */
+            stopped: number;
+            /**
+             * Tried Again
+             * @description Items asked again.
+             */
+            tried_again: number;
+            /**
+             * Waiting
+             * @description Items that wait for a person: tried and not helped, plus stopped and never tried.
+             */
+            waiting: number;
+        };
+        /**
          * ReadingAgainOut
          * @description What was asked for: the whole reading resumed, or only the pages the budget stopped.
          */
@@ -5739,7 +5874,7 @@ export interface components {
             retrying: boolean;
             /**
              * Stage
-             * @description Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate or form.
+             * @description Which part of the reading is running, as a code: waiting, ingest, pages, architect, preparing, rows, dimensions, chains, architect_pairing, whole_pages, saving, match, validate, form or try_again.
              */
             stage: string;
             /**
