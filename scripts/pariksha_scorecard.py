@@ -190,10 +190,25 @@ def _score(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Scorecards with their own compare (#1250): this one does not know their extra reasons to reject
+#: (new wrong wall ink, a new wrong automatic layout, an unverified row), so it would accept a change
+#: their own compare rejects. It refuses them and names the command to use.
+OWN_COMPARE = {
+    "rekha-walls": "scripts/pariksha_walls.py compare",
+    "bala-kinds": "scripts/pariksha_kinds.py compare",
+}
+
+
 def _compare(args: argparse.Namespace) -> int:
-    comparison = compare_scorecards(
-        read_scorecard(args.before.expanduser()), read_scorecard(args.after.expanduser())
-    )
+    before = read_scorecard(args.before.expanduser())
+    after = read_scorecard(args.after.expanduser())
+    for card in (before, after):
+        if card.agent in OWN_COMPARE:
+            raise Refused(
+                f"a {card.agent} scorecard has its own compare, which knows its rules: use "
+                f"{OWN_COMPARE[card.agent]} (before: {before.agent}, after: {after.agent})"
+            )
+    comparison = compare_scorecards(before, after)
     print(comparison.render())
     return 0 if comparison.accepted else 1
 

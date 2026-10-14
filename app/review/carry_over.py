@@ -75,11 +75,12 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from fractions import Fraction
+from functools import partial
 from typing import Any, Final
 from uuid import UUID
 
@@ -106,7 +107,7 @@ from app.review.requirements import needs_note
 from vocabulary.semantic_types import SemanticType
 from workflow.measurements import run_layer
 from workflow.pariksha_gates import GATE_FLAG, REKHA_ROW_GATE
-from workflow.slot_row_scope import effective_row_wall
+from workflow.slot_row_scope import UncarriedWallAnswer, effective_row_wall, uncarried_wall_answers
 
 __all__ = [
     "CARRIABLE_ACTIONS",
@@ -733,16 +734,54 @@ def _chain_tip(decisions: Sequence[SlotRowReviewDecision]) -> SlotRowReviewDecis
     return tips[-1] if tips else None
 
 
-def _effective_wall(row: _Row, decision: SlotRowReviewDecision | None) -> str | None:
-    """The wall layout the width check used on this row, the way `slot_row_check` decides it."""
+def _effective_wall(
+    row: _Row,
+    decision: SlotRowReviewDecision | None,
+    wall_hold: Callable[[], str | None] = lambda: None,
+) -> str | None:
+    """The wall layout the width check used on this row, the way `slot_row_check` decides it.
+    `wall_hold`: whether the row's walls were held for a reviewer's answer a re-read could not
+    carry (#1241), as `slot_rows` saw it when the check ran. It is asked only when the walls would
+    otherwise be automatic, the one case a hold changes (a reviewer's own answer always wins, and
+    every other row already has no wall)."""
     flags = [] if row.wall is None else (row.wall.ambiguity_flags or [])
+    layout = _flag(flags, "walls-sealed:")
+    source = _flag(flags, "wall-source:")
+    held = any(flag.startswith("walls-held:") for flag in flags)
+    confirmed = None if decision is None else decision.wall_config
     value, _why = effective_row_wall(
-        layout=_flag(flags, "walls-sealed:"),
-        source=_flag(flags, "wall-source:"),
-        held=any(flag.startswith("walls-held:") for flag in flags),
-        reviewer_confirmed=None if decision is None else decision.wall_config,
+        layout=layout, source=source, held=held, reviewer_confirmed=confirmed
+    )
+    if value is None or confirmed is not None:
+        return value
+    value, _why = effective_row_wall(
+        layout=layout,
+        source=source,
+        held=held,
+        reviewer_confirmed=confirmed,
+        wall_hold=wall_hold(),
     )
     return value
+
+
+class _WallHolds:
+    """`slot_rows`' wall hold (#1241) on a stored row as it stood when a check ran: one statement
+    per reading, revision and check time, however many rows."""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+        self._seen: dict[tuple[UUID, UUID, datetime], dict[UUID, UncarriedWallAnswer]] = {}
+
+    def __call__(self, row: _Row, revision_id: UUID, at: datetime) -> str | None:
+        if row.anchor is None:
+            return None
+        key = (revision_id, row.anchor.extraction_run_id, at)
+        if key not in self._seen:
+            self._seen[key] = uncarried_wall_answers(
+                self._db, revision_id, row.anchor.extraction_run_id, at=at
+            )
+        lost = self._seen[key].get(row.anchor.page_id)
+        return None if lost is None else lost.row_hold
 
 
 @dataclass(frozen=True, slots=True)
@@ -1026,6 +1065,7 @@ def fingerprint_bodies(db: Session, findings: Collection[Finding]) -> dict[UUID,
     }
     rows = _rows(db, anchor_ids)
     decisions = _row_decisions(db, anchor_ids)
+    wall_holds = _WallHolds(db)
     architect = _architect_side(
         db,
         {
@@ -1101,7 +1141,17 @@ def fingerprint_bodies(db: Session, findings: Collection[Finding]) -> dict[UUID,
                 "readings": stored_row.readings,
                 # No decision and a decision that typed nothing (a wall-only save) read alike.
                 "typed_values": {} if decision is None else _typed_values(decision.measurements),
-                "wall_layout": _effective_wall(stored_row, decision) if rule.walls else None,
+                "wall_layout": (
+                    _effective_wall(
+                        stored_row,
+                        decision,
+                        partial(
+                            wall_holds, stored_row, finding.package_revision_id, run.created_at
+                        ),
+                    )
+                    if rule.walls
+                    else None
+                ),
                 "architect": (
                     architect.content(anchor_id, run.created_at) if rule.architect else None
                 ),
