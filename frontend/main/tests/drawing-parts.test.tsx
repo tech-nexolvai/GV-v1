@@ -27,6 +27,8 @@ const part = (overrides: Partial<SuggestedPart>): SuggestedPart => ({
   reason: 'One of 2 dimensions drawn end to end along the lowest row.',
   added_by_a_person: false,
   from_countertop_line: false,
+  kind_named: false,
+  picture_pending: false,
   left_end: { x: '0.25', y: '0.8' },
   right_end: { x: '0.5', y: '0.8' },
   has_picture: false,

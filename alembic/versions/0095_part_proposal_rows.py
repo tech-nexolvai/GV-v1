@@ -9,7 +9,8 @@ append-only table says where each suggestion came from:
 
 * `part_proposal_rows` — for one suggestion, the row's anchor reading (`row_candidate_id`, the
   `slot:0` reading of the slot-reader run), the piece's place along the row (`slot_index`, `NULL`
-  for the countertop itself) and the slot-reader run.
+  for the countertop itself), the slot-reader run, and whether the drawing names the suggested
+  kind (`kind_named`).
 
 **One suggestion per row and piece, and one row and piece per suggestion, held by the schema**: a
 unique `part_proposal_id`, and a unique expression index on
@@ -67,6 +68,7 @@ def upgrade() -> None:
         sa.Column("row_candidate_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("slot_index", sa.Integer(), nullable=True),
         sa.Column("extraction_run_id", sa.Uuid(as_uuid=True), nullable=False),
+        sa.Column("kind_named", sa.Boolean(), nullable=False),
         sa.ForeignKeyConstraint(["part_proposal_id"], ["part_proposals.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
             ["row_candidate_id"], ["observation_candidates.id"], ondelete="RESTRICT"

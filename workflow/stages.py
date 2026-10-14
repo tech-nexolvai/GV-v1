@@ -402,8 +402,11 @@ from workflow.part_operands import (
     wall_layout_name,
 )
 from workflow.part_pictures import (
+    CUT_PART_PICTURES_WORKFLOW,
     PartPictureSettings,
     pages_without_pictures,
+    picture_job_waiting,
+    pictured,
     record_part_picture,
     unpictured_proposals,
 )
@@ -6485,9 +6488,16 @@ class DatabaseStages:
 
         Files a countertop and its pieces for each countertop row, linked to the row
         (`workflow/bala_items.py`), with code's own part finder run in memory as the second judgment
-        on each page (`_code_parts_on`). Then cuts the picture of every suggestion still without
-        one, as for every other suggestion (`cut_part_pictures`, #897): every suggested part gets a
-        picture (2026-10-03). **No item is written** (`items_written` is always 0).
+        on each page (`_code_parts_on`). **No item is written** (`items_written` is always 0).
+
+        **The pictures are the worker's next job, not this stage's** (review of #1243: cutting them
+        here took a 60-page set's match from under a second to two minutes). Every suggestion still
+        gets its picture (2026-10-03): where one of Bala's lacks it, the existing
+        `CUT_PART_PICTURES_WORKFLOW` is queued in this stage's transaction, once while it waits, and
+        the Measure page says the picture is being made until it exists.
+
+        **The finder only reports in PR 1**, so nothing it raises may fail the stage: a failure is
+        recorded as the reason it gave no second judgment.
         """
         records = {
             version: key
@@ -6496,14 +6506,22 @@ class DatabaseStages:
         loaded: dict[UUID, bytes] = {}
 
         def code_parts(page: Page) -> CodeFinding | str:
-            return self._code_parts_on(session, page, records, loaded)
+            try:
+                return self._code_parts_on(session, page, records, loaded)
+            except Exception as error:  # noqa: BLE001 - reported, never acted on (PR 1)
+                return f"code's part finder failed: {type(error).__name__}: {error}"
 
-        outcome = propose_items(session, package_revision_id, code_parts=code_parts)
+        outcome = propose_items(
+            session,
+            package_revision_id,
+            code_parts=code_parts,
+            same_outline_tolerance=(
+                self._part_finder.witness_tolerance if self._part_finder is not None else Decimal(0)
+            ),
+        )
         payload = outcome.as_payload()
-        payload["pictures"] = (
-            dict(self.cut_part_pictures(session, package_revision_id))
-            if outcome.proposals
-            else {"ran": False, "reason": "Bala suggested nothing to picture"}
+        payload["pictures"] = _queue_bala_pictures(
+            session, package_revision_id, list(outcome.proposals.values())
         )
         return payload
 
@@ -8748,6 +8766,24 @@ def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, Confirm
         if view.tag.startswith("panel-") and number.isdigit() and view.role is not None:
             roles[int(number)] = ConfirmedRole(view.role, latest.get(view.id, "a reviewer"))
     return roles
+
+
+def _queue_bala_pictures(
+    session: Session, package_revision_id: UUID, proposal_ids: Sequence[UUID]
+) -> dict[str, object]:
+    """Queue the picture job for Bala's suggestions still without a picture (#1236), once."""
+    if not proposal_ids:
+        return {"queued": False, "reason": "Bala suggested nothing to picture"}
+    if len(pictured(session, proposal_ids)) == len(set(proposal_ids)):
+        return {"queued": False, "reason": "every suggestion already has its picture"}
+    if not picture_job_waiting(session, package_revision_id):
+        enqueue(
+            session,
+            workflow=CUT_PART_PICTURES_WORKFLOW,
+            payload={"package_revision_id": str(package_revision_id)},
+        )
+        session.flush()
+    return {"queued": True}
 
 
 def _view_outlines(session: Session, page: Page, views: Sequence[DrawingView]) -> list[ViewOutline]:

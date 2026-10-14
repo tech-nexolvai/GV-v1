@@ -5213,12 +5213,22 @@ export interface components {
              * @description Whether its own picture is stored: the vendor's drawing around its outline (#897). False until the worker has cut it, or where the page could not be rendered.
              */
             has_picture: boolean;
+            /**
+             * Kind Named
+             * @description For a suggestion from the countertop line: whether the drawing names its kind (the countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). Only then is it confirmed as suggested in one click; otherwise the person says what it is. False for every other suggestion.
+             */
+            kind_named: boolean;
             /** @description The left end of the line that defines it, or null when no line did. */
             left_end: components["schemas"]["PointOut"] | null;
             /** Page Index */
             page_index: number;
             /** @description What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored. */
             picture_gv_marks: components["schemas"]["GvMarks"] | null;
+            /**
+             * Picture Pending
+             * @description True while its picture is being made: none is stored yet and the worker's job to cut it is queued.
+             */
+            picture_pending: boolean;
             /**
              * Position
              * @description Its place on its drawing, 1 for the leftmost.

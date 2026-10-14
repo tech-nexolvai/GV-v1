@@ -121,6 +121,20 @@ class PartOut(BaseModel):
     added_by_a_person: bool = Field(
         description="True when a person added it because the suggestions missed it."
     )
+    kind_named: bool = Field(
+        description=(
+            "For a suggestion from the countertop line: whether the drawing names its kind (the "
+            "countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). "
+            "Only then is it confirmed as suggested in one click; otherwise the person says what "
+            "it is. False for every other suggestion."
+        )
+    )
+    picture_pending: bool = Field(
+        description=(
+            "True while its picture is being made: none is stored yet and the worker's job to "
+            "cut it is queued."
+        )
+    )
     from_countertop_line: bool = Field(
         description=(
             "True when code suggested it from a countertop row the AI readers read (Bala, #1236): "
@@ -255,6 +269,8 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
         reason=proposal.reason,
         added_by_a_person=proposal.source == ADDED_BY_A_PERSON,
         from_countertop_line=proposal.source == BALA_SOURCE,
+        kind_named=listed.kind_named,
+        picture_pending=listed.picture_pending,
         left_end=None if ends is None else PointOut(x=ends[0][0], y=ends[0][1]),
         right_end=None if ends is None else PointOut(x=ends[1][0], y=ends[1][1]),
         has_picture=listed.has_picture,

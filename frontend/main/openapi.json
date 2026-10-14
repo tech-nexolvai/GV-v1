@@ -6824,6 +6824,11 @@
             "title": "Has Picture",
             "type": "boolean"
           },
+          "kind_named": {
+            "description": "For a suggestion from the countertop line: whether the drawing names its kind (the countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). Only then is it confirmed as suggested in one click; otherwise the person says what it is. False for every other suggestion.",
+            "title": "Kind Named",
+            "type": "boolean"
+          },
           "left_end": {
             "anyOf": [
               {
@@ -6849,6 +6854,11 @@
               }
             ],
             "description": "What its picture was found to show of GV's own coloured marks when it was cut (#921): `shown` where markup drawn in colour lies in it, so the page warns under it; `not_shown` where it was checked and none does; `not_checked` for a picture cut before the check existed or whose page's coloured markup could not be read. Null when no picture is stored."
+          },
+          "picture_pending": {
+            "description": "True while its picture is being made: none is stored yet and the worker's job to cut it is queued.",
+            "title": "Picture Pending",
+            "type": "boolean"
           },
           "position": {
             "description": "Its place on its drawing, 1 for the leftmost.",
@@ -6905,6 +6915,8 @@
           "suggested_code",
           "reason",
           "added_by_a_person",
+          "kind_named",
+          "picture_pending",
           "from_countertop_line",
           "left_end",
           "right_end",

@@ -52,9 +52,20 @@ export function reasonToShow(part: SuggestedPart): string {
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
-/** Whether a part may be confirmed as suggested with one click: one of Bala's, still undecided. */
+/**
+ * Whether a part may be confirmed as suggested with one click: one of Bala's, still undecided, and
+ * only where the drawing names its kind (the countertop, or a piece with a printed word).
+ */
 export function oneClickKind(part: SuggestedPart): PartKind | null {
-  return part.from_countertop_line && !part.decision ? part.suggested_kind : null;
+  return part.from_countertop_line && part.kind_named && !part.decision ? part.suggested_kind : null;
+}
+
+/**
+ * Whether the person is asked what a piece is (review of #1243): one of Bala's pieces, still
+ * undecided, that nothing printed names. Nothing is filled in for them.
+ */
+export function askWhatItIs(part: SuggestedPart): boolean {
+  return part.from_countertop_line && !part.kind_named && !part.decision;
 }
 
 /** Whose drawing it is, as a person would say it. */

@@ -941,6 +941,12 @@ class PartProposalRow(Base, TimestampedUUID, Immutable):
     )
     """The slot-reader run the row was read in."""
 
+    kind_named: Mapped[bool] = mapped_column()
+    """Whether the drawing names the suggested kind: always for the countertop (the row is the
+    countertop's), and for a piece only where printed words name it (a printed `FILLER`, a cabinet
+    tag). The Measure page offers one-click confirmation only then; otherwise the person says what
+    the piece is."""
+
     __table_args__ = (
         UniqueConstraint("part_proposal_id", name="uq_part_proposal_rows_part_proposal_id"),
         CheckConstraint(

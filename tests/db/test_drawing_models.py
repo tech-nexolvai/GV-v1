@@ -1661,6 +1661,7 @@ def _one_of_each(session: Session) -> None:
             row_candidate_id=row.id,
             slot_index=None,
             extraction_run_id=row.extraction_run_id,
+            kind_named=True,
         )
     )
     session.flush()

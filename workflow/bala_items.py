@@ -53,14 +53,21 @@ from decimal import Decimal, InvalidOperation
 from typing import Final, cast
 from uuid import UUID
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, select
+from sqlalchemy.orm import Session, aliased
 
-from app.models import DrawingView, ObservationCandidate, Page, PartProposalRow
+from app.models import (
+    DrawingView,
+    ObservationCandidate,
+    Page,
+    PartConfirmation,
+    PartProposal,
+    PartProposalRow,
+)
 from app.models.runs import ExtractionRun
 from app.review.row_location import slot_location
 from vocabulary.part_kinds import PartKind
-from workflow.parts import record_part_proposal
+from workflow.parts import outline_box, record_part_proposal
 from workflow.slot_row_scope import (
     SlotRow,
     UnchosenRowPage,
@@ -221,6 +228,8 @@ class BalaOutcome:
     plan: BalaPlan
     written: int = 0
     found: int = 0
+    already_decided: int = 0
+    """Re-read parts not suggested again: a person's decision stands on the same outline."""
     proposals: dict[tuple[UUID, int | None], UUID] = field(default_factory=dict)
 
     def as_payload(self) -> dict[str, object]:
@@ -234,6 +243,7 @@ class BalaOutcome:
             "pieces": sum(1 for row in filed for part in row.parts if part.slot_index is not None),
             "written": self.written,
             "found_again": self.found,
+            "already_decided": self.already_decided,
             "items_written": 0,
             "not_proposed": [
                 f"{row.label}: {row.not_proposed}" for row in rows if row.not_proposed is not None
@@ -280,15 +290,27 @@ def plan_items(
 
 
 def propose_items(
-    session: Session, revision_id: UUID, *, code_parts: CodeParts | None = None
+    session: Session,
+    revision_id: UUID,
+    *,
+    code_parts: CodeParts | None = None,
+    same_outline_tolerance: Decimal = Decimal(0),
 ) -> BalaOutcome:
     """File Bala's suggestions and their links for the revision's newest slot-reader run.
 
     **Writes `part_proposals` and `part_proposal_rows` only**, never an item, a decision or a run.
     A row and piece already linked is found again rather than filed twice.
+
+    **A part a person already decided is not suggested again** (review of #1243). Where an earlier
+    reading's Bala suggestion on the same drawing, of the same kind of thing (countertop or piece),
+    has the same outline within `same_outline_tolerance` (stored units; the match stage passes the
+    part finder's witness tolerance) and a person's decision stands on it, the re-read piece is that
+    part: nothing is filed, and `already_decided` counts it. Asking twice would let one cabinet be
+    confirmed twice, as two live items.
     """
     plan = plan_items(session, revision_id, code_parts=code_parts)
     outcome = BalaOutcome(plan=plan)
+    decided = _decided_outlines(session, plan)
     for row in plan.rows:
         if row.not_proposed is not None or row.view_id is None:
             continue
@@ -305,6 +327,13 @@ def propose_items(
             if existing is not None:
                 outcome.found += 1
                 outcome.proposals[(row.row_candidate_id, part.slot_index)] = existing
+                continue
+            if any(
+                countertop == (part.slot_index is None)
+                and _same_outline(box, part.box, same_outline_tolerance)
+                for countertop, box in decided.get(row.view_id, ())
+            ):
+                outcome.already_decided += 1
                 continue
             proposal = record_part_proposal(
                 session,
@@ -327,12 +356,48 @@ def propose_items(
                     row_candidate_id=row.row_candidate_id,
                     slot_index=part.slot_index,
                     extraction_run_id=row.extraction_run_id,
+                    kind_named=part.kind_named,
                 )
             )
             outcome.written += 1
             outcome.proposals[(row.row_candidate_id, part.slot_index)] = proposal.id
     session.flush()
     return outcome
+
+
+def _decided_outlines(session: Session, plan: BalaPlan) -> dict[UUID, list[tuple[bool, _Box]]]:
+    """By drawing: the outline of every Bala suggestion from another reading that a person's
+    current decision stands on, and whether it is a countertop."""
+    views = {row.view_id for row in plan.rows if row.view_id is not None}
+    if not views or plan.run_id is None:
+        return {}
+    later = aliased(PartConfirmation)
+    rows = session.execute(
+        select(PartProposal, PartProposalRow.slot_index)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .join(PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id)
+        .where(
+            PartProposal.drawing_view_id.in_(views),
+            PartProposalRow.extraction_run_id != plan.run_id,
+            ~exists().where(later.supersedes_id == PartConfirmation.id),
+        )
+    ).all()
+    decided: dict[UUID, list[tuple[bool, _Box]]] = {}
+    for proposal, slot_index in rows:
+        left, top, right, bottom = outline_box(proposal.extent)
+        decided.setdefault(proposal.drawing_view_id, []).append(
+            (slot_index is None, _Box(left=left, top=top, right=right, bottom=bottom))
+        )
+    return decided
+
+
+def _same_outline(first: _Box, second: _Box, tolerance: Decimal) -> bool:
+    return (
+        abs(first.left - second.left) <= tolerance
+        and abs(first.right - second.right) <= tolerance
+        and abs(first.top - second.top) <= tolerance
+        and abs(first.bottom - second.bottom) <= tolerance
+    )
 
 
 # ---------------------------------------------------------------------------

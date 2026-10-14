@@ -62,10 +62,10 @@ from app.models import (
     ViewRole,
 )
 from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind
+from app.models.runs import ExtractionRun
 from vocabulary.part_kinds import PartKind
-from workflow.part_pictures import GvMarks, pictured
+from workflow.part_pictures import GvMarks, picture_job_waiting, pictured
 from workflow.parts import confirm_part, record_part_proposal, withdraw_part
-from workflow.slot_row_scope import latest_slot_reader_run
 from workflow.view_roles import revision_views
 
 __all__ = [
@@ -129,6 +129,11 @@ class ListedPart:
     """The decision nothing has replaced, or `None` while nobody has decided."""
     has_picture: bool
     """Whether its own picture is stored (#897)."""
+    picture_pending: bool
+    """No picture yet, and the worker's job to cut it is queued (#1236): it is being made."""
+    kind_named: bool
+    """Whether the drawing names the suggested kind, for Bala's suggestions (#1236); `False` for
+    every other suggestion."""
     picture_gv_marks: GvMarks | None
     """What its picture was found to show of GV's own coloured marks (#921); `None` with no
     picture."""
@@ -154,7 +159,7 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
     In page order, each drawing's suggestions left to right. **Reads only.** A vendor's drawing with
     no suggestion is listed too, so a person can add the parts the suggester missed.
 
-    **Bala's suggestions from the newest reading only (#1236).** Bala files a countertop and its
+    **Bala's suggestions from its newest reading only (#1236).** Bala files a countertop and its
     pieces for each row of a slot-reader run, so a re-read files them again. One from an earlier run
     is listed only while a person's decision stands on it: a decision is never hidden, and an
     undecided suggestion the newer reading has replaced would be the same part asked twice.
@@ -168,7 +173,8 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
         )
     )
     decisions = _current_decisions(session, [proposal.id for proposal in proposals])
-    proposals = _without_replaced_bala(session, package_revision_id, proposals, decisions)
+    proposals, kind_named = _without_replaced_bala(session, proposals, decisions)
+    being_made = picture_job_waiting(session, package_revision_id)
     pictures = pictured(session, [proposal.id for proposal in proposals])
     cropped = _cropped_candidates(session, proposals)
     by_view: dict[UUID, list[PartProposal]] = {}
@@ -190,6 +196,8 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
                         position=index,
                         decision=decisions.get(proposal.id),
                         has_picture=proposal.id in pictures,
+                        picture_pending=being_made and proposal.id not in pictures,
+                        kind_named=kind_named.get(proposal.id, False),
                         picture_gv_marks=pictures.get(proposal.id),
                         has_crop=proposal.code_candidate_id in cropped,
                     )
@@ -203,27 +211,38 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
 
 def _without_replaced_bala(
     session: Session,
-    package_revision_id: UUID,
     proposals: list[PartProposal],
     decisions: dict[UUID, PartConfirmation],
-) -> list[PartProposal]:
-    """The suggestions less Bala's undecided ones from an earlier slot-reader run (#1236)."""
-    runs = {
-        link.part_proposal_id: link.extraction_run_id
-        for link in session.scalars(
+) -> tuple[list[PartProposal], dict[UUID, bool]]:
+    """The suggestions less Bala's undecided ones from an older reading (#1236), and whether the
+    drawing names each Bala suggestion's kind.
+
+    "Older" is against the newest slot-reader run **Bala has filed for** (review of #1243), never
+    simply the newest run: between a new reading and its match stage, or for ever if that reading
+    fails before match, the suggestions already filed stay listed.
+    """
+    links = list(
+        session.scalars(
             select(PartProposalRow).where(
                 PartProposalRow.part_proposal_id.in_([proposal.id for proposal in proposals])
             )
         )
-    }
-    if not runs:
-        return proposals
-    newest = latest_slot_reader_run(session, package_revision_id)
-    return [
+    )
+    if not links:
+        return proposals, {}
+    runs = {link.part_proposal_id: link.extraction_run_id for link in links}
+    newest = session.execute(
+        select(ExtractionRun.id)
+        .where(ExtractionRun.id.in_(set(runs.values())))
+        .order_by(ExtractionRun.created_at.desc(), ExtractionRun.id.desc())
+        .limit(1)
+    ).scalar_one()
+    kept = [
         proposal
         for proposal in proposals
         if proposal.id not in runs or runs[proposal.id] == newest or proposal.id in decisions
     ]
+    return kept, {link.part_proposal_id: link.kind_named for link in links}
 
 
 def defining_ends(proposal: PartProposal) -> tuple[tuple[str, str], tuple[str, str]] | None:

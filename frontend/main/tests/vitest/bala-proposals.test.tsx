@@ -18,6 +18,8 @@ const part = (overrides: Partial<SuggestedPart>): SuggestedPart => ({
   reason: 'Suggested by code from the countertop line: the countertop of this row, outlined by its printed overall length.',
   added_by_a_person: false,
   from_countertop_line: true,
+  kind_named: true,
+  picture_pending: false,
   left_end: { x: '0.2', y: '0.4' },
   right_end: { x: '0.6', y: '0.4' },
   has_picture: true,
@@ -53,7 +55,7 @@ const fromCode = part({
   reason: 'One of 2 dimensions drawn end to end along the lowest row.',
 });
 
-function renderList(parts: SuggestedPart[], canConfirm = true) {
+function renderList(parts: SuggestedPart[], canConfirm = true, onWithdraw = vi.fn()) {
   const onConfirm = vi.fn();
   render(
     <DrawingPartsList
@@ -63,7 +65,7 @@ function renderList(parts: SuggestedPart[], canConfirm = true) {
       renderPicture={(_drawing, shown) => <img alt={`Picture of ${shown.proposal_id}`} />}
       renderCrop={() => null}
       onConfirm={onConfirm}
-      onWithdraw={vi.fn()}
+      onWithdraw={onWithdraw}
       onAdd={vi.fn()}
     />,
   );
@@ -108,5 +110,40 @@ describe("Bala's suggestions on the Measure page (#1236)", () => {
     renderList([countertop], false);
     const button = screen.getByRole('button', { name: 'Confirm: countertop' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+  });
+
+  // Review of #1243: about 99 pieces in 100 have no printed kind. Then nothing is filled in.
+  const unnamed = part({
+    proposal_id: 'p-piece',
+    position: 4,
+    suggested_kind: 'cabinet',
+    kind_named: false,
+    reason: 'Suggested by code from the countertop line: piece 2 of 2 of this row, suggested as a cabinet because nothing printed names its kind; say what it is.',
+  });
+
+  it('offers no one-click confirmation where nothing printed names the kind', () => {
+    renderList([unnamed]);
+    expect(screen.queryByRole('button', { name: /^Confirm: / })).toBeNull();
+    const choices = within(card(/4\. /)).getByRole('group', { name: /What is part 4/ });
+    for (const name of ['Cabinet', 'Filler', 'Appliance space (not a part)', 'Something else (not a part)']) {
+      expect(within(choices).getByRole('button', { name })).toBeTruthy();
+    }
+  });
+
+  it('records the person’s own answer: a kind confirms it, an appliance space says it is not a part', async () => {
+    const onWithdraw = vi.fn();
+    const onConfirm = renderList([unnamed], true, onWithdraw);
+    const choices = within(card(/4\. /)).getByRole('group', { name: /What is part 4/ });
+
+    await userEvent.click(within(choices).getByRole('button', { name: 'Filler' }));
+    expect(onConfirm).toHaveBeenCalledWith(unnamed, 'filler', null);
+
+    await userEvent.click(within(choices).getByRole('button', { name: 'Appliance space (not a part)' }));
+    expect(onWithdraw).toHaveBeenCalledWith(unnamed);
+  });
+
+  it('says a picture is being made while the worker cuts it', () => {
+    renderList([part({ has_picture: false, picture_pending: true })]);
+    expect(screen.getByText('Its picture is being made. Reload in a moment to see it.')).toBeTruthy();
   });
 });

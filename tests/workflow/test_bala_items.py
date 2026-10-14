@@ -36,6 +36,7 @@ from app.models import (
     DrawingView,
     ItemIdentifier,
     ObservationCandidate,
+    OutboxEntry,
     Package,
     PackageRevision,
     PackageRevisionDocument,
@@ -60,6 +61,7 @@ from workflow.bala_items import (
     plan_items,
     propose_items,
 )
+from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -178,14 +180,17 @@ class _Revision:
         extra: Sequence[str] = (),
         kinds: dict[int, tuple[str, str]] | None = None,
         sealed: bool = True,
+        shift: int = 0,
     ) -> UUID:
-        """One countertop row; returns its anchor (`slot:0`) reading's id."""
+        """One countertop row; returns its anchor (`slot:0`) reading's id. `shift` moves every box
+        that many pixels right, as a re-read at the same resolution may."""
         anchor: UUID | None = None
         slots: list[str] = [str(index) for index in range(pieces)]
         if overall:
             slots.append("overall")
         for slot in slots:
             box = _overall_box(pieces) if slot == "overall" else _piece_box(int(slot))
+            box = (box[0] + shift, box[1], box[2] + shift, box[3])
             kind = (kinds or {}).get(int(slot)) if slot != "overall" else None
             flags = [
                 "slot-reader",
@@ -430,6 +435,24 @@ def test_asking_again_for_the_same_reading_files_nothing_twice(session: Session)
     assert _count(session, PartProposal) == 3
 
 
+def _decide(session: Session, revision: UUID, proposal: PartProposal) -> None:
+    confirmed = confirm_listed_part(
+        session,
+        package_revision_id=revision,
+        proposal_id=proposal.id,
+        kind=PartKind.CABINET,
+        code=None,
+        actor="reviewer",
+    )
+    assert isinstance(confirmed, PartConfirmation)
+
+
+def _listed(session: Session, revision: UUID) -> set[UUID]:
+    return {
+        part.proposal.id for drawing in revision_parts(session, revision) for part in drawing.parts
+    }
+
+
 def test_a_new_reading_files_new_suggestions_and_the_list_keeps_only_decided_old_ones(
     session: Session,
 ) -> None:
@@ -437,29 +460,79 @@ def test_a_new_reading_files_new_suggestions_and_the_list_keeps_only_decided_old
     first = built.row(built.run(), pieces=2)
     propose_items(session, built.revision.id)
     decided = _links(session)[(first, 0)]
-    confirmed = confirm_listed_part(
-        session,
-        package_revision_id=built.revision.id,
-        proposal_id=decided.id,
-        kind=PartKind.CABINET,
-        code=None,
-        actor="reviewer",
-    )
-    assert isinstance(confirmed, PartConfirmation)
+    _decide(session, built.revision.id, decided)
 
     second = built.row(built.run(), pieces=2)
     outcome = propose_items(session, built.revision.id)
 
-    assert outcome.written == 3
     links = _links(session)
-    assert {key for key in links if key[0] == second} == {(second, None), (second, 0), (second, 1)}
-    listed = {
-        part.proposal.id
-        for drawing in revision_parts(session, built.revision.id)
-        for part in drawing.parts
-    }
     newest = {links[key].id for key in links if key[0] == second}
-    assert listed == newest | {decided.id}
+    assert _listed(session, built.revision.id) == newest | {decided.id}
+    assert outcome.written == len(newest)
+
+
+def test_a_part_a_person_decided_is_not_suggested_again_after_a_re_read(session: Session) -> None:
+    """Review of #1243: the same piece, read again on the same drawing with the same outline, is
+    the part the person already decided. Suggesting it again would ask twice, and confirming both
+    would make two live items for one cabinet."""
+    built = _Revision(session)
+    first = built.row(built.run(), pieces=2)
+    propose_items(session, built.revision.id)
+    decided = _links(session)[(first, 0)]
+    _decide(session, built.revision.id, decided)
+
+    second = built.row(built.run(), pieces=2)
+    outcome = propose_items(session, built.revision.id)
+
+    links = _links(session)
+    assert (second, 0) not in links
+    assert {key for key in links if key[0] == second} == {(second, None), (second, 1)}
+    assert outcome.written == 2 and outcome.already_decided == 1
+    assert outcome.as_payload()["already_decided"] == 1
+    assert decided.id in _listed(session, built.revision.id)
+
+
+def test_the_same_outline_is_found_within_the_tolerance(session: Session) -> None:
+    """A re-read may draw every box a pixel to the right: within the finder's witness tolerance it
+    is still the outline the person decided."""
+    built = _Revision(session)
+    first = built.row(built.run(), pieces=1)
+    propose_items(session, built.revision.id)
+    _decide(session, built.revision.id, _links(session)[(first, 0)])
+
+    second = built.row(built.run(), pieces=1, shift=1)
+    outcome = propose_items(session, built.revision.id, same_outline_tolerance=Decimal("0.004"))
+
+    assert (second, 0) not in _links(session) and outcome.already_decided == 1
+
+
+def test_a_part_outlined_elsewhere_is_suggested_again_even_after_a_decision(
+    session: Session,
+) -> None:
+    """Only the same outline is the same part: a box that moved further than the tolerance is new."""
+    built = _Revision(session)
+    first = built.row(built.run(), pieces=1)
+    propose_items(session, built.revision.id)
+    _decide(session, built.revision.id, _links(session)[(first, 0)])
+
+    second = built.row(built.run(), pieces=1, shift=60)
+    outcome = propose_items(session, built.revision.id, same_outline_tolerance=Decimal("0.004"))
+
+    assert (second, 0) in _links(session) and outcome.already_decided == 0
+
+
+def test_a_newer_reading_with_no_suggestions_yet_hides_nothing(session: Session) -> None:
+    """Review of #1243: between a new slot-reader run and its match stage (or for ever, if that run
+    fails before match), the suggestions already listed stay listed."""
+    built = _Revision(session)
+    built.row(built.run(), pieces=2)
+    propose_items(session, built.revision.id)
+    before = _listed(session, built.revision.id)
+    assert len(before) == 3
+
+    built.row(built.run(), pieces=2)  # read, but Bala has not run on it yet
+
+    assert _listed(session, built.revision.id) == before
 
 
 def test_the_links_cannot_be_changed_or_doubled(session: Session) -> None:
@@ -482,6 +555,7 @@ def test_the_links_cannot_be_changed_or_doubled(session: Session) -> None:
             row_candidate_id=anchor,
             slot_index=None,
             extraction_run_id=link.extraction_run_id,
+            kind_named=True,
         )
     )
     with pytest.raises(IntegrityError):
@@ -501,7 +575,19 @@ def test_match_suggests_the_items_first_and_writes_no_item(session: Session) -> 
     bala = result["bala"]
     assert isinstance(bala, dict)
     assert bala["countertops"] == 1 and bala["pieces"] == 2 and bala["items_written"] == 0
-    assert bala["pictures"] == {"ran": False, "reason": "no artifact store is configured"}
+    # The pictures are the worker's next job, not match's (review of #1243).
+    assert bala["pictures"] == {"queued": True}
+    (job,) = session.scalars(select(OutboxEntry)).all()
+    assert job.workflow == CUT_PART_PICTURES_WORKFLOW
+    assert job.payload == {"package_revision_id": str(built.revision.id)}
+    # Asked again while that job waits: one job, not two.
+    DatabaseStages().match(session, built.revision.id)
+    assert _count(session, OutboxEntry) == 1
+    # Meanwhile the list says each picture is being made.
+    parts = [
+        part for drawing in revision_parts(session, built.revision.id) for part in drawing.parts
+    ]
+    assert parts and all(part.picture_pending and not part.has_picture for part in parts)
     # Matching itself saw no item, as before.
     assert result["items"] == 0 and result["candidates"] == 0
     assert _count(session, DrawingItem) == 0
@@ -570,6 +656,11 @@ def test_on_a_real_sheet_every_suggestion_gets_its_picture_and_code_agrees_on_th
     assert isinstance(bala, dict)
     assert bala["written"] == 3 and bala["code_part_finder"] == [], str(bala)
     bala_ids = {proposal.id for proposal in _links(session).values()}
+    # Match queues the pictures; the worker's job cuts them, every one.
+    assert bala["pictures"] == {"queued": True}
+    assert not bala_ids & set(session.scalars(select(PartPicture.part_proposal_id)))
+    session.commit()
+    assert stages.cut_part_pictures(session, revision.id)["ran"] is True
     pictured = set(session.scalars(select(PartPicture.part_proposal_id)))
     assert bala_ids <= pictured
     (row,) = plan_items(session, revision.id, code_parts=None).rows
@@ -582,6 +673,45 @@ def test_on_a_real_sheet_every_suggestion_gets_its_picture_and_code_agrees_on_th
     )
     assert planned.rows[0].automatic.pieces_code_agrees == (True, True)
     assert _count(session, DrawingItem) == 0
+
+
+def test_a_part_finder_that_fails_is_reported_and_the_match_goes_on(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1243: in PR 1 the finder only reports, so nothing it raises may fail the stage."""
+    from workflow import stages as stages_module
+
+    built = _Revision(session)
+    built.row(built.run(), pieces=1)
+
+    def store_down(*_arguments: object) -> bytes:
+        raise RuntimeError("the store is down")
+
+    monkeypatch.setattr(stages_module, "_fetch", store_down)
+
+    result = DatabaseStages(store=store, part_finder=SETTINGS).match(session, built.revision.id)
+
+    bala = result["bala"]
+    assert isinstance(bala, dict) and bala["countertops"] == 1
+    assert bala["code_part_finder"] == [
+        "code's part finder failed: RuntimeError: the store is down"
+    ]
+
+
+def test_each_link_says_whether_the_drawing_names_the_kind(session: Session) -> None:
+    """So the Measure page offers one click only where printed words name the piece (review of
+    #1243): the countertop is named by its row; a piece only by a printed kind."""
+    built = _Revision(session)
+    anchor = built.row(built.run(), pieces=2, kinds={1: ("filler", 'printed word "FILLER"')})
+    propose_items(session, built.revision.id)
+
+    named = {
+        link.slot_index: link.kind_named
+        for link in session.scalars(
+            select(PartProposalRow).where(PartProposalRow.row_candidate_id == anchor)
+        )
+    }
+    assert named == {None: True, 0: False, 1: True}
 
 
 def _keys(session: Session, revision: PackageRevision) -> dict[UUID, str]:
