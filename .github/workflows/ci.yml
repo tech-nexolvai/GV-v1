@@ -12,7 +12,14 @@ on:
   # comment — the same signal that hid the original config defect for eight days.
   schedule:
     - cron: "0 6 * * 1"
+  # A manual run. With `store_durations` ticked it also records how long every test took on CI's own
+  # runners, to refresh `.test_durations` (steps under the test shards below).
   workflow_dispatch:
+    inputs:
+      store_durations:
+        description: "Also record every test's duration and upload them, to refresh .test_durations"
+        type: boolean
+        default: false
 
 # A newer push to the same branch cancels the older run: two runs of the same suite on a superseded
 # commit tell nobody anything, and the second one to finish overwrites the first's answer.
@@ -94,6 +101,20 @@ jobs:
         run: mypy app workflow extraction retrieval reports eval
         continue-on-error: true
 
+      # Check the test-shard partition before any shard's result is trusted: the four lists must be
+      # nonempty, disjoint, and together exactly the full collection. Collection runs no test.
+      #
+      # **Here, not on shard 1 (#1283).** It used to run on shard 1 before its tests, adding about 75 s
+      # to the slowest job of the run. This job installs exactly the same extras as the shards (keep the
+      # two Install lines identical, so both collect the same tests), finishes long before the shards,
+      # and is already one of the jobs the required check `lint, types, tests` needs, so a coverage
+      # failure still fails that check. The DATABASE_URL is the shards' own, so collection sees the same
+      # environment; no database is needed or contacted to collect.
+      - name: Verify complete, non-overlapping shard coverage
+        env:
+          DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
+        run: python scripts/check_pytest_shard_coverage.py --splits 4
+
   test_shards:
     name: tests (shard ${{ matrix.group }}/4)
     if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
@@ -111,6 +132,12 @@ jobs:
       DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
+      # GitHub hands out runners of different speeds. Measured in #1283, the same tests ran up to about
+      # 1.5 times faster on one shard's runner than on another's in the same run, so a shard can be slow
+      # because of its machine, not its tests. This line says which machine it got.
+      - name: Runner CPU
+        run: lscpu | grep -E '^(Model name|CPU\(s\)):'
+
       # Every shard runs its own PostgreSQL 17 server and database, installed on the runner itself.
       #
       # **No container image, so no registry pull limit (#1260).** The database used to be a service
@@ -200,20 +227,72 @@ jobs:
       - name: Install test dependencies
         run: uv pip install --system -e ".[ai,dev,extraction,ocr,rules,platform,reports]"
 
-      # Check the partition before executing any shard. Collection does not execute tests;
-      # group 1 proves the four lists are nonempty, disjoint, and exactly cover collection.
-      - name: Verify complete, non-overlapping shard coverage
-        if: matrix.group == 1
-        run: python scripts/check_pytest_shard_coverage.py --splits 4
-
+      # The shard-coverage check (the four shards together run every test exactly once) runs in the
+      # `Python quality` job, not here; see the comment there.
+      #
+      # **Balancing.** `least_duration` deals tests out by their recorded times in `.test_durations`,
+      # so the shards only finish together while those times are current. A test missing from the file
+      # is counted at the average. Refresh the file when the same shard is the slowest by more than about
+      # 20% run after run, or when many tests have been added since the last refresh (compare the count
+      # the shard-coverage check prints with the number of names in the file). One run's spread alone
+      # is not a reason: the runners differ in speed (see "Runner CPU" above), and no split of the
+      # tests can fix that.
+      #
+      #   1. Run this workflow by hand on any branch with `store_durations` ticked (Actions > CI > Run
+      #      workflow, or `gh workflow run ci.yml --ref <branch> -f store_durations=true`). Every shard
+      #      runs exactly the tests it always runs, splits by the committed file as usual, and also
+      #      writes the times of its own tests (`--clean-durations` drops everyone else's), then
+      #      uploads them as the artifact `test-durations-shard-<n>`.
+      #   2. When the run is green, download the four files and join them (the shards are disjoint, so
+      #      this is a plain union), as CONTRIBUTING.md "Refreshing the test-shard timings" shows.
+      #   3. Commit the new `.test_durations` in a pull request; that PR's run shows the new balance.
+      #
+      # Only CI's times are valid: a laptop runs the suite at a different speed, test by test.
       - name: Run complete pytest shard
-        run: >-
-          pytest -q --splits 4 --group ${{ matrix.group }}
-          --splitting-algorithm least_duration
-          --durations-path .test_durations
+        env:
+          GROUP: ${{ matrix.group }}
+          STORE_DURATIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.store_durations }}
+        run: |
+          set -euo pipefail
+          if [ "$STORE_DURATIONS" = true ]; then
+            # `--durations-path=FILE`, one word, on purpose. Written as two words, pytest takes a file
+            # outside the checkout as a path to test, moves its root directory up to the common parent,
+            # and every test name gains a prefix: no recorded time then matches a test, the split falls
+            # back to equal counts, and the recorded names are useless. The check after it makes sure.
+            recorded="$RUNNER_TEMP/test-durations-shard-$GROUP.json"
+            cp .test_durations "$recorded"
+            pytest -q --splits 4 --group "$GROUP" \
+              --splitting-algorithm least_duration \
+              --durations-path="$recorded" \
+              --store-durations --clean-durations
+            python - "$recorded" <<'PY'
+          import json, sys
+          names = json.load(open(sys.argv[1]))
+          wrong = [name for name in names if not name.startswith("tests/")]
+          if not names or wrong:
+              sys.exit(f"recorded test names are not tests/...: {len(wrong)} of {len(names)}, e.g. {wrong[:3]}")
+          print(f"recorded the times of {len(names)} tests")
+          PY
+          else
+            pytest -q --splits 4 --group "$GROUP" \
+              --splitting-algorithm least_duration \
+              --durations-path .test_durations
+          fi
 
-  # Keep the existing required branch-protection check name. It aggregates the quality job
-  # and every matrix shard, so a failed or skipped shard cannot be hidden by another green job.
+      # Only on a recording run, and only when the shard passed (an `if` without a status function
+      # means `success() &&`): the times of a failed run are not worth keeping.
+      - name: Upload this shard's recorded test durations
+        if: github.event_name == 'workflow_dispatch' && inputs.store_durations
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-durations-shard-${{ matrix.group }}
+          path: ${{ runner.temp }}/test-durations-shard-${{ matrix.group }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Keep the existing required branch-protection check name. It aggregates the quality job (which
+  # also runs the shard-coverage check) and every matrix shard, so a failed or skipped shard, or shards
+  # that do not cover the suite exactly once, cannot be hidden by another green job.
   required_ci:
     name: lint, types, tests
     needs: [quality_checks, test_shards]
@@ -239,11 +318,30 @@ jobs:
   # `api:check` is the one that matters most. src/api/schema.d.ts is generated from the API's own
   # OpenAPI document, and the guarantee — rename a field on the server and the frontend stops
   # compiling — is only real if regenerating is verified to produce no diff.
+  #
+  # **Board status drift runs here too (#1283)**, as the last step; it used to be a job of its own, and
+  # one job fewer per run means one runner slot and one billed minute fewer. Two things claim to say
+  # whether a story may be worked on: the contract in the issue body, which scripts/issue_gate.py reads,
+  # and the status label, which every human, board view and filter reads. Nothing made them agree, so
+  # they drifted — a sweep found eighteen disagreements across 135 open issues, twelve showing 'ready' on
+  # work the gate stops. This is a board check, not a code check, so it can fail a pull request that
+  # changed nothing. That is the point. The alternative is a sweep somebody remembers to run, and the
+  # last one was the first one.
+  #
+  # Why this job and no other: the check needs an API token, and no job that runs the verdict tests may
+  # hold one (`.coderabbit.yaml`). The test shards and `safety guards` run them; this job runs no pytest
+  # suite but the board check's own test file, so it can hold the token. Only the board step gets it, in
+  # its environment. It is not one of the jobs `lint, types, tests` needs, as the board job was not, so
+  # the required check means what it meant before. The Python install below is a superset of what the
+  # board check needs, so it costs no extra install.
   frontend:
-    name: frontend (install, types, build)
+    name: frontend (install, types, build) + board status drift
     if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
     defaults:
       run:
         working-directory: frontend/main
@@ -285,21 +383,38 @@ jobs:
 
       # Needs Python, because the schema is exported from the route table rather than fetched from a
       # running server - that is what makes it safe here and unable to drift from what is deployed.
+      #
+      # The Python steps run even when a frontend step above failed (`!cancelled()`), so a broken build
+      # never hides the board check at the end of this job.
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: ${{ !cancelled() }}
         with:
           python-version: "3.12"
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: ${{ !cancelled() }}
         with:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
 
       - name: Install the API for schema export
+        id: python_install
+        if: ${{ !cancelled() }}
         working-directory: .
         run: uv pip install --system -e ".[ai,dev,rules,platform,reports]"
 
       - name: Generated API types are current
         run: npm run api:check
+
+      # Runs whenever the Python install worked, whatever happened to the frontend steps above.
+      - name: Board status drift (label vs contract)
+        if: ${{ !cancelled() && steps.python_install.outcome == 'success' }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pytest tests/test_board_drift.py -q
+          python scripts/check_board_drift.py
 
   # ---------------------------------------------------------------------------
   # Guards. These are the checks that turn the project's invariants from prose
@@ -318,8 +433,8 @@ jobs:
     timeout-minutes: 5
     # **No token in this job, deliberately.** It runs tests/test_verdict_isolation.py, and
     # `.coderabbit.yaml` says to flag any use of credentials in a job that runs the verdict tests. The
-    # board-drift check needs an API token, so it moved to its own job below rather than lending this one
-    # a credential it has no business holding.
+    # board-drift check needs an API token, so it lives in the `frontend` job above rather than lending
+    # this one a credential it has no business holding.
     permissions:
       contents: read
 
@@ -399,50 +514,6 @@ jobs:
         run: |
           pytest tests/test_risk_controls.py -q
 
-
-  # ---------------------------------------------------------------------------
-  # Split out of `guards` so that job holds no credential. Two things claim to say whether a story may
-  # be worked on: the contract in the issue body, which scripts/issue_gate.py reads, and the status
-  # label, which every human, board view and filter reads. Nothing made them agree, so they drifted — a
-  # sweep found eighteen disagreements across 135 open issues, twelve showing 'ready' on work the gate
-  # stops.
-  #
-  # This is a board check, not a code check, so it can fail a pull request that changed nothing. That is
-  # the point. The alternative is a sweep somebody remembers to run, and the last one was the first one.
-  # ---------------------------------------------------------------------------
-  board:
-    name: board status drift
-    if: github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.pull_request.draft)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: read
-
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-
-      - name: Install
-        run: uv pip install --system -e ".[ai,dev,rules,platform]"
-
-      - name: Board status drift (label vs contract)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pytest tests/test_board_drift.py -q
-          python scripts/check_board_drift.py
 
   # ---------------------------------------------------------------------------
   # Weekly only. Everything else in this workflow must pass or fail for reasons
