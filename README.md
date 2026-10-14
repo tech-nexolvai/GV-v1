@@ -247,8 +247,12 @@ Or step by step:
 | 2 | `make token` | Mint a client token for the worker |
 | 3 | `make migrate` | Bring the database to the latest schema |
 | 4 | `make serve` | Run the API |
-| 5 | `make dispatch` | Run the dispatcher |
-| 6 | `make worker` | Run the review worker |
+| 5 | `make worker` | Run the review worker: it takes the outbox's work and runs it |
+
+> **Never run both `make worker` and `make dispatch` on one outbox.** Each one takes the outbox's
+> rows (`FOR UPDATE SKIP LOCKED`), so two of them compete for the same work, and a row the
+> dispatcher hands to the Hatchet engine is one the review worker never runs. `make worker` is the
+> one every kit and demo uses. `make dispatch` is only for running the Hatchet worker instead.
 
 Working on several branches at once? `make worktree NAME=my-branch` gives each checkout its own
 database and ports, and `make where` shows them.

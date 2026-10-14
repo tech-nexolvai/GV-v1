@@ -166,11 +166,12 @@ def test_every_service_the_runbook_names_exists_in_compose() -> None:
 
 
 def test_the_runbook_names_all_three_processes() -> None:
-    """A package needs the API, the worker *and* the dispatcher, and missing one fails quietly.
+    """A package needs the API and one consumer of the outbox, and a missing one fails quietly.
 
-    Without the dispatcher the API returns success and nothing runs; without the worker the engine
-    accepts a workflow and no stage executes. Neither looks like an error, so the runbook has to be
-    explicit and this checks that it stays so.
+    Without a consumer the API returns success and nothing runs, which does not look like an error,
+    so the runbook has to be explicit and this checks that it stays so. **And never two consumers
+    (#1227):** `make worker` and `make dispatch` both take the outbox's rows, so started together they
+    compete for the same work; the runbook says so.
     """
     runbook = _runbook()
     for target in ("make serve", "make worker", "make dispatch"):
@@ -179,6 +180,9 @@ def test_the_runbook_names_all_three_processes() -> None:
         "the runbook does not warn that a missing process fails silently, which is the one thing "
         "somebody following it needs to know"
     )
+    assert (
+        "never run both consumers on one outbox" in runbook.lower()
+    ), "the runbook does not warn against running `make worker` and `make dispatch` together"
 
 
 def test_the_runbook_includes_the_migration_step() -> None:

@@ -1192,6 +1192,7 @@ def test_the_worker_carries_answers_right_after_reading_the_pages(
     import scripts.drain_outbox as worker
     import workflow.review as review_module
     from app.lifecycle import side_states
+    from workflow import sutradhar
 
     order: list[str] = []
 
@@ -1204,14 +1205,15 @@ def test_the_worker_carries_answers_right_after_reading_the_pages(
         return Outcome()
 
     monkeypatch.setattr(worker, "_stages", lambda **_kwargs: object())
-    monkeypatch.setattr(worker, "_ensure_workflow_run", lambda *args: None)
+    # The flow's steps live in `workflow/sutradhar.py` since #1227, so they are replaced there.
+    monkeypatch.setattr(sutradhar, "ensure_workflow_run", lambda *args: None)
     monkeypatch.setattr(review_module, "run_stage", run_stage)
     monkeypatch.setattr(
-        worker, "_carry_forward", lambda *_args: order.append("carry") or {"wall_answers": 0}
+        sutradhar, "carry_forward", lambda *_args: order.append("carry") or {"wall_answers": 0}
     )
-    monkeypatch.setattr(worker, "_build_package_text", lambda *_args: {})
-    monkeypatch.setattr(worker, "_hunt_values", lambda *_args: {})
-    monkeypatch.setattr(worker, "_propose_measurements", lambda *_args: {})
+    monkeypatch.setattr(sutradhar, "build_package_text", lambda *_args: {})
+    monkeypatch.setattr(sutradhar, "hunt_package_values", lambda *_args: {})
+    monkeypatch.setattr(sutradhar, "propose_measurements", lambda *_args: {})
     monkeypatch.setattr(side_states, "enter_needs_input", lambda *_args, **_kwargs: None)
     from app.runs import reading_progress
 
