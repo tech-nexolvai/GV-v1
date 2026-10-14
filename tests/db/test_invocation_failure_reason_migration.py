@@ -93,9 +93,11 @@ def test_the_revision_follows_the_refusals_and_fits_the_version_column() -> None
     found = script.get_revision(REVISION)
     assert found is not None and found.down_revision == BEFORE
     # #1236 added 0095 on top; this one stays directly beneath it.
-    assert script.get_heads() == ["0095_part_proposal_rows"]
     above = script.get_revision("0095_part_proposal_rows")
     assert above is not None and above.down_revision == REVISION
+    # Later migrations (#1238's 0096) may follow, on one line of history to the single head.
+    (head,) = script.get_heads()
+    assert above.revision in {rev.revision for rev in script.walk_revisions("base", head)}
 
 
 @pytest.mark.parametrize(
