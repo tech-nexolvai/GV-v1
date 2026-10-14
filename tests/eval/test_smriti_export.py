@@ -1365,3 +1365,171 @@ def test_a_v1_candidates_file_is_still_read_and_its_people_are_unchecked(tmp_pat
     (only,) = read_candidates(path).candidates
     assert only.actor_status == "unchecked"
     assert only.overturned is None and only.mistake_needed is None
+
+
+# --- review of #1269: chains of confirms and corrections, carried pairings, counts ------------
+
+
+@dataclass(frozen=True, slots=True)
+class Chains:
+    confirm_then_correct: tuple[UUID, UUID]
+    """(the confirm, the later correction's ledger entry) of one reading."""
+    correct_then_confirm: tuple[UUID, UUID]
+    """(the correction's ledger entry, the later confirm of the corrected reading)."""
+
+
+def build_chains(session: Session) -> Chains:
+    """Two readings, each confirmed and corrected by a person, in both orders, as the product
+    records them: each action names the reading it reviewed and the new reading it produced."""
+    from app.models.review import CorrectionLedgerEntry, ReviewAction
+    from tests.review.test_ledger import PAGE_HASH, _scenario
+
+    scenario = _scenario(session, media_box=["0", "0", "612", "792"])
+    revision_id = scenario.package_revision_id
+    run = _run(session, revision_id, "extraction.form_reader")
+    spans: list[UUID] = []
+    for number, box in ((0, "10,20,30,40"), (1, "40,20,60,40")):
+        span = _candidate(
+            session,
+            scenario.document_version_id,
+            scenario.page_id,
+            run.id,
+            ["slot-reader", f"slot:{number}", f"slot-box:{box}", "row-rank:1"],
+            raw_text='1 1/2"',  # the AI's misread
+        )
+        _ask(
+            session,
+            run.id,
+            scenario.document_version_id,
+            PAGE_HASH,
+            f"p0:slot{number}:0",
+            "claude-slot-span-v4",
+            [str(span)],
+        )
+        spans.append(span)
+
+    def reading(span: UUID) -> UUID:
+        return _slot_observation(session, scenario, span, revision_id)
+
+    def act(verb: str, original: UUID, resulting: UUID) -> UUID:
+        action = ReviewAction(
+            review_session_id=scenario.review_session_id,
+            finding_id=scenario.finding_id,
+            package_revision_id=revision_id,
+            action=verb,
+            actor=REVIEWER,
+            original_observation_id=original,
+            resulting_observation_id=resulting,
+        )
+        session.add(action)
+        session.flush()
+        if verb != "correct":
+            return action.id
+        entry = CorrectionLedgerEntry(
+            review_action_id=action.id,
+            canonical_observation_id=original,
+            original_value='{"value":"3/2"}',
+            corrected_value='{"value":"23/2"}',
+        )
+        session.add(entry)
+        session.flush()
+        return entry.id
+
+    # Confirmed first, then corrected: the correction replaces the confirm.
+    first, confirmed, corrected = reading(spans[0]), reading(spans[0]), reading(spans[0])
+    confirm_a = act("confirm", first, confirmed)
+    ledger_a = act("correct", confirmed, corrected)
+    # Corrected first, then the corrected reading confirmed: its value is the person's.
+    first, corrected, confirmed = reading(spans[1]), reading(spans[1]), reading(spans[1])
+    ledger_b = act("correct", first, corrected)
+    confirm_b = act("confirm", corrected, confirmed)
+    session.commit()
+    return Chains(
+        confirm_then_correct=(confirm_a, ledger_a), correct_then_confirm=(ledger_b, confirm_b)
+    )
+
+
+def test_a_later_correction_replaces_an_earlier_confirm_of_the_same_reading(
+    session: Session,
+) -> None:
+    chains = build_chains(session)
+    confirm, ledger = chains.confirm_then_correct
+    found = _export(session)
+    earlier = found[f"review_actions:{confirm}"]
+    assert earlier.kind == "superseded"
+    assert earlier.answer is None and not earlier.convertible, "the AI's misread is never an answer"
+    latest = found[f"correction_ledger:{ledger}"]
+    assert latest.kind == "corrected" and latest.convertible
+    assert latest.mistake_needed == "unanswered"
+
+
+def test_a_confirm_of_a_corrected_reading_never_proposes_the_ais_text(session: Session) -> None:
+    chains = build_chains(session)
+    ledger, confirm = chains.correct_then_confirm
+    found = _export(session)
+    confirmed = found[f"review_actions:{confirm}"]
+    assert confirmed.answer is None and confirmed.answer_source is None
+    assert not confirmed.convertible
+    assert "correction" in (confirmed.not_convertible or "")
+    # The correction stays the case, waiting for the printed text.
+    correction = found[f"correction_ledger:{ledger}"]
+    assert correction.kind == "corrected" and correction.convertible
+
+
+def test_a_carried_pairing_copy_is_never_a_new_decision_nor_an_overturn(session: Session) -> None:
+    from app.models.evidence import ArchitectPairingRecord
+
+    world = build_v2_world(session)
+    person = session.get(ArchitectPairingRecord, world.person_pairing)
+    assert person is not None
+    # The copy carry-forward writes onto a re-read of the row: `reviewer`, naming its original,
+    # replacing an automatic `code+ais` pairing of the new reading that it differs from.
+    automatic = ArchitectPairingRecord(
+        package_revision_id=person.package_revision_id,
+        page_id=person.page_id,
+        row_anchor_candidate_id=person.row_anchor_candidate_id,
+        extraction_run_id=session.scalar(
+            select(ArchitectPairingRecord.extraction_run_id).where(
+                ArchitectPairingRecord.id == world.code_pairing
+            )
+        ),
+        source="code+ais",
+        status="paired",
+        pairs=[{"kind": "overall", "architect_candidate_id": "x", "vendor_slot_indices": [1]}],
+        details={},
+        supersedes_id=person.id,
+    )
+    session.add(automatic)
+    session.flush()
+    copy = ArchitectPairingRecord(
+        package_revision_id=person.package_revision_id,
+        page_id=person.page_id,
+        row_anchor_candidate_id=person.row_anchor_candidate_id,
+        extraction_run_id=None,
+        source="reviewer",
+        status="reviewer",
+        pairs=[],
+        details={"carried_from_id": str(person.id)},
+        supersedes_id=automatic.id,
+        decided_by=REVIEWER,
+    )
+    session.add(copy)
+    session.commit()
+    found = _export(session)
+    carried = found[f"architect_pairing_records:{copy.id}"]
+    assert carried.kind == "carried"
+    assert carried.overturned is None, "a carried copy is no alarm"
+    assert not carried.convertible and str(person.id) in (carried.not_convertible or "")
+
+
+def test_a_decision_with_two_parts_counts_once(session: Session) -> None:
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    runs = table_counts(exported.candidates)["countertop_run_decisions"]
+    assert runs.decisions == 1  # the run and its walls are one decision
+    assert runs.convertible + runs.not_convertible == 2  # two cases
+    found = _by_id(exported.candidates)
+    assert f"countertop_run_decisions:{world.person_run}:walls" in found

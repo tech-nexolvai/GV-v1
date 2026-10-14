@@ -246,3 +246,32 @@ def test_the_pariksha_report_shows_the_agents_reviewer_corrections(
     )
     printed = capsys.readouterr().out
     assert "reviewer decisions on akshara: 3" in printed
+
+
+@pytest.mark.parametrize("where", ["missing", "inside-git"])
+def test_a_reviewer_list_that_cannot_be_used_is_refused_cleanly(
+    where: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import REVIEWERS_ENV
+
+    path = (
+        tmp_path / "missing.json"
+        if where == "missing"
+        else REPO / "smriti-reviewers-should-never-exist.json"
+    )
+    monkeypatch.setenv(REVIEWERS_ENV, str(path))
+    arguments = [
+        "export",
+        "--db",
+        "postgresql+psycopg://nobody@localhost:1/none",
+        "--out",
+        str(tmp_path / "candidates.json"),
+    ]
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "Traceback" not in err
+    assert ("does not exist" if where == "missing" else "git working tree") in err
+    assert not (tmp_path / "candidates.json").exists()

@@ -38,6 +38,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import AnswerKey, KeyFormatError, dump_key, read_key
+from eval.smriti.actors import ReviewersFileError
 from eval.smriti.candidates import (
     AGENT_ORDER,
     Candidate,
@@ -171,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         ConfirmationRefused,
         CandidatesFileError,
         KeyFormatError,
+        ReviewersFileError,
         FileExistsError,
         FileNotFoundError,
     ) as error:

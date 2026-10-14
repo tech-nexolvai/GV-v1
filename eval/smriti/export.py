@@ -127,6 +127,10 @@ VASTU_ONE_WIDTH: Final = (
     "a Vastu key lists every architect width on a page; one decided width is not a whole page"
 )
 SUPERSEDED: Final = "superseded by a later decision on the same {what}; only the newest counts"
+CONFIRMS_A_CORRECTION: Final = (
+    "confirms a value a person's correction made: its answer is the corrected value, already a "
+    "correction case; the reading's own text is the AI's misread, never this case's answer"
+)
 CARRIED: Final = (
     "carried from decision {original} on an earlier revision; that decision is its own candidate"
 )
@@ -276,6 +280,7 @@ class _Reader:
     pages: dict[UUID, Page]
     candidates: dict[UUID, ObservationCandidate | None]
     skipped: dict[str, Counter[str]]
+    chains: _Chains
 
     def skip(self, table: str, why: str) -> None:
         self.skipped.setdefault(table, Counter())[why] += 1
@@ -536,6 +541,61 @@ def _reading(
 # --- the tables -----------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _Chains:
+    """The reviewer's confirms and corrections of one reading, followed through the new readings
+    they produce (`review_actions.original_observation_id` → `resulting_observation_id`)."""
+
+    superseded: frozenset[UUID]
+    """Actions a later confirm or correction of the same reading replaced: the latest wins."""
+    confirms_a_correction: frozenset[UUID]
+    """Confirms of a reading a correction produced: it keeps the AI's span, but its value is the
+    person's, so the AI's text is never its answer (the correction is its own case)."""
+
+
+def _evidence_chains(session: Session) -> _Chains:
+    actions = session.execute(
+        select(
+            ReviewAction.id,
+            ReviewAction.action,
+            ReviewAction.original_observation_id,
+            ReviewAction.resulting_observation_id,
+        )
+        .where(
+            ReviewAction.original_observation_id.is_not(None),
+            ReviewAction.action.in_(("confirm", "correct")),
+        )
+        .order_by(ReviewAction.created_at, ReviewAction.id)
+    ).all()
+    produced: dict[UUID, tuple[str, UUID]] = {
+        row.resulting_observation_id: (row.action, row.original_observation_id)
+        for row in actions
+        if row.resulting_observation_id is not None
+    }
+
+    def walk(observation: UUID) -> tuple[UUID, bool]:
+        """The first reading of the chain, and whether a correction made this one's value."""
+        corrected, seen = False, {observation}
+        while observation in produced:
+            verb, observation = produced[observation]
+            corrected = corrected or verb == "correct"
+            if observation in seen:
+                break
+            seen.add(observation)
+        return observation, corrected
+
+    groups: dict[UUID, list[UUID]] = defaultdict(list)
+    confirms: set[UUID] = set()
+    for row in actions:
+        first, corrected = walk(row.original_observation_id)
+        if row.action == "confirm" and corrected:
+            confirms.add(row.id)
+            continue
+        groups[first].append(row.id)
+    superseded = {action for chain in groups.values() for action in chain[:-1]}
+    return _Chains(superseded=frozenset(superseded), confirms_a_correction=frozenset(confirms))
+
+
 def _ledger(reader: _Reader) -> list[Candidate]:
     out: list[Candidate] = []
     rows = reader.session.execute(
@@ -546,6 +606,9 @@ def _ledger(reader: _Reader) -> list[Candidate]:
     for entry, actor in rows:
         agent, span, question, why = _reading(reader, entry.canonical_observation_id)
         page_sha, page_number = _page_facts(reader, None if span is None else span.page_id)
+        replaced = entry.review_action_id in reader.chains.superseded
+        if replaced:
+            question, why = None, SUPERSEDED.format(what="reading")
         out.append(
             Candidate(
                 candidate_id=f"correction_ledger:{entry.id}",
@@ -553,7 +616,7 @@ def _ledger(reader: _Reader) -> list[Candidate]:
                 decision_id=str(entry.id),
                 agent=agent,
                 corrects="a value a reader read",
-                kind="corrected",
+                kind="superseded" if replaced else "corrected",
                 decided_by=actor,
                 decided_at=_iso(entry.created_at),
                 page_sha256=page_sha,
@@ -563,8 +626,8 @@ def _ledger(reader: _Reader) -> list[Candidate]:
                 answer=None,
                 answer_needed=None if question is None else LABEL_TEXT_NEEDED,
                 not_convertible=why,
-                overturned=_sealed_overturn(span),
-                mistake_needed=MISTAKE_UNANSWERED,
+                overturned=None if replaced else _sealed_overturn(span),
+                mistake_needed=None if replaced else MISTAKE_UNANSWERED,
             )
         )
     return out
@@ -752,10 +815,14 @@ def _architect(reader: _Reader) -> list[Candidate]:
             continue
         page_sha, page_number = _page_facts(reader, record.page_id)
         earlier = record.id in replaced
+        # A reviewer's pairing copied onto a re-read of the same row (`app/lifecycle/
+        # carry_forward.py`): written as `reviewer`, with the original named in its details.
+        carried_from = (record.details or {}).get("carried_from_id")
         previous = by_id.get(record.supersedes_id) if record.supersedes_id else None
         overturned = None
         if (
             not earlier
+            and carried_from is None
             and previous is not None
             and previous.source == "code+ais"
             and _pair_ids(previous.pairs) != _pair_ids(record.pairs)
@@ -773,7 +840,15 @@ def _architect(reader: _Reader) -> list[Candidate]:
                 decision_id=str(record.id),
                 agent="milan",
                 corrects="which architect dimension pairs with which vendor piece",
-                kind="superseded" if earlier else ("corrected" if overturned else "decided"),
+                kind=(
+                    "superseded"
+                    if earlier
+                    else (
+                        "carried"
+                        if carried_from is not None
+                        else ("corrected" if overturned else "decided")
+                    )
+                ),
                 decided_by=record.decided_by or "",
                 decided_at=_iso(record.created_at),
                 page_sha256=page_sha,
@@ -782,7 +857,15 @@ def _architect(reader: _Reader) -> list[Candidate]:
                 question=None,
                 answer=None,
                 answer_needed=None,
-                not_convertible=SUPERSEDED.format(what="row") if earlier else NO_MILAN_KEY,
+                not_convertible=(
+                    SUPERSEDED.format(what="row")
+                    if earlier
+                    else (
+                        CARRIED.format(original=carried_from)
+                        if carried_from is not None
+                        else NO_MILAN_KEY
+                    )
+                ),
                 overturned=overturned,
             )
         )
@@ -960,22 +1043,29 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
         .order_by(ReviewAction.created_at, ReviewAction.id)
     ).all()
 
-    def group(action: ReviewAction) -> tuple[str, UUID]:
-        if action.original_observation_id is not None:
-            return ("reading", action.original_observation_id)
-        return ("finding", action.finding_id)
+    def evidence(action: ReviewAction) -> bool:
+        return action.original_observation_id is not None and action.action in (
+            "confirm",
+            "correct",
+        )
 
-    newest: dict[tuple[str, UUID], UUID] = {}
+    # A decision on a finding: the newest on the same finding counts. A confirm or correction of a
+    # reading: the newest of its chain counts (`_evidence_chains`), corrections included.
+    newest: dict[UUID, UUID] = {}
     for action, _scope in rows:
-        if action.id not in ledgered:
-            newest[group(action)] = action.id
+        if action.id not in ledgered and not evidence(action):
+            newest[action.finding_id] = action.id
     out: list[Candidate] = []
     for action, scope in rows:
         if action.id in ledgered:
             continue  # the ledger entry is this action's candidate
         record = reader.candidate(scope)
         page_sha, page_number = _page_facts(reader, None if record is None else record.page_id)
-        superseded = newest[group(action)] != action.id
+        superseded = (
+            action.id in reader.chains.superseded
+            if evidence(action)
+            else newest[action.finding_id] != action.id
+        )
         recorded: dict[str, Any] = {"action": action.action}
         question: dict[str, Any] | None = None
         key_answer: dict[str, Any] | None = None
@@ -992,7 +1082,11 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
             pdf = [] if span is None or question is None else reader.pdf_texts(span)
             if pdf:
                 recorded["pdf_text"] = pdf
-            if question is not None and len(pdf) == 1:
+            if action.id in reader.chains.confirms_a_correction:
+                # The span is still the AI's, but the confirmed value is the person's correction:
+                # proposing the span's text would propose the misread. The correction is the case.
+                question, why = None, CONFIRMS_A_CORRECTION
+            elif question is not None and len(pdf) == 1:
                 # A positive case. The proposed answer is the file's own text under the span where
                 # it holds exactly one run, else the stored reading's text; either way the person
                 # confirming sees it against the picture (and may refuse), never types blind.
@@ -1498,7 +1592,12 @@ def export_candidates(
     people = reviewers_from_environment() if reviewers is None else reviewers
     session.execute(text("SET TRANSACTION READ ONLY"))
     reader = _Reader(
-        session=session, questions=_Questions(session), pages={}, candidates={}, skipped={}
+        session=session,
+        questions=_Questions(session),
+        pages={},
+        candidates={},
+        skipped={},
+        chains=_evidence_chains(session),
     )
     drawn = (
         *_ledger(reader),
