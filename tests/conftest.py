@@ -69,16 +69,28 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DATABASE_URL"] = own.render_as_string(hide_password=False)
 
 
-def pytest_unconfigure(config: pytest.Config) -> None:
-    """Drop this worker's database and put `DATABASE_URL` back as it was."""
-    saved = config.stash.get(_WORKER_DATABASE, None)
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Drop this worker's database once its tests are done.
+
+    **Here, not in `pytest_unconfigure`.** xdist tells the main process a worker is finished at the end
+    of the worker's `pytest_sessionfinish`, after this hook, and the main process may end the worker
+    soon after. A drop still running in `pytest_unconfigure` was cut off locally, which left an
+    "invalid" half-dropped database behind (the next run's create removes such a leftover anyway).
+    """
+    saved = session.config.stash.get(_WORKER_DATABASE, None)
     if saved is None:
         return
     from postgres_fixture import drop_worker_database
 
-    given, base, own = saved
-    os.environ["DATABASE_URL"] = given
+    _given, base, own = saved
     drop_worker_database(base, own)
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Put `DATABASE_URL` back as it was."""
+    saved = config.stash.get(_WORKER_DATABASE, None)
+    if saved is not None:
+        os.environ["DATABASE_URL"] = saved[0]
 
 
 @pytest.fixture(autouse=True)
