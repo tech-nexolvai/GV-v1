@@ -18,6 +18,17 @@ database holding several runs needs `--run`; the refusal lists them. Vastu also 
 
 `--code-version` is the stored run's commit, or `unrecorded` (flagged: not attributable).
 
+    # score the phase-5 agents (#1257): view kind or depth and sink values, from an answers file
+    python scripts/pariksha_scorecard.py score --agent akshara-depth \\
+        --key ~/GV-v1/data/goldset/depth-key-ai-set-3/akshara-depth.json \\
+        --answers ~/gv-local/<answers>.json --code-version <commit> --out ~/gv-local/<card>.json
+
+`rekha-view` and `akshara-depth` read the readers' answers from a `pariksha-depth-answers/1` file
+(format: `eval/pariksha/depth.py`), not from a database: reading a stored run waits for the reader
+(part 3). Their summary and compare print the key's provenance ("key read by Claude twice, not by a
+person") and the key's values per status and field. Their compare is `eval/pariksha/depth.py`'s:
+an expected hold counts as right, and a value given where the key holds is agreed-wrong.
+
 `--smriti <candidates file>` (from `scripts/smriti_candidates.py export`, #1232) also prints how many
 reviewer decisions concern this agent; printed only, never stored in the scorecard.
 
@@ -41,7 +52,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session
 
-from eval.pariksha.compare import compare_scorecards
+from eval.pariksha.compare import Comparison, compare_scorecards
+from eval.pariksha.depth import (
+    DEPTH_AGENTS,
+    KEY_PROVENANCE,
+    compare_depth,
+    describe_key,
+    read_depth_answers,
+    read_depth_key,
+    score_depth,
+)
 from eval.pariksha.keys import AnswerKey, ArchitectAnswerKey, KeyFormatError, read_key
 from eval.pariksha.score import UNRECORDED, Scorecard, score_akshara, score_rekha, score_vastu
 from eval.pariksha.scorecard import ScorecardError, read_scorecard, write_scorecard
@@ -138,7 +158,35 @@ def summary(card: Scorecard) -> str:
     return "\n".join(lines)
 
 
+def _score_depth(args: argparse.Namespace) -> int:
+    """`rekha-view` and `akshara-depth`: the readers' answers come from a file (#1257)."""
+    if args.answers is None or args.db is not None or args.run is not None:
+        raise Refused(
+            f"{args.agent} is scored from --answers (a pariksha-depth-answers/1 file), not --db or "
+            "--run: reading its answers from a stored run waits for the reader"
+        )
+    if args.smriti is not None or args.document_sha256 is not None:
+        raise Refused(f"--smriti and --document-sha256 do not apply to {args.agent}")
+    out = _outside_git(args.out)
+    key = read_depth_key(args.key.expanduser())
+    if key.agent != args.agent:
+        raise Refused(f"{args.key} is not a key for {args.agent}")
+    answers = read_depth_answers(args.answers.expanduser())
+    card = score_depth(
+        key, answers, code_version=args.code_version, scorer_version=_scorer_version()
+    )
+    write_scorecard(card, out)
+    print(summary(card))
+    print(describe_key(key))
+    print(f"  written: {out}")
+    return 0
+
+
 def _score(args: argparse.Namespace) -> int:
+    if args.agent in DEPTH_AGENTS:
+        return _score_depth(args)
+    if args.db is None or args.answers is not None:
+        raise Refused(f"{args.agent} is scored from a stored run: give --db, not --answers")
     out = _outside_git(args.out)
     # Read before scoring, so a refused candidates file never leaves a scorecard behind.
     decisions = None if args.smriti is None else read_candidates(args.smriti.expanduser())
@@ -208,7 +256,13 @@ def _compare(args: argparse.Namespace) -> int:
                 f"a {card.agent} scorecard has its own compare, which knows its rules: use "
                 f"{OWN_COMPARE[card.agent]} (before: {before.agent}, after: {after.agent})"
             )
-    comparison = compare_scorecards(before, after)
+    comparison: Comparison
+    if before.agent in DEPTH_AGENTS or after.agent in DEPTH_AGENTS:
+        # Refuses a card of any other agent, and two cards of different agents.
+        comparison = compare_depth(before, after)
+        print(f"key: {KEY_PROVENANCE}")
+    else:
+        comparison = compare_scorecards(before, after)
     print(comparison.render())
     return 0 if comparison.accepted else 1
 
@@ -217,8 +271,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     score = commands.add_parser("score", help="score a stored run into a new scorecard file")
-    score.add_argument("--agent", choices=("akshara", "rekha", "vastu"), required=True)
-    score.add_argument("--db", required=True, help="the stored run's database: URL or name")
+    score.add_argument(
+        "--agent", choices=("akshara", "rekha", "vastu", *DEPTH_AGENTS), required=True
+    )
+    score.add_argument(
+        "--db", help="the stored run's database: URL or name (akshara, rekha, vastu)"
+    )
+    score.add_argument(
+        "--answers",
+        type=Path,
+        help="rekha-view, akshara-depth: the readers' answers (pariksha-depth-answers/1)",
+    )
     score.add_argument("--key", type=Path, required=True)
     score.add_argument("--run", type=UUID, help="the extraction run, when the database has several")
     score.add_argument("--document-sha256", help="Vastu: the document, when the run read several")
