@@ -449,12 +449,20 @@ def test_an_end_at_the_corner_of_a_side_edge_running_the_whole_span_is_on_the_ou
     lines = (
         wall_hatch(90, 100, 60, 400)
         + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
-        + [line(400, 100, 400, 196)]  # the stone's side edge, wall to front; no front edge drawn
-        + vertical_dimension(50, 100, 196)
+        + [line(90, 100, 90, 196)]  # the stone's side edge, wall to front; no front edge drawn
+        + vertical_dimension(50, 100, 196)  # its witness lines end on it, at x 90
     )
     (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
     assert depth.low_end.kind is EndKind.WALL_BAND
     assert depth.high_end.kind is EndKind.OUTLINE and "corner" in depth.high_end.reason
+    far = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 100, 400, 196)]  # a parallel edge far along: no witness of the span reaches it
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(far), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
     shorter = (
         wall_hatch(90, 100, 60, 400)
         + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
@@ -465,24 +473,22 @@ def test_an_end_at_the_corner_of_a_side_edge_running_the_whole_span_is_on_the_ou
     assert depth.high_end.kind is EndKind.NOTHING
 
 
-def test_drawn_length_within_a_quarter_inch_and_a_tenth() -> None:
+def test_drawn_length_strictly_under_an_eighth_and_within_a_tenth() -> None:
     depth = span(1, Axis.VERTICAL, 0, 96)
     scale = view_scale(span(2, Axis.HORIZONTAL, 0, 340), Fraction(85))  # 4 pt per inch
-    quarter = Fraction(1, 4)
-    assert drawn_length_check(
-        depth, Fraction(24), scale, tolerance=Fraction(1, 10), within_inches=quarter
-    ).agrees
-    assert drawn_length_check(
-        depth, Fraction(95, 4), scale, tolerance=Fraction(1, 10), within_inches=quarter
-    ).agrees
-    assert not drawn_length_check(
-        depth, Fraction(189, 8), scale, tolerance=Fraction(1, 10), within_inches=quarter
-    ).agrees
-    # Without the quarter inch, a tenth lets 22" through.
+    eighth = Fraction(1, 8)
+
+    def agrees(value: Fraction) -> bool:
+        return drawn_length_check(
+            depth, value, scale, tolerance=Fraction(1, 10), within_inches=eighth
+        ).agrees
+
+    assert agrees(Fraction(24)) and agrees(Fraction(385, 16)) and agrees(Fraction(383, 16))
+    assert not agrees(Fraction(193, 8))  # 24 1/8": exactly an eighth off is another value
+    assert not agrees(Fraction(191, 8))  # 23 7/8"
+    assert not agrees(Fraction(97, 4)) and not agrees(Fraction(95, 4))  # a quarter either way
+    # A tenth alone lets 22" through.
     assert drawn_length_check(depth, Fraction(22), scale, tolerance=Fraction(1, 10)).agrees
-    assert not drawn_length_check(
-        depth, Fraction(22), scale, tolerance=Fraction(1, 10), within_inches=quarter
-    ).agrees
 
 
 def test_a_millimetre_number_printed_with_its_own_bracket_elsewhere_is_another_label() -> None:
@@ -504,7 +510,7 @@ def test_a_side_edge_must_run_the_whole_span_from_end_to_end() -> None:
     lines = (
         wall_hatch(90, 100, 60, 400)
         + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
-        + [line(400, 150, 400, 196)]  # ends at the span's end but starts half-way: not the stone
+        + [line(90, 150, 90, 196)]  # ends at the span's end but starts half-way: not the stone
         + vertical_dimension(50, 100, 196)
     )
     (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
@@ -543,3 +549,17 @@ def test_a_bracket_touching_its_number_from_below_is_its_pair() -> None:
     other_in = phrase("[3/4]", 1001, 166.8, Orientation.UPRIGHT, size=3)  # overlaps by 0.2 pt
     lanes = text_lanes([line_span], [own_mm, own_in, other_mm, other_in], S, chars=[])
     assert lanes[1].inches == 22, lanes[1].reason
+
+
+def test_a_spans_own_witness_drawn_well_past_its_line_is_never_its_edge() -> None:
+    # The only depth runs from the wall to a dashed cabinet face; its witness there overshoots the
+    # line by 8 pt on one side and runs 40 pt on the other. Nothing solid is at that end.
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(x, 186, x + 3, 186) for x in range(100, 400, 6)]  # a dashed cabinet face
+        + [line(50, 97.5, 50, 188.5), line(42, 100, 90, 100), line(42, 186, 90, 186)]
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.low_end.kind is EndKind.WALL_BAND
+    assert depth.high_end.kind is EndKind.NOTHING

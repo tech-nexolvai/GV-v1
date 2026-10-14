@@ -34,7 +34,7 @@ holds with a plain reason, and a hold never moves toward PASS.
      front edge (`front_offset_start.code_allows`), so **a strip measured from the stone's edge is
      never CT007**;
    * the number: the vector text at the dimension equals the sealed reading exactly, or (where the
-     number is pen strokes) its drawn length agrees within 1/4" (and 1/10) at the view's own
+     number is pen strokes) its drawn length agrees to under 1/8" (and 1/10) at the view's own
      scale, taken from a different dimension (the view's horizontal overall), or the links of the
      chain it is the overall of sum to it exactly. With neither, it holds: no code check
      confirmed the number. Any check that disagrees holds, as does a chain whose parts do not sum to
@@ -682,7 +682,7 @@ class ValueReading:
     drawing whose agreed readings differ hold on both)."""
     confirmed_by: Literal["vector-text", "chain", "drawn-length-only"] | None = None
     """The strongest code check that confirmed a usable value's number. `drawn-length-only` (a
-    pen-stroke label, within 1/4" at the view's scale) is the weakest, and part 4 may refuse it."""
+    pen-stroke label, under 1/8" off at the view's scale) is the weakest, and part 4 may refuse it."""
     scale_source: Literal["vector-text", "readers"] | None = None
     """Where the view's scale came from: the overall's printed text, or (weaker) the same two
     readers' reading of the overall."""
@@ -1270,32 +1270,27 @@ def _depth_place(kind: ViewKind, span: Span) -> str | None:
 
 
 def two_stones(view: PreparedView, settings: SpanSettings) -> str | None:
-    """Why a plan holds every depth on it, or `None`: two dimensions each run from the wall band to
-    a front edge, with different lengths, each at least half the deepest, and neither is a link of
-    a chain (#1265 review: one plan
-    draws two stones, 24" and 28" deep; reading "the" depth there could take the wrong one)."""
-    links = {part.number for chain in view.found.chains for part in chain.parts}
-    depths = [
-        span
-        for span in view.found.spans
-        if span.axis is Axis.VERTICAL
-        and span.number not in links
-        and {span.low_end.kind, span.high_end.kind} == {EndKind.WALL_BAND, EndKind.OUTLINE}
-    ]
-    # A stone is at least half as deep as the deepest: a short run from the wall to an edge (a
-    # cabinet part, a sink's back rim) is not a second stone.
-    longest = max((span.length_pt for span in depths), default=Decimal(0))
+    """Why a plan holds every depth on it, or `None`. **Fails closed** (#1265 review): any two
+    dimensions running top to bottom from the wall band with different lengths hold the plan,
+    whatever code sees at their other ends and whether or not they are a chain's links. Two stones
+    side by side (24" and 28" deep), a stepped stone, or a cubby beside the counter all look like
+    this, and reading "the" depth there could take the wrong one; so could a chain whose links
+    run across two stones (24 + 4 = 28)."""
     lengths: list[Decimal] = []
-    for span in depths:
-        if span.length_pt * 2 < longest:
+    for span in view.found.spans:
+        if span.axis is not Axis.VERTICAL or EndKind.WALL_BAND not in (
+            span.low_end.kind,
+            span.high_end.kind,
+        ):
             continue
         if all(abs(span.length_pt - length) > 2 * settings.end_meet_pt for length in lengths):
             lengths.append(span.length_pt)
     if len(lengths) < 2:
         return None
     return (
-        f"the view draws {len(lengths)} different depths from the wall to a front edge (two stones, "
-        "or a stepped stone): which is this countertop's is not known, so every depth here is held"
+        f"the view draws {len(lengths)} different lengths from the wall (two stones, a stepped "
+        "stone, or a part beside the counter): which is this countertop's depth is not known, so "
+        "every depth here is held"
     )
 
 

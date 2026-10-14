@@ -504,9 +504,12 @@ def with_depth(readers: FakeReaders, said: Reply | str) -> FakeReaders:
     return readers
 
 
-@pytest.mark.parametrize("read_as", ['22"', '23 5/8"', '24 3/8"', '24 3/4"', '25 1/2"'])
+@pytest.mark.parametrize(
+    "read_as", ['22"', '23 3/4"', '23 7/8"', '24 1/8"', '24 1/4"', '24 3/4"', '25 1/2"']
+)
 def test_a_reading_a_quarter_inch_off_the_drawn_length_holds(read_as: str) -> None:
-    # The depth is drawn exactly 24" long: within 1/10 these all agreed; within 1/4" none does.
+    # The depth is drawn exactly 24" long: within 1/10 these all agreed. Drawn lengths measure to
+    # about a fiftieth, so an eighth off (24 1/8", 23 7/8") is another value, and holds.
     view = prepared()
     found = values(read(view, with_depth(FakeReaders(view), read_as)))[CT010]
     assert not found.usable and "outside" in found.reason
@@ -514,7 +517,7 @@ def test_a_reading_a_quarter_inch_off_the_drawn_length_holds(read_as: str) -> No
 
 def test_a_value_confirmed_only_by_drawn_length_says_so() -> None:
     view = prepared()
-    found = values(read(view, with_depth(FakeReaders(view), '24 1/8"')))[CT010]
+    found = values(read(view, with_depth(FakeReaders(view), '24 1/16"')))[CT010]
     assert found.usable
     assert found.confirmed_by == "drawn-length-only"
     assert found.scale_source == "readers"
@@ -866,7 +869,7 @@ def test_two_stones_in_one_plan_hold_every_depth_first() -> None:
     view = prepared(lines=plan_lines() + second)
     assert two_stones(view, MEASURED_SPAN_SETTINGS) is not None
     found = values(read(view, FakeReaders(view)))
-    assert not found[CT010].usable and "different depths" in found[CT010].reason
+    assert not found[CT010].usable and "different lengths from the wall" in found[CT010].reason
     assert not found[CT007].usable  # the strip needs the stone's front edge: not known
     assert two_stones(prepared(), MEASURED_SPAN_SETTINGS) is None
 
@@ -888,42 +891,90 @@ def test_reviewers_ink_away_from_the_label_does_not_hold_it() -> None:
 
 
 def test_a_depth_drawn_as_a_chains_overall_asks_its_links_and_the_sum_confirms_it() -> None:
-    # The depth (wall to front, 96 pt) and, beside it, its chain 40 + 56 pt. The overall's number
-    # is not read, so there is no scale: only the chain's exact sum can confirm the depth.
-    chain = vertical_dimension(20, 100, 140) + vertical_dimension(20, 140, 196)
-    view = prepared(lines=plan_lines() + chain)
-    depth = number_of(view, Axis.VERTICAL, 100, 196)
-    links = [number_of(view, Axis.VERTICAL, 100, 140), number_of(view, Axis.VERTICAL, 140, 196)]
+    # A section: the depth runs left to right (96 pt) with its chain 40 + 56 pt below it. The
+    # depth is the view's only overall, so drawn length cannot check it: the chain's exact sum can.
+    lines = (
+        horizontal_dimension(320, 100, 196)
+        + horizontal_dimension(350, 100, 140)
+        + horizontal_dimension(350, 140, 196)
+    )
+    view = prepared(heading="SECTION A", lines=lines, outlines=())
+    depth = number_of(view, Axis.HORIZONTAL, 100, 196)
+    links = [number_of(view, Axis.HORIZONTAL, 100, 140), number_of(view, Axis.HORIZONTAL, 140, 196)]
     assert any(c.overall.number == depth for c in view.found.closures)
-    readers = FakeReaders(view)
-    overall = number_of(view, Axis.HORIZONTAL, 60, 400)
 
-    def numbers(first: str, second: str) -> None:
-        readers.numbers = {
-            model: {
-                **readers.numbers[model],
-                overall: NoAnswer("abstained"),
-                links[0]: first,
-                links[1]: second,
-            }
-            for model in CLAUDE_PAIR
-        }
+    def ask(read_as: dict[int, str]) -> tuple[DepthReading, list[Asked]]:
+        asked: list[Asked] = []
 
-    numbers('10"', '14"')
-    found = values(read(view, readers))[CT010]
-    asked = {a.key.rsplit(":n", 1)[1] for a in readers.asked if ":n" in a.key}
-    assert {str(n) for n in links} <= asked
+        def answer(questions: Sequence[Asked]) -> dict[tuple[str, str], Reply]:
+            asked.extend(questions)
+            out: dict[tuple[str, str], Reply] = {}
+            for q in questions:
+                if q.question.prompt_id == VIEW_KIND_PROMPT_ID:
+                    out[(q.key, q.model_id)] = ViewKindAnswer(q.model_id, "section_or_side", "")
+                elif q.question.prompt_id == SPAN_ROLE_PROMPT_ID:
+                    out[(q.key, q.model_id)] = SpanRoleAnswer(
+                        model_id=q.model_id,
+                        depth=depth,
+                        cutout_width="none",
+                        cutout_depth="none",
+                        front_offset="none",
+                        front_offset_start="none",
+                        hole_outline="none",
+                        why="",
+                    )
+                else:
+                    span = int(q.key.rsplit(":n", 1)[1])
+                    out[(q.key, q.model_id)] = number(read_as[span], q.model_id)
+            return out
+
+        reading = read_depth([page_of(view)], ask=answer, fraction_bar=GEOMETRY)
+        return reading, asked
+
+    reading, asked = ask({depth: '24"', links[0]: '10"', links[1]: '14"'})
+    found = values(reading)[CT010]
+    numbered = {q.key.rsplit(":n", 1)[1] for q in asked if ":n" in q.key}
+    assert {str(n) for n in links} <= numbered
     assert found.usable and found.confirmed_by == "chain", found.reason
-    numbers('10"', '13"')
-    assert not values(read(view, readers))[CT010].usable
+    reading, _asked = ask({depth: '24"', links[0]: '10"', links[1]: '13"'})
+    assert not values(reading)[CT010].usable
 
 
-def test_a_short_run_from_the_wall_is_not_a_second_stone() -> None:
+def test_a_short_run_from_the_wall_beside_the_depth_holds_too() -> None:
     from extraction.depth.read import two_stones
 
-    # A 30 pt run from the wall to an edge (a cabinet part) beside the 96 pt depth: one stone.
+    # Fail closed: a 30 pt run from the wall (a cubby, a part) beside the 96 pt depth holds it.
     part = [line(420, 130, 560, 130)] + vertical_dimension(440, 100, 130)
     lines = [s for s in plan_lines() if s not in wall_hatch(90, 100, 60, 400)]
     lines += wall_hatch(90, 100, 60, 560) + [line(400, 100, 560, 100), line(400, 90, 560, 90)]
     view = prepared(lines=lines + part)
-    assert two_stones(view, MEASURED_SPAN_SETTINGS) is None
+    assert two_stones(view, MEASURED_SPAN_SETTINGS) is not None
+    assert not values(read(view, FakeReaders(view)))[CT010].usable
+
+
+def test_two_stones_dimensioned_as_one_chain_never_confirm_a_depth() -> None:
+    # Stone A 96 pt deep beside stone B 112 pt deep, dimensioned as a chain 96 + 16 = 112 from the
+    # wall: the links run across two stones; the depth must not be confirmed by their sum.
+    chain = vertical_dimension(20, 100, 196) + vertical_dimension(20, 196, 212)
+    overall = vertical_dimension(35, 100, 212)
+    base = [s for s in plan_lines() if s not in vertical_dimension(50, 100, 196)]
+    view = prepared(lines=base + chain + overall + [line(93, 212, 400, 212)])  # stone B's front
+    readers = FakeReaders(view)
+    deepest = next(
+        s.number
+        for s in view.found.spans
+        if s.axis is Axis.VERTICAL and (s.start_pt, s.end_pt) == (d(100), d(212))
+    )
+    roles = {**readers.roles[OPUS], "depth": deepest}
+    readers.roles = {OPUS: roles, SONNET: roles}
+    links = [
+        next(
+            s.number
+            for s in view.found.spans
+            if s.axis is Axis.VERTICAL and (s.start_pt, s.end_pt) == (d(196), d(212))
+        )
+    ]
+    for model in CLAUDE_PAIR:
+        readers.numbers[model] = {**readers.numbers[model], deepest: '28"', links[0]: '4"'}
+    found = values(read(view, readers))[CT010]
+    assert not found.usable and "different lengths from the wall" in found.reason

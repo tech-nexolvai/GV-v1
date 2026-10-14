@@ -171,8 +171,9 @@ class SpanSettings:
     drawn_length_tolerance: Fraction
     """The drawn length at the view's scale is within this fraction of the value (design: 1/10)."""
     drawn_length_within_in: Fraction
-    """...and within this many inches of it (#1265 review: the measured lengths were exact to a
-    fiftieth, and a tenth cannot tell 24" from 23 3/4"). The stricter of the two decides."""
+    """...and strictly less than this many inches from it (#1265 review: the measured lengths were
+    exact to about a fiftieth; a tenth cannot tell 24" from 23 3/4", and even 1/4" let 24 1/4"
+    through). Both must hold."""
     witness_gap_pt: Decimal
     """How far along a witness line the edge it is drawn from may stop short of it: CAD draws a
     witness line from a small gap off the edge (measured 2.3 pt on a vendor plan)."""
@@ -614,6 +615,12 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
         for stroke in (found.stroke, *found.witnesses)
         if not _crossed_edge(found, stroke, settings)
     }
+    crossed = frozenset(
+        _key(*stroke)
+        for found in every
+        for stroke in found.witnesses
+        if _crossed_edge(found, stroke, settings)
+    )
     others = [
         stroke
         for stroke in strokes
@@ -632,8 +639,10 @@ def find_spans(ink: PageInk, view: Box, settings: SpanSettings) -> ViewSpans:
             end_pt=found.end,
             stroke_ends=found.stroke_ends,
             witnesses=found.witnesses,
-            low_end=_end(found.axis, found.start, found.witnesses, bands, others, settings),
-            high_end=_end(found.axis, found.end, found.witnesses, bands, others, settings),
+            low_end=_end(
+                found.axis, found.start, found.witnesses, bands, others, settings, crossed
+            ),
+            high_end=_end(found.axis, found.end, found.witnesses, bands, others, settings, crossed),
         )
         for number, found in enumerate(ordered, start=1)
     )
@@ -727,8 +736,14 @@ def _end(
     bands: Sequence[WallBand],
     others: Sequence[_Stroke],
     settings: SpanSettings,
+    crossed: frozenset[_Quad] = frozenset(),
 ) -> SpanEnd:
     """What the span's end at `at` (along its axis) meets.
+
+    **The span's own witness lines are never its edge** (#1265 review: a witness drawn well past its
+    line is ordinary drafting, and taking it for an edge made any dimension "meet" one). Another
+    dimension's witness that runs well past its line on both sides (`crossed`) is an edge that
+    line crosses, and may be.
 
     Only what **reaches the end's own witness line** counts: a band edge or a solid edge on the same
     line as the end (within `end_meet_pt`) whose extent across comes within `witness_gap_pt` of the
@@ -759,17 +774,25 @@ def _end(
             return SpanEnd(
                 at, EndKind.WALL_BAND, f"the end lies on the edge of a {band.source} wall band"
             )
+    mine = {_key(*witness) for witness in witnesses}
     for stroke in others:
+        key = _stroke_key(stroke)
         if (
             stroke.axis is not axis
+            and key not in mine
             and abs(stroke.at - at) <= reach
             and touches(stroke.start, stroke.end)
         ):
+            what = (
+                "a line another dimension crosses, running well past it both ways"
+                if key in crossed
+                else "not a line of any dimension"
+            )
             return SpanEnd(
                 at,
                 EndKind.OUTLINE,
                 "the end lies on a solid edge of the drawing that reaches its witness line "
-                f"({stroke.length:.1f} pt long, not a dimension's own line)",
+                f"({stroke.length:.1f} pt long, {what})",
             )
     return SpanEnd(
         at,
@@ -780,12 +803,31 @@ def _end(
 
 def _side_edge_corners(span: Span, others: Sequence[_Stroke], settings: SpanSettings) -> Span:
     """An end that met nothing lies on the outline when a solid edge **parallel** to the span runs
-    exactly the span's whole extent (both ends within `end_meet_pt`): the stone's side edge, drawn
-    from the wall to the front, whose corner is this end (#1265 review: a plan whose front edge is
+    exactly the span's whole extent (both ends within `end_meet_pt`) and the end's own witness line
+    runs out to it: the stone's side edge, drawn from the wall to the front, whose corner is this
+    end (#1265 review: a plan whose front edge is
     not drawn across, only its side edge down to the front corner)."""
     if EndKind.NOTHING not in (span.low_end.kind, span.high_end.kind):
         return span
     reach = settings.end_meet_pt
+    gap = settings.witness_gap_pt
+    loose = [end.at_pt for end in (span.low_end, span.high_end) if end.kind is EndKind.NOTHING]
+
+    def reached(stroke: _Stroke) -> bool:
+        # Every loose end's own witness line runs out to the side edge (#1265 review: a parallel
+        # edge far along, which no witness of this span reaches, is another part's edge).
+        for at in loose:
+            if not any(
+                (
+                    (abs(y0 - at) <= reach and y0 == y1 and x0 - gap <= stroke.at <= x1 + gap)
+                    if span.axis is Axis.VERTICAL
+                    else (abs(x0 - at) <= reach and x0 == x1 and y0 - gap <= stroke.at <= y1 + gap)
+                )
+                for x0, y0, x1, y1 in span.witnesses
+            ):
+                return False
+        return True
+
     side = next(
         (
             stroke
@@ -793,6 +835,7 @@ def _side_edge_corners(span: Span, others: Sequence[_Stroke], settings: SpanSett
             if stroke.axis is span.axis
             and abs(stroke.start - span.start_pt) <= reach
             and abs(stroke.end - span.end_pt) <= reach
+            and reached(stroke)
         ),
         None,
     )
@@ -968,22 +1011,25 @@ def drawn_length_check(
     """The span's drawn length at `scale`, against `value_inches`.
 
     **The decision, exactly:** `|drawn − value| ≤ tolerance × value`, on `Fraction`s, inclusive at
-    the boundary; with `within_inches`, also `|drawn − value| ≤ within_inches` (the stricter
-    decides). The design's tolerance is 1/10: a scale taken from one overall and a drawing
+    the boundary; with `within_inches`, also `|drawn − value| < within_inches`, strictly (both
+    must hold). The design's tolerance is 1/10: a scale taken from one overall and a drawing
     traced by hand are not exact, and the check is there to catch a reading of the wrong span or a
     misread digit (24 read as 34 is 42% off), not to grade the drafting.
     """
     if value_inches <= 0:
         raise ValueError("a value checked against a drawn length must be greater than zero")
     drawn = Fraction(span.length_pt) / scale.points_per_inch
-    allowed = tolerance * value_inches
-    if within_inches is not None:
-        allowed = min(allowed, within_inches)
-    agrees = abs(drawn - value_inches) <= allowed
+    off = abs(drawn - value_inches)
+    agrees = off <= tolerance * value_inches and (within_inches is None or off < within_inches)
+    limit = (
+        f"{tolerance} of the value"
+        if within_inches is None
+        else f"{tolerance} of the value and under {within_inches} in"
+    )
     reason = (
         f"span {span.number} is drawn {float(drawn):.2f} in long at the view's scale, "
         + ("within" if agrees else "outside")
-        + f" {allowed} in of the value"
+        + f" {limit}"
     )
     return DrawnLength(span.number, drawn, value_inches, agrees, reason)
 
@@ -1708,7 +1754,7 @@ MEASURED_SPAN_SETTINGS: Final = SpanSettings(
     dash_minimum_pt=Decimal(2),
     drain_maximum_fraction=Decimal("0.4"),
     drawn_length_tolerance=Fraction(1, 10),
-    drawn_length_within_in=Fraction(1, 4),
+    drawn_length_within_in=Fraction(1, 8),
     witness_gap_pt=Decimal(4),
     mm_corroboration_mm=Fraction(2),
     same_size_fraction=Decimal("0.1"),
