@@ -8,8 +8,9 @@ of its contents so an edited file is refused (the same rules as a Pariksha score
 
 **v2 (#1267)** adds to each candidate `overturned` (the automatic answer a person's decision
 replaced, or `None`), `mistake_needed` (`unanswered` on a correction or a typed value until a person
-says "AI misread" or "the vendor drew it wrong"; `None` where it is not asked) and `actor_status`
-(`reviewer`, `unknown`, or `unchecked` in a v1 file), and to the file the records left out as
+says "AI misread" or "the vendor drew it wrong"; `None` where it is not asked), `actor_status`
+(`reviewer`, `unknown`, or `unchecked` in a v1 file) and `answer_source` (`decision`, `pdf-text`
+or `ai-reading`), and to the file the records left out as
 code's or the machine's own (`skipped`, per table and why) and which reviewer list was used.
 
 Source: issues #1232, #1267 · Verification: `tests/eval/test_smriti_export.py`,
@@ -115,6 +116,11 @@ class Candidate:
     """`unanswered` on a correction or a typed value (see `MISTAKE_ANSWERS`); `None` elsewhere."""
     actor_status: str = UNCHECKED
     """`reviewer` (on the local list), `unknown` (not on it, or no list), `unchecked` (a v1 file)."""
+    answer_source: str | None = None
+    """Where `answer` came from, so the confirming page can say so and show the picture first:
+    `decision` (the reviewer's decision states it), `pdf-text` (the file's own text under the
+    span) or `ai-reading` (the stored reading's text, on a confirmed reading with no file text).
+    `None` when there is no answer."""
 
     @property
     def convertible(self) -> bool:
@@ -292,7 +298,7 @@ def _counts_document(counts: Mapping[str, DecisionCount]) -> dict[str, dict[str,
 
 
 #: The candidate fields v2 added, absent from a v1 file.
-_V2_FIELDS: Final = frozenset({"overturned", "mistake_needed", "actor_status"})
+_V2_FIELDS: Final = frozenset({"overturned", "mistake_needed", "actor_status", "answer_source"})
 
 
 def _candidate_document(candidate: Candidate) -> dict[str, Any]:

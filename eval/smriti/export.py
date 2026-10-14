@@ -32,10 +32,14 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Page
 from app.models.drawing import (
+    CountertopRun,
+    CountertopRunDecision,
+    DrawingItem,
     DrawingView,
     PartConfirmation,
     PartProposal,
     PartProposalRow,
+    ReadingPart,
     ViewRoleConfirmation,
 )
 from app.models.evidence import (
@@ -77,6 +81,11 @@ ROW_CHOICE_FLAG: Final = "slot-reader-row-choice"
 NO_ROW_FLAG: Final = "no-row:"
 BUDGET_STOPPED: Final = "no-row:budget-reached"
 WALL_SOURCE_FLAG: Final = "wall-source:"
+#: The routes whose text is the file's own characters (`workflow.stages.EXACT_TEXT_EXTRACTORS`),
+#: less the reviewer's markup: GV's markup is the answer key, never the printed text proposed.
+PDF_TEXT_EXTRACTORS: Final = frozenset(
+    {"pdfplumber", "extraction.cad_text", "extraction.stamp_text"}
+)
 #: Why a record is left out: code's own decision, or a record whose source is the machine.
 SKIPPED_CODE: Final = "code"
 SKIPPED_MACHINE: Final = "machine source"
@@ -96,6 +105,8 @@ NO_COUNTERTOP_ITEM_KEY: Final = (
     "no key scores whether a row is a countertop item; kept and counted (a person undoing code's "
     "item is listed as overturned)"
 )
+NO_RUNS_KEY: Final = "no key scores which parts sit beneath a countertop; kept and counted"
+NO_READING_PART_KEY: Final = "no key scores which part a reading measures; kept and counted"
 NO_KHOJ_KEY: Final = (
     "no Khoj key exists (Khoj stays off, decided 2026-10-14); a citation shows its pointer was "
     "right, kept and counted"
@@ -300,6 +311,29 @@ class _Reader:
                 )
             )
         )
+
+    def pdf_texts(self, span: ObservationCandidate) -> list[str]:
+        """The file's own text runs lying wholly inside the span's slot box, distinct, sorted."""
+        boxes = _flag_value(_flags(span), "slot-box:")
+        parts = boxes[0].split(",") if len(boxes) == 1 else []
+        if len(parts) != 4 or not all(part.lstrip("-").isdigit() for part in parts):
+            return []
+        x0, y0, x1, y1 = (int(part) for part in parts)
+        found: set[str] = set()
+        for raw_text, polygon in self.session.execute(
+            select(ObservationCandidate.raw_text, ObservationCandidate.polygon)
+            .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+            .where(
+                ObservationCandidate.page_id == span.page_id,
+                ExtractionRun.extractor.in_(PDF_TEXT_EXTRACTORS),
+            )
+        ):
+            box = _polygon_box(polygon)
+            if box is None or not raw_text or not raw_text.strip():
+                continue
+            if x0 <= box[0] and y0 <= box[1] and box[2] <= x1 and box[3] <= y1:
+                found.add(raw_text)
+        return sorted(found)
 
     def label_question(
         self, candidate: ObservationCandidate
@@ -910,6 +944,7 @@ def _no_countertop(reader: _Reader) -> list[Candidate]:
                 answer_needed=needed,
                 not_convertible=why,
                 overturned=overturned,
+                answer_source=None if key_answer is None else "decision",
             )
         )
     return out
@@ -945,6 +980,7 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
         question: dict[str, Any] | None = None
         key_answer: dict[str, Any] | None = None
         needed: str | None = None
+        source: str | None = None
         if action.action == "confirm" and action.original_observation_id is not None:
             agent, span, question, why = _reading(reader, action.original_observation_id)
             corrects = "a value a reader read (confirmed right)"
@@ -953,10 +989,16 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
             if span is not None:
                 page_sha, page_number = _page_facts(reader, span.page_id)
                 recorded["reading"] = span.raw_text
-            if question is not None and span is not None and span.raw_text.strip():
-                # A positive case: the answer is the stored reading's text, which the person
-                # confirming sees against the picture (and may refuse).
-                key_answer = {"texts": [span.raw_text]}
+            pdf = [] if span is None or question is None else reader.pdf_texts(span)
+            if pdf:
+                recorded["pdf_text"] = pdf
+            if question is not None and len(pdf) == 1:
+                # A positive case. The proposed answer is the file's own text under the span where
+                # it holds exactly one run, else the stored reading's text; either way the person
+                # confirming sees it against the picture (and may refuse), never types blind.
+                key_answer, source = {"texts": pdf}, "pdf-text"
+            elif question is not None and span is not None and span.raw_text.strip():
+                key_answer, source = {"texts": [span.raw_text]}, "ai-reading"
             elif question is not None:
                 needed = "the printed text of the label: the stored reading has no text"
         elif record is not None and ROW_CHOICE_FLAG in _flags(record):
@@ -979,7 +1021,7 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
             )
         if superseded:
             kind, why = "superseded", SUPERSEDED.format(what=what)
-            question, key_answer, needed = None, None, None
+            question, key_answer, needed, source = None, None, None, None
         out.append(
             Candidate(
                 candidate_id=f"review_actions:{action.id}",
@@ -997,6 +1039,7 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
                 answer=key_answer,
                 answer_needed=needed,
                 not_convertible=why,
+                answer_source=source,
             )
         )
     return out
@@ -1091,6 +1134,7 @@ def _part_confirmations(reader: _Reader) -> list[Candidate]:
                 answer_needed=None,
                 not_convertible=why,
                 overturned=overturned,
+                answer_source=None if key_answer is None else "decision",
             )
         )
     return out
@@ -1154,6 +1198,124 @@ def _view_roles(reader: _Reader) -> list[Candidate]:
                 answer_needed=None,
                 not_convertible=why,
                 overturned=overturned,
+            )
+        )
+    return out
+
+
+def _run_decisions(reader: _Reader) -> list[Candidate]:
+    """A person's run beneath a countertop (Bala, counted) and its wall choice (a walls case)."""
+    decisions = list(
+        reader.session.scalars(
+            select(CountertopRunDecision).order_by(
+                CountertopRunDecision.created_at, CountertopRunDecision.id
+            )
+        )
+    )
+    replaced = {decision.supersedes_id for decision in decisions if decision.supersedes_id}
+    table = "countertop_run_decisions"
+    out: list[Candidate] = []
+    for decision in decisions:
+        item = reader.session.get(DrawingItem, decision.countertop_item_id)
+        page_sha, page_number = _page_of(
+            None if item is None else reader.view_page(item.drawing_view_id)
+        )
+        earlier = (
+            ("superseded", SUPERSEDED.format(what="countertop"))
+            if decision.id in replaced
+            else None
+        )
+        members = (
+            0
+            if decision.run_id is None
+            else len(
+                list(
+                    reader.session.scalars(
+                        select(CountertopRun.id).where(CountertopRun.run_id == decision.run_id)
+                    )
+                )
+            )
+        )
+        out.append(
+            Candidate(
+                candidate_id=f"{table}:{decision.id}:run",
+                table=table,
+                decision_id=str(decision.id),
+                agent="bala",
+                corrects="which parts sit beneath a countertop (its run)",
+                kind="decided" if earlier is None else earlier[0],
+                decided_by=decision.confirmed_by,
+                decided_at=_iso(decision.created_at),
+                page_sha256=page_sha,
+                page_number=page_number,
+                recorded={"decision": decision.decision, "members": members},
+                question=None,
+                answer=None,
+                answer_needed=None,
+                not_convertible=NO_RUNS_KEY if earlier is None else earlier[1],
+            )
+        )
+        if decision.wall_config is not None:
+            out.append(
+                _walls_part(
+                    reader,
+                    candidate_id=f"{table}:{decision.id}:walls",
+                    table=table,
+                    decision_id=str(decision.id),
+                    decided_by=decision.confirmed_by,
+                    decided_at=decision.created_at,
+                    anchor=_countertop_anchor(reader, decision.countertop_item_id),
+                    wall_config=decision.wall_config,
+                    earlier=earlier,
+                )
+            )
+    return out
+
+
+def _countertop_anchor(reader: _Reader, item_id: UUID) -> ObservationCandidate | None:
+    """The read row a countertop item was made from: item → its confirmation → Bala's link."""
+    proposal_id = reader.session.scalar(
+        select(PartConfirmation.part_proposal_id).where(PartConfirmation.drawing_item_id == item_id)
+    )
+    if proposal_id is None:
+        return None
+    row = reader.session.scalar(
+        select(PartProposalRow.row_candidate_id).where(
+            PartProposalRow.part_proposal_id == proposal_id, PartProposalRow.slot_index.is_(None)
+        )
+    )
+    return reader.candidate(row)
+
+
+def _reading_parts(reader: _Reader) -> list[Candidate]:
+    links = list(
+        reader.session.scalars(select(ReadingPart).order_by(ReadingPart.created_at, ReadingPart.id))
+    )
+    replaced = {link.supersedes_id for link in links if link.supersedes_id}
+    out: list[Candidate] = []
+    for link in links:
+        earlier = link.id in replaced
+        span = reader.primary(link.canonical_observation_id)
+        page_sha, page_number = _page_facts(reader, None if span is None else span.page_id)
+        out.append(
+            Candidate(
+                candidate_id=f"reading_parts:{link.id}",
+                table="reading_parts",
+                decision_id=str(link.id),
+                agent="bala",
+                corrects="which confirmed part a reading measures",
+                kind="superseded" if earlier else "decided",
+                decided_by=link.confirmed_by,
+                decided_at=_iso(link.created_at),
+                page_sha256=page_sha,
+                page_number=page_number,
+                recorded={"linked": link.drawing_item_id is not None},
+                question=None,
+                answer=None,
+                answer_needed=None,
+                not_convertible=(
+                    SUPERSEDED.format(what="reading") if earlier else NO_READING_PART_KEY
+                ),
             )
         )
     return out
@@ -1346,6 +1508,8 @@ def export_candidates(
         *_review_actions(reader),
         *_part_confirmations(reader),
         *_view_roles(reader),
+        *_run_decisions(reader),
+        *_reading_parts(reader),
         *_item_classifications(reader),
         *_layout_confirmations(reader),
         *_citations(reader),

@@ -711,6 +711,9 @@ class V2World:
     batch_answer: UUID
     countertop_answer: UUID
     confirm_action: UUID
+    confirm_overall: UUID
+    person_run: UUID
+    code_run: UUID
     walls_decision: UUID
     dismiss: UUID
     code_pairing: UUID
@@ -755,6 +758,7 @@ def _row_record(
 
 def build_v2_world(session: Session) -> V2World:
     from app.models.drawing import (
+        CountertopRunDecision,
         DrawingItem,
         DrawingView,
         PartConfirmation,
@@ -930,6 +934,28 @@ def build_v2_world(session: Session) -> V2World:
 
     countertop = propose("countertop", None)
     code_countertop = decide(countertop, BALA_CONFIRMER, "countertop")
+    code_item = session.scalar(
+        select(PartConfirmation.drawing_item_id).where(PartConfirmation.id == code_countertop)
+    )
+    # A person confirmed the run beneath that countertop and chose its walls; code decided a run
+    # beneath another countertop by itself.
+    person_run = CountertopRunDecision(
+        countertop_item_id=code_item,
+        decision="confirmed",
+        run_id=uuid4(),
+        confirmed_by=REVIEWER,
+        wall_config="back_only",
+    )
+    other_item = DrawingItem(
+        drawing_view_id=view.id, item_type=PartKind.COUNTERTOP.item_type.value, extent=extent
+    )
+    session.add_all([person_run, other_item])
+    session.flush()
+    code_run = CountertopRunDecision(
+        countertop_item_id=other_item.id, decision="withdrawn", confirmed_by=BALA_CONFIRMER
+    )
+    session.add(code_run)
+    session.flush()
     person_withdrawal = decide(countertop, REVIEWER, None, supersedes=code_countertop)
     person_piece = decide(propose("filler", 1), REVIEWER, "cabinet")
     stranger_piece = decide(propose("filler", 0), "ui reviewer", "filler")
@@ -962,7 +988,39 @@ def build_v2_world(session: Session) -> V2World:
     batch_answer = answer(batch_record, "no_countertop", uuid4())
     countertop_answer = answer(agreed_record, "countertop", None)
 
-    # A person confirmed a reading was right, and dismissed a check's result.
+    # The file's own text under slot 1 (written differently from the AI's text), and GV's markup
+    # under the overall: the markup is the answer key, never the printed text proposed.
+    def text_run(extractor: str, text: str, box: tuple[int, int, int, int]) -> None:
+        x0, y0, x1, y1 = box
+        session.add(
+            ObservationCandidate(
+                document_version_id=version_id,
+                page_id=page_id,
+                extraction_run_id=_run(session, revision_id, extractor).id,
+                raw_text=text,
+                polygon=[[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                ambiguity_flags=[],
+            )
+        )
+        session.flush()
+
+    text_run("pdfplumber", '12-1/2"', (42, 22, 58, 38))
+    text_run("extraction.annotations", '15"', (12, 52, 58, 68))
+
+    # A person confirmed two readings were right, and dismissed a check's result.
+    confirm_overall = ReviewAction(
+        review_session_id=scenario.review_session_id,
+        finding_id=scenario.finding_id,
+        package_revision_id=revision_id,
+        action="confirm",
+        actor=REVIEWER,
+        original_observation_id=_slot_observation(
+            session, scenario, spans["slot:overall"], revision_id
+        ),
+        resulting_observation_id=scenario.observation_id,
+    )
+    session.add(confirm_overall)
+    session.flush()
     confirm = ReviewAction(
         review_session_id=scenario.review_session_id,
         finding_id=scenario.finding_id,
@@ -1025,6 +1083,9 @@ def build_v2_world(session: Session) -> V2World:
         batch_answer=batch_answer,
         countertop_answer=countertop_answer,
         confirm_action=confirm.id,
+        confirm_overall=confirm_overall.id,
+        person_run=person_run.id,
+        code_run=code_run.id,
         walls_decision=walls_decision.id,
         dismiss=dismiss.id,
         code_pairing=code_pairing.id,
@@ -1068,6 +1129,7 @@ def test_carried_and_batch_decisions_are_never_ready(session: Session) -> None:
     batch = found[f"no_countertop_answers:{world.batch_answer}"]
     assert batch.question is not None and batch.question["family"] == "slot-row-choice"
     assert batch.answer is None, "a batch click is never a ready answer"
+    assert batch.answer_source is None
     assert batch.answer_needed is not None and "own look" in batch.answer_needed
     assert batch.recorded["batch"] is True
 
@@ -1099,9 +1161,53 @@ def test_a_confirm_action_gives_a_positive_label_case(session: Session) -> None:
         "question_id": "p0:slot1:0",
         "slot_box": "40,20,60,40",
     }
-    # The answer is the stored reading's text, which the person sees and checks.
-    assert found.answer == {"texts": ['12 1/2"']}
+    # The file's own text under the span is preferred over the AI's, and says where it came from.
+    assert found.answer == {"texts": ['12-1/2"']}
+    assert found.answer_source == "pdf-text"
+    assert found.recorded["reading"] == '12 1/2"'
     assert found.convertible and found.mistake_needed is None
+
+
+def test_a_confirm_with_no_file_text_proposes_the_ai_reading_and_never_gvs_markup(
+    session: Session,
+) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"review_actions:{world.confirm_overall}"]
+    assert found.question is not None and found.question["question_id"] == "p0:overall:0"
+    # GV's markup lies under this span; it is the answer key, never the proposed printed text.
+    assert found.answer == {"texts": ['14 1/2"']}
+    assert found.answer_source == "ai-reading"
+    assert "pdf_text" not in found.recorded
+
+
+def test_the_pdf_text_routes_are_the_products_exact_text_routes_less_the_markup() -> None:
+    from eval.smriti.export import PDF_TEXT_EXTRACTORS
+    from workflow.stages import EXACT_TEXT_EXTRACTORS, MARKUP_EXTRACTOR
+
+    assert PDF_TEXT_EXTRACTORS == EXACT_TEXT_EXTRACTORS - {MARKUP_EXTRACTOR}
+
+
+def test_a_person_run_is_a_candidate_and_a_code_run_is_not(session: Session) -> None:
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    found = _by_id(exported.candidates)
+    run = found[f"countertop_run_decisions:{world.person_run}:run"]
+    assert run.agent == "bala" and run.kind == "decided"
+    assert run.recorded == {"decision": "confirmed", "members": 0}
+    assert not run.convertible and "beneath a countertop" in (run.not_convertible or "")
+    # Its wall choice is a walls case on the row the countertop was made from.
+    walls = found[f"countertop_run_decisions:{world.person_run}:walls"]
+    assert walls.agent == "rekha"
+    assert walls.question is not None and walls.question["question_id"] == "p0:walls"
+    assert walls.convertible and walls.answer is None
+    # The same layout code and both AIs gave: nothing automatic was overturned.
+    assert walls.overturned is None
+
+    assert not any(key.startswith(f"countertop_run_decisions:{world.code_run}") for key in found)
+    assert exported.skipped["countertop_run_decisions"] == {"code": 1}
 
 
 def test_a_person_confirming_a_piece_kind_gives_a_bala_kinds_case(session: Session) -> None:
@@ -1116,6 +1222,7 @@ def test_a_person_confirming_a_piece_kind_gives_a_bala_kinds_case(session: Sessi
         "pieces": 2,
     }
     assert found.answer == {"kinds": ["cabinet"]}
+    assert found.answer_source == "decision"
     assert found.convertible and found.overturned is None
 
 
