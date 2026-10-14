@@ -125,6 +125,7 @@ from app.runs.invocations import (
     record as record_model_invocation,
 )
 from app.runs.rates import call_cost_micros, rates_from_environment
+from app.runs.reading_activity import ActivityRecorder
 from app.runs.reading_progress import side_engine
 from app.telemetry.tracing import traced
 from app.verdicts.record import record_finding, supersede_runs
@@ -2748,10 +2749,19 @@ class DatabaseStages:
             )
 
     def _watch(self, session: Session, package_revision_id: UUID, stage: str) -> None:
-        """Start telling the reviewer where this revision's reading is (#1178)."""
+        """Start telling the reviewer where this revision's reading is (#1178), and what each
+        agent did (#1238): this stage attempt is one reading, with an id of its own."""
         self._reporter = ProgressReporter(side_engine(session), package_revision_id)
+        self._activity_recorder = ActivityRecorder(
+            side_engine(session), package_revision_id, uuid4()
+        )
         self._watch_session = session
         self._reporter.stage(stage)
+
+    def _activity(self) -> ActivityRecorder | None:
+        """The reading's activity hook (#1238); nothing when no stage is being watched."""
+        recorder: ActivityRecorder | None = getattr(self, "_activity_recorder", None)
+        return recorder
 
     def _progress(
         self, stage: str, *, pages_done: int | None = None, pages_total: int | None = None
@@ -2921,6 +2931,7 @@ class DatabaseStages:
             stored_answers=StoredReaderAnswers(session) if runtime.reuse_answers else None,
             progress=self._batch_progress(),
             stop=stop,
+            activity=self._activity(),
         )
         if stop.cause == "budget":
             # **A clean stop (#1206).** The budget was reached: every page whose own reading is

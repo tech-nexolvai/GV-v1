@@ -92,7 +92,10 @@ def test_the_revision_follows_the_refusals_and_fits_the_version_column() -> None
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision(REVISION)
     assert found is not None and found.down_revision == BEFORE
-    assert script.get_heads() == [REVISION]
+    # On the one line of history to the single head; later migrations may follow it (#1238).
+    assert REVISION in {
+        rev.revision for rev in script.walk_revisions("base", script.get_current_head())
+    }
 
 
 @pytest.mark.parametrize(
@@ -162,6 +165,7 @@ def test_the_downgrade_refuses_while_a_failed_call_keeps_its_cause(postgres_engi
         cost_micros=0,
     )
 
+    command.downgrade(config, REVISION)  # past any later migration first (#1238)
     with pytest.raises(RuntimeError, match=r"1 model_invocations row\(s\) record why"):
         command.downgrade(config, BEFORE)
 
@@ -169,6 +173,7 @@ def test_the_downgrade_refuses_while_a_failed_call_keeps_its_cause(postgres_engi
     with postgres_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     assert version == REVISION
+    command.upgrade(config, "head")
 
 
 def test_the_migration_goes_down_and_up_when_no_row_needs_it(postgres_engine: Engine) -> None:

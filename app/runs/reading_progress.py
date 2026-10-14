@@ -72,6 +72,7 @@ READING_STAGE_LABELS: Final[dict[str, str]] = {
     "match": "matching the drawings",
     "validate": "checking the evidence",
     "form": "filling in the measurements form",
+    "try_again": "AI readers trying again on what they could not settle",
 }
 
 if set(READING_STAGE_LABELS) != set(READING_STAGES):  # pragma: no cover - import-time guard

@@ -389,6 +389,7 @@ READING_STAGES: Final = (
     "match",
     "validate",
     "form",
+    "try_again",
 )
 
 _READING_STAGE_VALUES: Final = ", ".join(f"'{stage}'" for stage in READING_STAGES)
@@ -432,5 +433,95 @@ class ReadingProgress(Base, TimestampedUUID):
             "pages_done IS NULL OR (pages_total IS NOT NULL AND pages_done >= 0 "
             "AND pages_done <= pages_total)",
             name="reading_progress_pages_done",
+        ),
+    )
+
+
+#: What one line of a reading's live activity says happened (#1238): an agent's AIs answered, its
+#: inspector passed the item or stopped it, or (phase 3, PR B) it is trying again and how that went.
+READING_EVENT_KINDS: Final = ("answered", "passed", "stopped", "trying_again", "try_again_result")
+
+#: The agents of the review line, by name (`workflow.pariksha_gates.Agent`, which a test keeps equal).
+#: Written out here: the model layer imports nothing from `workflow`.
+READING_EVENT_AGENTS: Final = (
+    "Bala",
+    "Rekha",
+    "Akshara",
+    "Vastu",
+    "Milan",
+    "Kautilya",
+    "Nina",
+    "Vani",
+)
+
+#: A code question id (`p<page index>:` then lower-case letters, digits, `:` and `-`), never text.
+READING_EVENT_ITEM_PATTERN: Final = "^p[0-9]+:[a-z0-9:-]+$"
+#: A short stable code (`readers-differ`, `no-printed-numbers`, `closer-look`), never text.
+READING_EVENT_CODE_PATTERN: Final = "^[a-z0-9]+(-[a-z0-9]+)*$"
+READING_EVENT_ITEM_MAX: Final = 80
+#: At most three tries per item (Anant, 2026-10-14, phase 3 decision 4).
+READING_EVENT_MAX_ATTEMPTS: Final = 3
+READING_EVENT_CODE_MAX: Final = 48
+
+_READING_EVENT_KIND_VALUES: Final = ", ".join(f"'{kind}'" for kind in READING_EVENT_KINDS)
+_READING_EVENT_AGENT_VALUES: Final = ", ".join(f"'{agent}'" for agent in READING_EVENT_AGENTS)
+
+
+class ReadingEvent(Base, TimestampedUUID, Immutable):
+    """One line of a reading's live activity (#1238): codes only, never drawing text. Append-only.
+
+    **Why a table.** The progress row (`ReadingProgress`) is overwritten in place, a call row says
+    nothing about the inspectors, and the inspectors' results (`pariksha:` flags) are written only
+    when the stage commits. So nothing could say, while a page is read, that an agent's AIs split or
+    that its inspector stopped an item. Each event is written in its own short side transaction as
+    it happens (`app.runs.reading_activity.record_events`), and the words a person reads are made
+    from the codes in code, never stored.
+
+    **Telemetry, not evidence.** Nothing decides anything from these rows: every reading, hold,
+    verdict and gate result stays where it was, written by the stage. A failed write only means the
+    screen says less. It is still never edited: a later event is a new row, and an item's state is
+    its newest event.
+
+    `reading_id` is one id per stage attempt; the API shows only the newest. `position` orders the
+    events of one batch (written together, with one `created_at`).
+    """
+
+    __tablename__ = "reading_events"
+
+    package_revision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True))
+    """The revision being read. **Not a foreign key**, for the same reason as `ReadingProgress`'s:
+    a running stage holds its revision row locked, and a foreign-key check from the side
+    transaction would wait for the stage to end."""
+    reading_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    position: Mapped[int] = mapped_column(Integer())
+    page_number: Mapped[int] = mapped_column(Integer())
+    agent: Mapped[str] = mapped_column(String(16))
+    item: Mapped[str] = mapped_column(String(READING_EVENT_ITEM_MAX))
+    kind: Mapped[str] = mapped_column(String(24))
+    code: Mapped[str] = mapped_column(String(READING_EVENT_CODE_MAX))
+    change: Mapped[str | None] = mapped_column(String(READING_EVENT_CODE_MAX), default=None)
+    """What a try-again changed (`closer-look-2x`, `tie-break-disputed-lines`, ...), or null."""
+    attempt: Mapped[int | None] = mapped_column(Integer(), default=None)
+    """Which try a try-again event is about (1 to `READING_EVENT_MAX_ATTEMPTS`), or null."""
+
+    __table_args__ = (
+        CheckConstraint(f"kind IN ({_READING_EVENT_KIND_VALUES})", name="reading_event_kind"),
+        CheckConstraint(f"agent IN ({_READING_EVENT_AGENT_VALUES})", name="reading_event_agent"),
+        CheckConstraint(f"item ~ '{READING_EVENT_ITEM_PATTERN}'", name="reading_event_item"),
+        CheckConstraint(f"code ~ '{READING_EVENT_CODE_PATTERN}'", name="reading_event_code"),
+        CheckConstraint(
+            f"change IS NULL OR change ~ '{READING_EVENT_CODE_PATTERN}'",
+            name="reading_event_change",
+        ),
+        CheckConstraint("page_number >= 1", name="reading_event_page_number"),
+        CheckConstraint("position >= 0", name="reading_event_position"),
+        CheckConstraint(
+            f"attempt IS NULL OR (attempt >= 1 AND attempt <= {READING_EVENT_MAX_ATTEMPTS})",
+            name="reading_event_attempt",
+        ),
+        Index(
+            "ix_reading_events_revision_newest",
+            "package_revision_id",
+            "created_at",
         ),
     )

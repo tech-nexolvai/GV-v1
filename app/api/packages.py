@@ -54,12 +54,14 @@ from app.models import (
     PackageStateEvent,
     Project,
 )
+from app.runs.reading_activity import reading_activity_for
 from app.runs.reading_progress import reading_progress_for
 from app.schemas.packages import (
     PackageCreate,
     PackageOut,
     PackagePage,
     ProductTypeChoice,
+    ReadingActivityOut,
     ReadingProgressOut,
 )
 from app.verdicts.rulebook import snapshot_store
@@ -396,6 +398,12 @@ def get_package(
     )
     if snapshot is not None:
         package.reading = ReadingProgressOut.model_validate(snapshot, from_attributes=True)
+    # What each agent did in the newest reading (#1238), also after it ends.
+    activity = reading_activity_for(
+        session, package.current_revision_id, reading=snapshot is not None
+    )
+    if activity is not None:
+        package.activity = ReadingActivityOut.model_validate(activity, from_attributes=True)
     package.stop_reason = _plain_stop_reason(
         session, package.current_revision_id, PackageState(package.state)
     )
