@@ -608,9 +608,9 @@ export interface paths {
         };
         /**
          * Read each confirmed countertop's check plan: its rules, its results, what they wait on
-         * @description For each live countertop item (one a person confirmed and still stands by), the published
-         *     countertop rules and where each stands, the results its row or the item itself has, and what
-         *     each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
+         * @description For each live countertop item (one whose current decision confirms it), the published rules
+         *     for the package's product and where each stands, the results its row or the item itself has,
+         *     and what each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
          *
          *     **Read-only, and it decides nothing**: no check runs, no result changes. A countertop with no
          *     countertop row linked to it says so in `note`.
@@ -3467,7 +3467,7 @@ export interface components {
         };
         /**
          * CountertopItemRefOut
-         * @description A countertop a person confirmed (a live countertop item, #1245): which one, and where.
+         * @description A confirmed countertop (a live countertop item, #1245): which one, and where.
          */
         CountertopItemRefOut: {
             /**
@@ -3532,7 +3532,7 @@ export interface components {
             agreement: components["schemas"]["AgreementFactsOut"];
             /** @description Whether this row matches the architect's drawing (CT-ARCH-WIDTH-001). */
             architect?: components["schemas"]["ArchitectResultOut"];
-            /** @description The countertop a person confirmed from this row (#1245), through Bala's link (`part_proposal_rows`): the screen groups the row's results under it. The results stay keyed by the row. Null while no live countertop item was confirmed from it. */
+            /** @description The live countertop item confirmed from this row (#1245), through Bala's link (`part_proposal_rows`), or followed to it after a re-read only when the row is provably its own: the screen groups the row's results under it. The results stay keyed by the row. Null while no live countertop item belongs to it. */
             countertop_item?: components["schemas"]["CountertopItemRefOut"] | null;
             delta: components["schemas"]["ExactValueOut"] | null;
             /**
@@ -5370,7 +5370,8 @@ export interface components {
         };
         /**
          * PlannedRuleOut
-         * @description One published rule for a countertop, and where it stands for that countertop (#1245).
+         * @description One published rule for the package's product, and where it stands for one countertop
+         *     (#1245).
          */
         PlannedRuleOut: {
             /** Findings */
@@ -5382,14 +5383,24 @@ export interface components {
             missing: components["schemas"]["MissingInputOut"][];
             /**
              * Resolved
-             * @description Whether the rulebook says which version of the rule applies from what is stated alone. False for a rule chosen by the walls, which the checks resolve per row.
+             * @description Whether it is known which version and variant of the rule applies to this countertop: from its own result when it has one (chosen from its row's walls), else from what is stated alone.
              */
             resolved: boolean;
             /** Rule Id */
             rule_id: string;
             /**
+             * Variant
+             * @description The variant that applied (the wall layout's branch): its own result's, else the rulebook's; null for a rule with no variants, or when not known.
+             */
+            variant: string | null;
+            /**
+             * Version
+             * @description The rule's version: its own result's, else the rulebook's; null if not known.
+             */
+            version: string | null;
+            /**
              * Waits For
-             * @description Why it could not be resolved; null when it was.
+             * @description Why it is not known; null when it is.
              */
             waits_for: string | null;
         };
