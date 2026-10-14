@@ -417,9 +417,12 @@ def test_a_typed_width_is_never_prefilled_as_the_printed_text() -> None:
     card = _card_of(page, typed.candidate_id)
     box = card.split('<input class="texts"', 1)[1].split("</div>", 1)[0]
     assert 'data-prefill=""' in box and "12 1/2" not in box
-    # Shown only as what the reviewer typed: a site value, away from the answer box.
-    assert "the reviewer typed" in card and "site value, not the drawing" in card
-    assert card.index("site value, not the drawing") < card.index('<input class="texts"')
+    # Shown only as what the reviewer typed: GV's value, away from the answer box (#1282: the
+    # label does not tell the person whether the drawing is right or wrong).
+    said = "GV&#x27;s value; may differ from what is printed"
+    assert "the reviewer typed" in card and said in card
+    assert card.index(said) < card.index('<input class="texts"')
+    assert "site value" not in card and "not the drawing" not in card
 
 
 def test_each_card_carries_the_pictures_it_showed_and_none_when_it_showed_none() -> None:
@@ -467,7 +470,9 @@ def test_a_walls_card_says_no_jargon() -> None:
     )
     shown = re.sub(r'data-[a-z-]+="[^"]*"', "", _card_of(page, walls.candidate_id))
     assert "key_unsure" not in shown and "key unsure" not in shown.lower()
-    assert "This row shows only the back wall, so the ends are left open for now." in shown
+    # "Open" is also a button on this card, so the ends are "undecided", never "open" (#1282).
+    assert "This row shows only the back wall, so the ends are left undecided for now." in shown
+    assert "left open" not in shown
 
 
 def test_box_buttons_are_only_the_boxes_the_stored_picture_numbers() -> None:
@@ -481,3 +486,36 @@ def test_box_buttons_are_only_the_boxes_the_stored_picture_numbers() -> None:
     card = _card_of(page, "no_countertop_answers:2")
     assert 'data-box="1"' not in card and 'data-box="not_among_boxes"' in card
     assert "not recorded" in card
+
+
+# --- review of #1278: wording that may bias the answer (#1282) ------------------------------------
+
+
+def test_a_correction_labels_the_reviewers_value_as_gvs_never_as_the_site_or_the_drawing() -> None:
+    corrected = _correction()
+    page = smriti_review_page.build_page(
+        _export(corrected),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={corrected.candidate_id: [_picture()]},
+    )
+    card = _card_of(page, corrected.candidate_id)
+    assert "The reviewer corrected the value" in card
+    assert "GV&#x27;s value; may differ from what is printed" in card
+    assert "site value" not in card and "not the drawing" not in card
+
+
+def test_a_walls_card_whose_layout_settles_no_end_says_undecided_not_open() -> None:
+    walls = _walls(layout="something_new")
+    page = smriti_review_page.build_page(
+        _export(walls),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={walls.candidate_id: [_picture()]},
+    )
+    shown = re.sub(r'data-[a-z-]+="[^"]*"', "", _card_of(page, walls.candidate_id))
+    assert "left undecided for now" in shown and "left open" not in shown
+
+
+def test_the_page_says_nobody_confirms_a_case_they_decided() -> None:
+    assert "never confirm a case you decided yourself" in _every_type_page()

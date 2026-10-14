@@ -58,3 +58,27 @@ def test_a_report_file_inside_the_repository_is_refused(engine: Engine) -> None:
     inside = REPO / "smriti-report-must-not-exist.txt"
     assert smriti_report.main(["--db", _url(engine), "--out", str(inside)]) == smriti_report.REFUSED
     assert not inside.exists()
+
+
+# --- review of #1276: wording matches the code (#1281) --------------------------------------------
+
+
+def test_the_docstring_says_no_decision_counts_without_a_reviewer_list() -> None:
+    doc = " ".join((smriti_report.__doc__ or "").split())
+    assert 'every name counts as "other"' not in doc
+    assert "without it, no decision is counted at all" in doc
+    assert "the FAILs a reviewer on the list confirmed or signed" in doc
+
+
+def test_the_vendor_header_says_only_a_reviewer_on_the_list_counts(
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eval.smriti.actors import REVIEWERS_ENV
+
+    monkeypatch.delenv(REVIEWERS_ENV, raising=False)
+    assert smriti_report.main(["--db", _url(engine), "--vendors"]) == 0
+    printed = capsys.readouterr().out
+    assert "only FAILs a reviewer on the list confirmed or signed count" in printed
+    assert "only FAILs a person confirmed or signed count" not in printed
