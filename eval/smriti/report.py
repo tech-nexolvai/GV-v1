@@ -12,6 +12,19 @@ case. This report puts those decisions beside the agent they judge, so a person 
 * **gate usefulness**: for each item an inspector stopped (`reading_events`), what the person did
   later on that item. Corrected it: a useful stop. Confirmed the AI's answer: a needless stop.
 
+**Only real reviewers count (#1272 review).** Rates, overturned counts and gate verdicts use only
+decisions by names on the local real-reviewer list (`actor_status` `reviewer`, from
+`GV_SMRITI_REVIEWERS`). Most "person" rows in our copies were written by test scripts, so every
+other name is listed apart and never counted; with no list given, every rate is NOT MEASURED and
+says so. **A batch click is never counted:** a page answered in one "confirm these N pages" click
+is listed apart (each page still needs its own look), never as N confirms or N needless stops.
+
+**Which stops are an inspector's.** A page the AI budget left unread (`budget-reached`) or a
+question the budget never asked (`budget-not-asked`) is the budget's stop, not an inspector's, and a
+page code proved blank waits for nobody: both are counted apart and never judged. A decision is
+matched to a stop by the stop's file (document version) and page, never by page content alone (two
+files may hold the same page).
+
 **NOT MEASURED, never 0%.** A rate whose denominator is 0 says `NOT MEASURED` and why. So does the
 "AI misread" rate while any correction still waits for its misread-or-vendor answer: an exact rate
 or none. A measured rate always shows its numerator and denominator.
@@ -38,11 +51,19 @@ from datetime import datetime, timedelta
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Row, func, select
 from sqlalchemy.orm import Session
 
 from app.models.document import Page
+from app.models.evidence import (
+    CanonicalObservation,
+    NoCountertopAnswer,
+    ObservationCandidate,
+    SlotRowReviewDecision,
+)
+from app.models.review import CorrectionLedgerEntry, ReviewAction
 from app.models.runs import READING_FINISHED_KIND, ModelInvocation, ReadingEvent
+from app.models.verdicts import Finding
 from eval.correction_rate import CorrectionRateKey, correction_rate
 from eval.metrics import MetricResult
 from eval.pariksha.stored import prompt_family
@@ -151,7 +172,11 @@ UNDETERMINED: Final = "decided, not judged"
 value, which may be the site value, not the printed one; a decision on a split page's result)."""
 WAITING: Final = "no later decision"
 """No person decided this item after the stop (yet)."""
-GATE_VERDICTS: Final = (USEFUL, NEEDLESS, UNDETERMINED, WAITING)
+OFF_LIST: Final = "decided by a name not on the reviewer list, not counted"
+"""The newest decision is by a name not on the local real-reviewer list (or no list was given)."""
+BATCH: Final = "confirmed in a batch, needs its own look"
+"""The newest decision is a page answered in one "confirm these N pages" click."""
+GATE_VERDICTS: Final = (USEFUL, NEEDLESS, UNDETERMINED, WAITING, OFF_LIST, BATCH)
 
 #: The page-level items an inspector stops (`workflow.slot_reader._row_key`, the page sorter's
 #: `p<i>:page`): the person answers them on the page, in the no-countertop answers or on the page's
@@ -166,6 +191,14 @@ _ANSWERING_AGENTS: Final[Mapping[str, frozenset[str]]] = {
 #: A page code proved blank from the PDF (`app.runs.reading_activity.PROVEN_BLANK`): its `stopped`
 #: event waits for nobody, so no decision is expected. Counted apart, never judged.
 _PROVEN_BLANK: Final = "blank-page"
+#: A stop the AI budget made, not an inspector (`workflow.unread_pages.BUDGET_REACHED`,
+#: `workflow.slot_reader.BUDGET_NOT_ASKED`): every such code begins `budget`. Counted apart.
+_BUDGET_PREFIX: Final = "budget"
+#: The line finder's stop when its AIs said the page has no countertop line
+#: (`workflow.slot_reader._line_stop_code`): only then does a reviewer's "no countertop" confirm
+#: the AIs. After any other row-choice stop (the AIs split, unsure, ...) it judges nothing.
+_LINE_SAID_NONE: Final = "no-countertop"
+NO_LIST: Final = "no real-reviewer list was given (GV_SMRITI_REVIEWERS), so no decision is counted"
 _TRY_HELPED: Final = "helped"
 
 
@@ -250,8 +283,10 @@ class AgentReport:
     ai: AiAnswers
     decisions: DecisionCount
     """The exporter's own counts of this agent's current person decisions."""
-    by_reviewer: int
-    """Of those, decisions by names on the local real-reviewer list."""
+    off_list: int
+    """Current decisions by names not on the local real-reviewer list: listed, never counted."""
+    batch: int
+    """Pages answered in a batch click: listed, never counted (each needs its own look)."""
     corrections: Corrections
     correction_rate: Rate
     """Corrected / (corrected or confirmed): how often a person who judged the agent's answer
@@ -277,6 +312,8 @@ class LearnerReport:
     gates: tuple[GateOutcome, ...]
     proven_blank: int = 0
     """`stopped` events on pages code proved blank: nothing waits for a person there."""
+    budget_stops: int = 0
+    """Stops the AI budget made (`budget-...` codes): not an inspector's, so never judged."""
     unfinished_stops: int = 0
     """Stops in readings that never finished: never shown to a person, so not judged."""
 
@@ -289,7 +326,22 @@ def _when(candidate: Candidate) -> datetime:
 
 
 def _is_person(candidate: Candidate) -> bool:
+    """A current decision by anybody but code (shown; counted only when `_counts`)."""
     return candidate.current and not is_code_actor(candidate.decided_by)
+
+
+def _is_batch(candidate: Candidate) -> bool:
+    """A page answered in one "confirm these N pages" click (the exporter records `batch`)."""
+    return candidate.recorded.get("batch") is True
+
+
+def _counts(candidate: Candidate) -> bool:
+    """Whether a decision counts: a real reviewer's (on the local list), and not a batch click."""
+    return (
+        not is_code_actor(candidate.decided_by)
+        and candidate.actor_status == REVIEWER
+        and not _is_batch(candidate)
+    )
 
 
 def _same_question(stop: StoppedItem, candidate: Candidate) -> bool:
@@ -310,13 +362,17 @@ def _same_page(stop: StoppedItem, candidate: Candidate) -> bool:
     )
 
 
-def classify_stop(stop: StoppedItem, candidates: Iterable[Candidate]) -> GateOutcome:
+def classify_stop(
+    stop: StoppedItem, candidates: Iterable[Candidate], versions: Mapping[str, str]
+) -> GateOutcome:
     """What the person did about this stopped item afterwards, from their newest current decision.
 
     The decision must be a person's (never code's), current (a superseded or carried record never
-    counts), about the same item (its question id on the same page; for a page-level stop, the
-    person's answer about that page) and made after the stop."""
-    if stop.page_sha256 is None:
+    counts), about the same item in the same file (`versions`: candidate id → the document version
+    its decision is about; a candidate missing from it never matches) and page (its question id;
+    for a page-level stop, the person's answer about that page), and made after the stop. A
+    decision by a name off the reviewer list, or a batch click, judges nothing: it is said so."""
+    if stop.page_sha256 is None or stop.document_version_id is None:
         return GateOutcome(stop, WAITING, None)
     answering = _ANSWERING_AGENTS.get(stop.agent, frozenset({stop.agent}))
     later = [
@@ -324,6 +380,7 @@ def classify_stop(stop: StoppedItem, candidates: Iterable[Candidate]) -> GateOut
         for candidate in candidates
         if _is_person(candidate)
         and candidate.agent in answering
+        and versions.get(candidate.candidate_id) == stop.document_version_id
         and _when(candidate) >= stop.stopped_at
     ]
     # The exact question first; a page-level answer only when nothing names the question itself.
@@ -333,7 +390,20 @@ def classify_stop(stop: StoppedItem, candidates: Iterable[Candidate]) -> GateOut
     if not matched:
         return GateOutcome(stop, WAITING, None)
     newest = max(matched, key=lambda c: (_when(c), c.candidate_id))
+    if _is_batch(newest):
+        return GateOutcome(stop, BATCH, newest.candidate_id)
+    if not _counts(newest):
+        return GateOutcome(stop, OFF_LIST, newest.candidate_id)
     verdict = {"corrected": USEFUL, "confirmed": NEEDLESS}.get(newest.kind, UNDETERMINED)
+    if (
+        verdict == NEEDLESS
+        and newest.table == "no_countertop_answers"
+        and stop.agent == "rekha"
+        and stop.code != _LINE_SAID_NONE
+    ):
+        # "No countertop" confirms the AIs only where they said so; after a split or an unsure
+        # answer it does not say the AIs were right.
+        verdict = UNDETERMINED
     return GateOutcome(stop, verdict, newest.candidate_id)
 
 
@@ -410,7 +480,7 @@ def _corrections(decisions: Sequence[Sequence[Candidate]]) -> Corrections:
     )
 
 
-def _misread_rate(corrections: Corrections, judged: int) -> Rate:
+def _misread_rate(corrections: Corrections, judged: int, empty: str) -> Rate:
     waiting = corrections.unanswered + corrections.unsure
     unknown = None
     if judged and waiting:
@@ -426,7 +496,7 @@ def _misread_rate(corrections: Corrections, judged: int) -> Rate:
     return Rate(
         numerator=corrections.ai_misread,
         denominator=judged,
-        empty="no person corrected or confirmed this agent's answer",
+        empty=empty,
         unknown=unknown,
     )
 
@@ -438,19 +508,25 @@ def build_report(
     stops: Iterable[StoppedItem],
     reviewed: Mapping[CorrectionRateKey, MetricResult],
     window: str,
+    versions: Mapping[str, str] | None = None,
     proven_blank: int = 0,
     unfinished_stops: int = 0,
 ) -> LearnerReport:
     """Count and join, with nothing read: the exporter's candidates, the calls per prompt
-    (`(prompt_id, outcome, count)`), the stopped items and `correction_rate`'s results."""
+    (`(prompt_id, outcome, count)`), the stopped items, `correction_rate`'s results and each
+    candidate's document version (`versions`; without it no stop is matched to a decision)."""
     people = [candidate for candidate in export.candidates if _is_person(candidate)]
-    # `agent_counts` also lists earlier records; code's are dropped first (a person's never are).
-    counts = agent_counts(c for c in export.candidates if not is_code_actor(c.decided_by))
+    # Only a real reviewer's decisions are counted (`agent_counts` also lists their earlier
+    # records); every other name and every batch click is listed apart.
+    counts = agent_counts(c for c in export.candidates if _counts(c))
     ai, unmapped = _ai_answers(invocations)
+    inspected = [stop for stop in stops if not stop.code.startswith(_BUDGET_PREFIX)]
+    budget_stops = sum(1 for stop in stops if stop.code.startswith(_BUDGET_PREFIX))
     gates = tuple(
-        classify_stop(stop, people)
-        for stop in sorted(stops, key=lambda s: (s.agent, s.page_number, s.item, s.reading_id))
+        classify_stop(stop, people, versions or {})
+        for stop in sorted(inspected, key=lambda s: (s.agent, s.page_number, s.item, s.reading_id))
     )
+    no_list = export.reviewer_list is None
     readers: dict[str, list[tuple[CorrectionRateKey, MetricResult]]] = defaultdict(list)
     unmapped_readers: list[tuple[CorrectionRateKey, MetricResult]] = []
     for key in sorted(reviewed):
@@ -462,24 +538,34 @@ def build_report(
     ]
     agents = []
     for name in names:
-        mine = _decisions([c for c in people if c.agent == name])
+        mine = _decisions([c for c in people if c.agent == name and _counts(c)])
+        shown = _decisions([c for c in people if c.agent == name and not _counts(c)])
+        batch = sum(1 for parts in shown if _is_batch(parts[0]))
+        off_list = len(shown) - batch
         count = counts.get(name, DecisionCount())
         corrections = _corrections(mine)
         judged = count.corrected + count.confirmed
         verdicts = Counter(outcome.verdict for outcome in gates if outcome.stop.agent == name)
+        apart = [
+            *([f"{off_list} by names not on the reviewer list"] if off_list else []),
+            *([f"{batch} pages confirmed in a batch"] if batch else []),
+        ]
+        empty = (
+            NO_LIST
+            if no_list
+            else "no reviewer on the list corrected or confirmed this agent's answer"
+            + (f" ({' and '.join(apart)}: not counted)" if apart else "")
+        )
         agents.append(
             AgentReport(
                 agent=name,
                 ai=ai.get(name, AiAnswers()),
                 decisions=count,
-                by_reviewer=sum(1 for parts in mine if parts[0].actor_status == REVIEWER),
+                off_list=off_list,
+                batch=batch,
                 corrections=corrections,
-                correction_rate=Rate(
-                    numerator=count.corrected,
-                    denominator=judged,
-                    empty="no person corrected or confirmed this agent's answer",
-                ),
-                misread_rate=_misread_rate(corrections, judged),
+                correction_rate=Rate(numerator=count.corrected, denominator=judged, empty=empty),
+                misread_rate=_misread_rate(corrections, judged, empty),
                 reviewed=tuple(readers.get(name, ())),
                 gates={
                     verdict: verdicts[verdict] for verdict in GATE_VERDICTS if verdicts[verdict]
@@ -488,7 +574,10 @@ def build_report(
                     numerator=verdicts[USEFUL],
                     denominator=verdicts[USEFUL] + verdicts[NEEDLESS],
                     empty=(
-                        "no stopped item of this agent was later corrected or confirmed by a person"
+                        NO_LIST
+                        if no_list
+                        else "no stopped item of this agent was later corrected or confirmed by "
+                        "a reviewer on the list"
                     ),
                 ),
             )
@@ -503,6 +592,7 @@ def build_report(
         gates=gates,
         proven_blank=proven_blank,
         unfinished_stops=unfinished_stops,
+        budget_stops=budget_stops,
     )
 
 
@@ -585,6 +675,86 @@ def stopped_items(session: Session) -> tuple[list[StoppedItem], int, int]:
     return stops, blank, len(unfinished)
 
 
+def candidate_versions(session: Session, candidates: Iterable[Candidate]) -> dict[str, str]:
+    """The document version (file) each candidate's decision is about, for the tables whose
+    decisions can answer an inspector's stop: a correction or a confirm of a reading (its
+    observation's file), a decision on a page's result (its record's file), a typed width (its
+    row's file) and a no-countertop answer (its page's file). Other candidates are left out, so
+    they never match a stop."""
+    wanted: dict[str, dict[UUID, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for candidate in candidates:
+        try:
+            decision = UUID(candidate.decision_id)
+        except ValueError:
+            continue
+        wanted[candidate.table][decision].append(candidate.candidate_id)
+    found: dict[UUID, UUID] = {}
+
+    def add(rows: Iterable[Row[UUID, UUID]]) -> None:
+        for decision, version in rows:
+            if version is not None:
+                found.setdefault(decision, version)
+
+    if ids := list(wanted["correction_ledger"]):
+        add(
+            session.execute(
+                select(CorrectionLedgerEntry.id, CanonicalObservation.document_version_id)
+                .join(
+                    CanonicalObservation,
+                    CanonicalObservation.id == CorrectionLedgerEntry.canonical_observation_id,
+                )
+                .where(CorrectionLedgerEntry.id.in_(ids))
+            ).all()
+        )
+    if ids := list(wanted["review_actions"]):
+        add(
+            session.execute(
+                select(ReviewAction.id, CanonicalObservation.document_version_id)
+                .join(
+                    CanonicalObservation,
+                    CanonicalObservation.id == ReviewAction.original_observation_id,
+                )
+                .where(ReviewAction.id.in_(ids))
+            ).all()
+        )
+        add(
+            session.execute(
+                select(ReviewAction.id, ObservationCandidate.document_version_id)
+                .join(Finding, Finding.id == ReviewAction.finding_id)
+                .join(
+                    ObservationCandidate, ObservationCandidate.id == Finding.scope_row_candidate_id
+                )
+                .where(ReviewAction.id.in_(ids), ReviewAction.original_observation_id.is_(None))
+            ).all()
+        )
+    if ids := list(wanted["slot_row_review_decisions"]):
+        add(
+            session.execute(
+                select(SlotRowReviewDecision.id, ObservationCandidate.document_version_id)
+                .join(
+                    ObservationCandidate,
+                    ObservationCandidate.id == SlotRowReviewDecision.row_candidate_id,
+                )
+                .where(SlotRowReviewDecision.id.in_(ids))
+            ).all()
+        )
+    if ids := list(wanted["no_countertop_answers"]):
+        add(
+            session.execute(
+                select(NoCountertopAnswer.id, Page.document_version_id)
+                .join(Page, Page.id == NoCountertopAnswer.page_id)
+                .where(NoCountertopAnswer.id.in_(ids))
+            ).all()
+        )
+    return {
+        candidate_id: str(found[decision])
+        for decisions in wanted.values()
+        for decision, candidate_ids in decisions.items()
+        if decision in found
+        for candidate_id in candidate_ids
+    }
+
+
 def learner_report(
     session: Session,
     *,
@@ -618,6 +788,7 @@ def learner_report(
         stops=stops,
         reviewed=reviewed,
         window=f"the last {window.days} days",
+        versions=candidate_versions(session, export.candidates),
         proven_blank=blank,
         unfinished_stops=unfinished,
     )
@@ -637,11 +808,14 @@ def _agent_lines(agent: AgentReport) -> list[str]:
             + (f" ({families})" if families else "")
         ),
         (
-            f"  person decisions: {count.decisions} ({agent.by_reviewer} by names on the "
-            f"real-reviewer list, {count.decisions - agent.by_reviewer} by other names): "
+            f"  reviewer decisions (names on the real-reviewer list, counted): {count.decisions}: "
             f"{count.corrected} corrected, {count.confirmed} confirmed, {count.filled} typed a "
             f"held value, {count.decided} other decisions; {count.earlier} earlier records "
             "not counted"
+        ),
+        (
+            f"  not counted: {agent.off_list} decisions by names not on the reviewer list; "
+            f"{agent.batch} pages confirmed in a batch (each still needs its own look)"
         ),
         (
             f"  corrections {fixes.total}: AI misread {fixes.ai_misread}, vendor drew it "
@@ -679,12 +853,16 @@ def render_report(report: LearnerReport) -> str:
     reviewers = (
         f"real reviewers from {export.reviewer_list}"
         if export.reviewer_list is not None
-        else "no real-reviewer list given (every name counts as 'other')"
+        else "no real-reviewer list given, so no decision is counted"
     )
     lines = [
         (
             f"Smriti learner report: {report.database} (code {export.code_version}); read-only, "
             f"no model calls; {reviewers}"
+        ),
+        (
+            "Only decisions by names on the real-reviewer list count; other names and batch "
+            "clicks are listed, never counted."
         ),
         (
             f"{NOT_MEASURED} means there is nothing to divide by (or an answer is still missing); "
@@ -718,20 +896,29 @@ def render_report(report: LearnerReport) -> str:
             + ", ".join(f"{why} {count}" for why, count in sorted(export.skipped[table].items()))
             for table in sorted(export.skipped)
         )
-    overturned = overturned_listing(export)
+    overturned = [c for c in overturned_listing(export) if not is_code_actor(c.decided_by)]
+    counted = sum(1 for candidate in overturned if _counts(candidate))
     lines.append(
-        f"Overturned automatic results (report only; nothing is switched off): {len(overturned)}"
+        f"Overturned automatic results (report only; nothing is switched off): {counted} by "
+        f"reviewers on the list; {len(overturned) - counted} more listed, not counted"
     )
     for candidate in overturned:
         what = candidate.overturned or {}
+        who = (
+            "counted"
+            if _counts(candidate)
+            else "not counted: "
+            + ("a batch click" if _is_batch(candidate) else "not on the reviewer list")
+        )
         lines.append(
             f"  {candidate.decided_at[:10]} {candidate.agent}, page {candidate.page_number}: "
-            f"{what.get('what')} by {what.get('by')}; {candidate.candidate_id}"
+            f"{what.get('what')} by {what.get('by')} ({who}); {candidate.candidate_id}"
         )
     lines.append(
-        f"Inspector stops in finished readings: {len(report.gates)}; pages code proved blank, "
-        f"waiting for nobody: {report.proven_blank}; stops in readings that never finished (not "
-        f"judged): {report.unfinished_stops}"
+        f"Inspector stops in finished readings: {len(report.gates)}; left out, never judged: "
+        f"{report.budget_stops} stops the AI budget made, {report.proven_blank} pages code proved "
+        f"blank (waiting for nobody), {report.unfinished_stops} stops in readings that never "
+        "finished"
     )
     for outcome in report.gates:
         stop = outcome.stop

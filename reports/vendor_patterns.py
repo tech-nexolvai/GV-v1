@@ -18,12 +18,22 @@ told they still do it.
 
 **Person-confirmed only, on request (`confirmed_only`, #1272).** A FAIL nobody looked at may rest on
 a number the AI misread, so it is as likely the AI's mistake as the vendor's. With `confirmed_only`
-a FAIL counts only when a person stood behind it: their newest decision on that finding is a
+a FAIL counts only when a real reviewer stood behind it: their newest decision on that finding is a
 `confirm`, or they signed the revision (`approved_findings`) and did not dismiss or correct that
 finding (sign-off covers every finding, including the dismissed ones). The newest decision counts,
-so a later dismiss replaces an earlier confirm. Code is never a person: a `code:` actor
-(`workflow.parts.CODE_ACTOR_PREFIX`) confirming or signing is ignored. A confirm carried to a re-run
-(`finding_decision_carryovers`) is a copy, not a new confirmation: the original FAIL counts once.
+so a later dismiss replaces an earlier confirm; at the same instant the more cautious decision
+(dismiss or correct, then except) wins over a confirm.
+
+* **Only names on the local real-reviewer list count** (`reviewers`, the names the caller read from
+  the `GV_SMRITI_REVIEWERS` list, `eval/smriti/actors.py`; compared without case or surrounding
+  spaces). Most "person" rows in our copies were written by test scripts. With no list given,
+  nothing counts and the report says why (`not_counted`). A `code:` actor
+  (`workflow.parts.CODE_ACTOR_PREFIX`) is never a reviewer, whatever a list says.
+* **A failure counts once across its carried copies.** A re-run's FAIL that inherits a decision
+  (`finding_decision_carryovers`) is the same failure as the one it was carried from: however many
+  of the copies were confirmed or signed, the chain counts once, under its earliest qualifying
+  finding. A carried confirm alone is a copy, never a new confirmation.
+
 The default (`confirmed_only=False`) is unchanged. Correction hotspots are not filtered; which
 agent a correction belongs to (AI misread or vendor drew it) is Smriti's report
 (`eval/smriti/report.py`).
@@ -33,7 +43,7 @@ Source: issues #241, #1272; ADR-0006. Verification: ``tests/reports/test_vendor_
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
@@ -99,6 +109,9 @@ class VendorReport:
     """Whether only FAILs a person confirmed or signed were counted (see the module docstring).
     Said on the report, so a person-confirmed count is never read as every FAIL, or the reverse."""
 
+    not_counted: str | None = None
+    """Why no FAIL could count as person-confirmed (no real-reviewer list given), or `None`."""
+
     @property
     def has_findings(self) -> bool:
         """False when nothing was decided for this vendor in the window.
@@ -132,19 +145,63 @@ def _is_code(actor: str | None) -> bool:
     return isinstance(actor, str) and actor.strip().casefold().startswith(CODE_ACTOR_PREFIX)
 
 
+def _folded(name: str) -> str:
+    return name.strip().casefold()
+
+
 #: A signed FAIL still counts after these decisions: the person stood behind the failure (a
 #: confirm), or accepted the deviation for this drawing (an exception), which still says it is one.
 _SIGNED_STILL_STANDS: frozenset[str] = frozenset(
     {ReviewActionKind.CONFIRM.value, ReviewActionKind.EXCEPT.value}
 )
 
+#: At the same instant, the more cautious decision wins: a dismiss or a correction over an
+#: exception, and any of them over a confirm (higher sorts later, so it is "newest").
+_CAUTION: Mapping[str, int] = MappingProxyType(
+    {
+        ReviewActionKind.CONFIRM.value: 0,
+        ReviewActionKind.EXCEPT.value: 1,
+        ReviewActionKind.CORRECT.value: 2,
+        ReviewActionKind.DISMISS.value: 2,
+    }
+)
 
-def _person_confirmed(session: Session, finding_ids: list[UUID]) -> set[UUID]:
-    """The FAILs among these a person confirmed or signed (see the module docstring)."""
+NO_REVIEWER_LIST = (
+    "no real-reviewer list was given (GV_SMRITI_REVIEWERS), so no FAIL counts as person-confirmed"
+)
+
+
+def _carried_chains(session: Session, finding_ids: list[UUID]) -> dict[UUID, UUID]:
+    """Each finding's chain: the findings joined by carried decisions, named by one of them."""
+    parent: dict[UUID, UUID] = {finding: finding for finding in finding_ids}
+
+    def root(finding: UUID) -> UUID:
+        while parent[finding] != finding:
+            parent[finding] = parent[parent[finding]]
+            finding = parent[finding]
+        return finding
+
+    for new, old in session.execute(
+        select(FindingDecisionCarryover.new_finding_id, FindingDecisionCarryover.from_finding_id)
+    ):
+        if new in parent and old in parent:
+            parent[root(new)] = root(old)
+    return {finding: root(finding) for finding in finding_ids}
+
+
+def _person_confirmed(
+    session: Session, findings: list[tuple[UUID, datetime]], reviewers: frozenset[str]
+) -> set[UUID]:
+    """The FAILs among these a real reviewer confirmed or signed, one per carried chain."""
+    finding_ids = [finding for finding, _ in findings]
     if not finding_ids:
         return set()
-    # Every person decision on each finding, its own and those carried to it, newest last.
-    decisions: dict[UUID, list[tuple[datetime, str, str, bool]]] = {}
+
+    def reviewer(actor: str | None) -> bool:
+        return isinstance(actor, str) and not _is_code(actor) and _folded(actor) in reviewers
+
+    # Every reviewer decision on each finding, its own and those carried to it, newest last.
+    decisions: dict[UUID, list[tuple[datetime, int, str, str, bool]]] = {}
     own = session.execute(
         select(
             ReviewAction.finding_id,
@@ -167,9 +224,11 @@ def _person_confirmed(session: Session, finding_ids: list[UUID]) -> set[UUID]:
     ).all()
     for rows, is_carried in ((own, False), (carried, True)):
         for finding_id, when, action_id, action, actor in rows:
-            if _is_code(actor):
+            if not reviewer(actor):
                 continue
-            decisions.setdefault(finding_id, []).append((when, str(action_id), action, is_carried))
+            decisions.setdefault(finding_id, []).append(
+                (when, _CAUTION.get(action, 2), str(action_id), action, is_carried)
+            )
     signed = {
         finding_id
         for finding_id, approver in session.execute(
@@ -177,23 +236,28 @@ def _person_confirmed(session: Session, finding_ids: list[UUID]) -> set[UUID]:
             .join(Approval, Approval.id == ApprovedFinding.approval_id)
             .where(ApprovedFinding.finding_id.in_(finding_ids))
         )
-        if not _is_code(approver)
+        if reviewer(approver)
     }
-    confirmed: set[UUID] = set()
-    for finding_id in finding_ids:
+    qualifying: list[tuple[datetime, str, UUID]] = []
+    for finding_id, created in findings:
         made = sorted(decisions.get(finding_id, ()))
         newest = made[-1] if made else None
-        # The person's own newest decision is a confirm (a carried one is a copy, not new) ...
+        # The reviewer's own newest decision is a confirm (a carried one is a copy, not new) ...
         own_confirm = (
-            newest is not None and newest[2] == ReviewActionKind.CONFIRM.value and not newest[3]
+            newest is not None and newest[3] == ReviewActionKind.CONFIRM.value and not newest[4]
         )
         # ... or they signed the revision and did not dismiss or correct this finding.
         signed_standing = finding_id in signed and (
-            newest is None or newest[2] in _SIGNED_STILL_STANDS
+            newest is None or newest[3] in _SIGNED_STILL_STANDS
         )
         if own_confirm or signed_standing:
-            confirmed.add(finding_id)
-    return confirmed
+            qualifying.append((created, str(finding_id), finding_id))
+    # One per carried chain: its earliest qualifying finding.
+    chains = _carried_chains(session, finding_ids)
+    kept: dict[UUID, UUID] = {}
+    for _created, _id, finding_id in sorted(qualifying):
+        kept.setdefault(chains[finding_id], finding_id)
+    return set(kept.values())
 
 
 def _corrections(
@@ -281,14 +345,16 @@ def vendor_patterns(
     *,
     now: datetime | None = None,
     confirmed_only: bool = False,
+    reviewers: Collection[str] | None = None,
 ) -> VendorReport:
     """What this vendor repeatedly got wrong in the last `window`, with the findings.
 
     `now` is injectable so a report is reproducible: a function that read the clock could not be
     tested for the boundary, and the boundary is where a windowed report is most often wrong.
 
-    `confirmed_only` counts only the FAILs a person confirmed or signed (#1272); the trend is then
-    the trend of those.
+    `confirmed_only` counts only the FAILs a real reviewer confirmed or signed (#1272); the trend
+    is then the trend of those. `reviewers` names the real reviewers (the local list); with none,
+    nothing counts and `not_counted` says why.
 
     Reads only. This is reporting, and ADR-0006 keeps vendor identity out of every decision path —
     nothing here selects a rule, resolves a parameter or influences a verdict.
@@ -309,9 +375,17 @@ def vendor_patterns(
     since = until - window
 
     failures = _failures(session, vendor, since, until)
+    not_counted = None
     if confirmed_only:
-        kept = _person_confirmed(session, [finding for _, finding, _ in failures])
-        failures = [failure for failure in failures if failure[1] in kept]
+        if reviewers is None:
+            not_counted = NO_REVIEWER_LIST
+            failures = []
+        else:
+            names = frozenset(_folded(name) for name in reviewers if name.strip())
+            kept = _person_confirmed(
+                session, [(finding, when) for _, finding, when in failures], names
+            )
+            failures = [failure for failure in failures if failure[1] in kept]
     corrections = _corrections(session, vendor, since, until)
 
     return VendorReport(
@@ -322,4 +396,5 @@ def vendor_patterns(
         correction_hotspots=_group(corrections),
         trend=_trend(failures, since, until),
         confirmed_only=confirmed_only,
+        not_counted=not_counted,
     )

@@ -22,8 +22,10 @@ from eval.metrics import MetricResult
 from eval.smriti.actors import Reviewers
 from eval.smriti.candidates import Candidate, CandidateExport
 from eval.smriti.report import (
+    BATCH,
     NEEDLESS,
     NOT_MEASURED,
+    OFF_LIST,
     UNDETERMINED,
     USEFUL,
     WAITING,
@@ -40,6 +42,8 @@ PERSON = "reviewer-a"
 STRANGER = "someone-else"
 PAGE = "a" * 64
 OTHER_PAGE = "b" * 64
+DOC = str(uuid4())
+"""The invented file every stop and decision of the pure tests is about."""
 STOPPED_AT = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 LATER = (STOPPED_AT + timedelta(hours=1)).isoformat()
 EARLIER = (STOPPED_AT - timedelta(hours=1)).isoformat()
@@ -87,7 +91,7 @@ def _export(*candidates: Candidate, skipped: dict[str, dict[str, int]] | None = 
 def _stop(item: str = "p0:slot0:0", agent: str = "akshara", **changes: Any) -> StoppedItem:
     values: dict[str, Any] = {
         "reading_id": str(uuid4()),
-        "document_version_id": str(uuid4()),
+        "document_version_id": DOC,
         "page_number": 1,
         "page_sha256": PAGE,
         "agent": agent,
@@ -97,6 +101,15 @@ def _stop(item: str = "p0:slot0:0", agent: str = "akshara", **changes: Any) -> S
     }
     values.update(changes)
     return StoppedItem(**values)
+
+
+def _in_doc(*candidates: Candidate) -> dict[str, str]:
+    """Every candidate's decision is about the invented file `DOC`."""
+    return {candidate.candidate_id: DOC for candidate in candidates}
+
+
+def _classify(stop: StoppedItem, candidates: list[Candidate]) -> Any:
+    return classify_stop(stop, candidates, _in_doc(*candidates))
 
 
 def _agent(report: Any, name: str) -> Any:
@@ -261,8 +274,8 @@ def test_decisions_by_names_off_the_reviewer_list_are_counted_apart() -> None:
         window="test",
     )
     akshara = _agent(report, "akshara")
-    assert akshara.decisions.decisions == 2
-    assert akshara.by_reviewer == 1
+    assert akshara.decisions.decisions == 1
+    assert akshara.off_list == 1
 
 
 def test_overturned_automatic_results_are_counted_per_agent_and_listed() -> None:
@@ -324,30 +337,30 @@ def test_reviewed_reading_rates_are_mapped_to_their_agents() -> None:
 
 
 def test_a_stop_the_person_later_corrected_was_useful() -> None:
-    outcome = classify_stop(_stop(), [_candidate(kind="corrected")])
+    outcome = _classify(_stop(), [_candidate(kind="corrected")])
     assert outcome.verdict == USEFUL
 
 
 def test_a_stop_where_the_person_later_confirmed_the_ai_was_needless() -> None:
     confirm = _candidate(kind="confirmed", candidate_id="review_actions:c", table="review_actions")
-    assert classify_stop(_stop(), [confirm]).verdict == NEEDLESS
+    assert _classify(_stop(), [confirm]).verdict == NEEDLESS
 
 
 def test_a_typed_value_does_not_say_whether_the_ai_was_right() -> None:
     typed = _candidate(kind="filled", table="slot_row_review_decisions")
-    assert classify_stop(_stop(), [typed]).verdict == UNDETERMINED
+    assert _classify(_stop(), [typed]).verdict == UNDETERMINED
 
 
 def test_a_stop_with_no_later_person_decision_is_waiting() -> None:
-    assert classify_stop(_stop(), []).verdict == WAITING
+    assert _classify(_stop(), []).verdict == WAITING
     # A decision made before the stop is not what the person did about it.
-    assert classify_stop(_stop(), [_candidate(decided_at=EARLIER)]).verdict == WAITING
+    assert _classify(_stop(), [_candidate(decided_at=EARLIER)]).verdict == WAITING
     # A decision on another item or another page is not about this one.
     elsewhere = _candidate(
         question={"family": "claude-slot-span", "page_sha256": PAGE, "question_id": "p0:slot1:0"}
     )
-    assert classify_stop(_stop(), [elsewhere]).verdict == WAITING
-    assert classify_stop(_stop(page_sha256=OTHER_PAGE), [_candidate()]).verdict == WAITING
+    assert _classify(_stop(), [elsewhere]).verdict == WAITING
+    assert _classify(_stop(page_sha256=OTHER_PAGE), [_candidate()]).verdict == WAITING
 
 
 def test_only_the_newest_current_decision_judges_the_stop() -> None:
@@ -361,11 +374,11 @@ def test_only_the_newest_current_decision_judges_the_stop() -> None:
     correction = _candidate(
         kind="corrected", decided_at=(STOPPED_AT + timedelta(hours=2)).isoformat()
     )
-    assert classify_stop(_stop(), [confirm, correction]).verdict == USEFUL
+    assert _classify(_stop(), [confirm, correction]).verdict == USEFUL
     superseded = _candidate(kind="superseded")
-    assert classify_stop(_stop(), [superseded]).verdict == WAITING
+    assert _classify(_stop(), [superseded]).verdict == WAITING
     carried = _candidate(kind="carried")
-    assert classify_stop(_stop(), [carried]).verdict == WAITING
+    assert _classify(_stop(), [carried]).verdict == WAITING
 
 
 def test_a_page_stop_is_judged_by_the_persons_answer_about_that_page() -> None:
@@ -385,8 +398,8 @@ def test_a_page_stop_is_judged_by_the_persons_answer_about_that_page() -> None:
         kind="confirmed",
         question=None,
     )
-    assert classify_stop(_stop("p0:row-choice", "rekha"), [there_is_one]).verdict == USEFUL
-    assert classify_stop(_stop("p0:page", "bala"), [none_there]).verdict == NEEDLESS
+    assert _classify(_stop("p0:row-choice", "rekha"), [there_is_one]).verdict == USEFUL
+    assert _classify(_stop("p0:page", "bala"), [none_there]).verdict == NEEDLESS
     # A finding decision on the same page is not an answer about the page's countertop.
     finding = _candidate(
         agent="kautilya",
@@ -395,7 +408,7 @@ def test_a_page_stop_is_judged_by_the_persons_answer_about_that_page() -> None:
         kind="decided",
         question=None,
     )
-    assert classify_stop(_stop("p0:page", "bala"), [finding]).verdict == WAITING
+    assert _classify(_stop("p0:page", "bala"), [finding]).verdict == WAITING
 
 
 def test_gate_usefulness_is_useful_over_useful_or_needless_per_agent() -> None:
@@ -410,6 +423,7 @@ def test_gate_usefulness_is_useful_over_useful_or_needless_per_agent() -> None:
         stops=[_stop(), _stop("p0:slot1:0"), _stop("p0:slot2:0")],
         reviewed={},
         window="test",
+        versions=_in_doc(confirm, other_item),
     )
     akshara = _agent(report, "akshara")
     assert akshara.gates == {USEFUL: 1, NEEDLESS: 1, WAITING: 1}
@@ -568,4 +582,166 @@ def test_a_decision_with_several_parts_is_one_decision_and_one_correction() -> N
     akshara = _agent(report, "akshara")
     assert akshara.decisions.decisions == akshara.decisions.corrected == 1
     assert akshara.corrections.total == akshara.corrections.unanswered == 1
-    assert akshara.by_reviewer == 1
+    assert akshara.off_list == 0
+
+
+# --- only real reviewers count; batch clicks never do (#1272 review) ----------------------------
+
+
+def test_decisions_by_names_off_the_reviewer_list_never_make_a_rate() -> None:
+    """Two decisions by a test script's name are listed, never "1 of 2 (50%)"."""
+    report = build_report(
+        export=_export(
+            _candidate(decided_by="ui reviewer", actor_status="unknown", kind="corrected"),
+            _candidate(
+                decided_by="ui reviewer",
+                actor_status="unknown",
+                kind="confirmed",
+                candidate_id="review_actions:u",
+                table="review_actions",
+            ),
+        ),
+        invocations=[],
+        stops=[],
+        reviewed={},
+        window="test",
+    )
+    akshara = _agent(report, "akshara")
+    assert akshara.off_list == 2
+    assert akshara.decisions.decisions == 0
+    assert akshara.correction_rate.show().startswith(NOT_MEASURED)
+    assert "2 by names not on the reviewer list" in akshara.correction_rate.show()
+    assert "50%" not in render_report(report)
+
+
+def test_with_no_reviewer_list_every_rate_is_not_measured_and_says_why() -> None:
+    export = CandidateExport(
+        database="invented",
+        exported_at=STOPPED_AT.isoformat(),
+        code_version="test",
+        candidates=(
+            _candidate(actor_status="unknown", kind="corrected"),
+            _candidate(actor_status="unknown", kind="confirmed", candidate_id="review_actions:n"),
+        ),
+        reviewer_list=None,
+    )
+    report = build_report(export=export, invocations=[], stops=[], reviewed={}, window="test")
+    for agent in report.agents:
+        assert agent.correction_rate.show().startswith(NOT_MEASURED)
+        assert "no real-reviewer list" in agent.correction_rate.show()
+        assert "no real-reviewer list" in agent.gate_usefulness.show()
+
+
+def test_an_overturn_by_a_name_off_the_list_is_listed_not_counted() -> None:
+    overturned = {
+        "what": "a view role code set by itself",
+        "by": "code:x",
+        "answer": "a",
+        "record": "r",
+    }
+    report = build_report(
+        export=_export(
+            _candidate(
+                agent="bala",
+                table="view_role_confirmations",
+                candidate_id="view_role_confirmations:o",
+                decided_by="ui reviewer",
+                actor_status="unknown",
+                overturned=overturned,
+            ),
+        ),
+        invocations=[],
+        stops=[],
+        reviewed={},
+        window="test",
+    )
+    assert _agent(report, "bala").decisions.overturned == 0
+    text = render_report(report)
+    assert "0 by reviewers on the list; 1 more listed, not counted" in text
+    assert "not on the reviewer list" in text
+
+
+def test_a_stop_answered_by_a_name_off_the_list_is_not_judged() -> None:
+    stranger = _candidate(decided_by="ui reviewer", actor_status="unknown", kind="corrected")
+    assert _classify(_stop(), [stranger]).verdict == OFF_LIST
+    report = build_report(
+        export=_export(stranger),
+        invocations=[],
+        stops=[_stop()],
+        reviewed={},
+        window="test",
+        versions=_in_doc(stranger),
+    )
+    assert _agent(report, "akshara").gate_usefulness.show().startswith(NOT_MEASURED)
+
+
+def _batch_page(**changes: Any) -> Candidate:
+    values: dict[str, Any] = {
+        "agent": "rekha",
+        "table": "no_countertop_answers",
+        "candidate_id": f"no_countertop_answers:{uuid4()}",
+        "kind": "confirmed",
+        "question": None,
+        "recorded": {"answer": "no_countertop", "has_note": False, "batch": True},
+    }
+    values.update(changes)
+    return _candidate(**values)
+
+
+def test_a_batch_click_is_never_n_confirms_or_n_needless_stops() -> None:
+    pages = [_batch_page(page_number=n) for n in (1, 2, 3)]
+    stops = [
+        _stop("p0:row-choice", "rekha", page_number=n, code="no-countertop") for n in (1, 2, 3)
+    ]
+    report = build_report(
+        export=_export(*pages),
+        invocations=[],
+        stops=stops,
+        reviewed={},
+        window="test",
+        versions=_in_doc(*pages),
+    )
+    rekha = _agent(report, "rekha")
+    assert rekha.batch == 3
+    assert rekha.decisions.decisions == rekha.decisions.confirmed == 0
+    assert rekha.correction_rate.show().startswith(NOT_MEASURED)
+    assert {outcome.verdict for outcome in report.gates} == {BATCH}
+    assert rekha.gate_usefulness.show().startswith(NOT_MEASURED)
+    assert "3 pages confirmed in a batch (each still needs its own look)" in render_report(report)
+
+
+def test_a_budget_stop_is_not_an_inspectors_and_is_counted_apart() -> None:
+    confirm = _batch_page(recorded={"answer": "no_countertop", "batch": False})
+    report = build_report(
+        export=_export(confirm),
+        invocations=[],
+        stops=[
+            _stop("p0:page", "bala", code="budget-reached"),
+            _stop("p0:slot0:0", code="budget-not-asked"),
+        ],
+        reviewed={},
+        window="test",
+        versions=_in_doc(confirm),
+    )
+    assert report.gates == ()
+    assert report.budget_stops == 2
+    assert "2 stops the AI budget made" in render_report(report)
+
+
+def test_a_decision_on_the_same_page_in_another_file_does_not_judge_the_stop() -> None:
+    """Two files may hold the same page (a re-sent revision): the file must match, not only the
+    page's content."""
+    correction = _candidate(kind="corrected")
+    assert classify_stop(
+        _stop(), [correction], {correction.candidate_id: str(uuid4())}
+    ).verdict == (WAITING)
+    assert classify_stop(_stop(), [correction], {}).verdict == WAITING
+
+
+def test_no_countertop_after_the_line_finders_ais_split_judges_nothing() -> None:
+    """Only after the AIs said "no countertop" does the reviewer's "no countertop" confirm them."""
+    none_there = _batch_page(recorded={"answer": "no_countertop", "batch": False})
+    split = _stop("p0:row-choice", "rekha", code="readers-differ")
+    said_none = _stop("p0:row-choice", "rekha", code="no-countertop")
+    assert _classify(split, [none_there]).verdict == UNDETERMINED
+    assert _classify(said_none, [none_there]).verdict == NEEDLESS

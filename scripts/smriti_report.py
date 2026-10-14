@@ -10,7 +10,8 @@ No model call, no cost, nothing changed: the database is only read (read-only tr
 `NOT MEASURED` is shown wherever there is nothing to divide by, never 0%. The real-reviewer list is
 the local file `GV_SMRITI_REVIEWERS` names (see `eval/smriti/actors.py`); without it, every name
 counts as "other". `--vendors` adds, per recorded vendor, the FAILs a person confirmed or signed
-beside every FAIL (`reports/vendor_patterns.py`, `confirmed_only`): report only. The report holds
+beside every FAIL (`reports/vendor_patterns.py`, `confirmed_only`), counting only names on the
+same local list: report only. The report holds
 client values (pages, names): `--out` inside a git working tree is refused, and a file is written
 once, never overwritten.
 
@@ -33,15 +34,18 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.models.package import Package
-from eval.smriti.actors import ReviewersFileError
+from eval.smriti.actors import ReviewersFileError, reviewers_from_environment
 from eval.smriti.report import learner_report, render_report
 from reports.vendor_patterns import vendor_patterns
 
 __all__ = ["REFUSED", "main", "vendor_lines"]
 
 
-def vendor_lines(session: Session, window: timedelta, now: datetime) -> list[str]:
-    """Per recorded vendor: every FAIL, and those a person confirmed or signed (report only)."""
+def vendor_lines(
+    session: Session, window: timedelta, now: datetime, reviewers: frozenset[str] | None
+) -> list[str]:
+    """Per recorded vendor: every FAIL, and those a real reviewer (a name on the local list)
+    confirmed or signed. Report only. With no list, none counts, and the lines say why."""
     vendors = sorted(
         {
             vendor
@@ -59,12 +63,15 @@ def vendor_lines(session: Session, window: timedelta, now: datetime) -> list[str
         lines.append("  no package names a vendor")
     for vendor in vendors:
         every = vendor_patterns(session, vendor, window, now=now)
-        confirmed = vendor_patterns(session, vendor, window, now=now, confirmed_only=True)
+        confirmed = vendor_patterns(
+            session, vendor, window, now=now, confirmed_only=True, reviewers=reviewers
+        )
         all_fails = sum(len(found) for found in every.recurring_failures.values())
         kept = sum(len(found) for found in confirmed.recurring_failures.values())
         lines.append(
             f"  {vendor}: {kept} person-confirmed FAILs over {len(confirmed.recurring_failures)} "
             f"rule versions (of {all_fails} FAILs in all; trend {confirmed.trend})"
+            + (f"; {confirmed.not_counted}" if confirmed.not_counted else "")
         )
     return lines
 
@@ -88,7 +95,8 @@ def _report(args: argparse.Namespace) -> int:
                 text = render_report(report)
                 if args.vendors:
                     now = datetime.now(UTC)
-                    text += "\n\n" + "\n".join(vendor_lines(session, window, now))
+                    names = reviewers_from_environment().names
+                    text += "\n\n" + "\n".join(vendor_lines(session, window, now, names))
             finally:
                 session.rollback()
     finally:

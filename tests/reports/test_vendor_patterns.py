@@ -450,7 +450,10 @@ def test_no_failures_then_several_is_reported_as_worsening(
 # ---------------------------------------------------------------------------
 
 PERSON = "reviewer-a"
+STRANGER = "ui script"
 CODE_ACTOR = "code:invented-checker/v1"
+#: The local real-reviewer list, as a test gives it: invented names only.
+LIST = frozenset({"  Reviewer-A "})
 
 
 def _act(
@@ -515,7 +518,9 @@ def test_an_unconfirmed_fail_is_not_a_vendor_pattern_when_only_confirmed_ones_co
         _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=3))
 
     with unit_of_work(sessions) as session:
-        confirmed = vendor_patterns(session, VENDOR, WINDOW, now=NOW, confirmed_only=True)
+        confirmed = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
         every = vendor_patterns(session, VENDOR, WINDOW, now=NOW)
 
     assert confirmed.recurring_failures == {}
@@ -535,7 +540,9 @@ def test_a_fail_a_person_confirmed_or_signed_counts(sessions: sessionmaker[Sessi
         _sign(session, revision, [confirmed, signed])
 
     with unit_of_work(sessions) as session:
-        report = vendor_patterns(session, VENDOR, WINDOW, now=NOW, confirmed_only=True)
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
 
     assert _failed_ids(report) == {confirmed.id, signed.id}
 
@@ -557,7 +564,9 @@ def test_a_fail_the_person_dismissed_or_corrected_is_not_counted_even_when_signe
         _sign(session, revision, [dismissed, corrected])
 
     with unit_of_work(sessions) as session:
-        report = vendor_patterns(session, VENDOR, WINDOW, now=NOW, confirmed_only=True)
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
 
     assert report.recurring_failures == {}
 
@@ -580,16 +589,19 @@ def test_code_confirming_or_signing_a_fail_is_not_a_person_confirming_it(
         _sign(session, revision, [failed], by=CODE_ACTOR)
 
     with unit_of_work(sessions) as session:
-        report = vendor_patterns(session, VENDOR, WINDOW, now=NOW, confirmed_only=True)
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
 
     assert report.recurring_failures == {}
 
 
-def test_a_confirm_carried_to_a_rerun_is_not_a_new_confirmation(
-    sessions: sessionmaker[Session],
+@pytest.mark.parametrize("rerun_signed", [False, True])
+def test_a_failure_counts_once_across_its_carried_copies(
+    sessions: sessionmaker[Session], rerun_signed: bool
 ) -> None:
-    """A re-run's FAIL that only inherits the earlier confirm is a copy: the original FAIL counts
-    once, the copy is not a second vendor failure."""
+    """A re-run's FAIL that inherits the earlier confirm is a copy: the original FAIL counts once,
+    and the copy is not a second vendor failure, even when the re-run's revision is signed."""
     from app.models.review import FindingDecisionCarryover
 
     with unit_of_work(sessions) as session:
@@ -611,8 +623,77 @@ def test_a_confirm_carried_to_a_rerun_is_not_a_new_confirmation(
             )
         )
         session.flush()
+        if rerun_signed:
+            _sign(session, revision, [rerun])
+
+    with unit_of_work(sessions) as session:
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
+
+    assert _failed_ids(report) == {original.id}
+
+
+def test_with_no_reviewer_list_no_fail_counts_and_the_report_says_why(
+    sessions: sessionmaker[Session],
+) -> None:
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        failed = _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=4))
+        _act(session, failed, revision, ReviewActionKind.CONFIRM, NOW - timedelta(days=3))
+        _sign(session, revision, [failed])
 
     with unit_of_work(sessions) as session:
         report = vendor_patterns(session, VENDOR, WINDOW, now=NOW, confirmed_only=True)
 
-    assert _failed_ids(report) == {original.id}
+    assert report.recurring_failures == {}
+    assert report.not_counted is not None and "reviewer list" in report.not_counted
+
+
+def test_a_name_off_the_reviewer_list_confirming_or_signing_does_not_count(
+    sessions: sessionmaker[Session],
+) -> None:
+    """Most "person" rows in our copies were written by test scripts."""
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        failed = _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=4))
+        _act(
+            session,
+            failed,
+            revision,
+            ReviewActionKind.CONFIRM,
+            NOW - timedelta(days=3),
+            actor=STRANGER,
+        )
+        _sign(session, revision, [failed], by=STRANGER)
+
+    with unit_of_work(sessions) as session:
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
+
+    assert report.recurring_failures == {}
+    assert report.not_counted is None
+
+
+def test_at_the_same_instant_a_dismiss_wins_over_a_confirm(
+    sessions: sessionmaker[Session],
+) -> None:
+    """A tie is decided the cautious way, never by which id happens to sort last."""
+    when = NOW - timedelta(days=3)
+    with unit_of_work(sessions) as session:
+        revision = _revision(session, VENDOR)
+        snapshot = _snapshot(session)
+        failed = _finding(session, revision, snapshot, Outcome.FAIL, NOW - timedelta(days=4))
+        _act(session, failed, revision, ReviewActionKind.DISMISS, when)
+        _act(session, failed, revision, ReviewActionKind.CONFIRM, when)
+        _sign(session, revision, [failed])
+
+    with unit_of_work(sessions) as session:
+        report = vendor_patterns(
+            session, VENDOR, WINDOW, now=NOW, confirmed_only=True, reviewers=LIST
+        )
+
+    assert report.recurring_failures == {}
