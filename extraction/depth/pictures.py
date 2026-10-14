@@ -251,11 +251,13 @@ def end_marks_picture(
     thickness: int,
     reach: int,
     max_side: int,
+    headings: Sequence[PixelBox] = (),
 ) -> bytes:
     """The span's two ends marked across its own axis, each mark `reach` pixels either side of the
     line: vertical bars at a horizontal span's left and right ends, horizontal bars at a vertical
-    span's top and bottom ends."""
+    span's top and bottom ends. Every heading box in `headings` is painted out first."""
     canvas = _Canvas(rendered, crop)
+    _mask(canvas, headings)
     half = thickness // 2
     for x, y in (span.start, span.end):
         if span.axis is Axis.HORIZONTAL:

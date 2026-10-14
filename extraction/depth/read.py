@@ -38,7 +38,15 @@ holds with a plain reason, and a hold never moves toward PASS.
      a different dimension (the view's horizontal overall). With neither, it holds: no code check
      confirmed the number. Any check that disagrees holds, as does a chain whose parts do not sum to
      its overall;
-   * a depth printed on two views of one panel that disagree holds on both.
+   * a depth whose two-reader readings on two views of one panel disagree holds on both;
+   * a label the fraction-bar detector (#735) finds stacked holds.
+
+   Every usable value says which check confirmed it (`confirmed_by`); a value confirmed by drawn
+   length alone is the weakest, and where the view's scale came from the readers' own reading of
+   the overall that is recorded too (`scale_source`).
+
+**Not built here:** the design's title-block "D" hold (a depth in the title block that disagrees)
+and linking a view to its countertop item; both are part 4.
 
 **Calls.** Every question goes through the shared route (`slot_reader.bedrock.read_crops_parallel`
 via `CropJob.depth`, under the three pinned prompt ids), so it is paced, capped by the spend guard,
@@ -134,6 +142,7 @@ from extraction.form_reader.bedrock import (
 )
 from extraction.geometry.dimension_lines import Axis
 from extraction.geometry.rows import Box, PageInk
+from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
 from extraction.ink import InkAt
 from extraction.slot_reader.claude_output import (
     DEFAULT_CLAUDE_EFFORT,
@@ -170,10 +179,12 @@ __all__ = [
     "build_depth_request",
     "decide_view_kind",
     "depth_reader_enabled",
+    "label_boxes",
     "prepare_pdf_page",
     "prepare_view",
     "question_packet",
     "read_depth",
+    "stacked_by_bar",
 ]
 
 #: The switch. Off unless set to a yes word; anything unrecognised is refused, never read as on.
@@ -263,6 +274,9 @@ class PreparedView:
     sinks: tuple[tuple[SinkOutlines, CutoutJudgment], ...]
     panel_headings: tuple[Box, ...]
     """Every heading printed on the view's panel: each is painted out of every picture."""
+    label_boxes: Mapping[int, tuple[Box, ...]] = field(default_factory=dict)
+    """Per span, every stroke's box in its close-up: what the fraction-bar detector looks at."""
+    page_height: Decimal = Decimal(0)
 
     @property
     def key(self) -> str:
@@ -320,6 +334,8 @@ def prepare_view(
         for sink in sink_outlines(ink, view.extent, phrases, settings.spans)
     )
     return PreparedView(
+        label_boxes=label_boxes(ink, found.spans, settings),
+        page_height=ink.height,
         page_index=page_index,
         panel=panel,
         view=view,
@@ -455,6 +471,57 @@ def prepare_pdf_page(
     )
 
 
+def label_boxes(
+    ink: PageInk, spans: Sequence[Span], settings: DepthReaderSettings
+) -> dict[int, tuple[Box, ...]]:
+    """Per span, the box of every stroke and curve where its label is printed: along the span, and
+    within `label_reach_pt` of its line either side (where `spans.text_lanes` owns a label). The
+    whole close-up is wider and holds hatching and other labels, which the detector misreads."""
+    found: dict[int, tuple[Box, ...]] = {}
+    reach = settings.spans.label_reach_pt
+    for span in spans:
+        if span.axis is Axis.HORIZONTAL:
+            area = Box(span.start_pt, span.offset_pt - reach, span.end_pt, span.offset_pt + reach)
+        else:
+            area = Box(span.offset_pt - reach, span.start_pt, span.offset_pt + reach, span.end_pt)
+        boxes = [
+            Box(
+                min(line.x0, line.x1),
+                min(line.y0, line.y1),
+                max(line.x0, line.x1),
+                max(line.y0, line.y1),
+            )
+            for line in ink.lines
+            if _inside(line.x0, line.y0, area) and _inside(line.x1, line.y1, area)
+        ]
+        boxes.extend(
+            curve.box
+            for curve in ink.curves
+            if _inside(curve.box.x0, curve.box.top, area)
+            and _inside(curve.box.x1, curve.box.bottom, area)
+        )
+        found[span.number] = tuple(boxes)
+    return found
+
+
+def stacked_by_bar(
+    boxes: Sequence[Box], page_height: Decimal, geometry: FractionBarGeometry
+) -> bool:
+    """Whether the width reader's fraction-bar detector (#735) finds a stacked fraction among a
+    close-up's strokes, read upright or turned either way (a depth's label is often sideways)."""
+    if not boxes:
+        return False
+    flipped = tuple(
+        (box.x0, page_height - box.bottom, box.x1, page_height - box.top) for box in boxes
+    )
+    return any(
+        stacked_fractions(
+            flipped, geometry=geometry, ink=[True] * len(flipped), rotation_degrees=turn
+        )
+        for turn in (0, 90, 270)
+    )
+
+
 # ---------------------------------------------------------------------------
 # What the reader returns
 # ---------------------------------------------------------------------------
@@ -490,6 +557,15 @@ class ValueReading:
     outline: str | None = None
     checks: tuple[str, ...] = ()
     """What code checked and found agreeing, in plain words."""
+    agreed_inches: Fraction | None = None
+    """The two readers' sealed reading, whether or not code then held it (two views of one
+    drawing whose agreed readings differ hold on both)."""
+    confirmed_by: Literal["vector-text", "chain", "drawn-length-only"] | None = None
+    """The strongest code check that confirmed a usable value's number. `drawn-length-only` (a
+    pen-stroke label, ±1/10 at the view's scale) is the weakest, and part 4 may refuse it."""
+    scale_source: Literal["vector-text", "readers"] | None = None
+    """Where the view's scale came from: the overall's printed text, or (weaker) the same two
+    readers' reading of the overall."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -831,6 +907,7 @@ def _number_question(
         thickness=settings.thickness_px * close_factor,
         reach=settings.end_mark_reach_px * close_factor,
         max_side=settings.closeup_max_side,
+        headings=_headings(page, view),
     )
     turned = span.axis is Axis.VERTICAL
     pictures: tuple[bytes, ...] = (whole, close)
@@ -999,12 +1076,18 @@ class _Number:
     reason: str
 
 
-def _seal(answers: Sequence[ReaderAnswer], ink: InkAt | None, settings: SpanSettings) -> _Number:
+def _seal(
+    answers: Sequence[ReaderAnswer],
+    ink: InkAt | None,
+    settings: SpanSettings,
+    *,
+    stacked_by_bar: bool,
+) -> _Number:
     outcome = seal_label(
         _LABEL,
         answers=answers,
         ink=ink,
-        stacked_by_bar=False,
+        stacked_by_bar=stacked_by_bar,
         allow_stacked=False,
         row_ambiguity=None,
         allow_claude_pair=True,
@@ -1026,6 +1109,8 @@ def _seal(answers: Sequence[ReaderAnswer], ink: InkAt | None, settings: SpanSett
         return _Number(None, agreed, "the two readers' reading gives no value")
     if measured.unit is not Unit.INCH:
         return _Number(None, agreed, MM_ONLY)
+    if measured.exact <= 0:
+        return _Number(None, agreed, "a dimension of zero or less is no value: held")
     label = read_depth_label(agreed, mm_tolerance=settings.mm_corroboration_mm)
     if label.inches != measured.exact:
         return _Number(
@@ -1115,6 +1200,7 @@ def _strip_place(
 class _Scale:
     scale: ViewScale | None
     reason: str
+    source: Literal["vector-text", "readers"] | None = None
 
 
 def _number_checks(
@@ -1124,33 +1210,52 @@ def _number_checks(
     scale: _Scale,
     known: Mapping[int, Fraction],
     settings: SpanSettings,
-) -> tuple[str | None, tuple[str, ...]]:
-    """Code's checks of a sealed number: any that disagrees holds, and at least one must agree."""
+) -> tuple[
+    str | None, tuple[str, ...], Literal["vector-text", "chain", "drawn-length-only"] | None
+]:
+    """Code's checks of a sealed number: any that disagrees holds, and at least one must agree.
+    Also which check confirmed it, strongest first."""
     lane = view.lanes.get(span.number)
     agreed: list[str] = []
+    confirmed: Literal["vector-text", "chain", "drawn-length-only"] | None = None
     if lane is not None and lane.printed and lane.inches is None:
-        return f"the printed text at this dimension cannot be read exactly: {lane.reason}", ()
+        return f"the printed text at this dimension cannot be read exactly: {lane.reason}", (), None
     if lane is not None and lane.inches is not None:
         if lane.inches != inches:
             return (
-                f"the printed text at this dimension says {lane.printed[0]!r}, not the readers' "
-                "reading: held"
-            ), ()
+                (
+                    f"the printed text at this dimension says {lane.printed[0]!r}, not the readers' "
+                    "reading: held"
+                ),
+                (),
+                None,
+            )
         agreed.append("the vector text equals the two readers' reading exactly")
+        confirmed = "vector-text"
     if scale.scale is not None and scale.scale.overall_number != span.number:
         drawn = drawn_length_check(
             span, inches, scale.scale, tolerance=settings.drawn_length_tolerance
         )
         if not drawn.agrees:
-            return drawn.reason, ()
-        agreed.append(drawn.reason)
+            return drawn.reason, (), None
+        source = (
+            "the overall's printed text"
+            if scale.source == "vector-text"
+            else "the same two readers' reading of the overall (weaker)"
+        )
+        agreed.append(f"{drawn.reason} (the view's scale from {source})")
     for closure in view.found.closures:
         if span is closure.overall or span in closure.parts:
             checked = closure_check(closure, known)
             if checked.closes is False:
-                return f"the chain this dimension is part of does not close: {checked.reason}", ()
+                return (
+                    f"the chain this dimension is part of does not close: {checked.reason}",
+                    (),
+                    None,
+                )
             if checked.closes:
                 agreed.append("the chain it is part of sums exactly to its overall")
+                confirmed = confirmed or "chain"
     if not agreed:
         scale_note = (
             "the view's scale comes from this very dimension"
@@ -1158,10 +1263,14 @@ def _number_checks(
             else scale.reason
         )
         return (
-            "no code check could confirm the number: no printed text at this dimension, and no "
-            f"independent drawn-length check ({scale_note})"
-        ), ()
-    return None, tuple(agreed)
+            (
+                "no code check could confirm the number: no printed text at this dimension, and "
+                f"no independent drawn-length check ({scale_note})"
+            ),
+            (),
+            None,
+        )
+    return None, tuple(agreed), confirmed or "drawn-length-only"
 
 
 # ---------------------------------------------------------------------------
@@ -1221,11 +1330,11 @@ def _scale(state: _ViewState, sealed: Mapping[int, _Number]) -> _Scale:
     if overall is None:
         return _Scale(None, "the view has no horizontal dimension to take its scale from")
     lane = state.view.lanes.get(overall.number)
-    if lane is not None and lane.inches is not None:
-        return _Scale(view_scale(overall, lane.inches), "")
+    if lane is not None and lane.inches is not None and lane.inches > 0:
+        return _Scale(view_scale(overall, lane.inches), "", "vector-text")
     number = sealed.get(overall.number)
-    if number is not None and number.inches is not None:
-        return _Scale(view_scale(overall, number.inches), "")
+    if number is not None and number.inches is not None and number.inches > 0:
+        return _Scale(view_scale(overall, number.inches), "", "readers")
     return _Scale(
         None,
         f"the view's horizontal overall (dimension {overall.number}) has no exact value",
@@ -1236,6 +1345,7 @@ def _values(
     state: _ViewState,
     readers: tuple[str, str],
     settings: DepthReaderSettings,
+    fraction_bar: FractionBarGeometry,
 ) -> tuple[ValueReading, ...]:
     """Every value the view's kind can hold, each decided from both judgments."""
     view, page = state.view, state.page
@@ -1254,7 +1364,14 @@ def _values(
         span = view.span(asked_number)
         box = page.pixels(_closeup_box(span, settings))
         ink[asked_number] = None if page.ink_at is None else page.ink_at(box)
-        sealed[asked_number] = _seal(present, ink[asked_number], spans_settings)
+        sealed[asked_number] = _seal(
+            present,
+            ink[asked_number],
+            spans_settings,
+            stacked_by_bar=stacked_by_bar(
+                view.label_boxes.get(asked_number, ()), view.page_height, fraction_bar
+            ),
+        )
     scale = _scale(state, sealed)
     known: dict[int, Fraction] = {
         key: lane.inches for key, lane in view.lanes.items() if lane.inches is not None
@@ -1384,10 +1501,11 @@ def _values(
                     f"both readers agree, but code holds it: {place}",
                     start_edge=extra_edge,
                     outline=outline_letter,
+                    agreed_inches=found_number.inches,
                 )
             )
             continue
-        objection, checks = _number_checks(
+        objection, checks, confirmed_by = _number_checks(
             view, span, found_number.inches, scale, known, spans_settings
         )
         if objection is not None:
@@ -1402,6 +1520,7 @@ def _values(
                     f"both readers agree, but code holds it: {objection}",
                     start_edge=extra_edge,
                     outline=outline_letter,
+                    agreed_inches=found_number.inches,
                 )
             )
             continue
@@ -1417,6 +1536,9 @@ def _values(
                 start_edge=extra_edge,
                 outline=outline_letter,
                 checks=checks,
+                agreed_inches=found_number.inches,
+                confirmed_by=confirmed_by,
+                scale_source=scale.source,
             )
         )
     return tuple(readings)
@@ -1434,15 +1556,16 @@ def _pick_of(answer: SpanRoleAnswer | None, role: str) -> str:
 
 
 def _depths_disagree(views: list[ViewReading]) -> list[ViewReading]:
-    """A depth usable on two views of one panel with different values holds on both."""
+    """Two views of one panel whose two-reader readings of the depth differ hold the depth on both,
+    whether or not code held either reading (design §9.3)."""
     by_panel: dict[tuple[int, int], list[tuple[int, ValueReading]]] = {}
     for index, reading in enumerate(views):
         for value in reading.values:
-            if value.field == CT010 and value.usable:
+            if value.field == CT010 and value.agreed_inches is not None:
                 by_panel.setdefault((reading.page_index, reading.panel), []).append((index, value))
     out = list(views)
     for found in by_panel.values():
-        if len({value.inches for _index, value in found}) <= 1:
+        if len({value.agreed_inches for _index, value in found}) <= 1:
             continue
         for index, _value in found:
             reading = out[index]
@@ -1455,6 +1578,7 @@ def _depths_disagree(views: list[ViewReading]) -> list[ViewReading]:
                             usable=False,
                             inches=None,
                             checks=(),
+                            confirmed_by=None,
                             reason="the depth printed on two views of this drawing disagree: "
                             "held on both",
                         )
@@ -1471,6 +1595,7 @@ def read_depth(
     pages: Sequence[PreparedPage],
     *,
     ask: Asker,
+    fraction_bar: FractionBarGeometry,
     readers: tuple[str, str] = CLAUDE_PAIR,
     settings: DepthReaderSettings = MEASURED_DEPTH_READER_SETTINGS,
 ) -> DepthReading:
@@ -1588,7 +1713,7 @@ def read_depth(
             values = ()
             values_reason = state.roles_reason
         else:
-            values = _values(state, readers, settings)
+            values = _values(state, readers, settings, fraction_bar)
             values_reason = ""
         views.append(
             ViewReading(

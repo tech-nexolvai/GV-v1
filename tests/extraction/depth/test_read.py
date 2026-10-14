@@ -9,6 +9,7 @@ front-to-back dimensions, and a 16 pt strip from the hole's front edge to the ca
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from fractions import Fraction
 from uuid import UUID
 
@@ -37,10 +38,12 @@ from extraction.depth.read import (
     ValueReading,
     decide_view_kind,
     depth_reader_enabled,
+    label_boxes,
     read_depth,
 )
 from extraction.depth.spans import (
     MEASURED_SPAN_SETTINGS,
+    TextLane,
     cutout_judgment,
     find_spans,
     sink_outlines,
@@ -68,6 +71,7 @@ from tests.extraction.depth.test_spans import (
     vertical_dimension,
     wall_hatch,
 )
+from tests.extraction.test_glyph_bands import FRACTION, GEOMETRY
 
 OPUS, SONNET = CLAUDE_PAIR
 SHA = "a" * 64
@@ -91,18 +95,20 @@ def prepared(
     heading: str = "PLAN VIEW",
     lines: list[InkLine] | None = None,
     outlines: Sequence[tuple[float, float, float, float]] = ((150, 120, 260, 170),),
+    extent: Box = VIEW,
+    number: int = 1,
 ) -> PreparedView:
     page_ink = ink(
         plan_lines() if lines is None else lines,
         tuple(rectangle_path(*box) for box in outlines),
     )
-    found = find_spans(page_ink, VIEW, MEASURED_SPAN_SETTINGS)
+    found = find_spans(page_ink, extent, MEASURED_SPAN_SETTINGS)
     phrases = [phrase("SINK", 205, 145, Orientation.UPRIGHT)]
     view = VendorView(
-        number=1,
+        number=number,
         heading=heading,
         heading_box=None,
-        extent=VIEW,
+        extent=extent,
         separated=True,
         reason="made up",
         found_by="heading words",
@@ -116,13 +122,17 @@ def prepared(
         lanes=text_lanes(found.spans, [], MEASURED_SPAN_SETTINGS, chars=[]),
         sinks=tuple(
             (sink, cutout_judgment(sink, []))
-            for sink in sink_outlines(page_ink, VIEW, phrases, MEASURED_SPAN_SETTINGS)
+            for sink in sink_outlines(page_ink, extent, phrases, MEASURED_SPAN_SETTINGS)
         ),
         panel_headings=(),
+        label_boxes=label_boxes(page_ink, found.spans, MEASURED_DEPTH_READER_SETTINGS),
+        page_height=page_ink.height,
     )
 
 
-def page_of(view: PreparedView, *, ink_class: InkClass = InkClass.VENDOR) -> PreparedPage:
+def page_of(
+    view: PreparedView, *, ink_class: InkClass = InkClass.VENDOR, also: Sequence[PreparedView] = ()
+) -> PreparedPage:
     rendered = RenderedPage(
         document_version_id=UUID(int=1),
         page_index=0,
@@ -144,7 +154,7 @@ def page_of(view: PreparedView, *, ink_class: InkClass = InkClass.VENDOR) -> Pre
         document_version_id="doc",
         rendered=rendered,
         pixels=pixels,
-        views=(view,),
+        views=(view, *also),
         ink_at=lambda _box: InkAt(ink_class, ""),
     )
 
@@ -188,7 +198,11 @@ class FakeReaders:
         self.view = view
         self.kinds = kinds or {OPUS: "plan", SONNET: "plan"}
         depth = number_of(view, Axis.VERTICAL, 100, 196)
-        width = number_of(view, Axis.HORIZONTAL, 150, 260)
+        width = next(
+            span.number
+            for span in view.found.spans
+            if span.axis is Axis.HORIZONTAL and span.offset_pt == d(250)
+        )
         front_back = number_of(view, Axis.VERTICAL, 120, 170)
         strip = next(
             span.number
@@ -248,7 +262,9 @@ class FakeReaders:
 
 
 def read(view: PreparedView, readers: FakeReaders, **page: object) -> DepthReading:
-    return read_depth([page_of(view, **page)], ask=readers)  # type: ignore[arg-type]
+    return read_depth(
+        [page_of(view, **page)], ask=readers, fraction_bar=GEOMETRY  # type: ignore[arg-type]
+    )
 
 
 def values(reading: DepthReading) -> dict[str, ValueReading]:
@@ -458,10 +474,225 @@ def test_the_reviewers_ink_on_the_close_up_holds_the_number() -> None:
 def test_only_the_claude_pair_reads() -> None:
     view = prepared()
     with pytest.raises(ValueError):
-        read_depth([page_of(view)], ask=FakeReaders(view), readers=("a.one", "b.two"))
+        read_depth(
+            [page_of(view)],
+            ask=FakeReaders(view),
+            readers=("a.one", "b.two"),
+            fraction_bar=GEOMETRY,
+        )
 
 
 def test_settings_fit_claude_pictures() -> None:
     # A whole-view picture at most 1800 px a side is 65 x 65 tiles: under the 4784 limit.
     side = -(-MEASURED_DEPTH_READER_SETTINGS.view_max_side // 28)
     assert side * side <= 4784
+
+
+# --- review #1274 ---------------------------------------------------------------------------
+
+
+def with_depth(readers: FakeReaders, said: Reply | str) -> FakeReaders:
+    depth = readers.spans["depth"]
+    readers.numbers = {model: {**readers.numbers[model], depth: said} for model in CLAUDE_PAIR}
+    return readers
+
+
+@pytest.mark.parametrize("read_as", ['22"', '24 3/4"', '25 1/2"'])
+def test_a_value_confirmed_only_by_drawn_length_says_so(read_as: str) -> None:
+    # H2: drawn 24" long, read by both readers as something within 1/10. Drawn length cannot tell,
+    # so the value says it rests on drawn length alone (with the scale from the readers' overall).
+    view = prepared()
+    found = values(read(view, with_depth(FakeReaders(view), read_as)))[CT010]
+    assert found.usable
+    assert found.confirmed_by == "drawn-length-only"
+    assert found.scale_source == "readers"
+    assert any("weaker" in check for check in found.checks)
+
+
+def fraction_strokes(x: float, y: float) -> list[InkLine]:
+    """A stacked fraction as the plotter draws it (`test_glyph_bands.FRACTION`), at (x, y)."""
+    return [
+        line(x + float(x0), y - float(y0), x + float(x1), y - float(y1))
+        for x0, y0, x1, y1 in FRACTION
+    ]
+
+
+@pytest.mark.parametrize("read_as", ['22"', '24 3/4"', '25 1/2"'])
+def test_a_stacked_fraction_the_bar_detector_finds_holds(read_as: str) -> None:
+    view = prepared(lines=plan_lines() + fraction_strokes(56, 150))
+    found = values(read(view, with_depth(FakeReaders(view), read_as)))[CT010]
+    assert not found.usable and found.inches is None
+    assert "stacked" in found.reason
+
+
+def test_code_naming_another_kind_than_both_readers_holds_the_view() -> None:
+    # A plan headed "FRONT VIEW" with no wall band drawn: code says front view, both readers plan.
+    lines = [stroke for stroke in plan_lines() if stroke not in wall_hatch(90, 100, 60, 400)]
+    view = prepared(heading="FRONT VIEW", lines=lines)
+    assert view.code_kind.kind is ViewKind.ELEVATION
+    (only,) = read(view, FakeReaders(view)).views
+    assert only.kind is None and only.values == ()
+    assert "label says front view" in only.kind_reason
+    code = CodeViewKind(ViewKind.ELEVATION, kind_from_heading("FRONT VIEW"), False, "made up")
+    both = [ViewKindAnswer(OPUS, "plan", ""), ViewKindAnswer(SONNET, "plan", "")]
+    assert decide_view_kind(code, both)[0] is None
+
+
+def test_no_code_check_confirming_the_number_holds() -> None:
+    # The overall's number is not read, so there is no scale and no printed text: no check.
+    view = prepared()
+    readers = FakeReaders(view)
+    overall = number_of(view, Axis.HORIZONTAL, 60, 400)
+    readers.numbers = {
+        model: {**readers.numbers[model], overall: NoAnswer("abstained")} for model in CLAUDE_PAIR
+    }
+    found = values(read(view, readers))[CT010]
+    assert not found.usable and "no code check could confirm" in found.reason
+
+
+def test_vector_text_disagreeing_with_both_readers_holds() -> None:
+    view = prepared()
+    readers = FakeReaders(view)
+    depth = readers.spans["depth"]
+    lanes = dict(view.lanes)
+    lanes[depth] = TextLane(depth, ('25"',), Fraction(25), "reads exactly")
+    found = values(read(replace(view, lanes=lanes), readers))[CT010]
+    assert not found.usable and "printed text at this dimension says" in found.reason
+
+
+def test_vector_text_agreeing_is_the_strongest_confirmation() -> None:
+    view = prepared()
+    readers = FakeReaders(view)
+    depth = readers.spans["depth"]
+    lanes = dict(view.lanes)
+    lanes[depth] = TextLane(depth, ('24"',), Fraction(24), "reads exactly")
+    found = values(read(replace(view, lanes=lanes), readers))[CT010]
+    assert found.usable and found.confirmed_by == "vector-text"
+
+
+SECTION_EXTENT = Box(d(445), d(305), d(600), d(400))
+
+
+def section(
+    *, extent: Box = VIEW, y: float = 320, left: float = 460, right: float = 560
+) -> PreparedView:
+    return prepared(
+        heading="SECTION A",
+        lines=horizontal_dimension(y, left, right),
+        outlines=(),
+        extent=extent,
+        number=2 if extent != VIEW else 1,
+    )
+
+
+class SectionReaders:
+    """Both readers: a section, its one dimension is the depth, read as `read_as`."""
+
+    def __init__(self, view: PreparedView, read_as: str) -> None:
+        (self.span,) = [span.number for span in view.found.spans]
+        self.read_as = read_as
+        self.key = view.key
+
+    def owns(self, asked: Asked) -> bool:
+        return asked.key.startswith(self.key + ":")
+
+    def __call__(self, questions: Sequence[Asked]) -> dict[tuple[str, str], Reply]:
+        out: dict[tuple[str, str], Reply] = {}
+        for asked in questions:
+            prompt, model = asked.question.prompt_id, asked.model_id
+            if prompt == VIEW_KIND_PROMPT_ID:
+                out[(asked.key, model)] = ViewKindAnswer(model, "section_or_side", "")
+            elif prompt == SPAN_ROLE_PROMPT_ID:
+                out[(asked.key, model)] = SpanRoleAnswer(
+                    model_id=model,
+                    depth=self.span,
+                    cutout_width="none",
+                    cutout_depth="none",
+                    front_offset="none",
+                    front_offset_start="none",
+                    hole_outline="none",
+                    why="",
+                )
+            else:
+                out[(asked.key, model)] = number(self.read_as, model)
+        return out
+
+
+def test_a_scale_taken_from_the_very_dimension_checked_confirms_nothing() -> None:
+    # A section whose only horizontal dimension is the depth: its own reading would set the scale.
+    view = section()
+    assert view.code_kind.kind is ViewKind.SECTION
+    reading = read_depth([page_of(view)], ask=SectionReaders(view, '25"'), fraction_bar=GEOMETRY)
+    found = values(reading)[CT010]
+    assert not found.usable
+    assert "comes from this very dimension" in found.reason
+
+
+def test_a_strip_that_does_not_end_on_the_hole_holds() -> None:
+    view = prepared(lines=plan_lines(strip=(174, 186)))
+    readers = FakeReaders(view)
+    strip = readers.spans["strip"]
+    readers.numbers = {model: {**readers.numbers[model], strip: '3"'} for model in CLAUDE_PAIR}
+    found = values(read(view, readers))[CT007]
+    assert not found.usable and "does not end on the sink hole's front edge" in found.reason
+
+
+def test_a_cut_out_dimension_off_the_outline_edges_holds() -> None:
+    lines = [
+        stroke for stroke in plan_lines() if stroke not in horizontal_dimension(250, 150, 260)
+    ] + horizontal_dimension(250, 150, 250)
+    view = prepared(lines=lines)
+    readers = FakeReaders(view)
+    width = number_of(view, Axis.HORIZONTAL, 150, 250)
+    readers.numbers = {model: {**readers.numbers[model], width: '25"'} for model in CLAUDE_PAIR}
+    found = values(read(view, readers))[CT012]
+    assert not found.usable and "do not lie on outline A" in found.reason
+
+
+def _two_views(section_lane: Fraction) -> tuple[ValueReading, ValueReading]:
+    plan_extent = Box(d(0), d(0), d(440), d(300))
+    plan = prepared(extent=plan_extent)
+    side = section(extent=SECTION_EXTENT)
+    (span,) = side.found.spans
+    lanes = {span.number: TextLane(span.number, (f'{section_lane}"',), section_lane, "reads")}
+    side = replace(side, lanes=lanes)
+    plan_readers, side_readers = FakeReaders(plan), SectionReaders(side, '25"')
+
+    def ask(questions: Sequence[Asked]) -> dict[tuple[str, str], Reply]:
+        return {
+            **side_readers([q for q in questions if side_readers.owns(q)]),
+            **plan_readers([q for q in questions if not side_readers.owns(q)]),
+        }
+
+    reading = read_depth([page_of(plan, also=(side,))], ask=ask, fraction_bar=GEOMETRY)
+    first, second = reading.views
+    return values_of(first), values_of(second)
+
+
+def values_of(view: object) -> ValueReading:
+    return next(value for value in view.values if value.field == CT010)  # type: ignore[attr-defined]
+
+
+def test_two_views_whose_depths_disagree_hold_on_both() -> None:
+    plan, side = _two_views(Fraction(25))
+    assert plan.agreed_inches == 24 and side.agreed_inches == 25
+    assert not plan.usable and not side.usable
+    assert "disagree" in plan.reason and "disagree" in side.reason
+
+
+def test_a_code_held_reading_that_disagrees_still_holds_the_other_view() -> None:
+    # M2: the section's agreed 25" is held by code (its printed text says 26"), yet it still
+    # disagrees with the plan's 24", so the plan's depth holds too.
+    plan, side = _two_views(Fraction(26))
+    assert side.agreed_inches == 25 and not side.usable
+    assert not plan.usable and "disagree" in plan.reason
+
+
+def test_a_zero_reading_holds_and_never_raises() -> None:
+    view = prepared()
+    found = values(read(view, with_depth(FakeReaders(view), '0"')))[CT010]
+    assert not found.usable and "zero" in found.reason
+    readers = FakeReaders(view)
+    overall = number_of(view, Axis.HORIZONTAL, 60, 400)
+    readers.numbers = {model: {**readers.numbers[model], overall: '0"'} for model in CLAUDE_PAIR}
+    assert not values(read(view, readers))[CT010].usable
