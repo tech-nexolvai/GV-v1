@@ -6606,7 +6606,8 @@ class DatabaseStages:
         **The printed text it is given (#1266)** is what the page stage already recorded on the
         vendor's own text layers (`_printed_texts`), so the finder attaches a cabinet code the way
         it does on the page: exactly one inside the cabinet's span and no other's. Bala may pre-fill
-        "cabinet" from it (`GV_BALA_CABINET_PREFILL`). Never GV's markup, never an AI reading.
+        "cabinet" from it. Never GV's markup, never an AI reading. Only with
+        `GV_BALA_CABINET_PREFILL` on: off, it is given no text and attaches no code, as before.
 
         **It writes nothing**: no suggestion, no reading, no run. $0: no model is asked anything.
         """
@@ -6663,7 +6664,8 @@ class DatabaseStages:
             straightness=settings.straightness,
             crossing_margin=settings.crossing_margin,
         )
-        printed = _printed_texts(session, page)
+        # Read only for the pre-fill (#1266): switched off, the finder is given no text, as before.
+        printed = _printed_texts(session, page) if self._bala_cabinet_prefill else []
         found = propose_parts(
             _view_outlines(session, page, views),
             detected,

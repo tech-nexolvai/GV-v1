@@ -78,6 +78,7 @@ tests/workflow/test_bala_items.py, tests/db/test_drawing_models.py.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -132,6 +133,7 @@ __all__ = [
     "AUTOMATIC_REASON",
     "BALA_SOURCE",
     "BALA_VERSION",
+    "CABINET_TAG_PREFIXES",
     "FROM_THE_COUNTERTOP_LINE",
     "PIECES_STAY_ONE_CLICK",
     "PRINTED_ON_IT",
@@ -170,6 +172,32 @@ TAG_NAMES_IT: Final = "the drawing prints the cabinet tag"
 PRINTED_ON_IT: Final = (
     "on it (code pre-filled cabinet from that one tag; confirm it, or change it if it is not)"
 )
+
+#: The letter codes a cabinet tag may start with to pre-fill "cabinet" on a countertop row's piece
+#: (#1266; Anant's decision of 2026-10-15: an allow-list). A tag's shape alone
+#: (`vocabulary/cabinet_codes.py`, which other callers keep as it is) also fits appliances (DW, MW,
+#: HD), fillers (BF, WF, F) and panels (EP, FP, RF, RP), so only these name a cabinet here. Each is
+#: a base cabinet, the kind a countertop row's piece is; every one but DB is printed on pieces the
+#: stored, person-confirmed form keys call cabinets, and DB is the usual spelling of BD.
+#:
+#: * `B`: base cabinet.
+#: * `BC`: base corner cabinet.
+#: * `BD`: base drawer cabinet (a drawer stack).
+#: * `DB`: drawer base cabinet, the same as BD.
+#: * `SB`: sink base cabinet.
+#:
+#: Left out on purpose: wall cabinets (W, and open shelves), whose tag over a countertop row's
+#: piece is never that piece's own, and tall cabinets, which no stored key shows on a countertop
+#: row and whose letter codes vary by maker. Anything left out stays unknown, with its reason.
+CABINET_TAG_PREFIXES: Final[Mapping[str, str]] = {
+    "B": "base cabinet",
+    "BC": "base corner cabinet",
+    "BD": "base drawer cabinet",
+    "DB": "drawer base cabinet",
+    "SB": "sink base cabinet",
+}
+
+_LEADING_LETTERS: Final = re.compile(r"[A-Z]+")
 
 #: Why no piece is ever automatic (decision 2 of 2026-10-14).
 PIECES_STAY_ONE_CLICK: Final = "a piece stays a person's click (decision 2 of 2026-10-14)"
@@ -429,6 +457,11 @@ def propose_items(
     part finder's witness tolerance) and a person's decision stands on it, the re-read piece is that
     part: nothing is filed, and `already_decided` counts it. Asking twice would let one cabinet be
     confirmed twice, as two live items.
+
+    **The cabinet pre-fill (`cabinet_prefill`, #1266) governs new filings only.** A suggestion
+    already filed keeps the kind and `kind_named` it was filed with (its link is append-only):
+    switching the pre-fill off does not take back pre-fills already filed (they stay one-click
+    pre-selections a person must still confirm), and switching it on applies from the next reading.
     """
     plan = plan_items(session, revision_id, code_parts=code_parts, cabinet_prefill=cabinet_prefill)
     outcome = BalaOutcome(plan=plan)
@@ -953,15 +986,23 @@ def _kind(
 def _printed_tag(view: DrawingView, box: _Box, row: _Box, code: CodeFinding) -> PrintedCode | str:
     """The one cabinet tag printed on the piece, or why none counts (#1266, P5-K1).
 
-    Code's part finder must have found a cabinet on the piece's drawing with the piece's two ends
-    (within its tolerance) and attached exactly one cabinet tag to it: one inside its span and no
-    other part's (`extraction/model/part_proposals.py`). That alone reads only across the page, so
-    a wall cabinet's tag above a piece with no tag of its own (an appliance space, a panel) would
-    count. So the tag must also stand **among the lowest cabinet tags printed over the row** (`row`,
-    the countertop's outline, left to right): a tag with another one printed over the same row lower
-    than it by more than its own height stands higher up the wall, a wall cabinet's, and counts for
-    nothing. And it must be printed above the
-    piece's dimension, where the cabinet's face is.
+    1. Code's part finder found a cabinet on the piece's drawing with the piece's two ends (within
+       its tolerance) and attached exactly one cabinet code to it: one inside its span and no other
+       part's (`extraction/model/part_proposals.py`).
+    2. The code starts with a base-cabinet letter code (`CABINET_TAG_PREFIXES`). A code's shape
+       alone also fits appliances, fillers and panels (a dishwasher, a base filler, an end panel),
+       so any other letter code names nothing.
+    3. It is printed above the piece's dimension, where the cabinet's face is.
+    4. **No cabinet code printed over the row** (`row`, the countertop's outline, left to right,
+       inside the drawing, above or below the dimensions) **stands lower than it by more than its
+       own height** (the smaller side of its box, so a turned tag is measured across its text). A
+       tag with one lower stands higher up the wall: a wall cabinet's.
+    5. It is **not the only cabinet code printed above the row's dimensions** on the drawing: with
+       nothing to compare it with, a lone tag could be a wall cabinet's over a piece that carries
+       none of its own.
+
+    The finder reads only across the page, so without 3 to 5 a wall cabinet's tag above an
+    appliance space or a panel would count.
     """
     same = [
         part
@@ -980,27 +1021,46 @@ def _printed_tag(view: DrawingView, box: _Box, row: _Box, code: CodeFinding) -> 
         named = ", ".join(sorted(repr(tag.text) for tag in tags))
         return f"code's part finder read more than one tag on it ({named})"
     (tag,) = tags
+    prefix = _letters(tag.text)
+    if prefix not in CABINET_TAG_PREFIXES:
+        return (
+            f"the code {tag.text!r} printed on it does not start with a base-cabinet letter code "
+            f"({', '.join(CABINET_TAG_PREFIXES)}), so it may name an appliance, a filler, a panel, or a "
+            "wall or tall cabinet"
+        )
     if tag.bottom > box.top:
         return f"the tag {tag.text!r} is not printed above its dimension"
-    height = tag.bottom - tag.top
-    lower = sorted(
-        {
-            other.text
-            for other in code.codes
-            if other != tag
-            and row.left <= other.left
-            and other.right <= row.right
-            and other.bottom <= box.top
-            and other.top > tag.bottom + height
-        }
-    )
+    region = _region_box(view)
+    over_row = [
+        other
+        for other in code.codes
+        if other != tag
+        and region is not None
+        and row.left <= other.left
+        and other.right <= row.right
+        and region.top <= other.top
+        and other.bottom <= region.bottom
+    ]
+    height = min(tag.bottom - tag.top, tag.right - tag.left)
+    lower = sorted({other.text for other in over_row if other.top > tag.bottom + height})
     if lower:
         return (
             f"the tag {tag.text!r} over it stands higher up the wall than "
             f"{', '.join(repr(text) for text in lower)} printed over the same row, so it is a "
             "wall cabinet's"
         )
+    if not any(other.bottom <= box.top for other in over_row):
+        return (
+            f"the tag {tag.text!r} is the only cabinet code printed over the row, so nothing shows "
+            "it is the row's own and not a wall cabinet's above it"
+        )
     return tag
+
+
+def _letters(code: str) -> str:
+    """A cabinet code's leading capital letters: `"SB"` for a sink base's code."""
+    found = _LEADING_LETTERS.match(code)
+    return "" if found is None else found.group(0)
 
 
 def _reason(text: str) -> str:
