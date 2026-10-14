@@ -24,17 +24,27 @@ Lookup = Callable[[Session, UUID], EffectivePairing | None]
 
 
 def stored_pairings(lookup: Callable[[Any, UUID], EffectivePairing | None]) -> Lookup:
-    """`lookup`, with each pairing it returns stored once per row as a real record."""
-    stored: dict[tuple[UUID, UUID], EffectivePairing] = {}
-    used_ids: set[UUID] = set()
+    """`lookup`, with each pairing it returns backed by a real record on its row.
+
+    A row with no record gets one (a root record, with the pairing's own id when that id is free).
+    A row a test already gave records keeps them untouched: the pairing names the newest one with
+    the same source, or is returned as it is. "No pairing" (`none`) is never stored."""
 
     def wrapped(session: Session, anchor_id: UUID) -> EffectivePairing | None:
         pairing = lookup(session, anchor_id)
-        if pairing is None:
-            return None
-        key = (anchor_id, pairing.record_id)
-        if key in stored:
-            return stored[key]
+        if pairing is None or pairing.source == "none":
+            return pairing
+        named = session.get(ArchitectPairingRecord, pairing.record_id)
+        if named is not None and named.row_anchor_candidate_id == anchor_id:
+            return pairing
+        existing = session.scalars(
+            select(ArchitectPairingRecord)
+            .where(ArchitectPairingRecord.row_anchor_candidate_id == anchor_id)
+            .order_by(ArchitectPairingRecord.created_at.desc(), ArchitectPairingRecord.id)
+        ).all()
+        if existing:
+            same = next((record for record in existing if record.source == pairing.source), None)
+            return pairing if same is None else replace(pairing, record_id=same.id)
         anchor = session.get(ObservationCandidate, anchor_id)
         if anchor is None:
             return pairing
@@ -43,7 +53,7 @@ def stored_pairings(lookup: Callable[[Any, UUID], EffectivePairing | None]) -> L
             .where(PackageRevisionDocument.document_version_id == anchor.document_version_id)
             .limit(1)
         )
-        record_id = pairing.record_id if pairing.record_id not in used_ids else uuid4()
+        record_id = pairing.record_id if named is None else uuid4()
         reviewer = pairing.source == "reviewer"
         session.add(
             ArchitectPairingRecord(
@@ -60,8 +70,6 @@ def stored_pairings(lookup: Callable[[Any, UUID], EffectivePairing | None]) -> L
             )
         )
         session.flush()
-        used_ids.add(record_id)
-        stored[key] = replace(pairing, record_id=record_id)
-        return stored[key]
+        return replace(pairing, record_id=record_id)
 
     return wrapped
