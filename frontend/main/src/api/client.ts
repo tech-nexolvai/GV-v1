@@ -1024,6 +1024,8 @@ export type SlotReaderRow = {
   field_cut_in_force?: string | null;
   /** What code saw at the row's ends (#1202); the vendor's words there are evidence only. */
   wall_evidence?: string[];
+  /** Why the walls are asked again (#1241): an earlier wall answer could not be carried here. */
+  wall_hold_reason?: string | null;
 };
 
 export function listSlotReaderRows(projectId: string, packageId: string) {
