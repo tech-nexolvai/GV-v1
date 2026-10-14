@@ -733,10 +733,8 @@ D2, D3, D4 or D7, the interface is sketched but must not be implemented until th
 CI orchestration is owned by **`.github/workflows/ci.yml`**. It is not application code and has no
 runtime import permissions or public application API. The workflow keeps formatting, lint, type,
 frontend and safety checks as required checks, while the complete pytest suite runs in a four-job
-matrix. Each matrix job owns its own PostgreSQL 17 server and database; workers never share a test
-database or schema. The server is installed on the runner from the PostgreSQL project's apt repository,
-not pulled as a container image, because both registries tried so far turned shards red with an
-anonymous pull limit (#1156, #1260).
+matrix. Each matrix job owns its own PostgreSQL service and database; workers never share a test
+database or schema.
 
 The test-only dependency **`pytest-split`** is declared in the `dev` extra in `pyproject.toml`. Its
 public interface is the pytest CLI, not a GV wrapper:
