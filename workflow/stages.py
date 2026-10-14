@@ -389,6 +389,7 @@ from workflow.layout_proposals import (
 )
 from workflow.measurements import run_parameters_for
 from workflow.model_call_recorder import ModelCallRecorder
+from workflow.nina_gate import hold_unsafe_decisions
 from workflow.outbox import enqueue
 from workflow.part_operands import (
     CountertopScope,
@@ -7940,6 +7941,13 @@ class DatabaseStages:
             )
             written += 1
 
+        # **Nina's gate (#1228).** After the last new finding and before any decision carries
+        # over: a live PASS or FAIL that breaks a safety rule (a one-judgment pairing, an
+        # unwitnessed reading or automatic walls with no click, missing or unqualified inputs, a
+        # contract gate) is held for a person, with the run check's reason. It only ever holds;
+        # a run that breaks no rule is left exactly as it was (`workflow/nina_gate.py`).
+        nina_gate = hold_unsafe_decisions(session, package_revision_id)
+
         # **A reviewer's decision carries over only an unchanged result (#1073).** In this same
         # transaction, after the last new finding: each new result whose stored fingerprint equals
         # exactly one result it replaced inherits that result's still-valid decision, as an
@@ -7956,6 +7964,7 @@ class DatabaseStages:
             "ran": True,
             "findings": written,
             "decisions_carried_over": carried,
+            "pariksha_nina_gate": nina_gate.to_dict(),
             "rules_published": len(store.rule_ids()),
             "product_type": None if selected_product is None else selected_product.value,
             "rules_not_in_scope": not_in_scope,

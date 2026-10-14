@@ -112,6 +112,7 @@ from workflow.architect_row_plan import (
     pairing_source_from_notes,
     plan_architect_row,
 )
+from workflow.pariksha_gates import stopped_by_rekha
 from workflow.part_operands import reviewer_owned_pages
 from workflow.slot_row_scope import (
     ROW_CHOICE_SPLIT,
@@ -857,6 +858,10 @@ def _split_page_item(
 
     No pieces, no walls and no architect comparison, because no row was chosen to read. It needs the
     reviewer until its check result is decided, exactly like a held row.
+
+    A page whose line both AIs chose but Rekha's gate stopped (no printed numbers, #1228) is the
+    same held item with the same hold code (the screen shows it as a page to pick the row on), and
+    says truthfully that both readers agreed on the line.
     """
     return CountertopResultOut(
         finding_id=None if finding is None else finding.id,
@@ -875,7 +880,9 @@ def _split_page_item(
         delta=None,
         wall_layout=WallLayoutOut(config=None, label=None, source="not established"),
         agreement=AgreementFactsOut(
-            both_readers_agreed_on_row=False, values_agreed=(), code_clue_used=False
+            both_readers_agreed_on_row=stopped_by_rekha(page.record.ambiguity_flags),
+            values_agreed=(),
+            code_clue_used=False,
         ),
         hold=HoldOut(code=ROW_CHOICE_SPLIT, reason=page.reason),
         architect=ArchitectResultOut(not_compared_reason=NO_ROW_CHOSEN),

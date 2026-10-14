@@ -51,6 +51,7 @@ from extraction.architect.labels import read_label
 from storage.local import LocalStore
 from tests.api.test_slot_rows import _package_rows, _reader_support
 from tests.app.postgres_fixture import alembic_config
+from tests.workflow.stored_pairings import stored_pairings
 from verdict.finding import Finding as DomainFinding
 from verdict.operands import EvidenceStatus, VerdictOperand
 from verdict.outcomes import Outcome
@@ -242,7 +243,7 @@ def _run(
     found = dict(pairings or {})
     stages = DatabaseStages(
         store=LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test"),
-        architect_pairing=lambda _session, anchor: found.get(anchor),
+        architect_pairing=stored_pairings(lambda _session, anchor: found.get(anchor)),
     )
     stages.run_checks(session, revision.id)
     rows = session.execute(
