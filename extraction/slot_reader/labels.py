@@ -7,8 +7,8 @@ model: it is exact arithmetic on characters. What it accepts, and nothing else:
   from #987).
 - **Two numbers, one in brackets** — `648 [25 1/2]` (mm [in], as GV's vendors print) or `25 [635]`
   (in [mm]) — read as the inch number, on either side, only where the two corroborate: one is the
-  other times 25.4, within 3 mm for GV's mm-first order (Anant, 2026-10-15) and within the mm's own
-  last digit for inches first (#1263). Otherwise held. Millimetres only choose which number is the
+  other times 25.4, for GV's mm-first order within 3 mm (Anant, 2026-10-15) and both printed
+  roundings, and for inches first within the mm's own last digit (#1263). Otherwise held. Millimetres only choose which number is the
   inches; they are never the value (CLAUDE.md, the client lead's Q12).
 - **A sum, `a"+b"`**, optionally followed by the word `Filler` (the vendor prints `4"+1" Filler` for
   a filler made of two strips). One piece whose width is a + b exactly. Every part must carry its
@@ -77,7 +77,7 @@ _PAIR: Final = re.compile(
 #: 25.4 mm to the inch, exactly.
 _MM_PER_INCH: Final = Fraction(254, 10)
 #: GV's order, mm first (`648 [25 1/2]`): the printed mm must be within this many mm of 25.4 times
-#: the printed inches, inclusive. **Decided by Anant, 2026-10-15** (#1263 review). Wide enough for
+#: the printed inches, inclusive, and within both printed roundings (`_gv_order_allowance`). **Decided by Anant, 2026-10-15** (#1263 review). Wide enough for
 #: the vendor printing the inch to its fraction (a whole-inch label is often a millimetre or two
 #: off), narrow enough that a lost stacked 1/2" (12.7 mm) is held, not read as the whole inch.
 GV_ORDER_MM_MATCH: Final = Fraction(3)
@@ -134,11 +134,30 @@ def _number(number: str) -> Fraction:
     return Fraction(whole) + (Fraction(fraction) if fraction else 0)
 
 
+def _both_roundings(millimetres: str, inches: str) -> Fraction:
+    """How far apart two honest printings of one length can be: each number is the length rounded
+    to the step it is printed in, so half the mm's step plus half the inch's step in mm (the
+    allowance `units.policy.check_dual` uses, and the slot reader used before #1263)."""
+    return _printed_step(millimetres) / 2 + _MM_PER_INCH * _printed_step(inches) / 2
+
+
+def _gv_order_allowance(millimetres: str, inches: str) -> Fraction:
+    """GV's order, mm first: **the smaller of 3 mm and both printed roundings.**
+
+    3 mm is Anant's decision (2026-10-15): it holds a lost stacked 1/2" that both roundings
+    (13.2 mm for a whole inch) let through. Both roundings are the tighter bound for a fraction
+    under 1/4" (1/8": 2.09 mm), where 3 mm would let a stacked `7 3/8"` split as `7 [3/8]` read as
+    3/8". The smaller of the two is strictly tighter than either, so no label the reader held
+    before #1263 for its mm becomes a value (coordinator, 2026-10-15, under Anant's "tight").
+    """
+    return min(GV_ORDER_MM_MATCH, _both_roundings(millimetres, inches))
+
+
 def _corroborates(millimetres: str, inches: str, *, gv_order: bool) -> bool:
     """Whether the printed mm is the printed inches times 25.4, within the reading's allowance.
 
-    * **GV's order, mm first** (`648 [25 1/2]`): within `GV_ORDER_MM_MATCH` (3 mm, Anant's
-      decision of 2026-10-15).
+    * **GV's order, mm first** (`648 [25 1/2]`): within the smaller of `GV_ORDER_MM_MATCH` (3 mm,
+      Anant's decision of 2026-10-15) and `_both_roundings` (`_gv_order_allowance`).
     * **Inches first** (`25 [635]`): within half the mm's last printed digit, the mm's own rounding
       and nothing more. A GV label whose mm a reader cut short (`1372 [54]` read as `2 [54]`) must
       never pass as two inches beside 54 mm: 54 is not 50.8 to the millimetre.
@@ -146,7 +165,9 @@ def _corroborates(millimetres: str, inches: str, *, gv_order: bool) -> bool:
     Exact fractions; a fraction over 0 is no number.
     """
     try:
-        allowance = GV_ORDER_MM_MATCH if gv_order else _printed_step(millimetres) / 2
+        allowance = (
+            _gv_order_allowance(millimetres, inches) if gv_order else _printed_step(millimetres) / 2
+        )
         return abs(_number(millimetres) - _MM_PER_INCH * _number(inches)) <= allowance
     except ZeroDivisionError:
         return False
