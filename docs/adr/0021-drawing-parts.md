@@ -82,14 +82,30 @@ only**, following the precedent of code's view roles (decisions D2/D3 of 2026-10
   suggestion anyone has decided, nor where a person's current decision (confirmed or withdrawn)
   stands on a countertop at the same place on the same drawing (`why_code_may_not_confirm`).
   After: on every match, code takes its own item back where a person has since decided a
-  countertop at the same place, so a person adding a countertop over code's, or deciding an older
-  suggestion while match confirmed a newer overlapping one, ends with the person's alone. A person
-  undoes code's item on the Measure page ("Found by code: two checks agreed · Undo", a
-  withdrawal), and a person's later decision on it replaces code's like any other. "The same
-  place" is outlines overlapping from left to right on one drawing.
-- **One place, one countertop.** Code also writes nothing where any live countertop already stands
-  on the same drawing, whoever made it, and the match result says "an earlier revision's
-  countertop stands here".
+  countertop at the same place, so a person adding a countertop over code's item of **this**
+  revision, or deciding an older suggestion while match confirmed a newer overlapping one, ends
+  with the person's alone. Where code's item came from another revision's reading, code does not
+  take it back (below): both stay live until a person undoes code's. **The take-back waits for
+  the next match**, which runs only in the full pipeline (a new reading, or a re-run), so the two
+  overlapping countertops can stand until then, possibly up to sign-off; while they do, the drawing
+  only holds back (no item is a check scope unless a person stands by it, and two countertops on a
+  drawing make its checks abstain). A person can end it at once with Undo. A person undoes code's
+  item on the Measure page ("Found by code: two checks agreed · Undo", a withdrawal), and a
+  person's later decision on it replaces code's like any other. "The same place" is outlines
+  overlapping from left to right on one drawing.
+- **A person's run beneath code's item is a person's decision about it** (re-review of #1248).
+  A person may confirm (or withdraw) the run beneath code's countertop, which then becomes a
+  checked countertop. **Code never takes that item back**, whatever a later read says: a newer
+  reading, a row that stops agreeing, a person's countertop over it. The match result lists it
+  under `kept` ("kept: a person confirmed a run beneath it", with why it would otherwise have
+  gone), and `withdraw_part` in code's name refuses it. Taking it back would leave the person's run
+  on a dead item and turn its check into "No live confirmed countertop run remains", hiding a real
+  result. A person removes it with Undo.
+- **No two overlapping countertops by code.** Code also writes nothing where a live countertop's
+  outline overlaps on the same drawing, whoever made it, and says why: "a person confirmed a run
+  beneath the countertop here" for code's item kept under a person's run, otherwise "an earlier
+  revision's countertop stands here". Side-by-side countertops on one drawing do not block each
+  other.
 - **Code takes back only its own item, and only one this revision's reading made**
   (`release_contradicted_code_part`, as `release_contradicted_code_role` does for roles): when a
   newer slot-reader run of this revision replaces the row, when the newest read no longer gives
@@ -99,7 +115,11 @@ only**, following the precedent of code's view roles (decisions D2/D3 of 2026-10
   another revision's records (it finds its items by the reading's run, `package_revision_id`).
   Such an item stays live and is listed on the new revision's Measure page with Undo, which is a
   person's decision and so allowed there. `withdraw_part` in code's name refuses unless the current
-  decision is code's own confirmation.
+  decision is code's own confirmation, with no person's run beneath it.
+  **The other way round is allowed, as it is for a person's decisions:** a new revision's match can
+  still add code's item on a drawing it shares with a signed-off revision. That item is visible on
+  the signed-off revision's Measure page, is not counted against its sign-off (code's decisions are
+  not reviewer input, below), and changes none of its findings, which are frozen with its sign-off.
 - **Pieces stay a person's click** (decision 2): cabinets and fillers are never confirmed by code.
 - **Off by default**, behind `GV_BALA_AUTO_ITEMS`. **Off is not a rollback:** switching it off stops
   code making new items, but code's items whose two judgments still agree stay live. Code takes one
@@ -135,10 +155,18 @@ never takes a page from its countertop row (review of #1248: before this, one pe
 anywhere in the revision turned code's page into a "Confirm this countertop's run" question that
 hid the row's real result). Code never writes a run or a reading link, and no item sets
 `corroborated`. CT-WIDTH and CAB-FILLER read exactly what they read before, with or without
-code's items, until a person decides a run beneath one of them. The $0 proof on the four stored
+code's items, until a person decides a run beneath one of them; from then on code never takes
+that item back, so a later read cannot hide the run's result. The $0 proof on the four stored
 sets (#1244) found no automatic countertop on a page or row that is not a countertop, and findings
-byte-identical with the switch off and on; the re-run after the review adds a person's run beside
-code's item.
+byte-identical with the switch off and on; the re-runs after the reviews add a person's run beside
+code's item, and a person's run beneath it followed by a newer reading.
+
+**Caveat: "identical with the switch on or off" holds until #1247 (items used) merges.** After
+it, a drawing holding more than one live countertop withholds its readings, so code's item beside
+a person's countertop on the same drawing (until the next match takes it back, or for ever when it
+came from another revision) can turn that drawing's PASS into REVIEW_REQUIRED ("drawing that holds
+more than one confirmed countertop"). That is the safe direction: code's items can then only
+withhold, never move a result toward PASS.
 
 ## Unblocks
 
