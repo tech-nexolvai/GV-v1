@@ -272,6 +272,48 @@ export DATABASE_URL=postgresql+psycopg://gv:gv@localhost:5433/gv
 make check
 ```
 
+### Refreshing the test-shard timings
+
+CI runs the Python tests in four shards that are meant to finish together. `pytest-split` deals the
+tests out by the times recorded in `.test_durations`, and counts a test that is missing from the file at
+the average, so the shards drift apart as tests are added or get slower. When the shards' pytest times
+in a CI run are more than about 20% apart, or many tests have been added since the last refresh,
+record new times **on CI** (a laptop runs the suite at a different speed, so its times balance nothing):
+
+1. Run the CI workflow by hand with `store_durations` ticked. Every shard runs its usual tests and also
+   uploads the times of its own tests:
+
+   ```bash
+   gh workflow run ci.yml --ref <your-branch> -f store_durations=true
+   ```
+
+2. When that run is green, join the four files. The shards never share a test, so this is a plain
+   union; the script stops if any test appears twice or a shard file is missing.
+
+   ```bash
+   run=<id of the green run>
+   dir=$(mktemp -d)
+   gh run download "$run" --pattern 'test-durations-shard-*' --dir "$dir"
+   python3 - "$dir" <<'EOF'
+   import json, pathlib, sys
+   files = sorted(pathlib.Path(sys.argv[1]).glob("test-durations-shard-*/*.json"))
+   assert len(files) == 4, f"expected 4 shard files, found {len(files)}"
+   merged = {}
+   for path in files:
+       shard = json.loads(path.read_text())
+       assert not merged.keys() & shard.keys(), f"{path.name} repeats a test"
+       merged.update(shard)
+   text = json.dumps(merged, sort_keys=True, indent=4) + "\n"
+   pathlib.Path(".test_durations").write_text(text)
+   print(f"{len(merged)} tests, {sum(merged.values()):.0f} s recorded")
+   EOF
+   ```
+
+   The test count printed should equal the count in that run's "Verify complete, non-overlapping
+   shard coverage" step (in the `Python quality` job).
+
+3. Commit `.test_durations` in a pull request. Its CI run shows the new balance.
+
 ---
 
 ## What a story must contain before it can be worked
