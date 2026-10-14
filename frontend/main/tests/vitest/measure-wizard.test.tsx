@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MeasurementPanel } from '@/pages/MeasurementPanel';
+import type { ReadingActivityOut } from '@/lib/reading-activity';
 import { CountertopRunsList } from '@/components/measure/CountertopRunsList';
 import { countOf, isComplete, stepAfter, stepBefore, sumCounts } from '@/lib/measure-steps';
 import { slotRowCount, unsavedRowCount } from '@/components/measure/slotReaderReview';
@@ -345,10 +346,10 @@ describe('measurements: the live reading activity while reading (#1239)', () => 
       if (url.endsWith('/slot-rows')) return json({ rows: [] });
       return json({ error: 'unexpected', message: url, request_id: 'r' }, 500);
     });
-    const activity = {
-      reading_id: 'r1', finished: false, updated_at: null, now: null,
-      items: [{ page: 2, agent: 'Akshara', role: 'the number reader', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look-2x', attempt: 1, line: 'Page 2: the number reader is trying again (try 1 of 3) with a 2× close-up.', at: null }],
-      summary: { passed: 3, stopped: 1, tried_again: 1, helped: 0, waiting: 0, sentence: null },
+    const activity: ReadingActivityOut = {
+      reading_id: 'r1', finished: false, updated_at: '2026-10-14T10:00:00Z', now: '',
+      items: [{ page: 2, agent: 'Akshara', role: 'the number reader', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look-2x', attempt: 1, line: 'Page 2: the number reader is trying again (try 1 of 3) with a 2× close-up.', at: '2026-10-14T10:00:00Z' }],
+      summary: { passed: 3, stopped: 1, tried_again: 1, helped: 0, waiting: 0, sentence: '' },
     };
     const view = render(<MeasurementPanel packageId="pkg" readingActivity={activity} readingPages={{ pagesDone: 1, pagesTotal: 4 }} />);
     await screen.findAllByText('Reading these drawings');

@@ -6,73 +6,21 @@
  * plain sentence with role names, never an agent's name), and the activity carries `now` and
  * `summary.sentence`. The screen shows them word for word and adds only the role tag (the agent's
  * name on hover, Anant's phase 3 decision 1), a glyph by state and the links to Decisions. The
- * wording table below is a fallback for a sentence that is missing, so nothing is ever blank.
+ * wording table below is a fallback for a sentence that is empty, so nothing is ever blank.
  *
  * It decides nothing. "Passed" here means an inspector let the work go on; it is not a PASS result,
  * and nothing on this panel is an outcome.
  */
 
+import type { components } from '@/api/schema';
 import { pageWords } from '@/lib/review-stage';
 
-/**
- * One happening, as `PackageOut.activity.items[]` reports it (the shape #1242 posted). Mirrors it
- * until the generated types land; read through `readActivity`, so a missing or odd field never
- * breaks the page.
- */
-export interface ReadingActivityItemOut {
-  page: number;
-  /** The agent's name ("Rekha", "Akshara", …); shown only on hover. */
-  agent: string;
-  /** The agent's role in plain words ("the number reader"): the row's tag. */
-  role: string | null;
-  /** A code question id, e.g. `p11:slot0:0`; never drawing text. */
-  item: string;
-  /** `answered`, `stopped`, `trying_again`, `helped` or `waiting`: the row's glyph. */
-  state: string;
-  /** Why: `readers-differ`, `no-printed-numbers`, `not-helped`, `allowance-used`, `cannot-zoom`, … */
-  code: string | null;
-  /**
-   * What changed on a try-again (fixed codes): the number reader `closer-look-2x`,
-   * `closer-look-3x-upright`, `tighter-crop`; the line finder `tie-break-disputed-lines`,
-   * `other-numbered-lines`, `each-line-alone`. Null otherwise.
-   */
-  change: string | null;
-  /** Which try this is, 1 to 3 (Anant: up to 3 tries per item); null when not a try-again. */
-  attempt: number | null;
-  /** The server's plain sentence for this happening: what the screen shows. */
-  line: string | null;
-  at: string | null;
-}
-
-export interface ReadingActivitySummaryOut {
-  /** Inspector passes: counted, never listed. */
-  passed: number;
-  stopped: number;
-  tried_again: number;
-  helped: number;
-  /** Every item waiting for a person (stopped and not tried, or tried and not helped). */
-  waiting: number;
-  /** The server's summary sentence, e.g. "Tried again on 2 items: 1 now agree; 1 item waits for you." */
-  sentence: string | null;
-}
-
-export interface ReadingActivityOut {
-  reading_id: string;
-  /**
-   * False for a reading whose stage failed (and nothing reads now): no items, zero counts, and a
-   * sentence saying what it did is not shown. Also false for the attempt still running.
-   */
-  finished: boolean;
-  updated_at: string | null;
-  /** The newest line while reading; the summary sentence once the reading has ended. */
-  now: string | null;
-  /**
-   * Up to 20, in the server's order: items stopped, trying again, helped or waiting first (newest
-   * first), then answered pages in any places left. Passes are only counted.
-   */
-  items: ReadingActivityItemOut[];
-  summary: ReadingActivitySummaryOut | null;
-}
+/** One happening (`PackageOut.activity.items[]`, #1238), as the API's generated types say. */
+export type ReadingActivityItemOut = components['schemas']['ReadingActivityItemOut'];
+/** The reading's counts and its one summary sentence. */
+export type ReadingActivitySummaryOut = components['schemas']['ReadingActivitySummaryOut'];
+/** `PackageOut.activity`: null before the running attempt's first event, and on the package list. */
+export type ReadingActivityOut = components['schemas']['ReadingActivityOut'];
 
 /** The role each agent plays, for an item whose `role` is missing. The agent's name stays on hover. */
 const ROLES: Record<string, string> = {
@@ -249,50 +197,4 @@ export function linkedParts(sentence: string): { text: string; link: boolean }[]
     .split(DECISION_COUNT)
     .map((part, index) => ({ text: part, link: index % 2 === 1 }))
     .filter((part) => part.text !== '');
-}
-
-function text(value: unknown): string | null {
-  return typeof value === 'string' ? value : null;
-}
-
-function count(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-}
-
-/**
- * `PackageOut.activity`, read tolerantly: absent, null or a shape this screen does not know is no
- * activity (the panel then shows nothing); a broken item is dropped rather than drawn wrong.
- */
-export function readActivity(value: unknown): ReadingActivityOut | null {
-  if (!value || typeof value !== 'object') return null;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.reading_id !== 'string' || !Array.isArray(raw.items)) return null;
-  const items: ReadingActivityItemOut[] = [];
-  for (const entry of raw.items as unknown[]) {
-    if (!entry || typeof entry !== 'object') continue;
-    const it = entry as Record<string, unknown>;
-    if (typeof it.page !== 'number' || typeof it.agent !== 'string' || typeof it.state !== 'string') continue;
-    items.push({
-      page: it.page,
-      agent: it.agent,
-      role: text(it.role),
-      item: text(it.item) ?? '',
-      state: it.state,
-      code: text(it.code),
-      change: text(it.change),
-      attempt: typeof it.attempt === 'number' && Number.isFinite(it.attempt) ? it.attempt : null,
-      line: text(it.line),
-      at: text(it.at),
-    });
-  }
-  const s = raw.summary && typeof raw.summary === 'object' ? (raw.summary as Record<string, unknown>) : null;
-  return {
-    reading_id: raw.reading_id,
-    // Absent (an older answer) counts as finished: only an explicit false says it did not finish.
-    finished: raw.finished !== false,
-    updated_at: text(raw.updated_at),
-    now: text(raw.now),
-    items,
-    summary: s ? { passed: count(s.passed), stopped: count(s.stopped), tried_again: count(s.tried_again), helped: count(s.helped), waiting: count(s.waiting), sentence: text(s.sentence) } : null,
-  };
 }

@@ -48,7 +48,7 @@ import { HeaderActions, HeaderTitleExtra } from '../components/shell/ShellHeader
 import { reviewStage, type NextActionKind } from '@/lib/review-stage';
 import { ReviewStepper } from '@/components/review/review-stepper';
 import { ReadingActivity } from '@/components/review/reading-activity';
-import { readActivity, type ReadingActivityOut } from '@/lib/reading-activity';
+import type { ReadingActivityOut } from '@/lib/reading-activity';
 import { NextActionButton, type SecondaryAction } from '@/components/review/next-action';
 import { ChangedValuesBadge } from '@/components/review/changed-values-badge';
 import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
@@ -1389,9 +1389,9 @@ function ReviewSkeleton() {
 }
 
 /**
- * `PackageOut.activity` (#1238), read tolerantly: until the API sends it, or when it is null, there
- * is no activity and the panel shows nothing.
+ * `PackageOut.activity` (#1238): null before the running attempt's first event, and then the panel
+ * shows nothing (the stepper's progress line still says where the reading is).
  */
 function activityOf(detail: PackageDetail): ReadingActivityOut | null {
-  return readActivity((detail as { activity?: unknown }).activity);
+  return detail.activity ?? null;
 }

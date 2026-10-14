@@ -18,7 +18,6 @@ import {
   activityLine,
   fallbackLine,
   linkedParts,
-  readActivity,
   readingHeadline,
   roleTag,
   summarySentence,
@@ -45,22 +44,22 @@ function item(over: Partial<ReadingActivityItemOut>): ReadingActivityItemOut {
   };
 }
 
-const NO_SUMMARY: ReadingActivitySummaryOut = { passed: 0, stopped: 0, tried_again: 0, helped: 0, waiting: 0, sentence: null };
+const NO_SUMMARY: ReadingActivitySummaryOut = { passed: 0, stopped: 0, tried_again: 0, helped: 0, waiting: 0, sentence: '' };
 
 function activity(over: Partial<ReadingActivityOut> = {}): ReadingActivityOut {
   return {
     reading_id: '00000000-0000-4000-8000-000000000001',
     finished: true,
     updated_at: '2026-10-14T10:00:05Z',
-    now: null,
+    now: '',
     items: [],
     summary: NO_SUMMARY,
     ...over,
   };
 }
 
-/** #1242's posted example, as JSON from the wire. */
-const POSTED = {
+/** #1242's posted example, typed by the API's generated types. */
+const POSTED: ReadingActivityOut = {
   reading_id: '00000000-0000-4000-8000-000000000002', finished: true, updated_at: '2026-10-14T10:00:09Z', now: SERVER.now,
   items: [{
     page: 12, agent: 'Akshara', role: 'the number reader', item: 'p11:slot0:0', state: 'trying_again', code: 'readers-differ',
@@ -107,25 +106,27 @@ describe('reading activity: the server owns every sentence (#1242)', () => {
     expect(summarySentence(POSTED.summary)).toBe(SERVER.summary);
     expect(summarySentence(POSTED.summary, 'Something else the server said.')).toBe(SERVER.summary);
     expect(summarySentence({ ...POSTED.summary, sentence: '' }, 'Reading finished: 1 item waits for you.')).toBe('Reading finished: 1 item waits for you.');
-    expect(summarySentence({ ...POSTED.summary, sentence: null }, '  ')).toBe('Tried again on 2 items: 1 now agree; 1 item waits for you.');
+    expect(summarySentence({ ...POSTED.summary, sentence: '' }, '  ')).toBe('Tried again on 2 items: 1 now agree; 1 item waits for you.');
     expect(summarySentence(null, 'Reading finished: nothing waits for you.')).toBe('Reading finished: nothing waits for you.');
   });
 
-  it('reads #1242\'s posted example exactly', () => {
-    expect(readActivity(POSTED)).toEqual(POSTED);
+  it('#1242\'s posted example fits the generated type and renders its own words', () => {
+    show({ activity: POSTED, reading: true });
+    expect(screen.getAllByText(SERVER.trying).length).toBeGreaterThan(0);
+    expect(screen.getByText('Number reader')).toBeTruthy();
   });
 });
 
 describe('reading activity: the fallback when a sentence is missing', () => {
-  it('a missing or empty line uses the screen\'s own words', () => {
-    expect(activityLine(item({ line: null }))).toBe('Page 12: the two AIs picked different lines.');
+  it('a empty line uses the screen\'s own words', () => {
+    expect(activityLine(item({ line: '' }))).toBe('Page 12: the two AIs picked different lines.');
     expect(activityLine(item({ line: '  ' }))).toBe('Page 12: the two AIs picked different lines.');
   });
 
   it('answered', () => {
-    expect(fallbackLine(item({ state: 'answered', code: null }))).toBe('Page 12: the line finder answered.');
+    expect(fallbackLine(item({ state: 'answered', code: 'answered' }))).toBe('Page 12: the line finder answered.');
     // The server's role words are used where given.
-    expect(fallbackLine(item({ agent: 'Somebody', role: 'the new helper', state: 'answered', code: null }))).toBe('Page 12: the new helper answered.');
+    expect(fallbackLine(item({ agent: 'Somebody', role: 'the new helper', state: 'answered', code: 'answered' }))).toBe('Page 12: the new helper answered.');
   });
 
   it('stopped', () => {
@@ -133,7 +134,7 @@ describe('reading activity: the fallback when a sentence is missing', () => {
     expect(fallbackLine(item({ agent: 'Akshara', code: 'readers-differ' }))).toBe('Page 12: the two AIs read one number differently.');
     expect(fallbackLine(item({ agent: 'Akshara', code: 'unsure' }))).toBe('Page 12: an AI was not sure about one number.');
     expect(fallbackLine(item({ agent: 'Akshara', code: 'unreadable' }))).toBe('Page 12: an AI could not read one number clearly.');
-    expect(fallbackLine(item({ agent: 'Milan', role: null, code: 'some-new-code' }))).toBe('Page 12: the matcher stopped on one item. Waiting for you.');
+    expect(fallbackLine(item({ agent: 'Milan', role: '', code: 'some-new-code' }))).toBe('Page 12: the matcher stopped on one item. Waiting for you.');
   });
 
   it('trying again: each fixed change code (Anant: up to 3 tries, each changing something)', () => {
@@ -195,12 +196,12 @@ describe('reading activity: role names on screen, agent names on hover (Anant, d
   it('the tag is the server\'s role; else the role this screen knows; never the agent', () => {
     expect(roleTag(item({ role: 'the number reader' }))).toBe('Number reader');
     expect(roleTag(item({ agent: 'Somebody', role: 'the new helper' }))).toBe('New helper');
-    expect(roleTag(item({ agent: 'Rekha', role: null }))).toBe('Line finder');
+    expect(roleTag(item({ agent: 'Rekha', role: '' }))).toBe('Line finder');
     expect(roleTag(item({ agent: 'Akshara', role: '' }))).toBe('Number reader');
-    expect(roleTag(item({ agent: 'Somebody', role: null }))).toBe('AI helper');
+    expect(roleTag(item({ agent: 'Somebody', role: '' }))).toBe('AI helper');
     // The page sorter's items (unread pages, budget reached, no line found) appear too (#1242).
     expect(roleTag(item({ agent: 'Bala', role: 'the page sorter' }))).toBe('Page sorter');
-    expect(roleTag(item({ agent: 'Bala', role: null }))).toBe('Page sorter');
+    expect(roleTag(item({ agent: 'Bala', role: '' }))).toBe('Page sorter');
   });
 
   it('shows the role on the row and the agent name only on hover', async () => {
@@ -310,7 +311,7 @@ describe('reading activity: the panel', () => {
 describe('reading activity: the summary after reading', () => {
   it('shows the server\'s sentence with both counts linking to Decisions', async () => {
     const onOpenDecisions = vi.fn();
-    show({ activity: readActivity({ ...POSTED, now: SERVER.summary }), reading: false, onOpenDecisions });
+    show({ activity: { ...POSTED, now: SERVER.summary }, reading: false, onOpenDecisions });
     const region = screen.getByRole('status');
     expect(region.textContent).toBe(SERVER.summary);
     // After reading, the summary replaces the running list.
@@ -360,27 +361,5 @@ describe('reading activity: the summary after reading', () => {
   it('shows nothing after a reading where nothing stopped (passes are only counted)', () => {
     const { container } = show({ activity: activity({ summary: { ...NO_SUMMARY, passed: 41 } }), reading: false });
     expect(container.textContent).toBe('');
-  });
-});
-
-describe('reading activity: the API value is read tolerantly', () => {
-  it('absent, null or a wrong shape is no activity', () => {
-    expect(readActivity(undefined)).toBeNull();
-    expect(readActivity(null)).toBeNull();
-    expect(readActivity({ reading_id: 'x' })).toBeNull();
-    expect(readActivity('text')).toBeNull();
-  });
-
-  it('reads `finished`; a value that is not a boolean counts as finished', () => {
-    expect(readActivity({ ...POSTED, finished: false })?.finished).toBe(false);
-    expect(readActivity({ ...POSTED, finished: true })?.finished).toBe(true);
-    expect(readActivity({ ...POSTED, finished: undefined })?.finished).toBe(true);
-  });
-
-  it('keeps well-formed items and drops broken ones; odd fields become null', () => {
-    const parsed = readActivity({ ...POSTED, items: [...POSTED.items, { page: 'x' }, null] });
-    expect(parsed?.items).toHaveLength(1);
-    expect(readActivity({ ...POSTED, summary: undefined })?.summary).toBeNull();
-    expect(readActivity({ ...POSTED, items: [{ ...POSTED.items[0], attempt: 'two', line: 7, role: 3 }] })?.items[0]).toMatchObject({ attempt: null, line: null, role: null });
   });
 });
