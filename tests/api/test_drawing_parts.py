@@ -62,6 +62,7 @@ from tests.workflow.test_part_pictures import MARKED_SHEET
 from tests.workflow.test_part_proposals_route import _extract, _upgrade
 from tests.workflow.test_view_roles import _document_version, _item
 from tests.workflow.test_view_roles import _revision as _bare_revision
+from vocabulary.part_kinds import PartKind
 from workflow import parts as workflow_parts
 from workflow.part_pictures import (
     CUT_PART_PICTURES_WORKFLOW,
@@ -965,3 +966,76 @@ def test_backfill_publishes_only_detected_dimension_and_extension_endpoints(
     assert picture.snap_tolerance == str(ASSOCIATION_SETTINGS.witness_tolerance)
     assert picture.snap_points
     assert {point["source"] for point in picture.snap_points} <= {"dimension", "extension"}
+
+
+# -- only a person decides here (#1244, ADR-0021 amendment) ----------------------------------------
+
+
+def _client_as(session: Session, store: LocalStore, project_id: UUID, actor: str) -> Any:
+    """`_client`, but the signed-in principal's id is `actor`."""
+    from fastapi.testclient import TestClient
+
+    from app.api.dependencies import get_artifact_store, get_session
+    from app.auth import Principal, Role, authenticate
+    from app.main import create_app
+    from tests.api.test_drawing_views import _settings
+
+    principal = Principal(
+        id=actor, roles=frozenset({Role("reviewer")}), projects=frozenset({project_id})
+    )
+    app = create_app(_settings())
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_artifact_store] = lambda: store
+    app.dependency_overrides[authenticate] = lambda: principal
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_a_decision_in_code_s_name_is_refused(session: Session, store: LocalStore) -> None:
+    """Code confirms a part only through `confirm_part_by_code`, on two judgments: the endpoints
+    refuse any actor whose name says code (`code:`), and write nothing."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client_as(session, store, project_id, workflow_parts.BALA_CONFIRMER)
+    drawing = _drawing(client, project_id, package_id)
+    first = drawing["parts"][0]
+    url = f"{_base(project_id, package_id)}/parts/{first['proposal_id']}"
+
+    confirmed = client.post(f"{url}/confirm", json={"kind": "countertop"})
+    withdrawn = client.post(f"{url}/withdraw")
+    added = client.post(
+        f"{_base(project_id, package_id)}/views/{drawing['view_id']}/parts",
+        json={"kind": "filler", "ends": [first["left_end"], first["right_end"]]},
+    )
+
+    assert [confirmed.status_code, withdrawn.status_code, added.status_code] == [403, 403, 403]
+    assert "Only a person decides a part here" in confirmed.json()["message"]
+    _nothing_decided(session)
+
+
+def test_code_s_own_item_is_listed_as_found_by_code(session: Session, store: LocalStore) -> None:
+    """The list says which decision code made (`by_code`), so the page offers Undo; a person's
+    decision says false."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    countertop = session.scalars(
+        select(PartProposal).where(PartProposal.kind == "countertop")
+    ).one()
+    made = workflow_parts.confirm_part_by_code(
+        session, proposal=countertop, kind=PartKind.COUNTERTOP, reason="both agree"
+    )
+    assert made is not None
+    session.commit()
+    client = _client(session, store, project_id)
+
+    parts = {
+        part["proposal_id"]: part for part in _drawing(client, project_id, package_id)["parts"]
+    }
+
+    decision = parts[str(countertop.id)]["decision"]
+    assert decision["by_code"] is True
+    assert decision["decided_by"] == workflow_parts.BALA_CONFIRMER
+    # Undo: a person withdraws it.
+    undone = client.post(f"{_base(project_id, package_id)}/parts/{countertop.id}/withdraw")
+    assert undone.status_code == 201, undone.text
+    assert undone.json()["decision"]["by_code"] is False
+    assert undone.json()["decision"]["decision"] == "withdrawn"

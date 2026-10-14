@@ -4,8 +4,9 @@ Until this module nothing suggested a drawing's parts, so a person would have ha
 cabinet by hand. It suggests them from what the drawing already says about itself: the dimensions
 it draws end to end along a run, and the cabinet codes it prints. **A suggestion is not a part**
 (#852). The caller records each one as a `part_proposals` row and nothing more; only a person's
-confirmation makes a drawing item, through `workflow/parts.py:confirm_part`, and a guard test fails
-if anything else writes one.
+confirmation makes a drawing item from it, through `workflow/parts.py:confirm_part`, and a guard
+test fails if anything else writes one. (Code confirms only Bala's countertops from the slot
+reader's rows, on two judgments, #1244; never a suggestion from here.)
 
 ## What is suggested, and from what
 

@@ -3698,6 +3698,12 @@ export interface components {
          * @description What a person last said about one suggestion.
          */
         DecisionOut: {
+            /**
+             * By Code
+             * @description True when code confirmed it, not a person: a countertop whose two judgments agreed (both AI readers named its row, and code found the row wholly inside one drawing confirmed as the vendor's; #1244). The page says so and offers Undo, a person's withdrawal.
+             * @default false
+             */
+            by_code: boolean;
             /** Code */
             code: string | null;
             /**
@@ -7652,6 +7658,13 @@ export interface components {
              * @default []
              */
             categories: string[];
+            /** Confirm Only */
+            confirm_only: boolean;
+            /**
+             * Confirmed Pages
+             * @default []
+             */
+            confirmed_pages: number[];
             /** Consumers */
             consumers: {
                 [key: string]: string;
@@ -7664,6 +7677,8 @@ export interface components {
             semantic_type: string;
             /** Source */
             source: string;
+            /** Where To Find */
+            where_to_find?: string | null;
         };
     };
     responses: never;

@@ -32,7 +32,12 @@ from units.measurement import Measurement
 from verdict.operands import VerdictOperand
 from vocabulary.part_kinds import PartKind
 from workflow.countertop_runs import current_run_decision, live_run_rows
-from workflow.parts import live_part, live_part_item_ids
+from workflow.parts import (
+    CODE_ACTOR_PREFIX,
+    live_part,
+    live_part_item_ids,
+    persons_part_item_ids,
+)
 from workflow.reading_parts import current_links_to, live_reading_parts
 
 
@@ -157,6 +162,12 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
 
     A withdrawn decision still opts the revision into scoped checking. Otherwise withdrawing a
     broken run would restore the unscoped form widths and could turn an abstention into PASS.
+
+    **Only a countertop a person stands by** (review of #1248): one a person confirmed, or one a
+    person confirmed or withdrew a run beneath. Code's own countertop item (#1244) is not a scope
+    on its own: it would take its page from the page's countertop row and ask for a run nobody
+    was asked about, hiding the row's finding. Code's items change no finding until a person
+    decides a run beneath one.
     """
     decided = session.scalar(
         select(CountertopRunDecision.id)
@@ -183,6 +194,12 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
         .where(
             PackageRevisionDocument.package_revision_id == revision_id,
             DrawingItem.id.in_(live_part_item_ids()),
+            DrawingItem.id.in_(persons_part_item_ids())
+            | DrawingItem.id.in_(
+                select(CountertopRunDecision.countertop_item_id).where(
+                    ~CountertopRunDecision.confirmed_by.startswith(CODE_ACTOR_PREFIX)
+                )
+            ),
             DrawingItem.item_type == PartKind.COUNTERTOP.item_type.value,
             DrawingView.role == ViewRole.SHOP.value,
         )

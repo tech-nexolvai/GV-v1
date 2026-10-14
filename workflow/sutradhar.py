@@ -54,6 +54,7 @@ __all__ = [
     "PHRASE_GAP_VARIABLE",
     "StagesFactory",
     "automatic_typing_configuration",
+    "bala_auto_items_configuration",
     "build_package_text",
     "build_stages",
     "carry_forward",
@@ -82,6 +83,11 @@ StagesFactory = Callable[..., object]
 #: match stage as Bala's second judgment for each piece, with the reader's line and detector settings
 #: (`ASSOCIATION_VARIABLES`) and without turning on the localized reader.
 PART_FINDER_VARIABLE = "GV_PART_FINDER_ENABLED"
+
+#: Code's countertop items on two judgments (#1244, the ADR-0021 amendment of 2026-10-14): on, the
+#: match stage confirms a countertop suggestion with no click where both AI row readers and code's
+#: placement agree. Off by default; a person can always undo, and a person always wins.
+BALA_AUTO_ITEMS_VARIABLE = "GV_BALA_AUTO_ITEMS"
 
 #: The settings the line-work reader and the dimension-line detector take (`AssociationSettings`).
 #: Required for the same reason as the rest: each decides which strokes a reading may attach to,
@@ -197,6 +203,15 @@ def part_finder_configuration() -> object | None:
     if not _switched_on(PART_FINDER_VARIABLE):
         return None
     return _association(_stated(ASSOCIATION_VARIABLES, "code's part finder"))
+
+
+def bala_auto_items_configuration() -> bool:
+    """Whether code may confirm a countertop on two judgments (`GV_BALA_AUTO_ITEMS`, #1244).
+
+    Off unless switched on. It needs no settings of its own: both judgments read what the slot
+    reader and the drawings' confirmations already recorded, and nothing here asks a model.
+    """
+    return _switched_on(BALA_AUTO_ITEMS_VARIABLE)
 
 
 #: How a suggested part's picture is cut (#897): how far past the part's outline it reaches, in PDF
@@ -429,6 +444,8 @@ def build_stages(
         ),
         # Code's geometry-only part finder, in memory, as Bala's second judgment (#1236).
         part_finder=part_finder,  # type: ignore[arg-type]
+        # Off unless GV_BALA_AUTO_ITEMS: code's countertop items on two judgments (#1244).
+        bala_auto_items=bala_auto_items_configuration(),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).

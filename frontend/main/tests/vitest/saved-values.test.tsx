@@ -21,9 +21,9 @@ const value = (text: string, numerator: string, denominator: string) => ({
 
 const REQUIRED = {
   quantities: [
-    { key: 'SHOP:top_width', semantic_type: 'top_width', source: 'SHOP', many: false, consumers: [{ rule_id: 'R-WIDTH', input_name: 'top_width' }], categories: [] },
+    { key: 'USER_INPUT:top_width', semantic_type: 'top_width', source: 'USER_INPUT', many: false, consumers: [{ rule_id: 'R-WIDTH', input_name: 'top_width' }], categories: [] },
     { key: 'SHOP:piece_widths', semantic_type: 'piece_widths', source: 'SHOP', many: true, consumers: [{ rule_id: 'R-PIECES', input_name: 'piece_widths' }], categories: [] },
-    { key: 'SHOP:sink_width', semantic_type: 'sink_width', source: 'SHOP', many: false, consumers: [{ rule_id: 'R-SINK', input_name: 'sink_width' }], categories: [] },
+    { key: 'USER_INPUT:sink_width', semantic_type: 'sink_width', source: 'USER_INPUT', many: false, consumers: [{ rule_id: 'R-SINK', input_name: 'sink_width' }], categories: [] },
   ],
   page_numbers: [1],
   confirmed_readings: [],
@@ -38,7 +38,7 @@ const REQUIRED = {
   still_reading: false,
   revision_state: 'READY',
   saved_measurements: [
-    { key: 'SHOP:top_width', values: [value('40 1/2"', '81', '2')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
+    { key: 'USER_INPUT:top_width', values: [value('40 1/2"', '81', '2')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
     { key: 'SHOP:piece_widths', values: [value('12"', '12', '1'), value('15 15/16"', '255', '16')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
   ],
   saved_parameters: [
@@ -194,15 +194,15 @@ describe('Measurements after a reload (#1183)', { timeout: 15_000 }, () => {
     await user.click(stepButton(/Values/));
     // A saved value is done, so "only what needs a look" hides it: show every field.
     await user.click(await screen.findByRole('checkbox', { name: 'Show only what needs a look' }, { timeout: 5000 }));
-    await waitFor(() => expect(box('q-SHOP:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
+    await waitFor(() => expect(box('q-USER_INPUT:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
     const runInputs = screen.getAllByRole('textbox', { name: /Piece widths, item/ }) as HTMLInputElement[];
     expect(runInputs.map((input) => input.value)).toEqual(['12"', '15 15/16"']);
     // Not saved: still empty, and nothing was made up for it.
-    expect(box('q-SHOP:sink_width')?.value).toBe('');
+    expect(box('q-USER_INPUT:sink_width')?.value).toBe('');
     const saved = [...document.querySelectorAll('[data-measure-step="values"] [data-part="saved-by"]')].map((el) => el.textContent);
     expect(saved).toEqual([savedWords, savedWords]);
     // A saved value is a person's: done, never "needs a look".
-    const widthRow = box('q-SHOP:top_width')!.closest('[data-origin]')!;
+    const widthRow = box('q-USER_INPUT:top_width')!.closest('[data-origin]')!;
     expect(widthRow.getAttribute('data-origin')).toBe('saved');
     expect(widthRow.getAttribute('data-review')).toBe('done');
     // Reading back saved nothing (the page picture's own render request is not a save).
@@ -228,7 +228,7 @@ describe('Measurements after a reload (#1183)', { timeout: 15_000 }, () => {
     await user.click(stepButton(/Values/));
     // A saved value is done, so "only what needs a look" hides it: show every field.
     await user.click(await screen.findByRole('checkbox', { name: 'Show only what needs a look' }, { timeout: 5000 }));
-    await waitFor(() => expect(box('q-SHOP:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
+    await waitFor(() => expect(box('q-USER_INPUT:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
     await user.click(screen.getByRole('button', { name: 'Save values' }));
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/measurements'))).toBe(true));
     const first = JSON.parse(calls.find((c) => c.method === 'POST' && c.url.endsWith('/measurements'))!.body!);
@@ -236,8 +236,8 @@ describe('Measurements after a reload (#1183)', { timeout: 15_000 }, () => {
     expect(first.parameters).toEqual([]);
 
     calls.length = 0;
-    await user.clear(box('q-SHOP:top_width')!);
-    await user.type(box('q-SHOP:top_width')!, '41"');
+    await user.clear(box('q-USER_INPUT:top_width')!);
+    await user.type(box('q-USER_INPUT:top_width')!, '41"');
     expect(screen.getByText(/Save values replaces it\./)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Save values' }));
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/measurements'))).toBe(true));
@@ -303,8 +303,8 @@ describe('review fixes (#1183)', { timeout: 20_000 }, () => {
     await openPanel();
     await user.click(stepButton(/Values/));
     // "Show only what needs a look" is on, and the partly saved field is still shown.
-    await waitFor(() => expect(box('q-SHOP:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
-    const row = box('q-SHOP:top_width')!.closest('[data-origin]')!;
+    await waitFor(() => expect(box('q-USER_INPUT:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
+    const row = box('q-USER_INPUT:top_width')!.closest('[data-origin]')!;
     expect(row.getAttribute('data-review')).toBe('needs_look');
     expect(row.textContent).toContain('Saved for some of the checks it feeds; save again to cover all.');
     // The complete run is done and hidden.
@@ -318,13 +318,13 @@ describe('review fixes (#1183)', { timeout: 20_000 }, () => {
     const user = userEvent.setup();
     required = {
       ...REQUIRED,
-      proposed_readings: [{ field_key: 'SHOP:top_width', name: 'top_width', source: 'SHOP', many: false, placement_verified: true, expected_count: 1, values: [{ candidate_id: 'cand-1', value: '39 in', page_index: 0, position: 0 }] }],
+      proposed_readings: [{ field_key: 'USER_INPUT:top_width', name: 'top_width', source: 'USER_INPUT', many: false, placement_verified: true, expected_count: 1, values: [{ candidate_id: 'cand-1', value: '39 in', page_index: 0, position: 0 }] }],
     } as never;
     await openPanel();
     await user.click(stepButton(/Values/));
     await user.click(await screen.findByRole('checkbox', { name: 'Show only what needs a look' }, { timeout: 5000 }));
-    await waitFor(() => expect(box('q-SHOP:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
-    const row = box('q-SHOP:top_width')!.closest('[data-origin]')!;
+    await waitFor(() => expect(box('q-USER_INPUT:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
+    const row = box('q-USER_INPUT:top_width')!.closest('[data-origin]')!;
     expect(row.getAttribute('data-origin')).toBe('saved');
     expect(row.textContent).not.toContain('proposed by AI');
     // Nothing is waiting to be confirmed as an AI value on save.
@@ -397,14 +397,14 @@ describe('review fixes (#1183)', { timeout: 20_000 }, () => {
     await openPanel();
     await user.click(stepButton(/Values/));
     await user.click(await screen.findByRole('checkbox', { name: 'Show only what needs a look' }, { timeout: 5000 }));
-    await waitFor(() => expect(box('q-SHOP:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
+    await waitFor(() => expect(box('q-USER_INPUT:top_width')?.value).toBe('40 1/2"'), { timeout: 5000 });
     const later = { ...REQUIRED.saved_measurements[0], values: [{ ...value('41"', '41', '1'), set_by: 'other reviewer' }], set_by: 'other reviewer', set_at: '2026-03-05T12:00:00Z' };
     required = { ...REQUIRED, saved_measurements: [later, REQUIRED.saved_measurements[1]] };
     await user.click(screen.getByRole('button', { name: 'Save values' }));
     await screen.findByText(/Saved by other reviewer since you opened this:/, undefined, { timeout: 5000 });
     expect(postsTo('/measurements')).toEqual([]);
     await user.click(screen.getByRole('button', { name: 'Use theirs' }));
-    expect(box('q-SHOP:top_width')?.value).toBe('41"');
+    expect(box('q-USER_INPUT:top_width')?.value).toBe('41"');
     await user.click(screen.getByRole('button', { name: 'Save values' }));
     await waitFor(() => expect(postsTo('/measurements')).toHaveLength(1), { timeout: 5000 });
     expect(JSON.parse(postsTo('/measurements')[0].body!).measurements).toEqual([]);
@@ -416,7 +416,7 @@ describe('review fixes (#1183)', { timeout: 20_000 }, () => {
     const moved = { ...REQUIRED.saved_parameters[0], value: { ...REQUIRED.saved_parameters[0].value, set_at: '2026-03-06T12:00:00Z' } };
     expect(savedChangesSince(before, { ...before, saved_parameters: [moved] }).map((change) => change.id)).toEqual(['p:edge_thickness']);
     // Saved for the first time by someone else: a change too.
-    expect(savedChangesSince({ saved_measurements: [] }, before).map((change) => change.id)).toEqual(['q:SHOP:top_width', 'q:SHOP:piece_widths', 'p:edge_thickness']);
+    expect(savedChangesSince({ saved_measurements: [] }, before).map((change) => change.id)).toEqual(['q:USER_INPUT:top_width', 'q:SHOP:piece_widths', 'p:edge_thickness']);
   });
 
   it('a setting saved from a passage: the same passage is skipped; another passage or a declined one is sent', () => {

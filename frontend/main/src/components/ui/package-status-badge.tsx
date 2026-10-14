@@ -25,9 +25,10 @@ const TONE_CLASS: Record<Tone, string> = {
 
 /**
  * A package's lifecycle state: the same words as the legacy StatusBadge, with an icon so the colour
- * never carries the meaning alone. An unknown state still renders, by its own name.
+ * never carries the meaning alone. An unknown state still renders, by its own name. `restarting` is
+ * the package's `reading.retrying` where the page has it (#1249); lists without it say "Stopped".
  */
-export function PackageStatusBadge({ status, className }: { status: string; className?: string }) {
+export function PackageStatusBadge({ status, restarting = false, className }: { status: string; restarting?: boolean; className?: string }) {
   const tone = TONE[status] ?? 'quiet';
   const Icon = TONE[status] ? ICON[tone] : CircleDashed;
   return (
@@ -41,7 +42,7 @@ export function PackageStatusBadge({ status, className }: { status: string; clas
       )}
     >
       <Icon className="size-3.5" aria-hidden="true" />
-      {packageStatusLabel(status)}
+      {packageStatusLabel(status, { restarting })}
     </span>
   );
 }

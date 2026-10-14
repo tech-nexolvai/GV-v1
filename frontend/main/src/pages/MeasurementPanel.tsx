@@ -125,6 +125,13 @@ type Quantity = {
   semantic_type: string;
   source: string;
   many: boolean;
+  /** One number drawn on the vendor's or the architect's drawing (#1251): confirmed from a reading,
+   * never typed, so the form offers no box for it and the server refuses a typed one. */
+  confirm_only?: boolean;
+  /** Where a confirm-only number is drawn, in plain words (the vendor's view when it is known). */
+  where_to_find?: string | null;
+  /** The pages (1 upward) holding a reading confirmed for this field, whichever page is in view. */
+  confirmed_pages?: number[];
   consumers: { rule_id?: string; input_name?: string }[];
   /** The choices, when this input is a category rather than a dimension — empty otherwise.
    *
@@ -378,6 +385,93 @@ const ORIGIN_LABEL: Record<string, string> = {
  * first is used and the code stays beside it, because the code is what both rules actually agree on
  * and what a reviewer would quote when asking about it.
  */
+/** One number drawn on a drawing (#1251): confirmed from a reading, never typed. */
+function drawnSingle(quantity: Quantity): boolean {
+  return quantity.confirm_only === true && !quantity.many;
+}
+
+/**
+ * The value column of a drawn number (#1251): no box. GV's rule (Anant, 2026-10-12) is that people
+ * confirm readings and do not type numbers drawn on the vendor's or the architect's drawing.
+ *
+ * Every line here says only what the screen knows (#1253 review):
+ * - a value typed before 2026-10-14 is what the checks use (it is kept and still counts), so it is
+ *   shown, with its note, even after a reading of the same field is confirmed;
+ * - otherwise the reading the field holds (a confirmed reading, or an AI proposal that Save confirms);
+ * - with none: two readings confirmed on this page, a reading confirmed on another page, AI readings
+ *   to confirm below, or none yet. It never claims a drawing was not supplied: nothing here knows that.
+ */
+function ConfirmOnlyValue({
+  value,
+  typedBefore,
+  confirmedHere,
+  pagesElsewhere,
+  readingsBelow,
+  whereToFind,
+}: {
+  value: string;
+  /** The value typed before 2026-10-14 the checks still use, or null. */
+  typedBefore: string | null;
+  /** The readings confirmed for this field on the page in view. */
+  confirmedHere: string[];
+  /** Other pages holding a confirmed reading for this field. */
+  pagesElsewhere: number[];
+  /** Whether AI readings are offered under this field to confirm. */
+  readingsBelow: boolean;
+  whereToFind: string | null;
+}) {
+  const where = whereToFind ? (
+    <p className="text-xs text-muted-foreground" data-part="where-drawn">
+      Drawn on: {whereToFind}
+    </p>
+  ) : null;
+  if (typedBefore) {
+    return (
+      <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
+        <p className="num font-medium">{typedBefore}</p>
+        <p className="text-xs text-muted-foreground" data-part="typed-before">
+          Typed before 2026-10-14, when typing drawn numbers stopped. It still counts; it cannot be changed here.
+        </p>
+        {(confirmedHere.length > 0 || pagesElsewhere.length > 0) && (
+          <p className="text-xs text-muted-foreground" data-part="typed-before-wins">
+            A reading confirmed for this field does not replace it: the checks still use the typed value.
+          </p>
+        )}
+      </div>
+    );
+  }
+  if (value) {
+    return (
+      <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
+        <p className="num font-medium">{value}</p>
+      </div>
+    );
+  }
+  let status: string;
+  let next: string;
+  if (confirmedHere.length > 1) {
+    status = `${confirmedHere.length} readings are confirmed on this page: ${confirmedHere.join(', ')}`;
+    next = 'With more than one, the field shows none of them.';
+  } else if (pagesElsewhere.length > 0) {
+    const pages = pagesElsewhere.join(', ');
+    status = `A reading is confirmed on page ${pages}`;
+    next = `Open page ${pages} to see it.`;
+  } else if (readingsBelow) {
+    status = 'No reading confirmed yet';
+    next = 'Confirm one of the AI readings listed below. A number drawn on the drawing is never typed here.';
+  } else {
+    status = 'No reading confirmed yet';
+    next = 'A number drawn on the drawing is confirmed from a reading, never typed here. Until one is confirmed, the check waits for it.';
+  }
+  return (
+    <div className="flex flex-col gap-0.5 text-sm" data-part="confirm-only">
+      <p className="font-medium">{status}</p>
+      <p className="text-xs text-muted-foreground">{next}</p>
+      {where}
+    </div>
+  );
+}
+
 function fieldLabel(quantity: Quantity): string {
   const named = quantity.consumers.find((consumer) => consumer.input_name)?.input_name;
   if (!named) return quantity.semantic_type;
@@ -879,10 +973,13 @@ export function MeasurementPanel({
       } else {
         // A reviewer-entered value has priority in the editable form; do not erase it behind their
         // back merely because they later confirm an AI proposal.
+        // A drawn number typed before 2026-10-14 is what the checks still use (#1251), so the field
+        // keeps showing it; the confirmed reading does not replace it (#1253 review).
+        const typedEarlier = drawnSingle(target) && savedQuantitiesByKey(needed.saved_measurements)[target.key];
         setSingles((prior) => {
           const readingCount =
             needed.confirmed_readings.filter((item) => item.key === key).length + 1;
-          if (reviewerEditedSingles.has(target.key)) return prior;
+          if (reviewerEditedSingles.has(target.key) || typedEarlier) return prior;
           return { ...prior, [target.key]: readingCount === 1 ? reading.value : '' };
         });
       }
@@ -960,9 +1057,9 @@ export function MeasurementPanel({
         }
         confirmed.add(key);
       } catch {
-        // **A confirmation that fails costs the crop, never the value.** The number is still what
-        // the reviewer accepted, so it goes down the typed path as before and the check still runs.
-        // Losing a value because its provenance could not be recorded would be the worse trade.
+        // **A confirmation that fails is said, never typed in its place.** A typable field (a cabinet run)
+        // still goes down the typed path, which costs only the crop. A single number drawn on the
+        // drawing is never typed (#1251): Save leaves it out and says it could not be confirmed.
       }
     }
     return confirmed;
@@ -1014,6 +1111,9 @@ export function MeasurementPanel({
         // Confirmed above, so it reaches the checks as drawing-backed evidence. Typing it as well
         // would shadow that with a value carrying no page, no polygon and no crop.
         if (confirmedFromDrawing.has(quantity.key)) return [];
+        // A number drawn on the drawing is never sent as typed (#1251): a reading is confirmed
+        // instead, and the server refuses a typed one. A value typed before stays where it is.
+        if (drawnSingle(quantity)) return [];
         // A category is not a dimension and travels under `classifications` below (#684). Sending
         // it here would put `single_door` through the unit parser, which refuses it.
         if (isCategorical(quantity)) return [];
@@ -1039,6 +1139,11 @@ export function MeasurementPanel({
       });
 
       const classifications = classificationEntries(needed.quantities, runs);
+      // A drawn number whose reading could not be confirmed is not typed in its place (#1251), so
+      // it is said rather than lost: the rest still saves, and the field keeps its reading to confirm.
+      const unconfirmedDrawn = needed.quantities
+        .filter((quantity) => drawnSingle(quantity) && quantity.key in aiFilled && !confirmedFromDrawing.has(quantity.key))
+        .map(fieldLabel);
 
       // A setting typed from a found passage sends that passage as its citation, and the server
       // holds the number to it (#866); any other setting goes exactly as it always has.
@@ -1077,6 +1182,11 @@ export function MeasurementPanel({
         // The reload below reads it again.
       }
       setSavedReload((count) => count + 1);
+      if (unconfirmedDrawn.length > 0) {
+        const message = `The reading for ${unconfirmedDrawn.join(', ')} could not be confirmed, so it was not saved. Confirm it under the field and save again.`;
+        setError(message);
+        return message;
+      }
       return null;
     } catch (caught) {
       // The server's own message, verbatim. It names the field and says what to do about it; a
@@ -1487,12 +1597,19 @@ export function MeasurementPanel({
             .filter((candidate): candidate is ReviewedCandidate & CandidateOut => candidate !== undefined)
         : [];
     return (
-      <div className="flex flex-col gap-2 px-4 py-3" key={quantity.key} data-origin={origin} data-review={review.state}>
+      <div
+        className="flex flex-col gap-2 px-4 py-3"
+        key={quantity.key}
+        data-origin={origin}
+        data-review={review.state}
+        data-key={quantity.key}
+        data-confirm-only={drawnSingle(quantity) ? '' : undefined}
+      >
         {/* A compact row (#1061): the field and where its value came from | its value. The reason,
             crops, the AI's readings and the hints follow underneath. */}
         <div className="grid gap-x-4 gap-y-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
           <div className="flex min-w-0 flex-col gap-1.5">
-            <label className="flex flex-wrap items-baseline gap-x-2" htmlFor={`q-${quantity.key}`}>
+            <label className="flex flex-wrap items-baseline gap-x-2" htmlFor={drawnSingle(quantity) ? undefined : `q-${quantity.key}`}>
               {/* The rulebook's readable name leads; the code follows it. A reviewer filling this in
                   needs to know it is the sink cabinet width — `CT004` is what they quote back. */}
               <span className="text-sm font-medium">{fieldLabel(quantity)}</span>
@@ -1527,7 +1644,16 @@ export function MeasurementPanel({
             </div>
           </div>
           <div className="flex min-w-0 flex-col gap-2">
-            {quantity.many ? (
+            {drawnSingle(quantity) ? (
+              <ConfirmOnlyValue
+                value={(singles[quantity.key] ?? '').trim()}
+                typedBefore={savedQuantities[quantity.key]?.values.length === 1 ? savedText(savedQuantities[quantity.key].values[0]) : null}
+                confirmedHere={(readingsByKey[quantity.key] ?? []).map((reading) => reading.value)}
+                pagesElsewhere={(quantity.confirmed_pages ?? []).filter((page) => page !== selectedPageNumber)}
+                readingsBelow={review.state !== 'agreed' && candidates.some((candidate) => candidate.source === quantity.source)}
+                whereToFind={quantity.where_to_find ?? null}
+              />
+            ) : quantity.many ? (
               <>
                 {(runs[quantity.key] ?? ['']).map((value, index) => (
                   <div className="flex items-center gap-2" key={index}>
@@ -1637,7 +1763,8 @@ export function MeasurementPanel({
           </div>
         </div>
         {review.reason && review.state !== 'empty' && <Hint>{review.reason}</Hint>}
-        {savedQuantities[quantity.key] && (
+        {/* A drawn number has no box to replace its saved value: its column says what still counts. */}
+        {savedQuantities[quantity.key] && !drawnSingle(quantity) && (
           <SavedValueNote
             texts={savedTexts(savedQuantities[quantity.key])}
             setBy={savedQuantities[quantity.key].set_by}
@@ -1665,7 +1792,7 @@ export function MeasurementPanel({
           />
         )}
         {/* An empty field says which sheet to read it from: the rulebook knows, and says so. */}
-        {origin === 'empty' && (
+        {origin === 'empty' && !drawnSingle(quantity) && (
           <Hint>{quantity.source === 'USER_INPUT' ? 'Measure it on site.' : `Read it off the ${SOURCE_LABEL[quantity.source] ?? quantity.source}.`}</Hint>
         )}
       </div>

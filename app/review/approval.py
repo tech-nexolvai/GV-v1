@@ -68,6 +68,7 @@ from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
 from evidence.canonical import EvidenceStatus
 from rules.parameters import ParameterLayer
+from workflow.parts import CODE_ACTOR_PREFIX
 from workflow.view_roles import CODE_CONFIRMERS
 
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -278,8 +279,10 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
     - a reviewer's "There is a countertop" on a page listed with no countertop (#1191): the next run
       makes that page a blocking result. "Confirm: no countertop here" changes no result and is not
       counted;
-    - countertop-run decisions, part decisions and reading-to-part links (`workflow/
-      part_operands.py`), and a person's drawing-role confirmation (code's is not reviewer input);
+    - countertop-run decisions, a person's part decisions and reading-to-part links (`workflow/
+      part_operands.py`), and a person's drawing-role confirmation. Code's own part decisions
+      (#1244: a countertop on two judgments, or code taking its own back) and code's drawing roles
+      are not reviewer input (review of #1248);
     - a new reading of the countertop rows (#1206, "Read the unread pages" on this revision): the
       checks have not seen what it read;
     - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
@@ -346,7 +349,8 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
         .join(on_view, on_view.c.view_id == DrawingItem.drawing_view_id),
         select(on_view.c.package_revision_id, PartConfirmation.created_at)
         .join(PartProposal, PartProposal.id == PartConfirmation.part_proposal_id)
-        .join(on_view, on_view.c.view_id == PartProposal.drawing_view_id),
+        .join(on_view, on_view.c.view_id == PartProposal.drawing_view_id)
+        .where(~PartConfirmation.confirmed_by.startswith(CODE_ACTOR_PREFIX)),
         select(on_page.c.package_revision_id, ReadingPart.created_at)
         .join(CanonicalObservation, CanonicalObservation.id == ReadingPart.canonical_observation_id)
         .join(on_page, on_page.c.page_id == CanonicalObservation.page_id),

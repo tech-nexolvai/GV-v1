@@ -51,6 +51,11 @@ export interface AppSidebarProps {
   refreshKey: number;
   /** The open review's own, newest "need you" count, which wins over the list's copy. */
   liveNeedYou: { packageId: string; count: number } | null;
+  /**
+   * The open review's `reading.retrying` (#1249): its badge says "Restarting after a problem" like
+   * the review's header and Reading step. Other reviews have no reading line here, so keep "Stopped".
+   */
+  liveRestarting?: { packageId: string; restarting: boolean } | null;
   onNavigate: (page: Page) => void;
   onOpenPackage: (packageId: string) => void;
   onNewReview: () => void;
@@ -70,6 +75,7 @@ export function AppSidebar({
   theme,
   refreshKey,
   liveNeedYou,
+  liveRestarting = null,
   onNavigate,
   onOpenPackage,
   onNewReview,
@@ -198,7 +204,7 @@ export function AppSidebar({
                         {/* Packages carry only a vendor; there is no human package name yet. */}
                         <span className="w-full truncate font-medium">{pkg.vendor ?? 'Untitled document set'}</span>
                         <span className="flex w-full flex-wrap items-center gap-1.5">
-                          <PackageStatusBadge status={pkg.state} />
+                          <PackageStatusBadge status={pkg.state} restarting={liveRestarting?.packageId === pkg.id && liveRestarting.restarting} />
                           {/* The open review's number is on its header and Results tab (#1126): here it
                               only says that it needs you. Other reviews keep their number. */}
                           {count !== undefined && count > 0 && (

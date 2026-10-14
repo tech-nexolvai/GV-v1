@@ -3577,6 +3577,12 @@
       "DecisionOut": {
         "description": "What a person last said about one suggestion.",
         "properties": {
+          "by_code": {
+            "default": false,
+            "description": "True when code confirmed it, not a person: a countertop whose two judgments agreed (both AI readers named its row, and code found the row wholly inside one drawing confirmed as the vendor's; #1244). The page says so and offers Undo, a person's withdrawal.",
+            "title": "By Code",
+            "type": "boolean"
+          },
           "code": {
             "anyOf": [
               {
@@ -11845,6 +11851,18 @@
             "title": "Categories",
             "type": "array"
           },
+          "confirm_only": {
+            "title": "Confirm Only",
+            "type": "boolean"
+          },
+          "confirmed_pages": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Confirmed Pages",
+            "type": "array"
+          },
           "consumers": {
             "items": {
               "additionalProperties": {
@@ -11870,6 +11888,17 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "where_to_find": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where To Find"
           }
         },
         "required": [
@@ -11877,6 +11906,7 @@
           "semantic_type",
           "source",
           "many",
+          "confirm_only",
           "consumers"
         ],
         "title": "QuantityOut",
