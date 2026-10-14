@@ -147,6 +147,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finding_chain,
         finding_export,
         findings,
+        item_architect,
         measurements,
         operations,
         packages,
@@ -201,6 +202,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(visual_countertops.router, prefix=API_PREFIX)
+    # Each confirmed countertop's comparison with the architect, read by countertop (#1273): it
+    # reads only, and no check reads it.
+    app.include_router(item_architect.router, prefix=API_PREFIX)
     app.include_router(packages_summary.router, prefix=API_PREFIX)
     app.include_router(usage.router, prefix=API_PREFIX)
     app.include_router(finding_chain.router, prefix=API_PREFIX)

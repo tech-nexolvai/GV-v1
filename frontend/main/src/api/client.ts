@@ -205,6 +205,16 @@ export function getCountertopResults(projectId: string, packageId: string, revis
   return request<CountertopResults>(`/projects/${projectId}/packages/${packageId}/countertop-results${suffix}`);
 }
 
+/**
+ * Each confirmed countertop's comparison with the architect's drawing (#1273): "not compared" with
+ * the stored reason, waiting for the reviewer, or the compared pairs. Read-only; no check reads it.
+ */
+export type CountertopItemsArchitect = components['schemas']['ItemArchitectListOut'];
+export type CountertopItemArchitect = CountertopItemsArchitect['items'][number];
+export function getCountertopItemsArchitect(projectId: string, packageId: string) {
+  return request<CountertopItemsArchitect>(`/projects/${projectId}/packages/${packageId}/countertop-items/architect`);
+}
+
 /** The two buttons on a page listed with no countertop (#1191). */
 export type NoCountertopAnswer = components['schemas']['NoCountertopAnswerIn']['answer'];
 /**

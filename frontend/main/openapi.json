@@ -5226,6 +5226,213 @@
         "title": "InForceOut",
         "type": "object"
       },
+      "ItemArchitectListOut": {
+        "description": "Every confirmed countertop of a revision with its architect comparison, in page order.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemArchitectOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "revision_id",
+          "items"
+        ],
+        "title": "ItemArchitectListOut",
+        "type": "object"
+      },
+      "ItemArchitectOut": {
+        "description": "Where one confirmed countertop stands with the architect's drawing. Read-only.",
+        "properties": {
+          "countertop": {
+            "$ref": "#/components/schemas/CountertopItemRefOut"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its row's architect result; null when none.",
+            "title": "Finding Id"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "That result's outcome; null when none.",
+            "title": "Outcome"
+          },
+          "pairing_judgments": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whose judgments the pairing rests on, e.g. \"code and both AIs\".",
+            "title": "Pairing Judgments"
+          },
+          "pairing_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who paired its row; null when nobody did.",
+            "title": "Pairing Source"
+          },
+          "pairs": {
+            "description": "The pairs the recorded result compared, overall first; empty with no result.",
+            "items": {
+              "$ref": "#/components/schemas/ItemArchitectPairOut"
+            },
+            "title": "Pairs",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The recorded result's reason; with no result, why nothing is compared.",
+            "title": "Reason"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its countertop row (`row_id` on the results); null if none.",
+            "title": "Row Id"
+          },
+          "state": {
+            "description": "As the countertop results show its row: a recorded PASS or FAIL (`compared`), a recorded result the check could not decide (`for_reviewer`), no result yet for something a check run would compare (`not_checked_yet`), or nothing comparable (`not_compared`).",
+            "enum": [
+              "compared",
+              "for_reviewer",
+              "not_checked_yet",
+              "not_compared"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "countertop",
+          "row_id",
+          "state",
+          "reason",
+          "finding_id",
+          "outcome",
+          "pairs",
+          "pairing_source",
+          "pairing_judgments"
+        ],
+        "title": "ItemArchitectOut",
+        "type": "object"
+      },
+      "ItemArchitectPairOut": {
+        "description": "One width the check compared with the architect: the overall, or one vendor piece.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "piece",
+              "overall"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "description": "\"overall\" or \"piece 2\", counted from one as the row shows it.",
+            "title": "Label",
+            "type": "string"
+          },
+          "piece_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The piece a person confirmed for this place of the countertop's line; null for the overall, for a piece nobody confirmed, or when the line has no linked pieces.",
+            "title": "Piece Item Id"
+          },
+          "piece_item_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "That piece's type; null when there is none.",
+            "title": "Piece Item Type"
+          },
+          "vendor_piece": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The piece's place from the left, 1 first; null for the overall.",
+            "title": "Vendor Piece"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "vendor_piece",
+          "piece_item_id",
+          "piece_item_type"
+        ],
+        "title": "ItemArchitectPairOut",
+        "type": "object"
+      },
       "ItemPlanOut": {
         "description": "What is checked for one live countertop item (#1245): the seed of the per-item plan.",
         "properties": {
@@ -13501,6 +13708,79 @@
         "summary": "Ask for the checks to be run against this package",
         "tags": [
           "measurements"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/architect": {
+      "get": {
+        "description": "For each live countertop item, where its row stands with the architect's drawing, as the\ncountertop results show that row: its recorded result when there is one, with each compared\npiece named by the piece item a person confirmed (#1273, `workflow/milan_items.py`).\n\n**Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.",
+        "operationId": "countertop_items_architect_api_v1_projects__project_id__packages__package_id__countertop_items_architect_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "An earlier revision's number. Default: the newest revision.",
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An earlier revision's number. Default: the newest revision.",
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemArchitectListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read each confirmed countertop's comparison with the architect's drawing",
+        "tags": [
+          "countertop architect comparison"
         ]
       }
     },
