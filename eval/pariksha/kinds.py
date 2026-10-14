@@ -37,6 +37,11 @@ compared case by case like two versions:
 
 * **`product`**: the kind the run stored on each piece (`kind:` flag); a piece with none recorded
   is unknown.
+* **`bala`** (#1266): the kind Bala filed on each piece's suggestion (`part_proposal_rows`, linked
+  to the run's piece): a named kind (`kind_named`, which the Measure page pre-selects, e.g. from
+  one printed cabinet tag under `GV_BALA_CABINET_PREFILL`) is that kind; a suggestion that names
+  none, or no suggestion, is unknown. Score it on a copy where the match stage ran, switch off vs
+  on, to measure a pre-fill before it is switched on.
 * **`face-tag`**: a code rule measured, not shipped: a cabinet tag (`vocabulary/cabinet_codes`,
   finish codes refused), the word FILLER or an appliance word (DW, REF, RANGE) on the vendor's text
   layers (`extraction.stamp_text`, `rapidocr`, `pdfplumber`) whose whole box lies inside the piece's
@@ -73,6 +78,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.document import DocumentVersion, Page
+from app.models.drawing import PartProposal, PartProposalRow
 from app.models.evidence import ObservationCandidate
 from app.models.runs import ExtractionRun
 from eval.metrics import MetricResult
@@ -96,6 +102,7 @@ from eval.release_metrics import Direction
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
 __all__ = [
+    "BALA",
     "FACE_TAG",
     "FACE_TAG_REACH_PX",
     "KINDS",
@@ -135,7 +142,12 @@ KINDS_FAMILY: Final = "piece-kind"
 KINDS: Final = ("filler", "panel", "cabinet", "equal_cabinets", "appliance_space")
 PRODUCT: Final = "product"
 FACE_TAG: Final = "face-tag"
-SOURCES: Final = (PRODUCT, FACE_TAG)
+BALA: Final = "bala"
+SOURCES: Final = (PRODUCT, FACE_TAG, BALA)
+BALA_RULE: Final = (
+    "bala: the kind Bala filed on the piece's suggestion when it names one (kind_named, the "
+    "Measure page's pre-selection); otherwise unknown"
+)
 RIGHT: Final = "right"
 WRONG: Final = "wrong"
 UNKNOWN: Final = "unknown"
@@ -423,6 +435,9 @@ class StoredPiece:
     """The piece's span (`slot-box:`), in the page picture's pixels."""
     kind: str | None
     """The kind the run stored (`kind:`), `None` when it recorded none."""
+    bala: tuple[str, bool] | None = None
+    """The kind Bala filed on the piece's suggestion and whether it names it (`kind_named`), or
+    `None` when Bala filed no suggestion for the piece."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,6 +541,21 @@ def load_stored_pieces(
             word_box = _box(polygon)
             if word_box is not None and raw_text:
                 words[page_of[page_id]].append(StoredWord(text=raw_text, box=word_box))
+    filed: dict[tuple[UUID, int], tuple[str, bool]] = {}
+    for page_id, slot_index, kind, named in session.execute(
+        select(
+            ObservationCandidate.page_id,
+            PartProposalRow.slot_index,
+            PartProposal.kind,
+            PartProposalRow.kind_named,
+        )
+        .join(PartProposal, PartProposal.id == PartProposalRow.part_proposal_id)
+        .join(ObservationCandidate, ObservationCandidate.id == PartProposalRow.row_candidate_id)
+        .where(PartProposalRow.extraction_run_id == run_id, PartProposalRow.slot_index.is_not(None))
+        .order_by(PartProposalRow.created_at, PartProposalRow.id)
+    ):
+        if slot_index is not None:
+            filed.setdefault((page_id, slot_index), (str(kind), bool(named)))
     documents = sorted({row.document_sha256 for row, *_rest in chosen})
     return StoredPiecesRun(
         database=database,
@@ -541,6 +571,7 @@ def load_stored_pieces(
                 slot=slot,
                 box=box,
                 kind=kind,
+                bala=filed.get((row.page_id, slot)),
             )
             for row, slot, box, kind in chosen
         ),
@@ -591,6 +622,13 @@ def _named(piece: StoredPiece, run: StoredPiecesRun, source: str) -> tuple[str, 
         if piece.kind is None:
             return UNKNOWN, "no kind recorded on the piece"
         return piece.kind, f"stored kind:{piece.kind}"
+    if source == BALA:
+        if piece.bala is None:
+            return UNKNOWN, "Bala filed no suggestion for this piece"
+        kind, named = piece.bala
+        if not named:
+            return UNKNOWN, f"Bala suggested it as a {kind} but names no kind (one click)"
+        return kind, f"Bala named it {kind}"
     return face_tag_kind(piece.box, run.words.get(piece.page_sha256, ()))
 
 
@@ -760,7 +798,9 @@ def score_kinds(
         extractor_versions={
             "agent": KINDS_AGENT,
             "kind_source": source,
-            "rule": "the run's stored kind: flags" if source == PRODUCT else FACE_TAG_RULE,
+            "rule": {PRODUCT: "the run's stored kind: flags", BALA: BALA_RULE}.get(
+                source, FACE_TAG_RULE
+            ),
             "prompt_ids": "none (code only)",
             "model_ids": "none (code only)",
             "extractor": f"{run.extractor}@{run.extractor_version}",

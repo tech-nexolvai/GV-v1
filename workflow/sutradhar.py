@@ -55,6 +55,7 @@ __all__ = [
     "StagesFactory",
     "automatic_typing_configuration",
     "bala_auto_items_configuration",
+    "bala_cabinet_prefill_configuration",
     "build_package_text",
     "build_stages",
     "carry_forward",
@@ -88,6 +89,8 @@ PART_FINDER_VARIABLE = "GV_PART_FINDER_ENABLED"
 #: match stage confirms a countertop suggestion with no click where both AI row readers and code's
 #: placement agree. Off by default; a person can always undo, and a person always wins.
 BALA_AUTO_ITEMS_VARIABLE = "GV_BALA_AUTO_ITEMS"
+#: Code pre-fills "cabinet" on a piece with one printed cabinet tag (#1266). Off by default.
+BALA_CABINET_PREFILL_VARIABLE = "GV_BALA_CABINET_PREFILL"
 
 #: The settings the line-work reader and the dimension-line detector take (`AssociationSettings`).
 #: Required for the same reason as the rest: each decides which strokes a reading may attach to,
@@ -212,6 +215,18 @@ def bala_auto_items_configuration() -> bool:
     reader and the drawings' confirmations already recorded, and nothing here asks a model.
     """
     return _switched_on(BALA_AUTO_ITEMS_VARIABLE)
+
+
+def bala_cabinet_prefill_configuration() -> bool:
+    """Whether code pre-fills "cabinet" on a piece with one printed cabinet tag
+    (`GV_BALA_CABINET_PREFILL`, #1266).
+
+    Off unless switched on, and to stay off until the piece-kind scorecard shows 0 wrong (Anant's
+    decision 5 of 2026-10-14). A pre-fill is never a decision: a person still clicks. It reads the
+    tags with code's part finder, so without `GV_PART_FINDER_ENABLED` (or the reader's settings) it
+    pre-fills nothing, and each piece says why.
+    """
+    return _switched_on(BALA_CABINET_PREFILL_VARIABLE)
 
 
 #: How a suggested part's picture is cut (#897): how far past the part's outline it reaches, in PDF
@@ -446,6 +461,8 @@ def build_stages(
         part_finder=part_finder,  # type: ignore[arg-type]
         # Off unless GV_BALA_AUTO_ITEMS: code's countertop items on two judgments (#1244).
         bala_auto_items=bala_auto_items_configuration(),
+        # Off unless GV_BALA_CABINET_PREFILL: "cabinet" pre-filled from one printed tag (#1266).
+        bala_cabinet_prefill=bala_cabinet_prefill_configuration(),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).

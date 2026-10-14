@@ -62,6 +62,14 @@ the older run's undecided suggestions stop being listed (`app/evidence/parts.py`
 geometry-only finder on a page in memory (`DatabaseStages._code_parts_on`, $0) and writes nothing.
 A piece it finds a cabinet of the same span for counts as judgment 2 in `WouldBeAutomatic`.
 
+**Code pre-fills "cabinet" from one printed tag** (#1266, Anant's decision 5 of 2026-10-14),
+behind `GV_BALA_CABINET_PREFILL` (off by default). Where code's part finder found a cabinet with a
+piece's two ends and attached exactly one cabinet tag to it, and that tag stands among the lowest
+cabinet tags printed over the row (so a wall cabinet's tag never counts), the piece is suggested as
+a named cabinet: the Measure page pre-selects it and a person still confirms or changes it. A
+pre-fill is a suggestion's kind and nothing more: no confirmation, no item, never automatic. A
+label naming another kind and a tag name the piece two ways, so it stays unknown, naming both.
+
 **No extraction imports**, so the read-only dry run (`scripts/bala_dry_run.py`) can use the plan.
 
 Source: issue #1236; phase 4 design (§2, §5 PR 1); Anant's decisions of 2026-10-14. Verification:
@@ -70,6 +78,7 @@ tests/workflow/test_bala_items.py, tests/db/test_drawing_models.py.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -124,8 +133,11 @@ __all__ = [
     "AUTOMATIC_REASON",
     "BALA_SOURCE",
     "BALA_VERSION",
+    "CABINET_TAG_PREFIXES",
     "FROM_THE_COUNTERTOP_LINE",
     "PIECES_STAY_ONE_CLICK",
+    "PRINTED_ON_IT",
+    "TAG_NAMES_IT",
     "AutomaticOutcome",
     "BalaOutcome",
     "CodeFinding",
@@ -133,6 +145,7 @@ __all__ = [
     "CodeParts",
     "PlannedPart",
     "PlannedRow",
+    "PrintedCode",
     "WouldBeAutomatic",
     "confirm_automatic_countertops",
     "plan_items",
@@ -151,6 +164,40 @@ AUTOMATIC_REASON: Final = (
     "Both AI readers named this row, and code finds it wholly inside one drawing confirmed as the "
     "vendor's, outlined by its printed overall length, which its pieces tile end to end."
 )
+
+#: How a piece pre-filled from its printed cabinet tag says so (#1266): "... because the drawing
+#: prints the cabinet tag 'B36' on it, ...". The Measure page pre-selects "cabinet"; a person still
+#: confirms or changes it.
+TAG_NAMES_IT: Final = "the drawing prints the cabinet tag"
+PRINTED_ON_IT: Final = (
+    "on it (code pre-filled cabinet from that one tag; confirm it, or change it if it is not)"
+)
+
+#: The letter codes a cabinet tag may start with to pre-fill "cabinet" on a countertop row's piece
+#: (#1266; Anant's decision of 2026-10-15: an allow-list). A tag's shape alone
+#: (`vocabulary/cabinet_codes.py`, which other callers keep as it is) also fits appliances (DW, MW,
+#: HD), fillers (BF, WF, F) and panels (EP, FP, RF, RP), so only these name a cabinet here. Each is
+#: a base cabinet, the kind a countertop row's piece is; every one but DB is printed on pieces the
+#: stored, person-confirmed form keys call cabinets, and DB is the usual spelling of BD.
+#:
+#: * `B`: base cabinet.
+#: * `BC`: base corner cabinet.
+#: * `BD`: base drawer cabinet (a drawer stack).
+#: * `DB`: drawer base cabinet, the same as BD.
+#: * `SB`: sink base cabinet.
+#:
+#: Left out on purpose: wall cabinets (W, and open shelves), whose tag over a countertop row's
+#: piece is never that piece's own, and tall cabinets, which no stored key shows on a countertop
+#: row and whose letter codes vary by maker. Anything left out stays unknown, with its reason.
+CABINET_TAG_PREFIXES: Final[Mapping[str, str]] = {
+    "B": "base cabinet",
+    "BC": "base corner cabinet",
+    "BD": "base drawer cabinet",
+    "DB": "drawer base cabinet",
+    "SB": "sink base cabinet",
+}
+
+_LEADING_LETTERS: Final = re.compile(r"[A-Z]+")
 
 #: Why no piece is ever automatic (decision 2 of 2026-10-14).
 PIECES_STAY_ONE_CLICK: Final = "a piece stays a person's click (decision 2 of 2026-10-14)"
@@ -179,14 +226,29 @@ _OTHER_KINDS: Final[Mapping[str, str]] = {
 
 
 @dataclass(frozen=True, slots=True)
+class PrintedCode:
+    """A cabinet code printed on the vendor's page (`vocabulary/cabinet_codes.py`), as printed, and
+    its box in stored page space (#1266)."""
+
+    text: str
+    left: Decimal
+    top: Decimal
+    right: Decimal
+    bottom: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class CodePart:
-    """One part code's geometry-only finder suggests on a page: which drawing, what kind, and its
-    left and right ends in stored page space."""
+    """One part code's geometry-only finder suggests on a page: which drawing, what kind, its left
+    and right ends in stored page space, and the cabinet code it attached, if any (#1266)."""
 
     view_id: UUID
     kind: PartKind
     left: Decimal
     right: Decimal
+    code: PrintedCode | None = None
+    """The cabinet code the finder attached: exactly one sits inside the part's span and no other
+    part's (`extraction/model/part_proposals.py`). `None` for none, or for two."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +258,9 @@ class CodeFinding:
 
     parts: tuple[CodePart, ...]
     tolerance: Decimal
+    codes: tuple[PrintedCode, ...] = ()
+    """Every cabinet code the finder was given on the page: the vendor's own text layers, one per
+    print (#1266). Bala reads which of them stand lowest over a row."""
 
 
 #: Runs code's part finder on one page in memory: what it found, or why it did not run.
@@ -328,9 +393,17 @@ class BalaOutcome:
 
 
 def plan_items(
-    session: Session, revision_id: UUID, *, code_parts: CodeParts | None = None
+    session: Session,
+    revision_id: UUID,
+    *,
+    code_parts: CodeParts | None = None,
+    cabinet_prefill: bool = False,
 ) -> BalaPlan:
-    """What Bala would suggest for the revision's newest slot-reader run. **Reads only.**"""
+    """What Bala would suggest for the revision's newest slot-reader run. **Reads only.**
+
+    `cabinet_prefill` (`GV_BALA_CABINET_PREFILL`, #1266): a piece with exactly one cabinet tag
+    printed on it, as code's part finder reads it, is suggested as a named cabinet (pre-filled, one
+    click still needed); see `_printed_tag`. Off, the kinds are exactly what they were."""
     run_id = latest_slot_reader_run(session, revision_id)
     if run_id is None:
         return BalaPlan(revision_id=revision_id, run_id=None, rows=(), unchosen=())
@@ -350,7 +423,18 @@ def plan_items(
             found[page.id] = (
                 "code's part finder was not asked" if code_parts is None else code_parts(page)
             )
-        planned.append(_plan_row(session, sides, split, row, page, run, found[page.id]))
+        planned.append(
+            _plan_row(
+                session,
+                sides,
+                split,
+                row,
+                page,
+                run,
+                found[page.id],
+                cabinet_prefill=cabinet_prefill,
+            )
+        )
     return BalaPlan(revision_id=revision_id, run_id=run_id, rows=tuple(planned), unchosen=unchosen)
 
 
@@ -359,6 +443,7 @@ def propose_items(
     revision_id: UUID,
     *,
     code_parts: CodeParts | None = None,
+    cabinet_prefill: bool = False,
     same_outline_tolerance: Decimal = Decimal(0),
 ) -> BalaOutcome:
     """File Bala's suggestions and their links for the revision's newest slot-reader run.
@@ -372,8 +457,13 @@ def propose_items(
     part finder's witness tolerance) and a person's decision stands on it, the re-read piece is that
     part: nothing is filed, and `already_decided` counts it. Asking twice would let one cabinet be
     confirmed twice, as two live items.
+
+    **The cabinet pre-fill (`cabinet_prefill`, #1266) governs new filings only.** A suggestion
+    already filed keeps the kind and `kind_named` it was filed with (its link is append-only):
+    switching the pre-fill off does not take back pre-fills already filed (they stay one-click
+    pre-selections a person must still confirm), and switching it on applies from the next reading.
     """
-    plan = plan_items(session, revision_id, code_parts=code_parts)
+    plan = plan_items(session, revision_id, code_parts=code_parts, cabinet_prefill=cabinet_prefill)
     outcome = BalaOutcome(plan=plan)
     decided = _decided_outlines(session, plan)
     for row in plan.rows:
@@ -606,6 +696,8 @@ def _plan_row(
     page: Page,
     run: ExtractionRun,
     code: CodeFinding | str,
+    *,
+    cabinet_prefill: bool = False,
 ) -> PlannedRow:
     by_slot = _slot_candidates(row)
     states = _states(row)
@@ -677,7 +769,14 @@ def _plan_row(
         if box is None:
             unplaced.append(index)
             continue
-        kind, named, why = _kind(candidate)
+        tag: PrintedCode | str | None = None
+        if cabinet_prefill:
+            tag = (
+                _printed_tag(view, box, countertop_box, code)
+                if not isinstance(code, str)
+                else "code's part finder did not run, so no printed tag was read"
+            )
+        kind, named, why = _kind(candidate, tag)
         parts.append(
             PlannedPart(
                 slot_index=index,
@@ -843,8 +942,15 @@ def _states(row: SlotRow) -> tuple[str, ...]:
     return tuple(states)
 
 
-def _kind(candidate: ObservationCandidate) -> tuple[PartKind, bool, str]:
-    """The suggested kind, whether printed evidence named it, and why, in plain words."""
+def _kind(
+    candidate: ObservationCandidate, tag: PrintedCode | str | None = None
+) -> tuple[PartKind, bool, str]:
+    """The suggested kind, whether printed evidence named it, and why, in plain words.
+
+    `tag` is the cabinet tag printed on the piece (`_printed_tag`), or why none counts, or `None`
+    where the pre-fill is off (#1266). A tag names a cabinet only where the label names no other
+    kind: a label and a tag that disagree name it two ways, so it stays a person's to say, naming
+    both."""
     flags = candidate.ambiguity_flags or ()
     printed = next((flag.removeprefix("kind:") for flag in flags if flag.startswith("kind:")), "")
     evidence = next(
@@ -855,11 +961,106 @@ def _kind(candidate: ObservationCandidate) -> tuple[PartKind, bool, str]:
         ),
         None,
     )
+    if isinstance(tag, PrintedCode):
+        if printed in ("", "unknown"):
+            return PartKind.CABINET, True, f"{TAG_NAMES_IT} {tag.text!r} {PRINTED_ON_IT}"
+        if printed != "cabinet":
+            return (
+                PartKind.CABINET,
+                False,
+                (
+                    f"the drawing names it two ways: its label says {printed} "
+                    f"({evidence or printed}) and the cabinet tag {tag.text!r} is printed on it; "
+                    "say what it is"
+                ),
+            )
     if printed in _NAMED_KINDS:
         return _NAMED_KINDS[printed], True, f"the drawing names it ({evidence or printed})"
     if printed in _OTHER_KINDS:
         return PartKind.CABINET, False, _OTHER_KINDS[printed]
+    if isinstance(tag, str):
+        return PartKind.CABINET, False, f"nothing printed names its kind ({tag}); say what it is"
     return PartKind.CABINET, False, "nothing printed names its kind; say what it is"
+
+
+def _printed_tag(view: DrawingView, box: _Box, row: _Box, code: CodeFinding) -> PrintedCode | str:
+    """The one cabinet tag printed on the piece, or why none counts (#1266, P5-K1).
+
+    1. Code's part finder found a cabinet on the piece's drawing with the piece's two ends (within
+       its tolerance) and attached exactly one cabinet code to it: one inside its span and no other
+       part's (`extraction/model/part_proposals.py`).
+    2. The code starts with a base-cabinet letter code (`CABINET_TAG_PREFIXES`). A code's shape
+       alone also fits appliances, fillers and panels (a dishwasher, a base filler, an end panel),
+       so any other letter code names nothing.
+    3. It is printed above the piece's dimension, where the cabinet's face is.
+    4. **No cabinet code printed over the row** (`row`, the countertop's outline, left to right,
+       inside the drawing, above or below the dimensions) **stands lower than it by more than its
+       own height** (the smaller side of its box, so a turned tag is measured across its text). A
+       tag with one lower stands higher up the wall: a wall cabinet's.
+    5. **Another cabinet code is printed over the row** (inside the drawing, within the row's
+       left-to-right span) **above this piece's dimension**: with nothing to compare it with, a
+       lone tag could be a wall cabinet's over a piece that carries none of its own.
+
+    The finder reads only across the page, so without 3 to 5 a wall cabinet's tag above an
+    appliance space or a panel would count.
+    """
+    same = [
+        part
+        for part in code.parts
+        if part.view_id == view.id
+        and part.kind is PartKind.CABINET
+        and abs(part.left - box.left) <= code.tolerance
+        and abs(part.right - box.right) <= code.tolerance
+    ]
+    if not same:
+        return "code's part finder found no cabinet with its ends"
+    tags = {part.code for part in same if part.code is not None}
+    if not tags:
+        return "code's part finder found no one cabinet tag inside its span alone"
+    if len(tags) > 1:
+        named = ", ".join(sorted(repr(tag.text) for tag in tags))
+        return f"code's part finder read more than one tag on it ({named})"
+    (tag,) = tags
+    prefix = _letters(tag.text)
+    if prefix not in CABINET_TAG_PREFIXES:
+        return (
+            f"the code {tag.text!r} printed on it does not start with a base-cabinet letter code "
+            f"({', '.join(CABINET_TAG_PREFIXES)}), so it may name an appliance, a filler, a panel, or a "
+            "wall or tall cabinet"
+        )
+    if tag.bottom > box.top:
+        return f"the tag {tag.text!r} is not printed above its dimension"
+    region = _region_box(view)
+    over_row = [
+        other
+        for other in code.codes
+        if other != tag
+        and region is not None
+        and row.left <= other.left
+        and other.right <= row.right
+        and region.top <= other.top
+        and other.bottom <= region.bottom
+    ]
+    height = min(tag.bottom - tag.top, tag.right - tag.left)
+    lower = sorted({other.text for other in over_row if other.top > tag.bottom + height})
+    if lower:
+        return (
+            f"the tag {tag.text!r} over it stands higher up the wall than "
+            f"{', '.join(repr(text) for text in lower)} printed over the same row, so it is a "
+            "wall cabinet's"
+        )
+    if not any(other.bottom <= box.top for other in over_row):
+        return (
+            f"the tag {tag.text!r} is the only cabinet code printed over the row, so nothing shows "
+            "it is the row's own and not a wall cabinet's above it"
+        )
+    return tag
+
+
+def _letters(code: str) -> str:
+    """A cabinet code's leading capital letters: `"SB"` for a sink base's code."""
+    found = _LEADING_LETTERS.match(code)
+    return "" if found is None else found.group(0)
 
 
 def _reason(text: str) -> str:
