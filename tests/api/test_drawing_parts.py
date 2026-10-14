@@ -1039,3 +1039,82 @@ def test_code_s_own_item_is_listed_as_found_by_code(session: Session, store: Loc
     assert undone.status_code == 201, undone.text
     assert undone.json()["decision"]["by_code"] is False
     assert undone.json()["decision"]["decision"] == "withdrawn"
+
+
+# -- why it is not a part (#1246, with phase 5 decision 6) -----------------------------------------
+
+
+@pytest.mark.parametrize("reason", ["appliance-space", "side-panel", "other"])
+def test_the_reason_a_person_gave_survives_a_reload(
+    session: Session, store: LocalStore, reason: str
+) -> None:
+    """ "Appliance space", "Side panel" and "Something else" each keep their answer, and the list
+    says it again when the page is loaded afresh."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+
+    response = client.post(
+        f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/withdraw",
+        json={"reason": reason},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["decision"]["not_part_reason"] == reason
+    reloaded = {
+        part["proposal_id"]: part for part in _drawing(client, project_id, package_id)["parts"]
+    }
+    decision = reloaded[first["proposal_id"]]["decision"]
+    assert decision["decision"] == "withdrawn" and decision["not_part_reason"] == reason
+    assert session.scalars(select(PartConfirmation.not_part_reason)).one() == reason
+    assert _count(session, DrawingItem) == 0
+
+
+def test_not_a_part_with_no_body_keeps_no_reason(session: Session, store: LocalStore) -> None:
+    """ "Not a part" and Undo send nothing, as before: the decision keeps no reason."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+    base = f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/withdraw"
+
+    bare = client.post(base)
+    empty = client.post(base, json={})
+
+    assert [bare.status_code, empty.status_code] == [201, 201], bare.text
+    assert bare.json()["decision"]["not_part_reason"] is None
+    assert empty.json()["decision"]["not_part_reason"] is None
+
+
+def test_an_unknown_reason_is_refused_and_nothing_is_decided(
+    session: Session, store: LocalStore
+) -> None:
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+
+    response = client.post(
+        f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/withdraw",
+        json={"reason": "a-cupboard"},
+    )
+
+    assert response.status_code == 422
+    _nothing_decided(session)
+
+
+def test_a_confirmation_carries_no_reason(session: Session, store: LocalStore) -> None:
+    """A confirmation says what a part is: a reason sent with one is refused, never stored."""
+    _, project_id, package_id = _sheet(session, store)
+    _vendors(session)
+    client = _client(session, store, project_id)
+    first = _drawing(client, project_id, package_id)["parts"][0]
+
+    response = client.post(
+        f"{_base(project_id, package_id)}/parts/{first['proposal_id']}/confirm",
+        json={"kind": "cabinet", "reason": "side-panel"},
+    )
+
+    assert response.status_code == 422
+    _nothing_decided(session)

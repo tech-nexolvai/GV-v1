@@ -434,6 +434,27 @@ class PartDecision(StrEnum):
 PART_DECISION_VALUES = ", ".join(f"'{decision.value}'" for decision in PartDecision)
 
 
+class NotPartReason(StrEnum):
+    """Why a person said a suggested piece is not a part (#1246, phase 5 decision 6).
+
+    The person's own answer to "what is it?", kept so the page can show it back after a reload.
+    Nothing reads it to decide anything. Stored on `part_confirmations`, so the strings are part of
+    the data contract: treat them as fixed.
+    """
+
+    APPLIANCE_SPACE = "appliance-space"
+    """The gap left for an appliance, such as a dishwasher or a range."""
+
+    SIDE_PANEL = "side-panel"
+    """An end or side panel: a panel, not a cabinet or a filler."""
+
+    OTHER = "other"
+    """Something else the person did not name."""
+
+
+NOT_PART_REASON_VALUES = ", ".join(f"'{reason.value}'" for reason in NotPartReason)
+
+
 class PartProposal(Base, TimestampedUUID, Immutable):
     """What the computer suggests one part of a drawing is: a cabinet, a filler or a countertop.
 
@@ -580,8 +601,18 @@ class PartConfirmation(Base, TimestampedUUID, Immutable):
     """Who decided, on a withdrawal too: whether a part exists is a person's call, so every call
     names its person."""
 
+    not_part_reason: Mapped[str | None] = mapped_column(String(24), default=None)
+    """Why a person said it is not a part (`NotPartReason`), or `NULL` (#1246). Only on a person's
+    withdrawal, and optional there: "Not a part" and Undo give none, nor does any decision made
+    before migration 0097. Code never gives one: it cannot know what the piece is."""
+
     __table_args__ = (
         CheckConstraint(f"decision IN ({PART_DECISION_VALUES})", name="part_confirmation_decision"),
+        CheckConstraint(
+            "not_part_reason IS NULL OR (decision = 'withdrawn' AND confirmed_by NOT LIKE 'code:%'"
+            f" AND not_part_reason IN ({NOT_PART_REASON_VALUES}))",
+            name="part_confirmation_not_part_reason",
+        ),
         CheckConstraint(
             f"kind IS NULL OR kind IN ({PART_KIND_VALUES})", name="part_confirmation_kind"
         ),

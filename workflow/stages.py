@@ -361,6 +361,7 @@ from workflow.association import (
     dimension_texts,
 )
 from workflow.bala_items import (
+    BALA_SOURCE,
     CodeFinding,
     CodePart,
     confirm_automatic_countertops,
@@ -411,9 +412,9 @@ from workflow.part_pictures import (
     CUT_PART_PICTURES_WORKFLOW,
     PartPictureSettings,
     pages_without_pictures,
-    picture_job_waiting,
-    pictured,
+    picture_job_unstarted,
     record_part_picture,
+    suggestions_without_pictures,
     unpictured_proposals,
 )
 from workflow.parts import live_part_item_ids, outline_box, record_part_proposal
@@ -8853,12 +8854,18 @@ def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, Confirm
 def _queue_bala_pictures(
     session: Session, package_revision_id: UUID, proposal_ids: Sequence[UUID]
 ) -> dict[str, object]:
-    """Queue the picture job for Bala's suggestions still without a picture (#1236), once."""
-    if not proposal_ids:
-        return {"queued": False, "reason": "Bala suggested nothing to picture"}
-    if len(pictured(session, proposal_ids)) == len(set(proposal_ids)):
+    """Queue the picture job while any of Bala's suggestions on the revision has no picture (#1236).
+
+    Queued unless a job for the revision **has not started** (`picture_job_unstarted`, #1246):
+    that job will list every suggestion filed before it starts. A job that is already cutting
+    listed its pages before this match's suggestions existed, so another is queued behind it.
+    Cutting twice is harmless: a suggestion keeps the first picture cut for it.
+    """
+    if not suggestions_without_pictures(session, package_revision_id, source=BALA_SOURCE):
+        if not proposal_ids:
+            return {"queued": False, "reason": "Bala suggested nothing to picture"}
         return {"queued": False, "reason": "every suggestion already has its picture"}
-    if not picture_job_waiting(session, package_revision_id):
+    if not picture_job_unstarted(session, package_revision_id):
         enqueue(
             session,
             workflow=CUT_PART_PICTURES_WORKFLOW,
