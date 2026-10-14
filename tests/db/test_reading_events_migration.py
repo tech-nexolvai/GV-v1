@@ -18,7 +18,7 @@ from tests.app.postgres_fixture import alembic_config
 pytest_plugins = ("tests.app.postgres_fixture",)
 
 REVISION = "0096_reading_events"
-BEFORE = "0094_invocation_failure_reason"
+BEFORE = "0095_part_proposal_rows"
 
 
 def _config(engine: Engine):  # type: ignore[no-untyped-def]

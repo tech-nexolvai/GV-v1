@@ -262,6 +262,112 @@ def row_identity(
     )
 
 
+def _without_rank(key: RowIdentity) -> tuple[object, ...]:
+    """The row's identity without its rank (#1210): the same page bytes, page number, piece count,
+    reader version and values read. With the line within `ROW_Y_SLACK_PT` it is the same physical
+    row, whatever rank the reading gave it (the readers chose another of the page's ranked rows, or
+    code ranked them differently)."""
+    return (*key[:2], *key[3:])
+
+
+#: Where each piece of a row sits across the page, in points (`row_xs_pt`): per slot (`slot:<i>`
+#: or `slot:overall`), its slot box's left and right ends and its label's middle.
+RowXs = tuple[tuple[str, Decimal | None, Decimal | None, Decimal], ...]
+
+#: Where a row sits on a page: its identity, its line's height and its pieces across the page.
+Placement = tuple[RowIdentity | None, Decimal | None, RowXs | None]
+
+
+def _same_xs(mine: RowXs | None, other: RowXs | None) -> bool:
+    """The same pieces at the same places across the page: every slot's box ends and label middle
+    within `ROW_Y_SLACK_PT` (#1210 review: an identical run drawn beside the paired one, at the
+    same height, is another line). Unknown positions never match."""
+    if mine is None or other is None or [x[0] for x in mine] != [x[0] for x in other]:
+        return False
+    for (_slot, *here), (_same, *there) in zip(mine, other, strict=True):
+        for this, that in zip(here, there, strict=True):
+            if this is None and that is None:
+                continue
+            if this is None or that is None or abs(this - that) > ROW_Y_SLACK_PT:
+                return False
+    return True
+
+
+def _same_row(
+    where: Placement,
+    others: Iterable[Placement],
+    *,
+    within_revision: bool = False,
+) -> list[int]:
+    """Which of `others` (by index) are the row placed at `where`: the same identity, the line
+    within `ROW_Y_SLACK_PT`.
+
+    `within_revision` (#1210), for a newer reading of the same revision: every piece must also sit
+    at the same place across the page (`_same_xs`), and, when no row has the same rank, the same
+    physical row at another rank counts (`_without_rank`)."""
+    key, y, xs = where
+    if key is None or y is None:
+        return []
+    placed = list(others)
+
+    def near(other_y: Decimal | None, other_xs: RowXs | None) -> bool:
+        return (
+            other_y is not None
+            and abs(other_y - y) <= ROW_Y_SLACK_PT
+            and (not within_revision or _same_xs(xs, other_xs))
+        )
+
+    exact = [i for i, (other, oy, oxs) in enumerate(placed) if other == key and near(oy, oxs)]
+    if exact or not within_revision:
+        return exact
+    physical = _without_rank(key)
+    return [
+        i
+        for i, (other, oy, oxs) in enumerate(placed)
+        if other is not None and _without_rank(other) == physical and near(oy, oxs)
+    ]
+
+
+def _box_ends(flags: Iterable[str], name: str) -> tuple[Decimal, Decimal] | None:
+    """The left and right ends of a `<name>:left,top,right,bottom` box flag, in pixels."""
+    for flag in flags:
+        if flag.startswith(f"{name}:"):
+            parts = flag.removeprefix(f"{name}:").split(",")
+            try:
+                return Decimal(parts[0]), Decimal(parts[2])
+            except (IndexError, ArithmeticError):
+                return None
+    return None
+
+
+def row_xs_pt(row: SlotRow, dpi: int | None) -> RowXs | None:
+    """Where each piece of the row sits across the page, in points (`RowXs`); `None` when a piece's
+    place is unknown."""
+    if not dpi:
+        return None
+    scale = Decimal(72) / Decimal(dpi)
+    found: dict[str, tuple[Decimal | None, Decimal | None, Decimal]] = {}
+    for candidate in row.candidates:
+        flags = candidate.ambiguity_flags or ()
+        slot = next((flag for flag in flags if flag.startswith("slot:")), None)
+        if slot is None:
+            continue
+        polygon = candidate.polygon
+        if slot in found or not isinstance(polygon, list) or not polygon:
+            return None
+        try:
+            middle = sum((Decimal(str(point[0])) for point in polygon), Decimal(0)) / len(polygon)
+        except (TypeError, IndexError, ArithmeticError):
+            return None
+        ends = _box_ends(flags, "slot-box")
+        found[slot] = (
+            None if ends is None else ends[0] * scale,
+            None if ends is None else ends[1] * scale,
+            middle * scale,
+        )
+    return tuple((slot, *found[slot]) for slot in sorted(found)) or None
+
+
 def row_y_pt(row: SlotRow, dpi: int | None) -> Decimal | None:
     """Where the row's line sits on the page, in points: the middle of its first piece's box."""
     polygon = row.anchor.polygon
@@ -317,7 +423,12 @@ class WithinRevisionCarry:
     """Reviewer architect pairings carried to their rows, each still the pairing that counts."""
     pairings_held: int
     """Reviewer pairings that could not be placed on exactly one new row: that row's pairing is
-    held, naming the earlier decision, so it never silently reverts to the automatic one."""
+    held, naming the earlier decision, so it never silently reverts to the automatic one. When the
+    new reading chose another line of the page (#1210), the row it chose there is held."""
+    pairings_not_placed: int = 0
+    """Reviewer pairings on a page where the new reading chose no row left to hold (#1210): the page
+    has no countertop row now, so it is listed for the reviewer's own answer (a row-choice split
+    or a page with no countertop row, each blocking sign-off until answered)."""
 
 
 def carry_row_answers_within_revision(
@@ -329,20 +440,36 @@ def carry_row_answers_within_revision(
 
     * **Wall answers and typed widths** (`SlotRowReviewDecision`): the same identity as between
       revisions (page content hash, page number, row rank, piece count, reader version, every value
-      read, the line within `ROW_Y_SLACK_PT`); a row with no single match is asked again (its wall
-      and widths are blocking questions, so nothing is silent).
+      read, the line within `ROW_Y_SLACK_PT`), and every piece at the same place across the page
+      (`_same_xs`: an identical run beside it, at the same height, is another line). When no row
+      has the same rank, the same physical row at another rank counts (#1210, `_same_row`). A row
+      with no single match is asked again, and an answer left with no row is audited with the
+      reason (`_audit_not_carried`).
     * **Architect pairings a reviewer made** (`ArchitectPairingRecord`, source `reviewer`): by the
-      same identity; the copy outranks the new automatic pairing exactly as before. One that cannot
-      be placed on exactly one new row, or would no longer count there, holds that row's pairing
-      with the earlier decision named (`_hold_pairing`): never a silent return to the automatic one.
+      same rule; the copy outranks the new automatic pairing exactly as before. One that cannot be
+      placed on exactly one new row, or would no longer count there, holds that row's pairing with
+      the earlier decision named (`_hold_pairing`): never a silent return to the automatic one.
+      When the new reading chose another line of the page (no row left at the paired rank, #1210),
+      the page's chosen row is held, saying the reading picked a different line. With no row on
+      the page at all, the pairing is audited with the reason and the page is listed for the
+      reviewer. A row is held once per pass.
+    * **Holds stay in force** (#1210 review): a hold standing for a reviewer's pairing (source
+      `none`, `earlier_reviewer_record_id`) is never let go by a later reading. Its row, or the
+      row chosen in its place, is held again with the hold's own words, naming the original
+      decision, until a person pairs it.
 
     Each copy names the original (`carried_from_id`, in the pairing's `details`) and is audited.
     """
     earlier, _unchosen = slot_rows_and_unchosen_pages(session, revision_id, run_id=earlier_run_id)
     current = slot_rows(session, revision_id)
-    decisions = _carry_row_answers(session, earlier, current)
-    pairings, held = _carry_reviewer_pairings(session, revision_id, earlier, current)
-    return WithinRevisionCarry(decisions=decisions, pairings=pairings, pairings_held=held)
+    decisions = _carry_row_answers(session, earlier, current, within_revision=True)
+    pairings, held, not_placed = _carry_reviewer_pairings(session, revision_id, earlier, current)
+    return WithinRevisionCarry(
+        decisions=decisions,
+        pairings=pairings,
+        pairings_held=held,
+        pairings_not_placed=not_placed,
+    )
 
 
 def _carry_reviewer_pairings(
@@ -350,48 +477,72 @@ def _carry_reviewer_pairings(
     revision_id: UUID,
     earlier: Iterable[SlotRow],
     current: Iterable[SlotRow],
-) -> tuple[int, int]:
-    """`(carried, held)`: every reviewer pairing in force on an earlier row, on its new row."""
+) -> tuple[int, int, int]:
+    """`(carried, held, not placed)`: every reviewer pairing in force on an earlier row, on its new
+    row, or holding the row the new reading chose instead."""
     from workflow.architect_match_records import effective_architect_matches
     from workflow.architect_pairing_records import latest_architect_pairings, record_view
 
     earlier = tuple(earlier)
     current = tuple(current)
-    in_force = {
-        anchor_id: pairing
-        for anchor_id, pairing in latest_architect_pairings(
-            session, [row.anchor.id for row in earlier]
-        ).items()
-        if pairing is not None and pairing.source == "reviewer"
-    }
+    # A reviewer's pairing, or a hold that stands for one (#1210 review): a hold is never let go by
+    # a later reading; it holds the row again, naming the reviewer's original decision.
+    in_force: dict[UUID, tuple[Any, ArchitectPairingRecord, list[str] | None]] = {}
+    for anchor_id, pairing in latest_architect_pairings(
+        session, [row.anchor.id for row in earlier]
+    ).items():
+        if pairing is None:
+            continue
+        if pairing.source == "reviewer":
+            in_force[anchor_id] = (
+                pairing,
+                session.get_one(ArchitectPairingRecord, pairing.record_id),
+                None,
+            )
+        elif pairing.source == "none":
+            hold = session.get_one(ArchitectPairingRecord, pairing.record_id)
+            named = _held_for(session, hold)
+            if named is not None:
+                said = hold.details.get("reasons")
+                in_force[anchor_id] = (
+                    pairing,
+                    named,
+                    [str(reason) for reason in said] if isinstance(said, list) else [],
+                )
     if not in_force:
-        return 0, 0
+        return 0, 0, 0
     hashes = _page_hashes(session, (*earlier, *current))
     readers = _readers(session, (*earlier, *current))
 
-    def placed(row: SlotRow) -> tuple[RowIdentity | None, Decimal | None]:
+    def placed(row: SlotRow) -> Placement:
         version, dpi = readers.get(row.anchor.extraction_run_id, (None, None))
         return (
             row_identity(row, hashes.get(row.anchor.page_id), version),
             row_y_pt(row, dpi),
+            row_xs_pt(row, dpi),
         )
 
+    current_placed = [placed(other) for other in current]
     carried = held = 0
+    carried_to: set[UUID] = set()
+    held_rows: set[UUID] = set()
+    other_line: list[tuple[SlotRow, ArchitectPairingRecord, list[str] | None]] = []
     for row in earlier:
-        pairing = in_force.get(row.anchor.id)
-        if pairing is None:
+        entry = in_force.get(row.anchor.id)
+        if entry is None:
             continue
-        original = session.get_one(ArchitectPairingRecord, pairing.record_id)
-        key, y = placed(row)
-        targets = [
-            other
-            for other in current
-            if key is not None
-            and y is not None
-            and (where := placed(other))[0] == key
-            and where[1] is not None
-            and abs(where[1] - y) <= ROW_Y_SLACK_PT
-        ]
+        pairing, original, hold_reasons = entry
+        targets = [current[i] for i in _same_row(placed(row), current_placed, within_revision=True)]
+        if hold_reasons is not None:
+            # Still held: the same row, or the rows it could be, are held again; never carried.
+            suspects = targets or _same_rank(row, current)
+            if suspects:
+                held += _hold_pairing(
+                    session, revision_id, suspects, original, held=held_rows, reasons=hold_reasons
+                )
+            else:
+                other_line.append((row, original, hold_reasons))
+            continue
         if len(targets) == 1:
             target = targets[0]
             details: dict[str, object] = {**original.details, "carried_from_id": str(original.id)}
@@ -416,19 +567,86 @@ def _carry_reviewer_pairings(
                     details["match_record_id"] = str(match.record_id)
             if ok and _copy_counts(session, target, original, details, pairing):
                 carried += 1
+                carried_to.add(target.anchor.id)
                 continue
-            held += _hold_pairing(session, revision_id, [target], original)
+            held += _hold_pairing(session, revision_id, [target], original, held=held_rows)
             continue
         # Two new rows it could be, or none with the same identity: the rows on the same page at the
         # same rank are held, naming the decision, rather than taking the automatic pairing.
-        rank = _rank(row)
-        suspects = targets or [
+        suspects = targets or _same_rank(row, current)
+        if suspects:
+            held += _hold_pairing(session, revision_id, suspects, original, held=held_rows)
+        else:
+            other_line.append((row, original, None))
+    # No row left at the paired rank: the new reading chose another line of the page (#1210). The
+    # row it chose there is held, never left on its automatic pairing; a row that just took a
+    # reviewer's own pairing keeps it. Done after every carry, so no carried pairing is undone.
+    not_placed = 0
+    for row, original, hold_reasons in other_line:
+        chosen = [
             other
             for other in current
-            if other.anchor.page_id == row.anchor.page_id and _rank(other) == rank
+            if other.anchor.page_id == row.anchor.page_id and other.anchor.id not in carried_to
         ]
-        held += _hold_pairing(session, revision_id, suspects, original)
-    return carried, held
+        if not chosen:
+            # No countertop row on the page now: the page itself is listed for the reviewer, and
+            # the audit trail says why this pairing went nowhere.
+            not_placed += 1
+            _audit_not_carried(
+                session,
+                original.id,
+                "architect_pairing_record",
+                f"architect pairing not carried: no countertop row on page {row.page_number} "
+                "in the new reading; the page is listed for the reviewer",
+            )
+            continue
+        held += _hold_pairing(
+            session,
+            revision_id,
+            chosen,
+            original,
+            other_line_on_page=row.page_number,
+            held=held_rows,
+            reasons=hold_reasons,
+        )
+    return carried, held, not_placed
+
+
+def _same_rank(row: SlotRow, current: Iterable[SlotRow]) -> list[SlotRow]:
+    """The new rows on the same page at the same rank as `row`."""
+    rank = _rank(row)
+    return [
+        other
+        for other in current
+        if other.anchor.page_id == row.anchor.page_id and _rank(other) == rank
+    ]
+
+
+def _held_for(session: Session, hold: ArchitectPairingRecord) -> ArchitectPairingRecord | None:
+    """The reviewer's pairing a hold stands for (`earlier_reviewer_record_id`), or `None` for a
+    record that is no such hold (code's own "no pairing"). A hold whose named record cannot be read
+    stands for itself: it is still held, never let go."""
+    named = (hold.details or {}).get("earlier_reviewer_record_id")
+    if named is None:
+        return None
+    try:
+        found = session.get(ArchitectPairingRecord, UUID(str(named)))
+    except ValueError:
+        found = None
+    return hold if found is None else found
+
+
+def _audit_not_carried(session: Session, target_id: UUID, target_type: str, reason: str) -> None:
+    """Record an answer that could not be carried, with the plain reason (#1210 review). The audit
+    record has no reason field (and this change adds no migration), so the reason rides on the
+    actor: who did it, then what happened."""
+    emit(
+        session,
+        category=AuditCategory.REVIEW_ACTION,
+        actor=f"{CARRY_WITHIN_REVISION_ACTOR}: {reason}"[:200],
+        target_id=target_id,
+        target_type=target_type,
+    )
 
 
 def _tip(session: Session, row_anchor_id: UUID) -> UUID | None:
@@ -504,16 +722,40 @@ def _hold_pairing(
     revision_id: UUID,
     rows: Iterable[SlotRow],
     original: ArchitectPairingRecord,
+    *,
+    other_line_on_page: int | None = None,
+    held: set[UUID] | None = None,
+    reasons: list[str] | None = None,
 ) -> int:
     """Hold each row's pairing with the earlier reviewer decision named: a record of no pairing
-    that outranks the new automatic one, so a person pairs the row again."""
+    that outranks the new automatic one, so a person pairs the row again. `other_line_on_page`:
+    the page whose paired row the new reading did not choose (#1210); the words say so. `held`:
+    rows already held in this pass, skipped and added to. `reasons`: an earlier hold's own words,
+    kept when a later reading holds its row again."""
     said = (
         "nothing on the architect's drawing is comparable"
         if not original.pairs
         else f"{len(original.pairs)} architect dimension(s) paired"
     )
+    reason = (
+        (
+            f"{original.decided_by} paired this row on the earlier reading ({said}), "
+            "but the new reading could not be matched to that row for certain. Pair "
+            "it again."
+        )
+        if other_line_on_page is None
+        else (
+            f"{original.decided_by} paired the countertop row on page {other_line_on_page} on "
+            f"the earlier reading ({said}), but the new reading picked a different line on this "
+            "page, so that pairing could not be carried. Pair this row again."
+        )
+    )
     count = 0
     for row in rows:
+        if held is not None:
+            if row.anchor.id in held:
+                continue
+            held.add(row.anchor.id)
         record = ArchitectPairingRecord(
             package_revision_id=revision_id,
             page_id=row.anchor.page_id,
@@ -524,13 +766,7 @@ def _hold_pairing(
             pairs=[],
             details={
                 "earlier_reviewer_record_id": str(original.id),
-                "reasons": [
-                    (
-                        f"{original.decided_by} paired this row on the earlier reading ({said}), "
-                        "but the new reading could not be matched to that row for certain. Pair "
-                        "it again."
-                    )
-                ],
+                "reasons": reasons or [reason],
             },
             supersedes_id=_tip(session, row.anchor.id),
             decided_by=None,
@@ -549,7 +785,11 @@ def _hold_pairing(
 
 
 def _carry_row_answers(
-    session: Session, earlier: Iterable[SlotRow], current: Iterable[SlotRow]
+    session: Session,
+    earlier: Iterable[SlotRow],
+    current: Iterable[SlotRow],
+    *,
+    within_revision: bool = False,
 ) -> int:
     answered = [row for row in earlier if row.decision is not None]
     if not answered:
@@ -558,34 +798,37 @@ def _carry_row_answers(
     hashes = _page_hashes(session, (*answered, *current))
     readers = _readers(session, (*answered, *current))
 
-    def placed(row: SlotRow) -> tuple[RowIdentity | None, Decimal | None]:
+    def placed(row: SlotRow) -> Placement:
         version, dpi = readers.get(row.anchor.extraction_run_id, (None, None))
         return (
             row_identity(row, hashes.get(row.anchor.page_id), version),
             row_y_pt(row, dpi),
+            row_xs_pt(row, dpi),
         )
 
-    remembered: list[tuple[RowIdentity, Decimal, SlotRowReviewDecision]] = []
+    remembered: list[tuple[Placement, SlotRowReviewDecision]] = []
     for row in answered:
-        key, y = placed(row)
-        if key is not None and y is not None and row.decision is not None:
-            remembered.append((key, y, row.decision))
+        where = placed(row)
+        if where[0] is not None and where[1] is not None and row.decision is not None:
+            remembered.append((where, row.decision))
     carried = 0
+    used: set[UUID] = set()
     for row in current:
         if row.decision is not None:
             continue
-        key, y = placed(row)
-        if key is None or y is None:
-            continue
         matches = [
-            decision
-            for earlier_key, earlier_y, decision in remembered
-            if earlier_key == key and abs(earlier_y - y) <= ROW_Y_SLACK_PT
+            remembered[i][1]
+            for i in _same_row(
+                placed(row),
+                (where for where, _ in remembered),
+                within_revision=within_revision,
+            )
         ]
         # Two earlier rows this row could be is no identity at all: it is asked again.
         if len(matches) != 1:
             continue
         source = matches[0]
+        used.add(source.id)
         record = SlotRowReviewDecision(
             row_candidate_id=row.anchor.id,
             supersedes_id=None,
@@ -604,6 +847,26 @@ def _carry_row_answers(
             target_type="slot_row_review_decision",
         )
         carried += 1
+    if within_revision:
+        # Never silent (#1210 review): an answer the newer reading has no row for is audited with
+        # the reason. (A wall hold the screen shows is a follow-up; the row's walls are decided
+        # again, asked unless code and both AIs agree.)
+        pages_now = {row.anchor.page_id for row in current}
+        for row in answered:
+            assert row.decision is not None
+            if row.decision.id in used:
+                continue
+            why = (
+                f"the new reading's row on page {row.page_number} is not the row it was given on"
+                if row.anchor.page_id in pages_now
+                else f"no countertop row on page {row.page_number} in the new reading"
+            )
+            _audit_not_carried(
+                session,
+                row.decision.id,
+                "slot_row_review_decision",
+                f"wall answer not carried: {why}; the row's walls are asked again",
+            )
     return carried
 
 

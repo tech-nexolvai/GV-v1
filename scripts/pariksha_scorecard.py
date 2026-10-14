@@ -18,6 +18,9 @@ database holding several runs needs `--run`; the refusal lists them. Vastu also 
 
 `--code-version` is the stored run's commit, or `unrecorded` (flagged: not attributable).
 
+`--smriti <candidates file>` (from `scripts/smriti_candidates.py export`, #1232) also prints how many
+reviewer decisions concern this agent; printed only, never stored in the scorecard.
+
 Keys and scorecards hold client values (what the readers read): keep both outside any repository.
 An `--out` inside a git working tree is refused. Exit codes: 0 ACCEPT, 1 REJECT, 2 refused.
 """
@@ -45,6 +48,7 @@ from eval.pariksha.scorecard import ScorecardError, read_scorecard, write_scorec
 from eval.pariksha.stored import StoredRunError, load_architect_run, load_stored_run
 from eval.regression import IncomparableRuns
 from eval.runs import MissingProvenanceError
+from eval.smriti.candidates import CandidatesFileError, agent_line, read_candidates
 
 #: Exit codes: ACCEPT 0, REJECT 1, a refusal (tampered file, other agent or key, unreadable
 #: answers, bad provenance, an output path inside a git working tree) 2.
@@ -136,6 +140,8 @@ def summary(card: Scorecard) -> str:
 
 def _score(args: argparse.Namespace) -> int:
     out = _outside_git(args.out)
+    # Read before scoring, so a refused candidates file never leaves a scorecard behind.
+    decisions = None if args.smriti is None else read_candidates(args.smriti.expanduser())
     key = read_key(args.key.expanduser())
     expected = ArchitectAnswerKey if args.agent == "vastu" else AnswerKey
     if not isinstance(key, expected) or (isinstance(key, AnswerKey) and key.agent != args.agent):
@@ -177,6 +183,9 @@ def _score(args: argparse.Namespace) -> int:
         engine.dispose()
     write_scorecard(card, out)
     print(summary(card))
+    if decisions is not None:
+        # Printed beside the scorecard, never stored in it: the decisions come from another file.
+        print(agent_line(decisions, args.agent))
     print(f"  written: {out}")
     return 0
 
@@ -202,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--code-version", required=True, help="the commit of the code that made the stored run"
     )
     score.add_argument("--out", type=Path, required=True, help="the new scorecard file")
+    score.add_argument(
+        "--smriti",
+        type=Path,
+        help="a Smriti candidates file: also print the reviewer decisions about this agent",
+    )
     score.set_defaults(handler=_score)
     compare = commands.add_parser("compare", help="compare two scorecards: before, after")
     compare.add_argument("before", type=Path)
@@ -222,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         IncomparableRuns,
         MissingProvenanceError,
         FileExistsError,
+        CandidatesFileError,
     ) as error:
         # A refusal is not a verdict: 0 is ACCEPT, 1 is REJECT, 2 is "will not judge this".
         print(f"pariksha: {error}", file=sys.stderr)

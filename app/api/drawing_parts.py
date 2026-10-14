@@ -57,6 +57,7 @@ from app.models import OutboxEntry, Page, PartConfirmation, PartPicture, VendorP
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
+from workflow.bala_items import BALA_SOURCE
 from workflow.outbox import enqueue
 from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW, GvMarks
 from workflow.part_pictures import part_picture as recorded_picture
@@ -119,6 +120,26 @@ class PartOut(BaseModel):
     reason: str = Field(description="Why it was suggested, in plain English.")
     added_by_a_person: bool = Field(
         description="True when a person added it because the suggestions missed it."
+    )
+    kind_named: bool = Field(
+        description=(
+            "For a suggestion from the countertop line: whether the drawing names its kind (the "
+            "countertop itself, or a piece with a printed word such as FILLER or a cabinet tag). "
+            "Only then is it confirmed as suggested in one click; otherwise the person says what "
+            "it is. False for every other suggestion."
+        )
+    )
+    picture_pending: bool = Field(
+        description=(
+            "True while its picture is being made: none is stored yet and the worker's job to "
+            "cut it is queued."
+        )
+    )
+    from_countertop_line: bool = Field(
+        description=(
+            "True when code suggested it from a countertop row the AI readers read (Bala, #1236): "
+            "the countertop itself or one of its pieces, with its kind already suggested."
+        ),
     )
     left_end: PointOut | None = Field(
         description="The left end of the line that defines it, or null when no line did."
@@ -247,6 +268,9 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
         suggested_code=proposal.code_as_printed,
         reason=proposal.reason,
         added_by_a_person=proposal.source == ADDED_BY_A_PERSON,
+        from_countertop_line=proposal.source == BALA_SOURCE,
+        kind_named=listed.kind_named,
+        picture_pending=listed.picture_pending,
         left_end=None if ends is None else PointOut(x=ends[0][0], y=ends[0][1]),
         right_end=None if ends is None else PointOut(x=ends[1][0], y=ends[1][1]),
         has_picture=listed.has_picture,

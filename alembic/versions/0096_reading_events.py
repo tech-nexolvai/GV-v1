@@ -1,7 +1,7 @@
 """A reading's live activity, one coded line at a time (#1238), and the `try_again` stage.
 
 Revision ID: 0096_reading_events
-Revises: 0094_invocation_failure_reason
+Revises: 0095_part_proposal_rows
 
 **Why.** While a package is read the screen could say only "page k of N": the progress row
 (`0087`) is overwritten in place, and the inspectors' results (#1228, `pariksha:` flags) are written
@@ -37,9 +37,8 @@ them), so the table is dropped. A progress row that says `try_again` is a readin
 the narrower check cannot hold it, so such rows are deleted first (the screen then says less until
 the next progress line).
 
-**Chaining.** Written on main's head `0094_invocation_failure_reason`. Phase 4's open PR #1236 adds
-`0095_part_proposal_rows` on the same head; whichever merges second is re-chained onto the other
-(one line, `down_revision`).
+**Chaining.** Written on `0094_invocation_failure_reason`, then re-chained onto
+`0095_part_proposal_rows` (phase 4, #1243) once that merged first.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ from alembic import op
 from app.db.roles import ROLE_GRANTS
 
 revision: str = "0096_reading_events"
-down_revision: str | None = "0094_invocation_failure_reason"
+down_revision: str | None = "0095_part_proposal_rows"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

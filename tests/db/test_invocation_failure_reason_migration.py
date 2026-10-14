@@ -92,10 +92,12 @@ def test_the_revision_follows_the_refusals_and_fits_the_version_column() -> None
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision(REVISION)
     assert found is not None and found.down_revision == BEFORE
-    # On the one line of history to the single head; later migrations may follow it (#1238).
-    assert REVISION in {
-        rev.revision for rev in script.walk_revisions("base", script.get_current_head())
-    }
+    # #1236 added 0095 on top; this one stays directly beneath it.
+    above = script.get_revision("0095_part_proposal_rows")
+    assert above is not None and above.down_revision == REVISION
+    # Later migrations (#1238's 0096) may follow, on one line of history to the single head.
+    (head,) = script.get_heads()
+    assert above.revision in {rev.revision for rev in script.walk_revisions("base", head)}
 
 
 @pytest.mark.parametrize(
@@ -156,6 +158,8 @@ def test_the_downgrade_refuses_while_a_failed_call_keeps_its_cause(postgres_engi
     the old check forbids is neither cleared nor deleted. Nothing changes; the revision stays."""
     config = _config(postgres_engine)
     command.upgrade(config, "head")
+    with postgres_engine.connect() as connection:
+        before = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     failed = _store(
         postgres_engine,
         outcome=ModelInvocationOutcome.FAILED,
@@ -165,15 +169,14 @@ def test_the_downgrade_refuses_while_a_failed_call_keeps_its_cause(postgres_engi
         cost_micros=0,
     )
 
-    command.downgrade(config, REVISION)  # past any later migration first (#1238)
     with pytest.raises(RuntimeError, match=r"1 model_invocations row\(s\) record why"):
         command.downgrade(config, BEFORE)
 
     assert _reason(postgres_engine, failed) == ("failed", "PictureWouldBeResized")
     with postgres_engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-    assert version == REVISION
-    command.upgrade(config, "head")
+    # The whole downgrade is one transaction, so the revision above this one (#1236) stays too.
+    assert version == before
 
 
 def test_the_migration_goes_down_and_up_when_no_row_needs_it(postgres_engine: Engine) -> None:

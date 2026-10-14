@@ -42,7 +42,7 @@ from uuid import UUID
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
-from app.models import DrawingView, Page, PartPicture, PartProposal
+from app.models import DrawingView, OutboxEntry, Page, PartPicture, PartProposal
 
 __all__ = [
     "CUT_PART_PICTURES_WORKFLOW",
@@ -52,6 +52,7 @@ __all__ = [
     "gv_marks",
     "pages_without_pictures",
     "part_picture",
+    "picture_job_waiting",
     "pictured",
     "record_part_picture",
     "unpictured_proposals",
@@ -203,4 +204,21 @@ def pages_without_pictures(session: Session, document_version_ids: Sequence[UUID
             )
             .order_by(Page.document_version_id, Page.index)
         )
+    )
+
+
+def picture_job_waiting(session: Session, package_revision_id: UUID) -> bool:
+    """Whether a `CUT_PART_PICTURES_WORKFLOW` job for this revision is queued and not yet done or
+    given up: until it runs, a suggestion without a picture is having it made (#1236)."""
+    return bool(
+        session.execute(
+            select(
+                exists().where(
+                    OutboxEntry.workflow == CUT_PART_PICTURES_WORKFLOW,
+                    OutboxEntry.payload["package_revision_id"].astext == str(package_revision_id),
+                    OutboxEntry.dispatched_at.is_(None),
+                    OutboxEntry.abandoned_at.is_(None),
+                )
+            )
+        ).scalar()
     )
