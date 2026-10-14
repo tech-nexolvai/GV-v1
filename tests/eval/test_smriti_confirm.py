@@ -16,7 +16,7 @@ import pytest
 from eval.pariksha.keys import AnswerKey, LabelTruth, RowTruth, dump_key, load_key
 from eval.pariksha.kinds import KindsKey, dump_kinds_key, load_kinds_key
 from eval.pariksha.walls import WallsKey, dump_walls_key, load_walls_key
-from eval.smriti.actors import REVIEWER, UNCHECKED, UNKNOWN
+from eval.smriti.actors import REVIEWER, UNCHECKED, UNKNOWN, Reviewers
 from eval.smriti.candidates import (
     CANDIDATES_FORMAT,
     MISTAKE_UNANSWERED,
@@ -38,6 +38,10 @@ PAGE = "a" * 64
 OTHER_PAGE = "b" * 64
 PICTURE = "c" * 64
 FILE_SHA = "f" * 64
+#: The stored picture every invented question showed.
+PIC = "d" * 64
+#: The local real-reviewer list: the invented person who confirms.
+PEOPLE = Reviewers(names=frozenset({"a person"}), source="test")
 
 
 def _candidate(candidate_id: str, **fields: Any) -> Candidate:
@@ -197,11 +201,26 @@ def _answers(*entries: dict[str, Any], sha: str = FILE_SHA) -> dict[str, Any]:
 
 
 def _yes(candidate_id: str, **fields: Any) -> dict[str, Any]:
-    return {"candidate": candidate_id, "verdict": "yes", **fields}
+    return {"candidate": candidate_id, "verdict": "yes", "pictures": [PIC], **fields}
+
+
+def _given(export: CandidateExport, **kwargs: Any) -> dict[str, Any]:
+    """What the script reads from storage: each question's pictures and its numbered box count."""
+    kwargs.setdefault("pictures", {c.candidate_id: [PIC] for c in export.candidates})
+    kwargs.setdefault(
+        "boxes",
+        {
+            c.candidate_id: 3
+            for c in export.candidates
+            if (c.question or {}).get("family") == "slot-row-choice"
+        },
+    )
+    kwargs.setdefault("reviewers", PEOPLE)
+    return {"candidates_sha256": FILE_SHA, **kwargs}
 
 
 def _confirm(export: CandidateExport, *entries: dict[str, Any], **kwargs: Any) -> Any:
-    return confirm_candidates(export, _answers(*entries), candidates_sha256=FILE_SHA, **kwargs)
+    return confirm_candidates(export, _answers(*entries), **_given(export, **kwargs))
 
 
 # --- every key type, round-tripped through its Pariksha loader ------------------------------------
@@ -347,14 +366,21 @@ def test_a_correction_needs_misread_or_vendor() -> None:
     assert "AI misread" in key.cases[0].source
 
 
-def test_a_vendor_error_is_kept_out_of_the_ais_key_and_listed_for_the_vendor_report() -> None:
+def test_a_vendor_error_is_kept_out_of_the_ais_key_and_listed_with_its_printed_text() -> None:
+    export = _export(_correction(), _no_countertop())
+    with pytest.raises(ConfirmationRefused, match="printed text"):
+        _confirm(export, _yes("correction_ledger:4", mistake="vendor_drew_it"))
     result = _confirm(
-        _export(_correction(), _no_countertop()),
-        _yes("correction_ledger:4", mistake="vendor_drew_it"),
+        export,
+        _yes("correction_ledger:4", mistake="vendor_drew_it", texts=['1 1/3"']),
         _yes("no_countertop_answers:1"),
     )
     assert "akshara" not in result.keys
-    assert result.vendor == ("correction_ledger:4",)
+    assert [error.candidate_id for error in result.vendor] == ["correction_ledger:4"]
+    (error,) = result.vendor
+    assert error.printed == {"texts": ['1 1/3"']}
+    assert error.recorded == {"original": "1/3", "corrected": "5/2"}
+    assert error.confirmed_by == "a person"
     assert "correction_ledger:4" not in result.joined
 
 
@@ -448,11 +474,10 @@ def test_a_candidate_not_in_the_export_or_not_convertible_is_refused() -> None:
 
 
 def test_answers_for_another_candidates_file_are_refused() -> None:
+    export = _export(_no_countertop())
     with pytest.raises(ConfirmationRefused, match="another candidates file"):
         confirm_candidates(
-            _export(_no_countertop()),
-            _answers(_yes("no_countertop_answers:1"), sha="0" * 64),
-            candidates_sha256=FILE_SHA,
+            export, _answers(_yes("no_countertop_answers:1"), sha="0" * 64), **_given(export)
         )
 
 
@@ -467,10 +492,10 @@ def test_a_candidate_answered_twice_an_unknown_field_or_no_person_is_refused() -
     unnamed = _answers(_yes("no_countertop_answers:1"))
     unnamed["confirmed_by"] = " "
     with pytest.raises(ConfirmationRefused, match="confirmed_by"):
-        confirm_candidates(export, unnamed, candidates_sha256=FILE_SHA)
+        confirm_candidates(export, unnamed, **_given(export))
     with pytest.raises(ConfirmationRefused, match="format"):
         confirm_candidates(
-            export, {**unnamed, "format": "smriti-confirmations/1"}, candidates_sha256=FILE_SHA
+            export, {**unnamed, "format": "smriti-confirmations/1"}, **_given(export)
         )
 
 
@@ -501,7 +526,7 @@ def test_a_base_keys_cases_are_kept_and_a_conflict_with_them_is_refused() -> Non
     merged = _confirm(_export(moved), _yes("no_countertop_answers:1"), bases=[base])
     assert len(merged.keys["rekha"].cases) == 2
     with pytest.raises(ConfirmationRefused, match="already"):
-        _confirm(_export(_countertop()), _yes("no_countertop_answers:2", box=4), bases=[base])
+        _confirm(_export(_countertop()), _yes("no_countertop_answers:2", box=3), bases=[base])
     walls_base = _confirm(
         _export(_walls()), _yes("slot_row_review_decisions:6:walls", left="wall", right="open")
     ).keys["rekha-walls"]
@@ -544,3 +569,51 @@ def test_the_candidates_file_is_written_once_and_refused_when_edited(tmp_path: P
     path.write_text(json.dumps(document))
     with pytest.raises(CandidatesFileError, match="changed"):
         read_candidates(path)
+
+
+# --- review of #1278: who confirms, which pictures, which boxes -----------------------------------
+
+
+def test_the_confirmer_must_be_on_the_local_real_reviewer_list() -> None:
+    export = _export(_no_countertop())
+    stranger = {**_answers(_yes("no_countertop_answers:1")), "confirmed_by": "someone else"}
+    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
+        confirm_candidates(export, stranger, **_given(export))
+    nobody_listed = Reviewers(names=None, source=None)
+    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
+        _confirm(export, _yes("no_countertop_answers:1"), reviewers=nobody_listed)
+
+
+@pytest.mark.parametrize(
+    "name", ["claude", "Claude Opus", "code:bot", "codex agent", "gpt-5", "an AI", "review-bot"]
+)
+def test_an_ai_an_agent_or_code_never_confirms_even_when_listed(name: str) -> None:
+    export = _export(_no_countertop())
+    listed = Reviewers(names=frozenset({name}), source="test")
+    answers = {**_answers(_yes("no_countertop_answers:1")), "confirmed_by": name}
+    with pytest.raises(ConfirmationRefused, match="a person"):
+        confirm_candidates(export, answers, **_given(export, reviewers=listed))
+
+
+def test_a_yes_needs_the_stored_pictures_the_page_showed() -> None:
+    export = _export(_no_countertop())
+    without = {"candidate": "no_countertop_answers:1", "verdict": "yes"}
+    with pytest.raises(ConfirmationRefused, match="picture"):
+        _confirm(export, without)
+    with pytest.raises(ConfirmationRefused, match="picture"):
+        _confirm(export, _yes("no_countertop_answers:1", pictures=["e" * 64]))
+    with pytest.raises(ConfirmationRefused, match="picture"):
+        _confirm(export, _yes("no_countertop_answers:1"), pictures={})
+    # A No or an Unsure joins nothing, so it needs no picture.
+    result = _confirm(export, {"candidate": "no_countertop_answers:1", "verdict": "no"})
+    assert result.keys == {}
+
+
+def test_a_box_must_be_one_the_stored_picture_numbers() -> None:
+    export = _export(_countertop())
+    with pytest.raises(ConfirmationRefused, match="numbers 3 boxes"):
+        _confirm(export, _yes("no_countertop_answers:2", box=4))
+    with pytest.raises(ConfirmationRefused, match="not recorded"):
+        _confirm(export, _yes("no_countertop_answers:2", box=1), boxes={})
+    among = _confirm(export, _yes("no_countertop_answers:2", not_among_boxes=True), boxes={})
+    assert among.keys["rekha"].cases[0].truth == RowTruth(box=None, kind="not_among_boxes")

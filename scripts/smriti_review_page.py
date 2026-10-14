@@ -22,9 +22,16 @@ order:
    kind), **Yes / No / Unsure** accepts or rejects it. Where there is none, one plain instruction
    replaces the proposed-answer line, and the choices themselves are the answer, with one
    "Skip / unsure": the box on the numbered picture, what the vendor drew at each wall end, a batch
-   page's own answer, and for a correction "AI misread / vendor drew it wrong" with the printed text
-   (pre-filled from the file's own text under the label where there is exactly one run). There is
-   never a Yes/No under a person's own answer (Anant, 2026-10-15).
+   page's own answer, and for a correction "AI misread / vendor drew it wrong" with the printed text.
+   The text box is pre-filled ONLY from the file's own text under the label, where there is exactly
+   one run; otherwise it is empty. The reviewer's typed or corrected value is never pre-filled: it
+   is GV's site value, shown only in the decision sentence as "site value, not the drawing". There
+   is never a Yes/No under a person's own answer (Anant, 2026-10-15).
+
+Each card carries the hashes of the pictures it showed, and its answer names them; `confirm`
+refuses a Yes whose pictures are not its question's stored pictures. A card with no usable picture
+gives no answer, whatever the browser saved. Toggle buttons say `aria-pressed`, "Still needed" is
+announced (`aria-live`), and each picture has a plain alt text.
 
 **"Copy answers"** gives the `smriti-confirmations/2` JSON that `scripts/smriti_candidates.py confirm`
 takes, bound to the candidates file by its hash. Answers are kept in the browser (local storage) so
@@ -58,7 +65,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
-from uuid import UUID
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -69,9 +75,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import FAMILIES
-from eval.pariksha.kinds import KINDS_FAMILY
-from eval.pariksha.stored import prompt_family
-from eval.pariksha.walls import DRAWN, WALLS_FAMILY, _polygon_box
+from eval.pariksha.walls import DRAWN, _polygon_box
 from eval.smriti.candidates import (
     MISTAKE_UNANSWERED,
     Candidate,
@@ -85,6 +89,7 @@ from eval.smriti.confirm import (
     question_type,
     ready_candidates,
     site_ends,
+    stored_questions,
 )
 from vocabulary.wall_layouts import WALL_LAYOUT_WORDS
 
@@ -92,8 +97,13 @@ __all__ = ["REFUSED", "Picture", "build_page", "default_out", "find_pictures", "
 
 LABEL_FAMILY: Final = FAMILIES["akshara"]
 ROW_FAMILY: Final = FAMILIES["rekha"]
-#: Box buttons offered when the stored question does not say how many rows it numbered.
-UNKNOWN_BOXES: Final = 12
+#: Plain words for each picture a question stores.
+PICTURE_WORDS: Final[Mapping[str, str]] = {
+    "full_view": "the row area",
+    "close_up": "the close-up of the label",
+    "upright_close_up": "the label turned upright",
+    "numbered_vendor_view": "the page with its rows numbered",
+}
 SOURCES: Final[Mapping[str, str]] = {
     "pdf-text": "the drawing file's own text under this label (read by code, not by an AI)",
     "ai-reading": (
@@ -129,154 +139,6 @@ class Picture:
 
 
 # --- the pictures, from the database and the store ($0) ---------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _Packet:
-    family: str
-    run_id: UUID | None
-    page_sha256: str | None
-    question_id: str
-    candidate_ids: tuple[str, ...]
-    count: int | None
-    images: tuple[tuple[str, str, str | None], ...]
-    """`(name, sha256, storage_key)` of each picture."""
-
-
-def _packets(session: Session) -> list[_Packet]:
-    from app.models.runs import ModelInvocation
-
-    found: list[_Packet] = []
-    for prompt_id, run_id, packet in session.execute(
-        select(
-            ModelInvocation.prompt_id,
-            ModelInvocation.extraction_run_id,
-            ModelInvocation.reader_question_packet,
-        ).where(
-            ModelInvocation.reader_question_packet.is_not(None),
-            ModelInvocation.prompt_id.startswith(f"{LABEL_FAMILY}-v")
-            | ModelInvocation.prompt_id.startswith(f"{ROW_FAMILY}-v")
-            | ModelInvocation.prompt_id.startswith(f"{WALLS_FAMILY}-v"),
-        )
-    ):
-        if not isinstance(packet, Mapping) or not isinstance(packet.get("question_id"), str):
-            continue
-        images = packet.get("images")
-        pictures = tuple(
-            sorted(
-                (
-                    str(name),
-                    str(image["sha256"]),
-                    image.get("storage_key") if isinstance(image.get("storage_key"), str) else None,
-                )
-                for name, image in (images.items() if isinstance(images, Mapping) else ())
-                if isinstance(image, Mapping) and isinstance(image.get("sha256"), str)
-            )
-        )
-        candidates = packet.get("candidate_ids")
-        count = packet.get("candidate_count")
-        found.append(
-            _Packet(
-                family=prompt_family(prompt_id),
-                run_id=run_id,
-                page_sha256=(
-                    str(packet["source_page_sha256"])
-                    if isinstance(packet.get("source_page_sha256"), str)
-                    else None
-                ),
-                question_id=str(packet["question_id"]),
-                candidate_ids=tuple(map(str, candidates)) if isinstance(candidates, list) else (),
-                count=count if isinstance(count, int) else None,
-                images=pictures,
-            )
-        )
-    return found
-
-
-def _flags(session: Session, candidate_id: str) -> tuple[list[str], object]:
-    from app.models.evidence import ObservationCandidate
-
-    try:
-        found = session.get(ObservationCandidate, UUID(candidate_id))
-    except ValueError:
-        return [], None
-    if found is None:
-        return [], None
-    return [flag for flag in found.ambiguity_flags or () if isinstance(flag, str)], found.polygon
-
-
-def _asked(session: Session, packets: Sequence[_Packet], candidate: Candidate) -> list[_Packet]:
-    """The stored questions that asked this candidate's question, by its own guard."""
-    question = candidate.question or {}
-    family = question.get("family")
-    page = question.get("page_sha256")
-    if family == KINDS_FAMILY:
-        return _piece_packets(session, packets, candidate)
-    same = [
-        packet
-        for packet in packets
-        if packet.family == family
-        and packet.page_sha256 == page
-        and packet.question_id == question.get("question_id")
-    ]
-    if family == LABEL_FAMILY:
-        box = f"slot-box:{question.get('slot_box')}"
-        return [
-            packet
-            for packet in same
-            if len(packet.candidate_ids) == 1 and box in _flags(session, packet.candidate_ids[0])[0]
-        ]
-    if family == ROW_FAMILY:
-        picture = question.get("picture_sha256")
-        return [packet for packet in same if any(sha == picture for _n, sha, _k in packet.images)]
-    if family == WALLS_FAMILY:
-        row_box = question.get("row_box")
-        kept = []
-        for packet in same:
-            if len(packet.candidate_ids) != 1:
-                continue
-            found = _polygon_box(_flags(session, packet.candidate_ids[0])[1])
-            if found is not None and ",".join(str(edge) for edge in found) == row_box:
-                kept.append(packet)
-        return kept
-    return []
-
-
-def _piece_packets(
-    session: Session, packets: Sequence[_Packet], candidate: Candidate
-) -> list[_Packet]:
-    """A piece's label question in the run Bala's link names: the pictures the readers saw."""
-    from app.models.drawing import PartConfirmation, PartProposalRow
-
-    question = candidate.question or {}
-    found = re.match(r"^p(\d+):piece(\d+)$", str(question.get("question_id")))
-    if found is None or candidate.table != "part_confirmations":
-        return []
-    try:
-        decision = UUID(candidate.decision_id)
-    except ValueError:
-        return []
-    proposal = session.scalar(
-        select(PartConfirmation.part_proposal_id).where(PartConfirmation.id == decision)
-    )
-    link = (
-        None
-        if proposal is None
-        else session.scalar(
-            select(PartProposalRow).where(PartProposalRow.part_proposal_id == proposal)
-        )
-    )
-    if link is None:
-        return []
-    prefix = f"p{found.group(1)}:slot{found.group(2)}:"
-    return [
-        packet
-        for packet in packets
-        if packet.family == LABEL_FAMILY
-        and packet.run_id == link.extraction_run_id
-        and packet.page_sha256 == question.get("page_sha256")
-        and packet.question_id.startswith(prefix)
-    ]
 
 
 def _read(root: Path, name: str, sha: str, key: str | None) -> Picture:
@@ -322,19 +184,30 @@ def _pdf_text(session: Session, page_sha256: str, slot_box: str) -> list[str]:
     return sorted(found)
 
 
+def prefill_text(candidate: Candidate, pdf_texts: Sequence[str]) -> str:
+    """The text a stated label's box starts with: ONLY the file's own text under the span, when it
+    holds exactly one run; otherwise empty. The reviewer's typed or corrected value is never
+    pre-filled: it is GV's site value, and as printed text it would grade the AI against GV's
+    markup (circularity rule 2)."""
+    if question_type(candidate) != QuestionType.LABEL_STATED or len(pdf_texts) != 1:
+        return ""
+    return pdf_texts[0]
+
+
 def find_pictures(
     session: Session, store_root: Path, candidates: Sequence[Candidate]
 ) -> tuple[dict[str, list[Picture]], dict[str, int], dict[str, str]]:
-    """For each candidate: the pictures its question showed the AI, how many rows the numbered
-    picture holds (row questions), and the text to pre-fill (a label the person states)."""
-    packets = _packets(session)
+    """For each candidate: the pictures its question showed the AI (`stored_questions`, the same
+    lookup `confirm` checks a Yes against), how many rows the numbered picture holds (row
+    questions), and the file's own text to pre-fill (a label the person states)."""
     pictures: dict[str, list[Picture]] = {}
     boxes: dict[str, int] = {}
     prefill: dict[str, str] = {}
-    for candidate in candidates:
-        asked = _asked(session, packets, candidate)
-        if not asked:
-            pictures[candidate.candidate_id] = [
+    for candidate_id, stored in stored_questions(session, candidates).items():
+        pictures[candidate_id] = (
+            [_read(store_root, name, sha, key) for name, sha, key in stored.pictures]
+            if stored.pictures
+            else [
                 Picture(
                     "-",
                     "",
@@ -342,31 +215,21 @@ def find_pictures(
                     "no stored question names this case, so the picture the AI saw is not known",
                 )
             ]
-        else:
-            seen: dict[str, Picture] = {}
-            for packet in asked:
-                for name, sha, key in packet.images:
-                    if sha not in seen or seen[sha].png is None:
-                        seen[sha] = _read(store_root, name, sha, key)
-            pictures[candidate.candidate_id] = sorted(seen.values(), key=lambda p: p.name)
-        counts = {packet.count or len(packet.candidate_ids) for packet in asked}
-        if (
-            candidate.question
-            and candidate.question.get("family") == ROW_FAMILY
-            and len(counts) == 1
-        ):
-            boxes[candidate.candidate_id] = counts.pop()
+        )
+        if stored.boxes is not None:
+            boxes[candidate_id] = stored.boxes
+    for candidate in candidates:
         if question_type(candidate) == QuestionType.LABEL_STATED and candidate.question:
-            texts = _pdf_text(
-                session,
-                str(candidate.question.get("page_sha256")),
-                str(candidate.question.get("slot_box")),
+            text_ = prefill_text(
+                candidate,
+                _pdf_text(
+                    session,
+                    str(candidate.question.get("page_sha256")),
+                    str(candidate.question.get("slot_box")),
+                ),
             )
-            typed = candidate.recorded.get("typed")
-            if len(texts) == 1:
-                prefill[candidate.candidate_id] = texts[0]
-            elif isinstance(typed, str):
-                prefill[candidate.candidate_id] = typed
+            if text_:
+                prefill[candidate.candidate_id] = text_
     return pictures, boxes, prefill
 
 
@@ -446,12 +309,15 @@ _SCRIPT: Final = """
     var picked = a.mistake || a.no_label || a.typed || a.box != null || a.own || a.left || a.right;
     return picked ? "yes" : null;
   }
+  function shown(card) { var p = card.getAttribute("data-pictures");
+    return p ? p.split(",") : []; }
+  function mark(b, on) { b.classList.toggle("on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); }
   function needs(card, a) {
     var type = card.getAttribute("data-type"), out = [];
     if (verdict(card, a) !== "yes") return out;
     if (type === "label-stated") {
       if (mistakeNeeded(card) && !a.mistake) out.push("AI misread or the vendor drew it wrong");
-      if ((a.mistake === "ai_misread" || !mistakeNeeded(card))
+      if ((a.mistake || !mistakeNeeded(card))
           && !a.no_label && !(a.texts && a.texts.trim())) out.push("the printed text, or No label");
     }
     if (type === "row-box" && a.box == null) out.push("the box");
@@ -462,17 +328,16 @@ _SCRIPT: Final = """
   function paint(card) {
     var id = card.getAttribute("data-id"), a = get(id), v = verdict(card, a);
     card.querySelectorAll("button[data-v]").forEach(function (b) {
-      b.classList.toggle("on", a.v === b.getAttribute("data-v")); });
+      mark(b, a.v === b.getAttribute("data-v")); });
     card.querySelectorAll("button[data-mistake]").forEach(function (b) {
-      b.classList.toggle("on", a.mistake === b.getAttribute("data-mistake")); });
+      mark(b, a.mistake === b.getAttribute("data-mistake")); });
     card.querySelectorAll("button[data-box]").forEach(function (b) {
-      b.classList.toggle("on", String(a.box) === b.getAttribute("data-box")); });
+      mark(b, String(a.box) === b.getAttribute("data-box")); });
     card.querySelectorAll("button[data-own]").forEach(function (b) {
-      b.classList.toggle("on", a.own === b.getAttribute("data-own")); });
+      mark(b, a.own === b.getAttribute("data-own")); });
     card.querySelectorAll("button[data-drawn]").forEach(function (b) {
-      b.classList.toggle("on", a[b.getAttribute("data-end")] === b.getAttribute("data-drawn")); });
-    card.querySelectorAll("button[data-nolabel]").forEach(function (b) {
-      b.classList.toggle("on", !!a.no_label); });
+      mark(b, a[b.getAttribute("data-end")] === b.getAttribute("data-drawn")); });
+    card.querySelectorAll("button[data-nolabel]").forEach(function (b) { mark(b, !!a.no_label); });
     ["yes", "no", "unsure"].forEach(function (x) { card.classList.toggle("done-" + x, v === x); });
     var t = card.querySelector("input.texts");
     if (t) { if (a.texts == null) a.texts = t.getAttribute("data-prefill") || "";
@@ -483,7 +348,7 @@ _SCRIPT: Final = """
   }
   function count() {
     var done = cards.filter(function (c) { var a = get(c.getAttribute("data-id"));
-      return verdict(c, a) && !needs(c, a).length; }).length;
+      return shown(c).length && verdict(c, a) && !needs(c, a).length; }).length;
     var el = document.getElementById("count");
     if (el) el.textContent = done + " of " + cards.length + " answered";
   }
@@ -516,14 +381,15 @@ _SCRIPT: Final = """
   function entry(card) {
     var id = card.getAttribute("data-id"), type = card.getAttribute("data-type"), a = get(id);
     var v = verdict(card, a);
-    if (!v) return null;
-    var e = { candidate: id, verdict: v };
+    // A card the page could not show (no usable picture) never gives an answer, whatever the
+    // browser saved; every answer names the stored pictures its card showed.
+    if (!v || !shown(card).length) return null;
+    var e = { candidate: id, verdict: v, pictures: shown(card) };
     if (a.note && a.note.trim()) e.note = a.note.trim();
     if (v !== "yes") return e;
     if (type === "label-stated") {
       if (a.mistake) e.mistake = a.mistake;
-      if (!a.mistake || a.mistake === "ai_misread") {
-        if (a.no_label) e.no_label = true; else e.texts = [a.texts.trim()]; }
+      if (a.no_label) e.no_label = true; else e.texts = [a.texts.trim()];
     } else if (type === "row-box" || type === "row-batch") {
       if (a.own === "no_countertop") e.no_countertop = true;
       else if (a.box === "not_among_boxes") e.not_among_boxes = true;
@@ -534,7 +400,8 @@ _SCRIPT: Final = """
   document.getElementById("copy").addEventListener("click", function () {
     var said = document.getElementById("copied");
     if (!who || !who.value.trim()) { said.textContent = "Type your name at the top first."; return; }
-    var waiting = cards.filter(function (c) { return needs(c, get(c.getAttribute("data-id"))).length; });
+    var waiting = cards.filter(function (c) {
+      return shown(c).length && needs(c, get(c.getAttribute("data-id"))).length; });
     if (waiting.length) { said.textContent = "Finish card(s) " + waiting.map(function (c) {
       return c.getAttribute("data-num"); }).join(", ") + " first (see 'Still needed')."; return; }
     var answers = cards.map(entry).filter(function (e) { return e; });
@@ -589,13 +456,13 @@ def _sentences(candidate: Candidate, kind: str) -> tuple[str, str]:
     if kind == QuestionType.LABEL_STATED:
         if "corrected" in recorded:
             decision = (
-                f"The reviewer corrected the value from {recorded.get('original')} to "
-                f"{recorded.get('corrected')}."
+                f"The reviewer corrected the value from {recorded.get('original')} (the AI's "
+                f"reading) to {recorded.get('corrected')} (site value, not the drawing)."
             )
         elif "typed" in recorded or "inches" in recorded:
             decision = (
-                f"The reviewer typed {recorded.get('typed') or recorded.get('inches')} "
-                "for this width, which the readers had held."
+                "The readers held this width; the reviewer typed "
+                f"{recorded.get('typed') or recorded.get('inches')} (site value, not the drawing)."
             )
         else:
             decision = "The reviewer confirmed this reading, but it holds no text."
@@ -628,13 +495,9 @@ def _sentences(candidate: Candidate, kind: str) -> tuple[str, str]:
         )
     if kind == QuestionType.WALLS:
         layout = next((str(v) for v in recorded.values() if isinstance(v, str)), "")
-        left, right = site_ends(layout)
         return (
-            (
-                f"The reviewer chose the walls for the site: {_layout_words(layout)} (that is "
-                f"the site answer: left end {left.replace('_', ' ')}, right end "
-                f"{right.replace('_', ' ')})."
-            ),
+            f"The reviewer chose the walls for the site: {_layout_words(layout)}. "
+            + _site_words(layout),
             "What did the vendor DRAW at each end of the row (not what the site has)?",
         )
     piece = recorded.get("piece")
@@ -648,7 +511,18 @@ def _sentences(candidate: Candidate, kind: str) -> tuple[str, str]:
     )
 
 
-def _pictures_html(pictures: Sequence[Picture]) -> tuple[str, bool]:
+def _site_words(layout: str) -> str:
+    """What the reviewer's layout says about the row's two ends, in plain words."""
+    words = {"wall": "a wall", "open": "no wall"}
+    left, right = site_ends(layout)
+    if layout == "back_only":
+        return "This row shows only the back wall, so the ends are left open for now."
+    if left not in words or right not in words:
+        return "The layout does not say what is at the ends, so they are left open for now."
+    return f"On site there is {words[left]} at the left end and {words[right]} at the right end."
+
+
+def _pictures_html(pictures: Sequence[Picture], number: int) -> tuple[str, bool]:
     if not pictures:
         return (
             (
@@ -659,7 +533,7 @@ def _pictures_html(pictures: Sequence[Picture]) -> tuple[str, bool]:
         )
     parts: list[str] = []
     usable = True
-    for picture in pictures:
+    for index, picture in enumerate(pictures, start=1):
         if picture.png is None:
             usable = False
             parts.append(
@@ -668,10 +542,11 @@ def _pictures_html(pictures: Sequence[Picture]) -> tuple[str, bool]:
             )
             continue
         data = base64.b64encode(picture.png).decode()
+        words = PICTURE_WORDS.get(picture.name, "the picture")
+        alt = f"Card {number}, picture {index} of {len(pictures)}: {words} the AI saw"
         parts.append(
-            f'<figure><img src="data:image/png;base64,{data}" alt="{_e(picture.name)}">'
-            f"<figcaption>{_e(picture.name.replace('_', ' '))} (the picture the AI saw)"
-            "</figcaption></figure>"
+            f'<figure><img src="data:image/png;base64,{data}" alt="{_e(alt)}">'
+            f"<figcaption>{_e(words)} (the picture the AI saw)</figcaption></figure>"
         )
     return f'<div class="pics">{"".join(parts)}</div>', usable
 
@@ -682,40 +557,44 @@ def _controls(candidate: Candidate, kind: str, boxes: int | None, prefill: str) 
         if candidate.mistake_needed == MISTAKE_UNANSWERED:
             rows.append(
                 '<div class="row"><span class="label">Mistake</span>'
-                '<button data-mistake="ai_misread">AI misread</button>'
-                '<button data-mistake="vendor_drew_it">The vendor drew it wrong</button></div>'
+                '<button aria-pressed="false" data-mistake="ai_misread">AI misread</button>'
+                '<button aria-pressed="false" data-mistake="vendor_drew_it">The vendor drew it wrong</button></div>'
             )
         rows.append(
             '<div class="row"><span class="label">Printed</span>'
             f'<input class="texts" data-prefill="{_e(prefill)}" '
-            'placeholder="as printed, e.g. 12 1/2&quot;">'
-            "<button data-nolabel>No label</button></div>"
+            'placeholder="type what is printed">'
+            '<button aria-pressed="false" data-nolabel>No label</button></div>'
         )
     if kind in (QuestionType.ROW_BOX, QuestionType.ROW_BATCH):
         if kind == QuestionType.ROW_BATCH and candidate.recorded.get("answer") == "no_countertop":
             rows.append(
-                '<div class="row"><button data-own="no_countertop">No countertop on this page'
+                '<div class="row"><button aria-pressed="false" data-own="no_countertop">No countertop on this page'
                 "</button></div>"
             )
         else:
-            count = boxes or UNKNOWN_BOXES
-            buttons = "".join(f'<button data-box="{n}">{n}</button>' for n in range(1, count + 1))
+            buttons = "".join(
+                f'<button aria-pressed="false" data-box="{n}">{n}</button>'
+                for n in range(1, (boxes or 0) + 1)
+            )
             unknown = (
                 ""
                 if boxes
                 else (
-                    '<span class="muted">(how many boxes the picture numbers is not recorded)</span>'
+                    '<span class="muted">(how many boxes the picture numbers is not recorded, '
+                    "so a box cannot be picked here)</span>"
                 )
             )
             rows.append(
                 f'<div class="row"><span class="label">Box</span>{buttons}'
-                '<button data-box="not_among_boxes">Not among the boxes</button>'
-                f"{unknown}</div>"
+                '<button aria-pressed="false" data-box="not_among_boxes">Not among the boxes'
+                f"</button>{unknown}</div>"
             )
     if kind == QuestionType.WALLS:
         for end in ("left", "right"):
             buttons = "".join(
-                f'<button data-end="{end}" data-drawn="{drawn}">{_e(DRAWN_WORDS[drawn])}</button>'
+                f'<button aria-pressed="false" data-end="{end}" data-drawn="{drawn}">'
+                f"{_e(DRAWN_WORDS[drawn])}</button>"
                 for drawn in DRAWN
             )
             rows.append(
@@ -762,7 +641,8 @@ def _card(
 ) -> str:
     kind = question_type(candidate)
     assert kind is not None and candidate.question is not None
-    shown, usable = _pictures_html(pictures)
+    shown, usable = _pictures_html(pictures, number)
+    shas = ",".join(p.sha256 for p in pictures) if usable else ""
     decision, ask = _sentences(candidate, kind)
     mode = MODE_ACCEPT if kind in ACCEPTED else MODE_STATE
     if mode == MODE_ACCEPT:
@@ -776,19 +656,21 @@ def _card(
         )
         after = f'<p class="ask">{_e(ask)}</p>'
         verdict = (
-            '<button class="yes" data-v="yes">Yes</button>'
-            '<button class="no" data-v="no">No</button>'
-            '<button class="unsure" data-v="unsure">Unsure</button>'
+            '<button aria-pressed="false" class="yes" data-v="yes">Yes</button>'
+            '<button aria-pressed="false" class="no" data-v="no">No</button>'
+            '<button aria-pressed="false" class="unsure" data-v="unsure">Unsure</button>'
         )
     else:
         # No proposal: one plain instruction, and the choices ARE the answer (no Yes/No under them).
         lead = f'<p class="instruction">{_e(INSTRUCTIONS[kind](candidate))}</p>'
         after = ""
-        verdict = '<button class="unsure" data-v="unsure">Skip / unsure</button>'
+        verdict = (
+            '<button aria-pressed="false" class="unsure" data-v="unsure">Skip / unsure</button>'
+        )
     answer = (
         f"{_controls(candidate, kind, boxes, prefill)}"
         f'<div class="row verdict">{verdict}'
-        '<input class="note" placeholder="note (optional)"></div><p class="missing"></p>'
+        '<input class="note" placeholder="note (optional)"></div><p class="missing" aria-live="polite"></p>'
         if usable
         else ""
     )
@@ -797,7 +679,8 @@ def _card(
     question = json.dumps(dict(candidate.question), ensure_ascii=False)
     return (
         f'<section class="card" data-id="{_e(candidate.candidate_id)}" data-type="{_e(kind)}" '
-        f'data-mode="{mode}" data-num="{number}" data-mistake-needed="{mistake}">'
+        f'data-mode="{mode}" data-num="{number}" data-mistake-needed="{mistake}" '
+        f'data-pictures="{_e(shas)}">'
         f'<div class="head"><span class="num">{number}</span>'
         f'<span class="badge">{_e(candidate.agent)}: {_e(TYPE_WORDS[kind])}</span>'
         f'<span class="muted">{_e(page)}; decided by {_e(candidate.decided_by)} on '

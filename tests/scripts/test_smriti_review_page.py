@@ -19,7 +19,7 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from eval.smriti.candidates import read_candidates
+from eval.smriti.candidates import Candidate, read_candidates
 from eval.smriti.confirm import CONFIRMATIONS_FORMAT, ready_candidates
 from tests.eval.test_smriti_confirm import (
     _batch,
@@ -385,3 +385,99 @@ def test_where_the_person_states_the_answer_the_choices_are_the_answer() -> None
 
 def test_a_real_page_never_says_proof() -> None:
     assert "proof" not in _every_type_page().lower()
+
+
+# --- review of #1278 --------------------------------------------------------------------------------
+
+
+def _typed_width() -> Candidate:
+    return replace(
+        _correction("slot_row_review_decisions:9:piece_widths:1"),
+        table="slot_row_review_decisions",
+        decision_id="9",
+        corrects="a width the readers held, typed by the reviewer",
+        kind="filled",
+        recorded={"key": "piece_widths:1", "inches": "25/2", "typed": '12 1/2"'},
+    )
+
+
+def test_a_typed_width_is_never_prefilled_as_the_printed_text() -> None:
+    typed = _typed_width()
+    # Only the file's own text layer pre-fills; the reviewer's typed value never does.
+    assert smriti_review_page.prefill_text(typed, []) == ""
+    assert smriti_review_page.prefill_text(typed, ["a", "b"]) == ""
+    assert smriti_review_page.prefill_text(typed, ['12-1/2"']) == '12-1/2"'
+    page = smriti_review_page.build_page(
+        _export(typed),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={typed.candidate_id: [_picture()]},
+        prefill={},
+    )
+    card = _card_of(page, typed.candidate_id)
+    box = card.split('<input class="texts"', 1)[1].split("</div>", 1)[0]
+    assert 'data-prefill=""' in box and "12 1/2" not in box
+    # Shown only as what the reviewer typed: a site value, away from the answer box.
+    assert "the reviewer typed" in card and "site value, not the drawing" in card
+    assert card.index("site value, not the drawing") < card.index('<input class="texts"')
+
+
+def test_each_card_carries_the_pictures_it_showed_and_none_when_it_showed_none() -> None:
+    reading = _confirmed_reading()
+    shown = smriti_review_page.build_page(
+        _export(reading),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={reading.candidate_id: [_picture()]},
+    )
+    assert f'data-pictures="{PNG_SHA}"' in shown
+    unusable = smriti_review_page.build_page(
+        _export(reading),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={
+            reading.candidate_id: [
+                smriti_review_page.Picture("full_view", PNG_SHA, None, "not in the store")
+            ]
+        },
+    )
+    assert 'data-pictures=""' in unusable
+    # The page's script names each card's pictures in its answer, and skips a card with none.
+    assert "pictures:" in shown and 'getAttribute("data-pictures")' in shown
+
+
+def test_the_page_is_usable_with_a_screen_reader() -> None:
+    page = _every_type_page()
+    buttons = re.findall(r"<button[^>]*>", page)
+    toggles = [b for b in buttons if "data-v=" in b or "data-box=" in b or "data-drawn=" in b]
+    assert toggles and all('aria-pressed="false"' in b for b in toggles)
+    assert "aria-pressed" in page.split("<script>", 1)[1]
+    assert re.findall(r'<p class="missing"[^>]*>', page)[0].count('aria-live="polite"') == 1
+    alts = re.findall(r'<img [^>]*alt="([^"]*)"', page)
+    assert alts and all("the AI saw" in alt and "card" in alt.lower() for alt in alts)
+
+
+def test_a_walls_card_says_no_jargon() -> None:
+    walls = _walls(layout="back_only")
+    page = smriti_review_page.build_page(
+        _export(walls),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={walls.candidate_id: [_picture()]},
+    )
+    shown = re.sub(r'data-[a-z-]+="[^"]*"', "", _card_of(page, walls.candidate_id))
+    assert "key_unsure" not in shown and "key unsure" not in shown.lower()
+    assert "This row shows only the back wall, so the ends are left open for now." in shown
+
+
+def test_box_buttons_are_only_the_boxes_the_stored_picture_numbers() -> None:
+    page = smriti_review_page.build_page(
+        _export(_countertop()),
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={"no_countertop_answers:2": [_picture()]},
+        boxes={},
+    )
+    card = _card_of(page, "no_countertop_answers:2")
+    assert 'data-box="1"' not in card and 'data-box="not_among_boxes"' in card
+    assert "not recorded" in card

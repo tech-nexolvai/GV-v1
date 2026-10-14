@@ -14,19 +14,24 @@ No model call, no cost, nothing changed: the database is only read (read-only tr
     # they answered Yes into one new local key per agent, registered in the key library
     python scripts/smriti_candidates.py confirm ~/gv-local/<candidates>.json \\
         --confirmations ~/gv-local/<confirmations>.json --out-dir ~/gv-local/keys/smriti/ \\
-        --version <v> [--name smriti] [--db <database>] [--base ~/gv-local/<existing key>.json ...] \\
-        [--library ~/gv-local/keys/library.json]
+        --version <v> --db <database> [--name smriti] [--base ~/gv-local/<existing key>.json ...] \\
+        [--library ~/gv-local/keys/library.json] [--vendor-file ~/gv-local/smriti/vendor-errors.jsonl]
 
 The confirmations file (`smriti-confirmations/2`) is what the review page's "Copy answers" gives;
 its format is in `eval/smriti/confirm.py`. Each key is `<out-dir>/<agent>-<name>-<version>.json`,
 checked by its Pariksha loader and registered in the key library (`--library`, else the
-`GV_KEY_LIBRARY` setting; there is no default). A piece kind's row widths are read from the stored
-row, so `--db` is needed when one is confirmed. A conflict with a base key or with any key already
-registered for that agent is refused before anything is written.
+`GV_KEY_LIBRARY` setting; there is no default). `--db` is the database the candidates came from:
+each Yes is checked against the stored pictures of its question, a box against the rows its
+picture numbers, and a piece kind's row widths are read from the stored row. The confirmer must be
+on the local real-reviewer list (`GV_SMRITI_REVIEWERS`), and never an AI, an agent or code. A
+conflict with a base key or with any key already registered for that agent is refused before
+anything is written. Corrections the person says the vendor drew wrong never enter a key: they are
+appended once each, with the printed text the person read, to the local vendor-errors file.
 
 Candidates, confirmations, keys and the library hold client values (pages, what the reviewer
-decided): keep them outside any repository. An output inside a git working tree is refused. A file
-is written once, never overwritten.
+decided): keep them outside any repository. Every output (the keys folder and each key, the
+library, the vendor-errors file) is checked before anything is written, and one at or inside any
+git working tree is refused. A key is written once, never overwritten.
 
 Exit codes: 0 done, 2 refused.
 """
@@ -36,6 +41,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -47,7 +54,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import KeyFormatError
-from eval.smriti.actors import ReviewersFileError
+from eval.smriti.actors import ReviewersFileError, reviewers_from_environment
 from eval.smriti.candidates import (
     AGENT_ORDER,
     Candidate,
@@ -59,8 +66,11 @@ from eval.smriti.candidates import (
 from eval.smriti.confirm import (
     ConfirmationRefused,
     Confirmed,
+    VendorError,
     confirm_candidates,
+    stored_questions,
     stored_row_widths,
+    who_confirms,
 )
 from eval.smriti.export import export_candidates
 from eval.smriti.library import (
@@ -77,6 +87,8 @@ from eval.smriti.library import (
 
 __all__ = ["CONFIRMED_LABEL", "REFUSED", "main"]
 
+#: Each line of the local vendor-errors file (the later vendor report reads it).
+VENDOR_ERRORS_FORMAT = "smriti-vendor-error/1"
 #: How far to trust a key Smriti writes, printed beside every verdict it takes part in.
 CONFIRMED_LABEL = "a person confirmed each case against the picture the AI saw (Smriti review page)"
 
@@ -151,17 +163,71 @@ def _candidates_sha256(path: Path) -> str:
     return stored
 
 
-def _row_widths(url: str, candidates: tuple[Candidate, ...]) -> dict[str, list[str | None]]:
+def _outside_any_git(path: Path) -> Path:
+    """The path, resolved, or a refusal when it is a git working tree's own top folder or lies
+    anywhere inside one (this repository or any other)."""
+    resolved = _outside_git(path)
+    for folder in (resolved, *resolved.parents):
+        if (folder / ".git").exists():
+            raise Refused(
+                f"{path} is inside a git working tree ({folder}); Smriti's keys, library and "
+                "vendor errors hold client values, so write them outside any repository (for "
+                "example under ~/gv-local/)"
+            )
+    return resolved
+
+
+def default_vendor_file() -> Path:
+    """Where vendor errors are kept for the vendor report: `~/gv-local/smriti/vendor-errors.jsonl`."""
+    return Path.home() / "gv-local" / "smriti" / "vendor-errors.jsonl"
+
+
+def _stored(
+    url: str, candidates: tuple[Candidate, ...]
+) -> tuple[dict[str, list[str]], dict[str, int], dict[str, list[str | None]]]:
+    """Read-only: each candidate's stored pictures and box count, and each piece's row widths."""
     engine = create_engine(_database_url(url))
     try:
         with Session(engine) as session:
             try:
                 session.execute(text("SET TRANSACTION READ ONLY"))
-                return stored_row_widths(session, candidates)
+                questions = stored_questions(session, candidates)
+                widths = stored_row_widths(session, candidates)
             finally:
                 session.rollback()
     finally:
         engine.dispose()
+    pictures = {cid: [sha for _n, sha, _k in q.pictures] for cid, q in questions.items()}
+    boxes = {cid: q.boxes for cid, q in questions.items() if q.boxes is not None}
+    return pictures, boxes, widths
+
+
+def _save_vendor_errors(
+    errors: tuple[VendorError, ...], path: Path, *, database: str, candidates_sha256: str
+) -> int:
+    """Append each vendor error once (one JSON line) to the local file the vendor report reads."""
+    seen: set[tuple[str, str]] = set()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                known = json.loads(line)
+                seen.add((str(known.get("candidate_id")), str(known.get("candidates_sha256"))))
+    fresh = [error for error in errors if (error.candidate_id, candidates_sha256) not in seen]
+    if not fresh:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    when = datetime.now().astimezone().isoformat()
+    with path.open("a", encoding="utf-8") as handle:
+        for error in fresh:
+            record = {
+                "format": VENDOR_ERRORS_FORMAT,
+                "database": database,
+                "candidates_sha256": candidates_sha256,
+                **{name: value for name, value in asdict(error).items()},
+                "saved_at": when,
+            }
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    return len(fresh)
 
 
 def _write_keys(
@@ -170,7 +236,7 @@ def _write_keys(
     """Check every key against the library first, then write each once and register it."""
     shelf = read_library(library, missing_ok=True)
     paths = {
-        agent: out_dir / f"{agent}-{key.name}-{key.version}.json"
+        agent: _outside_any_git(out_dir / f"{agent}-{key.name}-{key.version}.json")
         for agent, key in confirmed.keys.items()
     }
     for agent, path in paths.items():
@@ -212,8 +278,18 @@ def _write_keys(
 
 
 def _confirm(args: argparse.Namespace) -> int:
-    out_dir = _outside_git(args.out_dir)
-    library = _outside_git(library_path(args.library))
+    # Every place this writes is checked first, so nothing is ever written inside git.
+    out_dir = _outside_any_git(args.out_dir)
+    library = _outside_any_git(library_path(args.library))
+    vendor_file = _outside_any_git(
+        args.vendor_file if args.vendor_file is not None else default_vendor_file()
+    )
+    if args.db is None:
+        raise Refused(
+            "give --db, the database the candidates came from: each Yes is checked against the "
+            "stored pictures of its question, and a piece kind's row widths come from there"
+        )
+    reviewers = reviewers_from_environment()
     candidates_path = args.candidates.expanduser()
     export = read_candidates(candidates_path)
     try:
@@ -221,11 +297,15 @@ def _confirm(args: argparse.Namespace) -> int:
     except json.JSONDecodeError as error:
         raise Refused(f"{args.confirmations.name} is not JSON: {error}") from error
     bases = [read_any_key(path.expanduser()) for path in args.base or ()]
-    widths = {} if args.db is None else _row_widths(args.db, export.candidates)
+    pictures, boxes, widths = _stored(args.db, export.candidates)
+    candidates_sha256 = _candidates_sha256(candidates_path)
     confirmed = confirm_candidates(
         export,
         confirmations,
-        candidates_sha256=_candidates_sha256(candidates_path),
+        candidates_sha256=candidates_sha256,
+        reviewers=reviewers,
+        pictures=pictures,
+        boxes=boxes,
         row_widths=widths,
         bases=bases,
         name=args.name,
@@ -236,19 +316,28 @@ def _confirm(args: argparse.Namespace) -> int:
         f"written, {len(confirmed.vendor)} vendor error(s) kept out of the AI's keys, "
         f"{len(confirmed.kept_out)} kept out"
     )
-    for candidate_id in confirmed.vendor:
-        print(f"  vendor drew it wrong (for the vendor report, not the AI's key): {candidate_id}")
     for candidate_id, why in confirmed.kept_out:
         print(f"  kept out: {candidate_id}: {why}")
-    if not confirmed.keys:
-        print("  no key written: nothing was answered Yes")
-        return 0
-    source = f"smriti candidates of {export.database} exported {export.exported_at}"
-    confirmed_by = str(confirmations["confirmed_by"]).strip()
-    for line in _write_keys(
-        confirmed, out_dir, library=library, confirmed_by=confirmed_by, source=source
-    ):
-        print(line)
+    confirmed_by = who_confirms(confirmations["confirmed_by"], reviewers)
+    if confirmed.keys:
+        source = f"smriti candidates of {export.database} exported {export.exported_at}"
+        for line in _write_keys(
+            confirmed, out_dir, library=library, confirmed_by=confirmed_by, source=source
+        ):
+            print(line)
+    else:
+        print("  no key written: nothing was answered Yes for the AI's keys")
+    if confirmed.vendor:
+        saved = _save_vendor_errors(
+            confirmed.vendor,
+            vendor_file,
+            database=export.database,
+            candidates_sha256=candidates_sha256,
+        )
+        print(
+            f"  vendor drew it wrong (kept out of the AI's keys): {len(confirmed.vendor)}, "
+            f"{saved} newly saved for the vendor report: {vendor_file}"
+        )
     return 0
 
 
@@ -277,7 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
     confirm.add_argument("--version", required=True, help="the new keys' version")
     confirm.add_argument("--name", default="smriti", help="the new keys' name (default smriti)")
     confirm.add_argument(
-        "--db", help="the database the candidates came from: a piece kind's stored row widths"
+        "--db", help="the database the candidates came from (stored pictures, row widths)"
     )
     confirm.add_argument(
         "--base",
@@ -286,6 +375,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="an existing key whose cases are kept (one per agent; may repeat)",
     )
     confirm.add_argument("--library", help="the key library (default: the GV_KEY_LIBRARY setting)")
+    confirm.add_argument(
+        "--vendor-file",
+        type=Path,
+        help="where vendor errors are kept (default ~/gv-local/smriti/vendor-errors.jsonl)",
+    )
     confirm.set_defaults(handler=_confirm)
     return parser
 

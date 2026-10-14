@@ -11,7 +11,17 @@ The confirmations file (`smriti-confirmations/2`):
 
     {"format": "smriti-confirmations/2", "confirmed_by": "<who looked>",
      "candidates_sha256": "<the candidates file's own hash>",
-     "answers": [{"candidate": "<id>", "verdict": "yes" | "no" | "unsure", ...}]}
+     "answers": [{"candidate": "<id>", "verdict": "yes" | "no" | "unsure",
+                  "pictures": ["<sha256 of each picture the card showed>"], ...}]}
+
+**Who confirms.** `confirmed_by` must be a name on the local real-reviewer list
+(`eval/smriti/actors.py`), and never an AI, an agent or code (`code:`, "claude", "bot", ...),
+even when listed (`who_confirms`).
+
+**What was seen.** A Yes names the stored pictures its card showed. They must be exactly the
+pictures the candidate's stored question showed the AI (`stored_questions`, read from the
+database); a Yes with none, or with others, is refused. A card the page could not show never
+gives an answer.
 
 **What a Yes needs, by the question it answers** (anything else on an entry is refused):
 
@@ -19,11 +29,12 @@ The confirmations file (`smriti-confirmations/2`):
   `decision`): nothing more. The proposal is never replaced: a wrong proposal is answered No.
 * **A label the reviewer corrected or typed**: `texts` (the printed text, as the person reads it in
   the picture) or `no_label`, and `mistake`: `ai_misread`, `vendor_drew_it` or `unsure`. Only
-  `ai_misread` joins the AI's key. **`vendor_drew_it` is kept out of the AI's key** and listed for
-  the vendor report (the AI may have read the drawing right; the vendor drew it wrong). `unsure` is
-  kept out.
+  `ai_misread` joins the AI's key. **`vendor_drew_it` is kept out of the AI's key** and kept, with
+  the printed text the person read, for the vendor report (the AI may have read the drawing right;
+  the vendor drew it wrong). `unsure` is kept out.
 * **"Confirm: no countertop"**: nothing more.
-* **"There is a countertop"**: `box` (the numbered row on the stored picture, from 1) or
+* **"There is a countertop"**: `box` (the numbered row on the stored picture, from 1 to the number
+  of rows the stored question numbered; refused when that number is not recorded) or
   `not_among_boxes: true`. Saying `no_countertop` contradicts the reviewer, so it is refused.
 * **A page answered in a batch click** ("confirm these N pages"): its own look, stated on its own
   card: `no_countertop: true`, `box` or `not_among_boxes`. It must agree with what the batch said;
@@ -50,10 +61,11 @@ Source: issues #1232, #1271 · Verification: `tests/eval/test_smriti_confirm.py`
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from fractions import Fraction
 from typing import Any, Final
 from uuid import UUID
@@ -77,16 +89,18 @@ from eval.pariksha.kinds import (
     dump_kinds_key,
     load_kinds_key,
 )
+from eval.pariksha.stored import prompt_family
 from eval.pariksha.walls import (
     DRAWN,
     KEY_UNSURE,
     WALLS_AGENT,
     WALLS_FAMILY,
     WallsKey,
+    _polygon_box,
     dump_walls_key,
     load_walls_key,
 )
-from eval.smriti.actors import REVIEWER
+from eval.smriti.actors import REVIEWER, Reviewers, is_code_actor
 from eval.smriti.candidates import (
     MISTAKE_ANSWERS,
     MISTAKE_UNANSWERED,
@@ -102,12 +116,16 @@ __all__ = [
     "ConfirmationRefused",
     "Confirmed",
     "QuestionType",
+    "StoredQuestion",
+    "VendorError",
     "confirm_candidates",
     "not_ready",
     "question_type",
     "ready_candidates",
     "site_ends",
+    "stored_questions",
     "stored_row_widths",
+    "who_confirms",
 ]
 
 CONFIRMATIONS_FORMAT: Final = "smriti-confirmations/2"
@@ -134,7 +152,32 @@ _SITE_ENDS: Final[Mapping[str, tuple[str, str]]] = {
 }
 
 _HEADER: Final = frozenset({"format", "confirmed_by", "candidates_sha256", "answers"})
-_COMMON: Final = frozenset({"candidate", "verdict", "note"})
+_COMMON: Final = frozenset({"candidate", "verdict", "note", "pictures"})
+#: Words that name an AI, an agent or a program, never a person: none of them ever confirms.
+_NOT_A_PERSON: Final = frozenset(
+    {
+        "ai",
+        "agent",
+        "anthropic",
+        "assistant",
+        "bot",
+        "chatgpt",
+        "claude",
+        "codex",
+        "copilot",
+        "gemini",
+        "gpt",
+        "haiku",
+        "llm",
+        "model",
+        "openai",
+        "opus",
+        "robot",
+        "script",
+        "sonnet",
+    }
+)
+_SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 
 
 class QuestionType:
@@ -170,6 +213,23 @@ Key = AnswerKey | WallsKey | KindsKey
 
 
 @dataclass(frozen=True, slots=True)
+class VendorError:
+    """A correction a person said the vendor drew wrong: the AI's key never takes it."""
+
+    candidate_id: str
+    page_sha256: str | None
+    page_number: int | None
+    question: Mapping[str, Any]
+    printed: Mapping[str, Any]
+    """What the person read in the picture: `{"texts": [...]}` or `{"no_label": true}`."""
+    recorded: Mapping[str, Any]
+    """What the reviewer recorded (the corrected or typed value: the site's, not the drawing's)."""
+    decided_by: str
+    decided_at: str
+    confirmed_by: str
+
+
+@dataclass(frozen=True, slots=True)
 class Confirmed:
     """What the person's answers made."""
 
@@ -179,9 +239,9 @@ class Confirmed:
     """Each key as its `pariksha-key/1` JSON."""
     joined: tuple[str, ...]
     """The candidates written into a key."""
-    vendor: tuple[str, ...]
-    """Corrections the person said the vendor drew wrong: kept out of the AI's key, for the vendor
-    report."""
+    vendor: tuple[VendorError, ...]
+    """Corrections the person said the vendor drew wrong: kept out of the AI's key, with the
+    printed text the person read, for the vendor report."""
     kept_out: tuple[tuple[str, str], ...]
     """Answered, and not written: `(candidate, why)` for a No, an Unsure, or an unsure mistake."""
 
@@ -250,6 +310,211 @@ def _layout(candidate: Candidate) -> str:
             f"{dict(candidate.recorded)}"
         )
     return values[0]
+
+
+def who_confirms(name: object, reviewers: Reviewers) -> str:
+    """The confirmer's name, or a refusal: only a person on the local real-reviewer list confirms.
+
+    An AI, an agent or code never does, even when its name is on the list: the AI under test is
+    Claude, so a shared misread would grade itself right (Anant, 2026-10-15)."""
+    confirmed_by = _text(name, "confirmed_by").strip()
+    words = set(re.findall(r"[a-z]+", confirmed_by.casefold()))
+    if is_code_actor(confirmed_by) or words & _NOT_A_PERSON:
+        raise ConfirmationRefused(
+            f"confirmed_by {confirmed_by!r} names an AI, an agent or code; only a person confirms "
+            "a case"
+        )
+    if reviewers.status(confirmed_by) != REVIEWER:
+        where = (
+            "no real-reviewer list was given"
+            if reviewers.names is None
+            else "the name is not on the local real-reviewer list"
+        )
+        raise ConfirmationRefused(
+            f"confirmed_by {confirmed_by!r} cannot confirm: {where}; only a person on the local "
+            "real-reviewer list confirms a case"
+        )
+    return confirmed_by
+
+
+# --- what the AI was shown, from storage ---------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class StoredQuestion:
+    """The stored questions that asked one candidate's question: their pictures and box count."""
+
+    pictures: tuple[tuple[str, str, str | None], ...]
+    """`(name, sha256, storage_key)` of each distinct picture, by name."""
+    boxes: int | None
+    """How many rows a row question's numbered picture numbers, when every packet agrees."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Packet:
+    family: str
+    run_id: UUID | None
+    page_sha256: str | None
+    question_id: str
+    candidate_ids: tuple[str, ...]
+    count: int | None
+    images: tuple[tuple[str, str, str | None], ...]
+
+
+def _packets(session: Session) -> list[_Packet]:
+    from app.models.runs import ModelInvocation
+
+    families = (FAMILIES["akshara"], FAMILIES["rekha"], WALLS_FAMILY)
+    found: list[_Packet] = []
+    for prompt_id, run_id, packet in session.execute(
+        select(
+            ModelInvocation.prompt_id,
+            ModelInvocation.extraction_run_id,
+            ModelInvocation.reader_question_packet,
+        ).where(
+            ModelInvocation.reader_question_packet.is_not(None),
+            ModelInvocation.prompt_id.startswith(f"{families[0]}-v")
+            | ModelInvocation.prompt_id.startswith(f"{families[1]}-v")
+            | ModelInvocation.prompt_id.startswith(f"{families[2]}-v"),
+        )
+    ):
+        if not isinstance(packet, Mapping) or not isinstance(packet.get("question_id"), str):
+            continue
+        images = packet.get("images")
+        pictures = tuple(
+            sorted(
+                (
+                    str(name),
+                    str(image["sha256"]),
+                    image["storage_key"] if isinstance(image.get("storage_key"), str) else None,
+                )
+                for name, image in (images.items() if isinstance(images, Mapping) else ())
+                if isinstance(image, Mapping) and isinstance(image.get("sha256"), str)
+            )
+        )
+        candidates = packet.get("candidate_ids")
+        count = packet.get("candidate_count")
+        page = packet.get("source_page_sha256")
+        found.append(
+            _Packet(
+                family=prompt_family(prompt_id),
+                run_id=run_id,
+                page_sha256=page if isinstance(page, str) else None,
+                question_id=str(packet["question_id"]),
+                candidate_ids=tuple(map(str, candidates)) if isinstance(candidates, list) else (),
+                count=count if isinstance(count, int) else None,
+                images=pictures,
+            )
+        )
+    return found
+
+
+def _record(session: Session, candidate_id: str) -> tuple[list[str], object]:
+    from app.models.evidence import ObservationCandidate
+
+    try:
+        found = session.get(ObservationCandidate, UUID(candidate_id))
+    except ValueError:
+        return [], None
+    if found is None:
+        return [], None
+    return [flag for flag in found.ambiguity_flags or () if isinstance(flag, str)], found.polygon
+
+
+def _piece_packets(
+    session: Session, packets: Sequence[_Packet], candidate: Candidate
+) -> list[_Packet]:
+    """A piece's label question in the run Bala's link names: the pictures the readers saw."""
+    from app.models.drawing import PartConfirmation, PartProposalRow
+
+    question = candidate.question or {}
+    found = re.match(r"^p(\d+):piece(\d+)$", str(question.get("question_id")))
+    if found is None or candidate.table != "part_confirmations":
+        return []
+    try:
+        decision = UUID(candidate.decision_id)
+    except ValueError:
+        return []
+    proposal = session.scalar(
+        select(PartConfirmation.part_proposal_id).where(PartConfirmation.id == decision)
+    )
+    link = (
+        None
+        if proposal is None
+        else session.scalar(
+            select(PartProposalRow).where(PartProposalRow.part_proposal_id == proposal)
+        )
+    )
+    if link is None:
+        return []
+    prefix = f"p{found.group(1)}:slot{found.group(2)}:"
+    return [
+        packet
+        for packet in packets
+        if packet.family == FAMILIES["akshara"]
+        and packet.run_id == link.extraction_run_id
+        and packet.page_sha256 == question.get("page_sha256")
+        and packet.question_id.startswith(prefix)
+    ]
+
+
+def _asked(session: Session, packets: Sequence[_Packet], candidate: Candidate) -> list[_Packet]:
+    """The stored questions that asked this candidate's question, by its own guard."""
+    question = candidate.question or {}
+    family = question.get("family")
+    if family == KINDS_FAMILY:
+        return _piece_packets(session, packets, candidate)
+    same = [
+        packet
+        for packet in packets
+        if packet.family == family
+        and packet.page_sha256 == question.get("page_sha256")
+        and packet.question_id == question.get("question_id")
+    ]
+    if family == FAMILIES["akshara"]:
+        box = f"slot-box:{question.get('slot_box')}"
+        return [
+            packet
+            for packet in same
+            if len(packet.candidate_ids) == 1
+            and box in _record(session, packet.candidate_ids[0])[0]
+        ]
+    if family == FAMILIES["rekha"]:
+        picture = question.get("picture_sha256")
+        return [packet for packet in same if any(sha == picture for _n, sha, _k in packet.images)]
+    if family == WALLS_FAMILY:
+        kept = []
+        for packet in same:
+            if len(packet.candidate_ids) != 1:
+                continue
+            row = _polygon_box(_record(session, packet.candidate_ids[0])[1])
+            if row is not None and ",".join(str(edge) for edge in row) == question.get("row_box"):
+                kept.append(packet)
+        return kept
+    return []
+
+
+def stored_questions(
+    session: Session, candidates: Iterable[Candidate]
+) -> dict[str, StoredQuestion]:
+    """For each candidate, the pictures its stored question(s) showed the AI and, on a row
+    question, how many rows the numbered picture numbers. Read-only. A candidate no stored
+    question names gets no pictures, so a Yes for it is refused."""
+    packets = _packets(session)
+    found: dict[str, StoredQuestion] = {}
+    for candidate in candidates:
+        asked = _asked(session, packets, candidate)
+        pictures: dict[str, tuple[str, str, str | None]] = {}
+        for packet in asked:
+            for name, sha, key in packet.images:
+                if sha not in pictures or pictures[sha][2] is None:
+                    pictures[sha] = (name, sha, key)
+        counts = {packet.count or len(packet.candidate_ids) for packet in asked}
+        found[candidate.candidate_id] = StoredQuestion(
+            pictures=tuple(sorted(pictures.values())),
+            boxes=counts.pop() if len(counts) == 1 else None,
+        )
+    return found
 
 
 # --- the stored row of a piece -------------------------------------------------------------------
@@ -387,7 +652,7 @@ class _Case:
 
 
 def _source(candidate: Candidate, export: CandidateExport, confirmed_by: str, said: str) -> str:
-    when = datetime.now(UTC).date().isoformat()
+    when = datetime.now().astimezone().date().isoformat()
     return (
         f"smriti {candidate.candidate_id} ({candidate.corrects}; {candidate.kind} by a reviewer on "
         f"{candidate.decided_at[:10]} in {export.database}); {said}confirmed by {confirmed_by} on "
@@ -400,6 +665,7 @@ def _case(
     entry: Mapping[str, Any],
     where: str,
     row_widths: Mapping[str, Sequence[str | None]],
+    boxes: int | None,
 ) -> tuple[dict[str, Any] | None, str, str | None]:
     """The key case a Yes makes (without its source), a note for the source, and, when the Yes
     does not join the AI's key, why (`vendor` for a vendor error)."""
@@ -436,7 +702,13 @@ def _case(
                     f"{cid}: mistake must be one of {MISTAKE_ANSWERS}, not {mistake!r}"
                 )
             if mistake == VENDOR_DREW_IT:
-                return None, "", "vendor"
+                printed = _label_answer(entry, where)
+                if printed is None:
+                    raise ConfirmationRefused(
+                        f"{cid}: the vendor drew it wrong, so give the printed text as it appears "
+                        "in the picture (texts) or no_label, for the vendor report"
+                    )
+                return {"printed": printed}, "", "vendor"
             if mistake != AI_MISREAD:
                 return (
                     None,
@@ -474,6 +746,16 @@ def _case(
                 f"{cid}: there is a countertop, so pick its box on the stored picture (box: n) "
                 "or say it is not among the boxes (not_among_boxes: true)"
             )
+        if "box" in pick:
+            if boxes is None:
+                raise ConfirmationRefused(
+                    f"{cid}: how many boxes the stored picture numbers is not recorded, so a box "
+                    "cannot be picked; answer not_among_boxes or leave it"
+                )
+            if pick["box"] > boxes:
+                raise ConfirmationRefused(
+                    f"{cid}: box {pick['box']} is not on the picture: it numbers {boxes} boxes"
+                )
         says_none = pick == {"kind": "no_countertop"}
         if says_none != (recorded == "no_countertop"):
             raise ConfirmationRefused(
@@ -590,6 +872,9 @@ def confirm_candidates(
     confirmations: Mapping[str, Any],
     *,
     candidates_sha256: str,
+    reviewers: Reviewers,
+    pictures: Mapping[str, Sequence[str]],
+    boxes: Mapping[str, int] | None = None,
     row_widths: Mapping[str, Sequence[str | None]] | None = None,
     bases: Sequence[object] = (),
     name: str = "smriti",
@@ -598,7 +883,11 @@ def confirm_candidates(
     """The keys made of exactly the candidates the person answered Yes (plus the base keys' cases).
 
     `candidates_sha256` is the candidates file's own hash: answers given for another file are
-    refused. `row_widths` (from `stored_row_widths`) fills the piece-kind cases."""
+    refused. `reviewers` is the local real-reviewer list: `confirmed_by` must be on it, and never
+    an AI, an agent or code. `pictures` and `boxes` (from `stored_questions`) are what each
+    candidate's stored question showed: a Yes must name exactly the pictures the page showed, and a
+    box must be one the numbered picture holds. `row_widths` (from `stored_row_widths`) fills the
+    piece-kind cases."""
     if not isinstance(confirmations, Mapping):
         raise ConfirmationRefused("the confirmations are one JSON object")
     if confirmations.get("format") != CONFIRMATIONS_FORMAT:
@@ -606,7 +895,7 @@ def confirm_candidates(
             f"format must be {CONFIRMATIONS_FORMAT!r}, not {confirmations.get('format')!r}"
         )
     _unknown(confirmations, _HEADER, "the confirmations")
-    confirmed_by = _text(confirmations.get("confirmed_by"), "confirmed_by").strip()
+    confirmed_by = who_confirms(confirmations.get("confirmed_by"), reviewers)
     if confirmations.get("candidates_sha256") != candidates_sha256:
         raise ConfirmationRefused(
             "these answers were given for another candidates file (candidates_sha256 "
@@ -625,7 +914,7 @@ def confirm_candidates(
     seen: set[str] = set()
     cases: list[_Case] = []
     joined: list[str] = []
-    vendor: list[str] = []
+    vendor: list[VendorError] = []
     kept_out: list[tuple[str, str]] = []
     for index, entry in enumerate(entries):
         where = f"answer {index + 1}"
@@ -664,9 +953,25 @@ def confirm_candidates(
         if verdict != YES:
             kept_out.append((candidate_id, f"answered {verdict}"))
             continue
-        document, said, out = _case(candidate, entry, where, widths)
+        _same_pictures(candidate_id, entry.get("pictures"), pictures.get(candidate_id))
+        document, said, out = _case(
+            candidate, entry, where, widths, (boxes or {}).get(candidate_id)
+        )
         if out == "vendor":
-            vendor.append(candidate_id)
+            assert document is not None and candidate.question is not None
+            vendor.append(
+                VendorError(
+                    candidate_id=candidate_id,
+                    page_sha256=candidate.page_sha256,
+                    page_number=candidate.page_number,
+                    question=dict(candidate.question),
+                    printed=document["printed"],
+                    recorded=dict(candidate.recorded),
+                    decided_by=candidate.decided_by,
+                    decided_at=candidate.decided_at,
+                    confirmed_by=confirmed_by,
+                )
+            )
             continue
         if out is not None:
             kept_out.append((candidate_id, out))
@@ -737,6 +1042,30 @@ def confirm_candidates(
         vendor=tuple(vendor),
         kept_out=tuple(kept_out),
     )
+
+
+def _same_pictures(candidate_id: str, given: object, stored: Sequence[str] | None) -> None:
+    """A Yes names exactly the stored pictures the page showed: one shown without its picture (a
+    card the page could not show, or a hand-written answer) never joins a key."""
+    if not stored:
+        raise ConfirmationRefused(
+            f"{candidate_id}: no stored picture of its question is known, so nobody has seen what "
+            "the AI saw; it cannot be confirmed"
+        )
+    if (
+        not isinstance(given, list)
+        or not given
+        or not all(isinstance(sha, str) and _SHA256.match(sha) for sha in given)
+    ):
+        raise ConfirmationRefused(
+            f"{candidate_id}: a Yes names the pictures the page showed (pictures: their sha256); "
+            "answer on the review page, which shows them"
+        )
+    if set(given) != set(stored):
+        raise ConfirmationRefused(
+            f"{candidate_id}: the pictures this Yes names are not the stored pictures of its "
+            "question; build the review page again and answer there"
+        )
 
 
 def _without_source(case: Mapping[str, Any]) -> dict[str, Any]:
