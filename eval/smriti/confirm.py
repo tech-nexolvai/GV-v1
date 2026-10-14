@@ -14,14 +14,20 @@ The confirmations file (`smriti-confirmations/2`):
      "answers": [{"candidate": "<id>", "verdict": "yes" | "no" | "unsure",
                   "pictures": ["<sha256 of each picture the card showed>"], ...}]}
 
-**Who confirms.** `confirmed_by` must be a name on the local real-reviewer list
-(`eval/smriti/actors.py`), and never an AI, an agent or code (`code:`, "claude", "bot", ...),
-even when listed (`who_confirms`).
+**Who confirms (#1282).** `confirmed_by` must be a name on the local CONFIRMERS list
+(`GV_SMRITI_CONFIRMERS`, `eval/smriti/actors.py`), which is apart from the reviewers list: reviewers
+decide in the app, confirmers confirm here. It is never an AI, an agent or code, even when listed:
+an AI name inside a word ("claudebot") or a name that is not plain ASCII (a look-alike letter) is
+refused too (`who_confirms`). **Nobody confirms a case they decided themselves**: any answer to a
+case whose `decided_by` is the confirmer is refused, so the decision always gets a second person.
 
 **What was seen.** A Yes names the stored pictures its card showed. They must be exactly the
 pictures the candidate's stored question showed the AI (`stored_questions`, read from the
 database); a Yes with none, or with others, is refused. A card the page could not show never
-gives an answer.
+gives an answer. **The bytes are checked too (#1282):** each of those pictures is read from the
+artifact store and its sha256 compared with the fingerprint the question recorded
+(`read_stored_picture`, `check_store`); a picture missing from the store, or whose bytes differ, or
+that was not checked, refuses the Yes.
 
 **What a Yes needs, by the question it answers** (anything else on an entry is refused):
 
@@ -61,12 +67,14 @@ Source: issues #1232, #1271 · Verification: `tests/eval/test_smriti_confirm.py`
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
+from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
@@ -100,7 +108,7 @@ from eval.pariksha.walls import (
     dump_walls_key,
     load_walls_key,
 )
-from eval.smriti.actors import REVIEWER, Reviewers, is_code_actor
+from eval.smriti.actors import CONFIRMERS_ENV, REVIEWER, Confirmers, not_a_person
 from eval.smriti.candidates import (
     MISTAKE_ANSWERS,
     MISTAKE_UNANSWERED,
@@ -118,9 +126,11 @@ __all__ = [
     "QuestionType",
     "StoredQuestion",
     "VendorError",
+    "check_store",
     "confirm_candidates",
     "not_ready",
     "question_type",
+    "read_stored_picture",
     "ready_candidates",
     "site_ends",
     "stored_questions",
@@ -153,30 +163,6 @@ _SITE_ENDS: Final[Mapping[str, tuple[str, str]]] = {
 
 _HEADER: Final = frozenset({"format", "confirmed_by", "candidates_sha256", "answers"})
 _COMMON: Final = frozenset({"candidate", "verdict", "note", "pictures"})
-#: Words that name an AI, an agent or a program, never a person: none of them ever confirms.
-_NOT_A_PERSON: Final = frozenset(
-    {
-        "ai",
-        "agent",
-        "anthropic",
-        "assistant",
-        "bot",
-        "chatgpt",
-        "claude",
-        "codex",
-        "copilot",
-        "gemini",
-        "gpt",
-        "haiku",
-        "llm",
-        "model",
-        "openai",
-        "opus",
-        "robot",
-        "script",
-        "sonnet",
-    }
-)
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -312,27 +298,32 @@ def _layout(candidate: Candidate) -> str:
     return values[0]
 
 
-def who_confirms(name: object, reviewers: Reviewers) -> str:
-    """The confirmer's name, or a refusal: only a person on the local real-reviewer list confirms.
+def _same_name(first: str, second: str) -> bool:
+    return first.strip().casefold() == second.strip().casefold()
 
-    An AI, an agent or code never does, even when its name is on the list: the AI under test is
-    Claude, so a shared misread would grade itself right (Anant, 2026-10-15)."""
+
+def who_confirms(name: object, confirmers: Confirmers) -> str:
+    """The confirmer's name, or a refusal: only a person on the local confirmers list confirms.
+
+    An AI, an agent or code never does, even when its name is on the list, and even inside a word
+    or spelled with look-alike letters: the AI under test is Claude, so a shared misread would grade
+    itself right (Anant, 2026-10-15)."""
     confirmed_by = _text(name, "confirmed_by").strip()
-    words = set(re.findall(r"[a-z]+", confirmed_by.casefold()))
-    if is_code_actor(confirmed_by) or words & _NOT_A_PERSON:
+    why = not_a_person(confirmed_by)
+    if why is not None:
         raise ConfirmationRefused(
-            f"confirmed_by {confirmed_by!r} names an AI, an agent or code; only a person confirms "
-            "a case"
+            f"confirmed_by {confirmed_by!r} {why}; only a person confirms a case"
         )
-    if reviewers.status(confirmed_by) != REVIEWER:
+    if not confirmers.knows(confirmed_by):
         where = (
-            "no real-reviewer list was given"
-            if reviewers.names is None
-            else "the name is not on the local real-reviewer list"
+            f"no confirmers list was given (set {CONFIRMERS_ENV} to a local file under "
+            "~/gv-local)"
+            if confirmers.names is None
+            else "the name is not on the local confirmers list"
         )
         raise ConfirmationRefused(
             f"confirmed_by {confirmed_by!r} cannot confirm: {where}; only a person on the local "
-            "real-reviewer list confirms a case"
+            "confirmers list confirms a case"
         )
     return confirmed_by
 
@@ -515,6 +506,49 @@ def stored_questions(
             boxes=counts.pop() if len(counts) == 1 else None,
         )
     return found
+
+
+#: Why a picture's bytes cannot stand for what the AI saw: no storage key recorded.
+NOT_STORED: Final = "the question's picture was not stored (no storage key)"
+#: ... the bytes in the store are not the ones the question recorded.
+NOT_THE_ONE: Final = "the stored picture is not the one the question recorded"
+
+
+def read_stored_picture(
+    root: Path, sha256: str, storage_key: str | None
+) -> tuple[bytes | None, str | None]:
+    """A stored question's picture, read from the artifact store and checked against the sha256
+    the question recorded: `(bytes, None)`, or `(None, why)` when it is not stored, not in the
+    store, or its bytes differ. The review page shows it, and `confirm` checks a Yes with it."""
+    from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
+    from storage.local import LocalStore
+
+    if storage_key is None:
+        return None, NOT_STORED
+    try:
+        with LocalStore(root=root).get(storage_key) as stored:
+            data = stored.read()
+    except (OSError, ValueError, ArtifactCorrupt, IntegrityRecordMissing) as error:
+        return None, f"the picture is not in the store ({type(error).__name__})"
+    if hashlib.sha256(data).hexdigest() != sha256:
+        return None, NOT_THE_ONE
+    return data, None
+
+
+def check_store(
+    root: Path, questions: Mapping[str, StoredQuestion], candidate_ids: Iterable[str]
+) -> dict[str, str | None]:
+    """For each picture these candidates' stored questions showed, by sha256: `None` when its
+    bytes are in the store and match, else why not. One good copy of a picture is enough."""
+    checked: dict[str, str | None] = {}
+    for candidate_id in candidate_ids:
+        question = questions.get(candidate_id)
+        for _name, sha, key in () if question is None else question.pictures:
+            if checked.get(sha, "unchecked") is None:
+                continue
+            _data, problem = read_stored_picture(root, sha, key)
+            checked[sha] = problem
+    return checked
 
 
 # --- the stored row of a piece -------------------------------------------------------------------
@@ -872,8 +906,9 @@ def confirm_candidates(
     confirmations: Mapping[str, Any],
     *,
     candidates_sha256: str,
-    reviewers: Reviewers,
+    confirmers: Confirmers,
     pictures: Mapping[str, Sequence[str]],
+    store: Mapping[str, str | None],
     boxes: Mapping[str, int] | None = None,
     row_widths: Mapping[str, Sequence[str | None]] | None = None,
     bases: Sequence[object] = (),
@@ -883,11 +918,13 @@ def confirm_candidates(
     """The keys made of exactly the candidates the person answered Yes (plus the base keys' cases).
 
     `candidates_sha256` is the candidates file's own hash: answers given for another file are
-    refused. `reviewers` is the local real-reviewer list: `confirmed_by` must be on it, and never
-    an AI, an agent or code. `pictures` and `boxes` (from `stored_questions`) are what each
-    candidate's stored question showed: a Yes must name exactly the pictures the page showed, and a
-    box must be one the numbered picture holds. `row_widths` (from `stored_row_widths`) fills the
-    piece-kind cases."""
+    refused. `confirmers` is the local confirmers list: `confirmed_by` must be on it, never be an
+    AI, an agent or code, and never be the reviewer who decided an answered case. `pictures` and
+    `boxes` (from `stored_questions`) are what each candidate's stored question showed: a Yes must
+    name exactly the pictures the page showed, and a box must be one the numbered picture holds.
+    `store` (from `check_store`) says, per picture sha256, whether its bytes in the artifact store
+    match: a Yes whose picture is missing, differs or was not checked is refused. `row_widths`
+    (from `stored_row_widths`) fills the piece-kind cases."""
     if not isinstance(confirmations, Mapping):
         raise ConfirmationRefused("the confirmations are one JSON object")
     if confirmations.get("format") != CONFIRMATIONS_FORMAT:
@@ -895,7 +932,7 @@ def confirm_candidates(
             f"format must be {CONFIRMATIONS_FORMAT!r}, not {confirmations.get('format')!r}"
         )
     _unknown(confirmations, _HEADER, "the confirmations")
-    confirmed_by = who_confirms(confirmations.get("confirmed_by"), reviewers)
+    confirmed_by = who_confirms(confirmations.get("confirmed_by"), confirmers)
     if confirmations.get("candidates_sha256") != candidates_sha256:
         raise ConfirmationRefused(
             "these answers were given for another candidates file (candidates_sha256 "
@@ -942,6 +979,12 @@ def confirm_candidates(
         why = not_ready(candidate)
         if why is not None:
             raise ConfirmationRefused(f"{candidate_id} cannot be confirmed: {why}")
+        if _same_name(candidate.decided_by, confirmed_by):
+            raise ConfirmationRefused(
+                f"{candidate_id} was decided by {candidate.decided_by!r}, who is also the confirmer; "
+                "nobody confirms their own decision: another person on the confirmers list answers "
+                "this case"
+            )
         kind = question_type(candidate)
         assert kind is not None
         extra = sorted(set(entry) - _COMMON - _FIELDS[kind])
@@ -953,7 +996,7 @@ def confirm_candidates(
         if verdict != YES:
             kept_out.append((candidate_id, f"answered {verdict}"))
             continue
-        _same_pictures(candidate_id, entry.get("pictures"), pictures.get(candidate_id))
+        _same_pictures(candidate_id, entry.get("pictures"), pictures.get(candidate_id), store)
         document, said, out = _case(
             candidate, entry, where, widths, (boxes or {}).get(candidate_id)
         )
@@ -1044,9 +1087,15 @@ def confirm_candidates(
     )
 
 
-def _same_pictures(candidate_id: str, given: object, stored: Sequence[str] | None) -> None:
-    """A Yes names exactly the stored pictures the page showed: one shown without its picture (a
-    card the page could not show, or a hand-written answer) never joins a key."""
+def _same_pictures(
+    candidate_id: str,
+    given: object,
+    stored: Sequence[str] | None,
+    store: Mapping[str, str | None],
+) -> None:
+    """A Yes names exactly the stored pictures the page showed, and each one's bytes are in the
+    artifact store as its fingerprint says: one shown without its picture (a card the page could
+    not show, or a hand-written answer) never joins a key."""
     if not stored:
         raise ConfirmationRefused(
             f"{candidate_id}: no stored picture of its question is known, so nobody has seen what "
@@ -1066,6 +1115,13 @@ def _same_pictures(candidate_id: str, given: object, stored: Sequence[str] | Non
             f"{candidate_id}: the pictures this Yes names are not the stored pictures of its "
             "question; build the review page again and answer there"
         )
+    for sha in sorted(set(stored)):
+        problem = store.get(sha, "was not checked in the artifact store")
+        if problem is not None:
+            raise ConfirmationRefused(
+                f"{candidate_id}: picture {sha[:12]}: {problem}; nobody can be shown to have seen "
+                "what the AI saw, so it cannot be confirmed"
+            )
 
 
 def _without_source(case: Mapping[str, Any]) -> dict[str, Any]:
