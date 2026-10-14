@@ -423,6 +423,9 @@ class ReadingProgress(Base, TimestampedUUID):
     pages_done: Mapped[int | None] = mapped_column(Integer(), default=None)
     pages_total: Mapped[int | None] = mapped_column(Integer(), default=None)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now)
+    reading_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), default=None)
+    """The running reading attempt (#1238): its events are the ones the screen shows while it runs.
+    Set when the reading stage starts; kept by later progress lines that name none."""
 
     __table_args__ = (
         CheckConstraint(f"stage IN ({_READING_STAGE_VALUES})", name="reading_progress_stage"),
@@ -439,7 +442,18 @@ class ReadingProgress(Base, TimestampedUUID):
 
 #: What one line of a reading's live activity says happened (#1238): an agent's AIs answered, its
 #: inspector passed the item or stopped it, or (phase 3, PR B) it is trying again and how that went.
-READING_EVENT_KINDS: Final = ("answered", "passed", "stopped", "trying_again", "try_again_result")
+READING_EVENT_KINDS: Final = (
+    "answered",
+    "passed",
+    "stopped",
+    "trying_again",
+    "try_again_result",
+    "finished",
+)
+
+#: The one kind that is a marker, not an item: written in the reading stage's own transaction, so it
+#: exists only for a reading whose stage committed (#1238 review). It names no page, agent or item.
+READING_FINISHED_KIND: Final = "finished"
 
 #: The agents of the review line, by name (`workflow.pariksha_gates.Agent`, which a test keeps equal).
 #: Written out here: the model layer imports nothing from `workflow`.
@@ -482,8 +496,10 @@ class ReadingEvent(Base, TimestampedUUID, Immutable):
     screen says less. It is still never edited: a later event is a new row, and an item's state is
     its newest event.
 
-    `reading_id` is one id per stage attempt; the API shows only the newest. `position` orders the
-    events of one batch (written together, with one `created_at`).
+    `reading_id` is one id per stage attempt (the progress row names the running one); the API shows
+    only that reading, or the newest one that finished. `position` orders the events of one batch
+    (written together, with one `created_at`). A `finished` row is a marker, written in the reading
+    stage's own transaction, so it exists only when that attempt committed.
     """
 
     __tablename__ = "reading_events"
@@ -492,13 +508,16 @@ class ReadingEvent(Base, TimestampedUUID, Immutable):
     """The revision being read. **Not a foreign key**, for the same reason as `ReadingProgress`'s:
     a running stage holds its revision row locked, and a foreign-key check from the side
     transaction would wait for the stage to end."""
-    reading_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    reading_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True))
     position: Mapped[int] = mapped_column(Integer())
-    page_number: Mapped[int] = mapped_column(Integer())
-    agent: Mapped[str] = mapped_column(String(16))
-    item: Mapped[str] = mapped_column(String(READING_EVENT_ITEM_MAX))
+    document_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), default=None)
+    """The file the page is in, so two shop files' page 3 are two items. Not a foreign key, for the
+    same reason as `package_revision_id`."""
+    page_number: Mapped[int | None] = mapped_column(Integer())
+    agent: Mapped[str | None] = mapped_column(String(16))
+    item: Mapped[str | None] = mapped_column(String(READING_EVENT_ITEM_MAX))
     kind: Mapped[str] = mapped_column(String(24))
-    code: Mapped[str] = mapped_column(String(READING_EVENT_CODE_MAX))
+    code: Mapped[str | None] = mapped_column(String(READING_EVENT_CODE_MAX))
     change: Mapped[str | None] = mapped_column(String(READING_EVENT_CODE_MAX), default=None)
     """What a try-again changed (`closer-look-2x`, `tie-break-disputed-lines`, ...), or null."""
     attempt: Mapped[int | None] = mapped_column(Integer(), default=None)
@@ -519,9 +538,17 @@ class ReadingEvent(Base, TimestampedUUID, Immutable):
             f"attempt IS NULL OR (attempt >= 1 AND attempt <= {READING_EVENT_MAX_ATTEMPTS})",
             name="reading_event_attempt",
         ),
+        CheckConstraint(
+            f"(kind = '{READING_FINISHED_KIND}' AND page_number IS NULL AND agent IS NULL "
+            "AND item IS NULL AND code IS NULL AND change IS NULL AND attempt IS NULL) OR "
+            f"(kind <> '{READING_FINISHED_KIND}' AND page_number IS NOT NULL AND agent IS NOT NULL "
+            "AND item IS NOT NULL AND code IS NOT NULL)",
+            name="reading_event_marker",
+        ),
         Index(
             "ix_reading_events_revision_newest",
             "package_revision_id",
             "created_at",
         ),
+        Index("ix_reading_events_reading_order", "reading_id", "created_at", "position"),
     )

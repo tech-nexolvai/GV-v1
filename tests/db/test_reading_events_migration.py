@@ -54,6 +54,14 @@ def test_the_table_has_no_foreign_key_and_the_progress_row_may_say_try_again(
         "change",
     } <= columns
     assert inspect(postgres_engine).get_foreign_keys("reading_events") == []
+    assert "document_version_id" in columns
+    indexes = {
+        index["name"]: index["column_names"]
+        for index in inspect(postgres_engine).get_indexes("reading_events")
+    }
+    assert indexes["ix_reading_events_reading_order"] == ["reading_id", "created_at", "position"]
+    progress = {c["name"] for c in inspect(postgres_engine).get_columns("reading_progress")}
+    assert "reading_id" in progress, "the progress row names the running reading"
     with postgres_engine.begin() as connection:
         connection.execute(
             text(
@@ -88,6 +96,8 @@ def test_the_downgrade_narrows_the_stage_and_drops_the_events_then_upgrades_agai
     command.downgrade(config, BEFORE)
     try:
         assert "reading_events" not in inspect(postgres_engine).get_table_names()
+        progress = {c["name"] for c in inspect(postgres_engine).get_columns("reading_progress")}
+        assert "reading_id" not in progress
         with pytest.raises(IntegrityError), postgres_engine.begin() as connection:
             connection.execute(
                 text(

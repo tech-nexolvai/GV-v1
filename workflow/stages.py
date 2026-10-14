@@ -2749,12 +2749,19 @@ class DatabaseStages:
             )
 
     def _watch(self, session: Session, package_revision_id: UUID, stage: str) -> None:
-        """Start telling the reviewer where this revision's reading is (#1178), and what each
-        agent did (#1238): this stage attempt is one reading, with an id of its own."""
-        self._reporter = ProgressReporter(side_engine(session), package_revision_id)
-        self._activity_recorder = ActivityRecorder(
-            side_engine(session), package_revision_id, uuid4()
-        )
+        """Start telling the reviewer where this revision's reading is (#1178).
+
+        The reading stage (`pages`) also starts a reading (#1238): this attempt gets an id of its
+        own, named on the progress row, so the screen shows only this attempt's events while it
+        runs. Later stages keep the id the row already names.
+        """
+        reading_id = None
+        if stage == "pages":
+            reading_id = uuid4()
+            self._activity_recorder = ActivityRecorder(
+                side_engine(session), package_revision_id, reading_id
+            )
+        self._reporter = ProgressReporter(side_engine(session), package_revision_id, reading_id)
         self._watch_session = session
         self._reporter.stage(stage)
 
@@ -2960,6 +2967,9 @@ class DatabaseStages:
                     )
                 ),
             )
+        # The pages listed unread (code found no row, or the budget stopped their own reading) are
+        # the page sorter's stops (#1238): told, so none is silent on the screen.
+        _tell_unread(self._activity(), unread)
         self._progress("saving")
         run = open_extraction_run(
             session,
@@ -2998,6 +3008,11 @@ class DatabaseStages:
                 extraction_run_id=run.id,
                 results=results,
             )
+        # In this stage's own transaction: the reading's events become the stored result only if
+        # this commits (#1238 review).
+        watching = self._activity()
+        if watching is not None:
+            watching.finished(session)
         session.flush()
         return count
 
@@ -8447,6 +8462,34 @@ def _queue_checks_after_reading(session: Session, package_revision_id: UUID) -> 
 
 #: The work that runs the checks (`app/api/measurements.RUN_CHECKS_WORKFLOW`).
 RUN_CHECKS_AFTER_READING: Final = "run_checks"
+
+
+def _tell_unread(activity: ActivityRecorder | None, unread: Sequence[UnreadPage]) -> None:
+    """One page sorter `stopped` event per page listed unread, with its no-row code (#1238).
+
+    Watching only: an event that cannot be built is skipped, and nothing here can raise.
+    """
+    if activity is None or not unread:
+        return
+    from app.runs.reading_activity import ActivityEvent, EventKind
+    from workflow.pariksha_gates import Agent
+
+    events: list[ActivityEvent] = []
+    for page in unread:
+        try:
+            events.append(
+                ActivityEvent(
+                    page.page_index + 1,
+                    Agent.BALA,
+                    f"p{page.page_index}:page",
+                    EventKind.STOPPED,
+                    page.code.replace(":", "-"),
+                    document_version_id=page.document_version_id,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - watching never changes a reading
+            logger.warning("activity event skipped: %s", type(error).__name__)
+    activity.record(events)
 
 
 def _stopped_at_budget(

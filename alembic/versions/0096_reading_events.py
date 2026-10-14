@@ -11,9 +11,9 @@ table for this (2026-10-14, phase 3 decision 5).
 
 **`reading_events`.** One row per event, written by the worker in its own short side transaction
 (`app.runs.reading_activity.record_events`): the revision, the reading (one id per stage attempt),
-the event's place in its batch, the page, the agent, the item (a code question id such as
-`p11:row-choice`), the kind (`answered`, `passed`, `stopped`, `trying_again`, `try_again_result`),
-a code, what a try-again changed and which try it is (1 to 3, phase 3 decision 4). **Codes only,
+the event's place in its batch, the document version, the page, the agent, the item (a code
+question id such as `p11:row-choice`), the kind (`answered`, `passed`, `stopped`, `trying_again`,
+`try_again_result`), a code, what a try-again changed and which try it is (1 to 3, phase 3 decision 4). **Codes only,
 never drawing text**: the CHECKs below refuse anything that is not a short lower-case code, so no
 printed value or page title can be stored. The words a person reads are made from the codes in
 code.
@@ -23,6 +23,11 @@ code.
 * **No foreign key to `package_revisions`**, for the same reason as `reading_progress`: a running
   stage holds its revision row locked, and a foreign-key check from the side transaction would wait
   for the stage to end.
+
+**Which attempt.** `reading_progress.reading_id` names the running attempt, so the screen shows only
+its events while it runs. A `finished` row (a marker with no page, agent, item or code) is written in
+the reading stage's own transaction, so it exists only for an attempt that committed; an attempt that
+failed is never shown as the reading's result.
 
 **`try_again`.** The reading stage list gains `try_again` (phase 3, PR B asks its try-again questions
 in a batch of that name), so `reading_progress_stage` is widened to allow it.
@@ -56,7 +61,12 @@ TABLE = "reading_events"
 IMMUTABLE_TABLES = (TABLE,)
 
 #: Written out here, not imported from the model: a migration must do the same thing whenever it runs.
-_KINDS = "'answered', 'passed', 'stopped', 'trying_again', 'try_again_result'"
+_KINDS = "'answered', 'passed', 'stopped', 'trying_again', 'try_again_result', 'finished'"
+_MARKER = (
+    "(kind = 'finished' AND page_number IS NULL AND agent IS NULL AND item IS NULL AND code IS NULL "
+    "AND change IS NULL AND attempt IS NULL) OR (kind <> 'finished' AND page_number IS NOT NULL "
+    "AND agent IS NOT NULL AND item IS NOT NULL AND code IS NOT NULL)"
+)
 _AGENTS = "'Bala', 'Rekha', 'Akshara', 'Vastu', 'Milan', 'Kautilya', 'Nina', 'Vani'"
 _ITEM = "^p[0-9]+:[a-z0-9:-]+$"
 _CODE = "^[a-z0-9]+(-[a-z0-9]+)*$"
@@ -107,11 +117,12 @@ def upgrade() -> None:
         sa.Column("package_revision_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("reading_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("position", sa.Integer(), nullable=False),
-        sa.Column("page_number", sa.Integer(), nullable=False),
-        sa.Column("agent", sa.String(length=16), nullable=False),
-        sa.Column("item", sa.String(length=80), nullable=False),
+        sa.Column("document_version_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("page_number", sa.Integer(), nullable=True),
+        sa.Column("agent", sa.String(length=16), nullable=True),
+        sa.Column("item", sa.String(length=80), nullable=True),
         sa.Column("kind", sa.String(length=24), nullable=False),
-        sa.Column("code", sa.String(length=48), nullable=False),
+        sa.Column("code", sa.String(length=48), nullable=True),
         sa.Column("change", sa.String(length=48), nullable=True),
         sa.Column("attempt", sa.Integer(), nullable=True),
         sa.CheckConstraint(f"kind IN ({_KINDS})", name="reading_event_kind"),
@@ -124,9 +135,12 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "attempt IS NULL OR (attempt >= 1 AND attempt <= 3)", name="reading_event_attempt"
         ),
+        sa.CheckConstraint(_MARKER, name="reading_event_marker"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_reading_events_reading_id", TABLE, ["reading_id"])
+    op.create_index(
+        "ix_reading_events_reading_order", TABLE, ["reading_id", "created_at", "position"]
+    )
     op.create_index(
         "ix_reading_events_revision_newest", TABLE, ["package_revision_id", "created_at"]
     )
@@ -145,14 +159,19 @@ def upgrade() -> None:
         op.get_bind().execute(sa.text(_in_current_schema(*grant_statements)))
     op.drop_constraint(_STAGE_CHECK, "reading_progress", type_="check")
     op.create_check_constraint(_STAGE_CHECK, "reading_progress", _stage_check(_STAGES_AFTER))
+    op.add_column(
+        "reading_progress",
+        sa.Column("reading_id", postgresql.UUID(as_uuid=True), nullable=True),
+    )
 
 
 def downgrade() -> None:
     """Drop the events (telemetry) and narrow the stage check again (see the docstring)."""
+    op.drop_column("reading_progress", "reading_id")
     op.execute("DELETE FROM reading_progress WHERE stage = 'try_again'")
     op.drop_constraint(_STAGE_CHECK, "reading_progress", type_="check")
     op.create_check_constraint(_STAGE_CHECK, "reading_progress", _stage_check(_STAGES_BEFORE))
     op.execute(f"DROP TRIGGER IF EXISTS {TABLE}_append_only ON {TABLE}")
     op.drop_index("ix_reading_events_revision_newest", table_name=TABLE)
-    op.drop_index("ix_reading_events_reading_id", table_name=TABLE)
+    op.drop_index("ix_reading_events_reading_order", table_name=TABLE)
     op.drop_table(TABLE)

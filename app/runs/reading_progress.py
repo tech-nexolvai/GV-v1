@@ -122,10 +122,12 @@ def record_progress(
     *,
     pages_done: int | None = None,
     pages_total: int | None = None,
+    reading_id: UUID | None = None,
 ) -> bool:
     """Say, in its own committed transaction, which part of the reading is running. Never raises.
 
-    Returns whether the line was written. A failure is logged by type only (a database error can
+    `reading_id` (#1238), when given, names the running reading attempt; a line that names none
+    keeps the one already there. Returns whether the line was written. A failure is logged by type only (a database error can
     quote the row it refused) and swallowed: the reading must go on whether or not it can be watched.
     """
     if engine is None:
@@ -135,12 +137,14 @@ def record_progress(
     if pages_done is not None and (pages_total is None or not 0 <= pages_done <= pages_total):
         raise ValueError("pages_done needs pages_total and must lie between 0 and it")
     now = utc_now()
-    values = {
+    values: dict[str, object] = {
         "stage": stage,
         "pages_done": pages_done,
         "pages_total": pages_total,
         "updated_at": now,
     }
+    if reading_id is not None:
+        values["reading_id"] = reading_id
     try:
         with Session(engine) as side, side.begin():
             wait_briefly_for_locks(side)
@@ -173,6 +177,8 @@ class ReadingSnapshot:
     unpriced_calls: int
     updated_at: datetime | None
     retrying: bool
+    reading_id: UUID | None = None
+    """The running reading attempt (#1238), when the progress row names one."""
 
 
 def _usd(micros: int) -> str:
@@ -218,8 +224,10 @@ def reading_progress_for(
         retrying = True
     if row is not None:
         stage, done, total, updated = row.stage, row.pages_done, row.pages_total, row.updated_at
+        running = row.reading_id
     else:
         stage, done, total, updated = STATE_STAGES[state], None, None, None
+        running = None
     calls = session.execute(
         select(
             ModelInvocation.model_id,
@@ -259,6 +267,7 @@ def reading_progress_for(
         unpriced_calls=unpriced,
         updated_at=updated,
         retrying=retrying,
+        reading_id=running,
     )
 
 

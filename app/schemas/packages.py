@@ -188,21 +188,33 @@ class ReadingActivitySummaryOut(BaseModel):
 class ReadingActivityOut(BaseModel):
     """What each agent's AIs answered and what its inspector did, in the newest reading (#1238).
 
-    Present from the reading's first event, and still present after the reading has ended (unlike
-    `reading`), for the revision's newest reading only: an earlier attempt's events are never mixed
-    in. Everything here is made from stored codes; no drawing text is ever in it.
+    While the revision is read: the running attempt only, from its first event. After: the newest
+    reading, still present (unlike `reading`). An earlier attempt's events are never mixed in, and
+    a reading whose stage failed is never shown as the result (`finished` false, no items, `now`
+    says it did not finish). Everything here is made from stored codes; no drawing text is ever in
+    it. The screen shows `line`, `now` and `summary.sentence` as they are.
     """
 
     reading_id: UUID = Field(description="The reading (one stage attempt) these events belong to.")
+    finished: bool = Field(
+        description=(
+            "Whether this reading's stage finished and its results are the stored ones. False "
+            "while it runs, and for a reading that failed (then `items` is empty)."
+        )
+    )
     updated_at: datetime = Field(description="When the newest event happened.")
     now: str = Field(
         description=(
             "One plain sentence: while reading, the newest item that is not a pass; after the "
-            "reading, its summary."
+            "reading, its summary (or that it did not finish)."
         )
     )
     items: list[ReadingActivityItemOut] = Field(
-        description="The newest 20 items that are not passes, newest first."
+        description=(
+            "Up to 20 items, newest first: those stopped, trying again, helped or waiting; then, "
+            "only if room is left, pages whose AIs answered and nothing more happened yet. Passes "
+            "are only counted."
+        )
     )
     summary: ReadingActivitySummaryOut
 

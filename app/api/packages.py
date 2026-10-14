@@ -400,7 +400,10 @@ def get_package(
         package.reading = ReadingProgressOut.model_validate(snapshot, from_attributes=True)
     # What each agent did in the newest reading (#1238), also after it ends.
     activity = reading_activity_for(
-        session, package.current_revision_id, reading=snapshot is not None
+        session,
+        package.current_revision_id,
+        reading=snapshot is not None,
+        running=None if snapshot is None else snapshot.reading_id,
     )
     if activity is not None:
         package.activity = ReadingActivityOut.model_validate(activity, from_attributes=True)

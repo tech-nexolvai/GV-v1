@@ -178,9 +178,16 @@ def test_the_line_finders_events_are_told_before_the_numbers_are_asked() -> None
     seen = Watch()
     _watch(slot_page(_number_sheet()), readers, activity=seen)
 
-    assert [batch[0].agent for batch in seen.batches] == [Agent.REKHA, Agent.AKSHARA]
+    first, last = seen.batches
+    assert [(event.agent, event.kind) for event in first] == [(Agent.REKHA, EventKind.ANSWERED)]
     assert told_before[0] == 0, "no number question was asked before the row choice was told"
     assert told_before[1] == len(readers.requests)
+    assert (last[0].agent, last[0].kind) == (
+        Agent.REKHA,
+        EventKind.PASSED,
+    ), "the line's pass is told once its numbers are read: a budget stop could still take it"
+    assert {event.agent for event in last[1:]} == {Agent.AKSHARA}
+    assert all(event.document_version_id is not None for event in seen.events)
 
 
 def test_without_the_row_readers_nothing_is_told() -> None:
@@ -246,7 +253,7 @@ def test_events_that_cannot_be_built_leave_the_result_exactly_as_with_no_hook(
         raise ValueError("an event that is not a code")
 
     monkeypatch.setattr(slot_reader_module, "_line_events", broken)
-    monkeypatch.setattr(slot_reader_module, "_number_events", broken)
+    monkeypatch.setattr(slot_reader_module, "_after_reading_events", broken)
     same_ids()
     seen = Collect()
     assert _watch(page, _readers(), activity=seen) == alone
@@ -289,7 +296,13 @@ SENTENCES: list[tuple[Agent, EventKind, str, str | None, int | None, str]] = [
     (Agent.REKHA, EventKind.STOPPED, "reader-unsure", None, None, "Page 12: the line finder was not sure which line is the countertop."),
     (Agent.REKHA, EventKind.STOPPED, "not-among-lines", None, None, "Page 12: the line finder saw a countertop that none of the lines measures."),
     (Agent.REKHA, EventKind.STOPPED, "no-answer", None, None, "Page 12: the line finder got no answer from one of its AIs."),
-    (Agent.REKHA, EventKind.STOPPED, "not-asked", None, None, "Page 12: the line finder was not asked: the AI budget was reached."),
+    (Agent.BALA, EventKind.STOPPED, "budget-reached", None, None, "Page 12: not read: the AI budget was reached before this page."),
+    (Agent.BALA, EventKind.STOPPED, "no-drawing", None, None, "Page 12: the page sorter found no drawing on this page."),
+    (Agent.BALA, EventKind.STOPPED, "no-vendor-drawing", None, None, "Page 12: the page sorter found no vendor drawing on this page."),
+    (Agent.BALA, EventKind.STOPPED, "reference-only", None, None, "Page 12: the page sorter found only a reference drawing on this page."),
+    (Agent.BALA, EventKind.STOPPED, "no-row-found", None, None, "Page 12: the page sorter found no countertop line to read on this page."),
+    (Agent.BALA, EventKind.STOPPED, "unreadable", None, None, "Page 12: the page sorter could not read this page."),
+    (Agent.BALA, EventKind.STOPPED, "blank-page", None, None, "Page 12: the page sorter found this page blank."),
     (Agent.AKSHARA, EventKind.ANSWERED, "some-answered", None, None, "Page 12: the number reader's AIs answered."),
     (Agent.AKSHARA, EventKind.PASSED, "sealed", None, None, "Page 12: the number reader read a number and both AIs agreed."),
     (Agent.AKSHARA, EventKind.STOPPED, "readers-differ", None, None, "Page 12: the number reader's two AIs read a number differently."),
@@ -300,7 +313,11 @@ SENTENCES: list[tuple[Agent, EventKind, str, str | None, int | None, str]] = [
     (Agent.AKSHARA, EventKind.STOPPED, "no-label", None, None, "Page 12: the number reader found no number for a piece."),
     (Agent.AKSHARA, EventKind.STOPPED, "two-labels", None, None, "Page 12: the number reader found more than one number for a piece."),
     (Agent.AKSHARA, EventKind.STOPPED, "row-held", None, None, "Page 12: a number was read, but its line waits for you."),
-    (Agent.AKSHARA, EventKind.STOPPED, "not-offered", None, None, "Page 12: a number was read, but it was not offered to the form."),
+    (Agent.AKSHARA, EventKind.STOPPED, "not-offered", None, None, "Page 12: a number was read, but it is held back for you to check."),
+    (Agent.AKSHARA, EventKind.STOPPED, "no-dimension", None, None, "Page 12: the number reader found only words, no number, for a piece."),
+    (Agent.AKSHARA, EventKind.STOPPED, "vif", None, None, "Page 12: a number is marked VIF (verify in field), so it waits for you."),
+    (Agent.AKSHARA, EventKind.STOPPED, "field-cut-included", None, None, "Page 12: a number already includes the field cut, so it waits for you."),
+    (Agent.AKSHARA, EventKind.STOPPED, "counter-break", None, None, "Page 12: the line includes a tall appliance or range bay, so it waits for you."),
     (Agent.AKSHARA, EventKind.STOPPED, "not-sealed", None, None, "Page 12: a number was not settled by both AIs."),
     (Agent.AKSHARA, EventKind.STOPPED, "drawn-length", None, None, "Page 12: the number reader's two AIs agreed on a number that does not fit its drawn length."),
     (Agent.AKSHARA, EventKind.STOPPED, "crowded", None, None, "Page 12: a number sits too close to another label to be read alone."),
@@ -374,6 +391,7 @@ def test_every_change_and_result_code_has_its_own_sentence() -> None:
         (EventKind.TRY_AGAIN_RESULT, "helped", None, None),
         (EventKind.STOPPED, "readers-differ", "closer-look-2x", None),
         (EventKind.STOPPED, "readers-differ", None, 1),
+        (EventKind.FINISHED, "readers-differ", None, None),  # only the stage writes the marker
     ],
 )
 def test_a_try_again_event_names_its_try_and_a_known_change(
@@ -466,6 +484,9 @@ def test_an_event_row_is_never_updated_or_deleted(engine: Any) -> None:
         ("page_number", 0),
         ("attempt", 0),
         ("attempt", 4),
+        ("agent", None),  # an item event names its agent, page, item and code
+        ("code", None),
+        ("kind", "finished"),  # the marker names none of them
     ],
 )
 def test_the_table_refuses_free_text(engine: Any, column: str, value: object) -> None:
@@ -492,9 +513,11 @@ def test_the_table_refuses_free_text(engine: Any, column: str, value: object) ->
         connection.execute(insert, row)
 
 
-def test_a_batch_the_database_refuses_is_dropped_whole_and_never_raises(engine: Any) -> None:
-    """A row that slipped past the event's own checks is refused by the table: nothing of the
-    batch is kept, and the reader is not told."""
+def test_an_event_that_is_not_all_codes_is_skipped_and_the_rest_written(
+    engine: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An event that slipped past its own check (built without it) is skipped and logged; the
+    rest of the batch is still written (#1238 review: never drop a whole batch for one)."""
     from sqlalchemy.orm import Session
 
     revision = uuid4()
@@ -507,17 +530,44 @@ def test_a_batch_the_database_refuses_is_dropped_whole_and_never_raises(engine: 
         ("code", "readers-differ"),
         ("change", None),
         ("attempt", None),
+        ("document_version_id", None),
     ):
         object.__setattr__(bad, name, value)
 
-    assert record_events(engine, revision, uuid4(), [_EVENT, bad]) is False
+    assert record_events(engine, revision, uuid4(), [bad, _EVENT]) is True
     with Session(engine) as session:
-        assert (
-            session.scalars(
-                select(ReadingEvent).where(ReadingEvent.package_revision_id == revision)
-            ).all()
-            == []
-        )
+        rows = session.scalars(
+            select(ReadingEvent).where(ReadingEvent.package_revision_id == revision)
+        ).all()
+    assert [(row.item, row.position) for row in rows] == [("p11:row-choice", 0)]
+    assert "reading activity event skipped: ValueError" in caplog.text
+
+
+def test_every_reason_a_number_can_be_held_with_has_its_own_sentence() -> None:
+    """Each reason code the seal, the row holds and the reader can give a held number, read from
+    their own source so a new code cannot be added without its words."""
+    import re as regex
+    from pathlib import Path
+
+    from extraction.slot_reader import labels, seal
+
+    source = Path(seal.__file__).read_text()
+    codes = set(regex.findall(r'review\(\s*"([a-z0-9-]+)"', source))
+    codes |= set(regex.findall(r'\(\s*"([a-z0-9-]+)",\s*"', source))
+    codes |= set(regex.findall(r'reason_code="([a-z0-9-]+)"', source))
+    codes |= set(
+        regex.findall(r'OwnerOutcome\(\s*LabelState\.REVIEW, None, None, "([a-z0-9-]+)"', source)
+    )
+    codes |= {labels.FIELD_CUT_INCLUDED[0], labels.VIF[0], labels.COUNTER_BREAK[0]}
+    codes |= {seal._ODD_FRACTION, "drawn-length", "row-held", "not-offered", "not-sealed"}
+    assert {"readers-differ", "no-label", "two-labels", "crowded", "vif"} <= codes, codes
+    generic = event_line(Agent.AKSHARA, EventKind.STOPPED, "a-code-not-listed", None, 12)
+    missing = {
+        code
+        for code in codes
+        if event_line(Agent.AKSHARA, EventKind.STOPPED, code, None, 12) == generic
+    }
+    assert missing == set()
 
 
 # --- the stopped events equal Pariksha's stops ------------------------------------------------------
@@ -569,10 +619,13 @@ def test_the_stopped_events_equal_parikshas_stops(
 
     for agent in (Agent.REKHA, Agent.AKSHARA):
         stops = sum(count.stopped for (who, _gate), count in tally.items() if who is agent)
-        passes = sum(count.passed for (who, gate), count in tally.items() if who is agent)
         assert len(seen.of(agent, EventKind.STOPPED)) == stops, agent
-        if agent is Agent.AKSHARA:
-            assert len(seen.of(agent, EventKind.PASSED)) == passes
+    seal = tally.get((Agent.AKSHARA, "seal"))
+    assert len(seen.of(Agent.AKSHARA, EventKind.PASSED)) == (0 if seal is None else seal.passed)
+    line = tally.get((Agent.REKHA, "row-has-printed-numbers"))
+    assert len(seen.of(Agent.REKHA, EventKind.PASSED)) == (
+        0 if line is None else line.passed + line.recorded
+    ), "one pass per row the reading keeps"
 
 
 def test_numbers_both_ais_agree_on_are_passes() -> None:
@@ -583,3 +636,22 @@ def test_numbers_both_ais_agree_on_are_passes() -> None:
     passed = seen.of(Agent.AKSHARA, EventKind.PASSED)
     assert [event.item for event in passed] == [f"p0:slot{index}:0" for index in range(4)]
     assert {event.code for event in passed} == {"sealed"}
+
+
+def test_an_event_write_is_bounded_in_time_as_well_as_in_lock_waits(engine: Any) -> None:
+    """A side write never holds up the reading: it gives up on a lock after a few seconds, and on a
+    slow statement too (#1238 review)."""
+    from sqlalchemy import event
+
+    statements: list[str] = []
+
+    def seen(_connection: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", seen)
+    try:
+        assert record_events(engine, uuid4(), uuid4(), [_EVENT])
+    finally:
+        event.remove(engine, "before_cursor_execute", seen)
+    assert any("SET LOCAL lock_timeout" in statement for statement in statements)
+    assert any("SET LOCAL statement_timeout" in statement for statement in statements)

@@ -46,7 +46,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID, uuid4
 
 from evidence.coordinates import PageTransform
@@ -1248,8 +1248,6 @@ def _line_stop_code(
     picks: Sequence[tuple[str, int | None]],
     kinds: Sequence[tuple[str, str]],
     gate: GateResult | None,
-    *,
-    not_asked: bool,
 ) -> str:
     """Why the line finder's page waits for a person, as a code (#1238): its gate's code, or what
     the readers' picks and kinds of answer say (the same reading `workflow/slot_row_scope.py` makes
@@ -1257,7 +1255,7 @@ def _line_stop_code(
     if gate is not None and gate.stopped:
         return gate.code
     if any(pick is None for _, pick in picks):
-        return "not-asked" if not_asked else "no-answer"
+        return "no-answer"
     said = {kind for _, kind in kinds}
     if "unsure" in said:
         return "reader-unsure"
@@ -1267,6 +1265,25 @@ def _line_stop_code(
         if said <= {"no_countertop"}:
             return "no-countertop"
     return "readers-differ"
+
+
+class _Events:
+    """Events built one at a time (#1238 review): one that is not all codes is skipped and logged,
+    never the whole batch."""
+
+    def __init__(self) -> None:
+        from app.runs.reading_activity import ActivityEvent
+
+        self._make = ActivityEvent
+        self.events: list[ActivityEvent] = []
+
+    def add(self, *args: Any, **kwargs: Any) -> None:
+        try:
+            self.events.append(self._make(*args, **kwargs))
+        except Exception as error:  # noqa: BLE001 - watching never changes a reading
+            logging.getLogger("gv.slot_reader").warning(
+                "activity event skipped: %s", type(error).__name__
+            )
 
 
 def _line_events(
@@ -1279,54 +1296,71 @@ def _line_events(
     left: frozenset[int],
 ) -> list[ActivityEvent]:
     """The line finder's events, right after the row choice (#1238), per page it was asked about:
-    `answered` when an AI answered, then `passed` (the page's row is read) or `stopped` (the page is
-    kept as a row-choice record the reviewer answers, exactly as `persist_slot_readings` keeps it).
+    `answered` when an AI answered, and `stopped` when the page is kept as a row-choice record the
+    reviewer answers (exactly as `persist_slot_readings` keeps it). Its passes wait for the end of
+    the reading (`_after_reading_events`): a chosen line whose own numbers the budget then stops is
+    not a row the reading keeps. A page in `left` (its row question was never sent: the budget
+    stopped the reading first) is the page sorter's, told by the stage with the unread pages.
     """
-    from app.runs.reading_activity import ActivityEvent, EventKind
+    from app.runs.reading_activity import EventKind
     from workflow.pariksha_gates import Agent
 
-    events: list[ActivityEvent] = []
+    told = _Events()
     for page, plan in planned:
-        if page.page_index not in asked:
+        if page.page_index not in asked or page.page_index in left:
             continue
         number, item = page.page_index + 1, _row_key(page.page_index)
+        document = page.document_version_id
         page_picks = picks.get(page.page_index, ())
         answered = sum(pick is not None for _, pick in page_picks)
         if answered:
             code = "all-answered" if answered == len(page_picks) else "some-answered"
-            events.append(ActivityEvent(number, Agent.REKHA, item, EventKind.ANSWERED, code))
-        gate = gates.get(page.page_index)
+            told.add(
+                number, Agent.REKHA, item, EventKind.ANSWERED, code, document_version_id=document
+            )
         if plan.row is not None:
-            code = gate.code if gate is not None else "agreed"
-            events.append(ActivityEvent(number, Agent.REKHA, item, EventKind.PASSED, code))
             continue
         code = _line_stop_code(
-            page_picks,
-            kinds.get(page.page_index, ()),
-            gate,
-            not_asked=page.page_index in left,
+            page_picks, kinds.get(page.page_index, ()), gates.get(page.page_index)
         )
-        events.append(ActivityEvent(number, Agent.REKHA, item, EventKind.STOPPED, code))
-    return events
+        told.add(number, Agent.REKHA, item, EventKind.STOPPED, code, document_version_id=document)
+    return told.events
 
 
 #: A reason code the event table takes (`app.models.runs.READING_EVENT_CODE_PATTERN`).
 _EVENT_CODE: Final = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 
-def _number_events(results: Sequence[PageSlotResult]) -> list[ActivityEvent]:
-    """The number reader's events, once the pages are read (#1238), per read row as it is kept:
-    `answered` per page, then each piece (and the overall) `passed` when its reading is sealed and
-    offered to the form, else `stopped` with its reason code. A row is counted as
-    `persist_slot_readings` keeps it, so these match Pariksha's `seal` gate count."""
-    from app.runs.reading_activity import ActivityEvent, EventKind
+def _after_reading_events(
+    results: Sequence[PageSlotResult], *, asked: Mapping[int, object], left: frozenset[int]
+) -> list[ActivityEvent]:
+    """The events once the pages are read (#1238), per read row as `persist_slot_readings` keeps it,
+    so they match Pariksha's gate count: the line finder's `passed` (with its gate's code), then the
+    number reader's `answered` per page and, per piece and the overall, `passed` when its reading is
+    sealed and offered to the form, else `stopped` with its reason code. Pages in `left` (the budget
+    stopped their own reading) are skipped: the stage lists them as unread, and tells them as the
+    page sorter's stops."""
+    from app.runs.reading_activity import EventKind
     from workflow.pariksha_gates import Agent
 
-    events: list[ActivityEvent] = []
+    told = _Events()
     for result in results:
+        if result.page_index in left:
+            continue
         if result.plan.row is None or not any(item.owner.index == 0 for item in result.slots):
             continue
         number = result.page_index + 1
+        document = result.document_version_id
+        if result.page_index in asked:
+            gate = result.row_gate
+            told.add(
+                number,
+                Agent.REKHA,
+                _row_key(result.page_index),
+                EventKind.PASSED,
+                gate.code if gate is not None else "agreed",
+                document_version_id=document,
+            )
         row_key = _CHAIN_ROW_KEY if result.read_through is not None else ""
         owners = [*result.slots, *([result.overall] if result.overall is not None else [])]
         codes = {owner.outcome.reason_code for owner in owners}
@@ -1334,10 +1368,13 @@ def _number_events(results: Sequence[PageSlotResult]) -> list[ActivityEvent]:
             code = (
                 "some-answered" if codes & {"not-asked", "one-reader-missing"} else "all-answered"
             )
-            events.append(
-                ActivityEvent(
-                    number, Agent.AKSHARA, f"p{result.page_index}:labels", EventKind.ANSWERED, code
-                )
+            told.add(
+                number,
+                Agent.AKSHARA,
+                f"p{result.page_index}:labels",
+                EventKind.ANSWERED,
+                code,
+                document_version_id=document,
             )
         offered = {proposal.slot_index for proposal in result.mapping.proposals}
         for owner in owners:
@@ -1354,8 +1391,13 @@ def _number_events(results: Sequence[PageSlotResult]) -> list[ActivityEvent]:
                 else set()
             )
             if sealed and index in offered and len(sources) in (0, 2):
-                events.append(
-                    ActivityEvent(number, Agent.AKSHARA, item, EventKind.PASSED, "sealed")
+                told.add(
+                    number,
+                    Agent.AKSHARA,
+                    item,
+                    EventKind.PASSED,
+                    "sealed",
+                    document_version_id=document,
                 )
                 continue
             if sealed:
@@ -1367,8 +1409,16 @@ def _number_events(results: Sequence[PageSlotResult]) -> list[ActivityEvent]:
             else:
                 reason = outcome.reason_code or ""
                 code = reason if _EVENT_CODE.fullmatch(reason) else "not-sealed"
-            events.append(ActivityEvent(number, Agent.AKSHARA, item, EventKind.STOPPED, code))
-    return events
+            told.add(
+                number, Agent.AKSHARA, item, EventKind.STOPPED, code, document_version_id=document
+            )
+    return told.events
+
+
+def _budget_left(stop: ReadingStop) -> frozenset[int]:
+    """The pages the stage will list as unread because the budget stopped their own reading
+    (`workflow/stages._stopped_at_budget`); none when the reading was not stopped for the budget."""
+    return stop.pages_left() if stop.cause == "budget" else frozenset()
 
 
 def read_slot_pages(
@@ -1421,8 +1471,9 @@ def read_slot_pages(
     left unread; a reading given none makes its own.
 
     `activity` (#1238), when given, is told in coded events what each agent's AIs answered and what
-    its inspector did, as it happens: the line finder's right after the row choice (`_line_events`),
-    the number reader's once the pages are read (`_number_events`). It only watches, through `_tell`:
+    its inspector did, as it happens: the line finder's answers and stops right after the row choice
+    (`_line_events`), its passes and the number reader's once the pages are read
+    (`_after_reading_events`). It only watches, through `_tell`:
     no answer, hold or seal depends on it, and a hook that raises is logged and dropped.
     """
     reading_stop = stop if stop is not None else ReadingStop()
@@ -1858,7 +1909,7 @@ def read_slot_pages(
             picks=row_picks,
             kinds=row_kinds,
             gates=row_gates,
-            left=reading_stop.pages_left(),
+            left=_budget_left(reading_stop),
         ),
     )
     answers = run_jobs(jobs, "dimensions")
@@ -2167,7 +2218,10 @@ def read_slot_pages(
         reading_stop,
         runtime,
     )
-    _tell(activity, lambda: _number_events(read))
+    _tell(
+        activity,
+        lambda: _after_reading_events(read, asked=row_ids, left=_budget_left(reading_stop)),
+    )
     return read
 
 
