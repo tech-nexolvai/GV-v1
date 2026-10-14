@@ -3,11 +3,11 @@ import { Check, RotateCw, ScanText } from 'lucide-react';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+  activityGlyph,
   activityLine,
   linkedParts,
-  needsYou,
   readingHeadline,
-  roleName,
+  roleTag,
   summarySentence,
   type ReadingActivityItemOut,
   type ReadingActivityOut,
@@ -23,7 +23,7 @@ export const SHOWN_ITEMS = 4;
  * While reading: the server's `now`, then the newest happenings — an inspector stopping an AI, the
  * AI trying again and what changed, and whether that helped — each with a glyph by state and the
  * role that did it ("Line finder"; the agent's name on hover). After reading: the server's summary
- * sentence ("Tried again on 5 items: 3 now agree, 4 wait for you."), whose counts open Decisions.
+ * sentence ("Tried again on 2 items: 1 now agree; 1 item waits for you."), whose counts open Decisions.
  *
  * Every sentence is the server's (#1238); the screen's own wording in `lib/reading-activity.ts` is
  * only a fallback for a sentence that is missing.
@@ -135,7 +135,7 @@ function ActivityRow({ item }: { item: ReadingActivityItemOut }) {
       <Tooltip>
         <TooltipTrigger asChild>
           <span tabIndex={0} className="shrink-0 cursor-help rounded-full border px-1.5 text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            {roleName(item.agent)}
+            {roleTag(item)}
           </span>
         </TooltipTrigger>
         <TooltipContent side="left">{item.agent}</TooltipContent>
@@ -144,8 +144,14 @@ function ActivityRow({ item }: { item: ReadingActivityItemOut }) {
   );
 }
 
+/** The glyph by state: amber needs-you (stopped, waiting), the turning arrow (trying again), or a plain tick. */
 function RowGlyph({ item }: { item: ReadingActivityItemOut }) {
-  if (needsYou(item)) return <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mt-0.5 shrink-0 text-outcome-review-fg" />;
-  if (item.state === 'trying_again') return <RotateCw data-glyph="trying-again" className="mt-0.5 size-[15px] shrink-0 animate-spin [animation-duration:2s] motion-reduce:animate-none" aria-hidden="true" />;
-  return <Check data-glyph="done" className="mt-0.5 size-[15px] shrink-0 text-muted-foreground" aria-hidden="true" />;
+  const glyph = activityGlyph(item);
+  return (
+    <span data-glyph={glyph} className="mt-0.5 flex shrink-0">
+      {glyph === 'needs-you' && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="text-outcome-review-fg" />}
+      {glyph === 'trying-again' && <RotateCw className="size-[15px] animate-spin [animation-duration:2s] motion-reduce:animate-none" aria-hidden="true" />}
+      {glyph === 'done' && <Check className="size-[15px] text-muted-foreground" aria-hidden="true" />}
+    </span>
+  );
 }

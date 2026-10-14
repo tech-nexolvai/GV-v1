@@ -18,7 +18,7 @@ vi.mock('@/api/config', () => ({ projectId: () => 'p' }));
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-const STOPPED = { page: 3, agent: 'Rekha', item: 'p2:row-choice', state: 'stopped', code: 'readers-differ', change: null, attempt: null, line: 'Page 3: the two AIs picked different lines.', at: '2026-10-14T10:00:01Z' };
+const STOPPED = { page: 3, agent: 'Rekha', role: 'the line finder', item: 'p2:row-choice', state: 'stopped', code: 'readers-differ', change: null, attempt: null, line: 'Page 3: the line finder stopped: the two AIs picked different lines.', at: '2026-10-14T10:00:01Z' };
 
 describe('ReviewPage: the live reading activity (#1239)', () => {
   let pkg: Record<string, unknown>;
@@ -54,7 +54,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
 
   it('while reading: the page and what stopped, under the stepper', async () => {
     pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 2, pages_total: 9, calls: 4, cost_usd: '0.040000', unpriced_calls: 0, retrying: false, updated_at: null };
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 1, tried_again: 0, helped: 0, waiting: 1, sentence: null } };
+    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { passed: 4, stopped: 1, tried_again: 0, helped: 0, waiting: 1, sentence: null } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
@@ -64,22 +64,23 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
     // Right under the stepper.
     expect(document.querySelector('[data-slot="review-stepper"]')?.nextElementSibling).toBe(panel);
     expect(within(panel).getByText('Reading page 3 of 9…')).toBeTruthy();
-    expect(within(panel).getByText('Page 3: the two AIs picked different lines.')).toBeTruthy();
+    expect(within(panel).getByText('Page 3: the line finder stopped: the two AIs picked different lines.')).toBeTruthy();
+    expect(within(panel).getByText('Line finder')).toBeTruthy();
     expect(panel.textContent).not.toContain('Rekha');
   });
 
   it('after reading: the summary, whose counts open Decisions', async () => {
     const user = userEvent.setup();
     pkg.state = 'AWAITING_REVIEW';
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { stopped: 3, tried_again: 2, helped: 1, waiting: 2, sentence: 'Tried again on 2 items: 1 now agrees, 1 waits for you.' } };
+    pkg.activity = { reading_id: 'r1', updated_at: null, now: 'Tried again on 2 items: 1 now agree; 1 item waits for you.', items: [STOPPED], summary: { passed: 12, stopped: 3, tried_again: 2, helped: 1, waiting: 1, sentence: 'Tried again on 2 items: 1 now agree; 1 item waits for you.' } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
       expect(found).not.toBeNull();
       return found as HTMLElement;
     });
-    expect(within(panel).getByRole('status').textContent).toBe('Tried again on 2 items: 1 now agrees, 1 waits for you.');
-    await user.click(within(panel).getByRole('button', { name: '1 waits for you' }));
+    expect(within(panel).getByRole('status').textContent).toBe('Tried again on 2 items: 1 now agree; 1 item waits for you.');
+    await user.click(within(panel).getByRole('button', { name: '1 item waits for you' }));
     // Decisions is the "Needs you" queue (loaded on first open).
     await waitFor(() => expect(document.querySelector('[data-slot="needs-you-queue"]')).not.toBeNull(), { timeout: 5000 });
   });
