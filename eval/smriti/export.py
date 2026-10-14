@@ -32,14 +32,10 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Page
 from app.models.drawing import (
-    CountertopRun,
-    CountertopRunDecision,
-    DrawingItem,
     DrawingView,
     PartConfirmation,
     PartProposal,
     PartProposalRow,
-    ReadingPart,
     ViewRoleConfirmation,
 )
 from app.models.evidence import (
@@ -100,8 +96,6 @@ NO_COUNTERTOP_ITEM_KEY: Final = (
     "no key scores whether a row is a countertop item; kept and counted (a person undoing code's "
     "item is listed as overturned)"
 )
-NO_RUNS_KEY: Final = "no key scores which parts sit beneath a countertop; kept and counted"
-NO_READING_PART_KEY: Final = "no key scores which part a reading measures; kept and counted"
 NO_KHOJ_KEY: Final = (
     "no Khoj key exists (Khoj stays off, decided 2026-10-14); a citation shows its pointer was "
     "right, kept and counted"
@@ -1165,124 +1159,6 @@ def _view_roles(reader: _Reader) -> list[Candidate]:
     return out
 
 
-def _run_decisions(reader: _Reader) -> list[Candidate]:
-    """A person's run beneath a countertop (Bala, counted) and its wall choice (a walls case)."""
-    decisions = list(
-        reader.session.scalars(
-            select(CountertopRunDecision).order_by(
-                CountertopRunDecision.created_at, CountertopRunDecision.id
-            )
-        )
-    )
-    replaced = {decision.supersedes_id for decision in decisions if decision.supersedes_id}
-    table = "countertop_run_decisions"
-    out: list[Candidate] = []
-    for decision in decisions:
-        item = reader.session.get(DrawingItem, decision.countertop_item_id)
-        page_sha, page_number = _page_of(
-            None if item is None else reader.view_page(item.drawing_view_id)
-        )
-        earlier = (
-            ("superseded", SUPERSEDED.format(what="countertop"))
-            if decision.id in replaced
-            else None
-        )
-        members = (
-            0
-            if decision.run_id is None
-            else len(
-                list(
-                    reader.session.scalars(
-                        select(CountertopRun.id).where(CountertopRun.run_id == decision.run_id)
-                    )
-                )
-            )
-        )
-        out.append(
-            Candidate(
-                candidate_id=f"{table}:{decision.id}:run",
-                table=table,
-                decision_id=str(decision.id),
-                agent="bala",
-                corrects="which parts sit beneath a countertop (its run)",
-                kind="decided" if earlier is None else earlier[0],
-                decided_by=decision.confirmed_by,
-                decided_at=_iso(decision.created_at),
-                page_sha256=page_sha,
-                page_number=page_number,
-                recorded={"decision": decision.decision, "members": members},
-                question=None,
-                answer=None,
-                answer_needed=None,
-                not_convertible=NO_RUNS_KEY if earlier is None else earlier[1],
-            )
-        )
-        if decision.wall_config is not None:
-            out.append(
-                _walls_part(
-                    reader,
-                    candidate_id=f"{table}:{decision.id}:walls",
-                    table=table,
-                    decision_id=str(decision.id),
-                    decided_by=decision.confirmed_by,
-                    decided_at=decision.created_at,
-                    anchor=_countertop_anchor(reader, decision.countertop_item_id),
-                    wall_config=decision.wall_config,
-                    earlier=earlier,
-                )
-            )
-    return out
-
-
-def _countertop_anchor(reader: _Reader, item_id: UUID) -> ObservationCandidate | None:
-    """The read row a countertop item was made from: item → its confirmation → Bala's link."""
-    proposal_id = reader.session.scalar(
-        select(PartConfirmation.part_proposal_id).where(PartConfirmation.drawing_item_id == item_id)
-    )
-    if proposal_id is None:
-        return None
-    row = reader.session.scalar(
-        select(PartProposalRow.row_candidate_id).where(
-            PartProposalRow.part_proposal_id == proposal_id, PartProposalRow.slot_index.is_(None)
-        )
-    )
-    return reader.candidate(row)
-
-
-def _reading_parts(reader: _Reader) -> list[Candidate]:
-    links = list(
-        reader.session.scalars(select(ReadingPart).order_by(ReadingPart.created_at, ReadingPart.id))
-    )
-    replaced = {link.supersedes_id for link in links if link.supersedes_id}
-    out: list[Candidate] = []
-    for link in links:
-        earlier = link.id in replaced
-        span = reader.primary(link.canonical_observation_id)
-        page_sha, page_number = _page_facts(reader, None if span is None else span.page_id)
-        out.append(
-            Candidate(
-                candidate_id=f"reading_parts:{link.id}",
-                table="reading_parts",
-                decision_id=str(link.id),
-                agent="bala",
-                corrects="which confirmed part a reading measures",
-                kind="superseded" if earlier else "decided",
-                decided_by=link.confirmed_by,
-                decided_at=_iso(link.created_at),
-                page_sha256=page_sha,
-                page_number=page_number,
-                recorded={"linked": link.drawing_item_id is not None},
-                question=None,
-                answer=None,
-                answer_needed=None,
-                not_convertible=(
-                    SUPERSEDED.format(what="reading") if earlier else NO_READING_PART_KEY
-                ),
-            )
-        )
-    return out
-
-
 def _item_classifications(reader: _Reader) -> list[Candidate]:
     rows = list(
         reader.session.scalars(
@@ -1470,8 +1346,6 @@ def export_candidates(
         *_review_actions(reader),
         *_part_confirmations(reader),
         *_view_roles(reader),
-        *_run_decisions(reader),
-        *_reading_parts(reader),
         *_item_classifications(reader),
         *_layout_confirmations(reader),
         *_citations(reader),

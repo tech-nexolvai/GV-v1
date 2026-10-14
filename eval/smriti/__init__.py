@@ -39,11 +39,16 @@ convertible.
 | `review_actions` dismiss, except, a finding's confirm | Kautilya | a check's result | kept and counted for the report; it judges a finding, not a reading |
 | `part_confirmations` (a person's) | Bala | what a part is | a piece's kind: a `bala-kinds` case (`p<page>:piece<n>`); a countertop yes/no: counted |
 | `view_role_confirmations` (a person's) | Bala | which drawing a view is | kept and counted (no view-role key) |
-| `countertop_run_decisions` | Bala (members), Rekha (walls) | the run beneath a countertop | members counted; its wall choice a `rekha-walls` case like a row's |
-| `reading_parts`, `item_classifications` | Bala | which part a reading measures; an older form's kinds | kept and counted |
+| `item_classifications` | Bala | an older form's kinds | kept and counted |
 | `layout_confirmations` | Rekha | an older form's whole-revision layout | kept and counted |
 | `parameter_value_citations` | Khoj | where a setting is stated | kept and counted (Khoj stays off; no key) |
 | `approved_matches` (human) | Milan | that two items correspond (older matcher) | kept and counted |
+
+**Not read yet: countertop runs and reading links.** `countertop_run_decisions` (the run beneath a
+countertop and its wall choice) and `reading_parts` (which part a reading measures) are person
+decisions too, but `tests/db/test_drawing_models.py` holds which modules may read those tables
+(only the confirmed-structure resolver, so rules never read them by another path). Adding Smriti
+to that list is a separate decision; until then they are not exported.
 
 A Vastu reading corrected in the ledger is Vastu's, and not convertible: a Vastu key lists every
 architect width on a page, and one correction is not a whole page. An answer on a page the AI budget
