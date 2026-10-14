@@ -24,8 +24,8 @@ decided 2026-10-15). **Per key**, one of:
 * **REJECT**: any new wrong, anything no longer asked, a fall in `asked`, the agent's own extra
   reasons (new wrong wall ink, a new wrong automatic layout), or anything worse.
   **Worse is judged on counts, never rates** (asking more questions with the same right answers
-  moves every rate and is no loss): fewer right, more wrong, fewer asked, a case no longer
-  asked, fewer automatic results right, the walls' site and ink counts, more held or unsure on
+  moves every rate and is no loss): any case newly wrong (per case, whatever the totals say),
+  fewer right, more wrong, fewer asked, a case no longer asked, fewer automatic results right, the walls' site and ink counts, more held or unsure on
   the cases both runs asked (unless wrong fell), or a higher cost per question when nothing got
   better (named in the reason). A case the older run never asked counts: its first answer can
   be the new wrong one. So
@@ -227,6 +227,7 @@ _FROM_ANSWERS: Final = (
     "not from a stored run: reading its answers from a stored run waits for the reader"
 )
 _SHOWN_PAGES: Final = 6
+_LISTED_CASES: Final = 10
 #: The one reason Pariksha's compare gives when nothing got worse and nothing got better.
 _NOT_BETTER: Final = "REJECT (not better:"
 #: The one rate judged for "worse": the cost per question, and only when it rises.
@@ -338,7 +339,9 @@ def _worse(agent: str, before: Scorecard, after: Scorecard, *, better: bool) -> 
 
     Asking more questions with the same right answers is not a loss, yet it moves every rate
     over `asked`; so a rate is never "worse" here. Worse is: fewer right, more wrong, fewer
-    asked, a case no longer asked, more held or unsure on the cases both runs asked (not judged
+    asked, a case no longer asked, any case newly wrong (per case: a right answer that became
+    wrong, or a held one that did, even when the totals hold), more held or unsure on the cases
+    both runs asked (not judged
     when the wrong count fell: wrong -> held is a real improvement), fewer automatic results
     right (walls: an automatic layout that became a sealed proposal or a hold is a loss even when
     it stays right), a fall or rise in the counts a card keeps only in its metrics (walls: against
@@ -352,6 +355,23 @@ def _worse(agent: str, before: Scorecard, after: Scorecard, *, better: bool) -> 
         return sum(1 for outcome in outcomes.values() if classes[outcome] == wanted)
 
     found: list[str] = []
+    # Anant's rule is per case: no case may become wrong, whatever the totals say (one wrong
+    # fixed and another made wrong keeps "wrong 1 -> 1" while a case is newly wrong). A case the
+    # older run never asked counts: its first answer can be the new wrong one.
+    newly_wrong = sorted(
+        case
+        for case, outcome in now.items()
+        if classes[outcome] == WRONG_CLASS
+        and (case not in was or classes[was[case]] != WRONG_CLASS)
+    )
+    if newly_wrong:
+        shown = ", ".join(newly_wrong[:_LISTED_CASES])
+        more = (
+            f", and {len(newly_wrong) - _LISTED_CASES} more"
+            if len(newly_wrong) > _LISTED_CASES
+            else ""
+        )
+        found.append(f"{len(newly_wrong)} newly wrong: {shown}{more}")
     right_before, right_after = count(was, RIGHT_CLASS), count(now, RIGHT_CLASS)
     if right_after < right_before:
         found.append(f"right {right_before} -> {right_after}")

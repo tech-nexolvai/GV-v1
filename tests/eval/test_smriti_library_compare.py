@@ -6,6 +6,7 @@ entries only; no database, no model call, no client value.
 
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from fractions import Fraction
 from uuid import uuid4
@@ -626,3 +627,58 @@ def test_an_end_gained_while_a_sealed_layout_is_lost_is_neutral_not_accepted() -
     walls = _walls_change(before, after)
     assert walls.status == NEUTRAL
     assert judge_library("rekha", [walls]).status == NEUTRAL
+
+
+# --- Anant's rule per case: no case may become wrong (final re-review, 2026-10-15) -----------
+
+LAYOUT_2 = f"{PAGE_B[:16]}/p2:walls:layout"
+
+
+def test_a_wrong_layout_fixed_while_a_held_layout_turns_wrong_is_rejected() -> None:
+    """Wrong stays 1 -> 1 and right rises, so the totals look better; but one layout is newly
+    wrong, and 0 new wrong is per case."""
+    before = {LEFT: AGREED_RIGHT, LAYOUT: SEALED_WRONG, LAYOUT_2: HELD}
+    after = {LEFT: AGREED_RIGHT, LAYOUT: SEALED_RIGHT, LAYOUT_2: SEALED_WRONG}
+    walls = _walls_change(before, after)
+    assert walls.status == REJECT
+    assert "newly wrong" in walls.reason
+    assert LAYOUT_2 in walls.reason
+    assert judge_library("rekha", [walls]).status == REJECT
+
+
+def test_a_wrong_end_fixed_while_another_end_turns_wrong_is_rejected() -> None:
+    before = {LEFT: AGREED_WRONG, RIGHT_END: pariksha_walls.ONE_UNSURE, LAYOUT: HELD}
+    after = {LEFT: AGREED_RIGHT, RIGHT_END: AGREED_WRONG, LAYOUT: AUTOMATIC_RIGHT}
+    walls = _walls_change(before, after)
+    assert walls.status == REJECT
+    assert RIGHT_END in walls.reason
+
+
+_MEASURED_AGENTS = ("akshara", "rekha", "vastu", WALLS_AGENT, KINDS_AGENT)
+
+
+@pytest.mark.parametrize("agent", _MEASURED_AGENTS)
+def test_no_random_change_is_accepted_with_a_case_newly_wrong_dropped_or_fewer_right(
+    agent: str,
+) -> None:
+    """A seeded random search, like the re-review's: random before/after outcomes over a few
+    cases, and every ACCEPT checked against the rule itself, case by case."""
+    classes = OUTCOME_CLASSES[agent]
+    outcomes = sorted(classes)
+    cases = [f"{PAGE_A[:16]}/p1:case{index}" for index in range(5)]
+    generator = random.Random(1268)
+    accepted = 0
+    for _ in range(20_000):
+        before = {case: generator.choice(outcomes) for case in cases}
+        after = {case: generator.choice(outcomes) for case in cases}
+        result = _judge(_side(before, agent=agent), _side(after, agent=agent), agent=agent)
+        if result.status != ACCEPT:
+            continue
+        accepted += 1
+        was = {case: classes[outcome] for case, outcome in before.items()}
+        now = {case: classes[outcome] for case, outcome in after.items()}
+        for case in cases:
+            assert not (now[case] == "wrong" and was[case] != "wrong"), (before, after)
+            assert not (was[case] != "unmeasured" and now[case] == "unmeasured"), (before, after)
+        assert sum(c == "right" for c in now.values()) >= sum(c == "right" for c in was.values())
+    assert accepted  # not vacuous: the search does reach ACCEPT
