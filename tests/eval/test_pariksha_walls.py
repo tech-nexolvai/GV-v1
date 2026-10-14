@@ -18,15 +18,19 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import KeyFormatError, QuestionIdentity, load_key
-from eval.pariksha.score import AGREED_RIGHT, NOT_ASKED, SPLIT, Scorecard
+from eval.pariksha.score import AGREED_RIGHT, NOT_ASKED, Scorecard
 from eval.pariksha.stored import StoredAttempt, StoredRunError
 from eval.pariksha.walls import (
     AUTOMATIC_RIGHT,
     AUTOMATIC_WRONG,
     BOTH_UNSURE,
+    DISAGREED,
     HELD_LAYOUT,
     INK_READER,
     KEY_UNSURE,
+    NO_ANSWER,
+    ONE_UNSURE,
+    SEALED_RIGHT,
     SEALED_WRONG,
     WALLS_AGENT,
     WALLS_FAMILY,
@@ -272,7 +276,7 @@ def test_each_row_end_is_scored_for_the_pair_against_what_the_vendor_drew() -> N
     assert outcomes["a:right"] == AGREED_RIGHT
     # Both say "yes" at a wall the vendor drew (and the site does not have): right on `drawn`.
     assert outcomes["b:left"] == AGREED_RIGHT
-    assert outcomes["b:right"] == SPLIT  # "no" and "unsure"
+    assert outcomes["b:right"] == ONE_UNSURE  # "no" and "unsure"
     assert outcomes["c:left"] == KEY_UNSURE
     assert outcomes["c:right"] == BOTH_UNSURE
     for end in ("d:left", "d:right", "e:left", "e:right"):
@@ -282,8 +286,11 @@ def test_each_row_end_is_scored_for_the_pair_against_what_the_vendor_drew() -> N
     assert _metric(card, "key_unsure_ends") == (1, 6)
     assert _metric(card, "pair_agreed_right") == (3, 5)
     assert _metric(card, "pair_agreed_wrong") == (0, 5)
-    assert _metric(card, "pair_split") == (1, 5)
+    assert _metric(card, "pair_one_unsure") == (1, 5)
+    assert _metric(card, "pair_disagreed") == (0, 5)
+    assert _metric(card, "pair_no_answer") == (0, 5)
     assert _metric(card, "pair_both_unsure") == (1, 5)
+    assert "pair_split" not in card.metrics
     assert _metric(card, f"reader_right:{OPUS}") == (4, 5)
     assert _metric(card, f"reader_unsure:{OPUS}") == (1, 5)
     assert _metric(card, f"reader_right:{SONNET}") == (3, 5)
@@ -296,7 +303,7 @@ def test_the_site_answer_is_reported_beside_it_never_gating() -> None:
 
     assert _metric(card, "pair_agreed_right@site") == (2, 6)
     assert _metric(card, "pair_agreed_wrong@site") == (1, 6)  # b left: the vendor's wall
-    assert _metric(card, "pair_split@site") == (1, 6)
+    assert _metric(card, "pair_one_unsure@site") == (1, 6)
     assert _metric(card, "pair_both_unsure@site") == (2, 6)
     assert _metric(card, f"reader_wrong:{OPUS}@site") == (1, 6)
     b_left = next(c for c in card.cases if c.case_id.startswith("b") and c.case_id.endswith("left"))
@@ -369,8 +376,25 @@ def test_a_missing_answer_is_invalid_and_never_an_agreement() -> None:
     one_missing = _question("a", {OPUS: wall_reply("yes", "yes"), SONNET: None})
     card = _score(stored_run(a=one_missing))
 
-    assert _outcomes(card)["a:left"] == SPLIT
+    assert _outcomes(card)["a:left"] == NO_ANSWER
+    assert _metric(card, "pair_no_answer") == (2, 5)
     assert _metric(card, f"reader_invalid:{SONNET}") == (2, 5)  # both ends
+
+
+def test_a_yes_against_a_no_is_disagreed_never_lumped_with_one_unsure() -> None:
+    contradiction = _question(
+        "b",
+        {OPUS: wall_reply("yes", "no"), SONNET: wall_reply("no", "unsure")},
+        ink=(True, False),
+    )
+    card = _score(stored_run(b=contradiction))
+
+    outcomes = _outcomes(card)
+    assert outcomes["b:left"] == DISAGREED  # "yes" against "no"
+    assert outcomes["b:right"] == ONE_UNSURE  # "no" against "unsure"
+    assert _metric(card, "pair_disagreed") == (1, 5)
+    assert _metric(card, "pair_one_unsure") == (1, 5)
+    assert _metric(card, "pair_disagreed@site") == (1, 6)
 
 
 def test_an_accepted_answer_that_cannot_be_read_refuses_the_scorecard() -> None:
@@ -466,6 +490,61 @@ def test_a_new_wrong_automatic_layout_is_rejected() -> None:
     assert layouts["b"] == AUTOMATIC_WRONG
 
 
+def test_a_new_sealed_wrong_layout_from_the_readers_does_not_reject() -> None:
+    """The readers' sealed layout is a proposal nobody pre-selects (decided 2026-10-13 (c)).
+
+    b's readers now agree on what the vendor drew (a wall at the left the site does not have), so
+    their sealed layout is wrong against the site; nothing new is agreed-wrong on `drawn`, and no
+    check uses the layout without a person's click. Only an automatic layout rejects."""
+    before = _score(stored_run())
+    proposed = _question(
+        "b",
+        {OPUS: wall_reply("yes", "no"), SONNET: wall_reply("yes", "no")},
+        ink=(True, False),
+        layout="back_and_left",
+        source="readers",
+    )
+    after = _score(stored_run(b=proposed))
+
+    comparison = compare_walls(before, after)
+
+    layouts = {c.case_id[:1]: c.outcome for c in after.cases if c.case_id.endswith(":layout")}
+    assert layouts["b"] == SEALED_WRONG
+    assert comparison.accepted, comparison.verdict
+
+
+def test_compare_walls_refuses_a_card_of_another_agent() -> None:
+    walls = _score(stored_run())
+    other = replace(walls, agent="bala-kinds")
+
+    for before, after in ((other, other), (walls, other), (other, walls)):
+        with pytest.raises(IncomparableRuns, match="rekha-walls"):
+            compare_walls(before, after)
+
+
+def test_a_sealed_right_layout_is_counted() -> None:
+    sealed = _question(
+        "a",
+        {OPUS: wall_reply("yes", "yes"), SONNET: wall_reply("yes", "yes")},
+        layout="back_left_right",
+        source="readers",
+    )
+    card = _score(stored_run(a=sealed))
+
+    layouts = {c.case_id[:1]: c.outcome for c in card.cases if c.case_id.endswith(":layout")}
+    assert layouts["a"] == SEALED_RIGHT
+
+
+def test_malformed_stored_rows_are_counted_never_silent() -> None:
+    clean = _score(stored_run())
+    assert _metric(clean, "skipped_malformed") == (0, 5)
+
+    run = replace(stored_run(), malformed=2)
+    card = _score(run)
+
+    assert _metric(card, "skipped_malformed") == (2, 5)
+
+
 def test_scorecards_of_different_keys_are_not_compared() -> None:
     before = _score(stored_run())
     other = key_document()
@@ -487,7 +566,8 @@ def test_metric_directions_follow_the_walls_meaning() -> None:
 
     deltas = {delta.metric: delta for delta in comparison.metrics}
     assert deltas["pair_agreed_right"].improved
-    assert deltas["pair_split"].improved
+    assert deltas["pair_one_unsure"].improved
+    assert deltas["pair_disagreed"].direction is not None
     assert deltas["ink_right"].direction is not None
     assert deltas["key_unsure_ends"].direction is None
 
@@ -711,3 +791,48 @@ def test_the_scorecard_of_a_stored_run(session: Session) -> None:
     assert _metric(card, "sealed_wrong") == (1, 1)
     assert card.extractor_versions["code_version_note"].startswith("the run's code version")
     assert replace(card, created_at="x").source["database"] == "synthetic"
+
+
+def test_a_malformed_row_id_or_wall_ink_flag_is_counted(session: Session) -> None:
+    from tests.workflow.test_slot_reader import _scaffold
+
+    _revision, version, page, run = _scaffold(session)
+    candidate = add_wall_row(
+        session,
+        version,
+        page,
+        run,
+        ["wall-reader", "walls-held:walls-not-agreed", "wall-ink:left=maybe,right=False"],
+        "walls: for the person",
+    )
+    for model in (OPUS, SONNET):
+        add_answer(
+            session,
+            run.id,
+            version.id,
+            question_id="p0:walls",
+            prompt_id="slot-walls-v3",
+            model_id=model,
+            raw=wall_reply("yes", "yes"),
+            candidate_ids=[candidate],
+        )
+        add_answer(
+            session,
+            run.id,
+            version.id,
+            question_id="p1:walls",
+            prompt_id="slot-walls-v3",
+            model_id=model,
+            raw=wall_reply("yes", "yes"),
+            candidate_ids=["not-a-row-id"],
+        )
+    session.commit()
+
+    stored = load_stored_walls(session, database="synthetic")
+
+    # One wall-ink flag that cannot be read, one row id that is no id: both counted.
+    assert stored.malformed == 2
+    rows = {question.identity.question_id: question.row for question in stored.questions}
+    assert rows["p1:walls"] is None
+    first = rows["p0:walls"]
+    assert first is not None and first.ink is None and first.malformed

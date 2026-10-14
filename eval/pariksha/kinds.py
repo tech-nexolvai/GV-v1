@@ -12,13 +12,20 @@ One case per keyed piece:
 
     {"format": "pariksha-key/1", "agent": "bala-kinds", "name": "...", "version": "...",
      "cases": [{"family": "piece-kind", "page_sha256": "<64 hex>", "question_id": "p6:piece2",
-                "pieces": 5, "answer": {"kinds": ["filler"]} | {"not_scored": "section"},
+                "pieces": 5, "row_widths": ["2", "91/8", null, "47/2", "2"],
+                "answer": {"kinds": ["filler"]} | {"not_scored": "section"},
                 "source": "..."}]}
 
 * **`question_id`**: `p<page index>:piece<n>`, the piece's position from the left (the product's
   `slot:<n>`). **`pieces`**: how many pieces the keyed row has. A run that read another number of
   pieces on the page read another row, or split it another way: the case is "not asked", never
   scored against the wrong piece. (The product reads one countertop row per page.)
+* **`row_widths`** (optional): the keyed row's piece widths in inches, exact (`"91/8"`), `null`
+  where the key's text gives none; the same list on every case of the row. The same piece count is
+  not enough to know the run read the keyed row: the run's piece spans must also be **in
+  proportion** to these widths (each span within `ROW_FIT_PX` pixels or `ROW_FIT_SHARE` of the
+  width times the row's pixels per inch, whichever is more). A row that does not fit, or whose key
+  gives fewer than two widths, is **row unverified**: listed, never scored right or wrong.
 * **`answer.kinds`**: the kinds a reader may name for it and be right: `filler`, `panel`,
   `cabinet`, `equal_cabinets`, `appliance_space`. The product has no word for a panel, so naming a
   panel a filler is **wrong** (the bar set by the cabinets design). `truth_kinds` turns the keys'
@@ -38,10 +45,14 @@ compared case by case like two versions:
   (`extraction.annotations`) is the answer key and never read.
 
 **Outcomes and metrics.** Per keyed piece: **right** (a kind the key accepts), **wrong** (any other
-kind), **unknown**, `not_scored` or `not_asked`. Over the run: `named_pieces`, how many of all the
-pieces the run read the source names at all.
+kind), **unknown**, `not_scored`, `row_unverified` or `not_asked`. Over the run: `named_pieces`,
+how many of all the pieces the run read the source names at all; `skipped_malformed`, the run's
+piece candidates whose position or span flag could not be read (counted, never dropped silently;
+the row's overall, `slot:overall`, is not a piece).
 
-**Compare.** `compare_kinds`: the Pariksha compare, with right and wrong as its right and wrong.
+**Compare.** `compare_kinds`: the Pariksha compare, with right and wrong as its right and wrong. A
+case that becomes `row_unverified` counts as no longer asked, which rejects. It compares two kinds
+cards only: a card of another agent (or two different agents) is refused.
 
 Source: issue #1250 · Verification: `tests/eval/test_pariksha_kinds.py`
 """
@@ -53,6 +64,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from pathlib import Path
 from typing import Final
 from uuid import UUID
@@ -79,7 +91,7 @@ from eval.pariksha.score import (
     _rate,
 )
 from eval.pariksha.stored import StoredRunError, _choose_run, _read_only, _run_row
-from eval.pariksha.walls import canonical_hash, compare_translated
+from eval.pariksha.walls import canonical_hash, compare_translated, require_agent
 from eval.release_metrics import Direction
 from vocabulary.cabinet_codes import is_cabinet_code, is_finish_code
 
@@ -92,6 +104,9 @@ __all__ = [
     "NOT_SCORED",
     "PRODUCT",
     "RIGHT",
+    "ROW_FIT_PX",
+    "ROW_FIT_SHARE",
+    "ROW_UNVERIFIED",
     "SOURCES",
     "TEXT_LAYERS",
     "UNKNOWN",
@@ -125,6 +140,13 @@ RIGHT: Final = "right"
 WRONG: Final = "wrong"
 UNKNOWN: Final = "unknown"
 NOT_SCORED: Final = "not_scored"
+#: The run read as many pieces as the key's row, but nothing shows it is the same row.
+ROW_UNVERIFIED: Final = "row_unverified"
+#: How far a piece's span may lie from the key's width times the row's pixels per inch, and still be
+#: that piece: the larger of these pixels and this share of the expected span. The keyed rows of the
+#: stored runs fit within 3 pixels; a row split another way is off by a whole piece.
+ROW_FIT_PX: Final = 6
+ROW_FIT_SHARE: Final = Fraction(1, 20)
 #: The vendor's text layers the face-tag rule reads; GV's markup (`extraction.annotations`) never.
 TEXT_LAYERS: Final = ("extraction.stamp_text", "rapidocr", "pdfplumber")
 #: How far above a piece's top a tag's middle may stand: 2 inches of paper at the reader's 300 dpi.
@@ -138,10 +160,18 @@ FACE_TAG_RULE: Final = (
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _QUESTION: Final = re.compile(r"^p\d+:piece(\d+)$")
 _HEADER: Final = frozenset({"format", "agent", "name", "version", "cases"})
-_CASE: Final = frozenset({"family", "page_sha256", "question_id", "pieces", "answer", "source"})
+_CASE: Final = frozenset(
+    {"family", "page_sha256", "question_id", "pieces", "row_widths", "answer", "source"}
+)
+_WIDTH: Final = re.compile(r"^[1-9]\d*(?:/[1-9]\d*)?$")
+_WORD: Final = re.compile(r"[a-z]+")
+_CABINET_WORDS: Final = frozenset({"cabinet", "cabinets", "vanity"})
+#: The kinds one key word may name together: a cabinet (of equal ones), or a filler or panel.
+_TOGETHER: Final = (frozenset({"cabinet", "equal_cabinets"}), frozenset({"filler", "panel"}))
 _TOKEN: Final = re.compile(r"[A-Za-z0-9]+(?:[-−][A-Za-z0-9]+)*")
 _APPLIANCE_WORDS: Final = frozenset({"DW", "REF", "RANGE"})
 _FORM_READER: Final = "extraction.form_reader"
+_OVERALL: Final = "overall"
 
 Box = tuple[int, int, int, int]
 
@@ -161,22 +191,30 @@ class KindTruth:
 
 
 def truth_kinds(word: str) -> KindTruth:
-    """The kinds a key's own word for a piece accepts (the form keys' words, normalised)."""
+    """The kinds a key's own word for a piece accepts (the form keys' words, normalised).
+
+    The words are read as a set, so their order never matters ("filler/panel" and "panel/filler"
+    accept the same kinds). A word naming kinds the key cannot both mean ("cabinet / filler") is
+    kept, not scored: it is never guessed."""
     lowered = word.strip().lower()
     if lowered in KINDS:
         return KindTruth(kinds=(lowered,))
-    if "equal" in lowered and lowered.startswith("cabinet"):
-        return KindTruth(kinds=("cabinet", "equal_cabinets"))
-    if lowered.startswith("cabinet") or lowered in ("vanity", "sink cabinet"):
-        return KindTruth(kinds=("cabinet",))
-    if "filler/panel" in lowered or "into wall" in lowered:
-        return KindTruth(kinds=("filler", "panel"))
-    if "panel" in lowered or "end piece" in lowered:
-        return KindTruth(kinds=("panel",))
-    if "filler" in lowered:
-        return KindTruth(kinds=("filler",))
-    if "space" in lowered:
-        return KindTruth(kinds=("appliance_space",))
+    words = set(_WORD.findall(lowered))
+    named: set[str] = set()
+    if words & _CABINET_WORDS:
+        named.add("cabinet")
+        if "equal" in words:
+            named.add("equal_cabinets")
+    if "filler" in words or "fillers" in words:
+        named.add("filler")
+    if words & {"panel", "panels"} or {"end", "piece"} <= words:
+        named.add("panel")
+    if {"into", "wall"} <= words:
+        named |= {"filler", "panel"}
+    if "space" in words:
+        named.add("appliance_space")
+    if len(named) == 1 or any(named <= together for together in _TOGETHER if named):
+        return KindTruth(kinds=tuple(kind for kind in KINDS if kind in named))
     return KindTruth(kinds=(), not_scored=word.strip() or "no kind given")
 
 
@@ -187,6 +225,9 @@ class KindCase:
     pieces: int
     truth: KindTruth
     source: str = ""
+    row_widths: tuple[Fraction | None, ...] | None = None
+    """The keyed row's piece widths in inches (`None` where the key gives none); `None` when the
+    key gives no widths, so the run's row can never be verified."""
 
     @property
     def slot(self) -> int:
@@ -233,6 +274,23 @@ def _answer(data: object, where: str) -> KindTruth:
     return KindTruth(kinds=tuple(str(kind) for kind in kinds))
 
 
+def _row_widths(value: object, pieces: int, where: str) -> tuple[Fraction | None, ...] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != pieces
+        or not all(
+            width is None or (isinstance(width, str) and _WIDTH.match(width)) for width in value
+        )
+    ):
+        raise KeyFormatError(
+            f"{where}: row_widths is a list of the row's {pieces} piece widths in inches, each "
+            f"exact ('91/8') or null, not {value!r}"
+        )
+    return tuple(None if width is None else Fraction(width) for width in value)
+
+
 def _case(data: object, index: int) -> KindCase:
     where = f"case {index + 1}"
     if not isinstance(data, Mapping):
@@ -265,6 +323,7 @@ def _case(data: object, index: int) -> KindCase:
         pieces=pieces,
         truth=_answer(data.get("answer"), where),
         source=source,
+        row_widths=_row_widths(data.get("row_widths"), pieces, where),
     )
 
 
@@ -286,10 +345,17 @@ def load_kinds_key(data: Mapping[str, object]) -> KindsKey:
         raise KeyFormatError("cases must be a non-empty list")
     cases = tuple(_case(entry, index) for index, entry in enumerate(raw_cases))
     seen: set[tuple[str, int]] = set()
+    rows: dict[str, tuple[int, tuple[Fraction | None, ...] | None]] = {}
     for case in cases:
         if (case.page_sha256, case.slot) in seen:
             raise KeyFormatError(f"the key names piece {case.case_id} twice")
         seen.add((case.page_sha256, case.slot))
+        row = rows.setdefault(case.page_sha256, (case.pieces, case.row_widths))
+        if row != (case.pieces, case.row_widths):
+            raise KeyFormatError(
+                f"the cases of page {case.page_sha256[:12]} give its row different pieces or "
+                "row_widths: one row per page has one list"
+            )
     key = KindsKey(name=name, version=version, cases=cases, sha256="")
     return replace(key, sha256=canonical_hash(dump_kinds_key(key)))
 
@@ -310,6 +376,15 @@ def dump_kinds_key(key: KindsKey) -> dict[str, object]:
             "page_sha256": case.page_sha256,
             "question_id": case.question_id,
             "pieces": case.pieces,
+            **(
+                {}
+                if case.row_widths is None
+                else {
+                    "row_widths": [
+                        None if width is None else str(width) for width in case.row_widths
+                    ]
+                }
+            ),
             "answer": (
                 {"kinds": list(case.truth.kinds)}
                 if case.truth.kinds
@@ -361,6 +436,8 @@ class StoredPiecesRun:
     pieces: tuple[StoredPiece, ...]
     words: Mapping[str, tuple[StoredWord, ...]]
     """Page hash → the vendor's text-layer words on that page."""
+    malformed: int = 0
+    """The run's piece candidates whose position or span flag could not be read."""
 
 
 def _flag(flags: Sequence[str], prefix: str) -> str | None:
@@ -402,13 +479,18 @@ def load_stored_pieces(
         .order_by(Page.index, ObservationCandidate.created_at, ObservationCandidate.id)
     ).all()
     pieces_found = []
+    malformed: Counter[UUID] = Counter()
     for row in found:
         flags = [flag for flag in row.ambiguity_flags or () if isinstance(flag, str)]
         slot, box = _flag(flags, "slot:"), _flag(flags, "slot-box:")
+        if slot == _OVERALL:
+            continue  # the row's overall: not a piece
         if slot is None or not slot.isdigit() or box is None:
+            malformed[row.extraction_run_id] += 1
             continue
         parts = box.split(",")
         if len(parts) != 4 or not all(part.lstrip("-").isdigit() for part in parts):
+            malformed[row.extraction_run_id] += 1
             continue
         x0, y0, x1, y1 = (int(part) for part in parts)
         pieces_found.append((row, int(slot), (x0, y0, x1, y1), _flag(flags, "kind:")))
@@ -463,6 +545,7 @@ def load_stored_pieces(
             for row, slot, box, kind in chosen
         ),
         words={page: tuple(found_words) for page, found_words in words.items()},
+        malformed=malformed[run_id],
     )
 
 
@@ -524,6 +607,39 @@ def _not_asked(case: KindCase, note: str) -> CaseScore:
     )
 
 
+def _row_unfit(case: KindCase, on_page: Mapping[int, StoredPiece]) -> str | None:
+    """Why the run's row cannot be shown to be the keyed row, or `None` when its spans fit.
+
+    Exact arithmetic: the row's pixels per inch is its known spans over its known widths."""
+    if case.row_widths is None:
+        return "the key gives no widths for this row, so the same row cannot be verified"
+    known = [
+        (slot, on_page[slot], width)
+        for slot, width in enumerate(case.row_widths)
+        if width is not None and slot in on_page
+    ]
+    if len(known) < 2:
+        return "the key gives fewer than two widths the run has pieces for: the row is unverified"
+    spans: list[tuple[int, Fraction, Fraction]] = [
+        (slot, Fraction(piece.box[2] - piece.box[0]), width) for slot, piece, width in known
+    ]
+    total_px = sum((span for _slot, span, _width in spans), Fraction(0))
+    total_in = sum((width for _slot, _span, width in spans), Fraction(0))
+    scale = total_px / total_in
+    off = [
+        slot
+        for slot, span, width in spans
+        if abs(span - width * scale) > max(Fraction(ROW_FIT_PX), width * scale * ROW_FIT_SHARE)
+    ]
+    if off:
+        shown = ", ".join(f"piece {slot}" for slot in off)
+        return (
+            f"the run's piece spans are not in proportion to the key's widths ({shown}): the "
+            "same piece count, but another row or another split"
+        )
+    return None
+
+
 def score_kinds(
     key: KindsKey,
     run: StoredPiecesRun,
@@ -548,6 +664,7 @@ def score_kinds(
     cases: list[CaseScore] = []
     outcomes: Counter[str] = Counter()
     keyed: set[tuple[str, int]] = set()
+    unverified = 0
     for case in key.cases:
         on_page = by_page.get(case.page_sha256)
         if not on_page:
@@ -559,6 +676,19 @@ def score_kinds(
                     case,
                     f"the run read {len(on_page)} pieces on this page; the key has "
                     f"{case.pieces} (another row, or the row split another way)",
+                )
+            )
+            continue
+        unfit = _row_unfit(case, on_page)
+        if unfit is not None:
+            unverified += 1
+            cases.append(
+                CaseScore(
+                    case_id=case.case_id,
+                    question=f"{KINDS_FAMILY}@{case.page_sha256[:12]}/{case.question_id}",
+                    expected=str(case.truth),
+                    outcome=ROW_UNVERIFIED,
+                    note=f"row unverified: {unfit}",
                 )
             )
             continue
@@ -604,6 +734,18 @@ def score_kinds(
             sum(1 for piece in run.pieces if (piece.page_sha256, piece.slot) not in keyed),
             pieces,
         ),
+        "row_unverified": _rate(
+            "row_unverified",
+            unverified,
+            len(key.cases),
+            "the run read as many pieces, but their spans do not show the keyed row",
+        ),
+        "skipped_malformed": _rate(
+            "skipped_malformed",
+            run.malformed,
+            pieces + run.malformed,
+            "piece candidates whose position or span flag could not be read",
+        ),
     }
     source_document = {"database": run.database, "extraction_run_id": run.extraction_run_id}
     if run.document_sha256 is not None:
@@ -635,7 +777,7 @@ def score_kinds(
 # --- compare ------------------------------------------------------------------------------------
 
 _KINDS_HIGHER: Final = ("asked", RIGHT)
-_KINDS_NEITHER: Final = ("scored", "named_pieces", "unkeyed_pieces")
+_KINDS_NEITHER: Final = ("scored", "named_pieces", "unkeyed_pieces", "skipped_malformed")
 
 
 def kinds_direction(name: str) -> Direction | None:
@@ -645,10 +787,13 @@ def kinds_direction(name: str) -> Direction | None:
 
 
 def compare_kinds(before: Scorecard, after: Scorecard) -> Comparison:
-    """Better (more right, no more wrong), with 0 new wrong kinds."""
+    """Better (more right, no more wrong), with 0 new wrong kinds.
+
+    A case that becomes row-unverified is no longer asked: never a way to stop being wrong."""
+    require_agent(before, after, KINDS_AGENT)
     return compare_translated(
         before,
         after,
-        outcomes={RIGHT: AGREED_RIGHT, WRONG: AGREED_WRONG},
+        outcomes={RIGHT: AGREED_RIGHT, WRONG: AGREED_WRONG, ROW_UNVERIFIED: NOT_ASKED},
         direction=kinds_direction,
     )

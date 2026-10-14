@@ -19,9 +19,14 @@ from eval.pariksha.keys import KeyFormatError
 from eval.pariksha.walls import WALLS_AGENT, load_walls_key
 from tests.eval.test_pariksha_stored import OPUS, PAGE_HASH, SONNET, add_answer
 from tests.eval.test_pariksha_walls import BOX, add_wall_row, wall_reply
+from tests.eval.test_pariksha_walls import _question as wall_question
+from tests.eval.test_pariksha_walls import _score as score_walls_card
+from tests.eval.test_pariksha_walls import stored_run as walls_run
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
+import pariksha_kinds
+import pariksha_scorecard
 import pariksha_walls
 import pariksha_walls_key
 
@@ -165,9 +170,71 @@ def test_refusals_exit_2(
     assert "agent" in capsys.readouterr().err
 
 
+def _walls_cards(tmp_path: Path) -> tuple[str, str]:
+    """Before, and after = before + one more agreed-right end + one new wrong wall ink."""
+    from eval.pariksha.scorecard import write_scorecard
+
+    before = score_walls_card(walls_run())
+    inked = wall_question(
+        "b",
+        {OPUS: wall_reply("yes", "no"), SONNET: wall_reply("yes", "no")},
+        ink=(True, True),  # ink at an end the vendor drew open
+    )
+    after = score_walls_card(walls_run(b=inked))
+    paths = tmp_path / "walls-before.json", tmp_path / "walls-after.json"
+    write_scorecard(before, paths[0])
+    write_scorecard(after, paths[1])
+    return str(paths[0]), str(paths[1])
+
+
+def _kinds_card(tmp_path: Path) -> str:
+    from eval.pariksha.kinds import PRODUCT
+    from eval.pariksha.scorecard import write_scorecard
+    from tests.eval.test_pariksha_kinds import _score as score_kinds_card
+    from tests.eval.test_pariksha_kinds import stored_run as kinds_run
+
+    path = tmp_path / "kinds.json"
+    write_scorecard(score_kinds_card(kinds_run(), PRODUCT), path)
+    return str(path)
+
+
+def test_only_the_walls_compare_judges_a_walls_card(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before, after = _walls_cards(tmp_path)
+
+    # The walls compare sees the new wrong wall ink.
+    assert pariksha_walls.main(["compare", before, after]) == 1
+    assert "new wrong wall ink" in capsys.readouterr().out
+    # The others would accept it (they do not know wall ink): they refuse, and say which to use.
+    assert pariksha_scorecard.main(["compare", before, after]) == 2
+    assert "pariksha_walls.py" in capsys.readouterr().err
+    assert pariksha_kinds.main(["compare", before, after]) == 2
+    assert "bala-kinds" in capsys.readouterr().err
+
+
+def test_only_the_kinds_compare_judges_a_kinds_card(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kinds = _kinds_card(tmp_path)
+    walls, _after = _walls_cards(tmp_path)
+
+    assert pariksha_kinds.main(["compare", kinds, kinds]) == 1  # the same card: not better
+    capsys.readouterr()
+    assert pariksha_scorecard.main(["compare", kinds, kinds]) == 2
+    assert "pariksha_kinds.py" in capsys.readouterr().err
+    assert pariksha_walls.main(["compare", kinds, kinds]) == 2
+    assert "rekha-walls" in capsys.readouterr().err
+    # A walls card against a kinds card: refused by every compare.
+    for main in (pariksha_walls.main, pariksha_kinds.main, pariksha_scorecard.main):
+        assert main(["compare", walls, kinds]) == 2
+        assert main(["compare", kinds, walls]) == 2
+    capsys.readouterr()
+
+
 # --- the key builder ----------------------------------------------------------------------------
 
-TRUTH = {
+TRUTH: dict[str, object] = {
     "sX|2|1": ["back_left_right", {"L": 1, "R": 1}],
     "sX|3|2": ["corner", {"L": 0, "R": 1}],
     "sY|9|1": ["island", {"L": 0, "R": 0}],
@@ -238,3 +305,16 @@ def test_a_truth_with_no_row_of_the_set_is_refused() -> None:
         pariksha_walls_key.truth_rows(TRUTH, "sZ")
     with pytest.raises(KeyFormatError, match="set>"):
         pariksha_walls_key.truth_rows({"bad": ["island", {"L": 0, "R": 0}]}, "sX")
+
+
+@pytest.mark.parametrize("ends", [{"L": 1, "R": 1}, {"L": 0, "R": 0}])
+def test_a_corner_with_both_or_neither_end_a_wall_is_a_key_error(ends: dict[str, int]) -> None:
+    # A corner is the back wall and exactly one end wall: anything else is never guessed.
+    with pytest.raises(KeyFormatError, match="corner"):
+        pariksha_walls_key.truth_rows({"sX|3|2": ["corner", ends]}, "sX")
+
+
+@pytest.mark.parametrize("ends", [{"L": 2, "R": 0}, {"L": "1", "R": 0}, {"L": None, "R": 1}])
+def test_an_end_that_is_not_0_or_1_is_a_key_error(ends: dict[str, object]) -> None:
+    with pytest.raises(KeyFormatError, match="0 or 1"):
+        pariksha_walls_key.truth_rows({"sX|2|1": ["island", ends]}, "sX")

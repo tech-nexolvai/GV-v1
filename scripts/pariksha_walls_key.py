@@ -12,11 +12,14 @@ the drawing's PDF. Writes the key outside any repository (the key holds what cli
 "R": 0|1}]}`, one entry per keyed row: the page number (from 1), the row candidate's number on the
 page (from 1, in code's row order), GV's layout for it (`back_left_right`, `back_only`, `island`,
 or `corner`, which is the back wall and the one end that has a wall) and whether each end has a wall
-on site. These come from GV's markup, so they are the `site` truth.
+on site (0 or 1). These come from GV's markup, so they are the `site` truth. A corner whose ends
+are both walls or neither is a key error, never turned into a layout.
 
 **The drawn ends** (`--drawn`): `[{"page": 7, "side": "right", "drawn": "key_unsure",
 "note": "..."}]`. Every end not listed is drawn as it is on site. An end whose drawing is not
-settled yet is `key_unsure`: listed in every scorecard and never scored, never guessed.
+settled yet is `key_unsure`: listed in every scorecard and never scored, never guessed. A drawn end
+is named by page and side, so it holds for every keyed row of that page: fine while the truth keys
+one row per page, and a known limit when a page has two keyed rows.
 
 **From the PDF**, with the product's own code, at $0: each page's content hash (the hash every run
 records for the page) and each keyed row's picture box, the box a run stores on the row's wall
@@ -64,7 +67,10 @@ class TruthRow:
     def site_layout(self) -> str:
         if self.layout != "corner":
             return self.layout
-        return "back_and_right" if self.right and not self.left else "back_and_left"
+        if self.left == self.right:
+            # `truth_rows` refuses this; never guess a corner's side.
+            raise KeyFormatError(f"page {self.page} row {self.row}: a corner has one end wall")
+        return "back_and_right" if self.right else "back_and_left"
 
 
 def truth_rows(data: Mapping[str, object], set_name: str) -> list[TruthRow]:
@@ -84,14 +90,18 @@ def truth_rows(data: Mapping[str, object], set_name: str) -> list[TruthRow]:
             or set(value[1]) != {"L", "R"}
         ):
             raise KeyFormatError(f"walls truth entry {name!r} is not [layout, {{L, R}}]")
-        rows.append(
-            TruthRow(
-                page=int(parts[1]),
-                row=int(parts[2]),
-                layout=value[0],
-                left=bool(value[1]["L"]),
-                right=bool(value[1]["R"]),
+        ends = value[1]["L"], value[1]["R"]
+        if not all(type(end) is int and end in (0, 1) for end in ends):
+            raise KeyFormatError(f"walls truth entry {name!r}: L and R are 0 or 1, not {ends!r}")
+        left, right = (bool(end) for end in ends)
+        if value[0] == "corner" and left == right:
+            raise KeyFormatError(
+                f"walls truth entry {name!r} is a corner with "
+                f"{'both ends' if left else 'neither end'} a wall: a corner is the back wall and "
+                "exactly one end wall. Fix the truth; the side is never guessed"
             )
+        rows.append(
+            TruthRow(page=int(parts[1]), row=int(parts[2]), layout=value[0], left=left, right=right)
         )
     if not rows:
         raise KeyFormatError(f"the walls truth has no row of set {set_name!r}")

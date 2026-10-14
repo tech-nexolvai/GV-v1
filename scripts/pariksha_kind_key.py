@@ -10,9 +10,11 @@ the key outside any repository (the key holds what client drawings show).
         [--page-map ~/gv-local/<map>.json]
 
 * Each piece becomes one case: the page's content hash (read from the PDF the way every run
-  records it), `p<page index>:piece<n>`, the row's piece count, and the kinds the key's word
-  accepts (`eval.pariksha.kinds.truth_kinds`). A word that names no kind (a section, a countertop
-  segment, unknown) is kept as `not_scored`, never dropped.
+  records it), `p<page index>:piece<n>`, the row's piece count, the row's piece widths in exact
+  inches (`width_inches`; `null` where the text gives none), and the kinds the key's word accepts
+  (`eval.pariksha.kinds.truth_kinds`). A word that names no kind (a section, a countertop segment,
+  unknown) is kept as `not_scored`, never dropped. The widths let the scorer check that a run's
+  row is the keyed one, not only a row with as many pieces.
 * `--page-map` keys another PDF that repeats the same drawings: `{"<page in --pdf>": <page in the
   form key>}`, page numbers from 1. Only the mapped pages are keyed.
 * A countertop entry's `superseded` part is history; its current pieces are the ones keyed.
@@ -25,8 +27,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Mapping, Sequence
+from fractions import Fraction
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -46,6 +50,51 @@ def _word(piece: object) -> str:
     if isinstance(piece, Mapping) and isinstance(piece.get("kind", ""), str):
         return str(piece.get("kind", ""))
     raise KeyFormatError(f"a form-key piece is [text, kind] or {{kind: ...}}, not {piece!r}")
+
+
+def _width_text(piece: object) -> str:
+    """The key's printed width for a piece: `[text, kind]` or `{"text": ...}`; empty if none."""
+    if isinstance(piece, list) and piece and isinstance(piece[0], str):
+        return piece[0]
+    if isinstance(piece, Mapping) and isinstance(piece.get("text"), str):
+        return str(piece["text"])
+    return ""
+
+
+_BRACKET = re.compile(r"\[([^\]]*)\]")
+_MILLIMETRES = re.compile(r"\d\s*mm\b|\bmm\b", re.IGNORECASE)
+
+
+def width_inches(text: str) -> Fraction | None:
+    """A form key's width text in exact inches, or `None` when it gives none.
+
+    `203 mm [8 in]` and `64 [2 1/2]`: the bracketed inch half (inches are the authority). `28 in`,
+    `11 3/8"`. `4"+1" Filler`: two fillers drawn as one piece, so their sum. `(6EQ)` and words are
+    notes, not widths. Millimetres alone are never read as inches."""
+    from units.measurement import Unit
+    from units.normalise import UnitNormalisationError, normalise_to_inches
+    from units.notation import canonical_notation
+
+    bracket = _BRACKET.search(text)
+    if bracket is None and _MILLIMETRES.search(text):
+        return None
+    body = re.sub(r"\([^)]*\)", "", bracket.group(1) if bracket else text)
+    total = Fraction(0)
+    for part in body.split("+"):
+        number = re.sub(r"[A-Za-z]+", "", part).strip()
+        if not number:
+            return None
+        if not number.endswith('"'):
+            number += '"'
+        try:
+            notation, _millimetres = canonical_notation(number)
+            measured = normalise_to_inches(notation)
+        except (UnitNormalisationError, TypeError, ValueError, ArithmeticError):
+            return None
+        if measured.unit is not Unit.INCH:
+            return None
+        total += measured.exact
+    return total if total > 0 else None
 
 
 def _ordered(pieces: Sequence[object]) -> list[object]:
@@ -88,6 +137,7 @@ def kind_key_document(
         if target not in page_hashes:
             raise Refused(f"page {target} is not in the PDF")
         pieces = by_page[keyed]
+        widths = [width_inches(_width_text(piece)) for piece in pieces]
         for index, piece in enumerate(pieces):
             truth = truth_kinds(_word(piece))
             cases.append(
@@ -96,6 +146,7 @@ def kind_key_document(
                     "page_sha256": page_hashes[target],
                     "question_id": f"p{target - 1}:piece{index}",
                     "pieces": len(pieces),
+                    "row_widths": [None if width is None else str(width) for width in widths],
                     "answer": (
                         {"kinds": list(truth.kinds)}
                         if truth.kinds

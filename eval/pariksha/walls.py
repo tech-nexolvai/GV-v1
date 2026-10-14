@@ -34,8 +34,9 @@ two truths:
 **What is scored, per row end.**
 
 * **The pair** (the case's outcome): agreed-right or **agreed-wrong** when both readers say the same
-  yes or no (the agreement `seal_walls` builds on); **both-unsure**; otherwise **split** (one
-  unsure, a yes against a no, or a missing answer).
+  yes or no (the agreement `seal_walls` builds on); **disagreed** when one says yes and the other
+  no (a contradiction, counted on its own); **one-unsure** when one says yes or no and the other
+  unsure; **both-unsure**; **no-answer** when a reader has no accepted answer.
 * **Each reader**: right, wrong, unsure or invalid (no accepted answer).
 * **Code's wall ink**, separately, as its own judgment (`code-wall-ink` among the case's readers):
   ink is positive only, so ink seen is right at a drawn wall and **wrong** anywhere else; no ink says
@@ -45,11 +46,24 @@ two truths:
 **Per row**: the stored layout against `site_layout`: **automatic** right or wrong (code's ink at
 both ends and both AIs, `wall-source:code-ink-and-both-ais`, the one layout a check uses without a
 click), the readers' **sealed** proposal right or wrong, or held for the person. And the cost of the
-question, from `model_invocations.cost_micros`.
+question, from `model_invocations.cost_micros`. Stored data this cannot read (a row id that is no id,
+a row box or a wall-ink flag that does not parse) is counted in `skipped_malformed`, never dropped
+silently.
 
 **Compare.** `compare_walls` is the Pariksha compare (`eval/pariksha/compare.py`), plus two more
 reasons to reject: an end whose wall ink became wrong, and a row whose automatic layout became
-wrong. Its metric directions are the walls' own (`walls_direction`).
+wrong. Its metric directions are the walls' own (`walls_direction`). It compares two walls cards
+only: a card of another agent (or two different agents) is refused, and the other compares refuse a
+walls card, because they do not know wall ink or layouts and would accept a change this rejects.
+
+A row whose **sealed** layout became wrong does **not** reject on its own. A sealed layout is the
+readers' proposal, never automatic: no check uses it without a person's click, and nothing is
+pre-selected (decided 2026-10-13 (c)). It is sealed only when both readers agree at both ends
+(`seal_walls`), so a newly wrong one comes from ends that agree with what the vendor drew while the
+site differs (a wall GV removes, which no reading of the drawing can know), from an end that is
+agreed-wrong on what the vendor drew (which rejects when it is new), from an end the key has not
+settled, or from the back wall, which this card does not key. So the bar stays "0 new agreed-wrong
+on what the vendor drew"; `sealed_wrong` is shown (fewer is better) for a person to weigh.
 
 **Reading stored answers.** Each accepted reply is read again by the reader's own code
 (`replay_stored_answer`, the path a re-run takes when it reuses an answer); every wall prompt
@@ -86,7 +100,6 @@ from eval.pariksha.score import (
     AGREED_RIGHT,
     AGREED_WRONG,
     NOT_ASKED,
-    SPLIT,
     CaseScore,
     ReaderScore,
     Scorecard,
@@ -104,6 +117,7 @@ from eval.pariksha.stored import (
     _run_row,
     prompt_family,
 )
+from eval.regression import IncomparableRuns
 from eval.release_metrics import Direction
 from extraction.slot_reader.bedrock import CropJob, replay_stored_answer
 from extraction.slot_reader.walls import Side, WallAnswer
@@ -114,10 +128,13 @@ __all__ = [
     "AUTOMATIC_RIGHT",
     "AUTOMATIC_WRONG",
     "BOTH_UNSURE",
+    "DISAGREED",
     "DRAWN",
     "HELD_LAYOUT",
     "INK_READER",
     "KEY_UNSURE",
+    "NO_ANSWER",
+    "ONE_UNSURE",
     "ROW_SLACK_PX",
     "SEALED_RIGHT",
     "SEALED_WRONG",
@@ -136,6 +153,7 @@ __all__ = [
     "load_stored_walls",
     "load_walls_key",
     "read_walls_key",
+    "require_agent",
     "score_walls",
     "walls_direction",
 ]
@@ -144,6 +162,12 @@ WALLS_AGENT: Final = "rekha-walls"
 WALLS_FAMILY: Final = "slot-walls"
 KEY_UNSURE: Final = "key_unsure"
 BOTH_UNSURE: Final = "both_unsure"
+#: One reader says yes and the other no: a contradiction, never lumped with an unsure.
+DISAGREED: Final = "disagreed"
+#: One reader says yes or no, the other unsure.
+ONE_UNSURE: Final = "one_unsure"
+#: A reader has no accepted answer for the row.
+NO_ANSWER: Final = "no_answer"
 #: What the vendor drew at an end (gating), and what the site has there (reported).
 DRAWN: Final = ("wall", "open", "not_shown", KEY_UNSURE)
 SITE: Final = ("wall", "open", KEY_UNSURE)
@@ -167,7 +191,7 @@ INK_NONE: Final = "none"
 INK_NOT_RECORDED: Final = "not_recorded"
 _READER_VERDICTS: Final = (RIGHT, WRONG, UNSURE, INVALID)
 _INK_VERDICTS: Final = (RIGHT, WRONG, INK_NONE, INK_NOT_RECORDED)
-_PAIR_OUTCOMES: Final = (AGREED_RIGHT, AGREED_WRONG, SPLIT, BOTH_UNSURE)
+_PAIR_OUTCOMES: Final = (AGREED_RIGHT, AGREED_WRONG, DISAGREED, ONE_UNSURE, BOTH_UNSURE, NO_ANSWER)
 _SIDES: Final = ("left", "right")
 _SAYS: Final[Mapping[Side, str]] = {Side.YES: "wall", Side.NO: "open"}
 
@@ -376,6 +400,8 @@ class StoredWallRow:
     """Who set the layout (`wall-source:`): automatic, the readers, or an older run's source."""
     ink: tuple[bool, bool] | None
     """Code's wall ink at (left, right); `None` for a run stored before code judged it (#1202)."""
+    malformed: tuple[str, ...] = ()
+    """What of the stored row could not be read (its box, its wall-ink flag)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,20 +423,23 @@ class StoredWallsRun:
     config_hash: str
     questions: tuple[StoredWallQuestion, ...]
     unidentified: int = 0
+    malformed: int = 0
+    """Stored rows or row ids this could not read: counted, never dropped silently."""
 
 
 def _flag(flags: Iterable[str], prefix: str) -> str | None:
     return next((flag.removeprefix(prefix) for flag in flags if flag.startswith(prefix)), None)
 
 
-def _ink(flags: Sequence[str]) -> tuple[bool, bool] | None:
+def _ink(flags: Sequence[str]) -> tuple[tuple[bool, bool] | None, bool]:
+    """Code's wall ink, and whether a stored wall-ink flag could not be read."""
     value = _flag(flags, WALL_INK_FLAG)
     if value is None:
-        return None
+        return None, False
     sides = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
     if sides.get("left") not in ("True", "False") or sides.get("right") not in ("True", "False"):
-        return None
-    return (sides["left"] == "True", sides["right"] == "True")
+        return None, True
+    return (sides["left"] == "True", sides["right"] == "True"), False
 
 
 def _polygon_box(polygon: object) -> Box | None:
@@ -424,15 +453,17 @@ def _polygon_box(polygon: object) -> Box | None:
     return (round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys)))
 
 
-def _wall_rows(session: Session, ids: Iterable[str]) -> dict[str, StoredWallRow]:
+def _wall_rows(session: Session, ids: Iterable[str]) -> tuple[dict[str, StoredWallRow], int]:
+    """The stored wall rows the ids name, and how many ids are no id at all."""
     wanted: set[UUID] = set()
+    not_ids = 0
     for value in ids:
         try:
             wanted.add(UUID(value))
         except ValueError:
-            continue
+            not_ids += 1
     if not wanted:
-        return {}
+        return {}, not_ids
     rows: dict[str, StoredWallRow] = {}
     for candidate_id, polygon, flags in session.execute(
         select(
@@ -444,14 +475,18 @@ def _wall_rows(session: Session, ids: Iterable[str]) -> dict[str, StoredWallRow]
         listed = [flag for flag in flags or () if isinstance(flag, str)]
         if WALL_READER_FLAG not in listed:
             continue
+        ink, bad_ink = _ink(listed)
+        row_box = _polygon_box(polygon)
+        malformed = (*(("row box",) if row_box is None else ()), *(("wall-ink flag",) * bad_ink))
         rows[str(candidate_id)] = StoredWallRow(
             candidate_id=str(candidate_id),
-            row_box=_polygon_box(polygon),
+            row_box=row_box,
             layout=_flag(listed, WALLS_SEALED_FLAG),
             source=_flag(listed, _SOURCE_FLAG),
-            ink=_ink(listed),
+            ink=ink,
+            malformed=malformed,
         )
-    return rows
+    return rows, not_ids
 
 
 def load_stored_walls(
@@ -518,7 +553,7 @@ def load_stored_walls(
         named[identity] = (
             str(candidates[0]) if isinstance(candidates, list) and len(candidates) == 1 else None
         )
-    rows = _wall_rows(session, (value for value in named.values() if value is not None))
+    rows, not_ids = _wall_rows(session, (value for value in named.values() if value is not None))
     return StoredWallsRun(
         database=database,
         extraction_run_id=str(run_id),
@@ -536,6 +571,7 @@ def load_stored_walls(
             for identity, (prompt_id, packet) in packets.items()
         ),
         unidentified=unidentified,
+        malformed=not_ids + sum(1 for row in rows.values() if row.malformed),
     )
 
 
@@ -597,12 +633,14 @@ def _pair(first: Side | None, second: Side | None, truth: str) -> str:
     if truth == KEY_UNSURE:
         return KEY_UNSURE
     if first is None or second is None:
-        return SPLIT
-    if first is second and first is not Side.UNSURE:
-        return AGREED_RIGHT if _SAYS[first] == truth else AGREED_WRONG
+        return NO_ANSWER
     if first is Side.UNSURE and second is Side.UNSURE:
         return BOTH_UNSURE
-    return SPLIT
+    if first is Side.UNSURE or second is Side.UNSURE:
+        return ONE_UNSURE
+    if first is not second:
+        return DISAGREED
+    return AGREED_RIGHT if _SAYS[first] == truth else AGREED_WRONG
 
 
 def _reader(side: Side | None, truth: str) -> str:
@@ -777,7 +815,12 @@ def score_walls(
                     ),
                 ),
                 cost_micros=question_cost,
-                note=note or f"set by: {question.row.source or 'nobody (held)'}",
+                note=(note or f"set by: {question.row.source or 'nobody (held)'}")
+                + (
+                    f"; could not read the stored {', '.join(question.row.malformed)}"
+                    if question.row.malformed
+                    else ""
+                ),
             )
         )
     if unreadable:
@@ -828,6 +871,12 @@ def score_walls(
         f"{run.unidentified} answer(s) had no page hash or question id" if run.unidentified else "",
     )
     metrics["unreadable_stored_answers"] = _rate("unreadable_stored_answers", 0, attempts)
+    metrics["skipped_malformed"] = _rate(
+        "skipped_malformed",
+        run.malformed,
+        len(run.questions),
+        "stored row ids, row boxes or wall-ink flags that could not be read",
+    )
     return Scorecard(
         agent=WALLS_AGENT,
         key_name=key.name,
@@ -862,6 +911,7 @@ _WALLS_HIGHER: Final = (
     "sealed_right",
 )
 _WALLS_NEITHER: Final = (
+    "skipped_malformed",
     "unkeyed_questions",
     "reused_answers",
     "key_unsure_ends",
@@ -966,8 +1016,23 @@ def _walls_reasons(before: Scorecard, after: Scorecard) -> list[str]:
     return reasons
 
 
+def require_agent(before: Scorecard, after: Scorecard, agent: str) -> None:
+    """Refuse a compare of any card that is not this agent's: another compare would judge it by
+    rules that are not its own (a walls card judged without its wall ink, say)."""
+    for card in (before, after):
+        if card.agent != agent:
+            raise IncomparableRuns(
+                f"this compare judges {agent} scorecards only; this is a {card.agent} scorecard "
+                f"(before: {before.agent}, after: {after.agent})"
+            )
+
+
 def compare_walls(before: Scorecard, after: Scorecard) -> Comparison:
-    """Better, with 0 new agreed-wrong ends, 0 new wrong wall ink and 0 new wrong automatic rows."""
+    """Better, with 0 new agreed-wrong ends, 0 new wrong wall ink and 0 new wrong automatic rows.
+
+    A new wrong *sealed* layout does not reject on its own: it is the readers' proposal, never
+    automatic, and nothing is pre-selected (see the module's **Compare**)."""
+    require_agent(before, after, WALLS_AGENT)
     return compare_translated(
         before, after, outcomes={}, direction=walls_direction, extra_reasons=_walls_reasons
     )

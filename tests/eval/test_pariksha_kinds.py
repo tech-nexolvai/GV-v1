@@ -7,6 +7,7 @@ tests use a synthetic run on the test database. No model call, no client value.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +24,7 @@ from eval.pariksha.kinds import (
     NOT_SCORED,
     PRODUCT,
     RIGHT,
+    ROW_UNVERIFIED,
     UNKNOWN,
     WRONG,
     StoredPiece,
@@ -45,12 +47,23 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 PAGES = {name: name * 64 for name in "abcde"}
 
 
+#: Each keyed row's piece widths (inches), in proportion to the stored spans below.
+WIDTHS = {
+    "a": ["1", "3", "3"],
+    "b": ["1", "2"],
+    "c": ["1", "1", "1", "1"],
+    "d": ["1", "1"],
+    "e": ["1", "2"],
+}
+
+
 def _case(page: str, index: int, pieces: int, answer: dict[str, Any]) -> dict[str, Any]:
     return {
         "family": KINDS_FAMILY,
         "page_sha256": PAGES[page],
         "question_id": f"p{'abcde'.index(page)}:piece{index}",
         "pieces": pieces,
+        "row_widths": WIDTHS[page],
         "answer": answer,
         "source": "invented",
     }
@@ -70,7 +83,7 @@ def key_document() -> dict[str, Any]:
             _case("b", 1, 2, {"kinds": ["cabinet"]}),
             _case("c", 0, 4, {"kinds": ["filler"]}),  # the run read 2 pieces here
             _case("d", 0, 2, {"kinds": ["filler"]}),  # the run read no row here
-            _case("e", 0, 1, {"not_scored": "section"}),
+            _case("e", 0, 2, {"not_scored": "section"}),
         ],
     }
 
@@ -98,7 +111,8 @@ def stored_run(**words: tuple[StoredWord, ...]) -> StoredPiecesRun:
         _piece("b", 1, 200, 600, None),
         _piece("c", 0, 0, 300, "unknown"),
         _piece("c", 1, 300, 600, "unknown"),
-        _piece("e", 0, 0, 900, "unknown"),
+        _piece("e", 0, 0, 300, "unknown"),
+        _piece("e", 1, 300, 900, "unknown"),
     )
     on_pages = {
         PAGES["a"]: (
@@ -164,6 +178,12 @@ def _outcomes(card: Scorecard) -> dict[str, str]:
         ("middle panel", ("panel",)),
         ("end piece", ("panel",)),
         ("filler/panel", ("filler", "panel")),
+        # The order of the words never matters.
+        ("panel/filler", ("filler", "panel")),
+        ("Panel / Filler", ("filler", "panel")),
+        ("end piece or filler", ("filler", "panel")),
+        ("space for the dishwasher", ("appliance_space",)),
+        ("equal cabinets", ("cabinet", "equal_cabinets")),
         ("into wall / end", ("filler", "panel")),
         ("dishwasher space", ("appliance_space",)),
         ("fridge space (not under countertop)", ("appliance_space",)),
@@ -178,7 +198,17 @@ def test_the_keys_words_become_the_kinds_a_reader_may_name(
 
 
 @pytest.mark.parametrize(
-    "word", ["section", "countertop_segment", "unknown", "unknown_check_sink_or_appliance", ""]
+    "word",
+    [
+        "section",
+        "countertop_segment",
+        "unknown",
+        "unknown_check_sink_or_appliance",
+        "",
+        # Two kinds the key cannot both mean: never guessed.
+        "cabinet / filler",
+        "filler or dishwasher space",
+    ],
 )
 def test_a_word_that_names_no_kind_is_kept_but_not_scored(word: str) -> None:
     truth = truth_kinds(word)
@@ -206,6 +236,10 @@ def test_the_key_reads_back_in_the_same_shape() -> None:
         ({"family": "claude-slot-span"}, "family"),
         ({"page_sha256": "A" * 64}, "page_sha256"),
         ({"text": "3"}, "unknown field"),
+        ({"row_widths": ["1", "3"]}, "row_widths"),
+        ({"row_widths": ["1", "3", "three"]}, "row_widths"),
+        ({"row_widths": ["1", "3", "-3"]}, "row_widths"),
+        ({"row_widths": "1,3,3"}, "row_widths"),
     ],
 )
 def test_a_bad_case_is_refused(change: dict[str, Any], message: str) -> None:
@@ -281,9 +315,11 @@ def test_the_products_stored_kinds_are_scored() -> None:
     assert _metric(card, "right") == (1, 5)
     assert _metric(card, "wrong") == (1, 5)
     assert _metric(card, "unknown") == (3, 5)
-    # Every piece the run read, keyed or not: 2 of 8 have a kind.
-    assert _metric(card, "named_pieces") == (2, 8)
-    assert _metric(card, "unkeyed_pieces") == (2, 8)
+    # Every piece the run read, keyed or not: 2 of 9 have a kind.
+    assert _metric(card, "named_pieces") == (2, 9)
+    assert _metric(card, "unkeyed_pieces") == (3, 9)
+    assert _metric(card, "row_unverified") == (0, 8)
+    assert _metric(card, "skipped_malformed") == (0, 9)
 
 
 def test_the_face_tag_rule_is_scored_on_the_same_pieces() -> None:
@@ -325,6 +361,74 @@ def _fields(run: StoredPiecesRun) -> dict[str, Any]:
     return {name: getattr(run, name) for name in run.__dataclass_fields__}
 
 
+def test_a_row_whose_spans_are_not_in_proportion_to_the_key_is_unverified_never_scored() -> None:
+    """Same piece count is not the same row: the spans must fit the key's widths too."""
+    document = key_document()
+    for case in document["cases"][:3]:
+        case["row_widths"] = ["1", "3", "30"]  # the run's last piece is as wide as its second
+    card = _score(stored_run(), FACE_TAG, document)
+
+    outcomes = _outcomes(card)
+    assert [outcomes[f"a{slot}"] for slot in range(3)] == [ROW_UNVERIFIED] * 3
+    a1 = next(c for c in card.cases if c.case_id.endswith("p0:piece1"))
+    assert "not in proportion" in a1.note and not a1.readers
+    assert _metric(card, "row_unverified") == (3, 8)
+    assert _metric(card, "asked") == (3, 8)  # b0, b1, e0
+    assert _metric(card, "right") == (0, 2)
+
+
+def test_a_key_without_row_widths_leaves_the_row_unverified() -> None:
+    document = key_document()
+    for case in document["cases"][3:5]:
+        del case["row_widths"]
+    card = _score(stored_run(), PRODUCT, document)
+
+    outcomes = _outcomes(card)
+    assert (outcomes["b0"], outcomes["b1"]) == (ROW_UNVERIFIED, ROW_UNVERIFIED)
+    assert "no widths" in next(c.note for c in card.cases if c.case_id.endswith("p1:piece0"))
+
+
+def test_spans_a_few_pixels_off_still_fit_the_row() -> None:
+    run = stored_run()
+    nudged = tuple(
+        (
+            StoredPiece(**{**_piece_fields(piece), "box": (piece.box[0] + 3, *piece.box[1:])})
+            if piece.page_sha256 == PAGES["a"] and piece.slot == 1
+            else piece
+        )
+        for piece in run.pieces
+    )
+    card = _score(StoredPiecesRun(**{**_fields(run), "pieces": nudged}), FACE_TAG)
+
+    assert _outcomes(card)["a1"] == RIGHT
+
+
+def test_a_row_of_one_known_width_cannot_be_verified() -> None:
+    document = key_document()
+    for case in document["cases"][3:5]:
+        case["row_widths"] = ["1", None]
+    card = _score(stored_run(), PRODUCT, document)
+
+    assert _outcomes(card)["b0"] == ROW_UNVERIFIED
+
+
+def test_two_cases_of_one_row_with_different_widths_are_refused() -> None:
+    document = key_document()
+    document["cases"][1]["row_widths"] = ["1", "3", "4"]
+    with pytest.raises(KeyFormatError, match="row_widths"):
+        load_kinds_key(document)
+
+
+def test_malformed_pieces_are_counted_never_silent() -> None:
+    card = _score(StoredPiecesRun(**{**_fields(stored_run()), "malformed": 2}), PRODUCT)
+
+    assert _metric(card, "skipped_malformed") == (2, 11)
+
+
+def _piece_fields(piece: StoredPiece) -> dict[str, Any]:
+    return {name: getattr(piece, name) for name in piece.__dataclass_fields__}
+
+
 # --- compare ------------------------------------------------------------------------------------
 
 
@@ -348,6 +452,36 @@ def test_better_with_no_new_wrong_is_accepted_and_a_new_wrong_rejected() -> None
     accepted = compare_kinds(before, _score(stored_run(b=quiet_b), FACE_TAG))
     assert accepted.accepted, accepted.verdict
     assert {change.after for change in accepted.fixed} == {RIGHT}
+
+
+def test_a_case_that_becomes_unverified_is_rejected_as_no_longer_asked() -> None:
+    before = _score(stored_run(), PRODUCT)
+    run = stored_run()
+    # The run's last piece on page a is now far wider than the key's: another row, same count.
+    moved = tuple(
+        (
+            StoredPiece(**{**_piece_fields(piece), "box": (piece.box[0], 1000, 3000, 1100)})
+            if piece.page_sha256 == PAGES["a"] and piece.slot == 2
+            else piece
+        )
+        for piece in run.pieces
+    )
+    after = _score(StoredPiecesRun(**{**_fields(run), "pieces": moved}), PRODUCT)
+
+    comparison = compare_kinds(before, after)
+
+    assert not comparison.accepted
+    assert "no longer asked" in comparison.verdict
+    assert {change.after for change in comparison.dropped} == {ROW_UNVERIFIED}
+
+
+def test_compare_kinds_refuses_a_card_of_another_agent() -> None:
+    kinds = _score(stored_run(), PRODUCT)
+    other = replace(kinds, agent="rekha-walls")
+
+    for before, after in ((other, other), (kinds, other), (other, kinds)):
+        with pytest.raises(IncomparableRuns, match="bala-kinds"):
+            compare_kinds(before, after)
 
 
 def test_scorecards_of_different_keys_are_not_compared() -> None:
@@ -511,6 +645,7 @@ def test_the_scorecard_of_a_stored_run(session: Session) -> None:
                 "page_sha256": "1" * 64,
                 "question_id": f"p0:piece{slot}",
                 "pieces": 2,
+                "row_widths": ["1", "3"],
                 "answer": {"kinds": [kind]},
             }
             for slot, kind in ((0, "filler"), (1, "cabinet"))
@@ -525,3 +660,30 @@ def test_the_scorecard_of_a_stored_run(session: Session) -> None:
     assert _metric(tags, "right") == (1, 2)
     assert _metric(product, "named_pieces") == (1, 2)
     assert product.source["document_sha256"] == "1" * 64
+
+
+def test_malformed_piece_flags_are_counted_and_the_overall_is_not_a_piece(
+    session: Session,
+) -> None:
+    version, run = synthetic_pieces_run(session)
+    page = session.execute(
+        text("SELECT page_id FROM observation_candidates WHERE extraction_run_id = :run LIMIT 1"),
+        {"run": run.id},
+    ).scalar_one()
+    from app.models.document import Page
+
+    on_page = session.get(Page, page)
+    for flags in (
+        ["slot-reader", "slot:2"],  # no span
+        ["slot-reader", "slot:3", "slot-box:1,2,3"],  # a span of three numbers
+        ["slot-reader", "slot:three", "slot-box:400,1000,500,1100"],  # no position
+        ["slot-reader"],  # neither
+    ):
+        _candidate(session, version, on_page, run, "invented", (0, 0, 10, 10), flags)
+    session.commit()
+
+    stored = load_stored_pieces(session, database="synthetic")
+
+    # `slot:overall` is the row's overall, not a piece: never counted as malformed.
+    assert stored.malformed == 4
+    assert len(stored.pieces) == 2

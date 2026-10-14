@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,7 @@ def _key(tmp_path: Path, second: str = "cabinet") -> Path:
                         "page_sha256": "1" * 64,
                         "question_id": f"p0:piece{slot}",
                         "pieces": 2,
+                        "row_widths": ["1", "3"],
                         "answer": {"kinds": [kind]},
                     }
                     for slot, kind in ((0, "filler"), (1, second))
@@ -165,6 +167,10 @@ def test_a_form_key_becomes_a_key_the_scorer_reads() -> None:
     )
 
     key = load_kinds_key(document)
+    # Each case carries its row's widths, so a scorer can check the run read the same row.
+    assert [case.row_widths for case in key.cases] == [
+        (Fraction(2), Fraction(20), Fraction(1)),
+    ] * 3 + [(Fraction(1), Fraction(5))] * 2
     shown = [(c.page_sha256[0], c.question_id, c.pieces, str(c.truth)) for c in key.cases]
     assert shown == [
         ("2", "p1:piece0", 3, "filler"),
@@ -195,3 +201,23 @@ def test_a_form_key_with_nothing_to_key_is_refused() -> None:
             version="1",
             source="invented",
         )
+
+
+@pytest.mark.parametrize(
+    ("text", "inches"),
+    [
+        ('2"', Fraction(2)),
+        ('11 3/8"', Fraction(91, 8)),
+        ("28 in", Fraction(28)),
+        ("1 3/4 in", Fraction(7, 4)),
+        ("203 mm [8 in]", Fraction(8)),  # the inch half is the authority
+        ("64 [2 1/2]", Fraction(5, 2)),
+        ('4"+1" Filler', Fraction(5)),  # two fillers drawn as one piece
+        ('97"(6EQ)', Fraction(97)),
+        ("203 mm", None),  # millimetres alone are never read as inches
+        ("unknown", None),
+        ("", None),
+    ],
+)
+def test_the_form_keys_width_text_becomes_exact_inches(text: str, inches: Fraction | None) -> None:
+    assert pariksha_kind_key.width_inches(text) == inches
