@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, ValidationError
 
+from extraction.depth.prompts import DEPTH_PROMPT_IDS
 from extraction.form_reader.bedrock import (
     KIMI_EFFORT,
     KIMI_K3_MODEL,
@@ -82,6 +83,8 @@ from extraction.slot_reader.walls import WALL_PROMPT, WALL_PROMPT_ID, Side, Wall
 from vocabulary.semantic_types import ProductType
 
 if TYPE_CHECKING:
+    from extraction.depth.output import DepthReply
+    from extraction.depth.prompts import DepthQuestion
     from extraction.slot_reader.anthropic import BatchSpendGuard
 
 __all__ = [
@@ -1795,10 +1798,15 @@ class CropJob:
     architect_candidates: int | None = None
     arch_match_common_scale: bool = False
     """Whether every panel of the match picture is drawn at the same size per real inch."""
+    depth: DepthQuestion | None = None
+    """A depth and sink reader question (#1265): asked by `extraction.depth.read` under its own
+    pinned prompt id, with its own pictures (`png` is the first of them)."""
 
     @property
     def pictures(self) -> tuple[bytes, ...]:
         """Every picture this job's request shows, in no particular order."""
+        if self.depth is not None:
+            return self.depth.pictures
         return tuple(
             picture
             for picture in (self.png, self.view_png, self.upright_png)
@@ -1808,6 +1816,11 @@ class CropJob:
 
 def job_prompt_id(job: CropJob, product: ProductType | None) -> str:
     """The prompt id the job's question is asked, and its answer recorded, under."""
+    if job.depth is not None:
+        # The depth reader's three pinned questions (#1265), registered here and nowhere else.
+        if job.depth.prompt_id not in DEPTH_PROMPT_IDS:
+            raise ValueError(f"{job.depth.prompt_id!r} is not a registered depth-reader prompt")
+        return job.depth.prompt_id
     if job.arch_match_question:
         return ARCH_MATCH_PROMPT_ID
     if job.arch_pair_question:
@@ -1838,12 +1851,26 @@ def _ask(
     | CounterBreakAnswer
     | ArchPairAnswer
     | ArchMatchAnswer
+    | DepthReply
 ):
     """Ask `client` the job's one question through the reader that question belongs to.
 
     The one place a job becomes a request and a reply becomes an answer: a live call and a stored
     answer reused on a re-run (#1112, `replay_stored_answer`) are read by exactly this code.
     """
+    if job.depth is not None:
+        from extraction.depth.read import ask_depth_question
+
+        return ask_depth_question(
+            job.depth,
+            client,
+            model_id=job.model_id,
+            page_index=job.page_index,
+            max_tokens=max_tokens,
+            record_attempt=record_attempt,
+            question_packet=job.question_packet,
+            claude_effort=claude_effort,
+        )
     if job.arch_match_question:
         shown = job.architect_candidates
         if isinstance(shown, bool) or not isinstance(shown, int):
@@ -1981,7 +2008,8 @@ def replay_stored_answer(
         | RowChoiceAnswer
         | CounterBreakAnswer
         | ArchPairAnswer
-        | ArchMatchAnswer,
+        | ArchMatchAnswer
+        | DepthReply,
         AttemptUsage,
     ]
     | None
@@ -2044,6 +2072,7 @@ def read_crops_parallel(
     | CounterBreakAnswer
     | ArchPairAnswer
     | ArchMatchAnswer
+    | DepthReply
     | None,
 ]:
     """Every job's answer by `(key, model_id)`; `None` where the reader abstained.
@@ -2104,6 +2133,7 @@ def read_crops_parallel(
         | CounterBreakAnswer
         | ArchPairAnswer
         | ArchMatchAnswer
+        | DepthReply
         | None,
     ]:
         if reading_stop.stopped:
@@ -2210,6 +2240,7 @@ def read_crops_parallel(
         | CounterBreakAnswer
         | ArchPairAnswer
         | ArchMatchAnswer
+        | DepthReply
         | None,
     ] = {}
     with ThreadPoolExecutor(max_workers=max_concurrent_calls) as executor:
