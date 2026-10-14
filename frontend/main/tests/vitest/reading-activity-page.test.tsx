@@ -54,7 +54,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
 
   it('while reading: the page and what stopped, under the stepper', async () => {
     pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 2, pages_total: 9, calls: 4, cost_usd: '0.040000', unpriced_calls: 0, retrying: false, updated_at: null };
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: null, items: [STOPPED], summary: { passed: 4, stopped: 1, tried_again: 0, helped: 0, waiting: 1, sentence: null } };
+    pkg.activity = { reading_id: 'r1', finished: true, updated_at: null, now: null, items: [STOPPED], summary: { passed: 4, stopped: 1, tried_again: 0, helped: 0, waiting: 1, sentence: null } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
@@ -72,7 +72,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
   it('after reading: the summary, whose counts open Decisions', async () => {
     const user = userEvent.setup();
     pkg.state = 'AWAITING_REVIEW';
-    pkg.activity = { reading_id: 'r1', updated_at: null, now: 'Tried again on 2 items: 1 now agree; 1 item waits for you.', items: [STOPPED], summary: { passed: 12, stopped: 3, tried_again: 2, helped: 1, waiting: 1, sentence: 'Tried again on 2 items: 1 now agree; 1 item waits for you.' } };
+    pkg.activity = { reading_id: 'r1', finished: true, updated_at: null, now: 'Tried again on 2 items: 1 now agree; 1 item waits for you.', items: [STOPPED], summary: { passed: 12, stopped: 3, tried_again: 2, helped: 1, waiting: 1, sentence: 'Tried again on 2 items: 1 now agree; 1 item waits for you.' } };
     render(<Page />);
     const panel = await waitFor(() => {
       const found = document.querySelector('[data-slot="reading-activity"]');
@@ -85,7 +85,7 @@ describe('ReviewPage: the live reading activity (#1239)', () => {
     await waitFor(() => expect(document.querySelector('[data-slot="needs-you-queue"]')).not.toBeNull(), { timeout: 5000 });
   });
 
-  it('shows nothing while the API sends no activity', async () => {
+  it('activity null while reading (before the attempt\'s first event): no panel, the progress line stays', async () => {
     pkg.reading = { stage: 'rows', label: "AI readers finding each page's countertop line", pages_done: 2, pages_total: 9, calls: 4, cost_usd: '0.040000', unpriced_calls: 0, retrying: false, updated_at: null };
     render(<Page />);
     // The package has loaded: the stepper shows its reading line.

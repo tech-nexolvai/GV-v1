@@ -58,17 +58,25 @@ export interface ReadingActivitySummaryOut {
 
 export interface ReadingActivityOut {
   reading_id: string;
+  /**
+   * False for a reading whose stage failed (and nothing reads now): no items, zero counts, and a
+   * sentence saying what it did is not shown. Also false for the attempt still running.
+   */
+  finished: boolean;
   updated_at: string | null;
   /** The newest line while reading; the summary sentence once the reading has ended. */
   now: string | null;
-  /** The newest 20 happenings, newest first; passes are only counted. */
+  /**
+   * Up to 20, in the server's order: items stopped, trying again, helped or waiting first (newest
+   * first), then answered pages in any places left. Passes are only counted.
+   */
   items: ReadingActivityItemOut[];
   summary: ReadingActivitySummaryOut | null;
 }
 
 /** The role each agent plays, for an item whose `role` is missing. The agent's name stays on hover. */
 const ROLES: Record<string, string> = {
-  Bala: 'the item finder',
+  Bala: 'the page sorter',
   Rekha: 'the line finder',
   Akshara: 'the number reader',
   Vastu: 'the architect reader',
@@ -217,6 +225,17 @@ export function summarySentence(summary: ReadingActivitySummaryOut | null | unde
   return waits ? `Reading finished: ${waits}.` : null;
 }
 
+/** What the screen says when a reading did not finish and the server gave no sentence. */
+export const NOT_FINISHED = 'The last reading did not finish, so what it did is not shown.';
+
+/**
+ * The line after a reading that did not finish: the server's sentence (or `now`), else
+ * `NOT_FINISHED`. Shown plainly: none of its numbers are counts to act on.
+ */
+export function unfinishedSentence(activity: Pick<ReadingActivityOut, 'summary' | 'now'>): string {
+  return activity.summary?.sentence?.trim() || activity.now?.trim() || NOT_FINISHED;
+}
+
 /**
  * A count a reviewer can act on, as #1242 writes it: "3 now agree", "1 item waits for you",
  * "2 items wait for you" (also "N now agrees" and "N wait for you", so the fallback never breaks it).
@@ -269,6 +288,8 @@ export function readActivity(value: unknown): ReadingActivityOut | null {
   const s = raw.summary && typeof raw.summary === 'object' ? (raw.summary as Record<string, unknown>) : null;
   return {
     reading_id: raw.reading_id,
+    // Absent (an older answer) counts as finished: only an explicit false says it did not finish.
+    finished: raw.finished !== false,
     updated_at: text(raw.updated_at),
     now: text(raw.now),
     items,

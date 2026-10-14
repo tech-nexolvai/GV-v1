@@ -9,6 +9,7 @@ import {
   readingHeadline,
   roleTag,
   summarySentence,
+  unfinishedSentence,
   type ReadingActivityItemOut,
   type ReadingActivityOut,
 } from '@/lib/reading-activity';
@@ -20,10 +21,15 @@ export const SHOWN_ITEMS = 4;
 /**
  * The live reading activity (#1239), under the review stepper and on the Measurements tab.
  *
- * While reading: the server's `now`, then the newest happenings — an inspector stopping an AI, the
+ * While reading: the server's `now`, then the first happenings in the server's order — an inspector
+ * stopping an AI (or the page sorter leaving a page unread), the
  * AI trying again and what changed, and whether that helped — each with a glyph by state and the
  * role that did it ("Line finder"; the agent's name on hover). After reading: the server's summary
  * sentence ("Tried again on 2 items: 1 now agree; 1 item waits for you."), whose counts open Decisions.
+ *
+ * A reading that did not finish shows only its sentence, plainly, with no counts or links. While a
+ * reading runs, `activity` is null until its first event: the panel is then absent, and the stepper's
+ * progress line still says where the reading is.
  *
  * Every sentence is the server's (#1238); the screen's own wording in `lib/reading-activity.ts` is
  * only a fallback for a sentence that is missing.
@@ -50,16 +56,20 @@ export function ReadingActivity({
   className?: string;
 }) {
   if (!activity) return null;
-  const summary = reading ? null : summarySentence(activity.summary, activity.now);
+  // A reading that did not finish says so plainly: no counts, no links (#1242).
+  const unfinished = !reading && !activity.finished;
+  const summary = reading ? null : unfinished ? unfinishedSentence(activity) : summarySentence(activity.summary, activity.now);
   if (!reading && !summary) return null;
 
-  const newest = [...activity.items].sort(byNewest).slice(0, SHOWN_ITEMS);
+  // The server's order: stops and tries first, answered pages only in places left. Never re-sorted.
+  const newest = activity.items.slice(0, SHOWN_ITEMS);
   const headline = readingHeadline(progress, activity.now, newest[0] ? activityLine(newest[0]) : null);
   return (
     <section
       data-tw
       data-slot="reading-activity"
       data-reading={reading ? 'true' : 'false'}
+      data-finished={activity.finished ? 'true' : 'false'}
       aria-label="Reading activity"
       className={cn('flex flex-col gap-1.5 rounded-xl border border-border bg-card px-3 py-2 font-sans text-sm', className)}
     >
@@ -79,6 +89,8 @@ export function ReadingActivity({
               </TooltipProvider>
             )}
           </>
+        ) : unfinished ? (
+          <p className="text-muted-foreground">{summary}</p>
         ) : summary && (
           <p>
             {activity.summary && activity.summary.waiting > 0 && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mr-1.5 inline-block align-[-3px] text-outcome-review-fg" />}
@@ -88,11 +100,6 @@ export function ReadingActivity({
       </div>
     </section>
   );
-}
-
-function byNewest(a: ReadingActivityItemOut, b: ReadingActivityItemOut): number {
-  const at = (item: ReadingActivityItemOut) => (item.at ? Date.parse(item.at) || 0 : 0);
-  return at(b) - at(a);
 }
 
 /**

@@ -346,7 +346,7 @@ describe('measurements: the live reading activity while reading (#1239)', () => 
       return json({ error: 'unexpected', message: url, request_id: 'r' }, 500);
     });
     const activity = {
-      reading_id: 'r1', updated_at: null, now: null,
+      reading_id: 'r1', finished: false, updated_at: null, now: null,
       items: [{ page: 2, agent: 'Akshara', role: 'the number reader', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look-2x', attempt: 1, line: 'Page 2: the number reader is trying again (try 1 of 3) with a 2× close-up.', at: null }],
       summary: { passed: 3, stopped: 1, tried_again: 1, helped: 0, waiting: 0, sentence: null },
     };

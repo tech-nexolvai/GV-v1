@@ -50,6 +50,7 @@ const NO_SUMMARY: ReadingActivitySummaryOut = { passed: 0, stopped: 0, tried_aga
 function activity(over: Partial<ReadingActivityOut> = {}): ReadingActivityOut {
   return {
     reading_id: '00000000-0000-4000-8000-000000000001',
+    finished: true,
     updated_at: '2026-10-14T10:00:05Z',
     now: null,
     items: [],
@@ -60,7 +61,7 @@ function activity(over: Partial<ReadingActivityOut> = {}): ReadingActivityOut {
 
 /** #1242's posted example, as JSON from the wire. */
 const POSTED = {
-  reading_id: '00000000-0000-4000-8000-000000000002', updated_at: '2026-10-14T10:00:09Z', now: SERVER.now,
+  reading_id: '00000000-0000-4000-8000-000000000002', finished: true, updated_at: '2026-10-14T10:00:09Z', now: SERVER.now,
   items: [{
     page: 12, agent: 'Akshara', role: 'the number reader', item: 'p11:slot0:0', state: 'trying_again', code: 'readers-differ',
     change: 'closer-look-3x-upright', attempt: 2, line: SERVER.trying, at: '2026-10-14T10:00:09Z',
@@ -183,6 +184,8 @@ describe('reading activity: the counts in a sentence become links to Decisions',
       { text: '.', link: false },
     ]);
     expect(linkedParts('Tried again on 5 items: 3 now agree; 2 items wait for you.').filter((p) => p.link).map((p) => p.text)).toEqual(['3 now agree', '2 items wait for you']);
+    // #1242 after its review writes "1 now agrees".
+    expect(linkedParts('Tried again on 2 items: 1 now agrees; 1 item waits for you.').filter((p) => p.link).map((p) => p.text)).toEqual(['1 now agrees', '1 item waits for you']);
     expect(linkedParts('Reading finished: 4 items wait for you.').filter((p) => p.link).map((p) => p.text)).toEqual(['4 items wait for you']);
     expect(linkedParts('Nothing to count.')).toEqual([{ text: 'Nothing to count.', link: false }]);
   });
@@ -195,6 +198,9 @@ describe('reading activity: role names on screen, agent names on hover (Anant, d
     expect(roleTag(item({ agent: 'Rekha', role: null }))).toBe('Line finder');
     expect(roleTag(item({ agent: 'Akshara', role: '' }))).toBe('Number reader');
     expect(roleTag(item({ agent: 'Somebody', role: null }))).toBe('AI helper');
+    // The page sorter's items (unread pages, budget reached, no line found) appear too (#1242).
+    expect(roleTag(item({ agent: 'Bala', role: 'the page sorter' }))).toBe('Page sorter');
+    expect(roleTag(item({ agent: 'Bala', role: null }))).toBe('Page sorter');
   });
 
   it('shows the role on the row and the agent name only on hover', async () => {
@@ -253,6 +259,25 @@ describe('reading activity: the panel', () => {
     const region = screen.getByRole('status');
     expect(within(region).getByText('Reading page 12 of 40…').tagName).toBe('P');
     expect(within(region).getAllByText(SERVER.trying)).toHaveLength(1);
+  });
+
+  it('renders the items in the server\'s order (stops and tries first, answered pages after), never re-sorted', () => {
+    show({
+      activity: activity({
+        items: [
+          item({ page: 3, agent: 'Bala', role: 'the page sorter', item: 'p2:page', code: 'budget-reached', line: 'Page 3: the page sorter left this page unread: the AI budget was reached.', at: '2026-10-14T10:00:01Z' }),
+          item({ page: 5, state: 'stopped', line: 'Page 5: the line finder stopped: the two AIs picked different lines.', at: '2026-10-14T10:00:02Z' }),
+          // Answered later, but listed after the stops: it only fills a leftover place.
+          item({ page: 9, state: 'answered', line: 'Page 9: the line finder answered.', at: '2026-10-14T10:00:09Z' }),
+        ],
+      }),
+      reading: true,
+    });
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.map((li) => li.getAttribute('data-state'))).toEqual(['stopped', 'stopped', 'answered']);
+    expect(rows[0].textContent).toContain('Page 3: the page sorter left this page unread');
+    expect(within(rows[0]).getByText('Page sorter')).toBeTruthy();
+    expect(rows[0].textContent).not.toContain('Bala');
   });
 
   it('an answered row has a plain tick; a line with no page gets one beside it', () => {
@@ -315,6 +340,23 @@ describe('reading activity: the summary after reading', () => {
     expect(screen.getByRole('status').textContent).toBe('Reading finished: 4 items wait for you.');
   });
 
+  it('a reading that did not finish: its sentence plainly, with no counts, links or glyph', () => {
+    const sentence = 'The last reading did not finish, so what it did is not shown.';
+    const onOpenDecisions = vi.fn();
+    show({ activity: activity({ finished: false, now: sentence, summary: { ...NO_SUMMARY, sentence } }), reading: false, onOpenDecisions });
+    const region = screen.getByRole('status');
+    expect(region.textContent).toBe(sentence);
+    expect(within(region).queryAllByRole('button')).toHaveLength(0);
+    expect(region.querySelector('[data-outcome-icon]')).toBeNull();
+    expect(document.querySelector('[data-slot="reading-activity"]')?.getAttribute('data-finished')).toBe('false');
+  });
+
+  it('a reading that did not finish, with no sentence: the same words from the screen, never counts', () => {
+    show({ activity: activity({ finished: false, summary: { ...NO_SUMMARY, stopped: 3, waiting: 3 } }), reading: false, onOpenDecisions: () => {} });
+    expect(screen.getByRole('status').textContent).toBe('The last reading did not finish, so what it did is not shown.');
+    expect(screen.queryAllByRole('button')).toHaveLength(0);
+  });
+
   it('shows nothing after a reading where nothing stopped (passes are only counted)', () => {
     const { container } = show({ activity: activity({ summary: { ...NO_SUMMARY, passed: 41 } }), reading: false });
     expect(container.textContent).toBe('');
@@ -327,6 +369,12 @@ describe('reading activity: the API value is read tolerantly', () => {
     expect(readActivity(null)).toBeNull();
     expect(readActivity({ reading_id: 'x' })).toBeNull();
     expect(readActivity('text')).toBeNull();
+  });
+
+  it('reads `finished`; a value that is not a boolean counts as finished', () => {
+    expect(readActivity({ ...POSTED, finished: false })?.finished).toBe(false);
+    expect(readActivity({ ...POSTED, finished: true })?.finished).toBe(true);
+    expect(readActivity({ ...POSTED, finished: undefined })?.finished).toBe(true);
   });
 
   it('keeps well-formed items and drops broken ones; odd fields become null', () => {
