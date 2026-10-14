@@ -371,6 +371,8 @@ def test_the_hatchet_worker_refuses_a_partial_reader_configuration(
 #: entry needs a reason, and a runner never belongs here.
 OFFLINE_TOOLS = frozenset(
     {
+        # Bala's read-only dry run (#1236): runs code's part finder in memory, writes nothing.
+        "scripts/bala_dry_run.py",
         "scripts/evaluate_goldset.py",
         "scripts/fraction_parts_scorecard.py",
         "scripts/run_checks.py",

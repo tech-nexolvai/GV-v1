@@ -185,6 +185,7 @@ from extraction.annotations import (
     VectorPath,
     page_box_polygon,
     read_annotation_layers,
+    read_drawing_segments,
     read_markup_layer,
 )
 from extraction.architect.reader import (
@@ -6556,21 +6557,20 @@ class DatabaseStages:
                 if page.has_vector_text
                 else None
             )
-            layers = read_annotation_layers(
+            # The same line-work the page stage's layers hold, read without their text and
+            # fractions, which the finder never looks at.
+            drawn = read_drawing_segments(
                 data,
                 page.index,
                 document_version_id=page.document_version_id,
                 dpi=self._dpi,
                 line_minimum_pt=settings.line_minimum_pt,
-                glyph_maximum_pt=settings.glyph_maximum_pt,
-                glyph_gap_pt=settings.glyph_gap_pt,
-                fraction_bar=settings.fraction_bar,
             )
         except (UnreadablePdf, ValueError) as error:
             reason = str(error).strip() or type(error).__name__
             return f"code's part finder did not run: {reason}"
         detected = detect(
-            (contents.segments if contents is not None else ()) + layers.drawing_segments,
+            (contents.segments if contents is not None else ()) + drawn,
             witness_tolerance=settings.witness_tolerance,
             minimum_span=settings.minimum_span,
             straightness=settings.straightness,

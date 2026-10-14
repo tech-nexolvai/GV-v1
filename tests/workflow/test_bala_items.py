@@ -604,3 +604,28 @@ def test_without_the_finder_s_settings_its_judgment_is_reported_not_run(session:
     (row,) = planned.rows
     assert row.code_finder == "code's part finder is off: its settings are not stated"
     assert row.automatic.pieces_code_agrees == (None,)
+
+
+def test_the_finder_reads_exactly_the_line_work_the_page_layers_hold() -> None:
+    """`read_drawing_segments` skips the text regions and fractions, never a line: on the sheet,
+    its segments are the layers' own, in the same order."""
+    from uuid import uuid4 as fresh
+
+    from extraction.annotations import read_annotation_layers, read_drawing_segments
+    from tests.workflow.test_part_proposals_route import SHEET
+
+    version = fresh()
+    layers = read_annotation_layers(
+        SHEET,
+        0,
+        document_version_id=version,
+        dpi=150,
+        line_minimum_pt=SETTINGS.line_minimum_pt,
+        glyph_maximum_pt=SETTINGS.glyph_maximum_pt,
+        glyph_gap_pt=SETTINGS.glyph_gap_pt,
+        fraction_bar=SETTINGS.fraction_bar,
+    )
+    segments = read_drawing_segments(
+        SHEET, 0, document_version_id=version, dpi=150, line_minimum_pt=SETTINGS.line_minimum_pt
+    )
+    assert layers.drawing_segments and segments == layers.drawing_segments
