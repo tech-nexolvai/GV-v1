@@ -50,10 +50,11 @@ export function ReadingActivity({
   className?: string;
 }) {
   if (!activity) return null;
-  const summary = reading ? null : summarySentence(activity.summary);
+  const summary = reading ? null : summarySentence(activity.summary, activity.now);
   if (!reading && !summary) return null;
 
   const newest = [...activity.items].sort(byNewest).slice(0, SHOWN_ITEMS);
+  const headline = readingHeadline(progress, activity.now, newest[0] ? activityLine(newest[0]) : null);
   return (
     <section
       data-tw
@@ -67,7 +68,7 @@ export function ReadingActivity({
           <>
             <p className="flex items-center gap-1.5 font-medium">
               <ScanText className="size-4 shrink-0" aria-hidden="true" />
-              {readingHeadline(progress, activity.now)}
+              {headline}
             </p>
             {newest.length > 0 && (
               // Its own provider, so the panel works wherever it is placed (the Measurements tab too).

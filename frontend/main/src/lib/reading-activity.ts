@@ -183,27 +183,31 @@ export function activityGlyph(item: Pick<ReadingActivityItemOut, 'state'>): Acti
 
 /**
  * The panel's first line while reading: the server's `now`; without it, "Reading page 12 of 40…"
- * from the worker's progress line; else just "Reading…".
+ * from the worker's progress line; else just "Reading…". When `now` only repeats the newest
+ * item's line (shown just below it), the page count leads instead, so nothing is said twice
+ * (orchestrator, 2026-10-14).
  */
 export function readingHeadline(
   progress: { pagesDone: number | null; pagesTotal: number | null } | null | undefined,
   now: string | null | undefined,
+  newestLine?: string | null,
 ): string {
   const said = now?.trim();
-  if (said) return said;
+  if (said && said !== newestLine?.trim()) return said;
   const pages = progress ? pageWords(progress) : null;
   return pages?.startsWith('page ') ? `Reading ${pages}…` : 'Reading…';
 }
 
 /**
- * The line after reading: the server's `summary.sentence`; without it, "Tried again on 5 items: 3
- * now agree; 4 items wait for you." or "Reading finished: 4 items wait for you." from the counts, with
- * `waiting` used as it is (every item waiting for a person). Null when there is nothing to say.
+ * The line after reading: the server's `summary.sentence`; if that is empty, the server's `now`
+ * (orchestrator, 2026-10-14); without either, "Tried again on 5 items: 3 now agree; 4 items wait
+ * for you." or "Reading finished: 4 items wait for you." from the counts, with `waiting` used as it
+ * is (every item waiting for a person). Null when there is nothing to say.
  */
-export function summarySentence(summary: ReadingActivitySummaryOut | null | undefined): string | null {
-  if (!summary) return null;
-  const said = summary.sentence?.trim();
+export function summarySentence(summary: ReadingActivitySummaryOut | null | undefined, now?: string | null): string | null {
+  const said = summary?.sentence?.trim() || now?.trim();
   if (said) return said;
+  if (!summary) return null;
   const { tried_again: tried, helped, waiting } = summary;
   const waits = waiting > 0 ? `${waiting} ${waiting === 1 ? 'item waits' : 'items wait'} for you` : null;
   if (tried > 0) {

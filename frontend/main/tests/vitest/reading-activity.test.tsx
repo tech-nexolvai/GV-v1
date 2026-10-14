@@ -94,8 +94,20 @@ describe('reading activity: the server owns every sentence (#1242)', () => {
     expect(readingHeadline(null, null)).toBe('Reading…');
   });
 
-  it('the summary: the server\'s sentence first', () => {
+  it('reading: when `now` repeats the newest item\'s line, the page count instead (orchestrator, 2026-10-14)', () => {
+    expect(readingHeadline({ pagesDone: 11, pagesTotal: 40 }, SERVER.trying, SERVER.trying)).toBe('Reading page 12 of 40…');
+    // Compared as trimmed text; with no page count, just "Reading…".
+    expect(readingHeadline(null, `${SERVER.trying} `, SERVER.trying)).toBe('Reading…');
+    // A different newest line keeps `now`.
+    expect(readingHeadline({ pagesDone: 11, pagesTotal: 40 }, SERVER.now, SERVER.stopped)).toBe(SERVER.now);
+  });
+
+  it('the summary: the server\'s sentence first, then `now`, then the fallback (orchestrator, 2026-10-14)', () => {
     expect(summarySentence(POSTED.summary)).toBe(SERVER.summary);
+    expect(summarySentence(POSTED.summary, 'Something else the server said.')).toBe(SERVER.summary);
+    expect(summarySentence({ ...POSTED.summary, sentence: '' }, 'Reading finished: 1 item waits for you.')).toBe('Reading finished: 1 item waits for you.');
+    expect(summarySentence({ ...POSTED.summary, sentence: null }, '  ')).toBe('Tried again on 2 items: 1 now agree; 1 item waits for you.');
+    expect(summarySentence(null, 'Reading finished: nothing waits for you.')).toBe('Reading finished: nothing waits for you.');
   });
 
   it('reads #1242\'s posted example exactly', () => {
@@ -232,6 +244,17 @@ describe('reading activity: the panel', () => {
     expect(rows.some((li) => li.textContent?.includes('· page'))).toBe(false);
   });
 
+  it('while reading: `now` that repeats the newest line is not shown twice; the page count leads', () => {
+    show({
+      activity: activity({ now: SERVER.trying, items: [item({ agent: 'Akshara', role: 'the number reader', state: 'trying_again', change: 'closer-look-3x-upright', attempt: 2, line: SERVER.trying })] }),
+      reading: true,
+      progress: { pagesDone: 11, pagesTotal: 40 },
+    });
+    const region = screen.getByRole('status');
+    expect(within(region).getByText('Reading page 12 of 40…').tagName).toBe('P');
+    expect(within(region).getAllByText(SERVER.trying)).toHaveLength(1);
+  });
+
   it('an answered row has a plain tick; a line with no page gets one beside it', () => {
     show({ activity: activity({ items: [item({ state: 'answered', page: 4, line: 'The line finder answered.' })] }), reading: true });
     const row = screen.getByRole('listitem');
@@ -278,6 +301,13 @@ describe('reading activity: the summary after reading', () => {
     expect(screen.getByRole('status').textContent).toBe('Reading finished: two items are held. Open Decisions');
     await userEvent.click(screen.getByRole('button', { name: 'Open Decisions' }));
     expect(onOpenDecisions).toHaveBeenCalledTimes(1);
+  });
+
+  it('with an empty summary sentence, the server\'s `now`', () => {
+    // Worded unlike the fallback, so the test sees which one was used.
+    show({ activity: activity({ now: 'All pages read: 2 items wait for you to decide.', summary: { ...NO_SUMMARY, stopped: 2, waiting: 2, sentence: '' } }), reading: false, onOpenDecisions: () => {} });
+    expect(screen.getByRole('status').textContent).toBe('All pages read: 2 items wait for you to decide.');
+    expect(screen.getByRole('button', { name: '2 items wait for you' })).toBeTruthy();
   });
 
   it('without a server sentence, the fallback wording', () => {
