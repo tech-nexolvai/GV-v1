@@ -212,6 +212,22 @@ def test_no_cut_off_or_lost_fraction_of_a_true_label_gives_a_wrong_value() -> No
             assert _inches(text) in (None, inches), (text, inches)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "7 [3/8]",  # a stacked 7 3/8" split in two: 9.5 mm is 2.5 mm from 7, more than 2.09
+        "13 [5/8]",  # 15.9 mm is 2.9 mm from 13: within 3 mm, not within 0.5 + 1.59 mm
+        "3 [3/16]",  # 4.8 mm is 1.8 mm from 3: within 3 mm, not within 0.5 + 0.79 mm
+    ],
+)
+def test_a_small_fraction_label_needs_both_roundings_as_well_as_3_mm(text: str) -> None:
+    """GV's order: the smaller of 3 mm and both printed roundings, so no label `main` held for its
+    mm becomes a value (coordinator, 2026-10-15: strictly tighter than Anant's 3 mm)."""
+    assert _inches(text) is None
+    assert _inches(text, allow_explicit_mm=True) is None
+    assert mm_inch_refusal(text) is not None
+
+
 def test_the_mm_side_is_never_a_fraction() -> None:
     """`25 1/2 [1]`: 1 mm is not 25 1/2" either way, and reading `25 1/2` as millimetres could
     never be right; nor may `1` become the inches against a fraction of a millimetre."""
@@ -238,19 +254,24 @@ def test_a_zero_inch_value_from_a_pair_is_never_accepted() -> None:
 
 
 def test_the_two_allowances_are_three_mm_for_gvs_order_and_the_mm_digit_for_inches_first() -> None:
-    """mm first (GV's order): within 3 mm of 25.4 times the inches, inclusive (Anant, 2026-10-15).
+    """mm first (GV's order): within 3 mm of 25.4 times the inches, inclusive (Anant, 2026-10-15),
+    and never more than both printed roundings allow (half the mm's step plus half the inch's step
+    in mm), so a label `main` held never becomes a value: for a fraction under 1/4" the roundings
+    are the tighter bound (1/8": 0.5 + 1.5875 mm).
     Inches first: within half the mm's last printed digit, the mm's own rounding only, so a GV
     label whose mm lost digits is never read the other way round. Exact fractions throughout."""
     for inch_text in ("1", "12", "24 1/2", "3/4", "17 5/16", "9 7/8", "40 3/8", "64"):
         whole, _, fraction = inch_text.partition(" ")
         inches = Fraction(whole) + (Fraction(fraction) if fraction else 0)
         centre = inches * Fraction(254, 10)
+        step = Fraction(1, int(inch_text.rsplit("/", 1)[1])) if "/" in inch_text else Fraction(1)
+        roundings = Fraction(1, 2) + Fraction(254, 10) * step / 2
         for offset in range(-16, 17):
             mm = int(centre) + offset
             if mm <= 0:
                 continue
             gap = abs(mm - centre)
-            gv_order = inches if gap <= 3 else None
+            gv_order = inches if gap <= min(Fraction(3), roundings) else None
             inches_first = inches if gap <= Fraction(1, 2) else None
             assert _inches(f"{mm} [{inch_text}]") == gv_order, (mm, inch_text)
             assert _inches(f"{inch_text} [{mm}]") == inches_first, (inch_text, mm)
