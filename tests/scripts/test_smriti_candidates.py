@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from eval.pariksha.keys import AnswerKey, read_key
 from eval.smriti.confirm import CONFIRMATIONS_FORMAT
 from tests.eval.test_pariksha_stored import PAGE_HASH, slot_box_of, synthetic_run
-from tests.eval.test_smriti_export import build_world
+from tests.eval.test_smriti_export import REVIEWER, build_world
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
@@ -68,10 +68,68 @@ def _url(engine: Engine) -> str:
     return engine.url.render_as_string(hide_password=False)
 
 
-def test_export_list_and_confirm_write_a_local_key_and_nothing_else(
+def _sha(path: Path) -> str:
+    return str(json.loads(path.read_text())["sha256"])
+
+
+def _write_answers(
+    path: Path,
+    candidates: Path,
+    *answers: dict[str, object],
+    session: Session | None = None,
+    confirmed_by: str | None = None,
+) -> Path:
+    """What the review page's "Copy answers" gives: each Yes names the stored pictures its card
+    showed (read here from the database, as the page reads them)."""
+    from eval.smriti.candidates import read_candidates
+    from eval.smriti.confirm import stored_questions
+    from tests.eval.test_smriti_export import REVIEWER
+
+    shown: dict[str, list[str]] = {}
+    if session is not None:
+        stored = stored_questions(session, read_candidates(candidates).candidates)
+        shown = {cid: [sha for _n, sha, _k in q.pictures] for cid, q in stored.items()}
+    path.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMATIONS_FORMAT,
+                "confirmed_by": confirmed_by or REVIEWER,
+                "candidates_sha256": _sha(candidates),
+                "answers": [
+                    {"pictures": shown.get(str(answer["candidate"]), []), **answer}
+                    for answer in answers
+                ],
+            }
+        )
+    )
+    return path
+
+
+def _confirm_args(
+    candidates: Path, answers: Path, out_dir: Path, library: Path, *extra: str
+) -> list[str]:
+    return [
+        "confirm",
+        str(candidates),
+        "--confirmations",
+        str(answers),
+        "--out-dir",
+        str(out_dir),
+        "--version",
+        "1",
+        "--library",
+        str(library),
+        "--vendor-file",
+        str(library.parent / "vendor-errors.jsonl"),
+        *extra,
+    ]
+
+
+def test_export_list_and_confirm_write_a_local_key_and_register_it(
     engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from app.models.evidence import NoCountertopAnswer
+    from eval.smriti.library import read_library
 
     world = build_world(session)
     candidates = tmp_path / "candidates.json"
@@ -85,73 +143,263 @@ def test_export_list_and_confirm_write_a_local_key_and_nothing_else(
     listed = capsys.readouterr().out.split("can become key cases", 1)[1]
     assert f"- no_countertop_answers:{world.no_countertop_reader}" in listed
     assert "- architect_pairing_records" not in listed
-    assert "- slot_row_review_decisions" not in listed
 
     # Exporting wrote no key: a candidate is only a candidate.
     assert sorted(path.name for path in tmp_path.iterdir()) == ["candidates.json"]
 
-    confirmations = tmp_path / "confirmations.json"
-    confirmations.write_text(
-        json.dumps(
-            {
-                "format": CONFIRMATIONS_FORMAT,
-                "confirmed_by": "a person",
-                "key": {"agent": "rekha", "name": "invented", "version": "1"},
-                "confirm": [{"candidate": f"no_countertop_answers:{world.no_countertop_reader}"}],
-            }
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": f"no_countertop_answers:{world.no_countertop_reader}", "verdict": "yes"},
+        session=session,
+    )
+    out_dir = tmp_path / "keys"
+    library = tmp_path / "library.json"
+    db = ("--db", _url(engine))
+    assert smriti_candidates.main(_confirm_args(candidates, answers, out_dir, library, *db)) == 0
+    written = sorted(out_dir.iterdir())
+    assert [path.name for path in written] == ["rekha-smriti-1.json"]
+    key = read_key(written[0])
+    assert isinstance(key, AnswerKey)
+    assert [case.question.question_id for case in key.cases] == ["p0:row-choice"]
+    # Registered in the key library, with who confirmed it.
+    entries = read_library(library).entries
+    assert [(entry.agent, entry.sha256, entry.confirmed_by) for entry in entries] == [
+        ("rekha", key.sha256, REVIEWER)
+    ]
+    # The database was only read.
+    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 4
+    # Written once: a second confirm to the same keys is refused.
+    assert (
+        smriti_candidates.main(_confirm_args(candidates, answers, out_dir, library, *db))
+        == smriti_candidates.REFUSED
+    )
+
+
+def _piece_on_a_row_with_widths(session: Session) -> object:
+    """A person's piece kind on a row the run stored with widths: piece 0 2", piece 1 12 1/2"."""
+    from app.models.document import Page
+    from app.models.drawing import (
+        DrawingItem,
+        DrawingView,
+        PartConfirmation,
+        PartProposal,
+        PartProposalRow,
+    )
+    from app.models.evidence import NoCountertopAnswer, ObservationCandidate
+    from tests.eval.test_smriti_export import REVIEWER, _ask, _run
+    from vocabulary.part_kinds import PartKind
+
+    page = session.scalars(select(Page)).one()
+    view = session.scalars(select(DrawingView).where(DrawingView.page_id == page.id)).first()
+    revision = session.scalars(select(NoCountertopAnswer.package_revision_id)).first()
+    assert view is not None and revision is not None
+    run = _run(session, revision, "extraction.form_reader")
+    spans = []
+    for slot, (numerator, denominator) in enumerate(((2, 1), (25, 2))):
+        span = ObservationCandidate(
+            document_version_id=page.document_version_id,
+            page_id=page.id,
+            extraction_run_id=run.id,
+            raw_text="invented",
+            value_numerator=numerator,
+            value_denominator=denominator,
+            unit="in",
+            polygon=[[0, 0], [1, 1]],
+            ambiguity_flags=["slot-reader", f"slot:{slot}", "row-rank:1"],
+        )
+        session.add(span)
+        session.flush()
+        spans.append(span.id)
+        _ask(
+            session,
+            run.id,
+            page.document_version_id,
+            page.content_hash,
+            f"p{page.index}:slot{slot}:0",
+            "claude-slot-span-v4",
+            [str(span.id)],
+        )
+    proposal = PartProposal(
+        drawing_view_id=view.id,
+        kind="filler",
+        extent={"space": "stored", "points": [["0", "0"], ["1", "1"]]},
+        source="bala",
+        source_version="1",
+        reason="invented",
+    )
+    session.add(proposal)
+    session.flush()
+    session.add(
+        PartProposalRow(
+            part_proposal_id=proposal.id,
+            row_candidate_id=spans[0],
+            slot_index=1,
+            extraction_run_id=run.id,
+            kind_named=False,
         )
     )
-    key_path = tmp_path / "key.json"
+    item = DrawingItem(
+        drawing_view_id=view.id,
+        item_type=PartKind.CABINET.item_type.value,
+        extent={"space": "stored", "points": [["0", "0"], ["1", "1"]]},
+    )
+    session.add(item)
+    session.flush()
+    decision = PartConfirmation(
+        part_proposal_id=proposal.id,
+        decision="confirmed",
+        kind="cabinet",
+        drawing_item_id=item.id,
+        confirmed_by=REVIEWER,
+    )
+    session.add(decision)
+    session.commit()
+    return decision.id
+
+
+def test_every_key_type_is_confirmed_registered_and_read_by_pariksha(
+    engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from eval.pariksha.kinds import KindsKey
+    from eval.pariksha.walls import WallsKey
+    from eval.smriti.library import read_any_key, read_library
+    from tests.eval.test_smriti_export import build_v2_world
+
+    world = build_v2_world(session)
+    piece = _piece_on_a_row_with_widths(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    capsys.readouterr()
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {
+            "candidate": f"no_countertop_answers:{world.countertop_answer}",
+            "verdict": "yes",
+            "box": 2,
+        },
+        {"candidate": f"review_actions:{world.confirm_action}", "verdict": "yes"},
+        {"candidate": f"part_confirmations:{piece}", "verdict": "yes"},
+        {
+            "candidate": f"slot_row_review_decisions:{world.walls_decision}:walls",
+            "verdict": "yes",
+            "left": "wall",
+            "right": "open",
+        },
+        session=session,
+    )
+    out_dir = tmp_path / "keys"
+    library = tmp_path / "library.json"
+    # The stored pictures and a piece's row widths come from the database, so it is needed.
+    assert (
+        smriti_candidates.main(_confirm_args(candidates, answers, out_dir, library))
+        == smriti_candidates.REFUSED
+    )
+    assert "--db" in capsys.readouterr().err
+    assert not out_dir.exists() and not library.exists()
     assert (
         smriti_candidates.main(
-            [
-                "confirm",
-                str(candidates),
-                "--confirmations",
-                str(confirmations),
-                "--out",
-                str(key_path),
-            ]
+            _confirm_args(candidates, answers, out_dir, library, "--db", _url(engine))
         )
         == 0
     )
-    key = read_key(key_path)
-    assert isinstance(key, AnswerKey)
-    assert [case.question.question_id for case in key.cases] == ["p0:row-choice"]
-    # The database was only read.
-    assert session.scalar(select(func.count()).select_from(NoCountertopAnswer)) == 4
-    # Written once: a second confirm to the same file is refused.
-    assert (
-        smriti_candidates.main(
-            [
-                "confirm",
-                str(candidates),
-                "--confirmations",
-                str(confirmations),
-                "--out",
-                str(key_path),
-            ]
-        )
-        == smriti_candidates.REFUSED
+    keys = {path.name: read_any_key(path) for path in out_dir.iterdir()}
+    assert sorted(keys) == [
+        "akshara-smriti-1.json",
+        "bala-kinds-smriti-1.json",
+        "rekha-smriti-1.json",
+        "rekha-walls-smriti-1.json",
+    ]
+    kinds = keys["bala-kinds-smriti-1.json"]
+    assert isinstance(kinds, KindsKey)
+    assert [str(width) for width in kinds.cases[0].row_widths or ()] == ["2", "25/2"]
+    walls = keys["rekha-walls-smriti-1.json"]
+    assert isinstance(walls, WallsKey)
+    assert walls.cases[0].site_layout == "back_and_left"
+    rows = keys["rekha-smriti-1.json"]
+    assert isinstance(rows, AnswerKey) and len(rows.cases) == 1
+    registered = read_library(library).entries
+    assert sorted(entry.agent for entry in registered) == [
+        "akshara",
+        "bala-kinds",
+        "rekha",
+        "rekha-walls",
+    ]
+    assert {entry.sha256 for entry in registered} == {key.sha256 for key in keys.values()}
+
+
+def test_an_unlisted_actor_is_never_written(
+    engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.eval.test_smriti_export import build_v2_world
+
+    world = build_v2_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": f"part_confirmations:{world.stranger_piece}", "verdict": "yes"},
+        session=session,
     )
+    out_dir = tmp_path / "keys"
+    arguments = _confirm_args(
+        candidates, answers, out_dir, tmp_path / "library.json", "--db", _url(engine)
+    )
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "list of real reviewers" in capsys.readouterr().err
+    assert not out_dir.exists()
+
+
+def test_a_conflict_with_a_registered_key_is_refused_and_nothing_is_written(
+    engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.eval.test_smriti_export import build_v2_world
+
+    world = build_v2_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    library = tmp_path / "library.json"
+    pick = f"no_countertop_answers:{world.countertop_answer}"
+    first = _write_answers(
+        tmp_path / "first.json",
+        candidates,
+        {"candidate": pick, "verdict": "yes", "box": 1},
+        session=session,
+    )
+    db = ("--db", _url(engine))
+    assert (
+        smriti_candidates.main(_confirm_args(candidates, first, tmp_path / "a", library, *db)) == 0
+    )
+    second = _write_answers(
+        tmp_path / "second.json",
+        candidates,
+        {"candidate": pick, "verdict": "yes", "box": 2},
+        session=session,
+    )
+    arguments = _confirm_args(candidates, second, tmp_path / "b", library, *db)
+    arguments[arguments.index("--version") + 1] = "2"
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "different answer" in capsys.readouterr().err
+    assert not (tmp_path / "b").exists()
 
 
 @pytest.mark.parametrize("command", ["export", "confirm"])
 def test_an_output_inside_a_git_working_tree_is_refused(
     tmp_path: Path, command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    inside = REPO / "smriti-should-never-exist.json"
+    inside = REPO / "smriti-should-never-exist"
     arguments = (
         ["export", "--db", "postgresql+psycopg://nobody@localhost:1/none", "--out", str(inside)]
         if command == "export"
-        else [
-            "confirm",
-            str(tmp_path / "candidates.json"),
-            "--confirmations",
-            str(tmp_path / "confirmations.json"),
-            "--out",
-            str(inside),
-        ]
+        else _confirm_args(
+            tmp_path / "candidates.json",
+            tmp_path / "confirmations.json",
+            inside,
+            tmp_path / "library.json",
+        )
     )
     assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
     assert "git working tree" in capsys.readouterr().err
@@ -164,33 +412,18 @@ def test_a_confirmation_without_a_person_refuses_and_writes_nothing(
     build_world(session)
     candidates = tmp_path / "candidates.json"
     assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
-    confirmations = tmp_path / "confirmations.json"
-    confirmations.write_text(
-        json.dumps(
-            {
-                "format": CONFIRMATIONS_FORMAT,
-                "confirmed_by": "a person",
-                "key": {"agent": "rekha", "name": "invented", "version": "1"},
-                "confirm": [],
-            }
-        )
-    )
-    key_path = tmp_path / "key.json"
+    answers = _write_answers(tmp_path / "confirmations.json", candidates)
+    out_dir = tmp_path / "keys"
     assert (
         smriti_candidates.main(
-            [
-                "confirm",
-                str(candidates),
-                "--confirmations",
-                str(confirmations),
-                "--out",
-                str(key_path),
-            ]
+            _confirm_args(
+                candidates, answers, out_dir, tmp_path / "library.json", "--db", _url(engine)
+            )
         )
         == smriti_candidates.REFUSED
     )
     assert "nothing" in capsys.readouterr().err
-    assert not key_path.exists()
+    assert not out_dir.exists()
 
 
 def test_the_pariksha_report_shows_the_agents_reviewer_corrections(
@@ -275,3 +508,101 @@ def test_a_reviewer_list_that_cannot_be_used_is_refused_cleanly(
     assert err.startswith("smriti: ") and "Traceback" not in err
     assert ("does not exist" if where == "missing" else "git working tree") in err
     assert not (tmp_path / "candidates.json").exists()
+
+
+# --- review of #1278 ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("where", ["out-dir", "library", "vendor-file"])
+def test_nothing_is_written_at_or_inside_another_repositorys_top_folder(
+    where: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    repository = tmp_path / "other-repo"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    outside = tmp_path / "local"
+    paths = {
+        "out-dir": outside / "keys",
+        "library": outside / "library.json",
+        "vendor-file": outside / "vendor-errors.jsonl",
+    }
+    paths[where] = repository if where == "out-dir" else repository / f"{where}.json"
+    arguments = [
+        "confirm",
+        str(tmp_path / "candidates.json"),
+        "--confirmations",
+        str(tmp_path / "confirmations.json"),
+        "--out-dir",
+        str(paths["out-dir"]),
+        "--version",
+        "1",
+        "--library",
+        str(paths["library"]),
+        "--vendor-file",
+        str(paths["vendor-file"]),
+        "--db",
+        "postgresql+psycopg://nobody@localhost:1/none",
+    ]
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    assert "git working tree" in capsys.readouterr().err
+    assert sorted(path.name for path in repository.iterdir()) == [".git"]
+    assert not outside.exists()
+
+
+@pytest.mark.parametrize("who", ["claude", "someone else"])
+def test_a_confirmer_who_is_not_a_listed_person_is_refused(
+    who: str,
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    world = build_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": f"no_countertop_answers:{world.no_countertop_reader}", "verdict": "yes"},
+        session=session,
+        confirmed_by=who,
+    )
+    out_dir = tmp_path / "keys"
+    arguments = _confirm_args(
+        candidates, answers, out_dir, tmp_path / "library.json", "--db", _url(engine)
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert ("only a person" if who == "claude" else "real-reviewer list") in err
+    assert not out_dir.exists()
+
+
+def test_a_vendor_error_is_saved_locally_with_its_printed_text(
+    engine: Engine, session: Session, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = build_world(session)
+    candidates = tmp_path / "candidates.json"
+    assert smriti_candidates.main(["export", "--db", _url(engine), "--out", str(candidates)]) == 0
+    pick = f"correction_ledger:{world.ledger_slot}"
+    answers = _write_answers(
+        tmp_path / "confirmations.json",
+        candidates,
+        {"candidate": pick, "verdict": "yes", "mistake": "vendor_drew_it", "texts": ['1/3"']},
+        session=session,
+    )
+    library = tmp_path / "library.json"
+    arguments = _confirm_args(candidates, answers, tmp_path / "keys", library, "--db", _url(engine))
+    assert smriti_candidates.main(arguments) == 0
+    vendor = tmp_path / "vendor-errors.jsonl"
+    (line,) = vendor.read_text().splitlines()
+    saved = json.loads(line)
+    assert saved["candidate_id"] == pick and saved["printed"] == {"texts": ['1/3"']}
+    assert saved["candidates_sha256"] == _sha(candidates)
+    # No key: a vendor error never enters the AI's key.
+    assert not (tmp_path / "keys").exists()
+    # The same answers again add nothing.
+    assert smriti_candidates.main(arguments) == 0
+    assert len(vendor.read_text().splitlines()) == 1
