@@ -10,21 +10,25 @@ only read, in read-only transactions.
 **The rule: better somewhere, worse nowhere** (Anant's "better with 0 new wrong", across a library;
 decided 2026-10-15). **Per key**, one of:
 
-* **ACCEPT**: the key's own compare accepts (better, 0 new wrong) **and** nothing is worse by the
-  library's counts below (except "more held", since wrong -> held is a real improvement). A
-  key's own compare counts only its own right and wrong (the walls compare: the ends), so a
-  layout, an automatic result, the ink or the site answer lost beside a gain still rejects.
+* **ACCEPT**: the key's own compare raised no blocking reason (no new wrong, nothing no longer
+  asked, none of its own extra reasons), the change is **better by the library's counts** (more
+  right and no more wrong, or as many right and fewer wrong) and nothing is worse by them. A
+  key's own compare counts only its own right and wrong (the walls compare: the ends, not the
+  layouts), so both "better" and "worse" are the library's: a layout gain alone is accepted,
+  and a layout, an automatic result, the ink or the site answer lost beside a gain rejects.
   The library is the stricter gate on purpose: a SEALED_WRONG walls layout counts as WRONG here,
   though #1250's own compare only shows it (Anant's rule is 0 new wrong; decided 2026-10-15).
 * **NEUTRAL**: nothing got worse and nothing got better. A key the change did not touch says
   this, so a change aimed at one key (the walls question, say) is not rejected by the rows keys it
   left alone.
 * **REJECT**: any new wrong, anything no longer asked, a fall in `asked`, the agent's own extra
-  reasons (new wrong wall ink, a new wrong automatic layout), or not better with anything worse.
+  reasons (new wrong wall ink, a new wrong automatic layout), or anything worse.
   **Worse is judged on counts, never rates** (asking more questions with the same right answers
-  moves every rate and is no loss): fewer right, more wrong, fewer asked, a case no longer asked,
-  more held or unsure on the cases both runs asked, or a higher cost per question with no gain in
-  right answers (named in the reason). A case the older run never asked counts: its first answer can be the new wrong one. So
+  moves every rate and is no loss): fewer right, more wrong, fewer asked, a case no longer
+  asked, fewer automatic results right, the walls' site and ink counts, more held or unsure on
+  the cases both runs asked (unless wrong fell), or a higher cost per question when nothing got
+  better (named in the reason). A case the older run never asked counts: its first answer can
+  be the new wrong one. So
   a run that read nothing of this kind is scored as one that asked nothing, and a run that stopped
   reading a page is rejected: not asking is never a way to stop being wrong.
 * **NOT MEASURED, never a pass**: neither run read any of the key's pages (the pages needed are
@@ -309,20 +313,37 @@ def _counted(card: Scorecard, metric: str) -> int | None:
     )
 
 
-def _worse(agent: str, before: Scorecard, after: Scorecard, *, accepted: bool = False) -> list[str]:
+def _settled(agent: str, card: Scorecard) -> tuple[int, int]:
+    """The card's right and wrong counts by the library's mapping (every outcome a type gives)."""
+    classes = OUTCOME_CLASSES[agent]
+    right = sum(1 for case in card.cases if classes[case.outcome] == RIGHT_CLASS)
+    wrong = sum(1 for case in card.cases if classes[case.outcome] == WRONG_CLASS)
+    return right, wrong
+
+
+def _better(agent: str, before: Scorecard, after: Scorecard) -> bool:
+    """Better by the library's counts: more right and no more wrong, or as many right and fewer
+    wrong. A key's own compare may count less (the walls compare counts only the ends)."""
+    (right_before, wrong_before), (right_after, wrong_after) = (
+        _settled(agent, before),
+        _settled(agent, after),
+    )
+    return (right_after > right_before and wrong_after <= wrong_before) or (
+        right_after == right_before and wrong_after < wrong_before
+    )
+
+
+def _worse(agent: str, before: Scorecard, after: Scorecard, *, better: bool) -> list[str]:
     """What got worse, judged on COUNTS, never on rates (decided 2026-10-15).
 
     Asking more questions with the same right answers is not a loss, yet it moves every rate
     over `asked`; so a rate is never "worse" here. Worse is: fewer right, more wrong, fewer
-    asked, a case no longer asked, more held or unsure on the cases both runs asked, fewer
-    automatic results right (walls: an automatic layout that became a sealed proposal or a hold
-    is a loss even when it stays right), a fall or rise in the counts a card keeps only in its
-    metrics (walls: against the site, and code's wall ink), or a higher cost per question with no
-    gain in right answers (cost is the one rate judged, and only up).
-
-    `accepted`: the key's own compare accepted the change. Its "better" stands only if none of
-    the counted losses above happened in the same key; "more held on the same cases" and the cost
-    are left out on that path, since wrong -> held is a real improvement."""
+    asked, a case no longer asked, more held or unsure on the cases both runs asked (not judged
+    when the wrong count fell: wrong -> held is a real improvement), fewer automatic results
+    right (walls: an automatic layout that became a sealed proposal or a hold is a loss even when
+    it stays right), a fall or rise in the counts a card keeps only in its metrics (walls: against
+    the site, and code's wall ink), or a higher cost per question when nothing got better (cost is
+    the one rate judged, and only up). `better`: the change is better by the library's counts."""
     classes = OUTCOME_CLASSES[agent]
     was = {c.case_id: c.outcome for c in before.cases if classes[c.outcome] != UNMEASURED_CLASS}
     now = {c.case_id: c.outcome for c in after.cases if classes[c.outcome] != UNMEASURED_CLASS}
@@ -345,7 +366,7 @@ def _worse(agent: str, before: Scorecard, after: Scorecard, *, accepted: bool = 
     both = set(was) & set(now)
     held_before = sum(1 for case in both if classes[was[case]] == HELD_CLASS)
     held_after = sum(1 for case in both if classes[now[case]] == HELD_CLASS)
-    if held_after > held_before and not accepted:
+    if held_after > held_before and wrong_after >= wrong_before:
         found.append(f"held or unsure on the same asked cases {held_before} -> {held_after}")
     if agent == WALLS_AGENT:
         automatic = pariksha_walls.AUTOMATIC_RIGHT
@@ -361,13 +382,12 @@ def _worse(agent: str, before: Scorecard, after: Scorecard, *, accepted: bool = 
             found.append(f"{metric} {old} -> {new}")
     cost_before, cost_after = _cost(before), _cost(after)
     if (
-        not accepted
+        not better
         and cost_before is not None
         and cost_after is not None
         and cost_after > cost_before
-        and right_after <= right_before
     ):
-        found.append("cost per question rose with no gain in right answers")
+        found.append("cost per question rose with nothing better")
     return found
 
 
@@ -425,36 +445,53 @@ def judge_key(
         comparison = COMPARES[entry.agent](before_card, after_card)
     except IncomparableRuns as error:
         return KeyResult(entry, REFUSED, str(error), pages, unread)
-    if comparison.accepted:
-        # The key's own compare counts only its own right and wrong (walls: the ends); the
-        # library's counts (layouts, automatic results, ink, the site) must not fall beside it.
-        losses = _worse(entry.agent, before_card, after_card, accepted=True)
-        if not losses:
-            return KeyResult(entry, ACCEPT, comparison.verdict, pages, unread, comparison)
-        reason = (
-            f"REJECT (its own compare says {comparison.verdict}, but by the library's counts: "
-            f"worse: {'; '.join(losses)})"
-        )
-        return KeyResult(entry, REJECT, reason, pages, unread, comparison)
-    worse = _worse(entry.agent, before_card, after_card)
-    # The compare's structured result first: any new wrong or anything no longer asked is a loss.
-    # Its other reasons (a fall in `asked`, walls' new wrong ink or automatic layout) exist only
-    # in its verdict, so only the exact "not better" verdict, alone, may become NEUTRAL; any other
-    # wording stays REJECT (fail safe; the wording is pinned by a test).
+    # The key's own compare may block: any new wrong or anything no longer asked (its structured
+    # result), or another reason it gives (a fall in `asked`, walls' new wrong ink or automatic
+    # layout), which exists only in its verdict. So only its ACCEPT, or its exact "not better"
+    # verdict alone, leaves the decision to the library's counts; any other wording stays REJECT
+    # (fail safe; the wording is pinned by a test).
     only_not_better = (
-        not comparison.new_wrong
+        not comparison.accepted
+        and not comparison.new_wrong
         and not comparison.dropped
         and comparison.verdict.startswith(_NOT_BETTER)
         and "; " not in comparison.verdict
     )
-    if only_not_better and not worse:
-        # 0 new wrong, nothing no longer asked, no fall in `asked`, no metric worse: not a loss.
+    if not comparison.accepted and not only_not_better:
+        return KeyResult(entry, REJECT, comparison.verdict, pages, unread, comparison)
+    # "Better" and "worse" both by the library's counts, for every scorecard type: a key's own
+    # compare counts only its own right and wrong (the walls compare: the ends, not the layouts).
+    better = _better(entry.agent, before_card, after_card)
+    worse = _worse(entry.agent, before_card, after_card, better=better)
+    right_before, wrong_before = _settled(entry.agent, before_card)
+    right_after, wrong_after = _settled(entry.agent, after_card)
+    counts = f"right {right_before} -> {right_after}, wrong {wrong_before} -> {wrong_after}"
+    if worse:
+        if comparison.accepted:
+            reason = (
+                f"REJECT (its own compare says {comparison.verdict}, but by the library's "
+                f"counts: worse: {'; '.join(worse)})"
+            )
+        else:
+            reason = f"{comparison.verdict[:-1]}; worse: {'; '.join(worse)})"
+        return KeyResult(entry, REJECT, reason, pages, unread, comparison)
+    if better:
+        reason = (
+            comparison.verdict
+            if comparison.accepted
+            else f"ACCEPT (better by the library's counts: {counts}; 0 new wrong; its own "
+            f"compare: {comparison.verdict})"
+        )
+        return KeyResult(entry, ACCEPT, reason, pages, unread, comparison)
+    if comparison.accepted:
+        reason = (
+            f"NEUTRAL (its own compare says {comparison.verdict}, but by the library's counts "
+            f"nothing is better: {counts})"
+        )
+    else:
+        # 0 new wrong, nothing no longer asked, no fall in `asked`, nothing worse: not a loss.
         reason = "NEUTRAL (" + comparison.verdict.removeprefix("REJECT (")
-        return KeyResult(entry, NEUTRAL, reason, pages, unread, comparison)
-    reason = comparison.verdict
-    if only_not_better:
-        reason = f"{reason[:-1]}; worse: {'; '.join(worse)})"
-    return KeyResult(entry, REJECT, reason, pages, unread, comparison)
+    return KeyResult(entry, NEUTRAL, reason, pages, unread, comparison)
 
 
 @dataclass(frozen=True, slots=True)

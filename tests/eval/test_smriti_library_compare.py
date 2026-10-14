@@ -586,3 +586,43 @@ def test_a_genuine_kinds_gain_stays_accepted_through_the_count_check() -> None:
     before = _side({Q1: pariksha_kinds.UNKNOWN, Q2: pariksha_kinds.UNKNOWN}, agent=KINDS_AGENT)
     after = _side({Q1: pariksha_kinds.RIGHT, Q2: pariksha_kinds.UNKNOWN}, agent=KINDS_AGENT)
     assert _judge(before, after, agent=KINDS_AGENT).status == ACCEPT
+
+
+# --- "better" is judged by the library's own counts too (re-review 2, 2026-10-15) ------------
+
+
+@pytest.mark.parametrize(
+    ("layout_before", "layout_after"),
+    [
+        (HELD, AUTOMATIC_RIGHT),
+        (HELD, SEALED_RIGHT),
+        (SEALED_WRONG, SEALED_RIGHT),
+        (SEALED_WRONG, HELD),
+    ],
+)
+def test_a_walls_layout_improvement_alone_is_accepted(
+    layout_before: str, layout_after: str
+) -> None:
+    """The walls compare looks at the ends only and says "not better"; by the library's counts
+    (right rose, or wrong fell with right held) the layout's gain is a gain."""
+    before = {LEFT: AGREED_RIGHT, LAYOUT: layout_before}
+    after = {LEFT: AGREED_RIGHT, LAYOUT: layout_after}
+    own = compare_walls(_walls(before).card, _walls(after).card)  # type: ignore[arg-type]
+    assert not own.accepted
+
+    walls = _walls_change(before, after)
+    assert walls.status == ACCEPT
+    assert judge_library("rekha", [walls]).status == ACCEPT
+
+
+def test_an_end_gained_while_a_sealed_layout_is_lost_is_neutral_not_accepted() -> None:
+    """The swap: the walls compare accepts the end's gain, but by the library's counts the right
+    count holds (a sealed-right layout fell to held), so nothing is better: NEUTRAL."""
+    before = {LEFT: pariksha_walls.ONE_UNSURE, LAYOUT: SEALED_RIGHT}
+    after = {LEFT: AGREED_RIGHT, LAYOUT: HELD}
+    own = compare_walls(_walls(before).card, _walls(after).card)  # type: ignore[arg-type]
+    assert own.accepted
+
+    walls = _walls_change(before, after)
+    assert walls.status == NEUTRAL
+    assert judge_library("rekha", [walls]).status == NEUTRAL
