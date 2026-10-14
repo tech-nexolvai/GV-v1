@@ -5,10 +5,11 @@ model: it is exact arithmetic on characters. What it accepts, and nothing else:
 
 - **A plain dimension** — digits, a fraction, inch and foot marks — parsed by `units/` (unchanged
   from #987).
-- **Two numbers, one in brackets** — `648 [25 1/2]` (mm [in], as GV's vendors print) or `25 [648]`
+- **Two numbers, one in brackets** — `648 [25 1/2]` (mm [in], as GV's vendors print) or `25 [635]`
   (in [mm]) — read as the inch number, on either side, only where the two corroborate: one is the
-  other times 25.4 within both printed roundings (#1263). Otherwise held. Millimetres only choose
-  which number is the inches; they are never the value (CLAUDE.md, the client lead's Q12).
+  other times 25.4, within 3 mm for GV's mm-first order (Anant, 2026-10-15) and within the mm's own
+  last digit for inches first (#1263). Otherwise held. Millimetres only choose which number is the
+  inches; they are never the value (CLAUDE.md, the client lead's Q12).
 - **A sum, `a"+b"`**, optionally followed by the word `Filler` (the vendor prints `4"+1" Filler` for
   a filler made of two strips). One piece whose width is a + b exactly. Every part must carry its
   own inch mark and parse alone through `units/`; a bare `4+1"` is not read as inches.
@@ -44,6 +45,7 @@ from units.notation import canonical_notation, is_compound
 __all__ = [
     "COUNTER_BREAK",
     "FIELD_CUT_INCLUDED",
+    "GV_ORDER_MM_MATCH",
     "PAIR_DISAGREES",
     "VIF",
     "ExpandedLabel",
@@ -66,7 +68,7 @@ _PLAIN: Final = re.compile(r"[0-9 /\"'\-.]+")
 #: a space or the trade's hyphen (`24-3/4`).
 _PAIR_NUMBER: Final = r"[0-9]+(?:\.[0-9]+)?(?:[ \-][0-9]+/[0-9]+)?|[0-9]+/[0-9]+"
 #: A label of two numbers, one outside brackets and one inside, each with an optional inch mark or
-#: the word mm: `610 [24]`, `648 [25 1/2]`, `25 [648]`, `25" [635]`, `635 mm [25"]` (#1263).
+#: the word mm: `610 [24]`, `648 [25 1/2]`, `25 [635]`, `25" [635]`, `635 mm [25"]` (#1263).
 _PAIR: Final = re.compile(
     rf"\s*(?P<outside>{_PAIR_NUMBER})\s*(?P<outside_mark>\"|mm)?\s*"
     rf"\[\s*(?P<inside>{_PAIR_NUMBER})\s*(?P<inside_mark>\"|mm)?\s*\]\s*",
@@ -74,6 +76,11 @@ _PAIR: Final = re.compile(
 )
 #: 25.4 mm to the inch, exactly.
 _MM_PER_INCH: Final = Fraction(254, 10)
+#: GV's order, mm first (`648 [25 1/2]`): the printed mm must be within this many mm of 25.4 times
+#: the printed inches, inclusive. **Decided by Anant, 2026-10-15** (#1263 review). Wide enough for
+#: the vendor printing the inch to its fraction (a whole-inch label is often a millimetre or two
+#: off), narrow enough that a lost stacked 1/2" (12.7 mm) is held, not read as the whole inch.
+GV_ORDER_MM_MATCH: Final = Fraction(3)
 #: Why a two-number label whose numbers do not corroborate gives no value (#1263).
 PAIR_DISAGREES: Final = (
     "the millimetres and inches printed together do not match (one is not the other times 25.4), "
@@ -127,19 +134,21 @@ def _number(number: str) -> Fraction:
     return Fraction(whole) + (Fraction(fraction) if fraction else 0)
 
 
-def _corroborates(millimetres: str, inches: str) -> bool:
-    """Whether the printed mm is the printed inches times 25.4, within both printed roundings.
+def _corroborates(millimetres: str, inches: str, *, gv_order: bool) -> bool:
+    """Whether the printed mm is the printed inches times 25.4, within the reading's allowance.
 
-    Each number on a label is the true length rounded to the step it is printed in, so each is
-    within half its step of that length, and the two may differ by half the mm's step plus half the
-    inch's step in mm. This is `units.policy.check_dual`'s allowance, in exact fractions. The
-    inch's rounding must count, not only the mm's: the vendor prints the inch to its own fraction,
-    so on the stored drawings a whole-inch label is often a millimetre or more from 25.4 times it.
+    * **GV's order, mm first** (`648 [25 1/2]`): within `GV_ORDER_MM_MATCH` (3 mm, Anant's
+      decision of 2026-10-15).
+    * **Inches first** (`25 [635]`): within half the mm's last printed digit, the mm's own rounding
+      and nothing more. A GV label whose mm a reader cut short (`1372 [54]` read as `2 [54]`) must
+      never pass as two inches beside 54 mm: 54 is not 50.8 to the millimetre.
+
+    Exact fractions; a fraction over 0 is no number.
     """
     try:
-        allowance = _printed_step(millimetres) / 2 + _MM_PER_INCH * _printed_step(inches) / 2
+        allowance = GV_ORDER_MM_MATCH if gv_order else _printed_step(millimetres) / 2
         return abs(_number(millimetres) - _MM_PER_INCH * _number(inches)) <= allowance
-    except ZeroDivisionError:  # a fraction over 0 is no number
+    except ZeroDivisionError:
         return False
 
 
@@ -158,10 +167,11 @@ def _pair_inches(pair: re.Match[str]) -> str | None:
     """The inch half of a two-number label as printed, where exactly one reading corroborates.
 
     The two readings: the number outside is mm and the one inside inches (`648 [25 1/2]`, as GV's
-    vendors print), or the other way round (`25 [648]`). A reading is out where the side it calls
-    inches says `mm`, or the side it calls mm has an inch mark or a fraction, or where the numbers
-    do not corroborate (`_corroborates`). Neither or both: `None`. Millimetres only ever choose
-    which number is the inches; they are never the value.
+    vendors print), or the other way round (`25 [635]`). A reading is out where the side it calls
+    inches says `mm`, or the side it calls mm has an inch mark or a fraction, where the inches are
+    not more than 0 (a 0" width is never a value), or where the numbers do not corroborate
+    (`_corroborates`, with its own allowance per reading). Neither or both: `None`. Millimetres
+    only ever choose which number is the inches; they are never the value.
     """
     found: list[str] = []
     for mm_side, inch_side in (("outside", "inside"), ("inside", "outside")):
@@ -170,7 +180,12 @@ def _pair_inches(pair: re.Match[str]) -> str | None:
         inch_mark = (pair.group(f"{inch_side}_mark") or "").lower()
         if mm_mark == '"' or inch_mark == "mm" or "/" in millimetres:
             continue
-        if _corroborates(millimetres, inches):
+        try:
+            if _number(inches) <= 0:
+                continue
+        except ZeroDivisionError:
+            continue
+        if _corroborates(millimetres, inches, gv_order=mm_side == "outside"):
             found.append(inches)
     return found[0] if len(found) == 1 else None
 
@@ -184,7 +199,7 @@ def _notation(text: str, allow_explicit_mm: bool) -> str | None:
     """The text as `normalise_to_inches` parses it, or `None` where it is no plain dimension.
 
     **A two-number label is its inch half, and only where the pair corroborates** (#1263). Before,
-    the bracket was always the inches, so `25 [648]` (inches, then mm) was 648 inches, and a pair
+    the bracket was always the inches, so `25 [635]` (inches, then mm) was 635 inches, and a pair
     whose numbers disagree (`305 [10]`) was 10. Any other text with a bracket is none.
     """
     if not text or is_compound(text):
@@ -206,7 +221,7 @@ def plain_dimension(text: str, *, allow_explicit_mm: bool = False) -> Measuremen
     drawing prints (`163/8"`, `5/4"`, `3/5"`; #1199): read as written, a squeezed `16 3/8"` would be
     twenty and three-eighths.
 
-    **A two-number label** — `648 [25 1/2]`, `25 [648]`, `25" [635]` — is its inch number, on either
+    **A two-number label** — `648 [25 1/2]`, `25 [635]`, `25" [635]` — is its inch number, on either
     side, only where the two numbers corroborate; otherwise `None`, and `mm_inch_refusal` says why
     (#1263). The word `mm` is read only with `allow_explicit_mm`. Millimetres never give the value.
 
