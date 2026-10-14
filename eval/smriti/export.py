@@ -452,6 +452,8 @@ class _Reader:
                 "page's pieces, so which row it means is not knowable"
             )
         pieces = len(slots)
+        if slots != set(range(pieces)):
+            return None, "the run's pieces on this page are not numbered 0 upward without a gap"
         if link.slot_index is None or link.slot_index not in slots:
             return None, f"the run read no piece {link.slot_index} on this page"
         return {
@@ -949,17 +951,7 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
         question: dict[str, Any] | None = None
         key_answer: dict[str, Any] | None = None
         needed: str | None = None
-        if record is not None and ROW_CHOICE_FLAG in _flags(record):
-            agent, why = _record_agent(record)
-            corrects = "the result of a page whose countertop row was not chosen"
-            kind = "decided"
-            if why is None:
-                why = (
-                    "a decision on the page's result names no box: the product records no reviewer "
-                    "row pick, so a row case cannot be built"
-                )
-            what = "page's result"
-        elif action.action == "confirm" and action.original_observation_id is not None:
+        if action.action == "confirm" and action.original_observation_id is not None:
             agent, span, question, why = _reading(reader, action.original_observation_id)
             corrects = "a value a reader read (confirmed right)"
             kind = "confirmed"
@@ -973,6 +965,16 @@ def _review_actions(reader: _Reader) -> list[Candidate]:
                 key_answer = {"texts": [span.raw_text]}
             elif question is not None:
                 needed = "the printed text of the label: the stored reading has no text"
+        elif record is not None and ROW_CHOICE_FLAG in _flags(record):
+            agent, why = _record_agent(record)
+            corrects = "the result of a page whose countertop row was not chosen"
+            kind = "decided"
+            if why is None:
+                why = (
+                    "a decision on the page's result names no box: the product records no reviewer "
+                    "row pick, so a row case cannot be built"
+                )
+            what = "page's result"
         else:
             agent, corrects, kind, why, what = (
                 "kautilya",
