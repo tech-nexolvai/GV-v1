@@ -50,24 +50,30 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from eval.pariksha import depth as pariksha_depth
 from eval.pariksha import kinds as pariksha_kinds
+from eval.pariksha import walls as pariksha_walls
 from eval.pariksha.compare import Comparison, compare_scorecards
 from eval.pariksha.depth import DEPTH_AGENTS, DepthKey
 from eval.pariksha.keys import AnswerKey, ArchitectAnswerKey
 from eval.pariksha.kinds import (
     KINDS_AGENT,
-    NOT_SCORED,
     PRODUCT,
-    ROW_UNVERIFIED,
     KindsKey,
     compare_kinds,
     load_stored_pieces,
     score_kinds,
 )
 from eval.pariksha.score import (
+    AGREED_RIGHT,
+    AGREED_WRONG,
+    EXTRA_HELD,
+    EXTRA_USABLE,
+    FOUND,
+    HELD,
+    MISSING,
     NOT_ASKED,
-    RIGHT_OUTCOMES,
-    WRONG_OUTCOMES,
+    SPLIT,
     CaseScore,
     Scorecard,
     score_akshara,
@@ -76,7 +82,6 @@ from eval.pariksha.score import (
 )
 from eval.pariksha.stored import StoredRunError, load_architect_run, load_stored_run
 from eval.pariksha.walls import (
-    KEY_UNSURE,
     WALLS_AGENT,
     WallsKey,
     compare_walls,
@@ -92,6 +97,7 @@ __all__ = [
     "EXIT_CODES",
     "NEUTRAL",
     "NOT_MEASURED",
+    "OUTCOME_CLASSES",
     "REFUSED",
     "REJECT",
     "KeyResult",
@@ -103,6 +109,7 @@ __all__ = [
     "judge_library",
     "measure",
     "nothing_stored",
+    "unknown_outcomes",
     "unmeasurable",
 ]
 
@@ -128,9 +135,81 @@ COMPARES: Final[Mapping[str, Callable[[Scorecard, Scorecard], Comparison]]] = {
     WALLS_AGENT: compare_walls,
     KINDS_AGENT: compare_kinds,
 }
-#: Outcomes that say the case was not measured in this run (not asked, not settled in the key,
-#: a row that could not be verified, a key word that names no kind).
-_UNMEASURED: Final = frozenset({NOT_ASKED, KEY_UNSURE, ROW_UNVERIFIED, NOT_SCORED})
+#: How each scorecard type's case outcomes count when the library asks "worse?": right, wrong,
+#: held (asked, neither right nor wrong: held, split, unsure, missing) or unmeasured (not asked,
+#: not settled in the key, a row that could not be verified). Every type is listed explicitly;
+#: an outcome missing here makes the key REFUSED, never quietly "held" (a new outcome word
+#: could otherwise hide a loss).
+RIGHT_CLASS: Final = "right"
+WRONG_CLASS: Final = "wrong"
+HELD_CLASS: Final = "held"
+UNMEASURED_CLASS: Final = "unmeasured"
+_PAIR_CLASSES: Final[Mapping[str, str]] = {
+    AGREED_RIGHT: RIGHT_CLASS,
+    AGREED_WRONG: WRONG_CLASS,
+    NOT_ASKED: UNMEASURED_CLASS,
+}
+_DEPTH_CLASSES: Final[Mapping[str, str]] = {
+    **_PAIR_CLASSES,
+    pariksha_depth.HELD_AS_KEY: RIGHT_CLASS,  # the key expects a hold: the depth compare's right
+    pariksha_depth.HELD: HELD_CLASS,
+    pariksha_depth.DISAGREED: HELD_CLASS,
+    pariksha_depth.ONE_UNSURE: HELD_CLASS,
+    pariksha_depth.BOTH_UNSURE: HELD_CLASS,
+    pariksha_depth.NO_ANSWER: HELD_CLASS,
+    pariksha_depth.KEY_SINGLE_READ: UNMEASURED_CLASS,
+    pariksha_depth.KEY_OPEN: UNMEASURED_CLASS,
+}
+OUTCOME_CLASSES: Final[Mapping[str, Mapping[str, str]]] = {
+    "akshara": {**_PAIR_CLASSES, HELD: HELD_CLASS},
+    "rekha": {**_PAIR_CLASSES, SPLIT: HELD_CLASS},
+    "vastu": {
+        FOUND: RIGHT_CLASS,
+        EXTRA_USABLE: WRONG_CLASS,
+        HELD: HELD_CLASS,
+        MISSING: HELD_CLASS,
+        EXTRA_HELD: HELD_CLASS,
+        NOT_ASKED: UNMEASURED_CLASS,
+    },
+    WALLS_AGENT: {
+        **_PAIR_CLASSES,
+        pariksha_walls.DISAGREED: HELD_CLASS,
+        pariksha_walls.ONE_UNSURE: HELD_CLASS,
+        pariksha_walls.BOTH_UNSURE: HELD_CLASS,
+        pariksha_walls.NO_ANSWER: HELD_CLASS,
+        pariksha_walls.KEY_UNSURE: UNMEASURED_CLASS,
+        # each row's layout, against the site layout
+        pariksha_walls.AUTOMATIC_RIGHT: RIGHT_CLASS,
+        pariksha_walls.SEALED_RIGHT: RIGHT_CLASS,
+        pariksha_walls.AUTOMATIC_WRONG: WRONG_CLASS,
+        pariksha_walls.SEALED_WRONG: WRONG_CLASS,
+        pariksha_walls.HELD_LAYOUT: HELD_CLASS,
+        "layout_not_keyed": UNMEASURED_CLASS,  # `score_walls`: the key gives no site layout
+    },
+    KINDS_AGENT: {
+        pariksha_kinds.RIGHT: RIGHT_CLASS,
+        pariksha_kinds.WRONG: WRONG_CLASS,
+        pariksha_kinds.UNKNOWN: HELD_CLASS,
+        pariksha_kinds.ROW_UNVERIFIED: UNMEASURED_CLASS,
+        pariksha_kinds.NOT_SCORED: UNMEASURED_CLASS,
+        NOT_ASKED: UNMEASURED_CLASS,
+    },
+    pariksha_depth.VIEW_AGENT: _DEPTH_CLASSES,
+    pariksha_depth.DEPTH_AGENT: _DEPTH_CLASSES,
+}
+#: Counts a scorecard keeps only in its metrics, judged by count: (metric, worse when it ...).
+#: The walls card scores each end against what the vendor drew (the case outcome) and, beside it,
+#: against the site (`@site`), and code's wall ink as its own judgment.
+_COUNTED_METRICS: Final[Mapping[str, tuple[tuple[str, str], ...]]] = {
+    WALLS_AGENT: (
+        ("pair_agreed_right@site", "fell"),
+        ("pair_agreed_wrong@site", "rose"),
+        ("ink_right", "fell"),
+        ("ink_wrong", "rose"),
+        ("ink_right@site", "fell"),
+        ("ink_wrong@site", "rose"),
+    ),
+}
 #: What Pariksha's loaders say when a run stored nothing of the kind asked for
 #: (`eval/pariksha/stored._choose_run`); every other refusal stays a refusal.
 _NOTHING_STORED: Final = "holds no stored"
@@ -152,7 +231,14 @@ def nothing_stored(error: StoredRunError) -> bool:
 
 def asked(card: Scorecard) -> int:
     """The cases this card measured: everything but not asked, unsettled or unverified."""
-    return sum(1 for case in card.cases if case.outcome not in _UNMEASURED)
+    classes = OUTCOME_CLASSES.get(card.agent, {})
+    return sum(1 for case in card.cases if classes.get(case.outcome) != UNMEASURED_CLASS)
+
+
+def unknown_outcomes(card: Scorecard) -> set[str]:
+    """Outcomes this library cannot place as right, wrong, held or unmeasured."""
+    classes = OUTCOME_CLASSES.get(card.agent, {})
+    return {case.outcome for case in card.cases if case.outcome not in classes}
 
 
 def _nothing_asked(card: Scorecard, note: str) -> Scorecard:
@@ -206,16 +292,16 @@ def _pages(pages: Sequence[str]) -> str:
     return shown + more
 
 
-def _right_and_wrong(agent: str) -> tuple[frozenset[str], frozenset[str]]:
-    """The outcomes the agent's own compare counts as right and as wrong."""
-    if agent == KINDS_AGENT:
-        return frozenset({pariksha_kinds.RIGHT}), frozenset({pariksha_kinds.WRONG})
-    return RIGHT_OUTCOMES, WRONG_OUTCOMES
-
-
 def _cost(card: Scorecard) -> Fraction | None:
     metric = card.metrics.get(_COST)
     return None if metric is None else metric.value
+
+
+def _counted(card: Scorecard, metric: str) -> int | None:
+    found = card.metrics.get(metric)
+    return (
+        None if found is None or found.value is None and found.denominator == 0 else found.numerator
+    )
 
 
 def _worse(agent: str, before: Scorecard, after: Scorecard) -> list[str]:
@@ -223,20 +309,23 @@ def _worse(agent: str, before: Scorecard, after: Scorecard) -> list[str]:
 
     Asking more questions with the same right answers is not a loss, yet it moves every rate
     over `asked`; so a rate is never "worse" here. Worse is: fewer right, more wrong, fewer
-    asked, a case no longer asked, more held or unsure on the cases both runs asked, or a higher
-    cost per question with no gain in right answers (cost is the one rate judged, and only up)."""
-    right, wrong = _right_and_wrong(agent)
-    was = {case.case_id: case.outcome for case in before.cases if case.outcome not in _UNMEASURED}
-    now = {case.case_id: case.outcome for case in after.cases if case.outcome not in _UNMEASURED}
+    asked, a case no longer asked, more held or unsure on the cases both runs asked, fewer
+    automatic results right (walls: an automatic layout that became a sealed proposal or a hold
+    is a loss even when it stays right), a fall or rise in the counts a card keeps only in its
+    metrics (walls: against the site, and code's wall ink), or a higher cost per question with no
+    gain in right answers (cost is the one rate judged, and only up)."""
+    classes = OUTCOME_CLASSES[agent]
+    was = {c.case_id: c.outcome for c in before.cases if classes[c.outcome] != UNMEASURED_CLASS}
+    now = {c.case_id: c.outcome for c in after.cases if classes[c.outcome] != UNMEASURED_CLASS}
 
-    def count(outcomes: dict[str, str], wanted: frozenset[str]) -> int:
-        return sum(1 for outcome in outcomes.values() if outcome in wanted)
+    def count(outcomes: dict[str, str], wanted: str) -> int:
+        return sum(1 for outcome in outcomes.values() if classes[outcome] == wanted)
 
     found: list[str] = []
-    right_before, right_after = count(was, right), count(now, right)
+    right_before, right_after = count(was, RIGHT_CLASS), count(now, RIGHT_CLASS)
     if right_after < right_before:
         found.append(f"right {right_before} -> {right_after}")
-    wrong_before, wrong_after = count(was, wrong), count(now, wrong)
+    wrong_before, wrong_after = count(was, WRONG_CLASS), count(now, WRONG_CLASS)
     if wrong_after > wrong_before:
         found.append(f"wrong {wrong_before} -> {wrong_after}")
     if len(now) < len(was):
@@ -245,11 +334,22 @@ def _worse(agent: str, before: Scorecard, after: Scorecard) -> list[str]:
     if gone:
         found.append(f"{len(gone)} no longer asked")
     both = set(was) & set(now)
-    settled = right | wrong
-    held_before = sum(1 for case in both if was[case] not in settled)
-    held_after = sum(1 for case in both if now[case] not in settled)
+    held_before = sum(1 for case in both if classes[was[case]] == HELD_CLASS)
+    held_after = sum(1 for case in both if classes[now[case]] == HELD_CLASS)
     if held_after > held_before:
         found.append(f"held or unsure on the same asked cases {held_before} -> {held_after}")
+    if agent == WALLS_AGENT:
+        automatic = pariksha_walls.AUTOMATIC_RIGHT
+        auto_before = sum(1 for outcome in was.values() if outcome == automatic)
+        auto_after = sum(1 for outcome in now.values() if outcome == automatic)
+        if auto_after < auto_before:
+            found.append(f"automatic layouts right {auto_before} -> {auto_after}")
+    for metric, direction in _COUNTED_METRICS.get(agent, ()):
+        old, new = _counted(before, metric), _counted(after, metric)
+        if old is None or new is None:
+            continue
+        if (direction == "fell" and new < old) or (direction == "rose" and new > old):
+            found.append(f"{metric} {old} -> {new}")
     cost_before, cost_after = _cost(before), _cost(after)
     if (
         cost_before is not None
@@ -289,6 +389,16 @@ def judge_key(
         before_card, after_card = before.card, _nothing_asked(before.card, after.note)
     else:
         before_card, after_card = before.card, after.card
+    unknown = sorted(unknown_outcomes(before_card) | unknown_outcomes(after_card))
+    if unknown:
+        return KeyResult(
+            entry,
+            REFUSED,
+            f"outcome(s) {', '.join(unknown)} of a {entry.agent} scorecard are not known to the "
+            "library as right, wrong, held or unmeasured: it will not guess (OUTCOME_CLASSES)",
+            pages,
+            unread,
+        )
     if asked(before_card) == 0 and asked(after_card) == 0:
         if unread == tuple(sorted(pages)):
             reason = (
@@ -308,7 +418,16 @@ def judge_key(
     if comparison.accepted:
         return KeyResult(entry, ACCEPT, comparison.verdict, pages, unread, comparison)
     worse = _worse(entry.agent, before_card, after_card)
-    only_not_better = comparison.verdict.startswith(_NOT_BETTER) and "; " not in comparison.verdict
+    # The compare's structured result first: any new wrong or anything no longer asked is a loss.
+    # Its other reasons (a fall in `asked`, walls' new wrong ink or automatic layout) exist only
+    # in its verdict, so only the exact "not better" verdict, alone, may become NEUTRAL; any other
+    # wording stays REJECT (fail safe; the wording is pinned by a test).
+    only_not_better = (
+        not comparison.new_wrong
+        and not comparison.dropped
+        and comparison.verdict.startswith(_NOT_BETTER)
+        and "; " not in comparison.verdict
+    )
     if only_not_better and not worse:
         # 0 new wrong, nothing no longer asked, no fall in `asked`, no metric worse: not a loss.
         reason = "NEUTRAL (" + comparison.verdict.removeprefix("REJECT (")

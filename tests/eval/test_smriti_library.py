@@ -175,10 +175,48 @@ def test_an_output_path_inside_a_git_checkout_is_refused(tmp_path: Path) -> None
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     key = _write(tmp_path / "keys", "labels.json", _label_key())
     for inside in (checkout / "deep" / "library.json", REPO / "library.json"):
-        library = _registered(read_library(inside, missing_ok=True), key)
+        # Reading (list, compare) is refused as well as writing (register).
+        with pytest.raises(LibraryError, match="inside a git"):
+            read_library(inside, missing_ok=True)
+        library = Library(path=inside, entries=_empty(tmp_path).entries)
+        library = _registered(library, key)
         with pytest.raises(LibraryError, match="inside a git"):
             write_library(library)
         assert not inside.exists()
+
+
+def test_a_key_inside_a_git_checkout_is_refused(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    inside = _write(checkout / "ignored", "labels.json", _label_key())
+    with pytest.raises(LibraryError, match="inside a git"):
+        describe(inside, confirmed_by=WHO, label=LABEL)
+
+    # A hand edit pointing an entry at it is refused when the list is read.
+    outside = _write(tmp_path / "keys", "labels.json", _label_key())
+    library = _registered(_empty(tmp_path), outside)
+    write_library(library)
+    document = json.loads(library.path.read_text())
+    document["entries"][0]["path"] = str(inside.resolve())
+    library.path.write_text(json.dumps(document))
+    with pytest.raises(LibraryError, match="inside a git"):
+        read_library(library.path)
+
+
+def test_a_hand_edited_library_with_two_answers_to_one_question_is_refused(
+    tmp_path: Path,
+) -> None:
+    library = _registered(_empty(tmp_path), _write(tmp_path / "a", "k.json", _label_key()))
+    clash = _write(tmp_path / "b", "k.json", _label_key(name="another", text='1/2"'))
+    clash_entry, _key = describe(clash, confirmed_by=WHO, label=LABEL)
+    write_library(library)
+    document = json.loads(library.path.read_text())
+    added = {name: getattr(clash_entry, name) for name in document["entries"][0]}
+    document["entries"].append(added)
+    library.path.write_text(json.dumps(document))
+    with pytest.raises(LibraryError, match="different answer"):
+        read_library(library.path)
 
 
 # --- conflicts -------------------------------------------------------------------------------
