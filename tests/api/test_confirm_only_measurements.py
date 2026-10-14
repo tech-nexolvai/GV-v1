@@ -14,6 +14,7 @@ that kind can be typed.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -27,7 +28,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from alembic import command
-from app.api.dependencies import get_session
+from app.api.dependencies import get_artifact_store, get_session
 from app.config import Settings
 from app.db.session import session_factory
 from app.main import create_app
@@ -36,6 +37,7 @@ from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import to_rows
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.schema import Quantity
+from storage.local import LocalStore
 from tests.app.postgres_fixture import alembic_config
 from units.measurement import Measurement, Unit
 from workflow.measurements import operands_for
@@ -53,12 +55,6 @@ def _settings() -> Settings:
     )
 
 
-def _principal() -> Any:
-    from app.auth import Principal, Role
-
-    return Principal(id="reviewer-a", roles=frozenset({Role.ADMIN}), projects=frozenset({PROJECT}))
-
-
 @pytest.fixture
 def session(postgres_engine: Engine) -> Iterator[Session]:
     config = alembic_config()
@@ -71,14 +67,18 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
-def _client(session: Session) -> Any:
+def _client(session: Session, *, store: LocalStore | None = None, project: UUID = PROJECT) -> Any:
     from fastapi.testclient import TestClient
 
-    from app.auth import authenticate
+    from app.auth import Principal, Role, authenticate
 
     app = create_app(_settings())
     app.dependency_overrides[get_session] = lambda: session
-    app.dependency_overrides[authenticate] = _principal
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="reviewer-a", roles=frozenset({Role.ADMIN}), projects=frozenset({project})
+    )
+    if store is not None:
+        app.dependency_overrides[get_artifact_store] = lambda: store
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -177,7 +177,9 @@ def test_a_single_number_drawn_on_a_drawing_is_refused_with_a_plain_reason(
     assert f"{rule_id}.{name}" in message
     assert drawing in message
     assert "confirm" in message.lower()
-    assert "not supplied" in message
+    # It says where the number is drawn, and never claims a drawing was not supplied: nothing here
+    # knows that (#1253 review).
+    assert "not supplied" not in message
     assert _run_sets(session) == 0
 
 
@@ -344,3 +346,151 @@ def test_a_value_typed_before_cannot_be_replaced_by_typing(session: Session) -> 
 
     assert response.status_code == 422, response.text
     assert _counted_depth(session, package) == Fraction(51, 2)
+
+
+# **Only what a published check declares, in the shape it declares, can be typed** (#1253 review).
+#
+# The refusal above matches the exact (rule, input) pair, so a name the rulebook never declared
+# walked past it: `countertop_depth#0` was stored as a one-item list for `countertop_depth`, which
+# outranks any reading and then crashed the checks for the whole revision on the scalar's arity.
+# Lists are sent as `values` under the plain input name; the server alone writes `#0`, `#1`, ... and
+# the `rule:` prefix, so a name carrying either is never a legitimate entry.
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "name"),
+    [
+        ("CT-DEPTH-001", "countertop_depth#0"),
+        ("CT-DEPTH-001", "countertop_depth:0"),
+        ("CAB-FILLER-001", "field_width#0"),
+        ("CT-WIDTH-001", "cabinet_widths#3"),
+        ("CT-DEPTH-001:countertop_depth", "x"),
+        ("CAB-FILLER-001#0", "field_width"),
+    ],
+)
+def test_a_name_carrying_the_stored_key_markers_is_refused(
+    session: Session, rule_id: str, name: str
+) -> None:
+    """`#` and `:` are the server's own markers in a stored key; a sent name never carries them."""
+    _publish(session, *ALL_RULES)
+    package = _package(session)
+
+    response = _post(
+        session, package, {"measurements": [{"rule_id": rule_id, "name": name, "value": '25"'}]}
+    )
+
+    assert response.status_code == 422, response.text
+    assert _run_sets(session) == 0
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "name"),
+    [
+        ("CT-DEPTH-001", "made_up_input"),
+        ("NO-SUCH-RULE-001", "field_width"),
+        # Declared by a rule file, but that rule is not published here.
+        ("CT-SINK-CABINET-WIDTH-001", "sink_cabinet_width"),
+    ],
+)
+def test_an_input_no_published_check_declares_is_refused(
+    session: Session, rule_id: str, name: str
+) -> None:
+    """A value no published check reads would sit in the store unasked-for; it is refused instead."""
+    _publish(session, *ALL_RULES)
+    package = _package(session)
+
+    response = _post(
+        session, package, {"measurements": [{"rule_id": rule_id, "name": name, "value": '25"'}]}
+    )
+
+    assert response.status_code == 422, response.text
+    assert f"{rule_id}.{name}" in response.json()["message"]
+    assert _run_sets(session) == 0
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # A list input sent one value: the check would compare a total against one cabinet.
+        {"rule_id": "CT-WIDTH-001", "name": "cabinet_widths", "value": '30"'},
+        {"rule_id": "CAB-FILLER-001", "name": "shop_cabinets", "value": '30"'},
+        # A single input sent as a list: the check would refuse a tuple for a scalar and crash.
+        {"rule_id": "CAB-FILLER-001", "name": "field_width", "values": ['120"']},
+        # A category sent as a dimension: each cabinet's type travels as a classification.
+        {"rule_id": "CAB-FILLER-001", "name": "cabinet_type", "values": ['30"']},
+    ],
+)
+def test_a_value_in_the_wrong_shape_for_its_input_is_refused(
+    session: Session, entry: dict[str, Any]
+) -> None:
+    """One value for a list, a list for one value, or a number for a category: 422, nothing kept."""
+    _publish(session, *ALL_RULES)
+    package = _package(session)
+
+    response = _post(session, package, {"measurements": [entry]})
+
+    assert response.status_code == 422, response.text
+    assert f"{entry['rule_id']}.{entry['name']}" in response.json()["message"]
+    assert _run_sets(session) == 0
+
+
+def test_the_form_says_where_a_drawn_value_is_read(session: Session) -> None:
+    """A confirm-only field names its view, never "the section drawing" for every one of them."""
+    _publish(session, *ALL_RULES)
+    package = _package(session)
+
+    response = _client(session).get(
+        f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs"
+    )
+
+    assert response.status_code == 200, response.text
+    where = {q["key"]: q["where_to_find"] for q in response.json()["quantities"]}
+    assert "plan view" in where["SHOP:CT012"]
+    assert "vendor's" in where["SHOP:countertop_overall_width"].lower()
+    assert "architect's" in where["ARCH:CT001"].lower()
+    for key, text in where.items():
+        assert "section drawing" not in (text or ""), key
+    # Only a confirm-only field is told where to read it; a typed field keeps its own hint.
+    assert where["USER_INPUT:field_dimension"] is None
+    assert where["SHOP:cabinet_width"] is None
+
+
+def test_the_form_names_every_page_a_reading_is_confirmed_on(session: Session) -> None:
+    """Viewing one page, a reading confirmed on another is still known: the field is not empty."""
+    from app.evidence.confirm import confirm_candidate_type
+    from app.models import ObservationCandidate
+    from tests.api.test_v1_loop import DRAWING
+    from tests.extraction.test_reader import MISSING_SPACE
+    from tests.workflow.test_pipeline_end_to_end import _revision as _read_revision
+    from workflow.stages import DatabaseStages
+
+    with tempfile.TemporaryDirectory() as directory:
+        store = LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
+        revision = _read_revision(session, store, data=DRAWING)
+        _publish(session, *ALL_RULES)
+        stages = DatabaseStages(store, missing_space=MISSING_SPACE)
+        stages.extract_pages(session, revision.id)
+        stages.validate_evidence(session, revision.id)
+        session.commit()
+        package = session.get_one(Package, revision.package_id)
+        depth = session.scalars(
+            select(ObservationCandidate).where(ObservationCandidate.raw_text == "648 [25 1/2]")
+        ).one()
+        confirm_candidate_type(
+            session, candidate_id=depth.id, semantic_type="CT010", confirmed_by="reviewer-a"
+        )
+        session.commit()
+        client = _client(session, store=store, project=package.project_id)
+
+        base = f"/api/v1/projects/{package.project_id}/packages/{package.id}/required-inputs"
+        on_page_two = client.get(f"{base}?page_number=2")
+        on_page_one = client.get(f"{base}?page_number=1")
+
+    assert on_page_two.status_code == 200, on_page_two.text
+    assert on_page_two.json()["confirmed_readings"] == []
+    pages = {q["key"]: q["confirmed_pages"] for q in on_page_two.json()["quantities"]}
+    assert pages["SHOP:CT010"] == [1]
+    assert pages["SHOP:CT012"] == []
+    assert {q["key"]: q["confirmed_pages"] for q in on_page_one.json()["quantities"]}[
+        "SHOP:CT010"
+    ] == [1]

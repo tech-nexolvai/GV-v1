@@ -83,21 +83,22 @@ DRAWN_SOURCES: Final[dict[str, str]] = {
 def confirm_only(source: str, *, many: bool) -> bool:
     """Whether a rule input is one number drawn on a drawing, so it is confirmed and never typed.
 
-    The same line the waiting card draws (`app/review/waiting_values.py`): a `USER_INPUT` entry or a
-    list is the reviewer's own entry on Measurements; one value on a SHOP or ARCH drawing is a
-    reading. A source this does not know is not a drawing, so it is not refused here.
+    One value on a SHOP or ARCH drawing is a reading; a `USER_INPUT` entry or a list is the
+    reviewer's own entry on Measurements. This is narrower than the waiting card's line
+    (`app/review/waiting_values.py`), which calls any single value that is not `USER_INPUT` drawn:
+    here a source that is not a drawing (`PRODUCT_SPEC`, which no rule reads today) is not refused.
     """
     return source in DRAWN_SOURCES and not many
 
 
-def typed_drawn_refusal(label: str, source: str) -> str:
-    """The plain sentence a typed drawn number is refused with (#1251)."""
+def typed_drawn_refusal(label: str, source: str, where: str) -> str:
+    """The plain sentence a typed drawn number is refused with (#1251), naming where it is drawn."""
     drawing = DRAWN_SOURCES.get(source, "a drawing")
     return (
         f"{label} is a number drawn on {drawing}, so it is not typed here: people confirm a "
-        "reading of it instead (GV's rule, 2026-10-12). Confirm the drawing's reading on "
-        "Measurements; with no reading, the check waits for the drawing that shows it (not "
-        "supplied)."
+        f"reading of it instead (GV's rule, 2026-10-12). It is drawn on {where[:1].lower()}"
+        f"{where[1:]} Confirm that reading on Measurements; until one is confirmed, the check "
+        "waits for it."
     )
 
 

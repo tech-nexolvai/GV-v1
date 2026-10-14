@@ -48,7 +48,7 @@ Verification: `tests/api/test_measurements.py`, `tests/api/test_setting_citation
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -88,6 +88,7 @@ from app.models.runs import ExtractionRun
 from app.review.setting_sizes import refused_size
 from app.review.settings_in_force import settings_in_force
 from app.review.sizes import NOT_ABOVE_ZERO, is_positive_size, typed_negative
+from app.review.waiting_values import DRAWING_GUIDE
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
@@ -118,8 +119,13 @@ from app.schemas.measurements import (
 from app.verdicts.rulebook import snapshot_store
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
-from rules.required_inputs import RequiredInputs, allowed_categories_for, required_inputs
-from rules.schema import Cardinality, Quantity, Rule
+from rules.required_inputs import (
+    RequiredInputs,
+    allowed_categories_for,
+    categories_for,
+    required_inputs,
+)
+from rules.schema import Cardinality, InputSelector, Quantity, Rule
 from rules.semantic_types import SemanticType
 from storage.store import ArtifactStore
 from units.imperial import format_inches
@@ -140,7 +146,7 @@ from workflow.layout_proposals import (
     record_layout_confirmation,
     stored_layout_proposals,
 )
-from workflow.measurements import LIST_MARKER, confirm_only, typed_drawn_refusal
+from workflow.measurements import DRAWN_SOURCES, LIST_MARKER, confirm_only, typed_drawn_refusal
 from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.parameter_citations import (
@@ -931,9 +937,10 @@ def read_required_inputs(
         )
         .order_by(Page.index, ObservationCandidate.created_at, CanonicalObservation.id)
     )
-    if page_number is not None:
-        confirmed_query = confirmed_query.where(Page.index == page_number - 1)
+    # Read for every page, then narrowed to the one in view: a field whose reading was confirmed on
+    # another page is not empty, and the form says which page holds it (#1253 review).
     confirmed_rows = session.execute(confirmed_query).all()
+    confirmed_pages: dict[str, set[int]] = {}
 
     seen_observations: set[UUID] = set()
     confirmed_readings_list: list[ConfirmedReadingOut] = []
@@ -943,9 +950,13 @@ def read_required_inputs(
         if observation.id in seen_observations:
             continue
         seen_observations.add(observation.id)
+        key = f"{observation.document_role}:{observation.semantic_type}"
+        confirmed_pages.setdefault(key, set()).add(page_index + 1)
+        if page_number is not None and page_index != page_number - 1:
+            continue
         confirmed_readings_list.append(
             ConfirmedReadingOut(
-                key=f"{observation.document_role}:{observation.semantic_type}",
+                key=key,
                 source=observation.document_role,
                 semantic_type=observation.semantic_type,
                 page_index=page_index,
@@ -987,6 +998,12 @@ def read_required_inputs(
                 source=quantity.source,
                 many=quantity.many,
                 confirm_only=confirm_only(quantity.source, many=quantity.many),
+                where_to_find=(
+                    _where_drawn(quantity.source, quantity.semantic_type)
+                    if confirm_only(quantity.source, many=quantity.many)
+                    else None
+                ),
+                confirmed_pages=tuple(sorted(confirmed_pages.get(quantity.key, ()))),
                 consumers=tuple(
                     {"rule_id": consumer.rule_id, "input_name": consumer.input_name}
                     for consumer in quantity.consumers
@@ -1159,19 +1176,20 @@ def enter_measurements(
     # order given — that order is the layout left to right, and `CAB-ARCH-VS-SHOP-001` compares two
     # runs position by position, so reordering here would compare the wrong pair of cabinets.
     measurement_keys: set[str] = set()
-    sized = _positive_size_inputs(session) if body.measurements else frozenset()
-    drawn = _confirm_only_inputs(session) if body.measurements else {}
+    published = _published_rules(session) if body.measurements or body.classifications else []
+    declared = _declared_inputs(published)
+    sized = _positive_size_inputs(published)
     for measurement in body.measurements:
         label = f"{measurement.rule_id}.{measurement.name}"
-        # **A number drawn on the drawing is confirmed, never typed** (#1251; GV's rule, Anant
-        # 2026-10-12). Refused whichever form carried it, before anything is stored, so a typed
-        # depth can no longer reach the checks and beat a reading. Values typed before this stay
-        # and still count (`workflow/measurements.py`); nothing new of that kind is accepted.
-        if (measurement.rule_id, measurement.name) in drawn:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=typed_drawn_refusal(label, drawn[(measurement.rule_id, measurement.name)]),
-            )
+        # **Only what a published check declares, in the shape it declares** (#1251, #1253 review).
+        # A number drawn on the drawing is confirmed, never typed (GV's rule, Anant 2026-10-12), and
+        # nothing else may slip a value past that: a name carrying the stored key's own markers, an
+        # input no check reads, or a value in the wrong shape would be stored where a check reads it,
+        # outrank a reading, or crash the checks on arity. All refused before anything is stored.
+        # Values typed before this stay and still count (`workflow/measurements.py`).
+        refusal = _refused_measurement(measurement, label, declared)
+        if refusal is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=refusal)
         if measurement.values is not None:
             for index, raw in enumerate(measurement.values):
                 key = f"{measurement.rule_id}:{measurement.name}{LIST_MARKER}{index}"
@@ -1194,7 +1212,6 @@ def enter_measurements(
     # client out of step with the rulebook, and accepting it would store a category the operation
     # will later refuse — turning a correctable 422 into an abstention on a package the reviewer
     # thought they had finished.
-    published = _published_rules(session) if body.classifications else []
     for classification in body.classifications:
         allowed = allowed_categories_for(published, classification.rule_id, classification.name)
         if allowed is None:
@@ -1286,32 +1303,75 @@ def enter_measurements(
     )
 
 
-def _positive_size_inputs(session: Session) -> frozenset[tuple[str, str]]:
+def _positive_size_inputs(rules: Sequence[Rule]) -> frozenset[tuple[str, str]]:
     """`(rule id, input name)` for every published input whose value is the size of a real thing."""
     return frozenset(
         (rule.id, name)
-        for rule in _published_rules(session)
+        for rule in rules
         for name, selector in rule.inputs.items()
         if is_positive_size(selector.semantic_type.value)
     )
 
 
-def _confirm_only_inputs(session: Session) -> dict[tuple[str, str], str]:
-    """`(rule id, input name)` → drawing source, for every published input that is one number
-    drawn on the vendor's or the architect's drawing: confirmed from a reading, never typed (#1251).
+def _declared_inputs(rules: Sequence[Rule]) -> dict[tuple[str, str], InputSelector]:
+    """`(rule id, input name)` → what the published rule declares for it: the only inputs typable."""
+    return {(rule.id, name): selector for rule in rules for name, selector in rule.inputs.items()}
 
-    Read from the published rulebook, as the form is, so the form's `confirm_only` and this refusal
-    cannot disagree. An input no published rule declares is not judged here.
+
+def _where_drawn(source: str, semantic_type: str) -> str:
+    """Where a drawn number is read, in plain words: the view when it is known, else the drawing.
+
+    `DRAWING_GUIDE` names the vendor's views (the client lead: plan for the cut-out and offsets,
+    elevation for widths), so it is used only for the vendor's drawing.
     """
-    return {
-        (rule.id, name): source
-        for rule in _published_rules(session)
-        for name, selector in rule.inputs.items()
-        if confirm_only(
-            source := str(getattr(selector.source, "value", selector.source)),
-            many=selector.cardinality is Cardinality.MANY,
+    if source == "SHOP" and semantic_type in DRAWING_GUIDE:
+        return DRAWING_GUIDE[semantic_type].where_to_find
+    drawing = DRAWN_SOURCES.get(source, "the drawing")
+    return f"{drawing[:1].upper()}{drawing[1:]}."
+
+
+def _refused_measurement(
+    measurement: MeasurementEntry,
+    label: str,
+    declared: Mapping[tuple[str, str], InputSelector],
+) -> str | None:
+    """Why one measurement may not be stored, in a sentence, or `None` when it may (#1253 review).
+
+    In order: the stored key's own markers, an input no published check declares, a category sent
+    as a dimension, a number drawn on the drawing (confirmed, never typed), then the shape — one
+    value for a single input, `values` for a list.
+    """
+    if any(
+        marker in text
+        for marker in (LIST_MARKER, ":")
+        for text in (measurement.rule_id, measurement.name)
+    ):
+        return (
+            f"{label}: a rule id or an input name never contains '{LIST_MARKER}' or ':', which mark "
+            "a stored entry. Send a list as `values` under the input's own name. Nothing was saved."
         )
-    }
+    pair = (measurement.rule_id, measurement.name)
+    if pair not in declared:
+        return (
+            f"{label} is not an input any published check reads, so nothing was saved. Use the rule "
+            "id and the input name the Measurements form gives."
+        )
+    selector = declared[pair]
+    semantic_type = str(selector.semantic_type.value)
+    if categories_for(semantic_type):
+        return f"{label} takes a category, not a dimension. Send it as a classification."
+    source = str(getattr(selector.source, "value", selector.source))
+    many = selector.cardinality is Cardinality.MANY
+    if confirm_only(source, many=many):
+        return typed_drawn_refusal(label, source, _where_drawn(source, semantic_type))
+    if many and measurement.values is None:
+        return (
+            f"{label} is a list the checks read in order, so send it as `values`, even with one "
+            "item. Nothing was saved."
+        )
+    if not many and measurement.values is not None:
+        return f"{label} is one value, so send it as `value`, not a list. Nothing was saved."
+    return None
 
 
 def _parse_size(

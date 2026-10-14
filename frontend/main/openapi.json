@@ -11613,6 +11613,14 @@
             "title": "Confirm Only",
             "type": "boolean"
           },
+          "confirmed_pages": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Confirmed Pages",
+            "type": "array"
+          },
           "consumers": {
             "items": {
               "additionalProperties": {
@@ -11638,6 +11646,17 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "where_to_find": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where To Find"
           }
         },
         "required": [

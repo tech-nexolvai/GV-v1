@@ -7513,6 +7513,11 @@ export interface components {
             categories: string[];
             /** Confirm Only */
             confirm_only: boolean;
+            /**
+             * Confirmed Pages
+             * @default []
+             */
+            confirmed_pages: number[];
             /** Consumers */
             consumers: {
                 [key: string]: string;
@@ -7525,6 +7530,8 @@ export interface components {
             semantic_type: string;
             /** Source */
             source: string;
+            /** Where To Find */
+            where_to_find?: string | null;
         };
     };
     responses: never;

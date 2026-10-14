@@ -236,6 +236,12 @@ class QuantityOut(BaseModel):
     #: for it, only a reading to confirm, and `POST .../measurements` refuses a typed one. False for
     #: the reviewer's own entries (`USER_INPUT`) and for lists, which stay typable.
     confirm_only: bool
+    #: Where a confirm-only number is drawn, in plain words: the vendor's view when it is known,
+    #: otherwise which drawing. None for a field the reviewer types (#1253 review).
+    where_to_find: str | None = None
+    #: The pages (1 upward) holding a reading confirmed for this field, across the whole revision,
+    #: whichever page the form was asked for, so a field confirmed elsewhere is not shown as empty.
+    confirmed_pages: tuple[int, ...] = ()
     #: The rule inputs this one measurement feeds, so a caller fans a single typed value out rather
     #: than asking for it once per rule.
     consumers: tuple[dict[str, str], ...]
