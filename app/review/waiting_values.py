@@ -63,6 +63,7 @@ from units.measurement import Unit
 from verdict.outcomes import Outcome
 from vocabulary.semantic_types import CLIENT_CODES, SemanticType
 from vocabulary.setting_names import setting_name
+from workflow.measurements import DRAWN_SOURCES
 
 __all__ = [
     "DRAWING_GUIDE",
@@ -251,6 +252,19 @@ def _setting_guide(name: str) -> Guide:
         return SETTING_GUIDE[name]
     guidance = " ".join(SOURCE_GUIDANCE[source] for source in allowed_sources(name))
     return Guide(setting_name(name), guidance or "The project spec.")
+
+
+def where_drawn(source: str, semantic_type: str) -> str:
+    """Where a drawn number is read, in plain words: the view when it is known, else the drawing.
+
+    `DRAWING_GUIDE` names the vendor's views (the client lead: plan for the cut-out and offsets,
+    elevation for widths), so it is used only for the vendor's drawing. One sentence for both the
+    Measure page and the waiting card (#1262), and never a claim that a drawing was not supplied.
+    """
+    if source == "SHOP" and semantic_type in DRAWING_GUIDE:
+        return DRAWING_GUIDE[semantic_type].where_to_find
+    drawing = DRAWN_SOURCES.get(source, "the drawing")
+    return f"{drawing[:1].upper()}{drawing[1:]}."
 
 
 def _drawing_guide(source: str, semantic_type: str) -> Guide:
@@ -447,6 +461,9 @@ def missing_inputs_for(
             where = guide.where_to_find
             if is_list:
                 where = LIST_ORDER.get(rule.operation.type, LIST_ON_MEASUREMENTS)
+            elif not entered:
+                # The Measure page's own sentence (#1262), so both screens name the same view.
+                where = where_drawn(source, semantic)
             drawn.append(
                 MissingInputOut(
                     key=f"{source}:{semantic}",

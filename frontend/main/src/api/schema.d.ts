@@ -6929,6 +6929,16 @@ export interface components {
         SavedQuantityOut: {
             /** Complete */
             complete: boolean;
+            /**
+             * Differs For
+             * @default []
+             */
+            differs_for: string[];
+            /**
+             * Held By
+             * @default []
+             */
+            held_by: string[];
             /** Key */
             key: string;
             /**
