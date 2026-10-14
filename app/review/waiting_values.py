@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 from uuid import UUID
 
 from sqlalchemy import select
@@ -51,7 +51,7 @@ from app.models import RuleSnapshot, VerdictInput
 from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.review.settings_in_force import SINK_SETTINGS
-from app.schemas.findings import FindingOut, MissingInputOut, SavedInputOut
+from app.schemas.findings import MissingInputOut, SavedInputOut
 from app.verdicts.rulebook import UnreadableSnapshot, from_row
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer
@@ -69,10 +69,35 @@ __all__ = [
     "SETTING_GUIDE",
     "SINK_SETTINGS",
     "WAITING_RULES",
+    "WaitingFinding",
     "missing_inputs_for",
 ]
 
 Scope = Literal["project", "sink", "drawing", "measurements"]
+
+
+class WaitingFinding(Protocol):
+    """What `missing_inputs_for` reads of a result: a listed `FindingOut`, or the per-countertop
+    check plan's own record of a live whole-package result (`workflow/item_plan.py`, #1245)."""
+
+    @property
+    def id(self) -> UUID: ...
+    @property
+    def check_run_id(self) -> UUID: ...
+    @property
+    def package_revision_id(self) -> UUID: ...
+    @property
+    def rule_id(self) -> str: ...
+    @property
+    def rule_snapshot_id(self) -> UUID: ...
+    @property
+    def outcome(self) -> Outcome: ...
+    @property
+    def scope_item_id(self) -> UUID | None: ...
+    @property
+    def scope_row_candidate_id(self) -> UUID | None: ...
+    @property
+    def parameter_set_versions(self) -> Mapping[str, str]: ...
 
 
 #: The checks this asks for: the six of #1181 and the two cabinet checks (#1205). Every other
@@ -293,7 +318,7 @@ def _latest_set_ids(
 
 
 def missing_inputs_for(
-    session: Session, project_id: UUID, items: Sequence[FindingOut]
+    session: Session, project_id: UUID, items: Sequence[WaitingFinding]
 ) -> dict[UUID, list[MissingInputOut]]:
     """For each revision-wide `NOT_FOUND` result in `items`, the values it could not run without.
 

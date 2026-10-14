@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.review.row_location import RowLocation
 from app.schemas.architect_matches import ArchitectViewRefOut
+from app.schemas.findings import MissingInputOut
 from app.schemas.review import optional_in_schema
 from verdict.outcomes import Outcome
 
@@ -298,6 +299,17 @@ class ArchitectResultOut(BaseModel):
     )
 
 
+class CountertopItemRefOut(BaseModel):
+    """A confirmed countertop (a live countertop item, #1245): which one, and where."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item_id: UUID
+    page_number: int
+    number: int = Field(description="Its place among the page's live countertops, 1 from the left.")
+    label: str = Field(description='"Countertop 1 on page 3".')
+
+
 class CountertopResultOut(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -359,6 +371,81 @@ class CountertopResultOut(BaseModel):
             "explanation, labelled as the current value."
         ),
     )
+    countertop_item: CountertopItemRefOut | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "The live countertop item confirmed from this row (#1245), through Bala's link "
+            "(`part_proposal_rows`), or followed to it after a re-read only when the row is "
+            "provably its own: the screen groups the row's results under it. The results stay "
+            "keyed by the row. Null while no live countertop item belongs to it."
+        ),
+    )
+
+
+class PlannedFindingOut(BaseModel):
+    """One live result that belongs to a countertop: its row's, or the countertop's own."""
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: UUID
+    rule_id: str
+    outcome: Outcome
+    scope: Literal["row", "item"]
+
+
+class PlannedRuleOut(BaseModel):
+    """One published rule for the package's product, and where it stands for one countertop
+    (#1245)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rule_id: str
+    resolved: bool = Field(
+        description=(
+            "Whether it is known which version and variant of the rule applies to this countertop: "
+            "from its own result when it has one (chosen from its row's walls), else from what is "
+            "stated alone."
+        )
+    )
+    waits_for: str | None = Field(description="Why it is not known; null when it is.")
+    version: str | None = Field(
+        description="The rule's version: its own result's, else the rulebook's; null if not known."
+    )
+    variant: str | None = Field(
+        description=(
+            "The variant that applied (the wall layout's branch): its own result's, else the "
+            "rulebook's; null for a rule with no variants, or when not known."
+        )
+    )
+    findings: tuple[PlannedFindingOut, ...]
+    missing: tuple[MissingInputOut, ...] = Field(
+        description="What the rule's whole-package result is waiting on; empty when nothing."
+    )
+
+
+class ItemPlanOut(BaseModel):
+    """What is checked for one live countertop item (#1245): the seed of the per-item plan."""
+
+    model_config = ConfigDict(frozen=True)
+
+    countertop: CountertopItemRefOut
+    row_id: UUID | None = Field(
+        description="The countertop row it was confirmed from (`row_id` on the results); null if none."
+    )
+    rules: tuple[PlannedRuleOut, ...]
+    findings: tuple[PlannedFindingOut, ...]
+    note: str | None
+
+
+class CheckPlanOut(BaseModel):
+    """Each live countertop item of a revision and its plan, in page order (#1245). Read-only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    package_id: UUID
+    revision_id: UUID
+    items: tuple[ItemPlanOut, ...]
 
 
 class NoCountertopConfirmationOut(BaseModel):

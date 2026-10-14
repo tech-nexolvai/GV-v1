@@ -444,7 +444,9 @@ def test_locations_and_crops_are_read_only_and_do_not_grow_with_rows(
     # when no stored setting holds it and the rulebook's default is read); same for any row count.
     # 15 since #1241: a reviewer's wall answer an earlier reading could not carry is asked for
     # once; still the same for any number of rows.
-    assert len(large) == len(small) <= 15
+    # 16 since #1245: the live countertops are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert len(large) == len(small) <= 16
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in small + large)
     assert tables() == before
 

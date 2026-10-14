@@ -19,6 +19,7 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from eval.smriti.actors import Reviewers
 from eval.smriti.candidates import NEEDS_CONFIRMATION, Candidate, agent_counts, table_counts
 from eval.smriti.export import export_candidates
 
@@ -27,6 +28,8 @@ pytest_plugins = ("tests.app.postgres_fixture",)
 OPUS = "anthropic.claude-opus-5-5"
 PICTURE = "7" * 64
 REVIEWER = "reviewer-a"
+#: The local real-reviewer list, as a test gives it: invented names only.
+PEOPLE = Reviewers(names=frozenset({REVIEWER}), source="test")
 
 
 @pytest.fixture
@@ -473,9 +476,11 @@ def _by_id(candidates: tuple[Candidate, ...]) -> dict[str, Candidate]:
     return {candidate.candidate_id: candidate for candidate in candidates}
 
 
-def _export(session: Session) -> dict[str, Candidate]:
+def _export(session: Session, reviewers: Reviewers = PEOPLE) -> dict[str, Candidate]:
     try:
-        return _by_id(export_candidates(session, database="synthetic").candidates)
+        return _by_id(
+            export_candidates(session, database="synthetic", reviewers=reviewers).candidates
+        )
     finally:
         session.rollback()
 
@@ -521,7 +526,10 @@ def test_walls_and_a_typed_width_split_into_rekha_and_akshara_and_only_the_lates
     assert walls.agent == "rekha"
     assert walls.kind == "decided"
     assert walls.recorded == {"wall_config": "back_only"}
-    assert not walls.convertible and "walls" in (walls.not_convertible or "")
+    # A walls key exists since #1250: the reason is now that no wall question names this row.
+    assert not walls.convertible and "wall question" in (walls.not_convertible or "")
+    assert "no walls answer" not in (walls.not_convertible or "")
+    assert "walls key" not in (walls.not_convertible or "")
 
     width = found[f"slot_row_review_decisions:{world.row_decision_latest}:piece_widths:1"]
     assert width.agent == "akshara"
@@ -638,7 +646,7 @@ def test_a_row_choice_question_asked_with_two_pictures_is_not_guessed(session: S
 def test_every_candidate_needs_confirmation_and_the_counts_add_up(session: Session) -> None:
     build_world(session)
     try:
-        exported = export_candidates(session, database="synthetic")
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
     finally:
         session.rollback()
     assert {candidate.status for candidate in exported.candidates} == {NEEDS_CONFIRMATION}
@@ -664,7 +672,7 @@ def test_the_export_is_read_only(session: Session) -> None:
     build_world(session)
     before = session.scalar(select(func.count()).select_from(CorrectionLedgerEntry))
     session.rollback()
-    export_candidates(session, database="synthetic")
+    export_candidates(session, database="synthetic", reviewers=PEOPLE)
     with pytest.raises(DBAPIError, match="read-only"):
         session.execute(text("CREATE TEMPORARY TABLE smriti_probe (x int)"))
     session.rollback()
@@ -673,8 +681,855 @@ def test_the_export_is_read_only(session: Session) -> None:
 
 def test_an_empty_database_exports_no_candidates(session: Session) -> None:
     try:
-        exported = export_candidates(session, database="synthetic")
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
     finally:
         session.rollback()
     assert exported.candidates == ()
     assert agent_counts(exported.candidates) == {}
+
+
+# --- Smriti v2 (#1267): every person decision, nothing code made -------------------------------
+
+WALL_BOX = "5,5,95,80"
+
+
+@dataclass(frozen=True, slots=True)
+class V2World:
+    """The newer decision tables: code's decisions, a person's, an unknown name's, carried copies,
+    a batch click, and a person overturning what code or both AIs decided by themselves."""
+
+    page_hash: str
+    code_role_only: UUID
+    code_role: UUID
+    person_role: UUID
+    code_countertop: UUID
+    person_withdrawal: UUID
+    person_piece: UUID
+    stranger_piece: UUID
+    original_row: UUID
+    carried_row: UUID
+    batch_answer: UUID
+    countertop_answer: UUID
+    confirm_action: UUID
+    confirm_overall: UUID
+    person_run: UUID
+    code_run: UUID
+    walls_decision: UUID
+    dismiss: UUID
+    code_pairing: UUID
+    person_pairing: UUID
+
+
+def _row_record(
+    session: Session,
+    run_id: UUID,
+    version_id: UUID,
+    page_id: UUID,
+    page_hash: str,
+    kinds: list[str],
+) -> UUID:
+    """A reader's row-choice record on a page every reader said has no countertop, and its question."""
+    rows = [str(uuid4()), str(uuid4())]
+    record = _candidate(
+        session,
+        version_id,
+        page_id,
+        run_id,
+        [
+            "slot-reader-row-choice",
+            "row-choice:0",
+            *(f"row-pick:{model}:none" for model in kinds),
+            *(f"row-kind:{model}:no_countertop" for model in kinds),
+            *(f"row-candidate:{i}:{row}" for i, row in enumerate(rows, start=1)),
+        ],
+    )
+    _ask(
+        session,
+        run_id,
+        version_id,
+        page_hash,
+        "p0:row-choice",
+        "slot-row-choice-v3",
+        rows,
+        picture=PICTURE,
+    )
+    return record
+
+
+def build_v2_world(session: Session) -> V2World:
+    from app.models.drawing import (
+        CountertopRunDecision,
+        DrawingItem,
+        DrawingView,
+        PartConfirmation,
+        PartProposal,
+        PartProposalRow,
+        ViewRoleConfirmation,
+    )
+    from app.models.evidence import (
+        ArchitectPairingRecord,
+        NoCountertopAnswer,
+        ObservationCandidate,
+        SlotRowReviewDecision,
+    )
+    from app.models.review import ReviewAction
+    from tests.review.test_ledger import PAGE_HASH, _scenario
+    from vocabulary.part_kinds import PartKind
+    from workflow.parts import BALA_CONFIRMER
+    from workflow.view_roles import CODE_CONFIRMER
+
+    scenario = _scenario(session, media_box=["0", "0", "612", "792"])
+    revision_id = scenario.package_revision_id
+    version_id = scenario.document_version_id
+    page_id = scenario.page_id
+    run = _run(session, revision_id, "extraction.form_reader")
+
+    # One countertop row of two pieces and its overall, each span asked once.
+    spans: dict[str, UUID] = {}
+    for slot, box, printed in (
+        ("slot:0", "10,20,30,40", '2"'),
+        ("slot:1", "40,20,60,40", '12 1/2"'),
+        ("slot:overall", "10,50,60,70", '14 1/2"'),
+    ):
+        spans[slot] = _candidate(
+            session,
+            version_id,
+            page_id,
+            run.id,
+            ["slot-reader", slot, f"slot-box:{box}", "row-rank:1", "row-slot-count:2"],
+            raw_text=printed,
+        )
+        number = slot.removeprefix("slot:")
+        _ask(
+            session,
+            run.id,
+            version_id,
+            PAGE_HASH,
+            "p0:overall:0" if number == "overall" else f"p0:slot{number}:0",
+            "claude-slot-span-v4",
+            [str(spans[slot])],
+        )
+
+    # The row's wall question: code's ink and both AIs agreed on a layout by themselves.
+    wall = ObservationCandidate(
+        document_version_id=version_id,
+        page_id=page_id,
+        extraction_run_id=run.id,
+        raw_text="walls: back_only",
+        polygon=[[5, 5], [95, 5], [95, 80], [5, 80]],
+        ambiguity_flags=[
+            "wall-reader",
+            "row-rank:1",
+            "walls-sealed:back_only",
+            "wall-ink:left=False,right=False",
+            "wall-source:code-ink-and-both-ais",
+        ],
+    )
+    session.add(wall)
+    session.flush()
+    _ask(session, run.id, version_id, PAGE_HASH, "p0:walls", "slot-walls-v3", [str(wall.id)])
+    walls_decision = SlotRowReviewDecision(
+        row_candidate_id=spans["slot:0"],
+        wall_config="back_and_left",
+        measurements={},
+        confirmed_by=REVIEWER,
+    )
+    session.add(walls_decision)
+    session.flush()
+
+    # A decision carried from an earlier revision's identical row: the original is its own case.
+    earlier_run = _run(session, revision_id, "extraction.form_reader")
+    later_run = _run(session, revision_id, "extraction.form_reader")
+    earlier_anchor = _candidate(
+        session, version_id, page_id, earlier_run.id, ["slot-reader", "slot:0", "row-rank:1"]
+    )
+    later_anchor = _candidate(
+        session, version_id, page_id, later_run.id, ["slot-reader", "slot:0", "row-rank:1"]
+    )
+    original_row = SlotRowReviewDecision(
+        row_candidate_id=earlier_anchor,
+        wall_config="island",
+        measurements={},
+        confirmed_by=REVIEWER,
+    )
+    session.add(original_row)
+    session.flush()
+    carried_row = SlotRowReviewDecision(
+        row_candidate_id=later_anchor,
+        wall_config="island",
+        measurements={},
+        confirmed_by=REVIEWER,
+        carried_from_id=original_row.id,
+    )
+    session.add(carried_row)
+    session.flush()
+
+    # View roles: code set one view alone, and set another that a person then changed.
+    region = {"space": "stored", "points": [["0", "0"], ["1", "1"]]}
+    view = DrawingView(page_id=page_id, tag="A", region=region)
+    other_view = DrawingView(page_id=page_id, tag="B", region=region)
+    session.add_all([view, other_view])
+    session.flush()
+    code_role_only = ViewRoleConfirmation(
+        drawing_view_id=other_view.id, role="shop", confirmed_by=CODE_CONFIRMER
+    )
+    code_role = ViewRoleConfirmation(
+        drawing_view_id=view.id, role="shop", confirmed_by=CODE_CONFIRMER
+    )
+    session.add_all([code_role_only, code_role])
+    session.flush()
+    person_role = ViewRoleConfirmation(drawing_view_id=view.id, role="arch", confirmed_by=REVIEWER)
+    session.add(person_role)
+    session.flush()
+
+    # Bala's parts of the row: code made the countertop by itself and a person took it back; a
+    # person named piece 1 a cabinet; a name nobody listed named piece 0 a filler.
+    extent = {"space": "stored", "points": [["0", "0"], ["1", "1"]]}
+
+    def propose(kind: str, slot_index: int | None) -> UUID:
+        proposal = PartProposal(
+            drawing_view_id=view.id,
+            kind=kind,
+            extent=extent,
+            source="bala",
+            source_version="1",
+            reason="invented",
+        )
+        session.add(proposal)
+        session.flush()
+        session.add(
+            PartProposalRow(
+                part_proposal_id=proposal.id,
+                row_candidate_id=spans["slot:0"],
+                slot_index=slot_index,
+                extraction_run_id=run.id,
+                kind_named=slot_index is None,
+            )
+        )
+        session.flush()
+        return proposal.id
+
+    def decide(
+        proposal: UUID, actor: str, kind: str | None, supersedes: UUID | None = None
+    ) -> UUID:
+        item_id = None
+        if kind is not None:
+            item = DrawingItem(
+                drawing_view_id=view.id, item_type=PartKind(kind).item_type.value, extent=extent
+            )
+            session.add(item)
+            session.flush()
+            item_id = item.id
+        decision = PartConfirmation(
+            part_proposal_id=proposal,
+            supersedes_id=supersedes,
+            decision="withdrawn" if kind is None else "confirmed",
+            kind=kind,
+            drawing_item_id=item_id,
+            confirmed_by=actor,
+        )
+        session.add(decision)
+        session.flush()
+        return decision.id
+
+    countertop = propose("countertop", None)
+    code_countertop = decide(countertop, BALA_CONFIRMER, "countertop")
+    code_item = session.scalar(
+        select(PartConfirmation.drawing_item_id).where(PartConfirmation.id == code_countertop)
+    )
+    # A person confirmed the run beneath that countertop and chose its walls; code decided a run
+    # beneath another countertop by itself.
+    person_run = CountertopRunDecision(
+        countertop_item_id=code_item,
+        decision="confirmed",
+        run_id=uuid4(),
+        confirmed_by=REVIEWER,
+        wall_config="back_only",
+    )
+    other_item = DrawingItem(
+        drawing_view_id=view.id, item_type=PartKind.COUNTERTOP.item_type.value, extent=extent
+    )
+    session.add_all([person_run, other_item])
+    session.flush()
+    code_run = CountertopRunDecision(
+        countertop_item_id=other_item.id, decision="withdrawn", confirmed_by=BALA_CONFIRMER
+    )
+    session.add(code_run)
+    session.flush()
+    person_withdrawal = decide(countertop, REVIEWER, None, supersedes=code_countertop)
+    person_piece = decide(propose("filler", 1), REVIEWER, "cabinet")
+    stranger_piece = decide(propose("filler", 0), "ui reviewer", "filler")
+
+    # Two pages every reader listed with no countertop: one confirmed in a batch click, and one
+    # where the person said both AIs were wrong.
+    batch_record = _row_record(
+        session, run.id, version_id, page_id, PAGE_HASH, ["opus-5-5", "sonnet-5-5"]
+    )
+    agreed_record = _row_record(
+        session, run.id, version_id, page_id, PAGE_HASH, ["opus-5-5", "sonnet-5-5"]
+    )
+
+    def answer(record: UUID, said: str, batch: UUID | None) -> UUID:
+        row = NoCountertopAnswer(
+            package_revision_id=revision_id,
+            row_choice_candidate_id=record,
+            page_id=page_id,
+            page_number=1,
+            page_content_hash=PAGE_HASH,
+            reading_answer="row-pick:opus-5-5:none",
+            answer=said,
+            answered_by=REVIEWER,
+            batch_id=batch,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+    batch_answer = answer(batch_record, "no_countertop", uuid4())
+    countertop_answer = answer(agreed_record, "countertop", None)
+
+    # The file's own text under slot 1 (written differently from the AI's text), and GV's markup
+    # under the overall: the markup is the answer key, never the printed text proposed.
+    def text_run(extractor: str, text: str, box: tuple[int, int, int, int]) -> None:
+        x0, y0, x1, y1 = box
+        session.add(
+            ObservationCandidate(
+                document_version_id=version_id,
+                page_id=page_id,
+                extraction_run_id=_run(session, revision_id, extractor).id,
+                raw_text=text,
+                polygon=[[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+                ambiguity_flags=[],
+            )
+        )
+        session.flush()
+
+    text_run("pdfplumber", '12-1/2"', (42, 22, 58, 38))
+    text_run("extraction.annotations", '15"', (12, 52, 58, 68))
+
+    # A person confirmed two readings were right, and dismissed a check's result.
+    confirm_overall = ReviewAction(
+        review_session_id=scenario.review_session_id,
+        finding_id=scenario.finding_id,
+        package_revision_id=revision_id,
+        action="confirm",
+        actor=REVIEWER,
+        original_observation_id=_slot_observation(
+            session, scenario, spans["slot:overall"], revision_id
+        ),
+        resulting_observation_id=scenario.observation_id,
+    )
+    session.add(confirm_overall)
+    session.flush()
+    confirm = ReviewAction(
+        review_session_id=scenario.review_session_id,
+        finding_id=scenario.finding_id,
+        package_revision_id=revision_id,
+        action="confirm",
+        actor=REVIEWER,
+        original_observation_id=_slot_observation(session, scenario, spans["slot:1"], revision_id),
+        resulting_observation_id=scenario.observation_id,
+    )
+    dismiss = ReviewAction(
+        review_session_id=scenario.review_session_id,
+        finding_id=scenario.finding_id,
+        package_revision_id=revision_id,
+        action="dismiss",
+        actor=REVIEWER,
+    )
+    session.add_all([confirm, dismiss])
+    session.flush()
+
+    # Code and both AIs paired the row by themselves; a person replaced the pairing.
+    code_pairing = ArchitectPairingRecord(
+        package_revision_id=revision_id,
+        page_id=page_id,
+        row_anchor_candidate_id=spans["slot:0"],
+        extraction_run_id=run.id,
+        source="code+ais",
+        status="paired",
+        pairs=[
+            {"kind": "overall", "architect_candidate_id": str(uuid4()), "vendor_slot_indices": [0]}
+        ],
+        details={},
+    )
+    session.add(code_pairing)
+    session.flush()
+    person_pairing = ArchitectPairingRecord(
+        package_revision_id=revision_id,
+        page_id=page_id,
+        row_anchor_candidate_id=spans["slot:0"],
+        extraction_run_id=None,
+        source="reviewer",
+        status="reviewer",
+        pairs=[],
+        details={},
+        supersedes_id=code_pairing.id,
+        decided_by=REVIEWER,
+    )
+    session.add(person_pairing)
+    session.commit()
+    return V2World(
+        page_hash=PAGE_HASH,
+        code_role_only=code_role_only.id,
+        code_role=code_role.id,
+        person_role=person_role.id,
+        code_countertop=code_countertop,
+        person_withdrawal=person_withdrawal,
+        person_piece=person_piece,
+        stranger_piece=stranger_piece,
+        original_row=original_row.id,
+        carried_row=carried_row.id,
+        batch_answer=batch_answer,
+        countertop_answer=countertop_answer,
+        confirm_action=confirm.id,
+        confirm_overall=confirm_overall.id,
+        person_run=person_run.id,
+        code_run=code_run.id,
+        walls_decision=walls_decision.id,
+        dismiss=dismiss.id,
+        code_pairing=code_pairing.id,
+        person_pairing=person_pairing.id,
+    )
+
+
+def test_a_code_part_or_view_role_is_never_a_candidate_and_is_counted_as_skipped(
+    session: Session,
+) -> None:
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    found = _by_id(exported.candidates)
+    for code_made in (
+        f"part_confirmations:{world.code_countertop}",
+        f"view_role_confirmations:{world.code_role}",
+        f"view_role_confirmations:{world.code_role_only}",
+        f"architect_pairing_records:{world.code_pairing}",
+    ):
+        assert code_made not in found
+    assert not any(candidate.decided_by.startswith("code:") for candidate in exported.candidates)
+    # Never silent: what was left out is counted, with why.
+    assert exported.skipped["part_confirmations"] == {"code": 1}
+    assert exported.skipped["view_role_confirmations"] == {"code": 2}
+    assert exported.skipped["architect_pairing_records"] == {"machine source": 1}
+
+
+def test_carried_and_batch_decisions_are_never_ready(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)
+    carried = found[f"slot_row_review_decisions:{world.carried_row}:walls"]
+    assert carried.kind == "carried"
+    assert not carried.convertible and carried.answer is None
+    assert str(world.original_row) in (carried.not_convertible or "")
+    # The original decision is its own candidate.
+    assert found[f"slot_row_review_decisions:{world.original_row}:walls"].kind == "decided"
+
+    batch = found[f"no_countertop_answers:{world.batch_answer}"]
+    assert batch.question is not None and batch.question["family"] == "slot-row-choice"
+    assert batch.answer is None, "a batch click is never a ready answer"
+    assert batch.answer_source is None
+    assert batch.answer_needed is not None and "own look" in batch.answer_needed
+    assert batch.recorded["batch"] is True
+
+
+def test_an_unknown_actor_is_not_convertible(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)
+    stranger = found[f"part_confirmations:{world.stranger_piece}"]
+    assert stranger.actor_status == "unknown"
+    assert not stranger.convertible
+    assert "not on the local list" in (stranger.not_convertible or "")
+    assert found[f"part_confirmations:{world.person_piece}"].actor_status == "reviewer"
+
+    # With no list given, nobody is a known reviewer: nothing is convertible.
+    nobody = _export(session, Reviewers(names=None, source=None))
+    assert nobody, "the decisions are still listed"
+    assert not any(candidate.convertible for candidate in nobody.values())
+    assert {candidate.actor_status for candidate in nobody.values()} == {"unknown"}
+
+
+def test_a_confirm_action_gives_a_positive_label_case(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"review_actions:{world.confirm_action}"]
+    assert found.agent == "akshara"
+    assert found.kind == "confirmed"
+    assert found.question == {
+        "family": "claude-slot-span",
+        "page_sha256": world.page_hash,
+        "question_id": "p0:slot1:0",
+        "slot_box": "40,20,60,40",
+    }
+    # The file's own text under the span is preferred over the AI's, and says where it came from.
+    assert found.answer == {"texts": ['12-1/2"']}
+    assert found.answer_source == "pdf-text"
+    assert found.recorded["reading"] == '12 1/2"'
+    assert found.convertible and found.mistake_needed is None
+
+
+def test_a_confirm_with_no_file_text_proposes_the_ai_reading_and_never_gvs_markup(
+    session: Session,
+) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"review_actions:{world.confirm_overall}"]
+    assert found.question is not None and found.question["question_id"] == "p0:overall:0"
+    # GV's markup lies under this span; it is the answer key, never the proposed printed text.
+    assert found.answer == {"texts": ['14 1/2"']}
+    assert found.answer_source == "ai-reading"
+    assert "pdf_text" not in found.recorded
+
+
+def test_the_pdf_text_routes_are_the_products_exact_text_routes_less_the_markup() -> None:
+    from eval.smriti.export import PDF_TEXT_EXTRACTORS
+    from workflow.stages import EXACT_TEXT_EXTRACTORS, MARKUP_EXTRACTOR
+
+    assert PDF_TEXT_EXTRACTORS == EXACT_TEXT_EXTRACTORS - {MARKUP_EXTRACTOR}
+
+
+def test_a_person_run_is_a_candidate_and_a_code_run_is_not(session: Session) -> None:
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    found = _by_id(exported.candidates)
+    run = found[f"countertop_run_decisions:{world.person_run}:run"]
+    assert run.agent == "bala" and run.kind == "decided"
+    assert run.recorded == {"decision": "confirmed", "members": 0}
+    assert not run.convertible and "beneath a countertop" in (run.not_convertible or "")
+    # Its wall choice is a walls case on the row the countertop was made from.
+    walls = found[f"countertop_run_decisions:{world.person_run}:walls"]
+    assert walls.agent == "rekha"
+    assert walls.question is not None and walls.question["question_id"] == "p0:walls"
+    assert walls.convertible and walls.answer is None
+    # The same layout code and both AIs gave: nothing automatic was overturned.
+    assert walls.overturned is None
+
+    assert not any(key.startswith(f"countertop_run_decisions:{world.code_run}") for key in found)
+    assert exported.skipped["countertop_run_decisions"] == {"code": 1}
+
+
+def test_a_person_confirming_a_piece_kind_gives_a_bala_kinds_case(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"part_confirmations:{world.person_piece}"]
+    assert found.agent == "bala"
+    assert found.kind == "corrected"  # suggested a filler, the person said cabinet
+    assert found.question == {
+        "family": "piece-kind",
+        "page_sha256": world.page_hash,
+        "question_id": "p0:piece1",
+        "pieces": 2,
+    }
+    assert found.answer == {"kinds": ["cabinet"]}
+    assert found.answer_source == "decision"
+    assert found.convertible and found.overturned is None
+
+
+def test_a_person_replacing_a_code_item_is_flagged_overturned(session: Session) -> None:
+    from workflow.parts import BALA_CONFIRMER
+    from workflow.view_roles import CODE_CONFIRMER
+
+    world = build_v2_world(session)
+    found = _export(session)
+    withdrawal = found[f"part_confirmations:{world.person_withdrawal}"]
+    assert withdrawal.overturned is not None
+    assert withdrawal.overturned["by"] == BALA_CONFIRMER
+    assert withdrawal.overturned["record"] == f"part_confirmations:{world.code_countertop}"
+    assert withdrawal.kind == "corrected"
+
+    role = found[f"view_role_confirmations:{world.person_role}"]
+    assert role.agent == "bala"
+    assert role.overturned is not None and role.overturned["by"] == CODE_CONFIRMER
+    assert role.overturned["answer"] == "shop"
+    assert not role.convertible
+
+    pairing = found[f"architect_pairing_records:{world.person_pairing}"]
+    assert pairing.overturned is not None and pairing.overturned["by"] == "code+ais"
+
+    walls = found[f"slot_row_review_decisions:{world.walls_decision}:walls"]
+    assert walls.overturned is not None
+    assert walls.overturned["answer"] == "back_only"
+    assert walls.overturned["by"] == "wall-source:code-ink-and-both-ais"
+
+    countertop = found[f"no_countertop_answers:{world.countertop_answer}"]
+    assert countertop.overturned is not None and countertop.overturned["by"] == "both AIs"
+
+
+def test_a_wall_choice_names_its_walls_question_and_the_person_states_the_drawn_ends(
+    session: Session,
+) -> None:
+    world = build_v2_world(session)
+    walls = _export(session)[f"slot_row_review_decisions:{world.walls_decision}:walls"]
+    assert walls.question == {
+        "family": "slot-walls",
+        "page_sha256": world.page_hash,
+        "question_id": "p0:walls",
+        "row_box": WALL_BOX,
+    }
+    assert walls.recorded == {"wall_config": "back_and_left"}
+    assert walls.answer is None and walls.convertible
+    assert walls.answer_needed is not None and "drawn" in walls.answer_needed
+
+
+def test_there_is_a_countertop_asks_the_person_for_the_box(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"no_countertop_answers:{world.countertop_answer}"]
+    assert found.agent == "rekha" and found.kind == "corrected"
+    assert found.question is not None and found.question["picture_sha256"] == PICTURE
+    assert found.answer is None and found.convertible
+    assert found.answer_needed is not None and "box" in found.answer_needed
+    assert "not_among_boxes" in found.answer_needed
+
+
+def test_a_correction_asks_misread_or_vendor_and_it_starts_unanswered(session: Session) -> None:
+    world = build_world(session)
+    found = _export(session)
+    assert found[f"correction_ledger:{world.ledger_slot}"].mistake_needed == "unanswered"
+    typed = found[f"slot_row_review_decisions:{world.row_decision_latest}:piece_widths:1"]
+    assert typed.mistake_needed == "unanswered"
+    assert found[f"no_countertop_answers:{world.no_countertop_reader}"].mistake_needed is None
+
+
+def test_a_dismiss_is_counted_for_the_findings_and_never_convertible(session: Session) -> None:
+    world = build_v2_world(session)
+    found = _export(session)[f"review_actions:{world.dismiss}"]
+    assert found.agent == "kautilya"
+    assert found.recorded == {"action": "dismiss"}
+    assert not found.convertible and "finding" in (found.not_convertible or "")
+
+
+def test_the_overturned_listing_and_the_v2_file_round_trip(session: Session, tmp_path: Any) -> None:
+    from eval.smriti.candidates import (
+        CANDIDATES_FORMAT,
+        overturned_listing,
+        read_candidates,
+        render_counts,
+        write_candidates,
+    )
+
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    listed = overturned_listing(exported)
+    assert {candidate.candidate_id for candidate in listed} >= {
+        f"part_confirmations:{world.person_withdrawal}",
+        f"view_role_confirmations:{world.person_role}",
+        f"no_countertop_answers:{world.countertop_answer}",
+    }
+    printed = render_counts(exported)
+    assert "overturned" in printed and "report only" in printed
+
+    path = tmp_path / "candidates.json"
+    write_candidates(exported, path)
+    assert json.loads(path.read_text())["format"] == CANDIDATES_FORMAT == "smriti-candidates/2"
+    again = read_candidates(path)
+    assert again.candidates == exported.candidates
+    assert again.skipped == exported.skipped
+
+
+def test_a_v1_candidates_file_is_still_read_and_its_people_are_unchecked(tmp_path: Any) -> None:
+    from eval.smriti.candidates import _digest, read_candidates
+
+    v1_entry = {
+        "candidate_id": "no_countertop_answers:1",
+        "table": "no_countertop_answers",
+        "decision_id": "1",
+        "agent": "rekha",
+        "corrects": "a page listed as having no countertop",
+        "kind": "confirmed",
+        "decided_by": REVIEWER,
+        "decided_at": "2026-10-14T00:00:00+00:00",
+        "page_sha256": "a" * 64,
+        "page_number": 1,
+        "recorded": {"answer": "no_countertop"},
+        "question": None,
+        "answer": None,
+        "answer_needed": None,
+        "not_convertible": "invented",
+        "status": NEEDS_CONFIRMATION,
+    }
+    document: dict[str, Any] = {
+        "format": "smriti-candidates/1",
+        "database": "synthetic",
+        "exported_at": "2026-10-14T00:00:00+00:00",
+        "code_version": "test",
+        "candidates": [v1_entry],
+        "counts": {},
+    }
+    document["sha256"] = _digest(document)
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps(document))
+    (only,) = read_candidates(path).candidates
+    assert only.actor_status == "unchecked"
+    assert only.overturned is None and only.mistake_needed is None
+
+
+# --- review of #1269: chains of confirms and corrections, carried pairings, counts ------------
+
+
+@dataclass(frozen=True, slots=True)
+class Chains:
+    confirm_then_correct: tuple[UUID, UUID]
+    """(the confirm, the later correction's ledger entry) of one reading."""
+    correct_then_confirm: tuple[UUID, UUID]
+    """(the correction's ledger entry, the later confirm of the corrected reading)."""
+
+
+def build_chains(session: Session) -> Chains:
+    """Two readings, each confirmed and corrected by a person, in both orders, as the product
+    records them: each action names the reading it reviewed and the new reading it produced."""
+    from app.models.review import CorrectionLedgerEntry, ReviewAction
+    from tests.review.test_ledger import PAGE_HASH, _scenario
+
+    scenario = _scenario(session, media_box=["0", "0", "612", "792"])
+    revision_id = scenario.package_revision_id
+    run = _run(session, revision_id, "extraction.form_reader")
+    spans: list[UUID] = []
+    for number, box in ((0, "10,20,30,40"), (1, "40,20,60,40")):
+        span = _candidate(
+            session,
+            scenario.document_version_id,
+            scenario.page_id,
+            run.id,
+            ["slot-reader", f"slot:{number}", f"slot-box:{box}", "row-rank:1"],
+            raw_text='1 1/2"',  # the AI's misread
+        )
+        _ask(
+            session,
+            run.id,
+            scenario.document_version_id,
+            PAGE_HASH,
+            f"p0:slot{number}:0",
+            "claude-slot-span-v4",
+            [str(span)],
+        )
+        spans.append(span)
+
+    def reading(span: UUID) -> UUID:
+        return _slot_observation(session, scenario, span, revision_id)
+
+    def act(verb: str, original: UUID, resulting: UUID) -> UUID:
+        action = ReviewAction(
+            review_session_id=scenario.review_session_id,
+            finding_id=scenario.finding_id,
+            package_revision_id=revision_id,
+            action=verb,
+            actor=REVIEWER,
+            original_observation_id=original,
+            resulting_observation_id=resulting,
+        )
+        session.add(action)
+        session.flush()
+        if verb != "correct":
+            return action.id
+        entry = CorrectionLedgerEntry(
+            review_action_id=action.id,
+            canonical_observation_id=original,
+            original_value='{"value":"3/2"}',
+            corrected_value='{"value":"23/2"}',
+        )
+        session.add(entry)
+        session.flush()
+        return entry.id
+
+    # Confirmed first, then corrected: the correction replaces the confirm.
+    first, confirmed, corrected = reading(spans[0]), reading(spans[0]), reading(spans[0])
+    confirm_a = act("confirm", first, confirmed)
+    ledger_a = act("correct", confirmed, corrected)
+    # Corrected first, then the corrected reading confirmed: its value is the person's.
+    first, corrected, confirmed = reading(spans[1]), reading(spans[1]), reading(spans[1])
+    ledger_b = act("correct", first, corrected)
+    confirm_b = act("confirm", corrected, confirmed)
+    session.commit()
+    return Chains(
+        confirm_then_correct=(confirm_a, ledger_a), correct_then_confirm=(ledger_b, confirm_b)
+    )
+
+
+def test_a_later_correction_replaces_an_earlier_confirm_of_the_same_reading(
+    session: Session,
+) -> None:
+    chains = build_chains(session)
+    confirm, ledger = chains.confirm_then_correct
+    found = _export(session)
+    earlier = found[f"review_actions:{confirm}"]
+    assert earlier.kind == "superseded"
+    assert earlier.answer is None and not earlier.convertible, "the AI's misread is never an answer"
+    latest = found[f"correction_ledger:{ledger}"]
+    assert latest.kind == "corrected" and latest.convertible
+    assert latest.mistake_needed == "unanswered"
+
+
+def test_a_confirm_of_a_corrected_reading_never_proposes_the_ais_text(session: Session) -> None:
+    chains = build_chains(session)
+    ledger, confirm = chains.correct_then_confirm
+    found = _export(session)
+    confirmed = found[f"review_actions:{confirm}"]
+    assert confirmed.answer is None and confirmed.answer_source is None
+    assert not confirmed.convertible
+    assert "correction" in (confirmed.not_convertible or "")
+    # The correction stays the case, waiting for the printed text.
+    correction = found[f"correction_ledger:{ledger}"]
+    assert correction.kind == "corrected" and correction.convertible
+
+
+def test_a_carried_pairing_copy_is_never_a_new_decision_nor_an_overturn(session: Session) -> None:
+    from app.models.evidence import ArchitectPairingRecord
+
+    world = build_v2_world(session)
+    person = session.get(ArchitectPairingRecord, world.person_pairing)
+    assert person is not None
+    # The copy carry-forward writes onto a re-read of the row: `reviewer`, naming its original,
+    # replacing an automatic `code+ais` pairing of the new reading that it differs from.
+    automatic = ArchitectPairingRecord(
+        package_revision_id=person.package_revision_id,
+        page_id=person.page_id,
+        row_anchor_candidate_id=person.row_anchor_candidate_id,
+        extraction_run_id=session.scalar(
+            select(ArchitectPairingRecord.extraction_run_id).where(
+                ArchitectPairingRecord.id == world.code_pairing
+            )
+        ),
+        source="code+ais",
+        status="paired",
+        pairs=[{"kind": "overall", "architect_candidate_id": "x", "vendor_slot_indices": [1]}],
+        details={},
+        supersedes_id=person.id,
+    )
+    session.add(automatic)
+    session.flush()
+    copy = ArchitectPairingRecord(
+        package_revision_id=person.package_revision_id,
+        page_id=person.page_id,
+        row_anchor_candidate_id=person.row_anchor_candidate_id,
+        extraction_run_id=None,
+        source="reviewer",
+        status="reviewer",
+        pairs=[],
+        details={"carried_from_id": str(person.id)},
+        supersedes_id=automatic.id,
+        decided_by=REVIEWER,
+    )
+    session.add(copy)
+    session.commit()
+    found = _export(session)
+    carried = found[f"architect_pairing_records:{copy.id}"]
+    assert carried.kind == "carried"
+    assert carried.overturned is None, "a carried copy is no alarm"
+    assert not carried.convertible and str(person.id) in (carried.not_convertible or "")
+
+
+def test_a_decision_with_two_parts_counts_once(session: Session) -> None:
+    world = build_v2_world(session)
+    try:
+        exported = export_candidates(session, database="synthetic", reviewers=PEOPLE)
+    finally:
+        session.rollback()
+    runs = table_counts(exported.candidates)["countertop_run_decisions"]
+    assert runs.decisions == 1  # the run and its walls are one decision
+    assert runs.convertible + runs.not_convertible == 2  # two cases
+    found = _by_id(exported.candidates)
+    assert f"countertop_run_decisions:{world.person_run}:walls" in found

@@ -1621,7 +1621,9 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     # only when no stored setting holds it); still the same for any number of rows.
     # 18 since #1241: a reviewer's wall answer an earlier reading could not carry is asked for
     # once; still the same for any number of rows.
-    assert counter[0] <= 18
+    # 19 since #1245: the live countertops are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert counter[0] <= 19
 
 
 def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:

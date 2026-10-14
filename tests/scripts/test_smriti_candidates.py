@@ -51,6 +51,19 @@ def session(engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
+@pytest.fixture(autouse=True)
+def _known_reviewer(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The local real-reviewer list (#1267), naming the invented reviewer of `build_world`."""
+    from eval.smriti.actors import REVIEWERS_ENV, REVIEWERS_FORMAT
+    from tests.eval.test_smriti_export import REVIEWER
+
+    people = tmp_path_factory.mktemp("local") / "people.json"
+    people.write_text(json.dumps({"format": REVIEWERS_FORMAT, "reviewers": [REVIEWER]}))
+    monkeypatch.setenv(REVIEWERS_ENV, str(people))
+
+
 def _url(engine: Engine) -> str:
     return engine.url.render_as_string(hide_password=False)
 
@@ -233,3 +246,32 @@ def test_the_pariksha_report_shows_the_agents_reviewer_corrections(
     )
     printed = capsys.readouterr().out
     assert "reviewer decisions on akshara: 3" in printed
+
+
+@pytest.mark.parametrize("where", ["missing", "inside-git"])
+def test_a_reviewer_list_that_cannot_be_used_is_refused_cleanly(
+    where: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import REVIEWERS_ENV
+
+    path = (
+        tmp_path / "missing.json"
+        if where == "missing"
+        else REPO / "smriti-reviewers-should-never-exist.json"
+    )
+    monkeypatch.setenv(REVIEWERS_ENV, str(path))
+    arguments = [
+        "export",
+        "--db",
+        "postgresql+psycopg://nobody@localhost:1/none",
+        "--out",
+        str(tmp_path / "candidates.json"),
+    ]
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "Traceback" not in err
+    assert ("does not exist" if where == "missing" else "git working tree") in err
+    assert not (tmp_path / "candidates.json").exists()

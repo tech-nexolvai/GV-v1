@@ -62,6 +62,7 @@ from app.models import (
     CountertopRunDecision,
     DrawingItem,
     ItemIdentifier,
+    NotPartReason,
     PartConfirmation,
     PartDecision,
     PartProposal,
@@ -289,18 +290,33 @@ def confirm_part(
     return _record(session, confirmation, actor)
 
 
-def withdraw_part(session: Session, *, proposal: PartProposal, actor: str) -> PartConfirmation:
+def withdraw_part(
+    session: Session,
+    *,
+    proposal: PartProposal,
+    actor: str,
+    reason: NotPartReason | None = None,
+) -> PartConfirmation:
     """A person saying a suggestion is not a part, or no longer is. Writes no item.
+
+    `reason` is the person's own answer when they gave one (#1246): an appliance space, a side panel
+    or something else. It is kept on the decision so the page can show it after a reload; nothing
+    reads it to decide anything. "Not a part" and Undo give none.
 
     An item made by an earlier confirmation keeps its row and stops being current, because the
     decision that made it has been replaced. Code withdraws only its own item, through
-    `release_contradicted_code_part`, as `BALA_CONFIRMER`: with code's name, this refuses unless the
-    current decision is code's own confirmation (review of #1248), and refuses when a person has
-    confirmed or withdrawn a run beneath its item (re-review of #1248).
+    `release_contradicted_code_part`, as `BALA_CONFIRMER`, and never with a reason: it cannot know
+    what the piece is. With code's name, this refuses unless the current decision is code's own
+    confirmation (review of #1248), and refuses when a person has confirmed or withdrawn a run
+    beneath its item (re-review of #1248).
     """
     _require_actor(actor)
+    if reason is not None:
+        reason = NotPartReason(reason)
     if by_code(actor) and actor != BALA_CONFIRMER:
         raise ValueError(f"code withdraws a part only as {BALA_CONFIRMER!r}")
+    if by_code(actor) and reason is not None:
+        raise ValueError("code never gives a reason a piece is not a part: it cannot know one")
     replaced = current_decision(session, proposal)
     if by_code(actor) and not _codes_own_confirmation(replaced):
         raise ValueError(
@@ -317,6 +333,7 @@ def withdraw_part(session: Session, *, proposal: PartProposal, actor: str) -> Pa
         supersedes_id=None if replaced is None else replaced.id,
         decision=PartDecision.WITHDRAWN.value,
         confirmed_by=actor,
+        not_part_reason=None if reason is None else reason.value,
     )
     return _record(session, confirmation, actor)
 

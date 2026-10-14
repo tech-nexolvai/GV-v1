@@ -42,6 +42,7 @@ export function OtherChecks({
   onValuesSaved,
   onRunChecks,
   defaultOpen = false,
+  title = 'Other checks',
 }: {
   findings: Finding[];
   /** Rule id → its human name from the rulebook; the id is shown when a name is not known. */
@@ -55,6 +56,8 @@ export function OtherChecks({
   onRunChecks?: () => void;
   /** Opened at first: on a cabinet package these are the review's checks (#1205). */
   defaultOpen?: boolean;
+  /** "Whole package" when the results are grouped per confirmed countertop (#1245). */
+  title?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState('');
@@ -84,12 +87,12 @@ export function OtherChecks({
 
   return (
     <TooltipProvider delayDuration={250}>
-    <section data-slot="other-checks" aria-label="Other checks">
+    <section data-slot="other-checks" aria-label={title}>
       <Accordion type="single" collapsible defaultValue={defaultOpen ? 'other' : undefined} className="rounded-xl border bg-card px-4">
         <AccordionItem value="other" className="border-b-0">
           <AccordionTrigger className="py-3">
             <span className="flex items-center gap-2">
-              Other checks
+              {title}
               <span className="num rounded-full bg-muted px-1.5 text-xs">{findings.length}</span>
               {/* Its noun with it (#1179): these are checks, apart from the countertops and the review's items. */}
               {waiting > 0 && <span className="text-xs text-outcome-review-fg"><span className="num">{waiting}</span> {waiting === 1 ? 'check needs' : 'checks need'} you</span>}

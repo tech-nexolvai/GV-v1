@@ -39,10 +39,17 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
-from app.models import DrawingView, OutboxEntry, Page, PartPicture, PartProposal
+from app.models import (
+    DrawingView,
+    OutboxEntry,
+    PackageRevisionDocument,
+    Page,
+    PartPicture,
+    PartProposal,
+)
 
 __all__ = [
     "CUT_PART_PICTURES_WORKFLOW",
@@ -52,9 +59,11 @@ __all__ = [
     "gv_marks",
     "pages_without_pictures",
     "part_picture",
+    "picture_job_unstarted",
     "picture_job_waiting",
     "pictured",
     "record_part_picture",
+    "suggestions_without_pictures",
     "unpictured_proposals",
 ]
 
@@ -221,4 +230,62 @@ def picture_job_waiting(session: Session, package_revision_id: UUID) -> bool:
                 )
             )
         ).scalar()
+    )
+
+
+def picture_job_unstarted(session: Session, package_revision_id: UUID) -> bool:
+    """Whether a `CUT_PART_PICTURES_WORKFLOW` job for this revision is queued and **has not started**
+    (#1246): never tried, not done, not given up, and not held by a worker right now.
+
+    Such a job will list the pages still missing a picture when it starts, so it will find every
+    suggestion filed before then. A job that has started may have listed them already.
+
+    **Why the lock, and not only `attempts`.** The worker runs a job inside the dispatcher's
+    transaction (`workflow/outbox.py:dispatch_committed`), holding its row `FOR UPDATE`, and its
+    `attempts` and `dispatched_at` become visible only when that transaction commits, after the
+    cut. While it cuts, the row looks untried to everyone else. `FOR KEY SHARE SKIP LOCKED` steps
+    over a row a worker holds, so that job counts as started. The share lock taken on an unstarted
+    row lasts until the caller's transaction ends; a dispatcher skips the row until then, and then
+    runs it after the caller's suggestions are committed.
+
+    `picture_job_waiting` stays what the Measure page asks ("its picture is being made").
+    """
+    return (
+        session.execute(
+            select(OutboxEntry.id)
+            .where(
+                OutboxEntry.workflow == CUT_PART_PICTURES_WORKFLOW,
+                OutboxEntry.payload["package_revision_id"].astext == str(package_revision_id),
+                OutboxEntry.dispatched_at.is_(None),
+                OutboxEntry.abandoned_at.is_(None),
+                OutboxEntry.attempts == 0,
+            )
+            .limit(1)
+            .with_for_update(read=True, key_share=True, skip_locked=True)
+        ).first()
+        is not None
+    )
+
+
+def suggestions_without_pictures(
+    session: Session, package_revision_id: UUID, *, source: str
+) -> int:
+    """How many suggestions filed by `source` on this revision's drawings have no picture yet."""
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(PartProposal)
+            .join(DrawingView, DrawingView.id == PartProposal.drawing_view_id)
+            .join(Page, Page.id == DrawingView.page_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+                PartProposal.source == source,
+                ~exists().where(PartPicture.part_proposal_id == PartProposal.id),
+            )
+        )
+        or 0
     )
