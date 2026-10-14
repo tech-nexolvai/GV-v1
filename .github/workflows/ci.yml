@@ -235,8 +235,8 @@ jobs:
       # is counted at the average. Refresh the file when the same shard is the slowest by more than about
       # 20% run after run, or when many tests have been added since the last refresh (compare the count
       # the shard-coverage check prints with the number of names in the file). One run's spread alone
-      # is not a reason: the
-      # runners differ in speed (see "Runner CPU" above), and no split of the tests can fix that.
+      # is not a reason: the runners differ in speed (see "Runner CPU" above), and no split of the
+      # tests can fix that.
       #
       #   1. Run this workflow by hand on any branch with `store_durations` ticked (Actions > CI > Run
       #      workflow, or `gh workflow run ci.yml --ref <branch> -f store_durations=true`). Every shard
