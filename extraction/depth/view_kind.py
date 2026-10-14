@@ -28,8 +28,9 @@ their extents, so it is reused unchanged. Some vendors print only a caption unde
 (`ELEVATION`, `SECTION AT ...`, `PLAN`) with no scale note; then the captions are found by their
 words and size, and each caption owns the part of the panel above it, columns split halfway
 between captions on one row. The captions are also used when `page_views` leaves drawing out (it
-rejects a title for having no drawing above it, or takes drawing joined to the sheet's frame for
-the border, as on a vendor's own full sheet); then a title printed right over a scale note counts
+rejects a title for having no drawing above it, takes drawing joined to the sheet's frame for the
+border, as on a vendor's own full sheet, or leaves out ink running far below the titles, where a
+vendor's plan is drawn under its front view's title); then a title printed right over a scale note counts
 as a caption too, whatever its size. A stroke that crosses from one view's part into another's
 marks both
 views not separated, as `page_views` does. Nothing is silent: ink below every caption, a caption
@@ -344,7 +345,13 @@ def find_vendor_views(
         note
         for note in survey.notes
         if note.kind == TITLE_NOT_VIEW
-        or (note.kind == INK_OUTSIDE_VIEWS and note.startswith("left out as the sheet's border"))
+        or (
+            note.kind == INK_OUTSIDE_VIEWS
+            and (
+                note.startswith("left out as the sheet's border")
+                or "far below the view titles" in note
+            )
+        )
     ]
     if survey.views and not trouble:
         views = tuple(
