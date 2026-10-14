@@ -17,11 +17,11 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, event, select
 from sqlalchemy.orm import Session
 
 from app.db.session import session_factory
-from app.models import PartProposal, PartProposalRow
+from app.models import Finding, Package, PartProposal, PartProposalRow
 from app.verdicts.rulebook import snapshot_store
 from rules.semantic_types import ProductType
 from storage.local import LocalStore
@@ -117,6 +117,10 @@ def _countertop_rules(session: Session) -> set[str]:
     }
 
 
+def row_width_variant(session: Session, finding_id: UUID) -> str | None:
+    return session.get_one(Finding, finding_id).variant
+
+
 def test_no_items_no_plan(session: Session, store: LocalStore) -> None:
     """Rows read, suggestions filed, nothing confirmed: there is no countertop item, so no plan."""
     built = _Revision(session)
@@ -162,8 +166,11 @@ def test_the_plan_lists_the_rules_its_row_s_results_and_what_they_wait_on(
     assert depth.resolved and depth.findings == ()
     assert "countertop_overhang" in {missing.key for missing in depth.missing}
     assert width.missing == ()
-    # The width rule's variant is chosen per row from that row's walls, so the plan says it waits.
-    assert not width.resolved and width.waits_for is not None and "wall_config" in width.waits_for
+    # The width rule's variant is chosen per row from that row's walls: the plan takes the version
+    # and the variant from the row's own result, and does not say it waits for the walls.
+    assert width.resolved and width.waits_for is None
+    assert width.version is not None
+    assert width.variant == row_width_variant(session, row_width.finding_id)
 
 
 def test_a_countertop_with_no_row_says_so_and_lists_no_row_s_results(
@@ -337,3 +344,184 @@ def test_after_a_re_read_a_row_on_another_drawing_is_never_followed_to(
     assert entry.note == NO_ROW_LINKED
     codes = [code for code, _ids in _codes(session, built.revision.id)]
     assert "countertop-item-without-width-result" in codes
+
+
+def _reread_rows(session: Session, built: _Revision, pages: int) -> list[UUID]:
+    """Read every page, confirm each page's countertop, then read every page again: Bala skips each
+    decided countertop, so every newest row has no link of its own."""
+    first_run = built.run()
+    firsts = [built.row(first_run, page=page) for page in range(pages)]
+    propose_items(session, built.revision.id)
+    for anchor in firsts:
+        _confirm_bala_countertop(session, anchor)
+    newest_run = built.run()
+    newest = [built.row(newest_run, page=page) for page in range(pages)]
+    outcome = propose_items(session, built.revision.id)
+    assert outcome.already_decided >= pages
+    return newest
+
+
+def test_after_a_re_read_a_row_skipped_for_a_withdrawn_suggestion_is_never_followed_to(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1247 (M1), the reviewer's case. Run 1: countertop A is confirmed. Run 2: the reader
+    picks a different row on the same page, and the person says it is not a countertop. Run 3: the
+    reader picks that row again, so Bala skips it, because of the withdrawn decision, not A's. The
+    row is not A's: A stays unplaced and the run check names it."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    item = _confirm_bala_countertop(session, first)
+
+    other = built.row(built.run(), page=0, shift=40)
+    filed = propose_items(session, built.revision.id)
+    assert filed.written >= 1
+    rejected = session.scalars(
+        select(PartProposal)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .where(PartProposalRow.row_candidate_id == other, PartProposalRow.slot_index.is_(None))
+    ).one()
+    withdraw_part(session, proposal=rejected, actor=PERSON)
+
+    again = built.row(built.run(), page=0, shift=40)
+    skipped = propose_items(session, built.revision.id)
+    assert skipped.already_decided >= 1
+    _checked(session, store, built)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+    assert entry.countertop.item_id == item
+    assert entry.countertop.row_candidate_id is None
+    assert not entry.countertop.row_followed
+    assert entry.note == NO_ROW_LINKED
+    assert again not in countertops_by_row(session, built.revision.id)
+    codes = [code for code, _ids in _codes(session, built.revision.id)]
+    assert "countertop-item-without-width-result" in codes
+
+
+def test_after_a_re_read_a_row_two_decided_countertops_could_own_is_followed_by_neither(
+    session: Session, store: LocalStore
+) -> None:
+    """Two countertops decided on the same page, and the newest reading's row skipped: nothing says
+    which decision the skip was for, so neither countertop takes it (unique both ways)."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, first)
+    second = built.row(built.run(), page=0, shift=40)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, second)
+
+    again = built.row(built.run(), page=0, shift=40)
+    assert propose_items(session, built.revision.id).already_decided >= 1
+    _checked(session, store, built)
+
+    countertops = live_countertops(session, built.revision.id)
+    assert len(countertops) == 2
+    assert all(c.row_candidate_id is None and not c.row_followed for c in countertops)
+    assert again not in countertops_by_row(session, built.revision.id)
+
+
+def test_after_a_re_read_a_row_whose_outline_does_not_overlap_is_never_followed_to(
+    session: Session, store: LocalStore
+) -> None:
+    """Bala's tolerance can be wide enough to skip a row whose outline lies elsewhere on the drawing:
+    the countertop is followed only to a row whose outline overlaps its own along and across."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0, pieces=1)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, first)
+
+    far = built.row(built.run(), page=0, pieces=1, shift=700)
+    assert (
+        propose_items(session, built.revision.id, same_outline_tolerance=Decimal(1)).already_decided
+        >= 1
+    )
+    _checked(session, store, built)
+
+    (countertop,) = live_countertops(session, built.revision.id)
+    assert countertop.row_candidate_id is None
+    assert far not in countertops_by_row(session, built.revision.id)
+
+
+def _statements(session: Session, call: object) -> int:
+    bind = session.get_bind()
+    seen: list[str] = []
+
+    def count(*_args: object) -> None:
+        seen.append("statement")
+
+    event.listen(bind, "before_cursor_execute", count)
+    try:
+        assert callable(call)
+        call()
+    finally:
+        event.remove(bind, "before_cursor_execute", count)
+    return len(seen)
+
+
+@pytest.mark.parametrize("pages", [2, 6])
+def test_following_after_a_re_read_asks_the_database_a_fixed_number_of_times(
+    session: Session, pages: int
+) -> None:
+    """Review of #1247 (M3): after a re-read, following every countertop to its newest row costs the
+    same number of statements whatever the number of rows (it measured 13 with 2 rows and 21 with
+    6). Both sizes must match the budget."""
+    built = _Revision(session, pages=pages)
+    newest = _reread_rows(session, built, pages)
+    session.expire_all()
+
+    statements = _statements(session, lambda: countertops_by_row(session, built.revision.id))
+
+    assert set(countertops_by_row(session, built.revision.id)) == set(newest)
+    assert statements == FOLLOW_STATEMENTS
+
+
+#: What following after a re-read costs, whatever the number of rows.
+FOLLOW_STATEMENTS = 11
+
+
+def test_the_plan_lists_only_the_package_s_product_s_rules(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1247 (L4): on a cabinet package the countertop's plan lists the cabinet rules the
+    package is checked by, not the countertop rules, whose checks never run there."""
+    built = _Revision(session)
+    anchor = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, anchor)
+    package = session.get_one(Package, built.revision.package_id)
+    package.product_type = ProductType.CABINET.value
+    session.flush()
+    _publish_rulebook(session)
+
+    (entry,) = check_plan_for(session, built.revision.id).items
+
+    store_ = snapshot_store(session)
+    cabinet = {
+        rule_id
+        for rule_id in store_.rule_ids()
+        if (latest := store_.latest(rule_id)) is not None
+        and latest.rule.product_type is ProductType.CABINET
+    }
+    assert cabinet
+    assert {rule.rule_id for rule in entry.rules} == cabinet
+    assert not {rule.rule_id for rule in entry.rules} & _countertop_rules(session)
+
+
+def test_the_run_check_line_is_silent_on_a_cabinet_package(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1247 (L5): on a cabinet package the countertop width check is out of scope, so a
+    confirmed countertop there has no width result by design and the line says nothing."""
+    built = _Revision(session)
+    built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _unlinked_countertop(session, built, page=1)
+    package = session.get_one(Package, built.revision.package_id)
+    package.product_type = ProductType.CABINET.value
+    session.flush()
+    _checked(session, store, built)
+
+    codes = [code for code, _ids in _codes(session, built.revision.id)]
+
+    assert "countertop-item-without-width-result" not in codes

@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Engine, func, select
+from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import session_factory
@@ -21,7 +21,7 @@ from app.models import Finding, Package
 from storage.local import LocalStore
 from tests.api.test_visual_ui import _client
 from tests.workflow.test_bala_items import _Revision
-from tests.workflow.test_item_plan import _confirm_bala_countertop
+from tests.workflow.test_item_plan import _confirm_bala_countertop, _reread_rows
 from tests.workflow.test_part_proposals_route import _upgrade
 from tests.workflow.test_stages import _publish_rulebook
 from workflow.bala_items import propose_items
@@ -102,3 +102,49 @@ def test_the_plan_lists_each_countertop_and_reads_only(session: Session, tmp_pat
         "/countertop-items/plan"
     )
     assert elsewhere.status_code == 404
+
+
+def _results_statements(session: Session, tmp_path: Path, pages: int, *, publish: bool) -> int:
+    """How many statements the countertop results ask after a re-read of `pages` pages, each page's
+    countertop confirmed on the first reading and skipped by Bala on the second."""
+    built = _Revision(session, pages=pages)
+    newest = _reread_rows(session, built, pages)
+    if publish:
+        _publish_rulebook(session)
+    DatabaseStages(LocalStore(root=tmp_path, ticket_secret=b"synthetic-test-only")).run_checks(
+        session, built.revision.id
+    )
+    session.flush()
+    package = session.get_one(Package, built.revision.package_id)
+    client = _client(session, package.project_id)
+    url = f"{API_PREFIX}/projects/{package.project_id}/packages/{package.id}/countertop-results"
+    client.get(url)  # warm: the first request of a client loads what every request shares
+    session.expire_all()
+    seen: list[object] = []
+
+    def count(*_args: object) -> None:
+        seen.append(None)
+
+    bind = session.get_bind()
+    event.listen(bind, "before_cursor_execute", count)
+    try:
+        response = client.get(url)
+    finally:
+        event.remove(bind, "before_cursor_execute", count)
+    assert response.status_code == 200, response.text
+    named = {
+        row["row_id"] for row in response.json()["items"] if row["countertop_item"] is not None
+    }
+    assert named == {str(anchor) for anchor in newest}
+    return len(seen)
+
+
+def test_after_a_re_read_the_results_ask_the_same_number_of_statements_for_any_number_of_rows(
+    session: Session, tmp_path: Path
+) -> None:
+    """Review of #1247 (M3): following the confirmed countertops to a re-read's rows used to rebuild
+    Bala's whole plan, one query per row (13 statements with 2 rows, 21 with 6). It now costs the
+    same whatever the number of rows."""
+    two = _results_statements(session, tmp_path, 2, publish=True)
+    six = _results_statements(session, tmp_path, 6, publish=False)
+    assert two == six

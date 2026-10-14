@@ -1,28 +1,34 @@
 """Each live countertop item, and what is checked for it: the seed of Kautilya (#1245).
 
-**What a countertop item is here.** A `drawing_items` row of type `countertop_overall_width` that a
-person's current decision confirmed (`workflow/parts.py:live_part_item_ids`), on one drawing view.
-Bala suggests one for every countertop row the slot reader read (`workflow/bala_items.py`) and links
-the suggestion to the row (`part_proposal_rows`), so an item confirmed from one of Bala's suggestions
-knows its row. An item confirmed from any other suggestion has no row.
+**What a countertop item is here.** A `drawing_items` row of type `countertop_overall_width` whose
+current decision confirms it (`workflow/parts.py`), on one drawing view. Whoever made that decision
+counts: a person's click, or, once #1248 lets code confirm, code's two-judgment confirmation
+(`confirmed_by` starting `code:`). Nothing here reads who decided, and nothing here can turn a
+result toward PASS, so code's items are read exactly as a person's are.
+
+Bala suggests one countertop for every countertop row the slot reader read
+(`workflow/bala_items.py`) and links the suggestion to the row (`part_proposal_rows`), so an item
+confirmed from one of Bala's suggestions knows its row. An item confirmed from any other suggestion
+has no row.
 
 **Three readers use it, and none of them decides anything:**
 
 * `workflow/evidence_operands.py` asks how many countertops each drawing holds
   (`countertops_by_view`): a reading on a drawing with one countertop belongs to that countertop, and
   on a drawing with two or more it belongs to none, so two countertops' cabinets are never summed.
+  That only ever withholds, whoever confirmed the countertops.
 * the results screen asks which countertop each row belongs to (`countertops_by_row`), to group the
   row's results under it. The results stay keyed by the row (`scope_row_candidate_id`), so a
   reviewer's decision still carries over to an unchanged re-run (decided by Anant, 2026-10-14).
-* `check_plan_for` lists, for each countertop, the published rules for its product
+* `check_plan_for` lists, for each countertop, the published rules for the package's product
   (`rules/applicability.resolve`), the results its row (or the item itself) has, and the values each
   rule's whole-package result is still waiting on (`app/review/waiting_values.py`).
 
 **Read-only.** Nothing here writes a row, runs a check or asks a model. No extraction import, so the
 API may read it (`tests/api/test_no_heavy_work.py`).
 
-Source: issue #1245; phase 4 design §3 and §5 PR 3. Verification: `tests/workflow/test_item_plan.py`,
-`tests/workflow/test_per_item_assembly.py`.
+Source: issue #1245; phase 4 design §3 and §5 PR 3; review of #1247. Verification:
+`tests/workflow/test_item_plan.py`, `tests/workflow/test_per_item_assembly.py`.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from app.models import (
     CheckRun,
     DrawingItem,
     DrawingView,
+    ExtractionRun,
     Finding,
     Package,
     PackageRevision,
@@ -47,10 +54,12 @@ from app.models import (
     Page,
     PartConfirmation,
     PartDecision,
+    PartProposal,
     PartProposalRow,
     RuleDefinition,
     RuleSnapshot,
 )
+from app.models.package import package_product
 from app.review.waiting_values import WAITING_RULES, missing_inputs_for
 from app.schemas.findings import MissingInputOut
 from app.verdicts.rulebook import snapshot_store
@@ -60,9 +69,9 @@ from rules.project import ProjectScope
 from rules.semantic_types import ProductType
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
-from workflow.bala_items import plan_items
+from workflow.bala_items import _Box, _region_box, _slot_candidates, _stored_box
 from workflow.parts import outline_box
-from workflow.slot_row_scope import latest_slot_reader_run
+from workflow.slot_row_scope import SlotRow, latest_slot_reader_run, slot_rows_and_unchosen_pages
 
 __all__ = [
     "NO_ROW_LINKED",
@@ -93,7 +102,7 @@ _UNREADABLE: Final = (Decimal("Infinity"), Decimal("Infinity"))
 
 @dataclass(frozen=True, slots=True)
 class LiveCountertop:
-    """One countertop a person stands by, where it is, and the row it was confirmed from."""
+    """One live countertop item, where it is, and the row it was confirmed from."""
 
     item_id: UUID
     view_id: UUID
@@ -103,9 +112,9 @@ class LiveCountertop:
     """Its place among the live countertops on its page, `1` from the left."""
     row_candidate_id: UUID | None
     """The anchor of its countertop row in the newest reading: the row Bala suggested it from
-    (`part_proposal_rows`), or, after a re-read, the newest row Bala matched to it by drawing and
-    outline (`row_followed`); `None` when it was confirmed from another suggestion or no newest
-    row matches it."""
+    (`part_proposal_rows`), or, after a re-read, the newest row Bala skipped because of this
+    countertop's decision and no other (`row_followed`, `_follow_to_newest_rows`); `None` when it
+    was confirmed from another suggestion, or when no newest row is provably its own."""
     row_followed: bool = False
     """Whether `row_candidate_id` was found by following an older reading's link (a re-read)."""
 
@@ -124,18 +133,18 @@ def live_countertops(
 ) -> tuple[LiveCountertop, ...]:
     """Every live countertop item on this revision's drawings, in page order, left to right.
 
-    **Live** means a person's current decision confirmed it as a countertop: a withdrawn or corrected
-    item keeps its row (no role holds `DELETE`) and is not here. The row it came from is read through
-    its confirmation's suggestion (`part_proposal_rows`, the countertop's own link: `slot_index` is
-    `NULL`).
+    **Live** means its current decision confirms it as a countertop, whoever decided (a person, or
+    code under #1248): a withdrawn or corrected item keeps its row (no role holds `DELETE`) and is
+    not here. The row it came from is read through its confirmation's suggestion
+    (`part_proposal_rows`, the countertop's own link: `slot_index` is `NULL`).
 
     **After a re-read** the newest slot-reader run has new rows, and Bala does not suggest again a
-    countertop a person already decided (same drawing, same outline): the new row has no link of its
-    own, and the item's link names the older reading's row. With `follow_rows`, such an item is
-    followed to the newest run's row the same way Bala matched it (`_follow_to_newest_rows`), so its
-    results, which are keyed by the newest row, are still its own. `follow_rows=False` (the evidence
-    step, which needs only the drawings) leaves `row_candidate_id` as the link says, and costs one
-    statement.
+    countertop already decided: the new row has no link of its own, and the item's link names the
+    older reading's row. With `follow_rows`, such an item is followed to the newest row only where
+    that row is provably its own (`_follow_to_newest_rows`), so its results, which are keyed by the
+    newest row, are still its own. `follow_rows=False` (the evidence step, which needs only the
+    drawings) leaves `row_candidate_id` as the link says, and costs one statement. Following costs
+    a fixed number of statements, whatever the number of rows.
     """
     later = aliased(PartConfirmation)
     rows = session.execute(
@@ -147,6 +156,7 @@ def live_countertops(
             Page.index,
             PartProposalRow.row_candidate_id,
             PartProposalRow.extraction_run_id,
+            PartConfirmation.part_proposal_id,
         )
         .join(PartConfirmation, PartConfirmation.drawing_item_id == DrawingItem.id)
         .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
@@ -181,7 +191,7 @@ def live_countertops(
                 session,
                 package_revision_id,
                 newest,
-                [(row[0], row[1], row[2]) for row in stale],
+                [_Stale(item_id=row[0], page_id=row[3], proposal_id=row[7]) for row in stale],
             )
             current.update(found)
             followed.update(found)
@@ -196,7 +206,7 @@ def live_countertops(
     ordered = sorted(rows, key=lambda row: (row[4], *place(row[2]), str(row[0])))
     counts: dict[UUID, int] = {}
     countertops: list[LiveCountertop] = []
-    for item_id, view_id, _extent, page_id, page_index, _link, _run in ordered:
+    for item_id, view_id, _extent, page_id, page_index, _link, _run, _proposal in ordered:
         counts[page_id] = counts.get(page_id, 0) + 1
         countertops.append(
             LiveCountertop(
@@ -212,23 +222,74 @@ def live_countertops(
     return tuple(countertops)
 
 
+@dataclass(frozen=True, slots=True)
+class _Stale:
+    """A live countertop confirmed from an older reading's row."""
+
+    item_id: UUID
+    page_id: UUID
+    proposal_id: UUID
+
+
 def _follow_to_newest_rows(
     session: Session,
     package_revision_id: UUID,
     newest: UUID,
-    stale: Sequence[tuple[UUID, UUID, Mapping[str, object]]],
+    stale: Sequence[_Stale],
 ) -> dict[UUID, UUID]:
-    """Each countertop confirmed from an older reading's row, followed to the newest run's row Bala
-    skipped for it (review of #1243): the item's anchor in the newest run, by item.
+    """Each countertop confirmed from an older reading's row, followed to the newest run's row that
+    Bala skipped **because of this countertop's decision and no other**: the item's anchor in the
+    newest run, by item (review of #1247, M1).
 
-    Bala skips a re-read countertop when a person's decision stands on a suggestion **on the same
-    drawing** with **the same outline** (`bala_items.propose_items`). So a newest row is followed to
-    only when it has no countertop link of its own in the newest run (Bala filed nothing for it),
-    Bala outlines it on the same drawing as the item, and the two outlines overlap along the row; of
-    those, the nearest outline wins, each item and each row at most once. A row Bala outlined
-    differently got a suggestion of its own and is never taken over. Anything else stays unlinked,
-    which the plan says (`NO_ROW_LINKED`) and the run check reports.
+    **How Bala skips** (`bala_items.propose_items`): a newest row's countertop is not suggested again
+    when an older reading's Bala countertop suggestion on the same drawing, with the same outline
+    within the part finder's tolerance, has a current decision of any kind: confirmed, or withdrawn.
+    So a newest row with no link of its own may have been skipped for a *withdrawn* suggestion, or
+    for another countertop's. Following it by nearness alone could hang a rejected row's results
+    under this countertop.
+
+    **The rule, all of it required:**
+
+    * this countertop's suggestion is **the only decided Bala countertop suggestion** from another
+      reading on any drawing of its page. Decisions are never removed (a correction supersedes a
+      decision on the same suggestion, so a decided suggestion stays decided), so the set of decided
+      suggestions only grows: if this one is the only one now, it was the only one when Bala
+      skipped, and Bala's skip on this page can only have been for it, within Bala's own tolerance,
+      whatever that tolerance was. No tolerance needs to be stored or guessed;
+    * the newest run has **exactly one** countertop row on the page with no countertop link of its
+      own, so one row for this countertop and, by the first point, one countertop for this row;
+    * Bala can outline that row exactly as it does (`bala_items`'s own helpers): every piece has a
+      reading, its outline is placed, and exactly one drawing holds its line, the countertop's own;
+    * its outline overlaps this countertop's suggested outline **along and across**.
+
+    Anything else stays unlinked: the plan says so (`NO_ROW_LINKED`) and the run check names it.
+    That only withholds a grouping; nothing here reaches a result.
+
+    **A fixed number of statements**, whatever the number of rows or countertops: the decided
+    suggestions with their outlines, the newest run's links, its rows, their pages and drawings,
+    and the run.
     """
+    pages = {entry.page_id for entry in stale}
+    decided: dict[UUID, set[UUID]] = {}
+    outlines: dict[UUID, PartProposal] = {}
+    for proposal, page_id in session.execute(
+        select(PartProposal, DrawingView.page_id)
+        .join(DrawingView, DrawingView.id == PartProposal.drawing_view_id)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .where(
+            DrawingView.page_id.in_(pages),
+            PartProposalRow.slot_index.is_(None),
+            PartProposalRow.extraction_run_id != newest,
+            exists().where(PartConfirmation.part_proposal_id == PartProposal.id),
+        )
+    ).all():
+        decided.setdefault(page_id, set()).add(proposal.id)
+        outlines[proposal.id] = proposal
+    sole = {
+        entry.page_id: entry for entry in stale if decided.get(entry.page_id) == {entry.proposal_id}
+    }
+    if not sole:
+        return {}
     linked = set(
         session.scalars(
             select(PartProposalRow.row_candidate_id).where(
@@ -237,39 +298,83 @@ def _follow_to_newest_rows(
             )
         )
     )
-    boxes: list[tuple[UUID, UUID, tuple[Decimal, Decimal, Decimal, Decimal]]] = []
-    for row in plan_items(session, package_revision_id).rows:
-        if row.not_proposed is not None or row.view_id is None:
+    unlinked: dict[UUID, list[SlotRow]] = {}
+    for row in slot_rows_and_unchosen_pages(session, package_revision_id, run_id=newest)[0]:
+        if row.anchor.page_id in sole and row.anchor.id not in linked:
+            unlinked.setdefault(row.anchor.page_id, []).append(row)
+    single = {page_id: rows[0] for page_id, rows in unlinked.items() if len(rows) == 1}
+    if not single:
+        return {}
+    run = session.get(ExtractionRun, newest)
+    if run is None:
+        return {}
+    page_by_id = {
+        page.id: page for page in session.scalars(select(Page).where(Page.id.in_(single)))
+    }
+    views_by_page: dict[UUID, list[DrawingView]] = {}
+    for view in session.scalars(
+        select(DrawingView).where(DrawingView.page_id.in_(single)).order_by(DrawingView.id)
+    ):
+        views_by_page.setdefault(view.page_id, []).append(view)
+    followed: dict[UUID, UUID] = {}
+    for page_id, row in single.items():
+        page = page_by_id.get(page_id)
+        suggested = outlines.get(sole[page_id].proposal_id)
+        if page is None or suggested is None:
             continue
-        if row.row_candidate_id in linked:
+        box = _bala_outline(row, page, run)
+        if box is None:
             continue
-        for part in row.parts:
-            if part.slot_index is None:
-                box = part.box
-                boxes.append(
-                    (row.row_candidate_id, row.view_id, (box.left, box.top, box.right, box.bottom))
-                )
-    pairs: list[tuple[Decimal, str, str, UUID, UUID]] = []
-    for item_id, view_id, extent in stale:
+        holding = [view.id for view in views_by_page.get(page_id, ()) if _holds_line(view, box)]
+        if holding != [suggested.drawing_view_id]:
+            continue
         try:
-            item_box = outline_box(extent)
+            left, top, right, bottom = outline_box(suggested.extent)
         except ValueError:
             continue
-        for anchor, row_view, row_box in boxes:
-            if row_view != view_id:
-                continue
-            if item_box[2] < row_box[0] or row_box[2] < item_box[0]:
-                continue
-            distance = max(abs(a - b) for a, b in zip(item_box, row_box, strict=True))
-            pairs.append((distance, str(anchor), str(item_id), anchor, item_id))
-    followed: dict[UUID, UUID] = {}
-    taken: set[UUID] = set()
-    for _distance, _a, _i, anchor, item_id in sorted(pairs):
-        if item_id in followed or anchor in taken:
+        if box.right < left or right < box.left or box.bottom < top or bottom < box.top:
             continue
-        followed[item_id] = anchor
-        taken.add(anchor)
+        followed[sole[page_id].item_id] = row.anchor.id
     return followed
+
+
+def _bala_outline(row: SlotRow, page: Page, run: ExtractionRun) -> _Box | None:
+    """The countertop outline Bala draws for `row` (`bala_items._plan_row`), or `None` where Bala
+    would not suggest it: a piece with no reading, no pieces, or boxes that cannot be placed."""
+    by_slot = _slot_candidates(row)
+    if row.piece_count < 1:
+        return None
+    pieces: list[_Box | None] = []
+    for index in range(row.piece_count):
+        candidate = by_slot.get(str(index))
+        if candidate is None:
+            return None
+        pieces.append(_stored_box(candidate, page, run))
+    overall = by_slot.get("overall")
+    overall_box = None if overall is None else _stored_box(overall, page, run)
+    if overall_box is not None:
+        return overall_box
+    placed = [box for box in pieces if box is not None]
+    if len(placed) != len(pieces):
+        return None
+    return _Box(
+        left=min(box.left for box in placed),
+        top=min(box.top for box in placed),
+        right=max(box.right for box in placed),
+        bottom=max(box.bottom for box in placed),
+    )
+
+
+def _holds_line(view: DrawingView, box: _Box) -> bool:
+    """Whether the drawing holds the row's line, end to end, as Bala places a row
+    (`bala_items._views_holding`)."""
+    region = _region_box(view)
+    return (
+        region is not None
+        and region.left <= box.left
+        and box.right <= region.right
+        and region.top <= box.middle <= region.bottom
+    )
 
 
 def countertops_by_view(
@@ -308,14 +413,20 @@ class PlannedFinding:
 
 @dataclass(frozen=True, slots=True)
 class PlannedRule:
-    """One published rule for the countertop's product, and where it stands for this countertop."""
+    """One published rule for the package's product, and where it stands for this countertop."""
 
     rule_id: str
     resolved: bool
-    """Whether the resolver could say which version of the rule applies from what is stated alone.
-    A rule with a discriminator (the wall layout) is resolved per row when the checks run."""
+    """Whether it is known which version and variant of the rule applies to this countertop: from
+    this countertop's own result for it when it has one (the checks chose them from its row's
+    walls), else from what is stated alone (the resolver)."""
     waits_for: str | None
-    """The resolver's own reason when it could not (`rules/applicability.Abstention.reason`)."""
+    """Only when it is not known: the resolver's own reason (`rules/applicability.Abstention`)."""
+    version: str | None
+    """The rule's version: the one its own result was checked under, else the resolver's."""
+    variant: str | None
+    """The variant that applied (the wall layout's branch): its own result's, else the resolver's;
+    `None` for a rule with no variants, or when it is not known."""
     findings: tuple[PlannedFinding, ...]
     """This countertop's own live results for the rule."""
     missing: tuple[MissingInputOut, ...]
@@ -360,13 +471,15 @@ class _Waiting:
 def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
     """For each live countertop item, its rules, its own results and what its rules wait on.
 
-    **Read-only, and it decides nothing.** The rules come from the published rulebook through the
-    same resolver the checks use, with no discriminator stated: a rule with one (the wall layout) is
-    listed as waiting for it, with the resolver's reason, because the checks resolve it per row from
-    that row's walls. The results are the live ones (`check_runs.superseded_at IS NULL`) keyed by the
-    countertop's row or by the item itself. The values listed as missing are those of each rule's
-    whole-package `NOT_FOUND` result, worked out by `missing_inputs_for` exactly as the results list
-    does.
+    **Read-only, and it decides nothing.** The rules are the published ones for **the package's
+    product** (`package_product`; a package that never stated one is checked by every product's
+    rules, and its countertops are listed with the countertop rules), through the same resolver the
+    checks use, with no discriminator stated. Where this countertop has its own result for a rule,
+    the rule's version and variant are the result's, because the checks chose them from its row's
+    walls; only a rule with no result of its own is listed as waiting, with the resolver's reason.
+    The results are the live ones (`check_runs.superseded_at IS NULL`) keyed by the countertop's row
+    or by the item itself. The values listed as missing are those of each rule's whole-package
+    `NOT_FOUND` result, worked out by `missing_inputs_for` exactly as the results list does.
     """
     countertops = live_countertops(session, package_revision_id)
     if not countertops:
@@ -377,7 +490,7 @@ def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
     resolution = resolve(
         store,
         CheckContext(
-            product_type=ProductType.COUNTERTOP,
+            product_type=package_product(package) or ProductType.COUNTERTOP,
             project=ProjectScope(
                 project_id=str(package.project_id),
                 # Carried by the resolver, never used to choose a rule (`rules/applicability.py`).
@@ -391,17 +504,26 @@ def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
             discriminators={},
         ),
     )
-    planned: list[tuple[str, bool, str | None]] = sorted(
-        [(entry.rule_id, True, None) for entry in resolution.applicable]
+    planned: list[tuple[str, bool, str | None, str | None, str | None]] = sorted(
+        [
+            (
+                entry.rule_id,
+                True,
+                None,
+                entry.snapshot.rule.version,
+                None if entry.variant is None else entry.variant.when,
+            )
+            for entry in resolution.applicable
+        ]
         + [
-            (abstention.rule_id, False, abstention.reason)
+            (abstention.rule_id, False, abstention.reason, None, None)
             for abstention in resolution.abstentions
             if abstention.rule_id is not None
         ]
     )
 
     live = session.execute(
-        select(Finding, RuleDefinition.rule_id, CheckRun.rule_snapshot_id)
+        select(Finding, RuleDefinition.rule_id, CheckRun.rule_snapshot_id, RuleSnapshot.version)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
         .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
@@ -423,7 +545,7 @@ def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
             scope_row_candidate_id=finding.scope_row_candidate_id,
             parameter_set_versions=finding.parameter_set_versions or {},
         )
-        for finding, rule_id, snapshot_id in live
+        for finding, rule_id, snapshot_id, _version in live
         if finding.scope_item_id is None
         and finding.scope_row_candidate_id is None
         and rule_id in WAITING_RULES
@@ -436,6 +558,15 @@ def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
 
     items: list[ItemPlan] = []
     for countertop in countertops:
+        mine = [
+            (finding, rule_id, version)
+            for finding, rule_id, _snapshot, version in live
+            if finding.scope_item_id == countertop.item_id
+            or (
+                countertop.row_candidate_id is not None
+                and finding.scope_row_candidate_id == countertop.row_candidate_id
+            )
+        ]
         own = tuple(
             PlannedFinding(
                 finding_id=finding.id,
@@ -443,28 +574,60 @@ def check_plan_for(session: Session, package_revision_id: UUID) -> CheckPlan:
                 outcome=Outcome(finding.outcome),
                 scope="item" if finding.scope_item_id == countertop.item_id else "row",
             )
-            for finding, rule_id, _snapshot in live
-            if finding.scope_item_id == countertop.item_id
-            or (
-                countertop.row_candidate_id is not None
-                and finding.scope_row_candidate_id == countertop.row_candidate_id
-            )
+            for finding, rule_id, _version in mine
         )
+        # The newest of its own results per rule: the version and variant the checks chose for it.
+        checked = {rule_id: (version, finding.variant) for finding, rule_id, version in mine}
         items.append(
             ItemPlan(
                 countertop=countertop,
                 rules=tuple(
-                    PlannedRule(
-                        rule_id=rule_id,
-                        resolved=resolved,
-                        waits_for=reason,
-                        findings=tuple(entry for entry in own if entry.rule_id == rule_id),
-                        missing=missing_by_rule.get(rule_id, ()),
+                    _planned_rule(
+                        rule_id,
+                        resolved,
+                        reason,
+                        version,
+                        variant,
+                        checked.get(rule_id),
+                        tuple(entry for entry in own if entry.rule_id == rule_id),
+                        missing_by_rule.get(rule_id, ()),
                     )
-                    for rule_id, resolved, reason in planned
+                    for rule_id, resolved, reason, version, variant in planned
                 ),
                 findings=own,
                 note=NO_ROW_LINKED if countertop.row_candidate_id is None else None,
             )
         )
     return CheckPlan(package_revision_id=package_revision_id, items=tuple(items))
+
+
+def _planned_rule(
+    rule_id: str,
+    resolved: bool,
+    reason: str | None,
+    version: str | None,
+    variant: str | None,
+    checked: tuple[str, str | None] | None,
+    findings: tuple[PlannedFinding, ...],
+    missing: tuple[MissingInputOut, ...],
+) -> PlannedRule:
+    """One rule's entry: from this countertop's own result when it has one, else the resolver's."""
+    if checked is not None:
+        return PlannedRule(
+            rule_id=rule_id,
+            resolved=True,
+            waits_for=None,
+            version=checked[0],
+            variant=checked[1],
+            findings=findings,
+            missing=missing,
+        )
+    return PlannedRule(
+        rule_id=rule_id,
+        resolved=resolved,
+        waits_for=reason,
+        version=version,
+        variant=variant,
+        findings=findings,
+        missing=missing,
+    )
