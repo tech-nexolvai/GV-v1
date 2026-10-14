@@ -745,14 +745,11 @@ pytest -q --splits 4 --group <1..4> \\
 ```
 
 `.test_durations` is a checked-in, non-sensitive map from pytest node IDs to observed test durations.
-It is used only to balance scheduling; it does not select which tests exist. The times must come from
-CI's own runners: a manual run of the workflow with `store_durations` set records each shard's times
-(`--store-durations --clean-durations`), and their union is committed (CONTRIBUTING.md, "Refreshing the
-test-shard timings"). A test missing from the file is counted at the average. CI must retain a
+It is used only to balance scheduling; it does not select which tests exist. The first timing seed is
+produced by a complete, unsplit CI run and reviewed before it is added. Until that seed exists, the
+plugin's equal-duration fallback still partitions the full collected suite. CI must retain a
 collect-only coverage check that proves the four selected node-ID sets are pairwise disjoint and
-their union equals the unsplit collection. An empty group or a mismatch fails CI. Since #1283 that
-check runs in the `Python quality` job, which installs the same extras as the shards and is one of
-the jobs the required check `lint, types, tests` needs, so it no longer lengthens a shard.
+their union equals the unsplit collection. An empty group or a mismatch fails CI.
 
 There is no cross-run cache of PostgreSQL data or schemas. The existing pytest database fixture
 migrates a schema once per pytest session and resets its data between tests; each matrix job has its
