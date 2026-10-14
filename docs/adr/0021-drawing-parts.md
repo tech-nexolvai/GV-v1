@@ -78,18 +78,40 @@ only**, following the precedent of code's view roles (decisions D2/D3 of 2026-10
      vendor's.
 
   Either judgment missing leaves a suggestion for a person's one click, and the stage records why.
-- **A person always wins.** Code writes nothing on a suggestion anyone has decided, nor where a
-  person's current decision stands on a countertop at the same place on the same drawing. A person
-  undoes code's item on the Measure page ("Found by code: two checks agreed · Undo", a withdrawal),
-  and a person's later decision replaces code's like any other.
-- **Code takes back only its own item** (`release_contradicted_code_part`, as
-  `release_contradicted_code_role` does for roles): when a newer slot-reader run replaces the row,
-  or the newest read no longer gives both judgments.
+- **A person always wins, before and after code confirms.** Before: code writes nothing on a
+  suggestion anyone has decided, nor where a person's current decision (confirmed or withdrawn)
+  stands on a countertop at the same place on the same drawing (`why_code_may_not_confirm`).
+  After: on every match, code takes its own item back where a person has since decided a
+  countertop at the same place, so a person adding a countertop over code's, or deciding an older
+  suggestion while match confirmed a newer overlapping one, ends with the person's alone. A person
+  undoes code's item on the Measure page ("Found by code: two checks agreed · Undo", a
+  withdrawal), and a person's later decision on it replaces code's like any other. "The same
+  place" is outlines overlapping from left to right on one drawing.
+- **One place, one countertop.** Code also writes nothing where any live countertop already stands
+  on the same drawing, whoever made it, and the match result says "an earlier revision's
+  countertop stands here".
+- **Code takes back only its own item, and only one this revision's reading made**
+  (`release_contradicted_code_part`, as `release_contradicted_code_role` does for roles): when a
+  newer slot-reader run of this revision replaces the row, when the newest read no longer gives
+  both judgments, or when a person has since decided a countertop at the same place. A new
+  revision carries every unchanged document at the version it had (`app/lifecycle/supersede.py`),
+  so two revisions share drawings, and the older one may be signed off: code never writes onto
+  another revision's records (it finds its items by the reading's run, `package_revision_id`).
+  Such an item stays live and is listed on the new revision's Measure page with Undo, which is a
+  person's decision and so allowed there. `withdraw_part` in code's name refuses unless the current
+  decision is code's own confirmation.
 - **Pieces stay a person's click** (decision 2): cabinets and fillers are never confirmed by code.
-- **Off by default**, behind `GV_BALA_AUTO_ITEMS`.
+- **Off by default**, behind `GV_BALA_AUTO_ITEMS`. **Off is not a rollback:** switching it off stops
+  code making new items, but code's items whose two judgments still agree stay live. Code takes one
+  back only for the reasons above; a person removes one with Undo.
+- **Not reviewer input.** Code's part decisions (making or taking back its item) are not counted as
+  inputs newer than the checks for sign-off (`app/review/approval.py`), as code's drawing roles are
+  not.
 - **Only two callers of `confirm_part`:** `confirm_part_by_code`, and the Measure page's own
   (`app/evidence/parts.py:confirm_listed_part` and `add_part`), which refuse any actor naming code
-  (`code:`). A second guard in `tests/db/test_drawing_models.py` holds this.
+  (`code:`). A second guard in `tests/db/test_drawing_models.py` holds this, by the function's
+  name wherever it is read: an import from any module (re-exported or relative, renamed or not),
+  any `.confirm_part` attribute, and the text `"confirm_part"` (`getattr`) outside `__all__`.
 
 ## Consequences
 
@@ -97,17 +119,26 @@ only**, following the precedent of code's view roles (decisions D2/D3 of 2026-10
   plans, results grouped by countertop) have items to work with.
 - Harder: an item's `confirmed_by` may now name code; anything that asks "did a person decide this?"
   must look at it (`workflow/parts.py:by_code`).
-- Forbidden: code confirming a piece; code confirming over a person; code confirming through any
-  route but `confirm_part_by_code`; a countertop run written by anything but a person's decision.
+- Forbidden: code confirming a piece; code confirming over a person or over any live countertop;
+  code confirming through any route but `confirm_part_by_code`; code taking back anything but its
+  own item, or an item another revision's reading made; a countertop run written by anything but a
+  person's decision.
 
 ## Safety impact
 
-None on the false-PASS rate. Code's items can never create a PASS: the countertop checks read
-items only once a person has confirmed a countertop's run (`workflow/part_operands.py:
-countertop_scopes` returns `None` until a person's `CountertopRunDecision` exists), and code never
-writes a run or a reading link. CT-WIDTH and CAB-FILLER read exactly what they read before, and no
-item sets `corroborated`. The $0 proof on the four stored sets (#1244) found no automatic countertop
-on a page or row that is not a countertop, and findings byte-identical with the switch off and on.
+None on the false-PASS rate, and no change to any finding. Code's items can never create a PASS,
+and change no finding, because the countertop checks are scoped only to a countertop a person
+stands by: `workflow/part_operands.py:countertop_scopes` returns `None` until a person's
+`CountertopRunDecision` exists, and after that it lists only countertops a person confirmed, or
+that a person confirmed (or withdrew) a run beneath. Code's item alone is never a scope, so it
+never takes a page from its countertop row (review of #1248: before this, one person-confirmed run
+anywhere in the revision turned code's page into a "Confirm this countertop's run" question that
+hid the row's real result). Code never writes a run or a reading link, and no item sets
+`corroborated`. CT-WIDTH and CAB-FILLER read exactly what they read before, with or without
+code's items, until a person decides a run beneath one of them. The $0 proof on the four stored
+sets (#1244) found no automatic countertop on a page or row that is not a countertop, and findings
+byte-identical with the switch off and on; the re-run after the review adds a person's run beside
+code's item.
 
 ## Unblocks
 
