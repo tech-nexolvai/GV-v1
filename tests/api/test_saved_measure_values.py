@@ -7,6 +7,11 @@ showed the form empty although the values were stored and the checks were readin
 The tests follow the issue: a saved value comes back after a reload, the latest entry wins, another
 revision's or project's values never appear, settings keep their source, and the read is a fixed
 number of queries however much was saved. Every value is synthetic.
+
+The values typed here are the ones a reviewer still types (#1251): the site width (`USER_INPUT`) and
+the cabinet runs. A number drawn on the drawing is confirmed from a reading and never typed, so the
+save refuses it (`tests/api/test_confirm_only_measurements.py`, which also covers a value typed
+before that rule coming back on the form).
 """
 
 from __future__ import annotations
@@ -42,11 +47,12 @@ PROJECT = uuid4()
 OTHER_PROJECT = uuid4()
 RULEBOOK = Path(__file__).resolve().parents[2] / "rules" / "rulebook"
 
-#: Two rules sharing the sink cutout width (`SHOP:CT012`), one with the sink cabinet width alone
-#: (`SHOP:CT004`), plus a run-scope and a project-scope setting.
+#: The two sink rules, for their run-scope and project-scope settings.
 SINK_RULES = ("ct_sink_cabinet_width_001.yaml", "ct_sink_cutout_width_001.yaml")
-CUTOUT = "SHOP:CT012"
-SINK_CABINET = "SHOP:CT004"
+#: The cabinet filler check: the site width, one value a reviewer types (`USER_INPUT`), and the
+#: vendor's cabinet run, which it shares with the countertop width check.
+SITE_RULE = "cab_filler_001.yaml"
+SITE = "USER_INPUT:field_dimension"
 CABINETS = "SHOP:cabinet_width"
 
 
@@ -144,43 +150,40 @@ def _settings_saved(form: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {saved["name"]: saved for saved in form["saved_parameters"]}
 
 
-def _cutout(value: str) -> list[dict[str, str]]:
-    """The cutout width as the form saves it: once per rule input it feeds."""
-    return [
-        {"rule_id": "CT-SINK-CABINET-WIDTH-001", "name": "cutout_width", "value": value},
-        {"rule_id": "CT-SINK-CUTOUT-WIDTH-001", "name": "cutout_width", "value": value},
-    ]
+def _site(value: str) -> list[dict[str, str]]:
+    """The site width as the form saves it: one value, typed by the reviewer."""
+    return [{"rule_id": "CAB-FILLER-001", "name": "field_width", "value": value}]
 
 
 def test_a_saved_measurement_comes_back_after_a_reload(session: Session) -> None:
-    """Outcome: the cutout width typed as `30 1/2"` comes back on a fresh GET as exactly 61/2 in,
+    """Outcome: the site width typed as `30 1/2"` comes back on a fresh GET as exactly 61/2 in,
     written so the form can send it again unchanged, with who saved it and when, and marked complete
-    because both checks that read it hold it."""
-    _publish(session, *SINK_RULES)
+    because the check that reads it holds it."""
+    _publish(session, SITE_RULE)
     package = _package(session)
     client = _client(session)
 
-    _save(client, package, measurements=_cutout('30 1/2"'))
+    _save(client, package, measurements=_site('30 1/2"'))
     saved = _measured(_form(_client(session), package))
 
-    assert set(saved) == {CUTOUT}
-    (value,) = saved[CUTOUT]["values"]
+    assert set(saved) == {SITE}
+    (value,) = saved[SITE]["values"]
     assert (value["numerator"], value["denominator"], value["unit"]) == ("61", "2", "in")
     assert value["text"] == '30 1/2"'
     assert normalise_to_inches(value["text"]).exact == normalise_to_inches('30 1/2"').exact
-    assert (saved[CUTOUT]["set_by"], value["set_by"]) == ("anant", "anant")
-    assert saved[CUTOUT]["set_at"] == value["set_at"]
-    assert saved[CUTOUT]["complete"] is True
+    assert (saved[SITE]["set_by"], value["set_by"]) == ("anant", "anant")
+    assert saved[SITE]["set_at"] == value["set_at"]
+    assert saved[SITE]["complete"] is True
 
 
 def test_a_millimetre_value_comes_back_as_the_exact_inches_it_became(session: Session) -> None:
     """The typed characters are not stored, only the number. Outcome: `984 mm` comes back as
     4920/127 in and as text that reads back to exactly that, never as a rounded decimal."""
-    _publish(session, *SINK_RULES)
+    _publish(session, SITE_RULE)
     package = _package(session)
 
-    _save(_client(session), package, measurements=_cutout("984 mm"))
-    (value,) = _measured(_form(_client(session), package))[CUTOUT]["values"]
+    _save(_client(session), package, measurements=_site("984 mm"))
+    (value,) = _measured(_form(_client(session), package))[SITE]["values"]
 
     assert (value["numerator"], value["denominator"]) == ("4920", "127")
     assert normalise_to_inches(value["text"]).exact == normalise_to_inches("984 mm").exact
@@ -188,44 +191,53 @@ def test_a_millimetre_value_comes_back_as_the_exact_inches_it_became(session: Se
 
 
 def test_the_latest_entry_wins_and_an_untouched_field_stays(session: Session) -> None:
-    """Monday: cutout 30" and sink cabinet 36". Tuesday, by someone else: cutout 31" alone.
-    Outcome: the cutout is Tuesday's, by Tuesday's reviewer; the sink cabinet is still Monday's."""
-    _publish(session, *SINK_RULES)
+    """Monday: site width 120" and a cabinet run of 36". Tuesday, by someone else: site width 121"
+    alone. Outcome: the site width is Tuesday's, by Tuesday's reviewer; the run is still Monday's.
+    """
+    _publish(session, SITE_RULE)
     package = _package(session)
 
     _save(
         _client(session, actor="monday"),
         package,
         measurements=[
-            *_cutout('30"'),
-            {"rule_id": "CT-SINK-CABINET-WIDTH-001", "name": "sink_cabinet_width", "value": '36"'},
+            *_site('120"'),
+            {"rule_id": "CAB-FILLER-001", "name": "shop_cabinets", "values": ['36"']},
         ],
     )
-    _save(_client(session, actor="tuesday"), package, measurements=_cutout('31"'))
+    _save(_client(session, actor="tuesday"), package, measurements=_site('121"'))
     saved = _measured(_form(_client(session), package))
 
-    assert [v["text"] for v in saved[CUTOUT]["values"]] == ['31"']
-    assert saved[CUTOUT]["set_by"] == "tuesday"
-    assert [v["text"] for v in saved[SINK_CABINET]["values"]] == ['36"']
-    assert saved[SINK_CABINET]["set_by"] == "monday"
-    assert saved[SINK_CABINET]["set_at"] < saved[CUTOUT]["set_at"]
+    assert [v["text"] for v in saved[SITE]["values"]] == ['121"']
+    assert saved[SITE]["set_by"] == "tuesday"
+    assert [v["text"] for v in saved[CABINETS]["values"]] == ['36"']
+    assert saved[CABINETS]["set_by"] == "monday"
+    assert saved[CABINETS]["set_at"] < saved[SITE]["set_at"]
 
 
 def test_a_quantity_saved_for_only_one_of_its_checks_is_not_complete(session: Session) -> None:
-    """The cutout feeds two checks. Outcome: saved for one, it comes back but is not complete; saved
-    for both with different numbers, the newer comes back and is still not complete."""
-    _publish(session, *SINK_RULES)
+    """The vendor's cabinet run feeds two checks (the countertop width and the filler check).
+    Outcome: saved for one, it comes back but is not complete; saved for both with different
+    numbers, the newer comes back and is still not complete; saved for both alike, it is."""
+    _publish(session, "ct_width_001.yaml", SITE_RULE)
     package = _package(session)
     client = _client(session)
-    first, second = _cutout('30"')
+    first = {"rule_id": "CT-WIDTH-001", "name": "cabinet_widths", "values": ['30"', '36"']}
+    second = {"rule_id": "CAB-FILLER-001", "name": "shop_cabinets", "values": ['30"', '36"']}
 
     _save(client, package, measurements=[first])
-    one = _measured(_form(client, package))[CUTOUT]
-    _save(client, package, measurements=[{**second, "value": '32"'}])
-    differing = _measured(_form(client, package))[CUTOUT]
+    one = _measured(_form(client, package))[CABINETS]
+    _save(client, package, measurements=[{**second, "values": ['30"', '32"']}])
+    differing = _measured(_form(client, package))[CABINETS]
+    _save(client, package, measurements=[second])
+    alike = _measured(_form(client, package))[CABINETS]
 
-    assert ([v["text"] for v in one["values"]], one["complete"]) == (['30"'], False)
-    assert ([v["text"] for v in differing["values"]], differing["complete"]) == (['32"'], False)
+    assert ([v["text"] for v in one["values"]], one["complete"]) == (['30"', '36"'], False)
+    assert ([v["text"] for v in differing["values"]], differing["complete"]) == (
+        ['30"', '32"'],
+        False,
+    )
+    assert ([v["text"] for v in alike["values"]], alike["complete"]) == (['30"', '36"'], True)
 
 
 def test_a_run_of_values_comes_back_in_layout_order(session: Session) -> None:
@@ -287,20 +299,20 @@ def test_a_shorter_run_saved_again_replaces_the_longer_one(session: Session) -> 
 def test_a_save_without_the_run_leaves_the_run_and_a_resent_run_keeps_the_rest(
     session: Session,
 ) -> None:
-    """#1081. A run of three, then a save with only a sink setting, then the run again as one.
+    """#1081. A run of three, then a save with only the site width, then the run again as one.
     Outcome: the run is untouched by the save that left it out; resending it replaces only the
-    run, and the sink setting saved in between stays."""
-    _publish(session, "ct_width_001.yaml", *SINK_RULES)
+    run, and the site width saved in between stays."""
+    _publish(session, "ct_width_001.yaml", SITE_RULE)
     package = _package(session)
 
     _save(_client(session), package, measurements=_cabinets('24"', '18"', '30"'))
-    _save(_client(session), package, measurements=_cutout('30"'))
+    _save(_client(session), package, measurements=_site('120"'))
     assert _checked_widths(session, package) == ["24", "18", "30"]
 
     _save(_client(session), package, measurements=_cabinets('27"'))
     saved = _measured(_form(_client(session), package))
     assert [v["text"] for v in saved[CABINETS]["values"]] == ['27"']
-    assert [v["text"] for v in saved[CUTOUT]["values"]] == ['30"']
+    assert [v["text"] for v in saved[SITE]["values"]] == ['120"']
     assert _checked_widths(session, package) == ["27"]
 
 
@@ -340,17 +352,17 @@ def test_settings_keep_their_layer_source_reference_and_who(session: Session) ->
 
 
 def test_another_packages_or_projects_values_never_appear(session: Session) -> None:
-    """Package A saves a cutout and a run setting; package B in the same project and package C in
-    another project save nothing. Outcome: B and C get nothing of A's run values. A project setting
-    is the project's by design, so B sees A's project setting and C does not."""
-    _publish(session, *SINK_RULES)
+    """Package A saves a site width and a run setting; package B in the same project and package C
+    in another project save nothing. Outcome: B and C get nothing of A's run values. A project
+    setting is the project's by design, so B sees A's project setting and C does not."""
+    _publish(session, *SINK_RULES, SITE_RULE)
     first, second = _package(session), _package(session)
     elsewhere = _package(session, OTHER_PROJECT)
 
     _save(
         _client(session),
         first,
-        measurements=_cutout('30"'),
+        measurements=_site('120"'),
         parameters=[
             {"name": "sink_interior_width", "value": '28"', "scope": "run"},
             {"name": "sink_cutout_clearance", "value": '1/8"', "source": "Fabricator"},
@@ -368,12 +380,12 @@ def test_another_packages_or_projects_values_never_appear(session: Session) -> N
 def test_an_earlier_revisions_values_never_appear(session: Session) -> None:
     """The vendor resubmits: revision 2 replaces revision 1. Outcome: the form for revision 2 shows
     none of the measurements or run settings saved for revision 1."""
-    _publish(session, *SINK_RULES)
+    _publish(session, *SINK_RULES, SITE_RULE)
     package = _package(session)
     _save(
         _client(session),
         package,
-        measurements=_cutout('30"'),
+        measurements=_site('120"'),
         parameters=[{"name": "sink_interior_width", "value": '28"', "scope": "run"}],
     )
 
@@ -390,9 +402,9 @@ def test_an_earlier_revisions_values_never_appear(session: Session) -> None:
 def test_a_package_in_a_project_the_caller_names_wrongly_is_not_found(session: Session) -> None:
     """Asking for project B's package under project A is the same 404 as a package that does not
     exist, and leaks none of its saved values."""
-    _publish(session, *SINK_RULES)
+    _publish(session, SITE_RULE)
     elsewhere = _package(session, OTHER_PROJECT)
-    _save(_client(session), elsewhere, project=OTHER_PROJECT, measurements=_cutout('30"'))
+    _save(_client(session), elsewhere, project=OTHER_PROJECT, measurements=_site('120"'))
 
     response = _client(session).get(
         f"/api/v1/projects/{PROJECT}/packages/{elsewhere}/required-inputs"
@@ -404,9 +416,9 @@ def test_a_package_in_a_project_the_caller_names_wrongly_is_not_found(session: S
 
 def test_reading_the_form_writes_nothing(session: Session) -> None:
     """Read-only: no parameter set is minted by looking at the form."""
-    _publish(session, *SINK_RULES)
+    _publish(session, SITE_RULE)
     package = _package(session)
-    _save(_client(session), package, measurements=_cutout('30"'))
+    _save(_client(session), package, measurements=_site('120"'))
 
     def sets() -> int:
         return session.execute(select(func.count()).select_from(StoredParameterSet)).scalar_one()
@@ -435,17 +447,17 @@ def _statements(session: Session, client: Any, package: UUID) -> int:
 
 def test_the_read_is_a_fixed_number_of_queries(session: Session) -> None:
     """No query per saved value: one saved field and a dozen cost the same."""
-    _publish(session, *SINK_RULES, "ct_width_001.yaml")
+    _publish(session, *SINK_RULES, SITE_RULE, "ct_width_001.yaml")
     small, large = _package(session), _package(session)
     client = _client(session)
 
-    _save(client, small, measurements=_cutout('30"'))
+    _save(client, small, measurements=_site('120"'))
     _save(
         client,
         large,
         measurements=[
-            *_cutout('30"'),
-            {"rule_id": "CT-SINK-CABINET-WIDTH-001", "name": "sink_cabinet_width", "value": '36"'},
+            *_site('120"'),
+            {"rule_id": "CAB-FILLER-001", "name": "shop_cabinets", "values": ['36"', '30"']},
             {
                 "rule_id": "CT-WIDTH-001",
                 "name": "cabinet_widths",
