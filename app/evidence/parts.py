@@ -62,6 +62,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.models import (
     DrawingView,
+    NotPartReason,
     PackageRevisionDocument,
     Page,
     PartConfirmation,
@@ -351,17 +352,23 @@ def confirm_listed_part(
 
 
 def withdraw_listed_part(
-    session: Session, *, package_revision_id: UUID, proposal_id: UUID, actor: str
+    session: Session,
+    *,
+    package_revision_id: UUID,
+    proposal_id: UUID,
+    actor: str,
+    reason: NotPartReason | None = None,
 ) -> PartConfirmation | PartRefused:
-    """A person saying one suggestion is not a part, on whichever drawing of the revision it is.
-    On code's own countertop item (#1244) this is the Undo."""
+    """A person saying one suggestion is not a part, on whichever drawing of the revision it is,
+    with their reason when they gave one (#1246). On code's own countertop item (#1244) this is the
+    Undo, which gives none."""
     refused_actor = _not_a_person(actor)
     if refused_actor is not None:
         return refused_actor
     proposal = listed_proposal(session, package_revision_id, proposal_id)
     if proposal is None:
         return PartRefused(PartRefusalReason.NO_SUCH_PART, "There is no such part on this package.")
-    return withdraw_part(session, proposal=proposal, actor=actor)
+    return withdraw_part(session, proposal=proposal, actor=actor, reason=reason)
 
 
 def add_part(

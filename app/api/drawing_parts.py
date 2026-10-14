@@ -30,7 +30,7 @@ from typing import Annotated, Final
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -55,7 +55,14 @@ from app.evidence.parts import (
     revision_parts,
     withdraw_listed_part,
 )
-from app.models import OutboxEntry, Page, PartConfirmation, PartPicture, VendorPagePicture
+from app.models import (
+    NotPartReason,
+    OutboxEntry,
+    Page,
+    PartConfirmation,
+    PartPicture,
+    VendorPagePicture,
+)
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
@@ -110,6 +117,14 @@ class DecisionOut(BaseModel):
     """The code the person kept, exactly as they sent it, or null for none."""
     decided_by: str
     decided_at: datetime
+    not_part_reason: NotPartReason | None = Field(
+        default=None,
+        description=(
+            "Why the person said it is not a part, when they said why (#1246): an appliance "
+            "space, a side panel or something else. Null on a confirmation, on a withdrawal "
+            "without a reason, and on code's decision."
+        ),
+    )
     by_code: bool = Field(
         default=False,
         description=(
@@ -233,6 +248,10 @@ class PartsOut(BaseModel):
 
 
 class ConfirmPartIn(BaseModel):
+    # A confirmation says what a part is; a field it does not name, such as a not-a-part reason,
+    # is refused rather than dropped (#1246).
+    model_config = ConfigDict(extra="forbid")
+
     kind: PartKind
     code: str | None = Field(
         default=None,
@@ -240,6 +259,21 @@ class ConfirmPartIn(BaseModel):
         description=(
             "The code printed on the part, exactly as it is printed; null when none is printed. "
             "Stored as sent: never trimmed, never read as a width."
+        ),
+    )
+
+
+class WithdrawPartIn(BaseModel):
+    """Why a person says a suggestion is not a part, when they say why (#1246)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: NotPartReason | None = Field(
+        default=None,
+        description=(
+            '`appliance-space`, `side-panel` or `other`; null or left out for a plain "Not a '
+            'part" or an Undo. Kept on the decision and shown again after a reload; nothing '
+            "reads it to decide anything."
         ),
     )
 
@@ -268,6 +302,9 @@ def _decision(row: PartConfirmation | None) -> DecisionOut | None:
         code=row.code_as_printed,
         decided_by=row.confirmed_by,
         decided_at=row.created_at,
+        not_part_reason=(
+            None if row.not_part_reason is None else NotPartReason(row.not_part_reason)
+        ),
         by_code=by_code(row.confirmed_by),
     )
 
@@ -674,8 +711,10 @@ def withdraw_part_endpoint(
     project_id: UUID,
     package_id: UUID,
     proposal_id: UUID,
+    body: WithdrawPartIn | None = None,
 ) -> PartOut:
-    """Record that it is not a part. Makes nothing; a part it had made stops being read."""
+    """Record that it is not a part, and why when the person said why. Makes nothing; a part it had
+    made stops being read."""
     revision = _revision(session, project_id, package_id)
     _decide(
         session,
@@ -684,6 +723,7 @@ def withdraw_part_endpoint(
             package_revision_id=revision.id,
             proposal_id=proposal_id,
             actor=principal.id,
+            reason=None if body is None else body.reason,
         ),
     )
     return _listed(session, revision.id, proposal_id)

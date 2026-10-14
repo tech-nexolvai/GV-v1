@@ -30,7 +30,22 @@ export function showsGvMarks(marks: PictureGvMarks | null | undefined): boolean 
   return marks === 'shown';
 }
 
+/** Why a person says a piece is not a part (#1246), kept on their decision. */
+export type NotPartReason = components['schemas']['NotPartReason'];
+
 export const PART_KINDS: readonly PartKind[] = ['cabinet', 'filler', 'countertop'];
+
+/**
+ * The answers to "what is it?" that say a piece is not a part (#1246), in the order they are offered.
+ * "Side panel" is phase 5 decision 6: the end panels in the client's sink cabinet formula.
+ */
+export const NOT_PART_REASONS: readonly NotPartReason[] = ['appliance-space', 'side-panel', 'other'];
+
+export const NOT_PART_REASON_LABEL: Record<NotPartReason, string> = {
+  'appliance-space': 'Appliance space',
+  'side-panel': 'Side panel',
+  other: 'Something else',
+};
 
 export const KIND_LABEL: Record<PartKind, string> = {
   cabinet: 'Cabinet',
@@ -109,7 +124,11 @@ export function partCount(drawings: readonly PartDrawing[]): StepCount {
 export function decisionLabel(part: SuggestedPart): string {
   const decision = part.decision;
   if (!decision) return 'Not decided yet.';
-  if (decision.decision === 'withdrawn') return `Not a part, said ${decision.decided_by}.`;
+  if (decision.decision === 'withdrawn') {
+    const reason = decision.not_part_reason;
+    if (!reason) return `Not a part, said ${decision.decided_by}.`;
+    return `Not a part (${NOT_PART_REASON_LABEL[reason].toLowerCase()}), said ${decision.decided_by}.`;
+  }
   if (decision.by_code) {
     const found = decision.kind ? KIND_LABEL[decision.kind].toLowerCase() : 'part';
     return `Confirmed as a ${found} by code, not by a person.`;

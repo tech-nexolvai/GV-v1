@@ -2709,6 +2709,7 @@
         "type": "object"
       },
       "ConfirmPartIn": {
+        "additionalProperties": false,
         "properties": {
           "code": {
             "anyOf": [
@@ -3616,6 +3617,17 @@
                 "type": "null"
               }
             ]
+          },
+          "not_part_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotPartReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the person said it is not a part, when they said why (#1246): an appliance space, a side panel or something else. Null on a confirmation, on a withdrawal without a reason, and on code's decision."
           }
         },
         "required": [
@@ -5951,6 +5963,16 @@
         ],
         "title": "NoCountertopPagesIn",
         "type": "object"
+      },
+      "NotPartReason": {
+        "description": "Why a person said a suggested piece is not a part (#1246, phase 5 decision 6).\n\nThe person's own answer to \"what is it?\", kept so the page can show it back after a reload.\nNothing reads it to decide anything. Stored on `part_confirmations`, so the strings are part of\nthe data contract: treat them as fixed.",
+        "enum": [
+          "appliance-space",
+          "side-panel",
+          "other"
+        ],
+        "title": "NotPartReason",
+        "type": "string"
       },
       "OpaqueTraceOut": {
         "description": "A trace this API does not recognise, handed over intact.\n\n**Not an error and not a silent empty object.** A recompute is compared against what the engine\nrecorded, so dropping a shape nobody has taught this endpoint about would lose the only copy. A\nreader gets the content and is told plainly that it was not understood.",
@@ -11796,6 +11818,25 @@
         "title": "WallLayoutProposalOut",
         "type": "object"
       },
+      "WithdrawPartIn": {
+        "additionalProperties": false,
+        "description": "Why a person says a suggestion is not a part, when they say why (#1246).",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotPartReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`appliance-space`, `side-panel` or `other`; null or left out for a plain \"Not a part\" or an Undo. Kept on the decision and shown again after a reload; nothing reads it to decide anything."
+          }
+        },
+        "title": "WithdrawPartIn",
+        "type": "object"
+      },
       "app__schemas__distribution__QuantityOut": {
         "description": "One exact dimension, rendered without a JSON float.",
         "properties": {
@@ -15368,7 +15409,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/parts/{proposal_id}/withdraw": {
       "post": {
-        "description": "Record that it is not a part. Makes nothing; a part it had made stops being read.",
+        "description": "Record that it is not a part, and why when the person said why. Makes nothing; a part it had\nmade stops being read.",
         "operationId": "withdraw_part_endpoint_api_v1_projects__project_id__packages__package_id__parts__proposal_id__withdraw_post",
         "parameters": [
           {
@@ -15402,6 +15443,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/WithdrawPartIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "content": {
