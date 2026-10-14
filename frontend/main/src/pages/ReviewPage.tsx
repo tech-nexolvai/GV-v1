@@ -88,10 +88,12 @@ interface ReviewPageProps {
   onTitleChange?: (title: string, revision: number | null) => void;
   /** Reports how many findings still need the reviewer, so the sidebar shows the live count. */
   onNeedYouChange?: (count: number | null) => void;
+  /** Reports whether this review's failed reading is restarting now, so the sidebar badge agrees (#1249). */
+  onRestartingChange?: (restarting: boolean) => void;
   onPackageChanged?: () => void;
 }
 
-export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeedYouChange, onPackageChanged }: ReviewPageProps) {
+export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeedYouChange, onRestartingChange, onPackageChanged }: ReviewPageProps) {
   // `sessionId` is the package id — `PackagesPage` opens a review with `onOpenReview(pkg.id)`.
   const packageId = sessionId;
   // Revisions of this review (#1180): which one is on screen (null = the newest), and the dialog.
@@ -230,6 +232,15 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     if (blockingCount !== null) onNeedYouChange?.(blockingCount);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [blockingCount]);
+
+  // Where the reading is: the newest recorded line, else the package's own (#1178).
+  const liveReading = recordedReading !== undefined ? recordedReading : (remote.status === 'ready' ? remote.data.detail.reading ?? null : null);
+  // The sidebar's badge for this review says "Restarting" exactly when its header does (#1249).
+  const restarting = liveReading?.retrying === true;
+  useEffect(() => {
+    onRestartingChange?.(restarting);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restarting]);
 
   // The fetched findings are the starting point; reviewer actions below are applied on top, so they
   // are not thrown away every time this re-renders.
@@ -700,7 +711,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     project: remote.status === 'ready' ? remote.data.detail.project_id : '',
     revision: remote.status === 'ready' ? remote.data.detail.current_revision_number : null,
   };
-  const readingLine = recordedReading !== undefined ? recordedReading : (remote.status === 'ready' ? remote.data.detail.reading ?? null : null);
+  const readingLine = liveReading;
   const stage = reviewStage({
     state: pkg.status,
     reading: readingLine ? {
@@ -966,7 +977,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     <div className="@container/review flex h-full min-h-0 w-full min-w-0">
     <div className="review-page min-w-0 flex-1">
       <HeaderTitleExtra>
-        <PackageStatusBadge status={pkg.status} restarting={readingLine?.retrying === true} />
+        <PackageStatusBadge status={pkg.status} restarting={restarting} />
         {switcher}
       </HeaderTitleExtra>
       {newRevisionDialog}

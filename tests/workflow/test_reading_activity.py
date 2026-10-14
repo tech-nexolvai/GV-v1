@@ -727,7 +727,15 @@ def test_a_page_proven_blank_is_nothing_to_read_not_waiting_for_you(engine: Any)
 
 
 @pytest.mark.parametrize(
-    "code", ["no-row-found", "budget-reached", "unreadable", "no-drawing", "no-vendor-drawing"]
+    "code",
+    [
+        "no-row-found",
+        "budget-reached",
+        "unreadable",
+        "no-drawing",
+        "no-vendor-drawing",
+        "reference-only",
+    ],
 )
 def test_a_page_that_needs_a_reviewer_still_waits_beside_a_blank_one(
     engine: Any, code: str

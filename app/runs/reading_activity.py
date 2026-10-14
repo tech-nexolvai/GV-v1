@@ -593,6 +593,9 @@ def reading_activity_for(
     )
     helped_code = newest.c.code == "helped"
     # A page code proved blank: nothing to read, so it is counted with the passes (#1249).
+    # This trusts the event's `blank-page` code. Sign-off re-checks the stored proof against the
+    # current blank-page rule (`UnchosenRowPage.needs_answer`, app/review/no_countertop.py), so a
+    # rule change can only alter this display, and sign-off still waits for an answer.
     blank = (
         (newest.c.agent == Agent.BALA.value)
         & (newest.c.kind == EventKind.STOPPED.value)
