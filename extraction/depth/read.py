@@ -1845,9 +1845,17 @@ def read_depth(
             ):
                 continue
             wanted.append(number)
-            if role == "depth" and state.view.lanes[number].inches is None:
+            if (
+                role == "depth"
+                and state.view.lanes[number].inches is None
+                and not (
+                    state.kind is ViewKind.PLAN
+                    and two_stones(state.view, settings.spans) is not None
+                )
+            ):
                 # A depth drawn as a chain's overall: its links' numbers let the chain's sum
-                # confirm it exactly (the only extra questions; asked once each).
+                # confirm it exactly (the only extra questions; asked once each). Never on a plan
+                # the two-stones guard holds: nothing there could be confirmed.
                 for closure in state.view.found.closures:
                     if closure.overall.number == number:
                         wanted.extend(

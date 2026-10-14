@@ -978,3 +978,5 @@ def test_two_stones_dimensioned_as_one_chain_never_confirm_a_depth() -> None:
         readers.numbers[model] = {**readers.numbers[model], deepest: '28"', links[0]: '4"'}
     found = values(read(view, readers))[CT010]
     assert not found.usable and "different lengths from the wall" in found.reason
+    # Nothing there can be confirmed, so the chain's links are not paid for.
+    assert not any(a.key.endswith(f":n{links[0]}") for a in readers.asked)
