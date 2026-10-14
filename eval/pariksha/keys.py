@@ -22,6 +22,7 @@ from extraction.slot_reader.seal import normalise_text
 
 __all__ = [
     "AGENTS",
+    "DEPTH_FAMILIES",
     "FAMILIES",
     "KEY_FORMAT",
     "NO_ROW_KINDS",
@@ -44,6 +45,13 @@ FAMILIES: Final[Mapping[str, str]] = {
     "rekha": "slot-row-choice",
 }
 AGENTS: Final = ("akshara", "rekha", "vastu")
+#: The phase-5 agents (#1257): the view-kind question and the depth and sink values, with the family
+#: each one's key cases name. Their keys are `pariksha-key/1` too, with their own case shape, read by
+#: `eval/pariksha/depth.py`; `load_key` refuses them and says so, so this loader never scores one.
+DEPTH_FAMILIES: Final[Mapping[str, str]] = {
+    "rekha-view": "view-kind",
+    "akshara-depth": "depth-span",
+}
 #: A row question's two answers that name no box (`slot-row-choice-v3` and later).
 NO_ROW_KINDS: Final = ("no_countertop", "not_among_boxes")
 
@@ -252,6 +260,10 @@ def load_key(data: Mapping[str, object]) -> AnswerKey | ArchitectAnswerKey:
     if data.get("format") != KEY_FORMAT:
         raise KeyFormatError(f"format must be {KEY_FORMAT!r}, not {data.get('format')!r}")
     agent = data.get("agent")
+    if agent in DEPTH_FAMILIES:
+        raise KeyFormatError(
+            f"a {agent} key is read by eval/pariksha/depth.py (read_depth_key), not by this loader"
+        )
     if agent not in AGENTS:
         raise KeyFormatError(f"agent must be one of {AGENTS}, not {agent!r}")
     name = _text(data.get("name"), "name")
