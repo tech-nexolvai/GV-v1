@@ -131,21 +131,44 @@ def _measurements_client(session: Session) -> tuple[TestClient, str]:
     "measurement",
     [
         {"rule_id": "CT-WIDTH-001", "name": "piece_widths", "values": ["21 in", "0 in", "18 in"]},
-        {"rule_id": "CT-WIDTH-001", "name": "countertop_width", "value": "-39 in"},
+        {"rule_id": "CAB-FILLER-001", "name": "field_width", "value": "-39 in"},
         {"rule_id": "CT-WIDTH-001", "name": "filler_widths", "values": ["0 in"]},
-        {"rule_id": "CT-SINK-CUTOUT-WIDTH-001", "name": "cutout_width", "value": "0 mm"},
+        {"rule_id": "CAB-FILLER-001", "name": "field_width", "value": "0 mm"},
     ],
-    ids=["zero-piece", "negative-overall", "zero-filler", "zero-sink-cutout"],
+    ids=["zero-piece", "negative-site-width", "zero-filler", "zero-site-width-mm"],
 )
 def test_a_saved_width_of_zero_or_less_is_refused_and_nothing_stored(
     session: Session, measurement: dict[str, Any]
 ) -> None:
+    """Every size a person still types (#1251): the typed lists and the site width."""
     client, url = _measurements_client(session)
 
     response = client.post(url, json={"measurements": [measurement]})
 
     assert response.status_code == 422, response.text
     assert response.json()["message"].endswith(NOT_ABOVE_ZERO)
+    assert session.scalar(select(func.count()).select_from(ParameterValue)) == 0
+
+
+@pytest.mark.parametrize(
+    "measurement",
+    [
+        {"rule_id": "CT-WIDTH-001", "name": "countertop_width", "value": "-39 in"},
+        {"rule_id": "CT-SINK-CUTOUT-WIDTH-001", "name": "cutout_width", "value": "0 mm"},
+    ],
+    ids=["negative-overall", "zero-sink-cutout"],
+)
+def test_a_drawn_width_of_zero_or_less_is_never_stored(
+    session: Session, measurement: dict[str, Any]
+) -> None:
+    """A size drawn on the vendor's drawing is no longer typed at all (#1251): a zero or a negative
+    one is refused before its size is looked at, and nothing is stored either way."""
+    client, url = _measurements_client(session)
+
+    response = client.post(url, json={"measurements": [measurement]})
+
+    assert response.status_code == 422, response.text
+    assert "not typed here" in response.json()["message"]
     assert session.scalar(select(func.count()).select_from(ParameterValue)) == 0
 
 

@@ -6,15 +6,17 @@ Verification for `app/review/waiting_values.py` (`missing_inputs` on the finding
 zero refusals (`app/api/company_settings.py`, `app/api/measurements.py`), and `entered` /
 `defaults_used` in the changed-values report (`workflow/changed_values.py`).
 
-A drawn number is never asked for (GV's rule: people confirm readings, they do not fill in
-measurements; Anant, 2026-10-12). Where a test needs one to reach a PASS or FAIL it is supplied as a
-confirmed reading would be, through the Measurements save — standing in for the reader. Every check
-runs through the real engine (`DatabaseStages.run_checks`). Every number and name is synthetic.
+A drawn number is never asked for, and never typed (GV's rule: people confirm readings, they do not
+fill in measurements; Anant, 2026-10-12; the Measurements save refuses one since #1251). Where a test
+needs one to reach a PASS or FAIL it arrives the way the app now gets it: a reading on the vendor's
+drawing that a reviewer confirms (`confirm_candidate_type`, "Confirm a reading"). Every check runs
+through the real engine (`DatabaseStages.run_checks`). Every number and name is synthetic.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -26,11 +28,30 @@ from alembic import command
 from app.api.dependencies import get_session
 from app.config import Settings
 from app.db.session import session_factory
+from app.evidence.confirm import confirm_candidate_type
 from app.main import create_app
-from app.models import Package, PackageRevision, PackageState, Project
+from app.models import (
+    CanonicalObservation,
+    Document,
+    DocumentKind,
+    DocumentVersion,
+    ExtractionRun,
+    ObservationCandidate,
+    Package,
+    PackageRevision,
+    PackageRevisionDocument,
+    PackageState,
+    Page,
+    Project,
+    SourceArtifact,
+    TaskRun,
+    WorkflowRun,
+)
 from app.models.project_sinks import ProjectSink
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook
+from units.normalise import normalise_to_inches
+from workflow.measurements import operands_for
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -168,7 +189,8 @@ def _settings(client: Any, package: UUID, **values: str) -> None:
     assert response.status_code == 201, response.text
 
 
-#: Which rule inputs each drawn number fills, for a test standing in for the reader.
+#: Which rule inputs each drawn number fills. A confirmed reading reaches each of them through the
+#: rulebook's own join (source and type), so one confirmation fills both checks that read it.
 READS: dict[str, tuple[tuple[str, str], ...]] = {
     "SHOP:CT004": (("CT-SINK-CABINET-WIDTH-001", "sink_cabinet_width"),),
     "SHOP:CT007": (
@@ -192,17 +214,109 @@ READS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
-def _read(client: Any, package: UUID, **values: str) -> None:
-    """Drawn numbers as a confirmed reading would supply them (the reader's stand-in)."""
-    body = {
-        "measurements": [
-            {"rule_id": rule_id, "name": name, "value": value}
-            for key, value in values.items()
-            for rule_id, name in READS[f"SHOP:{key}"]
-        ]
-    }
-    response = client.post(f"/api/v1/projects/{PROJECT}/packages/{package}/measurements", json=body)
-    assert response.status_code == 201, response.text
+def _read(session: Session, client: Any, package: UUID, **values: str) -> None:
+    """Drawn numbers the way the app now gets them (#1251): each one read on a page of the vendor's
+    drawing and confirmed by a reviewer, through the same `confirm_candidate_type` "Confirm a
+    reading" calls. Typing one is refused, so a test may no longer stand in for the reader that way.
+
+    Outcome checked here, before any run: the typed route really is closed for every input these
+    numbers fill, and nothing was typed — each input's value can only come from the reading.
+    """
+    for key, text in values.items():
+        for rule_id, name in READS[f"SHOP:{key}"]:
+            typed = client.post(
+                f"/api/v1/projects/{PROJECT}/packages/{package}/measurements",
+                json={"measurements": [{"rule_id": rule_id, "name": name, "value": text}]},
+            )
+            assert typed.status_code == 422, typed.text
+    revision = session.scalars(
+        select(PackageRevision)
+        .where(PackageRevision.package_id == package)
+        .order_by(PackageRevision.revision_number.desc())
+        .limit(1)
+    ).one()
+
+    artifact = SourceArtifact(storage_key=f"synthetic/{uuid4()}", sha256=uuid4().hex * 2, size=1)
+    document = Document(package_id=package, kind=DocumentKind.SHOP.value)
+    session.add_all((artifact, document))
+    session.flush()
+    version = DocumentVersion(
+        document_id=document.id,
+        source_artifact_id=artifact.id,
+        sha256=artifact.sha256,
+        page_count=1,
+    )
+    session.add(version)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=revision.id,
+            package_id=package,
+            document_id=document.id,
+            document_version_id=version.id,
+        )
+    )
+    # One page and no drawing views: the page is the vendor's one drawing, so all its readings are
+    # on the same drawing and on the vendor's side (`app/evidence/sides.py`).
+    page = Page(
+        document_version_id=version.id,
+        index=0,
+        content_hash=artifact.sha256,
+        width_pt=Decimal(612),
+        height_pt=Decimal(792),
+        rotation=0,
+        has_vector_text=True,
+        media_box=["0", "0", "612", "792"],
+        crop_box=["0", "0", "612", "792"],
+    )
+    workflow_run = WorkflowRun(package_revision_id=revision.id, engine_run_id=str(uuid4()))
+    session.add_all((page, workflow_run))
+    session.flush()
+    task = TaskRun(
+        workflow_run_id=workflow_run.id,
+        idempotency_key=str(uuid4()),
+        task_type="extract",
+        attempt=1,
+        outcome="SUCCEEDED",
+    )
+    session.add(task)
+    session.flush()
+    extraction = ExtractionRun(
+        task_run_id=task.id,
+        extractor="pdfplumber",
+        extractor_version="synthetic-1",
+        config_hash="synthetic",
+        dpi=150,
+    )
+    session.add(extraction)
+    session.flush()
+
+    for row, (code, text) in enumerate(values.items()):
+        exact = normalise_to_inches(text).exact
+        top = 100 + 40 * row
+        candidate = ObservationCandidate(
+            document_version_id=version.id,
+            page_id=page.id,
+            extraction_run_id=extraction.id,
+            raw_text=text,
+            value_numerator=exact.numerator,
+            value_denominator=exact.denominator,
+            unit="in",
+            polygon=[[100, top], [200, top], [200, top + 20], [100, top + 20]],
+            coordinate_space="image",
+            ambiguity_flags=[],
+        )
+        session.add(candidate)
+        session.flush()
+        confirmed = confirm_candidate_type(
+            session, candidate_id=candidate.id, semantic_type=code, confirmed_by="a reviewer"
+        )
+        assert isinstance(confirmed, CanonicalObservation), confirmed
+    session.commit()
+    typed = operands_for(session, revision.id)
+    assert not any(
+        name in typed.get(rule_id, {}) for key in values for rule_id, name in READS[f"SHOP:{key}"]
+    ), "a drawn number was typed, not confirmed"
 
 
 def _sink(client: Any, **body: Any) -> Any:
@@ -327,6 +441,7 @@ def test_typed_settings_say_run_checks_and_the_run_decides_all_six(session: Sess
     assert width["saved"]["source"] == "G.C / Client: Sink Synthetic Sink A"
 
     _read(
+        session,
         client,
         package,
         CT010='21 1/4"',
@@ -372,7 +487,7 @@ def test_a_wrong_drawn_value_fails_after_the_run(session: Session) -> None:
     client = _client(session)
     package, revision = _package(session)
     _settings(client, package, cabinet_side_thickness='3/4"')
-    _read(client, package, CT004='36"', CT011='2"', CT012='29 1/2"', CT013='2"')
+    _read(session, client, package, CT004='36"', CT011='2"', CT012='29 1/2"', CT013='2"')
 
     _run(session, revision)
 
@@ -391,7 +506,7 @@ def test_the_sink_entry_feeds_every_sink_check(session: Session) -> None:
     first, first_revision = _package(session)
     second, second_revision = _package(session)
     for package in (first, second):
-        _read(client, package, CT012='29 1/2"', CT008='14 1/2"')
+        _read(session, client, package, CT012='29 1/2"', CT008='14 1/2"')
 
     saved = _sink(
         client,
@@ -485,7 +600,7 @@ def test_a_size_typed_for_the_package_wins_and_says_so(session: Session) -> None
         },
     )
     assert response.status_code == 201, response.text
-    _read(client, package, CT012='29 1/2"')
+    _read(session, client, package, CT012='29 1/2"')
 
     in_use = client.get(f"/api/v1/projects/{PROJECT}/packages/{package}/sink-in-use").json()
     _run(session, revision)
@@ -619,7 +734,7 @@ def test_a_project_value_wins_over_the_company_default(session: Session) -> None
     _settings(client, package, countertop_overhang='1"')
     _run(session, revision)
     assert _needs(_findings(client, package)["CT-DEPTH-001"]) == [("SHOP:CT010", "drawing")]
-    _read(client, package, CT010='23"')
+    _read(session, client, package, CT010='23"')
 
     _run(session, revision)
     assert _findings(client, package)["CT-DEPTH-001"]["outcome"] == "PASS"
