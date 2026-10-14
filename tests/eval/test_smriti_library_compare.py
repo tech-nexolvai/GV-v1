@@ -278,7 +278,7 @@ def test_everything_unchanged_is_neutral_with_its_own_exit_code() -> None:
     assert not verdict.verdict.startswith("ACCEPT")
 
 
-def test_not_better_with_a_metric_worse_is_rejected_not_neutral() -> None:
+def test_not_better_with_a_higher_cost_is_rejected_not_neutral() -> None:
     before, after = UNCHANGED
     assert after.card is not None
     costlier = MetricResult(
@@ -290,7 +290,7 @@ def test_not_better_with_a_metric_worse_is_rejected_not_neutral() -> None:
     )
     result = _judge(before, worse)
     assert result.status == REJECT
-    assert "worse: cost_micros_per_question" in result.reason
+    assert "worse: cost per question rose" in result.reason
 
 
 def test_a_real_loss_stays_rejected() -> None:
@@ -303,3 +303,46 @@ def test_a_real_loss_stays_rejected() -> None:
     )
     assert no_longer.status == REJECT
     assert "no longer asked" in no_longer.reason
+
+
+# --- worse is judged on counts, not rates (orchestrator decision 2026-10-15) -----------------
+
+Q3 = f"{PAGE_A[:16]}/p1:slot2:0"
+
+
+def test_more_questions_asked_with_the_same_right_count_is_neutral_not_rejected() -> None:
+    """Asked 1 -> 2 (as 34 -> 37): every rate over `asked` moves, but nothing was lost."""
+    result = _judge(_side({Q1: AGREED_RIGHT, Q2: NOT_ASKED}), _side({Q1: AGREED_RIGHT, Q2: HELD}))
+    assert result.status == NEUTRAL
+
+
+def test_a_right_answer_lost_on_a_case_both_runs_asked_is_worse_even_if_the_count_holds() -> None:
+    """Right 2 -> 2, but a case both runs asked went from right to held: the held count rose on
+    the same asked cases, so the change is worse, never neutral."""
+    result = _judge(
+        _side({Q1: AGREED_RIGHT, Q2: AGREED_RIGHT, Q3: NOT_ASKED}),
+        _side({Q1: HELD, Q2: AGREED_RIGHT, Q3: AGREED_RIGHT}),
+    )
+    assert result.status == REJECT
+    assert "held or unsure on the same asked cases 0 -> 1" in result.reason
+
+
+def test_a_fall_in_the_right_count_is_worse() -> None:
+    result = _judge(
+        _side({Q1: AGREED_RIGHT, Q2: AGREED_RIGHT}), _side({Q1: AGREED_RIGHT, Q2: HELD})
+    )
+    assert result.status == REJECT
+    assert "right 2 -> 1" in result.reason
+
+
+def test_a_lower_cost_alone_is_neither_better_nor_worse() -> None:
+    before, after = UNCHANGED
+    assert after.card is not None
+    cheaper = MetricResult(
+        key="cost_micros_per_question", value=Fraction(500, 3), numerator=500, denominator=3
+    )
+    side = Side(
+        card=replace(after.card, metrics={**after.card.metrics, cheaper.key: cheaper}),
+        pages=after.pages,
+    )
+    assert _judge(before, side).status == NEUTRAL

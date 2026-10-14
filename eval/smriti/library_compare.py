@@ -11,12 +11,15 @@ only read, in read-only transactions.
 decided 2026-10-15). **Per key**, one of:
 
 * **ACCEPT**: the key's own compare accepts (better, 0 new wrong).
-* **NEUTRAL**: nothing got worse and nothing got better: 0 new wrong, nothing no longer asked, no
-  fall in `asked`, no metric worse. A key the change did not touch says this, so a change aimed at
-  one key (the walls question, say) is not rejected by the rows keys it left alone.
+* **NEUTRAL**: nothing got worse and nothing got better. A key the change did not touch says
+  this, so a change aimed at one key (the walls question, say) is not rejected by the rows keys it
+  left alone.
 * **REJECT**: any new wrong, anything no longer asked, a fall in `asked`, the agent's own extra
-  reasons (new wrong wall ink, a new wrong automatic layout), or not better with any metric worse
-  (named). A case the older run never asked counts: its first answer can be the new wrong one. So
+  reasons (new wrong wall ink, a new wrong automatic layout), or not better with anything worse.
+  **Worse is judged on counts, never rates** (asking more questions with the same right answers
+  moves every rate and is no loss): fewer right, more wrong, fewer asked, a case no longer asked,
+  more held or unsure on the cases both runs asked, or a higher cost per question with no gain in
+  right answers (named in the reason). A case the older run never asked counts: its first answer can be the new wrong one. So
   a run that read nothing of this kind is scored as one that asked nothing, and a run that stopped
   reading a page is rejected: not asking is never a way to stop being wrong.
 * **NOT MEASURED, never a pass**: neither run read any of the key's pages (the pages needed are
@@ -41,11 +44,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import Final
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from eval.pariksha import kinds as pariksha_kinds
 from eval.pariksha.compare import Comparison, compare_scorecards
 from eval.pariksha.depth import DEPTH_AGENTS, DepthKey
 from eval.pariksha.keys import AnswerKey, ArchitectAnswerKey
@@ -61,6 +66,8 @@ from eval.pariksha.kinds import (
 )
 from eval.pariksha.score import (
     NOT_ASKED,
+    RIGHT_OUTCOMES,
+    WRONG_OUTCOMES,
     CaseScore,
     Scorecard,
     score_akshara,
@@ -134,6 +141,8 @@ _FROM_ANSWERS: Final = (
 _SHOWN_PAGES: Final = 6
 #: The one reason Pariksha's compare gives when nothing got worse and nothing got better.
 _NOT_BETTER: Final = "REJECT (not better:"
+#: The one rate judged for "worse": the cost per question, and only when it rises.
+_COST: Final = "cost_micros_per_question"
 
 
 def nothing_stored(error: StoredRunError) -> bool:
@@ -197,6 +206,61 @@ def _pages(pages: Sequence[str]) -> str:
     return shown + more
 
 
+def _right_and_wrong(agent: str) -> tuple[frozenset[str], frozenset[str]]:
+    """The outcomes the agent's own compare counts as right and as wrong."""
+    if agent == KINDS_AGENT:
+        return frozenset({pariksha_kinds.RIGHT}), frozenset({pariksha_kinds.WRONG})
+    return RIGHT_OUTCOMES, WRONG_OUTCOMES
+
+
+def _cost(card: Scorecard) -> Fraction | None:
+    metric = card.metrics.get(_COST)
+    return None if metric is None else metric.value
+
+
+def _worse(agent: str, before: Scorecard, after: Scorecard) -> list[str]:
+    """What got worse, judged on COUNTS, never on rates (decided 2026-10-15).
+
+    Asking more questions with the same right answers is not a loss, yet it moves every rate
+    over `asked`; so a rate is never "worse" here. Worse is: fewer right, more wrong, fewer
+    asked, a case no longer asked, more held or unsure on the cases both runs asked, or a higher
+    cost per question with no gain in right answers (cost is the one rate judged, and only up)."""
+    right, wrong = _right_and_wrong(agent)
+    was = {case.case_id: case.outcome for case in before.cases if case.outcome not in _UNMEASURED}
+    now = {case.case_id: case.outcome for case in after.cases if case.outcome not in _UNMEASURED}
+
+    def count(outcomes: dict[str, str], wanted: frozenset[str]) -> int:
+        return sum(1 for outcome in outcomes.values() if outcome in wanted)
+
+    found: list[str] = []
+    right_before, right_after = count(was, right), count(now, right)
+    if right_after < right_before:
+        found.append(f"right {right_before} -> {right_after}")
+    wrong_before, wrong_after = count(was, wrong), count(now, wrong)
+    if wrong_after > wrong_before:
+        found.append(f"wrong {wrong_before} -> {wrong_after}")
+    if len(now) < len(was):
+        found.append(f"asked {len(was)} -> {len(now)}")
+    gone = sorted(set(was) - set(now))
+    if gone:
+        found.append(f"{len(gone)} no longer asked")
+    both = set(was) & set(now)
+    settled = right | wrong
+    held_before = sum(1 for case in both if was[case] not in settled)
+    held_after = sum(1 for case in both if now[case] not in settled)
+    if held_after > held_before:
+        found.append(f"held or unsure on the same asked cases {held_before} -> {held_after}")
+    cost_before, cost_after = _cost(before), _cost(after)
+    if (
+        cost_before is not None
+        and cost_after is not None
+        and cost_after > cost_before
+        and right_after <= right_before
+    ):
+        found.append("cost per question rose with no gain in right answers")
+    return found
+
+
 def judge_key(
     entry: LibraryEntry,
     pages: frozenset[str],
@@ -243,7 +307,7 @@ def judge_key(
         return KeyResult(entry, REFUSED, str(error), pages, unread)
     if comparison.accepted:
         return KeyResult(entry, ACCEPT, comparison.verdict, pages, unread, comparison)
-    worse = [delta.metric for delta in comparison.metrics if delta.regressed]
+    worse = _worse(entry.agent, before_card, after_card)
     only_not_better = comparison.verdict.startswith(_NOT_BETTER) and "; " not in comparison.verdict
     if only_not_better and not worse:
         # 0 new wrong, nothing no longer asked, no fall in `asked`, no metric worse: not a loss.
@@ -251,7 +315,7 @@ def judge_key(
         return KeyResult(entry, NEUTRAL, reason, pages, unread, comparison)
     reason = comparison.verdict
     if only_not_better:
-        reason = f"{reason[:-1]}; worse: {', '.join(worse)})"
+        reason = f"{reason[:-1]}; worse: {'; '.join(worse)})"
     return KeyResult(entry, REJECT, reason, pages, unread, comparison)
 
 

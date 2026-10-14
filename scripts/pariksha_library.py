@@ -28,7 +28,7 @@ that kind is read, and one with several is refused with the list. `--db` names w
 `scripts/pariksha_scorecard.py` (a full URL, or a name on the server `DATABASE_URL` points at).
 
 A change is accepted only when it is better on at least one key and worse on none: a key the change
-left alone is NEUTRAL (0 new wrong, nothing lost, no metric worse, not better), and a library where
+left alone is NEUTRAL (0 new wrong, nothing lost, nothing worse by count, not better), and a library where
 every measured key is NEUTRAL exits 4 (nothing better, nothing worse: no reason to switch).
 
 Every verdict names, per key, who confirmed it and its label, and lists every key and page that was
