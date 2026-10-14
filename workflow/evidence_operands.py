@@ -22,14 +22,16 @@ one side lie on more than one drawing gets none of them for those inputs, and th
 rule's own `on_ambiguous` with the reason.
 
 **One drawing can show two countertops** (a kitchenette's wall and base runs), and labelling both
-runs' cabinets used to sum them. Since #1245 a person's confirmed countertops decide it (`_assembly`):
-a reading on a drawing holding exactly one live countertop item belongs to that countertop, which is
-the same grouping as before; on a drawing holding two or more, no reading says which countertop it is
-under, so each reading is its own assembly and a side with two or more of them is withheld, with
-`COUNTERTOPS_SHARE_A_DRAWING`. **This can only withhold, never add:** it only ever splits one
-drawing's readings apart and never joins two drawings, so a side spans at least as many assemblies as
-it spanned drawings (`tests/workflow/test_per_item_assembly.py`). A drawing with no countertop item
-keeps today's behaviour exactly.
+runs' cabinets used to sum them. Since #1245 the live countertop items decide it (`_assembly`),
+whoever confirmed them (a person, or code under #1248): a reading on a drawing holding exactly one
+live countertop item belongs to that countertop, which is the same grouping as before; on a drawing
+holding two or more, no reading says which countertop it is under, so each reading is its own
+assembly and a side with two or more of them is withheld, with `COUNTERTOPS_SHARE_A_DRAWING` (or
+`DRAWINGS_SPANNED` when the side also lies on another drawing). **This can only withhold, never
+add**, whoever confirmed the items: it only ever splits one drawing's readings apart and never joins
+two drawings, so a side spans at least as many assemblies as it spanned drawings
+(`tests/workflow/test_per_item_assembly.py`). A drawing with no countertop item keeps today's
+behaviour exactly.
 
 **A run an operation compares member by member gets nothing from evidence** (#794, #833). No
 reading carries its cabinet's identifier or its place in a confirmed run yet (#748), and a run in
@@ -107,8 +109,8 @@ DRAWINGS_SPANNED: Final = (
 #: can never be taken to share a drawing with anything.
 _Drawing = tuple[str, UUID]
 
-#: What a check says when one side's readings lie on a drawing holding two or more countertops a
-#: person confirmed (#1245), for the reviewer: why they were not used, and how to give the check one.
+#: What a check says when one side's readings lie on one drawing holding two or more confirmed
+#: countertops (#1245), for the reviewer: why they were not used, and how to give the check one.
 COUNTERTOPS_SHARE_A_DRAWING: Final = (
     "The labelled readings for this check are on a drawing that holds more than one confirmed "
     "countertop, and no reading says which countertop it belongs to, so they are not added "
@@ -430,6 +432,8 @@ def evidence_operands(
         # countertop's own vendor drawing (`part_operands`), exactly as before.
         observations[row.id] = observation, drawing
 
+    # Each reading's drawing, for the reviewer's sentence when a side is withheld (#1245).
+    drawing_of = {reading: drawing for reading, (_observation, drawing) in observations.items()}
     operands: dict[str, dict[str, VerdictOperand]] = {}
     ambiguous: dict[str, dict[str, str]] = {}
     with_readings: dict[str, frozenset[str]] = {}
@@ -439,7 +443,9 @@ def evidence_operands(
         with_readings[rule.id] = frozenset(
             name for name in ordered if by_need.get(_need(rule.inputs[name]))
         )
-        withheld = _shared_drawing_reason(rule, _spanning(rule, ordered, by_need), by_need, shared)
+        withheld = _shared_drawing_reason(
+            rule, ordered, _spanning(rule, ordered, by_need), by_need, drawing_of, shared
+        )
         if withheld:
             ambiguous[rule.id] = withheld
         for name, selector in (rule.inputs or {}).items():
@@ -564,32 +570,50 @@ def _spanning(
 
 def _shared_drawing_reason(
     rule: Rule,
+    ordered: Mapping[str, str],
     withheld: dict[str, str],
     by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID, _Drawing]]],
+    drawing_of: Mapping[UUID, _Drawing],
     shared: Collection[UUID],
 ) -> dict[str, str]:
-    """`withheld`, with `COUNTERTOPS_SHARE_A_DRAWING` as the reason where that side has a reading on
-    a drawing holding two or more countertops (#1245): "on N different drawings" would not be true.
+    """`withheld`, with the reason that is true for each side (#1245; review of #1247, L6).
+
+    `_spanning` counts the side's assemblies, which on a drawing holding two or more countertops
+    are its single readings, so "on N different drawings" would not be true there. Per side, as
+    `_spanning` withholds (every one-assembly input not compared member by member, read from the
+    same documents), the side's readings are counted by their **drawings**:
+
+    * on two or more different drawings: the drawings are why, so `DRAWINGS_SPANNED` with that
+      count, even when one of them also holds two countertops;
+    * on one drawing, which holds two or more countertops: `COUNTERTOPS_SHARE_A_DRAWING`.
 
     Changes only the words: the same inputs are withheld as `_spanning` said.
     """
     if not shared or not withheld:
         return withheld
-    # Per side, as `_spanning` withholds: every one-assembly input read from the same documents.
     needs_by_side: dict[str, set[tuple[str, str]]] = {}
-    for selector in (rule.inputs or {}).values():
-        if selector.scope in _ONE_ASSEMBLY:
-            source, semantic = _need(selector)
-            needs_by_side.setdefault(source, set()).add((source, semantic))
+    for name, selector in (rule.inputs or {}).items():
+        if name in ordered or selector.scope not in _ONE_ASSEMBLY:
+            continue
+        source, semantic = _need(selector)
+        needs_by_side.setdefault(source, set()).add((source, semantic))
     worded: dict[str, str] = {}
     for name, why in withheld.items():
         source, _semantic = _need(rule.inputs[name])
-        on_shared = any(
-            reading in shared
+        readings = [
+            reading
             for need in needs_by_side.get(source, ())
             for _observation, reading, _assembly in by_need.get(need, ())
+        ]
+        if not any(reading in shared for reading in readings):
+            worded[name] = why
+            continue
+        drawings = {drawing_of[reading] for reading in readings if reading in drawing_of}
+        worded[name] = (
+            DRAWINGS_SPANNED.format(count=len(drawings))
+            if len(drawings) > 1
+            else COUNTERTOPS_SHARE_A_DRAWING
         )
-        worded[name] = COUNTERTOPS_SHARE_A_DRAWING if on_shared else why
     return worded
 
 

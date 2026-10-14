@@ -300,7 +300,7 @@ class ArchitectResultOut(BaseModel):
 
 
 class CountertopItemRefOut(BaseModel):
-    """A countertop a person confirmed (a live countertop item, #1245): which one, and where."""
+    """A confirmed countertop (a live countertop item, #1245): which one, and where."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -375,9 +375,10 @@ class CountertopResultOut(BaseModel):
         default=None,
         json_schema_extra=optional_in_schema,
         description=(
-            "The countertop a person confirmed from this row (#1245), through Bala's link "
-            "(`part_proposal_rows`): the screen groups the row's results under it. The results "
-            "stay keyed by the row. Null while no live countertop item was confirmed from it."
+            "The live countertop item confirmed from this row (#1245), through Bala's link "
+            "(`part_proposal_rows`), or followed to it after a re-read only when the row is "
+            "provably its own: the screen groups the row's results under it. The results stay "
+            "keyed by the row. Null while no live countertop item belongs to it."
         ),
     )
 
@@ -394,18 +395,29 @@ class PlannedFindingOut(BaseModel):
 
 
 class PlannedRuleOut(BaseModel):
-    """One published rule for a countertop, and where it stands for that countertop (#1245)."""
+    """One published rule for the package's product, and where it stands for one countertop
+    (#1245)."""
 
     model_config = ConfigDict(frozen=True)
 
     rule_id: str
     resolved: bool = Field(
         description=(
-            "Whether the rulebook says which version of the rule applies from what is stated alone. "
-            "False for a rule chosen by the walls, which the checks resolve per row."
+            "Whether it is known which version and variant of the rule applies to this countertop: "
+            "from its own result when it has one (chosen from its row's walls), else from what is "
+            "stated alone."
         )
     )
-    waits_for: str | None = Field(description="Why it could not be resolved; null when it was.")
+    waits_for: str | None = Field(description="Why it is not known; null when it is.")
+    version: str | None = Field(
+        description="The rule's version: its own result's, else the rulebook's; null if not known."
+    )
+    variant: str | None = Field(
+        description=(
+            "The variant that applied (the wall layout's branch): its own result's, else the "
+            "rulebook's; null for a rule with no variants, or when not known."
+        )
+    )
     findings: tuple[PlannedFindingOut, ...]
     missing: tuple[MissingInputOut, ...] = Field(
         description="What the rule's whole-package result is waiting on; empty when nothing."

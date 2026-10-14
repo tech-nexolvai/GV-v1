@@ -50,6 +50,7 @@ from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
 from workflow.evidence_operands import (
     COUNTERTOPS_SHARE_A_DRAWING,
+    DRAWINGS_SPANNED,
     EvidenceOperands,
     _assembly,
     _spanning,
@@ -212,6 +213,50 @@ def test_two_countertops_on_one_drawing_withhold_the_summed_cabinets(
     _assert_only_withheld(before, after)
     assert finding.outcome == Outcome.REVIEW_REQUIRED.value, finding.reason
     assert finding.reason is not None and COUNTERTOPS_SHARE_A_DRAWING in finding.reason
+
+
+def test_a_side_on_two_different_drawings_says_so_even_when_one_holds_two_countertops(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1247 (L6): one side's readings lie on two genuinely different drawings, one of
+    which also holds two countertops. The side is withheld for the drawings, so the reviewer is told
+    it spans two drawings, not that countertops share one. Only the words differ."""
+    sheet = _Sheet(session, store)
+    sheet.countertop("0.20", "0.50")
+    sheet.countertop("0.50", "0.80")
+    other = Page(
+        document_version_id=sheet.page.document_version_id,
+        index=1,
+        content_hash="d" * 64,
+        width_pt=400,
+        height_pt=100,
+        rotation=0,
+        has_vector_text=True,
+        render_failed=False,
+    )
+    session.add(other)
+    session.flush()
+    session.add(
+        CanonicalObservation(
+            document_version_id=other.document_version_id,
+            page_id=other.id,
+            document_role="SHOP",
+            coordinate_space="stored",
+            polygon=[["0.20", "0.30"], ["0.40", "0.30"], ["0.40", "0.31"], ["0.20", "0.31"]],
+            semantic_type=PartKind.CABINET.item_type.value,
+            value_numerator=24,
+            value_denominator=1,
+            unit="in",
+            status="HUMAN_CONFIRMED",
+            authority="AUTHORITATIVE",
+        )
+    )
+    session.flush()
+
+    evidence = sheet.evidence()
+
+    assert WIDTH_INPUTS <= set(evidence.ambiguous[RULE])
+    assert set(evidence.ambiguous[RULE].values()) == {DRAWINGS_SPANNED.format(count=2)}
 
 
 def test_a_withdrawn_countertop_no_longer_counts(session: Session, store: LocalStore) -> None:

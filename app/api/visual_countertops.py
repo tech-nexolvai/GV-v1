@@ -984,8 +984,8 @@ def _countertop_results_for_revision(
     # once. A combined sheet asks nothing more, and its architect blocks are as before.
     indexed = separate_architect and architect_file_indexed(session, revision.id)
     row_anchor_ids = [row.anchor.id for row in rows]
-    # The countertop a person confirmed from each row (#1245), one statement: the screen groups the
-    # row's results under it. Asked only when there are rows.
+    # The live countertop confirmed from each row (#1245): the screen groups the row's results under
+    # it. One statement, or a fixed few after a re-read. Asked only when there are rows.
     countertop_by_row = countertops_by_row(session, revision.id) if rows else {}
     matches = effective_architect_matches(session, row_anchor_ids) if indexed else {}
     waiting = architect_matches_waiting_for_run(
@@ -1270,9 +1270,9 @@ def countertop_item_plan(
         ),
     ] = None,
 ) -> CheckPlanOut:
-    """For each live countertop item (one a person confirmed and still stands by), the published
-    countertop rules and where each stands, the results its row or the item itself has, and what
-    each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
+    """For each live countertop item (one whose current decision confirms it), the published rules
+    for the package's product and where each stands, the results its row or the item itself has,
+    and what each rule's whole-package result is still waiting on (#1245, `workflow/item_plan.py`).
 
     **Read-only, and it decides nothing**: no check runs, no result changes. A countertop with no
     countertop row linked to it says so in `note`.
@@ -1317,6 +1317,8 @@ def countertop_item_plan(
                         rule_id=rule.rule_id,
                         resolved=rule.resolved,
                         waits_for=rule.waits_for,
+                        version=rule.version,
+                        variant=rule.variant,
                         findings=tuple(found(entry) for entry in rule.findings),
                         missing=rule.missing,
                     )

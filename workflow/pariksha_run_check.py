@@ -19,7 +19,10 @@ kept, per agent (`gate_tally`, #1228).
 
 * (a) coverage: every published rule for the package's product has a result; every abstention says
   why; every countertop row (and every confirmed countertop) has its width result; every live
-  countertop item has a width result, its row's or its own (#1245; report only).
+  countertop item has a width result, its row's or its own (#1245; report only). Like the other
+  width lines, that one is **silent on a package whose checks do not include the countertop width
+  rule** (a cabinet package): its countertops get no width result there by design, so none is
+  missing.
 * (b) two judgments: no PASS or FAIL rests on a one-judgment architect pairing (the pairing the
   result recorded in its own note, checked against the record it names; `AUTOMATIC_SOURCES`) or
   on a value with only one reading on record; no PASS rests on a reading flagged
@@ -631,11 +634,18 @@ def _item_width_coverage(
     width_items: set[UUID],
 ) -> list[RunCheckItem]:
     """Every live countertop item has a width result: its row's (the row it was confirmed from,
-    `part_proposal_rows`) or its own (#1245).
+    `part_proposal_rows`, or the newest row provably its own after a re-read) or its own (#1245).
+    Every live item counts, whoever confirmed it (a person, or code under #1248).
 
     **Report only**: nothing is held or changed (Nina's gate reads `decision_faults`, not this). A
     countertop with a confirmed run is already named by `countertop-without-width-result`, so it is
     not named twice.
+
+    **Silent on a cabinet package, on purpose** (review of #1247): this is called only when the
+    countertop width rule is in the package's scope (`run_check`, `reading`). On a package whose
+    product is cabinets the countertop width check never runs, so a confirmed countertop there
+    has no width result by design and nothing is missing; the cabinet checks' own coverage lines
+    still apply.
     """
     reported = {subject.item_id for subject in manual or ()}
     items: list[RunCheckItem] = []
