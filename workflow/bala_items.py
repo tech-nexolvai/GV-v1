@@ -997,9 +997,9 @@ def _printed_tag(view: DrawingView, box: _Box, row: _Box, code: CodeFinding) -> 
        inside the drawing, above or below the dimensions) **stands lower than it by more than its
        own height** (the smaller side of its box, so a turned tag is measured across its text). A
        tag with one lower stands higher up the wall: a wall cabinet's.
-    5. It is **not the only cabinet code printed above the row's dimensions** on the drawing: with
-       nothing to compare it with, a lone tag could be a wall cabinet's over a piece that carries
-       none of its own.
+    5. **Another cabinet code is printed over the row** (inside the drawing, within the row's
+       left-to-right span) **above this piece's dimension**: with nothing to compare it with, a
+       lone tag could be a wall cabinet's over a piece that carries none of its own.
 
     The finder reads only across the page, so without 3 to 5 a wall cabinet's tag above an
     appliance space or a panel would count.

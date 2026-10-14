@@ -262,7 +262,31 @@ def test_base_tags_printed_below_the_dimension_still_make_a_high_tag_a_wall_cabi
     pieces = _pieces(session, built, finding)
 
     assert pieces[1].kind_named is False
-    assert "wall cabinet's" in pieces[1].reason
+    # Refused by the lower-tag rule itself, not by the lone-tag rule (whose reason also says
+    # "wall cabinet's"): the base tags under the dimension count (re-review of #1277).
+    assert "stands higher up the wall" in pieces[1].reason
+
+
+def test_two_high_tags_with_base_tags_only_below_the_dimension_are_both_wall_cabinets(
+    session: Session,
+) -> None:
+    """Two high tags keep each other from being a lone tag, so only the base tags printed under the
+    dimension line show they stand higher up the wall. Counting only codes above the dimension
+    would pre-fill both (re-review of #1277)."""
+    built = _Revision(session)
+    built.row(built.run(), pieces=3)
+    view = built.views[0].id
+    finding = _finding(
+        _part(view, 1, _tag("B45", 1, 300)),
+        _part(view, 2, _tag("B30", 2, 300)),
+        also=(_tag("B27", 0, 900), _tag("SB33", 2, 900)),
+    )
+
+    pieces = _pieces(session, built, finding)
+
+    for piece in (pieces[1], pieces[2]):
+        assert piece.kind_named is False
+        assert "stands higher up the wall" in piece.reason
 
 
 def test_a_lone_tag_over_the_row_names_nothing(session: Session) -> None:
