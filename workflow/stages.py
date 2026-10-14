@@ -3060,7 +3060,8 @@ class DatabaseStages:
         session.flush()
         # The rows of the pages already read are new records in this reading: the reviewer's wall
         # answers, typed widths and architect pairings on them come along (#1206), by the same row
-        # identity a later revision uses; a pairing that cannot be placed holds its row.
+        # identity a later revision uses; a pairing that cannot be placed holds its row, and one
+        # whose row the new reading did not choose holds the row it chose on that page (#1210).
         from app.lifecycle.carry_forward import carry_row_answers_within_revision
 
         carried = (
@@ -3079,6 +3080,7 @@ class DatabaseStages:
             "answers_carried": 0 if carried is None else carried.decisions,
             "pairings_carried": 0 if carried is None else carried.pairings,
             "pairings_held": 0 if carried is None else carried.pairings_held,
+            "pairings_not_placed": 0 if carried is None else carried.pairings_not_placed,
             "checks_queued": checks is not None,
         }
 

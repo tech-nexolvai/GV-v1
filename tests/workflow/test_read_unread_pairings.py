@@ -66,8 +66,10 @@ def store() -> Iterator[LocalStore]:
         yield LocalStore(root=Path(directory), ticket_secret=b"a secret only this test knows")
 
 
-def _slot(store: LocalStore, readers: Any) -> DatabaseStages:
-    plain = chain.runtime(readers, claude_row_reader=True)
+def _slot(store: LocalStore, readers: Any, *, packets: bool = False) -> DatabaseStages:
+    """`packets`: as production builds it, the Claude readers store their question packets (#1225),
+    so the row's evidence is complete and the check stage compares it (#1210's sign-off test)."""
+    plain = replace(chain.runtime(readers, claude_row_reader=True), question_packets=packets)
     runtime = replace(plain, form=replace(plain.form, rates=chain.PricedRates()))
     return DatabaseStages(
         store,
@@ -81,7 +83,7 @@ def _slot(store: LocalStore, readers: Any) -> DatabaseStages:
 
 
 def _reviewed_row(
-    session: Session, store: LocalStore, *, pairs: str
+    session: Session, store: LocalStore, *, pairs: str, packets: bool = False
 ) -> tuple[Any, DatabaseStages, Any, ArchitectPairingRecord]:
     """The vendor row read, the reviewer's pick of the architect view, then the reviewer's own
     pairing: `pairs` "none" (nothing comparable) or "chosen" (the first comparable span with the
@@ -92,7 +94,7 @@ def _reviewed_row(
     reading.extract_pages(session, revision.id)
     session.commit()
     readers = chain.Readers()
-    slot = _slot(store, readers)
+    slot = _slot(store, readers, packets=packets)
     slot._meter = _SpendMeter(cap_micros=1_000_000_000)
     slot._architect_pages = dict(reading._architect_pages)
     slot._architect_view_crops = dict(reading._architect_view_crops)
@@ -304,3 +306,192 @@ def test_through_read_the_unread_pages_the_reviewers_pairing_still_counts(
     assert (result["pairings_carried"], result["pairings_held"]) == (1, 0)
     # The reviewer's pick of the architect view is carried by #1166's own rule.
     assert chain._match(session, anchor).source == "carried"
+
+
+# --- #1210: a newer reading that puts the row at another rank --------------------------------------
+
+
+def _read_at_rank(
+    monkeypatch: pytest.MonkeyPatch,
+    session: Session,
+    slot: DatabaseStages,
+    revision: Any,
+    readers: Any,
+    *,
+    rank: int,
+    texts: dict[int | None, str] | None = None,
+    reader_version: str | None = None,
+) -> None:
+    """A newer reading whose chosen row is recorded at `rank` (the readers picked another of the
+    page's ranked rows, or code ranked the page's rows differently), read with `texts` and recorded
+    under `reader_version` when given."""
+    from workflow import stages as stages_module
+    from workflow.slot_reader import persist_slot_readings as original
+
+    if reader_version is not None:
+        monkeypatch.setattr(stages_module, "SLOT_READER_VERSION", reader_version)
+
+    def at_rank(target: Session, *, results: Any, **kwargs: Any) -> int:
+        moved = [
+            (
+                result
+                if result.plan.row is None
+                else replace(
+                    result, plan=replace(result.plan, row=replace(result.plan.row, rank=rank))
+                )
+            )
+            for result in results
+        ]
+        return original(target, results=moved, **kwargs)
+
+    saved = dict(chain.TEXTS)
+    monkeypatch.setattr(stages_module, "persist_slot_readings", at_rank)
+    if texts is not None:
+        chain.TEXTS.update(texts)
+    try:
+        chain._read_slots(session, slot, revision, readers)
+    finally:
+        monkeypatch.undo()
+        chain.TEXTS.clear()
+        chain.TEXTS.update(saved)
+
+
+def _rank_of(anchor: Any) -> str:
+    return str(
+        next(
+            flag.removeprefix("row-rank:")
+            for flag in anchor.ambiguity_flags
+            if flag.startswith("row-rank:")
+        )
+    )
+
+
+def test_the_same_row_at_another_rank_keeps_the_reviewers_pairing_and_wall_answer(
+    session: Session,
+    store: LocalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same physical row (same page bytes, line, pieces and values) recorded at another rank:
+    the reviewer's pairing and wall answer follow the row, not the rank (#1210). Before, the
+    pairing found no row at its old rank and was dropped with nothing held."""
+    from app.models.evidence import SlotRowReviewDecision
+
+    revision, slot, readers, decision = _reviewed_row(session, store, pairs="none")
+    earlier = latest_slot_reader_run(session, revision.id)
+    assert earlier is not None
+    old = chain._anchor(session)
+    wall = SlotRowReviewDecision(
+        row_candidate_id=old.id,
+        supersedes_id=None,
+        wall_config="back_only",
+        measurements={},
+        confirmed_by=REVIEWER,
+    )
+    session.add(wall)
+    session.commit()
+
+    _read_at_rank(monkeypatch, session, slot, revision, readers, rank=2)
+    carried = carry_row_answers_within_revision(session, revision.id, earlier)
+    session.commit()
+    anchor = chain._anchor(session)
+    assert (_rank_of(old), _rank_of(anchor)) == ("1", "2")
+
+    now = latest_architect_pairing(session, anchor.id)
+    assert now is not None and (now.source, now.pairs) == ("reviewer", ())
+    record = session.get_one(ArchitectPairingRecord, now.record_id)
+    assert record.details["carried_from_id"] == str(decision.id)
+    (row,) = slot_rows(session, revision.id)
+    assert row.decision is not None
+    assert (row.decision.wall_config, row.decision.carried_from_id) == ("back_only", wall.id)
+    assert (carried.decisions, carried.pairings, carried.pairings_held) == (1, 1, 0)
+
+
+@pytest.mark.parametrize(
+    ("packets", "newer"),
+    [
+        pytest.param(False, {"texts": {None: '97"'}}, id="read-to-other-values"),
+        pytest.param(True, {"reader_version": "slot-reader-v1-newer"}, id="by-a-newer-reader"),
+    ],
+)
+def test_another_row_chosen_holds_the_reviewers_pairing_and_blocks_sign_off(
+    session: Session,
+    store: LocalStore,
+    monkeypatch: pytest.MonkeyPatch,
+    packets: bool,
+    newer: dict[str, Any],
+) -> None:
+    """The newer reading chose another row of the page: another rank, and nothing proves it is the
+    row the reviewer paired (other values read, or a newer reader). No row is left at the paired
+    rank. The pairing is never dropped: the page's chosen row is held, naming the earlier decision
+    and saying the reading picked a different line, and the vendor-vs-architect result on it waits
+    for the reviewer, so sign-off is blocked (#1210).
+
+    Before, the new row kept its automatic code+ais pairing, and nothing said a reviewer's pairing
+    had been left behind: by a newer reader (question packets on, as production reads), the row
+    compared to a PASS and nothing blocked sign-off."""
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from app.models.verdicts import CheckRun, Finding
+    from app.review.approval import approval_readiness
+    from tests.workflow.test_stages import _publish_rulebook
+    from workflow.architect_row_plan import ARCHITECT_CHECK_RULE_ID
+
+    revision, slot, readers, decision = _reviewed_row(session, store, pairs="none", packets=packets)
+    earlier = latest_slot_reader_run(session, revision.id)
+    assert earlier is not None
+
+    _read_at_rank(monkeypatch, session, slot, revision, readers, rank=2, **newer)
+    carried = carry_row_answers_within_revision(session, revision.id, earlier)
+    session.commit()
+    anchor = chain._anchor(session)
+    assert _rank_of(anchor) == "2"
+
+    now = latest_architect_pairing(session, anchor.id)
+    assert now is not None
+    assert (now.source, now.pairs) == ("none", ())
+    assert any(
+        reason.startswith(f"{REVIEWER} paired the countertop row on page 1 on the earlier reading")
+        and "picked a different line" in reason
+        and "Pair this row again" in reason
+        for reason in now.reasons
+    ), now.reasons
+    record = session.get_one(ArchitectPairingRecord, now.record_id)
+    assert record.details["earlier_reviewer_record_id"] == str(decision.id)
+    assert (carried.pairings, carried.pairings_held) == (0, 1)
+    audit = session.scalars(select(AuditEvent).where(AuditEvent.target_id == record.id)).one()
+    assert audit.actor == "read the unread pages (#1206)"
+
+    _publish_rulebook(session)
+    DatabaseStages(store).run_checks(session, revision.id)
+    session.commit()
+    (finding,) = session.scalars(
+        select(Finding)
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        .where(
+            Finding.package_revision_id == revision.id,
+            CheckRun.superseded_at.is_(None),
+            RuleDefinition.rule_id == ARCHITECT_CHECK_RULE_ID,
+            Finding.scope_row_candidate_id == anchor.id,
+        )
+    ).all()
+    assert finding.outcome == "REVIEW_REQUIRED", (finding.reason, finding.notes)
+    readiness = approval_readiness(session, revision.id)
+    assert not readiness.can_approve
+    assert finding.id in readiness.blocking_finding_ids
+
+
+def test_a_page_with_no_row_now_counts_the_pairing_as_not_placed(
+    session: Session,
+    store: LocalStore,
+) -> None:
+    """The newer reading chose no countertop row on the page at all: there is no row to hold, and
+    the page is listed for the reviewer's own answer. The pairing is counted, never lost from the
+    count (#1210)."""
+    from app.lifecycle.carry_forward import _carry_reviewer_pairings
+
+    revision, _slot_stage, _readers, _decision = _reviewed_row(session, store, pairs="none")
+    earlier = slot_rows(session, revision.id)
+    assert len(earlier) == 1
+
+    assert _carry_reviewer_pairings(session, revision.id, earlier, ()) == (0, 0, 1)
