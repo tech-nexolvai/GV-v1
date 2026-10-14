@@ -513,3 +513,15 @@ def test_only_a_stacked_fraction_code_confirms_is_flagged_stacked_by_code() -> N
     assert STACKED_BY_CODE not in reader_only.flags
     plain = seal()
     assert "stacked" not in plain.flags and STACKED_BY_CODE not in plain.flags
+
+
+@pytest.mark.parametrize("present", [OPUS, SONNET])
+def test_with_the_pair_the_files_text_never_stands_in_for_a_missing_reader(present: str) -> None:
+    """Decided 2026-10-08: with the approved pair a value seals only when both readers agree; the
+    file's own text is a witness beside them, never the second reader. Input: a text label, one of
+    the pair answered (the other failed, was stopped or abstained). Outcome: the person decides."""
+    outcome = seal(TEXT, (answer(present, '14 3/8"'),), allow_claude_pair=True)
+
+    assert outcome.state is LabelState.REVIEW
+    assert outcome.reason_code == "one-reader-missing"
+    assert outcome.value is None

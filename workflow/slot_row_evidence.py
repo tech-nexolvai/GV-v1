@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit.events import SYSTEM_ACTOR, AuditCategory, emit
@@ -46,7 +47,13 @@ from evidence.coordinates import ImagePoint, StoredPoint
 from evidence.corroborate import independence_key
 from evidence.gate import GateRefusal, seal
 from evidence.polygon import Polygon
-from extraction.slot_reader.bedrock import CLAUDE_SPAN_PROMPT_IDS, parse_stored_reader_answer
+from extraction.product_context import PRODUCT_SUFFIX
+from extraction.slot_reader.bedrock import (
+    CLAUDE_SPAN_PROMPT_IDS,
+    CROP_PROMPT_ID,
+    parse_stored_reader_answer,
+)
+from extraction.slot_reader.claude_output import is_claude_model
 from extraction.slot_reader.labels import expand_label, plain_dimension
 from extraction.slot_reader.seal import _CLAUDE_PAIR, TEXT_LAYER, normalise_text
 from rules.semantic_types import DocumentRole, SemanticType
@@ -76,17 +83,21 @@ from workflow.slot_row_scope import (
 )
 
 
-def _verified_reader_answer(answer: object, expected: Fraction) -> Measurement | None:
+def _verified_reader_answer(
+    answer: object, expected: Fraction, *, belongs_asked: bool = True
+) -> Measurement | None:
     """Accept only an exact, deterministic parse of the stored reader text.
 
     Stacked/combined are visual description flags, not value authority. A row candidate reaches this
     function only after the slot reader's own seal marks it CORROBORATED; this check independently
-    verifies that each stored raw answer parses to the exact sealed inch value.
+    verifies that each stored raw answer parses to the exact sealed inch value. The legacy crop
+    question never asks `belongs` (`belongs_asked=False`): its answer is about the crop it was shown,
+    as the slot reader takes it; one that says anything but yes still never supports a value.
     """
     if not isinstance(answer, dict):
         return None
     text = answer.get("text")
-    belongs = answer.get("belongs")
+    belongs = answer.get("belongs", None if belongs_asked else "yes")
     if (
         # `true` in v1 to v3, "yes" in v4 (#1110); "no" and "unsure" never support a value.
         not (belongs is True or belongs == "yes")
@@ -331,9 +342,10 @@ def _seal_row(
             proposal_fields[overall_candidate.id],
             semantic=SemanticType.COUNTERTOP_OVERALL_WIDTH,
         )
-        if observation is None:
+        domain = None if observation is None else _domain_observation(session, observation)
+        if observation is None or domain is None:
             return "The overall label has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
-        operand = seal(_domain_observation(session, observation), "countertop_width")
+        operand = seal(domain, "countertop_width")
         if isinstance(operand, GateRefusal):
             return operand.detail
         operands["countertop_width"] = replace(operand, evidence_observation_id=str(observation.id))
@@ -361,9 +373,10 @@ def _seal_row(
             field,
             semantic=SemanticType.COUNTERTOP_PIECE_WIDTH,
         )
-        if observation is None:
+        domain = None if observation is None else _domain_observation(session, observation)
+        if observation is None or domain is None:
             return f"Piece {position + 1} has missing, conflicting or duplicate saved evidence. Review this row; no reading was selected."
-        operand = seal(_domain_observation(session, observation), f"piece_width_{position + 1}")
+        operand = seal(domain, f"piece_width_{position + 1}")
         if isinstance(operand, GateRefusal) or not isinstance(operand.value, Measurement):
             return "A piece width did not pass the evidence gate."
         piece_operands.append(operand.value)
@@ -580,9 +593,12 @@ def _canonical_for_candidate(
         ):
             return None
         raw_by_reader.append((reader_id, support))
+    # Each reader's answer to this very label on record in the run: looked up once, used both to
+    # rebuild a missing record and to check every record against a real call.
+    bound = _stored_reader_answers(session, candidate)
     if len(raw_by_reader) < 2:
         materialized = _materialize_stored_reader_answers(
-            session, candidate, already_seen=seen_readers
+            session, candidate, bound, already_seen=seen_readers
         )
         raw_by_reader.extend(materialized)
     if (
@@ -593,6 +609,10 @@ def _canonical_for_candidate(
             == independence_key("bedrock-slot-reader", raw_by_reader[1][0])
             and frozenset(reader_id for reader_id, _support in raw_by_reader) != _CLAUDE_PAIR
         )
+    ):
+        return None
+    if not _answers_on_record(
+        session, candidate, [reader_id for reader_id, _ in raw_by_reader], bound
     ):
         return None
 
@@ -713,38 +733,51 @@ def _canonical_for_candidate(
     return canonical
 
 
-def _materialize_stored_reader_answers(
-    session: Session,
-    candidate: ObservationCandidate,
-    *,
-    already_seen: set[str],
-) -> list[tuple[str, ObservationCandidate]]:
-    """Promote this run's already-stored attempts to immutable evidence candidates.
+def _is_crop_prompt(prompt_id: str) -> bool:
+    """The legacy crop question (`slot-crop-v1`), with or without the product line (#994)."""
+    return prompt_id == CROP_PROMPT_ID or prompt_id.startswith(CROP_PROMPT_ID + PRODUCT_SUFFIX)
 
-    The first replayable build predates the explicit support-candidate rows. Its private invocation
-    records still bind each successful answer to the exact candidate id, page and packet hash, so the
-    check may reconstitute those two raw answers without calling a model or modifying an old row.
+
+def _label_question() -> ColumnElement[bool]:
+    """A call that asked a reader for one label: the Claude span question or the legacy crop one."""
+    return or_(
+        ModelInvocation.prompt_id.in_(CLAUDE_SPAN_PROMPT_IDS),
+        ModelInvocation.prompt_id == CROP_PROMPT_ID,
+        ModelInvocation.prompt_id.startswith(CROP_PROMPT_ID + PRODUCT_SUFFIX, autoescape=True),
+    )
+
+
+def _stored_reader_answers(
+    session: Session, candidate: ObservationCandidate
+) -> dict[str, tuple[ModelInvocation, Measurement, str]]:
+    """Each reader's `ok` answer on record in this run to this very label, by model.
+
+    Only a label question counts (the Claude span question, or the legacy crop question when the
+    run stored packets for it), never a row choice, walls, counter break or layout call. An answer
+    counts only when its question packet names this candidate, document version and page, the
+    packet's hash still matches, and the stored reply parses to the candidate's exact value. A
+    reused answer (#1112) is recorded the same way under the new run, with its own packet.
     """
-    flags = set(candidate.ambiguity_flags or ())
-    row_rank = next((flag for flag in flags if flag.startswith("row-rank:")), None)
-    if row_rank is None:
-        return []
     page = session.get(Page, candidate.page_id)
-    if page is None:
-        return []
+    if page is None or candidate.value_numerator is None or candidate.value_denominator is None:
+        return {}
+    expected = Fraction(candidate.value_numerator, candidate.value_denominator)
     invocations = session.scalars(
         select(ModelInvocation).where(
             ModelInvocation.extraction_run_id == candidate.extraction_run_id,
-            ModelInvocation.prompt_id.in_(CLAUDE_SPAN_PROMPT_IDS),
+            _label_question(),
             ModelInvocation.outcome == "ok",
             ModelInvocation.private_raw_response.is_not(None),
+            # Only the packets that name this label: one lookup per value, not the run's every
+            # answer (#1226 review). The full binding is checked below.
+            ModelInvocation.reader_question_packet["candidate_ids"].contains([str(candidate.id)]),
         )
     ).all()
-    by_reader: dict[str, ObservationCandidate] = {}
+    by_reader: dict[str, tuple[ModelInvocation, Measurement, str]] = {}
     for invocation in invocations:
         packet = invocation.reader_question_packet
         raw = invocation.private_raw_response
-        if not isinstance(packet, dict) or raw is None or invocation.model_id in already_seen:
+        if not isinstance(packet, dict) or raw is None:
             continue
         packet_candidates = packet.get("candidate_ids")
         if (
@@ -770,13 +803,84 @@ def _materialize_stored_reader_answers(
             answer = parse_stored_reader_answer(raw)
         except (TypeError, ValueError):
             continue
-        if candidate.value_numerator is None or candidate.value_denominator is None:
-            continue
-        expected = Fraction(candidate.value_numerator, candidate.value_denominator)
-        reading = _verified_reader_answer(answer, expected)
+        reading = _verified_reader_answer(
+            answer, expected, belongs_asked=not _is_crop_prompt(invocation.prompt_id)
+        )
         if reading is None:
             continue
-        text = str(answer["text"])
+        by_reader[invocation.model_id] = (invocation, reading, str(answer["text"]))
+    return by_reader
+
+
+def _answers_on_record(
+    session: Session,
+    candidate: ObservationCandidate,
+    reader_ids: Sequence[str],
+    bound: Mapping[str, object],
+) -> bool:
+    """Whether every reader supporting this candidate really answered this label in this run.
+
+    The reader records are written from the answers the slot reader held; this checks each one
+    against the calls on record, so two records never stand for one real reader (a failed, missing
+    or other-label answer). `bound` holds the readers whose answer to this very label, with this
+    exact value, is on record (`_stored_reader_answers`). The file's own text is no call.
+
+    - **A Claude reader** (the value carries `reader-mode:claude`, or the reader is a Claude model)
+      must be in `bound`. No other call it made counts: not a row choice, walls, counter break or
+      layout call, and not an answer to another label (#1226 review).
+    - **A legacy reader whose crop calls carry packets** must be in `bound` too.
+    - **The legacy fallback** is the only other way: a reader whose `ok` legacy crop calls
+      (`slot-crop-v1`, with or without the product) in this run carry no packet at all, as before
+      packets were stored. Such a call does not say which label it answered, so the fallback
+      accepts at least one of them as that reader's call; no other kind of call counts.
+    """
+    claude_mode = "reader-mode:claude" in (candidate.ambiguity_flags or ())
+    for reader_id in reader_ids:
+        if reader_id == TEXT_LAYER or reader_id in bound:
+            continue
+        if claude_mode or is_claude_model(reader_id):
+            return False
+        crop_calls = session.scalars(
+            select(ModelInvocation.reader_question_packet.is_(None)).where(
+                ModelInvocation.extraction_run_id == candidate.extraction_run_id,
+                ModelInvocation.model_id == reader_id,
+                _label_question(),
+                ModelInvocation.prompt_id.not_in(CLAUDE_SPAN_PROMPT_IDS),
+                ModelInvocation.outcome == "ok",
+                ModelInvocation.private_raw_response.is_not(None),
+            )
+        ).all()
+        if not crop_calls or not all(crop_calls):
+            # No crop call by this reader, or its calls carry packets and none answers this label.
+            return False
+    return True
+
+
+def _materialize_stored_reader_answers(
+    session: Session,
+    candidate: ObservationCandidate,
+    bound: Mapping[str, tuple[ModelInvocation, Measurement, str]],
+    *,
+    already_seen: set[str],
+) -> list[tuple[str, ObservationCandidate]]:
+    """Promote this run's already-stored attempts to immutable evidence candidates.
+
+    The first replayable build predates the explicit support-candidate rows. Its private invocation
+    records still bind each successful answer to the exact candidate id, page and packet hash, so the
+    check may reconstitute those two raw answers without calling a model or modifying an old row.
+    """
+    flags = set(candidate.ambiguity_flags or ())
+    row_rank = next((flag for flag in flags if flag.startswith("row-rank:")), None)
+    if row_rank is None:
+        return []
+    page = session.get(Page, candidate.page_id)
+    if page is None:
+        return []
+    materialized: list[tuple[str, ObservationCandidate]] = []
+    for model_id, (invocation, reading, text) in bound.items():
+        # Only the Claude span answers, as before: the first replayable build was a Claude one.
+        if model_id in already_seen or invocation.prompt_id not in CLAUDE_SPAN_PROMPT_IDS:
+            continue
         support = ObservationCandidate(
             id=uuid4(),
             document_version_id=candidate.document_version_id,
@@ -791,7 +895,7 @@ def _materialize_stored_reader_answers(
             ambiguity_flags=[
                 "slot-reader-support",
                 f"supports:{candidate.id}",
-                f"reader-id:{invocation.model_id}",
+                f"reader-id:{model_id}",
                 f"reader-invocation:{invocation.id}",
                 row_rank,
                 f"slot-reader-page:{page.index}",
@@ -799,11 +903,26 @@ def _materialize_stored_reader_answers(
         )
         session.add(support)
         session.flush()
-        by_reader[invocation.model_id] = support
-    return list(by_reader.items())
+        materialized.append((model_id, support))
+    return materialized
 
 
-def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCanonicalObservation:
+def _domain_observation(
+    session: Session, row: CanonicalObservation
+) -> DomainCanonicalObservation | None:
+    """The stored value as the gate sees it, with the lanes on record, never an assumed one.
+
+    `None` when the stored row cannot be reconstituted (its lanes contradict its status): a
+    row-level refusal, never an exception that aborts the whole check stage.
+    """
+    lanes = tuple(
+        CorroborationLane(value)
+        for value in session.scalars(
+            select(EvidenceCorroborationLane.lane)
+            .where(EvidenceCorroborationLane.canonical_observation_id == row.id)
+            .order_by(EvidenceCorroborationLane.lane)
+        )
+    )
     supporting = tuple(
         str(value)
         for value in session.scalars(
@@ -815,6 +934,18 @@ def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCa
     page = session.get(Page, row.page_id)
     if page is None:
         raise ValueError("the candidate page disappeared")
+    try:
+        return _reconstituted(row, page, supporting, lanes)
+    except ValueError:
+        return None
+
+
+def _reconstituted(
+    row: CanonicalObservation,
+    page: Page,
+    supporting: tuple[str, ...],
+    lanes: tuple[CorroborationLane, ...],
+) -> DomainCanonicalObservation:
     return DomainCanonicalObservation(
         document_version_id=row.document_version_id,
         document_role=DocumentRole(row.document_role),
@@ -832,7 +963,7 @@ def _domain_observation(session: Session, row: CanonicalObservation) -> DomainCa
         status=EvidenceStatus(row.status),
         authority=Authority(row.authority),
         supported_by=supporting,
-        corroborated_by=(CorroborationLane.SECOND_READER,),
+        corroborated_by=lanes,
         conflicts_with=(),
         evidence_crop_uri=row.evidence_crop_uri,
     )
