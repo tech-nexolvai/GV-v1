@@ -32,6 +32,7 @@ from app.models import (
     DrawingView,
     Finding,
     ObservationCandidate,
+    Package,
     PackageRevision,
     PartConfirmation,
     PartProposal,
@@ -338,6 +339,16 @@ def test_a_pairing_changed_after_the_run_shows_what_the_run_recorded(
     assert status is not None
     assert (status.state, status.outcome, status.finding_id) == ("compared", "FAIL", recorded.id)
     assert [pair.label for pair in status.pairs] == ["overall"]
+
+
+def test_a_package_whose_checks_include_no_countertop_lists_none(session: Session) -> None:
+    """A cabinet package (#1205): the countertop results list no countertop, so neither does this."""
+    built, _anchor, item = _one_countertop(session)
+    session.get_one(Package, built.revision.package_id).product_type = "cabinet"
+    session.flush()
+
+    assert architect_statuses_for_revision(session, built.revision.id) == ()
+    assert architect_status_for_item(session, item) is None
 
 
 def test_not_a_live_countertop_has_no_status(session: Session) -> None:

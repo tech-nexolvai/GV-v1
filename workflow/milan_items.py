@@ -54,6 +54,7 @@ from app.models import (
     DrawingItem,
     DrawingView,
     Finding,
+    Package,
     PackageRevision,
     PackageRevisionDocument,
     Page,
@@ -64,6 +65,7 @@ from app.models import (
     RuleSnapshot,
     VerdictInput,
 )
+from app.review.no_countertop import countertops_checked
 from verdict.outcomes import Outcome
 from workflow.architect_match_records import effective_architect_matches
 from workflow.architect_pairing_contract import EffectivePairing
@@ -167,12 +169,22 @@ def architect_statuses_for_revision(
     *,
     pairing_lookup: PairingLookup | None = None,
 ) -> tuple[ItemArchitectStatus, ...]:
-    """Every live countertop of the revision with its architect comparison, in page order.
+    """Every live countertop of the revision with its architect comparison, in page order; none
+    for a package whose checks include no countertop, as the countertop results list none.
 
     `pairing_lookup` answers the effective pairing of a row with no recorded result; by default
     every such row's is read in one batch (`effective_architect_pairings`), as the countertop
     results read it.
     """
+    # A package whose checks include no countertop (cabinets, #1205): the countertop results list
+    # no countertop for it, so neither does this (one statement).
+    product = session.scalar(
+        select(Package.product_type)
+        .join(PackageRevision, PackageRevision.package_id == Package.id)
+        .where(PackageRevision.id == package_revision_id)
+    )
+    if not countertops_checked(product):
+        return ()
     countertops = live_countertops(session, package_revision_id)
     if not countertops:
         return ()
