@@ -62,6 +62,7 @@ export function CountertopTable({
   notCheckedHint = null,
   groups = [],
   groupFindings,
+  groupArchitect,
 }: {
   rows: CountertopResult[];
   /**
@@ -84,6 +85,8 @@ export function CountertopTable({
   groups?: readonly CountertopGroup[];
   /** A countertop's other results, shown under its heading. */
   groupFindings?: (group: CountertopGroup) => ReactNode;
+  /** A countertop's one read-only line about the architect's drawing (#1273), under its heading. */
+  groupArchitect?: (group: CountertopGroup) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const body = useRef<HTMLTableSectionElement>(null);
@@ -159,7 +162,7 @@ export function CountertopTable({
                 {grouped && (
                   <TableRow data-slot="countertop-group" data-item-id={section.group?.item.item_id} className="bg-muted/30 hover:bg-muted/30">
                     <TableCell colSpan={10} className="py-2 whitespace-normal">
-                      <GroupHeading group={section.group} findings={groupFindings} />
+                      <GroupHeading group={section.group} findings={groupFindings} architect={groupArchitect} />
                     </TableCell>
                   </TableRow>
                 )}
@@ -223,7 +226,7 @@ export function CountertopTable({
           <Fragment key={section.group?.item.item_id ?? 'not-grouped'}>
             {grouped && (
               <li data-slot="countertop-group" data-item-id={section.group?.item.item_id} className="px-1 pt-2 text-sm">
-                <GroupHeading group={section.group} findings={groupFindings} />
+                <GroupHeading group={section.group} findings={groupFindings} architect={groupArchitect} />
               </li>
             )}
         {section.rows.map((row) => {
@@ -281,13 +284,22 @@ export function CountertopTable({
  * A confirmed countertop's heading (#1245), with its other results under it; or, after them, the
  * heading of the rows no countertop was confirmed from.
  */
-function GroupHeading({ group, findings }: { group: CountertopGroup | null; findings?: (group: CountertopGroup) => ReactNode }) {
+function GroupHeading({
+  group,
+  findings,
+  architect,
+}: {
+  group: CountertopGroup | null;
+  findings?: (group: CountertopGroup) => ReactNode;
+  architect?: (group: CountertopGroup) => ReactNode;
+}) {
   if (group === null) {
     return <span className="font-medium text-muted-foreground">Not confirmed as a countertop yet</span>;
   }
   return (
     <div className="flex flex-col gap-1.5">
       <span className="font-medium"><CountertopItemTitle item={group.item} /></span>
+      {architect?.(group)}
       {group.findings.length > 0 && findings?.(group)}
     </div>
   );
