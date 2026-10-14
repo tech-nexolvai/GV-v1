@@ -21,6 +21,14 @@ removable.
 **There is no "confirm all".** Each call decides one suggestion, because each decision is a person
 looking at one part.
 
+**Code's own countertop items (#1244, ADR-0021 amendment)** are listed with their decision, which
+names code (`workflow/parts.py:BALA_CONFIRMER`), so the page says "Found by code: two checks agreed"
+and offers Undo: a person's withdrawal, like any other. Code's taking back of its own item
+(`release_contradicted_code_part`) is shown as undecided, because code took back its own word and
+no person has said anything; the suggestion goes back to a person's one click. **Every decision here
+is a person's: an actor naming code (`code:`) is refused** (`PartRefusalReason.CODE_ACTOR`), so code
+has exactly one way to confirm a part, `confirm_part_by_code`.
+
 **Each suggestion has its own picture (#897)**, cut by the worker from the vendor's drawing: the
 part's outline and a stated margin around it (`workflow/part_pictures.py`). A part a person adds is
 cut once the worker reaches it, and until then, or where the page could not be rendered, it has
@@ -57,6 +65,7 @@ from app.models import (
     PackageRevisionDocument,
     Page,
     PartConfirmation,
+    PartDecision,
     PartProposal,
     PartProposalRow,
     ViewRole,
@@ -65,7 +74,13 @@ from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind
 from app.models.runs import ExtractionRun
 from vocabulary.part_kinds import PartKind
 from workflow.part_pictures import GvMarks, picture_job_waiting, pictured
-from workflow.parts import confirm_part, record_part_proposal, withdraw_part
+from workflow.parts import (
+    BALA_CONFIRMER,
+    by_code,
+    confirm_part,
+    record_part_proposal,
+    withdraw_part,
+)
 from workflow.view_roles import revision_views
 
 __all__ = [
@@ -108,6 +123,8 @@ class PartRefusalReason(StrEnum):
     END_NOT_ON_DRAWING = "end_not_on_drawing"
     #: The two ends are one above the other, so they span nothing from left to right.
     ENDS_NOT_APART = "ends_not_apart"
+    #: The decision names code as its maker (#1244): only a person decides here.
+    CODE_ACTOR = "code_actor"
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,8 +178,10 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
 
     **Bala's suggestions from its newest reading only (#1236).** Bala files a countertop and its
     pieces for each row of a slot-reader run, so a re-read files them again. One from an earlier run
-    is listed only while a person's decision stands on it: a decision is never hidden, and an
-    undecided suggestion the newer reading has replaced would be the same part asked twice.
+    is listed only while a person's decision stands on it: a person's decision is never hidden, and
+    an undecided suggestion the newer reading has replaced would be the same part asked twice. Code's
+    own decision on an older reading (#1244) is not a person's: the newer reading's suggestion is the
+    one code decides on, so the older one is not listed.
     """
     views = revision_views(session, package_revision_id)
     proposals = list(
@@ -194,7 +213,7 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
                     ListedPart(
                         proposal=proposal,
                         position=index,
-                        decision=decisions.get(proposal.id),
+                        decision=_shown(decisions.get(proposal.id)),
                         has_picture=proposal.id in pictures,
                         picture_pending=being_made and proposal.id not in pictures,
                         kind_named=kind_named.get(proposal.id, False),
@@ -207,6 +226,18 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
             )
         )
     return tuple(drawings)
+
+
+def _shown(decision: PartConfirmation | None) -> PartConfirmation | None:
+    """The decision as the page shows it: code taking back its own item (#1244) is no decision,
+    because no person has said anything; the suggestion is a person's one click again."""
+    if (
+        decision is not None
+        and decision.confirmed_by == BALA_CONFIRMER
+        and decision.decision != PartDecision.CONFIRMED.value
+    ):
+        return None
+    return decision
 
 
 def _without_replaced_bala(
@@ -240,7 +271,9 @@ def _without_replaced_bala(
     kept = [
         proposal
         for proposal in proposals
-        if proposal.id not in runs or runs[proposal.id] == newest or proposal.id in decisions
+        if proposal.id not in runs
+        or runs[proposal.id] == newest
+        or (proposal.id in decisions and not by_code(decisions[proposal.id].confirmed_by))
     ]
     return kept, {link.part_proposal_id: link.kind_named for link in links}
 
@@ -292,6 +325,9 @@ def confirm_listed_part(
     Recorded by `confirm_part`, which makes the item and audits the decision. A confirmation replaces
     whichever decision was current, so confirming again is how a person corrects one.
     """
+    refused_actor = _not_a_person(actor)
+    if refused_actor is not None:
+        return refused_actor
     proposal = listed_proposal(session, package_revision_id, proposal_id)
     if proposal is None:
         return PartRefused(PartRefusalReason.NO_SUCH_PART, "There is no such part on this package.")
@@ -306,7 +342,11 @@ def confirm_listed_part(
 def withdraw_listed_part(
     session: Session, *, package_revision_id: UUID, proposal_id: UUID, actor: str
 ) -> PartConfirmation | PartRefused:
-    """A person saying one suggestion is not a part, on whichever drawing of the revision it is."""
+    """A person saying one suggestion is not a part, on whichever drawing of the revision it is.
+    On code's own countertop item (#1244) this is the Undo."""
+    refused_actor = _not_a_person(actor)
+    if refused_actor is not None:
+        return refused_actor
     proposal = listed_proposal(session, package_revision_id, proposal_id)
     if proposal is None:
         return PartRefused(PartRefusalReason.NO_SUCH_PART, "There is no such part on this package.")
@@ -331,6 +371,9 @@ def add_part(
     not give. The person's code goes on the confirmation, not the suggestion, because a suggestion's
     code must name the reading it came from and this one came from no reading.
     """
+    refused_actor = _not_a_person(actor)
+    if refused_actor is not None:
+        return refused_actor
     view = next(
         (
             entry.view
@@ -370,6 +413,17 @@ def add_part(
         source_version=_ADDED_VERSION,
     )
     return confirm_part(session, proposal=proposal, kind=kind, code=code, actor=actor)
+
+
+def _not_a_person(actor: str) -> PartRefused | None:
+    """Refuse a decision whose maker names code (`code:`): code confirms only through
+    `workflow/parts.py:confirm_part_by_code`, never through the Measure page (#1244)."""
+    if by_code(actor):
+        return PartRefused(
+            PartRefusalReason.CODE_ACTOR,
+            "Only a person decides a part here; code confirms a countertop only on two judgments.",
+        )
+    return None
 
 
 def _cannot_make_parts(view: DrawingView) -> PartRefused | None:

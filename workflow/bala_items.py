@@ -13,10 +13,29 @@ only) and, for each row, files:
 each linked to its row and piece in `part_proposal_rows`, with `source = "bala.slot-row"`. A person
 confirms each with one click on the Measure page, through the existing `confirm_part` route.
 
-**Suggestions only: no item.** Nothing here writes `drawing_items`; only a person's confirmation
-does (`workflow/parts.py:confirm_part`, guarded by `tests/db/test_drawing_models.py`). Whether two
-judgments may ever make an item without a click is PR 2's question (decided 2026-10-14), and this
-module only *reports* what would qualify (`WouldBeAutomatic`), so the $0 dry run can measure it.
+**Suggestions, and one narrow automatic case (#1244).** `propose_items` writes no item. Only a
+confirmation makes one (`workflow/parts.py:confirm_part`, guarded by
+`tests/db/test_drawing_models.py`): a person's, or, behind `GV_BALA_AUTO_ITEMS` (off by default),
+code's own for a **countertop** whose two independent judgments agree (`WouldBeAutomatic`,
+`confirm_automatic_countertops`; Anant's decision 1 of 2026-10-14, the ADR-0021 amendment):
+
+* **the AI readers**: both row readers named this very row (`row-choice:<n>`, n > 0, on every
+  reading of it), so code did not pick it; its page is not one they split on; it carries no hold of
+  any kind (`row-hold:`, `row-ambiguous`, missing widths, a check hold, GV's markup over it); no
+  reader said no stone is drawn over it; Rekha's gate did not stop it; and no reviewer row decision
+  typed widths into it;
+* **code**: the row's printed overall exists and the row's pieces tile it (no `pieces do not tile
+  the overall`), one reading per piece, as many as `row-slot-count`, their boxes meeting end to end,
+  every one and the overall sealed by both readers; and the overall and every piece lie wholly
+  inside exactly one drawing (`ReadingSides.drawings_holding`), whose role a confirmation (a
+  person's, or code's two-judgment one) says is the vendor's.
+
+Either judgment missing leaves a suggestion for a person's one click, with the reason recorded. A
+later read that no longer agrees, or a newer reading, takes back only code's own item
+(`release_contradicted_code_part`). **Pieces are never automatic** (decision 2): nothing printed
+names 130 of every 131 of them, and even a named one stays a person's click in this version.
+Automatic items cannot create a PASS: the countertop checks read items only once a person has
+confirmed a countertop's run (`workflow/part_operands.py:countertop_scopes`).
 
 **The countertop's outline is its own, never the union of its pieces** (`app/models/drawing.py`,
 `PartProposal.extent`): the box code drew round the row's printed overall length (`slot:overall`'s
@@ -56,18 +75,34 @@ from uuid import UUID
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
+from app.evidence.sides import ReadingSides
 from app.models import (
     DrawingView,
     ObservationCandidate,
+    PackageRevisionDocument,
     Page,
     PartConfirmation,
+    PartDecision,
     PartProposal,
     PartProposalRow,
+    ViewRole,
+    ViewRoleConfirmation,
 )
 from app.models.runs import ExtractionRun
 from app.review.row_location import slot_location
+from evidence.coordinates import StoredPoint
+from evidence.polygon import Polygon
+from vocabulary.check_holds import NO_STONE_FLAG
 from vocabulary.part_kinds import PartKind
-from workflow.parts import outline_box, record_part_proposal
+from workflow.pariksha_gates import stopped_by_rekha
+from workflow.parts import (
+    BALA_CONFIRMER,
+    CODE_ACTOR_PREFIX,
+    confirm_part_by_code,
+    outline_box,
+    record_part_proposal,
+    release_contradicted_code_part,
+)
 from workflow.slot_row_scope import (
     SlotRow,
     UnchosenRowPage,
@@ -77,9 +112,12 @@ from workflow.slot_row_scope import (
 )
 
 __all__ = [
+    "AUTOMATIC_REASON",
     "BALA_SOURCE",
     "BALA_VERSION",
     "FROM_THE_COUNTERTOP_LINE",
+    "PIECES_STAY_ONE_CLICK",
+    "AutomaticOutcome",
     "BalaOutcome",
     "CodeFinding",
     "CodePart",
@@ -87,6 +125,7 @@ __all__ = [
     "PlannedPart",
     "PlannedRow",
     "WouldBeAutomatic",
+    "confirm_automatic_countertops",
     "plan_items",
     "propose_items",
 ]
@@ -97,6 +136,20 @@ BALA_VERSION: Final = "1"
 
 #: How every one of Bala's reasons begins: the words the Measure page shows (#1236).
 FROM_THE_COUNTERTOP_LINE: Final = "Suggested by code from the countertop line"
+
+#: Why code confirmed a countertop with no click (#1244): both judgments, in words.
+AUTOMATIC_REASON: Final = (
+    "Both AI readers named this row, and code finds it wholly inside one drawing confirmed as the "
+    "vendor's, outlined by its printed overall length, which its pieces tile end to end."
+)
+
+#: Why no piece is ever automatic (decision 2 of 2026-10-14).
+PIECES_STAY_ONE_CLICK: Final = "a piece stays a person's click (decision 2 of 2026-10-14)"
+
+#: The geometry finding `extraction/geometry/rows.py:PIECES_DO_NOT_TILE`, as the reader records it
+#: on the row (`row-finding:`): the printed overall reaches past the pieces. Restated, because this
+#: module imports nothing from `extraction/`.
+_PIECES_DO_NOT_TILE_FLAG: Final = "row-finding:pieces do not tile the overall"
 
 #: `part_proposals.reason` holds at most this many characters.
 _REASON_LIMIT: Final = 500
@@ -177,13 +230,13 @@ class PlannedPart:
 
 @dataclass(frozen=True, slots=True)
 class WouldBeAutomatic:
-    """What PR 2 would make without a click, if both judgments agree (reported, never acted on).
+    """Whether code may make the row's countertop item with no click: both judgments agree (#1244).
 
-    The countertop: judgment 1 is both row readers naming this row, read in full, with no row hold;
-    judgment 2 is code placing the row wholly inside exactly one drawing confirmed as the vendor's,
-    its piece boxes running end to end, as many as the row says. A piece: its countertop qualifies,
-    its own reading is sealed, printed words name its kind, and code's own part finder finds a
-    cabinet with the same ends.
+    `countertop` is True only when the AI readers' judgment and code's both hold (the module
+    docstring lists each condition); `countertop_why_not` names every one that does not. Acted on
+    only behind `GV_BALA_AUTO_ITEMS` (`confirm_automatic_countertops`). **No piece is ever
+    automatic** (`PIECES_STAY_ONE_CLICK`): `pieces` is always False, and its reasons also say what
+    a piece's second judgment found, for the dry run.
     """
 
     countertop: bool
@@ -216,6 +269,7 @@ class PlannedRow:
 
 @dataclass(frozen=True, slots=True)
 class BalaPlan:
+    revision_id: UUID
     run_id: UUID | None
     rows: tuple[PlannedRow, ...]
     unchosen: tuple[UnchosenRowPage, ...]
@@ -270,13 +324,15 @@ def plan_items(
     """What Bala would suggest for the revision's newest slot-reader run. **Reads only.**"""
     run_id = latest_slot_reader_run(session, revision_id)
     if run_id is None:
-        return BalaPlan(run_id=None, rows=(), unchosen=())
+        return BalaPlan(revision_id=revision_id, run_id=None, rows=(), unchosen=())
     rows, unchosen = slot_rows_and_unchosen_pages(session, revision_id, run_id=run_id)
     run = session.get(ExtractionRun, run_id)
     if run is None:
-        return BalaPlan(run_id=run_id, rows=(), unchosen=unchosen)
+        return BalaPlan(revision_id=revision_id, run_id=run_id, rows=(), unchosen=unchosen)
     found: dict[UUID, CodeFinding | str] = {}
     planned: list[PlannedRow] = []
+    sides = ReadingSides(session)
+    split = frozenset(page.page_number for page in unchosen if page.split)
     for row in rows:
         page = session.get(Page, row.anchor.page_id)
         if page is None:
@@ -285,8 +341,8 @@ def plan_items(
             found[page.id] = (
                 "code's part finder was not asked" if code_parts is None else code_parts(page)
             )
-        planned.append(_plan_row(session, row, page, run, found[page.id]))
-    return BalaPlan(run_id=run_id, rows=tuple(planned), unchosen=unchosen)
+        planned.append(_plan_row(session, sides, split, row, page, run, found[page.id]))
+    return BalaPlan(revision_id=revision_id, run_id=run_id, rows=tuple(planned), unchosen=unchosen)
 
 
 def propose_items(
@@ -365,9 +421,134 @@ def propose_items(
     return outcome
 
 
+@dataclass
+class AutomaticOutcome:
+    """What `confirm_automatic_countertops` did: code's countertop items made and taken back."""
+
+    switched_on: bool
+    confirmed: list[str] = field(default_factory=list)
+    """Each countertop code confirmed, by its row's label."""
+    left_to_a_person: list[str] = field(default_factory=list)
+    """Rows whose two judgments agree but a decision already stands (a person always wins)."""
+    released: list[str] = field(default_factory=list)
+    """Code's own items taken back, by row, with why."""
+
+    def as_payload(self) -> dict[str, object]:
+        return {
+            "switched_on": self.switched_on,
+            "countertops_confirmed": len(self.confirmed),
+            "confirmed": self.confirmed,
+            "left_to_a_person": self.left_to_a_person,
+            "released": self.released,
+        }
+
+
+def confirm_automatic_countertops(
+    session: Session, outcome: BalaOutcome, *, switched_on: bool
+) -> AutomaticOutcome:
+    """Code's countertop items for the rows whose two judgments agree, and code's own items taken
+    back where they no longer do (#1244). Call after `propose_items`, with its outcome.
+
+    **Taking back runs whatever the switch says**: an item of code's whose row a newer slot-reader
+    run replaced, or whose judgments the newest read no longer gives, is withdrawn as
+    `BALA_CONFIRMER` (`release_contradicted_code_part`); a person's decision is never touched.
+    **Making items needs `switched_on`** (`GV_BALA_AUTO_ITEMS`, off by default): for each row whose
+    `WouldBeAutomatic.countertop` holds, its countertop suggestion is confirmed through
+    `confirm_part_by_code`, which writes nothing where any decision already stands. Pieces never.
+    """
+    plan = outcome.plan
+    result = AutomaticOutcome(switched_on=switched_on)
+    rows = {row.row_candidate_id: row for row in plan.rows}
+    if plan.run_id is None:
+        return result
+    later = aliased(PartConfirmation)
+    held_by_code = session.execute(
+        select(PartProposal, PartProposalRow)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .join(PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id)
+        .where(
+            PartProposal.drawing_view_id.in_(_revision_view_ids(session, plan.revision_id)),
+            PartProposalRow.slot_index.is_(None),
+            PartConfirmation.confirmed_by == BALA_CONFIRMER,
+            PartConfirmation.decision == PartDecision.CONFIRMED.value,
+            ~exists().where(later.supersedes_id == PartConfirmation.id),
+        )
+        .order_by(PartProposal.created_at, PartProposal.id)
+    ).all()
+    newest = session.get_one(ExtractionRun, plan.run_id)
+    for proposal, link in held_by_code:
+        row = rows.get(link.row_candidate_id)
+        if link.extraction_run_id != plan.run_id:
+            read = session.get_one(ExtractionRun, link.extraction_run_id)
+            if (read.created_at, str(read.id)) > (newest.created_at, str(newest.id)):
+                # Read after this revision's newest reading (another revision sharing the drawing):
+                # that reading is the newer one, so its item stands.
+                continue
+            why = "a newer reading of the countertop rows replaced it"
+        elif row is None or not row.automatic.countertop:
+            why = "; ".join(
+                row.automatic.countertop_why_not if row is not None else ("its row is gone",)
+            )
+        else:
+            continue
+        if release_contradicted_code_part(session, proposal=proposal, judgments_agree=False):
+            result.released.append(f"{_label(session, row, link)}: {why}")
+    if not switched_on:
+        return result
+    for row in plan.rows:
+        if row.not_proposed is not None or not row.automatic.countertop:
+            continue
+        proposal_id = outcome.proposals.get((row.row_candidate_id, None))
+        if proposal_id is None:
+            result.left_to_a_person.append(f"{row.label}: a person already decided it")
+            continue
+        proposal = session.get_one(PartProposal, proposal_id)
+        made = confirm_part_by_code(
+            session, proposal=proposal, kind=PartKind.COUNTERTOP, reason=AUTOMATIC_REASON
+        )
+        if made is None:
+            result.left_to_a_person.append(f"{row.label}: a decision already stands on it")
+        else:
+            result.confirmed.append(row.label)
+    session.flush()
+    return result
+
+
+def _label(session: Session, row: PlannedRow | None, link: PartProposalRow) -> str:
+    """The row's label, or for a row of an earlier reading, its page and that it is earlier."""
+    if row is not None:
+        return row.label
+    page_index = session.execute(
+        select(Page.index)
+        .join(ObservationCandidate, ObservationCandidate.page_id == Page.id)
+        .where(ObservationCandidate.id == link.row_candidate_id)
+    ).scalar_one()
+    return f"Countertop row on page {page_index + 1} (an earlier reading)"
+
+
+def _revision_view_ids(session: Session, revision_id: UUID) -> set[UUID]:
+    """Every drawing on the revision's pages: code's items are looked for on all of them, so one
+    on a page the newest reading read no row on is still found and taken back."""
+    return set(
+        session.scalars(
+            select(DrawingView.id)
+            .join(Page, Page.id == DrawingView.page_id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == Page.document_version_id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == revision_id)
+        )
+    )
+
+
 def _decided_outlines(session: Session, plan: BalaPlan) -> dict[UUID, list[tuple[bool, _Box]]]:
     """By drawing: the outline of every Bala suggestion from another reading that a person's
-    current decision stands on, and whether it is a countertop."""
+    current decision stands on, and whether it is a countertop.
+
+    A person's only: code's own decision (#1244) is no reason to stop suggesting the part again.
+    Its item from an older reading is taken back by `confirm_automatic_countertops`, and the newer
+    reading's suggestion is the one that counts."""
     views = {row.view_id for row in plan.rows if row.view_id is not None}
     if not views or plan.run_id is None:
         return {}
@@ -379,6 +560,7 @@ def _decided_outlines(session: Session, plan: BalaPlan) -> dict[UUID, list[tuple
         .where(
             PartProposal.drawing_view_id.in_(views),
             PartProposalRow.extraction_run_id != plan.run_id,
+            ~PartConfirmation.confirmed_by.startswith(CODE_ACTOR_PREFIX),
             ~exists().where(later.supersedes_id == PartConfirmation.id),
         )
     ).all()
@@ -407,6 +589,8 @@ def _same_outline(first: _Box, second: _Box, tolerance: Decimal) -> bool:
 
 def _plan_row(
     session: Session,
+    sides: ReadingSides,
+    split: frozenset[int],
     row: SlotRow,
     page: Page,
     run: ExtractionRun,
@@ -512,7 +696,23 @@ def _plan_row(
         parts=tuple(parts),
         not_proposed=None,
         states=states,
-        automatic=_would_be_automatic(row, view, by_slot, pieces, parts, code),
+        automatic=_would_be_automatic(
+            _Judged(
+                session=session,
+                sides=sides,
+                split=split,
+                row=row,
+                page=page,
+                view=view,
+                by_slot=by_slot,
+                overall=(
+                    None if overall is None or overall_box is None else (overall, overall_box)
+                ),
+            ),
+            pieces,
+            parts,
+            code,
+        ),
         code_finder=code_finder,
     )
 
@@ -600,12 +800,23 @@ def _flags(row: SlotRow) -> frozenset[str]:
 
 
 def _chosen_by_the_readers(row: SlotRow) -> bool:
-    """Whether the row readers named this row (`row-choice:<n>`, n > 0); otherwise code chose it."""
-    for flag in row.anchor.ambiguity_flags or ():
-        if flag.startswith("row-choice:"):
-            number = flag.removeprefix("row-choice:")
-            return number.isdigit() and int(number) > 0
-    return False
+    """Whether the row readers named this row: every reading of it carries the one `row-choice:<n>`,
+    n > 0, which the reader writes only when every row reader named the same line
+    (`workflow/slot_reader.py:_agreed_row`). Otherwise code chose it."""
+    choices: set[str] = set()
+    for candidate in row.candidates:
+        found = [
+            flag.removeprefix("row-choice:")
+            for flag in candidate.ambiguity_flags or ()
+            if flag.startswith("row-choice:")
+        ]
+        if len(found) != 1:
+            return False
+        choices.add(found[0])
+    if len(choices) != 1:
+        return False
+    (number,) = choices
+    return number.isdigit() and int(number) > 0
 
 
 def _row_held(row: SlotRow) -> bool:
@@ -644,24 +855,27 @@ def _reason(text: str) -> str:
     return text if len(text) <= _REASON_LIMIT else text[: _REASON_LIMIT - 1] + "…"
 
 
+@dataclass(frozen=True, slots=True)
+class _Judged:
+    """What the two judgments on one row read."""
+
+    session: Session
+    sides: ReadingSides
+    split: frozenset[int]
+    row: SlotRow
+    page: Page
+    view: DrawingView
+    by_slot: Mapping[str, ObservationCandidate]
+    overall: tuple[ObservationCandidate, _Box] | None
+
+
 def _would_be_automatic(
-    row: SlotRow,
-    view: DrawingView,
-    by_slot: Mapping[str, ObservationCandidate],
+    judged: _Judged,
     pieces: Sequence[tuple[int, ObservationCandidate, _Box | None]],
     parts: Sequence[PlannedPart],
     code: CodeFinding | str,
 ) -> WouldBeAutomatic:
-    why_not: list[str] = []
-    if not _chosen_by_the_readers(row):
-        why_not.append("the AI readers did not choose this row")
-    if _row_held(row):
-        why_not.append("the row is held")
-    if view.role != "shop":
-        why_not.append("its drawing is not confirmed as the vendor's")
-    boxes = [box for _, _, box in pieces]
-    if any(box is None for box in boxes) or not _end_to_end(by_slot, row.piece_count):
-        why_not.append("its pieces do not run end to end")
+    why_not = [*_readers_judgment(judged), *_codes_judgment(judged, pieces)]
     countertop = not why_not
 
     piece_parts = {part.slot_index: part for part in parts if part.slot_index is not None}
@@ -670,18 +884,22 @@ def _would_be_automatic(
     agrees: list[bool | None] = []
     for index, candidate, box in pieces:
         part = piece_parts.get(index)
-        piece_why: list[str] = [] if countertop else ["its countertop does not qualify"]
+        piece_why: list[str] = [PIECES_STAY_ONE_CLICK]
+        if not countertop:
+            piece_why.append("its countertop does not qualify")
         if not candidate_is_sealed(candidate):
             piece_why.append("its reading is not sealed")
         if part is None or not part.kind_named:
             piece_why.append("nothing printed names its kind")
-        agreed = None if isinstance(code, str) or box is None else _code_agrees(view, box, code)
+        agreed = (
+            None if isinstance(code, str) or box is None else _code_agrees(judged.view, box, code)
+        )
         agrees.append(agreed)
         if agreed is None:
             piece_why.append("code's part finder did not run")
         elif not agreed:
             piece_why.append("code's part finder found no cabinet with the same ends")
-        automatic.append(not piece_why)
+        automatic.append(False)
         reasons.append(tuple(piece_why))
     return WouldBeAutomatic(
         countertop=countertop,
@@ -690,6 +908,115 @@ def _would_be_automatic(
         pieces_why_not=tuple(reasons),
         pieces_code_agrees=tuple(agrees),
     )
+
+
+def _readers_judgment(judged: _Judged) -> list[str]:
+    """Judgment 1, the AI readers': why it does not hold, or nothing when it does."""
+    row = judged.row
+    why: list[str] = []
+    if not _chosen_by_the_readers(row):
+        why.append("the AI readers did not both name this row")
+    if row.page_number in judged.split:
+        why.append("the AI readers split on this page")
+    flags = _flags(row)
+    if _row_held(row):
+        why.append("the row is held")
+    if row.held_reason is not None:
+        # Every hold, including GV's markup over the row, a missing width and a check hold: a person
+        # looks at a held row anyway, and code decides nothing a person has been asked about.
+        why.append(f"the row waits for the reviewer ({row.held_reason.rstrip('.')})")
+    if "reviewer-markup" in flags:
+        why.append("GV's markup is drawn over the row, and GV's markup is never a reading")
+    if any(flag.startswith(NO_STONE_FLAG) for flag in flags):
+        why.append("a reader said no stone top is drawn over this row")
+    if stopped_by_rekha(row.anchor.ambiguity_flags):
+        why.append("Rekha's gate stopped the row")
+    decision = row.decision
+    if decision is not None and decision.measurements:
+        why.append("a reviewer typed widths into this row")
+    return why
+
+
+def _codes_judgment(
+    judged: _Judged, pieces: Sequence[tuple[int, ObservationCandidate, _Box | None]]
+) -> list[str]:
+    """Judgment 2, code's: why it does not hold, or nothing when it does."""
+    row = judged.row
+    why: list[str] = []
+    if judged.overall is None:
+        why.append(
+            "no overall length is printed for it (or it could not be placed), so its outline "
+            "would be its pieces' own"
+        )
+    if _PIECES_DO_NOT_TILE_FLAG in _flags(row):
+        why.append("its pieces do not tile its printed overall")
+    if not _one_reading_per_slot(row):
+        why.append(f"it does not have exactly one reading for each of its {row.piece_count} pieces")
+    boxes = [box for _, _, box in pieces]
+    if any(box is None for box in boxes) or not _end_to_end(judged.by_slot, row.piece_count):
+        why.append("its pieces do not run end to end")
+    readings = [candidate for _, candidate, _ in pieces]
+    if judged.overall is not None:
+        readings.append(judged.overall[0])
+    if not readings or not all(candidate_is_sealed(candidate) for candidate in readings):
+        why.append("a width in the row is not sealed by both readers")
+    placed = [box for box in boxes if box is not None]
+    if judged.overall is not None:
+        placed.append(judged.overall[1])
+    holding = {_holding(judged, box) for box in placed}
+    if not placed or holding != {judged.view.id}:
+        why.append("code does not find the whole row inside exactly one drawing")
+    if not _vendors_by_a_confirmation(judged.session, judged.view):
+        why.append("no confirmation says its drawing is the vendor's")
+    return why
+
+
+def _one_reading_per_slot(row: SlotRow) -> bool:
+    """Exactly one reading for each piece `0 … row-slot-count - 1` and one for the overall."""
+    counts: dict[str, int] = {}
+    for candidate in row.candidates:
+        for flag in candidate.ambiguity_flags or ():
+            if flag.startswith("slot:"):
+                slot = flag.removeprefix("slot:")
+                counts[slot] = counts.get(slot, 0) + 1
+    expected = {str(index) for index in range(row.piece_count)} | {"overall"}
+    return row.piece_count > 0 and set(counts) == expected and set(counts.values()) == {1}
+
+
+def _holding(judged: _Judged, box: _Box) -> UUID | None:
+    """The one drawing that holds the box, as every side is decided (`ReadingSides`), or `None`."""
+    try:
+        polygon = Polygon(
+            points=tuple(
+                StoredPoint(x=x, y=y)
+                for x, y in ((box.left, box.top), (box.right, box.top), (box.right, box.bottom))
+            )
+            + (StoredPoint(x=box.left, y=box.bottom),),
+            space="stored",
+            document_version_id=judged.page.document_version_id,
+            page=judged.page.index,
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    holding = judged.sides.drawings_holding(judged.page, polygon)
+    if holding is None or len(holding) != 1:
+        return None
+    return holding[0].id
+
+
+def _vendors_by_a_confirmation(session: Session, view: DrawingView) -> bool:
+    """Whether the drawing is the vendor's by a confirmation: its role is SHOP, and the newest
+    confirmation of it (a person's, or code's on two judgments, `workflow/view_roles.py`) says so.
+    A role nothing confirmed, or one a later read withdrew, does not count."""
+    if view.role != ViewRole.SHOP.value:
+        return False
+    latest = session.execute(
+        select(ViewRoleConfirmation.role)
+        .where(ViewRoleConfirmation.drawing_view_id == view.id)
+        .order_by(ViewRoleConfirmation.created_at.desc(), ViewRoleConfirmation.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return latest == ViewRole.SHOP.value
 
 
 def _end_to_end(by_slot: Mapping[str, ObservationCandidate], count: int) -> bool:

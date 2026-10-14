@@ -359,7 +359,12 @@ from workflow.association import (
     ReadItem,
     dimension_texts,
 )
-from workflow.bala_items import CodeFinding, CodePart, propose_items
+from workflow.bala_items import (
+    CodeFinding,
+    CodePart,
+    confirm_automatic_countertops,
+    propose_items,
+)
 from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import (
     evidence_operands,
@@ -1824,6 +1829,7 @@ class DatabaseStages:
         slot_reader: SlotReaderRuntime | None = None,
         part_pictures: PartPictureSettings | None = None,
         part_finder: AssociationSettings | None = None,
+        bala_auto_items: bool = False,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
@@ -2003,6 +2009,12 @@ class DatabaseStages:
         if part_finder is not None and not isinstance(part_finder, AssociationSettings):
             raise TypeError("part_finder must be AssociationSettings")
         self._part_finder = part_finder if part_finder is not None else association
+        # **Code's countertop items on two judgments (#1244, ADR-0021 amendment).** Off unless
+        # `GV_BALA_AUTO_ITEMS` is on: `match` then confirms a countertop suggestion with no click
+        # where both AI row readers and code's placement agree (`workflow/bala_items.py`).
+        if not isinstance(bala_auto_items, bool):
+            raise TypeError("bala_auto_items must be a bool")
+        self._bala_auto_items = bala_auto_items
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -6490,7 +6502,13 @@ class DatabaseStages:
 
         Files a countertop and its pieces for each countertop row, linked to the row
         (`workflow/bala_items.py`), with code's own part finder run in memory as the second judgment
-        on each page (`_code_parts_on`). **No item is written** (`items_written` is always 0).
+        on each page (`_code_parts_on`).
+
+        **Then code's countertop items (#1244).** Code's own items whose row a newer reading
+        replaced, or whose two judgments no longer agree, are taken back (always). With
+        `GV_BALA_AUTO_ITEMS` on, a countertop whose two judgments agree is confirmed by code with no
+        click (`confirm_automatic_countertops`); a person's decision always wins, and pieces are
+        never automatic. `items_written` counts code's items; it is 0 with the switch off.
 
         **The pictures are the worker's next job, not this stage's** (review of #1243: cutting them
         here took a 60-page set's match from under a second to two minutes). Every suggestion still
@@ -6521,7 +6539,12 @@ class DatabaseStages:
                 self._part_finder.witness_tolerance if self._part_finder is not None else Decimal(0)
             ),
         )
+        automatic = confirm_automatic_countertops(
+            session, outcome, switched_on=self._bala_auto_items
+        )
         payload = outcome.as_payload()
+        payload["items_written"] = len(automatic.confirmed)
+        payload["automatic"] = automatic.as_payload()
         payload["pictures"] = _queue_bala_pictures(
             session, package_revision_id, list(outcome.proposals.values())
         )
@@ -6639,8 +6662,9 @@ class DatabaseStages:
 
         **First, Bala suggests the items (#1236)**: a countertop for each countertop row the slot
         reader read, and a part for each of its pieces, each with its picture, for a person to
-        confirm (`_bala_items`). Suggestions only: no item is written, so the matching below sees
-        exactly what it saw before.
+        confirm (`_bala_items`). With `GV_BALA_AUTO_ITEMS` on, code also confirms the countertops
+        whose two judgments agree (#1244); such an item carries no identifier, so the matching
+        below proposes nothing from it.
         """
         self._watch(session, package_revision_id, "match")
         bala = self._bala_items(session, package_revision_id)

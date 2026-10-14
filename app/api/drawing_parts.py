@@ -5,7 +5,9 @@ them, and countertops. These endpoints list those suggestions, left to right, an
 answer to one of them: confirm it as a part of a given kind (with the code as printed, corrected if
 need be), or withdraw it. A person may also add a part the suggestions missed. **Only a confirmation makes a part**, through
 `workflow/parts.py:confirm_part`; listing never does, and there is deliberately no endpoint that
-decides more than one suggestion.
+decides more than one suggestion. **Every decision here is a person's**: an actor naming code
+(`code:`) is refused (403). Code confirms a countertop only in the match stage, on two judgments
+(`confirm_part_by_code`, #1244); its item is listed with `by_code`, and withdrawing it is the Undo.
 
 The rules about which drawing may have parts, and what is kept, are `app/evidence/parts.py`'s.
 
@@ -61,6 +63,7 @@ from workflow.bala_items import BALA_SOURCE
 from workflow.outbox import enqueue
 from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW, GvMarks
 from workflow.part_pictures import part_picture as recorded_picture
+from workflow.parts import by_code
 from workflow.vendor_page_pictures import (
     RENDER_VENDOR_PAGE_PICTURES_WORKFLOW,
 )
@@ -72,6 +75,9 @@ router = APIRouter(tags=["drawing parts"])
 
 #: The refusals that mean "no such thing here", in the same words as every other absence.
 _ABSENT: Final = {PartRefusalReason.NO_SUCH_PART, PartRefusalReason.NO_SUCH_DRAWING}
+
+#: A decision whose maker names code (#1244): only a person decides through these endpoints.
+_FORBIDDEN: Final = {PartRefusalReason.CODE_ACTOR}
 
 #: The refusals about the drawing as it stands, which no change to the request will fix.
 _CONFLICT: Final = {
@@ -104,6 +110,15 @@ class DecisionOut(BaseModel):
     """The code the person kept, exactly as they sent it, or null for none."""
     decided_by: str
     decided_at: datetime
+    by_code: bool = Field(
+        default=False,
+        description=(
+            "True when code confirmed it, not a person: a countertop whose two judgments agreed "
+            "(both AI readers named its row, and code found the row wholly inside one drawing "
+            "confirmed as the vendor's; #1244). The page says so and offers Undo, a person's "
+            "withdrawal."
+        ),
+    )
 
 
 class PartOut(BaseModel):
@@ -253,6 +268,7 @@ def _decision(row: PartConfirmation | None) -> DecisionOut | None:
         code=row.code_as_printed,
         decided_by=row.confirmed_by,
         decided_at=row.created_at,
+        by_code=by_code(row.confirmed_by),
     )
 
 
@@ -339,6 +355,8 @@ def _listed(session: Session, revision_id: UUID, proposal_id: UUID) -> PartOut:
 def _refuse(refused: PartRefused) -> HTTPException:
     if refused.reason in _ABSENT:
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
+    if refused.reason in _FORBIDDEN:
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=refused.detail)
     if refused.reason in _CONFLICT:
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=refused.detail)
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=refused.detail)

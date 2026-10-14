@@ -173,6 +173,8 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         # Code's part finder (#1236): off unless GV_PART_FINDER_ENABLED; the stages then use the
         # association settings above when the localized reader is on.
         "part_finder": None,
+        # Code's countertop items on two judgments (#1244): off unless GV_BALA_AUTO_ITEMS.
+        "bala_auto_items": False,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -206,6 +208,7 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "slot_reader": None,
         "part_pictures": None,
         "part_finder": None,
+        "bala_auto_items": False,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }
@@ -509,6 +512,23 @@ def test_the_part_finder_takes_the_line_settings_without_turning_on_the_localize
     ((_args, kwargs),) = recorder.calls
     assert kwargs["association"] is None and kwargs["localized_ocr"] is None
     assert kwargs["part_finder"] == _expected_synthetic_arguments()["association"]
+
+
+@pytest.mark.parametrize(("stated", "expected"), [("1", True), ("true", True), ("0", False)])
+def test_code_s_countertop_items_are_switched_on_only_by_their_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stated: str, expected: bool
+) -> None:
+    """#1244 (ADR-0021 amendment): code's countertop items on two judgments are off by default
+    (the golden arguments above) and on only with `GV_BALA_AUTO_ITEMS`."""
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, {**MINIMAL_ENVIRONMENT, "GV_BALA_AUTO_ITEMS": stated})
+    recorder = _record_stages(monkeypatch)
+
+    worker._stages()
+
+    ((_args, kwargs),) = recorder.calls
+    assert kwargs["bala_auto_items"] is expected
 
 
 def test_the_part_finder_refuses_a_partial_configuration(

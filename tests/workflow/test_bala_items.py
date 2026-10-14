@@ -181,16 +181,19 @@ class _Revision:
         kinds: dict[int, tuple[str, str]] | None = None,
         sealed: bool = True,
         shift: int = 0,
+        gap: int = 0,
     ) -> UUID:
         """One countertop row; returns its anchor (`slot:0`) reading's id. `shift` moves every box
-        that many pixels right, as a re-read at the same resolution may."""
+        that many pixels right, as a re-read at the same resolution may; `gap` leaves that many
+        pixels between one piece's box and the next."""
         anchor: UUID | None = None
         slots: list[str] = [str(index) for index in range(pieces)]
         if overall:
             slots.append("overall")
         for slot in slots:
             box = _overall_box(pieces) if slot == "overall" else _piece_box(int(slot))
-            box = (box[0] + shift, box[1], box[2] + shift, box[3])
+            step = 0 if slot == "overall" else gap * int(slot)
+            box = (box[0] + shift + step, box[1], box[2] + shift + step, box[3])
             kind = (kinds or {}).get(int(slot)) if slot != "overall" else None
             flags = [
                 "slot-reader",
@@ -381,7 +384,7 @@ def test_a_row_code_chose_without_the_readers_is_suggested_saying_so(session: Se
     assert len(links) == 3
     assert all("code did" in proposal.reason for proposal in links.values())
     (row,) = outcome.plan.rows
-    assert "the AI readers did not choose this row" in row.automatic.countertop_why_not
+    assert "the AI readers did not both name this row" in row.automatic.countertop_why_not
 
 
 def test_a_split_page_has_no_row_to_outline_and_is_listed_with_the_readers_reason(
