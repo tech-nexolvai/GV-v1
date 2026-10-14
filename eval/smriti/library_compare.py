@@ -52,7 +52,14 @@ from eval.pariksha.kinds import (
     load_stored_pieces,
     score_kinds,
 )
-from eval.pariksha.score import NOT_ASKED, Scorecard, score_akshara, score_rekha, score_vastu
+from eval.pariksha.score import (
+    NOT_ASKED,
+    CaseScore,
+    Scorecard,
+    score_akshara,
+    score_rekha,
+    score_vastu,
+)
 from eval.pariksha.stored import StoredRunError, load_architect_run, load_stored_run
 from eval.pariksha.walls import (
     KEY_UNSURE,
@@ -128,7 +135,14 @@ def _nothing_asked(card: Scorecard, note: str) -> Scorecard:
         card,
         metrics={},
         cases=tuple(
-            replace(case, outcome=NOT_ASKED, readers=(), cost_micros=0, note=f"not asked: {note}")
+            # As Pariksha's own "not asked" case: no readers, no cost.
+            CaseScore(
+                case_id=case.case_id,
+                question=case.question,
+                expected=case.expected,
+                outcome=NOT_ASKED,
+                note=f"not asked: {note}",
+            )
             for case in card.cases
         ),
     )
