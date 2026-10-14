@@ -442,7 +442,9 @@ def test_locations_and_crops_are_read_only_and_do_not_grow_with_rows(
     assert len(_results(session, project_id, package_id)) == 20
     # 14 since #1202: the field cut a run would use now is asked once (a second statement only
     # when no stored setting holds it and the rulebook's default is read); same for any row count.
-    assert len(large) == len(small) <= 14
+    # 15 since #1245: the countertops a person confirmed are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert len(large) == len(small) <= 15
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in small + large)
     assert tables() == before
 

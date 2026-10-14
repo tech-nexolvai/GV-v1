@@ -1619,7 +1619,9 @@ def test_countertop_results_stay_bounded_with_carried_decisions(
     # statement only when a read page has pasted drawings); still the same for any number of rows.
     # 17 since #1202: the field cut a run would use now is asked once (and the rulebook's default
     # only when no stored setting holds it); still the same for any number of rows.
-    assert counter[0] <= 17
+    # 18 since #1245: the countertops a person confirmed are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert counter[0] <= 18
 
 
 def test_an_id_inside_a_flag_is_replaced_not_dropped() -> None:

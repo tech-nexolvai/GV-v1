@@ -352,7 +352,9 @@ def test_countertop_result_query_count_stays_bounded_for_twenty_rows(
     assert len(response.json()["items"]) == 20
     # 14 since #1202: the field cut a run would use now is asked once (a second statement only
     # when no stored setting holds it and the rulebook's default is read); same for any row count.
-    assert statements <= 14
+    # 15 since #1245: the countertops a person confirmed are asked for once, to group each row's
+    # results under its countertop; still the same for any number of rows.
+    assert statements <= 15
 
 
 def test_a_cabinet_package_s_results_cost_one_statement_more_at_most(session: Session) -> None:
