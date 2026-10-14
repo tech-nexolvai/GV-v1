@@ -222,7 +222,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
             )}
             {/* A reviewer's wall answer on this page in an earlier reading could not be carried to this
                 one (#1241): its walls are asked again, never automatic, and the row says why. */}
-            {row.wall_hold_reason && row.wall_config === null && (
+            {row.wall_hold_reason && row.wall_config === null && row.walls_needed !== false && (
               <div data-part="wall-hold">
                 <Caution className="text-sm">Walls asked again: {row.wall_hold_reason}</Caution>
               </div>

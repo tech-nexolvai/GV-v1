@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.slot_rows import SlotRowReviewIn, list_slot_rows, review_slot_row
+from app.api.visual_countertops import _wall as _results_wall
 from app.auth.roles import Principal, Role
 from app.db.session import session_factory
 from app.lifecycle.carry_forward import carry_row_answers_within_revision
@@ -284,6 +285,11 @@ def test_an_answer_the_new_reading_cannot_carry_holds_the_new_rows_walls(
     assert listed.wall_reason == row.wall_hold
     assert listed.wall_proposal is None and listed.wall_config is None
     assert decision.id != listed.decision_id
+    # The results screen, the needs-you queue and the signed PDF (which freezes the screen's
+    # results) never name the sealed automatic walls as the walls this held result used.
+    layout = _results_wall(row, None, finding)
+    assert (layout.config, layout.label, layout.source) == (None, None, "not established")
+    assert layout.line == f"Walls asked again: {row.wall_hold}"
 
 
 @pytest.mark.parametrize(

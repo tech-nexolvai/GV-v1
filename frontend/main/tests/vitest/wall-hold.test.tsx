@@ -62,6 +62,14 @@ describe('a wall answer a newer reading could not carry (#1241)', () => {
     expect(question?.automatic).toBe(false);
   });
 
+  it('does not ask the walls again on a held row whose result is the same for every wall case', async () => {
+    rows.current = [{ ...HELD, row_id: 'row-5', walls_needed: false }];
+    render(<SlotReaderRows packageId="pkg" refresh={0} />);
+    await waitFor(() => expect(screen.getByText(/Walls not needed/)).toBeTruthy());
+    // No "please choose the walls again" next to "walls not needed" with no wall buttons.
+    expect(document.querySelector('[data-part="wall-hold"]')).toBeNull();
+  });
+
   it('shows nothing extra on a row that is not held', async () => {
     rows.current = [{ ...HELD, row_id: 'row-4', wall_hold_reason: null, wall_reason: null }];
     render(<SlotReaderRows packageId="pkg" refresh={0} />);
