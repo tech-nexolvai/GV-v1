@@ -521,3 +521,68 @@ def test_the_not_better_wording_neutral_relies_on_is_pinned() -> None:
         agent=WALLS_AGENT,
     )
     assert result.status == REJECT
+
+
+# --- the library's counts apply on the ACCEPT path too (re-review, 2026-10-15) ---------------
+
+RIGHT_END = f"{PAGE_A[:16]}/p1:walls:right"
+
+
+@pytest.mark.parametrize(
+    ("layout_before", "layout_after", "metrics", "shown"),
+    [
+        (SEALED_RIGHT, SEALED_WRONG, {}, "wrong 0 -> 1"),
+        (AUTOMATIC_RIGHT, HELD, {}, "automatic layouts right 1 -> 0"),
+        (AUTOMATIC_RIGHT, SEALED_RIGHT, {}, "automatic layouts right 1 -> 0"),
+        (HELD, HELD, {"ink_right": 0}, "ink_right 1 -> 0"),
+        (HELD, HELD, {"pair_agreed_wrong_at_site": 2}, "pair_agreed_wrong@site 1 -> 2"),
+    ],
+)
+def test_a_loss_beside_a_gain_in_one_walls_key_is_rejected_though_its_own_compare_accepts(
+    layout_before: str, layout_after: str, metrics: dict[str, int], shown: str
+) -> None:
+    """One end goes unsure -> right (the walls compare's "better"), and in the same key a layout,
+    the ink or the site answer gets worse: the walls compare accepts; the library rejects."""
+    before = {LEFT: pariksha_walls.ONE_UNSURE, LAYOUT: layout_before}
+    after = {LEFT: AGREED_RIGHT, LAYOUT: layout_after}
+    own = compare_walls(_walls(before).card, _walls(after).card)  # type: ignore[arg-type]
+    assert own.accepted
+
+    walls = _walls_change(before, after, **metrics)
+    assert walls.status == REJECT
+    assert shown in walls.reason
+    assert judge_library("rekha", [walls]).status == REJECT
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({LEFT: AGREED_WRONG, LAYOUT: HELD}, {LEFT: pariksha_walls.ONE_UNSURE, LAYOUT: HELD}),
+        ({LEFT: pariksha_walls.ONE_UNSURE, LAYOUT: HELD}, {LEFT: AGREED_RIGHT, LAYOUT: HELD}),
+        (
+            {LEFT: pariksha_walls.BOTH_UNSURE, RIGHT_END: AGREED_WRONG, LAYOUT: SEALED_RIGHT},
+            {LEFT: AGREED_RIGHT, RIGHT_END: pariksha_walls.ONE_UNSURE, LAYOUT: AUTOMATIC_RIGHT},
+        ),
+    ],
+)
+def test_a_genuine_walls_improvement_with_no_loss_stays_accepted(
+    before: dict[str, str], after: dict[str, str]
+) -> None:
+    walls = _walls_change(before, after)
+    assert walls.status == ACCEPT
+    assert judge_library("rekha", [walls]).status == ACCEPT
+
+
+def test_an_accepted_labels_key_whose_wrong_answers_became_held_stays_accepted() -> None:
+    """Every scorecard type takes the ACCEPT-path count check, and "more held on the same cases"
+    is deliberately not part of it there: wrong -> held is a real improvement."""
+    before = _side({Q1: AGREED_RIGHT, Q2: AGREED_WRONG, Q3: AGREED_WRONG})
+    after = _side({Q1: AGREED_RIGHT, Q2: HELD, Q3: HELD})
+    assert _judge(before, after).status == ACCEPT
+
+
+def test_a_genuine_kinds_gain_stays_accepted_through_the_count_check() -> None:
+    """The ACCEPT-path count check runs for every scorecard type, kinds included."""
+    before = _side({Q1: pariksha_kinds.UNKNOWN, Q2: pariksha_kinds.UNKNOWN}, agent=KINDS_AGENT)
+    after = _side({Q1: pariksha_kinds.RIGHT, Q2: pariksha_kinds.UNKNOWN}, agent=KINDS_AGENT)
+    assert _judge(before, after, agent=KINDS_AGENT).status == ACCEPT
