@@ -23,7 +23,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -37,6 +37,7 @@ __all__ = [
     "MISTAKE_UNANSWERED",
     "NEEDS_CONFIRMATION",
     "READABLE_FORMATS",
+    "UNCHECKED_ACTOR",
     "Candidate",
     "CandidateExport",
     "CandidatesFileError",
@@ -150,39 +151,47 @@ class DecisionCount:
     """Reviewer decisions about one agent (or in one table), as exact counts."""
 
     decisions: int = 0
-    """Current reviewer decisions (not superseded, not carried)."""
+    """Current reviewer decisions (not superseded, not carried), each counted once."""
     corrected: int = 0
     filled: int = 0
     confirmed: int = 0
     decided: int = 0
     ready: int = 0
-    """Convertible with the answer the decision states: a person only confirms."""
+    """Cases convertible with the answer proposed: a person only confirms."""
     convertible: int = 0
-    """Ready ones plus those whose identity is built and whose answer the person states."""
+    """Cases: ready ones plus those whose identity is built and whose answer the person states."""
     not_convertible: int = 0
+    """Cases that can never become key cases."""
     earlier: int = 0
-    """Superseded or carried records, not counted as decisions."""
+    """Superseded or carried records (decisions), not counted as decisions."""
     overturned: int = 0
     """Current decisions that replaced an automatic result (report only)."""
 
 
 def _count(candidates: Iterable[Candidate], key: str) -> dict[str, DecisionCount]:
+    """Decisions are counted once each, however many parts one has (a row's walls and widths, a
+    run and its walls); convertible, ready and not convertible count cases, one per part."""
     tallies: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    parts: dict[tuple[str, str, str], list[Candidate]] = defaultdict(list)
     for candidate in candidates:
-        tally = tallies[getattr(candidate, key)]
-        if not candidate.current:
+        parts[(getattr(candidate, key), candidate.table, candidate.decision_id)].append(candidate)
+    for (name, _table, _decision), group in parts.items():
+        tally = tallies[name]
+        current = [candidate for candidate in group if candidate.current]
+        if not current:
             tally["earlier"] += 1
             continue
         tally["decisions"] += 1
-        tally[candidate.kind] += 1
-        if candidate.overturned is not None:
+        tally[current[0].kind] += 1
+        if any(candidate.overturned is not None for candidate in current):
             tally["overturned"] += 1
-        if candidate.convertible:
-            tally["convertible"] += 1
-            if candidate.answer is not None:
-                tally["ready"] += 1
-        else:
-            tally["not_convertible"] += 1
+        for candidate in current:
+            if candidate.convertible:
+                tally["convertible"] += 1
+                if candidate.answer is not None:
+                    tally["ready"] += 1
+            else:
+                tally["not_convertible"] += 1
     return {name: DecisionCount(**tally) for name, tally in tallies.items()}
 
 
@@ -199,9 +208,9 @@ def _line(name: str, count: DecisionCount) -> str:
     return (
         f"{name}: {count.decisions} decisions ({count.corrected} corrected, {count.filled} filled "
         f"a held value, {count.confirmed} confirmed, {count.decided} other decisions); "
-        f"convertible {count.convertible} (ready {count.ready}, "
+        f"convertible cases {count.convertible} (ready {count.ready}, "
         f"{count.convertible - count.ready} need a person's answer), "
-        f"not convertible {count.not_convertible}; earlier records {count.earlier}; "
+        f"not convertible cases {count.not_convertible}; earlier records {count.earlier}; "
         f"overturned an automatic result {count.overturned}"
     )
 
@@ -305,6 +314,21 @@ def _candidate_document(candidate: Candidate) -> dict[str, Any]:
     return {item.name: getattr(candidate, item.name) for item in fields(Candidate)}
 
 
+#: Why a candidate whose decider was never checked against the real-reviewer list cannot convert.
+UNCHECKED_ACTOR: Final = (
+    "its decider was never checked against the local real-reviewer list (a file made before the "
+    "list existed); export the candidates again"
+)
+
+
+def _unchecked(candidate: Candidate) -> Candidate:
+    """A candidate read with no recorded reviewer check (a v1 file, or a v2 file without
+    `actor_status`) is never convertible: who decided it may be a test script."""
+    if candidate.actor_status != UNCHECKED or not candidate.convertible:
+        return candidate
+    return replace(candidate, not_convertible=UNCHECKED_ACTOR)
+
+
 def write_candidates(export: CandidateExport, path: Path) -> None:
     """Write the candidates once; an existing file is never overwritten."""
     document: dict[str, Any] = {
@@ -345,9 +369,11 @@ def read_candidates(path: Path) -> CandidateExport:
     required = {item.name for item in fields(Candidate) if item.name not in _V2_FIELDS}
     try:
         candidates = tuple(
-            Candidate(
-                **{name: entry[name] for name in required},
-                **{name: entry[name] for name in _V2_FIELDS if name in entry},
+            _unchecked(
+                Candidate(
+                    **{name: entry[name] for name in required},
+                    **{name: entry[name] for name in _V2_FIELDS if name in entry},
+                )
             )
             for entry in document["candidates"]
         )

@@ -89,12 +89,22 @@ text would be a guess. The candidate carries the identity and the reviewer's val
 states the printed text when confirming.
 
 **Only current decisions count.** A decision a later one on the same row or page replaced is
-listed as `superseded`; one copied from an earlier revision as `carried` (its original is its own
-candidate). Both are listed, never counted as decisions and never convertible.
+listed as `superseded`; one copied from an earlier revision (or onto a re-read of the same row, as
+a carried pairing) as `carried` (its original is its own candidate, and a copy is never an
+overturn). Both are listed, never counted as decisions and never convertible. A reading's confirms
+and corrections are followed through the new readings they produce: the latest one wins, so a
+later correction replaces an earlier confirm. A confirm of a reading a correction produced is
+never convertible: the span is still the AI's, but the value is the person's, and the correction
+is its own case.
+
+**A file is only as checked as its export.** A `smriti-candidates/1` file (or a v2 file without
+`actor_status`) was made before anyone was checked against the real-reviewer list, so its
+candidates read back as not convertible; `confirm.py` also writes only `reviewer` decisions.
 
 ## Counts
 
-`agent_counts` and `table_counts`: per agent (or table), the current decisions and how many
+`agent_counts` and `table_counts`: per agent (or table), the current decisions (each once, however
+many parts it has) and how many
 corrected the machine's answer, filled a value the readers held, confirmed it or are another kind of
 decision; how many are convertible (ready, or waiting for a person's answer) and how many are not;
 and how many overturned an automatic result.

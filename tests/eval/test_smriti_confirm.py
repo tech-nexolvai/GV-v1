@@ -51,6 +51,7 @@ def _row(candidate_id: str = "no_countertop_answers:1") -> Candidate:
         answer={"kind": "no_countertop"},
         answer_needed=None,
         not_convertible=None,
+        actor_status="reviewer",
     )
 
 
@@ -76,6 +77,7 @@ def _label(candidate_id: str = "correction_ledger:2") -> Candidate:
         answer=None,
         answer_needed="the printed text of the label",
         not_convertible=None,
+        actor_status="reviewer",
     )
 
 
@@ -96,6 +98,7 @@ def _milan() -> Candidate:
         answer=None,
         answer_needed=None,
         not_convertible="pariksha-key/1 has no Milan answer yet",
+        actor_status="reviewer",
     )
 
 
@@ -261,3 +264,74 @@ def test_the_candidates_file_is_written_once_and_refused_when_edited(tmp_path: P
     path.write_text(json.dumps(document))
     with pytest.raises(CandidatesFileError, match="changed"):
         read_candidates(path)
+
+
+# --- review of #1269: only a checked reviewer's decision; P6-2 cases refused on purpose ---------
+
+
+def test_a_v1_file_with_a_scripted_reviewer_is_refused(tmp_path: Any) -> None:
+    from eval.smriti.candidates import _candidate_document, _digest
+
+    entry = {
+        name: value
+        for name, value in _candidate_document(replace(_row(), decided_by="ui reviewer")).items()
+        if name not in {"overturned", "mistake_needed", "actor_status", "answer_source"}
+    }
+    document: dict[str, Any] = {
+        "format": "smriti-candidates/1",
+        "database": "synthetic",
+        "exported_at": "2026-10-14T00:00:00+00:00",
+        "code_version": "test",
+        "candidates": [entry],
+        "counts": {},
+    }
+    document["sha256"] = _digest(document)
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps(document))
+    export = read_candidates(path)
+    (only,) = export.candidates
+    assert only.actor_status == "unchecked" and not only.convertible
+    with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
+        confirm_candidates(export, _confirmations("rekha", {"candidate": only.candidate_id}))
+
+
+def test_an_unknown_or_unchecked_decider_is_refused_even_when_convertible() -> None:
+    for status in ("unknown", "unchecked"):
+        row = replace(_row(), actor_status=status)
+        with pytest.raises(ConfirmationRefused, match="real-reviewer list"):
+            confirm_candidates(
+                _export(row), _confirmations("rekha", {"candidate": row.candidate_id})
+            )
+
+
+@pytest.mark.parametrize("case", ["walls", "piece-kind", "batch", "there-is-a-countertop"])
+def test_cases_p6_2_builds_are_refused_on_purpose(case: str) -> None:
+    row = _row()
+    if case == "walls":
+        row = replace(
+            row,
+            question={
+                "family": "slot-walls",
+                "page_sha256": PAGE,
+                "question_id": "p0:walls",
+                "row_box": "1,2,3,4",
+            },
+            answer=None,
+        )
+    elif case == "piece-kind":
+        row = replace(
+            row,
+            question={
+                "family": "piece-kind",
+                "page_sha256": PAGE,
+                "question_id": "p0:piece0",
+                "pieces": 2,
+            },
+            answer={"kinds": ["filler"]},
+        )
+    elif case == "batch":
+        row = replace(row, recorded={"answer": "no_countertop", "batch": True}, answer=None)
+    else:
+        row = replace(row, recorded={"answer": "countertop", "batch": False}, answer=None)
+    with pytest.raises(ConfirmationRefused, match="#1271"):
+        confirm_candidates(_export(row), _confirmations("rekha", {"candidate": row.candidate_id}))

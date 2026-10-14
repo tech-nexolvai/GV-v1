@@ -1,5 +1,5 @@
 import type { CountertopResult } from '@/api/client';
-import { distinguishingLabel } from '@/lib/countertop-results';
+import { distinguishingLabel, type CountertopItem } from '@/lib/countertop-results';
 
 type Row = Pick<CountertopResult, 'row_id' | 'page_number' | 'label'>;
 type Siblings = readonly Pick<CountertopResult, 'row_id' | 'page_number'>[];
@@ -36,4 +36,16 @@ export function CountertopTitle({ row, rows }: { row: Row; rows: Siblings }) {
 export function CountertopName({ row, rows }: { row: Row; rows: Siblings }) {
   const extra = distinguishingLabel(row, rows);
   return <>Countertop{extra && <> · <Words text={extra} /></>}</>;
+}
+
+/**
+ * A live countertop item (#1245), as the heading its results are grouped under:
+ * "Countertop 2 · page 5". The API's whole label stays in the title.
+ */
+export function CountertopItemTitle({ item }: { item: CountertopItem }) {
+  return (
+    <span title={item.label}>
+      Countertop <span className="num">{item.number}</span> · page <span className="num">{item.page_number}</span>
+    </span>
+  );
 }
