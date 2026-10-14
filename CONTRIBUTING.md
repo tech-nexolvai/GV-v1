@@ -318,6 +318,33 @@ record new times **on CI** (a laptop runs the suite at a different speed, so its
 
 3. Commit `.test_durations` in a pull request. Its CI run shows the new balance.
 
+The recording run is single-process on purpose, so it takes about 7–8 minutes per shard instead of the
+usual 3–4: the split balances single-process times, and a time recorded beside three other workers also
+measures the competition for the machine.
+
+### Running the tests on several workers (pytest-xdist)
+
+Each CI shard runs its tests on four worker processes (`pytest -n 4 --dist loadgroup`, #1289). You can do
+the same locally; without `-n`, nothing about a run changes.
+
+- **One database per worker.** Under `-n`, each worker creates its own empty database beside the one
+  `DATABASE_URL` names (`gvtest_7` becomes `gvtest_7_gw0`, `gvtest_7_gw1`, ...), points `DATABASE_URL`
+  at it for its whole run, including any subprocess a test starts, and drops it when it finishes
+  (`tests/conftest.py`).
+- **Only a test database.** The name must start with `gv_test` or `gvtest`, and the port must not be
+  5433, the local stack's database. Anything else stops the run before a test starts. So point it at a
+  scratch database, for example:
+
+  ```bash
+  createdb -h localhost -p <port> -U <user> gvtest_mine
+  export DATABASE_URL=postgresql+psycopg://<user>:<password>@localhost:<port>/gvtest_mine
+  pytest -n 4 --dist loadgroup
+  ```
+
+- **A test that cannot share the machine with its twin** (a fixed file path, a fixed port, anything
+  outside its own `tmp_path` and database) is marked `@pytest.mark.xdist_group("<name>")`, which keeps
+  every test of that group on one worker. Prefer fixing the test (`tmp_path`, port 0) when that is easy.
+
 ---
 
 ## What a story must contain before it can be worked

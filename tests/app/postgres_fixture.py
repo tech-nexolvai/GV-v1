@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+import re
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -41,6 +42,92 @@ def alembic_config() -> Config:
 #: replay every migration into a schema that already has the tables. The whole saving here rests on
 #: that call being a no-op, and this is what keeps it one.
 PRESERVED_TABLES: frozenset[str] = frozenset({"alembic_version"})
+
+
+#: The only database names the per-worker setup below may create or drop: CI's `gv_test` and the local
+#: `gvtest_<N>` scratch databases. Everything else on a server (a live app's database, `postgres`, a
+#: template) is refused by name before any SQL runs.
+TEST_DATABASE_PREFIXES: tuple[str, ...] = ("gv_test", "gvtest")
+
+#: The local stack's PostgreSQL (docker-compose.yml), which the running app uses. Refused outright, even
+#: for a test-looking name, so a mistyped `DATABASE_URL` can never create or drop anything there.
+LOCAL_STACK_PORT = 5433
+
+#: The worker ids pytest-xdist hands out: `gw0`, `gw1`, ... Anything else is refused, which also keeps
+#: the id safe to put inside a quoted database name.
+_WORKER_ID = re.compile(r"gw[0-9]+")
+
+
+def worker_database_url(url: URL, worker: str) -> URL:
+    """The URL of one xdist worker's own database: same server and login, `<name>_<worker>` (#1289).
+
+    Raises `ValueError` unless `url` names a test database off the local stack's port and `worker` is an
+    id xdist would give, because the caller goes on to drop and create the database it returns.
+    """
+    if not _WORKER_ID.fullmatch(worker):
+        raise ValueError(f"{worker!r} is not a pytest-xdist worker id (gw0, gw1, ...)")
+    if url.port == LOCAL_STACK_PORT:
+        raise ValueError(
+            f"DATABASE_URL points at port {LOCAL_STACK_PORT}, the local stack's database; "
+            "per-worker test databases are never created there"
+        )
+    name = url.database or ""
+    if not name.startswith(TEST_DATABASE_PREFIXES):
+        raise ValueError(
+            f"{name!r} is not a test database (names start with {' or '.join(TEST_DATABASE_PREFIXES)}); "
+            "refusing to create per-worker databases beside it"
+        )
+    return url.set(database=f"{name}_{worker}")
+
+
+def worker_database_for(environ: Mapping[str, str]) -> tuple[URL, URL] | None:
+    """`(DATABASE_URL, this worker's own database URL)` under xdist, or `None` to leave things as they are.
+
+    `None` without a worker id (a plain single-process run: nothing changes), without `DATABASE_URL` (the
+    database tests skip, as they always have), and for a URL that is not PostgreSQL, which
+    `_database_url` already fails with its own message.
+    """
+    worker = environ.get("PYTEST_XDIST_WORKER")
+    raw_url = environ.get("DATABASE_URL")
+    if worker is None or raw_url is None:
+        return None
+    url = make_url(raw_url)
+    if not url.drivername.startswith("postgresql"):
+        return None
+    return url, worker_database_url(url, worker)
+
+
+def _drop_and_create(base: URL, own: URL, *, create: bool) -> None:
+    name = own.database
+    # Checked again here, not only when the URL was built: this is the function that runs DROP.
+    if name is None or worker_database_url(base, name.rsplit("_", 1)[-1]) != own:
+        raise ValueError(f"{own.database!r} is not a worker database of {base.database!r}")
+    # Connected to the base test database, never to `postgres`: the setup touches nothing it was not
+    # given. AUTOCOMMIT because CREATE and DROP DATABASE cannot run inside a transaction.
+    admin = create_engine(base, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as connection:
+            # `WITH (FORCE)` (PostgreSQL 13+) ends any connection still open on it, such as an engine a
+            # test never disposed, or a crashed earlier run's.
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            if create:
+                connection.execute(text(f'CREATE DATABASE "{name}"'))
+    finally:
+        admin.dispose()
+
+
+def create_worker_database(base: URL, own: URL) -> None:
+    """Create the worker's database empty, replacing any leftover of the same name from an earlier run.
+
+    Only the database: the tests migrate it themselves, exactly as they migrate `DATABASE_URL` today (the
+    session schema below, and the modules that run their own `command.upgrade`).
+    """
+    _drop_and_create(base, own, create=True)
+
+
+def drop_worker_database(base: URL, own: URL) -> None:
+    """Drop the worker's database at the end of its run. No error if it is already gone."""
+    _drop_and_create(base, own, create=False)
 
 
 def _database_url() -> URL:
