@@ -579,6 +579,7 @@ def test_a_failure_in_the_hand_over_is_recorded_against_the_last_stage(
 ) -> None:
     """The phrase index, value hunter, form proposal and NEEDS_INPUT share validate's transaction."""
     import scripts.drain_outbox as worker
+    from workflow import sutradhar
 
     revision_id = _uploaded_revision(session)
     stages = _WatchedStages(engine)
@@ -590,7 +591,8 @@ def test_a_failure_in_the_hand_over_is_recorded_against_the_last_stage(
             raise failing.pop(0)
         return {"ran": False, "reason": "synthetic"}
 
-    monkeypatch.setattr(worker, "_propose_measurements", proposal)
+    # The flow's steps live in `workflow/sutradhar.py` since #1227, so the step is replaced there.
+    monkeypatch.setattr(sutradhar, "propose_measurements", proposal)
     outbox_row = str(uuid4())
     with pytest.raises(TimeoutError):
         _deliver(engine, worker, revision_id, outbox_row)
