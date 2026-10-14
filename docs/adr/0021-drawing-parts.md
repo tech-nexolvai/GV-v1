@@ -133,6 +133,19 @@ only**, following the precedent of code's view roles (decisions D2/D3 of 2026-10
   name wherever it is read: an import from any module (re-exported or relative, renamed or not),
   any `.confirm_part` attribute, and the text `"confirm_part"` (`getattr`) outside `__all__`.
 
+## Amendment (2026-10-14, #1266): code pre-fills "cabinet" from one printed tag
+
+Anant's decision 5 of 2026-10-14 (cabinets design P5-K1). **A pre-fill, not a confirmation:** where
+code's part finder (run in memory, with the cabinet codes the page stage read on the vendor's own
+text layers, never GV's markup or an AI reading) finds a cabinet with a piece's two ends and
+attaches exactly one cabinet tag to it, and that tag stands among the lowest tags printed over the
+row (a higher one is a wall cabinet's), Bala files the piece as a cabinet with `kind_named` true.
+The Measure page pre-selects "cabinet"; a person still clicks to confirm or change it. Nothing
+here confirms a piece, writes an item, or feeds a check. Behind `GV_BALA_CABINET_PREFILL`, off by
+default and switched on only at 0 wrong on the piece-kind scorecard (`scripts/pariksha_kinds.py
+--source bala`); the $0 proof on AI Sets 1-3 found 5 more right on AI Set 2, 5 on AI Set 3's
+repeats, 0 on AI Set 1, 0 wrong, and findings identical with the switch off and on.
+
 ## Consequences
 
 - Easier: a countertop both AI readers and code agree on needs no click, so later steps (per-item

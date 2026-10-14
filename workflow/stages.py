@@ -310,6 +310,7 @@ from verdict.finding import Finding
 from verdict.operands import VerdictOperand
 from verdict.operations import register_all
 from verdict.outcomes import Outcome, is_decision
+from vocabulary.cabinet_codes import is_cabinet_code
 from vocabulary.part_kinds import PartKind
 from workflow.ai_budget import AiBudget
 from workflow.architect_match_contract import MatchLookup
@@ -363,6 +364,7 @@ from workflow.association import (
 from workflow.bala_items import (
     CodeFinding,
     CodePart,
+    PrintedCode,
     confirm_automatic_countertops,
     propose_items,
 )
@@ -1831,6 +1833,7 @@ class DatabaseStages:
         part_pictures: PartPictureSettings | None = None,
         part_finder: AssociationSettings | None = None,
         bala_auto_items: bool = False,
+        bala_cabinet_prefill: bool = False,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
@@ -2016,6 +2019,12 @@ class DatabaseStages:
         if not isinstance(bala_auto_items, bool):
             raise TypeError("bala_auto_items must be a bool")
         self._bala_auto_items = bala_auto_items
+        # **Code pre-fills "cabinet" from one printed cabinet tag (#1266).** Off unless
+        # `GV_BALA_CABINET_PREFILL` is on: a piece then comes pre-selected as a cabinet where code's
+        # part finder attached exactly one cabinet tag to a part with its ends. A person still clicks.
+        if not isinstance(bala_cabinet_prefill, bool):
+            raise TypeError("bala_cabinet_prefill must be a bool")
+        self._bala_cabinet_prefill = bala_cabinet_prefill
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -6563,6 +6572,7 @@ class DatabaseStages:
             session,
             package_revision_id,
             code_parts=code_parts,
+            cabinet_prefill=self._bala_cabinet_prefill,
             same_outline_tolerance=(
                 self._part_finder.witness_tolerance if self._part_finder is not None else Decimal(0)
             ),
@@ -6590,9 +6600,14 @@ class DatabaseStages:
 
         The same strokes and the same suggester as the page stage's (`_propose_page_parts`): the
         page's vector line-work and its drawings' line-work, detected under the finder's settings,
-        and `propose_parts` with its own witness tolerance. No printed text is given to it, so it
-        attaches no code; Bala compares only where its cabinets end. **It writes nothing**: no
-        suggestion, no reading, no run. $0: no model is asked anything.
+        and `propose_parts` with its own witness tolerance. Bala compares where its cabinets end.
+
+        **The printed text it is given (#1266)** is what the page stage already recorded on the
+        vendor's own text layers (`_printed_texts`), so the finder attaches a cabinet code the way
+        it does on the page: exactly one inside the cabinet's span and no other's. Bala may pre-fill
+        "cabinet" from it (`GV_BALA_CABINET_PREFILL`). Never GV's markup, never an AI reading.
+
+        **It writes nothing**: no suggestion, no reading, no run. $0: no model is asked anything.
         """
         settings = self._part_finder
         if settings is None:
@@ -6647,10 +6662,11 @@ class DatabaseStages:
             straightness=settings.straightness,
             crossing_margin=settings.crossing_margin,
         )
+        printed = _printed_texts(session, page)
         found = propose_parts(
             _view_outlines(session, page, views),
             detected,
-            (),
+            printed,
             edge_tolerance=settings.witness_tolerance,
         )
         return CodeFinding(
@@ -6660,10 +6676,12 @@ class DatabaseStages:
                     kind=part.kind,
                     left=min(point.x for point in part.extent.points),
                     right=max(point.x for point in part.extent.points),
+                    code=None if part.code is None else _printed_code(part.code),
                 )
                 for part in found.parts
             ),
             tolerance=settings.witness_tolerance,
+            codes=tuple(_printed_code(code) for code in printed),
         )
 
     def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
@@ -8866,6 +8884,79 @@ def _queue_bala_pictures(
         )
         session.flush()
     return {"queued": True}
+
+
+#: The vendor's own text layers a printed cabinet code is taken from for code's part finder in
+#: memory (#1266): the vector text, the CAD notes, a pasted drawing's font text and the local OCR.
+#: Never GV's markup (the answer key) and never an AI reader's text.
+_PRINTED_CODE_EXTRACTORS: Final = frozenset(
+    {EXTRACTOR, CAD_TEXT_EXTRACTOR, STAMP_TEXT_EXTRACTOR, "rapidocr"}
+)
+
+
+def _printed_texts(session: Session, page: Page) -> list[PrintedText]:
+    """The cabinet codes the page stage recorded on the page's vendor text layers, in stored space,
+    for code's part finder in memory (#1266). Reads only.
+
+    **One code read by two layers is one code.** The font text and the OCR often both read the same
+    printed tag; given twice, the finder would see two codes in one span and attach neither. A code
+    with the same text whose box overlaps one already kept is the same print and is left out. Two
+    different codes, or the same code printed twice apart, are all kept, so the finder still says
+    "two codes" where the drawing prints two. A reading whose box cannot be placed is left out (it
+    could be anywhere, so it cannot be inside a span).
+    """
+    rows = session.execute(
+        select(ObservationCandidate, ExtractionRun.dpi)
+        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
+        .where(
+            ObservationCandidate.page_id == page.id,
+            ExtractionRun.extractor.in_(_PRINTED_CODE_EXTRACTORS),
+        )
+        .order_by(ObservationCandidate.created_at, ObservationCandidate.id)
+    ).all()
+    kept: list[PrintedText] = []
+    for row, dpi in rows:
+        text = (row.raw_text or "").strip()
+        if not dpi or not row.polygon or not is_cabinet_code(text):
+            continue
+        transform = page_transform(page, dpi)
+        if transform is None:
+            continue
+        try:
+            extent = Polygon(
+                points=tuple(
+                    transform.to_stored(ImagePoint(int(x), int(y))) for x, y in row.polygon
+                ),
+                space="stored",
+                document_version_id=page.document_version_id,
+                page=page.index,
+            )
+        except (ArithmeticError, IndexError, TypeError, ValueError):
+            continue
+        if any(other.text == text and _extents_overlap(other.extent, extent) for other in kept):
+            continue
+        kept.append(PrintedText(candidate_id=row.id, text=text, extent=extent))
+    return kept
+
+
+def _printed_code(code: PrintedText) -> PrintedCode:
+    """A cabinet code as Bala reads it: as printed, and its box in stored space."""
+    return PrintedCode(
+        text=code.text,
+        left=min(point.x for point in code.extent.points),
+        top=min(point.y for point in code.extent.points),
+        right=max(point.x for point in code.extent.points),
+        bottom=max(point.y for point in code.extent.points),
+    )
+
+
+def _extents_overlap(first: Polygon, second: Polygon) -> bool:
+    return (
+        min(p.x for p in first.points) <= max(p.x for p in second.points)
+        and min(p.x for p in second.points) <= max(p.x for p in first.points)
+        and min(p.y for p in first.points) <= max(p.y for p in second.points)
+        and min(p.y for p in second.points) <= max(p.y for p in first.points)
+    )
 
 
 def _view_outlines(session: Session, page: Page, views: Sequence[DrawingView]) -> list[ViewOutline]:

@@ -14,6 +14,8 @@ automatic in PR 2 (both judgments agreeing), with the reasons the rest would not
 only with `--store <root>` (the local store holding the revision's PDFs, read only) and
 `GV_PART_FINDER_ENABLED=1` with the `GV_READER_*` settings, as the worker states them; otherwise the
 report says it did not run. `GV_READER_MISSING_SPACE_HEIGHTS` is needed for a page with vector text.
+`--cabinet-prefill` plans as `GV_BALA_CABINET_PREFILL` would (#1266): a piece with one printed cabinet
+tag, as the part finder reads it, is pre-filled as a cabinet.
 
 The report holds code's own sentences, ids, page numbers and counts, never a drawing's values; a
 report about a client's drawings is still kept out of the repository. Compare it with an answer key
@@ -179,6 +181,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--revision", type=UUID, action="append", help="a revision (repeatable)")
     parser.add_argument("--store", type=Path, help="the local store holding the PDFs, read only")
     parser.add_argument("--json", type=Path, help="also save the report as JSON to this file")
+    parser.add_argument(
+        "--cabinet-prefill",
+        action="store_true",
+        help="plan as GV_BALA_CABINET_PREFILL would: one printed cabinet tag pre-fills a cabinet",
+    )
     args = parser.parse_args(argv)
     url = args.database or os.environ.get("DATABASE_URL")
     if not url:
@@ -190,7 +197,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _read_only(session)
         for revision in args.revision or _revisions(session):
             plan = plan_items(
-                session, revision, code_parts=_code_parts(session, revision, args.store)
+                session,
+                revision,
+                code_parts=_code_parts(session, revision, args.store),
+                cabinet_prefill=args.cabinet_prefill,
             )
             entry = report(plan, revision)
             entries.append(entry)
