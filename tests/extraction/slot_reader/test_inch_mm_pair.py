@@ -125,7 +125,7 @@ def test_the_word_mm_is_still_only_read_for_the_claude_pair() -> None:
         "1124 [44 1 1/4]",  # a stacked fraction read as two
         "648 [25 1/2] 3",
         "648 [",
-        '2\'-0" [610]',
+        "2'-0\" [610]",
     ],
 )
 def test_anything_else_with_a_bracket_or_mm_alone_is_never_a_value(text: str) -> None:
