@@ -336,14 +336,6 @@ class WallSettings:
     """A hatch that runs on into the row is a band passing the end (a plan's back wall), not a wall
     at it: the same strokes are counted this far inside the row, past `hatch_inside_pt`, and a
     count of at least this fraction of the hatch's own refuses it (#1202)."""
-    hatch_min_width_pt: Decimal
-    hatch_narrow_rise_pt: Decimal
-    """A hatch band no wider than `hatch_min_width_pt` is only a panel wide: it counts only when
-    its top rises at least `hatch_narrow_rise_pt` above the cabinets beside the end (#1204), as a
-    wall seen from the side does (measured: 26 pt and more). A hatched end panel or filler stops at
-    the cabinets' top. When nothing is drawn beside the end to measure against, nothing changes.
-    A wider band needs no rise: the real wall hatch measured in front views is 12.6 pt wide and
-    more, and often stops below the wall cabinets' top."""
     band_max_lightness: Decimal
     band_min_width_pt: Decimal
     band_max_width_pt: Decimal
@@ -384,7 +376,9 @@ class WallSettings:
     Since the #1202 review only a wall **drawn in section** counts: a second upright line
     `wall_body_min_pt` to `wall_body_max_pt` further out (away from the row), as tall, with nothing
     drawn between ("inside" is `inner_margin_pt` in from the sides). Since #1204 the minimum is
-    more than a panel's thickness: two lines a panel apart are an end panel or a cabinet's side.
+    more than a panel's thickness: two lines a panel apart are an end panel or a cabinet's side
+    (the closest measured is 4.81 pt). It stays under the thinnest wall to keep, a 4.5" wall at
+    1:48 (6.75 pt); the real walls in section measured are 18.6 pt.
     Nor a double frame: both faces meeting their own level line (within `frame_open_pt`, as a
     frame's corners may be left open), the outer one further out, each spanning the whole row.
     A single tall line may be the elevation's outline, a frame round the row, an end panel, a
@@ -431,8 +425,6 @@ E3_WALL_SETTINGS = WallSettings(
     hatch_cross_slack_degrees=10,
     hatch_through_pt=Decimal(30),
     hatch_through_fraction=Decimal("0.5"),
-    hatch_min_width_pt=Decimal(10),
-    hatch_narrow_rise_pt=Decimal(10),
     band_max_lightness=Decimal("0.9"),
     band_min_width_pt=Decimal(12),
     band_max_width_pt=Decimal(24),
@@ -451,7 +443,7 @@ E3_WALL_SETTINGS = WallSettings(
     mark_max_pt=Decimal(12),
     mark_reach_pt=Decimal(3),
     number_reach_pt=Decimal(10),
-    wall_body_min_pt=Decimal(5),
+    wall_body_min_pt=Decimal("5.75"),
     wall_body_max_pt=Decimal(40),
     frame_open_pt=Decimal(6),
     picture_max_side_px=1600,
@@ -545,7 +537,6 @@ def hatch_at(
     *,
     x_end: Decimal,
     side: Literal["left", "right"],
-    row_width: Decimal,
     y_low: Decimal,
     y_high: Decimal,
     settings: WallSettings,
@@ -555,9 +546,10 @@ def hatch_at(
     Many parallel strokes (or a cross-hatch) beside the end, over the drawing's height, that also
     form a band running **up** the end (#1202): taller than wide, and not running on into the row.
     A plan's back wall drawn across the end window is a band lying across it, not a wall at it.
-    A band only a panel wide must rise above the cabinets beside the end (#1204): one as tall as
-    the cabinets is a hatched end panel or filler, not a wall. A wall seen from the side (its
-    section in a side view) is as narrow, but it rises past the cabinets.
+    A hatch band only a panel wide is still counted (#1204 review): real walls are hatched as
+    narrow as 6 pt, and their tops can sit below the cabinets' reference height (which includes
+    dimension lines), so a hatched end panel cannot be told from a wall here. Automatic walls
+    still need both AIs and the stone running to the walls.
     """
     x_low, x_high = _end_window(x_end, side, settings)
     through = settings.hatch_through_pt
@@ -606,22 +598,6 @@ def hatch_at(
     running_on = sum(inside.get(item, 0) for item in family_bins)
     if running_on >= settings.hatch_through_fraction * len(family):
         return False, f"{why}, but the hatch runs on into the row: a band passing the end"
-    if width <= settings.hatch_min_width_pt:
-        casework_top = _casework_top(
-            _shape_boxes(ink),
-            x_end=x_end,
-            side=side,
-            row_width=row_width,
-            y_low=y_low,
-            y_high=y_high,
-            settings=settings,
-        )
-        top = min(stroke.box.top for stroke in family)
-        if casework_top is not None and top > casework_top - settings.hatch_narrow_rise_pt:
-            return False, (
-                f"{why}, but only a panel's width and no higher than the cabinets beside it: "
-                "a hatched end panel or filler, not a wall"
-            )
     return True, why
 
 
@@ -894,7 +870,8 @@ def tall_line_at(
     row_ends = (min(x_end, far_end), max(x_end, far_end))
     segments = _segments(ink)
     verticals = _vertical_strokes(ink, settings)
-    why = "no tall wall line at the end"
+    nothing = "no tall wall line at the end"
+    why = nothing
     for x, top, bottom in verticals:
         if not x_low <= x <= x_high or bottom < floor_reach or bottom - top >= frame:
             continue
@@ -905,7 +882,9 @@ def tall_line_at(
             continue
         found = _wall_body(shapes, ink, verticals, x, top, bottom, side, settings)
         if found is None:
-            why = "a single tall line at the end, not a wall drawn in section"
+            # The weakest reason: it never hides a frame, a dimension or a cabinet named before.
+            if why == nothing:
+                why = "a single tall line at the end, not a wall drawn in section"
             continue
         body, outer_top, outer_bottom = found
         outer_x = x - body if side == "left" else x + body
@@ -950,8 +929,9 @@ def _wall_body(
     """The wall's thickness, and its outer face's top and bottom, when the line is the inner face
     of a wall drawn in section: a second upright line further out (away from the row), a wall's
     thickness away (more than a panel's, #1204), as tall, with nothing drawn between: not even an
-    upright line running past the strip's top or bottom, such as a cabinet side's other face with
-    its doors beyond (#1204). `None` otherwise."""
+    upright line between them running more than `join_slack_pt` past the strip's top or bottom,
+    such as a cabinet side's other face with its doors beyond (#1204). An upright no longer than
+    the two faces (a finish line in the wall) does not refuse it. `None` otherwise."""
     length = bottom - top
     for other_x, other_top, other_bottom in verticals:
         gap = x - other_x if side == "left" else other_x - x
@@ -965,14 +945,15 @@ def _wall_body(
         )
         if _holds_any(shapes, ink, strip, settings):
             continue
-        margin = settings.inner_margin_pt
+        margin, join = settings.inner_margin_pt, settings.join_slack_pt
         if any(
             strip.x0 + margin < between_x < strip.x1 - margin
             and between_top < strip.bottom
             and between_bottom > strip.top
+            and (between_top < strip.top - join or between_bottom > strip.bottom + join)
             for between_x, between_top, between_bottom in verticals
         ):
-            continue  # an upright line between the two: a panel's other face, not an empty wall
+            continue  # an upright running on past the two: a panel's other face, not a wall
         return gap, other_top, other_bottom
     return None
 
@@ -1143,7 +1124,6 @@ def wall_pictures(
         ink,
         x_end=xs0,
         side="left",
-        row_width=width,
         y_low=hatch_low,
         y_high=hatch_high,
         settings=settings,
@@ -1152,7 +1132,6 @@ def wall_pictures(
         ink,
         x_end=xs1,
         side="right",
-        row_width=width,
         y_low=hatch_low,
         y_high=hatch_high,
         settings=settings,
