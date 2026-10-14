@@ -34,8 +34,10 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_artifact_store, get_session
 from app.config import Settings
 from app.db.session import session_factory
+from app.evidence.confirm import confirm_candidate_type
 from app.main import create_app
 from app.models import (
+    CanonicalObservation,
     CheckRun,
     DocumentVersion,
     EvidenceArtifact,
@@ -62,6 +64,7 @@ from storage.local import LocalStore
 from tests.evidence.test_bridge import _upgrade
 from tests.workflow.test_parameter_proposals import LEFT, RIGHT, _drawings, _read, _run, _sheet
 from units.measurement import Measurement, Unit
+from workflow.evidence_operands import operands_from_evidence
 from workflow.parameter_citations import (
     CitationRefusal,
     CitationRefusalReason,
@@ -79,6 +82,8 @@ OVERHANG = "countertop_overhang"
 #: response field, so finding it anywhere in a body means the number leaked.
 NOTE = 'OVERHANG 1 7/16" TYP.'
 SEEN = '1 7/16"'
+#: The countertop depth the vendor draws: 24" of cabinet plus exactly the note's overhang.
+DRAWN_DEPTH = '25 7/16"'
 NUMBER_TRACES = ("7/16", "23/16", "1.4375")
 
 RULEBOOK = Path(__file__).resolve().parents[2] / "rules" / "rulebook"
@@ -668,9 +673,27 @@ def test_the_vendors_note_equal_to_its_drawn_value_gives_not_found_never_pass(
     and draws a countertop 25 7/16" deep: 24" of cabinet plus exactly that overhang. The architect's
     drawing says nothing about the overhang. Taking the vendor's note would PASS the vendor against
     themselves. Outcome: nothing is proposed, a forged citation of the note is refused, and the
-    depth check says NOT_FOUND because the overhang is missing."""
-    review = _Review(session, store, _sheet((LEFT, 70, "ID SET ELEVATION"), (RIGHT, 70, NOTE)))
+    depth check says NOT_FOUND because the overhang is missing.
+
+    The depth reaches the check the way a drawn number does since #1251: the vendor's printed
+    `25 7/16"`, confirmed by a reviewer ("Confirm a reading"), never typed. So the check has its
+    depth and its cabinet depth, and only the overhang it must not take from the vendor is missing.
+    """
+    review = _Review(
+        session,
+        store,
+        _sheet((LEFT, 70, "ID SET ELEVATION"), (RIGHT, 70, NOTE), (RIGHT, 20, DRAWN_DEPTH)),
+    )
     _publish(session, "ct_depth_001.yaml")
+    depth_reading = confirm_candidate_type(
+        session,
+        candidate_id=_run(session, review.revision, DRAWN_DEPTH).id,
+        semantic_type="CT010",
+        confirmed_by="anant",
+    )
+    assert isinstance(depth_reading, CanonicalObservation), depth_reading
+    assert depth_reading.document_role == "SHOP"
+    session.commit()
 
     proposed = propose_setting(session, review.revision.id, OVERHANG)
     assert proposed.outcome is ProposalOutcome.NOT_FOUND
@@ -687,14 +710,12 @@ def test_the_vendors_note_equal_to_its_drawn_value_gives_not_found_never_pass(
     )
     session.add(forged)
     session.commit()
-    drawn_depth = {"rule_id": "CT-DEPTH-001", "name": "countertop_depth", "value": '25 7/16"'}
 
     refused = review.enter(
         {"name": OVERHANG, "value": SEEN, "citation": str(forged.id)},
         {"name": "cabinet_depth", "value": '24"'},
-        measurements=[drawn_depth],
     )
-    entered = review.enter({"name": "cabinet_depth", "value": '24"'}, measurements=[drawn_depth])
+    entered = review.enter({"name": "cabinet_depth", "value": '24"'})
     DatabaseStages().run_checks(session, review.revision.id)
 
     assert refused.status_code == 422, refused.text
@@ -711,3 +732,9 @@ def test_the_vendors_note_equal_to_its_drawn_value_gives_not_found_never_pass(
     depth = outcomes["CT-DEPTH-001"]
     assert str(depth.outcome) == "NOT_FOUND"
     assert "'countertop_overhang'" in (depth.reason or "")
+    # The check held its depth: the confirmed reading, sealed, exactly as the vendor printed it.
+    rule = Rule.model_validate(yaml.safe_load((RULEBOOK / "ct_depth_001.yaml").read_text("utf-8")))
+    held = operands_from_evidence(session, review.revision.id, [rule])["CT-DEPTH-001"]
+    value = held["countertop_depth"].value
+    assert isinstance(value, Measurement)
+    assert (value.exact, value.unit) == (Fraction(407, 16), Unit.INCH)

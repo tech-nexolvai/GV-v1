@@ -6889,6 +6889,11 @@ export interface components {
              * @description What code saw at the row's ends, in plain words (#1202): wall ink (a hatch running up the end, a solid band, a tall wall line) and the vendor's words there, which are evidence only and never decide the walls.
              */
             wall_evidence?: string[];
+            /**
+             * Wall Hold Reason
+             * @description Why this row's walls are asked again (#1241): a reviewer's wall answer on this page in an earlier reading could not be carried to this reading. Until this row has its own wall answer no automatic wall is used, and `wall_proposal` is empty.
+             */
+            wall_hold_reason?: string | null;
             /** Wall Layout Choices */
             wall_layout_choices: string[];
             /** Wall Proposal */
@@ -7506,6 +7511,13 @@ export interface components {
              * @default []
              */
             categories: string[];
+            /** Confirm Only */
+            confirm_only: boolean;
+            /**
+             * Confirmed Pages
+             * @default []
+             */
+            confirmed_pages: number[];
             /** Consumers */
             consumers: {
                 [key: string]: string;
@@ -7518,6 +7530,8 @@ export interface components {
             semantic_type: string;
             /** Source */
             source: string;
+            /** Where To Find */
+            where_to_find?: string | null;
         };
     };
     responses: never;

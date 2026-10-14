@@ -220,6 +220,13 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
             {row.walls_needed === false && row.wall_config === null && (
               <Hint>Walls not needed: this row&apos;s width gives the same result for every wall case.</Hint>
             )}
+            {/* A reviewer's wall answer on this page in an earlier reading could not be carried to this
+                one (#1241): its walls are asked again, never automatic, and the row says why. */}
+            {row.wall_hold_reason && row.wall_config === null && row.walls_needed !== false && (
+              <div data-part="wall-hold">
+                <Caution className="text-sm">Walls asked again: {row.wall_hold_reason}</Caution>
+              </div>
+            )}
             {/* The wall choice as picture buttons (#1061). Choosing is only a draft: the saved answer is
                 selected, a reader proposal never is, and nothing is sent until "Use this wall layout". */}
             {shouldOfferRowWallControl(row) && (
@@ -252,7 +259,7 @@ export function SlotReaderRows({ packageId, refresh, targetRow, onTargetReached,
                 {(row.wall_source === 'readers' || row.wall_source === 'drawing-and-readers') && row.wall_proposal && row.wall_config === null && (
                   <Hint>Suggested partly or fully by the readers. Choose it for this row before saving it.</Hint>
                 )}
-                {row.wall_reason && <Hint>{row.wall_reason}</Hint>}
+                {row.wall_reason && row.wall_reason !== row.wall_hold_reason && <Hint>{row.wall_reason}</Hint>}
               </div>
             )}
             {selectedWall && selectedWall !== row.wall_config && row.wall_confirmation_allowed && (

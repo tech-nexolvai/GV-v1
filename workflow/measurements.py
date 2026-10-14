@@ -17,11 +17,23 @@ guesses, or averages: a value a reviewer typed is qualified because a reviewer t
 then abstains with NOT_FOUND — which is the correct outcome and the one the whole system is built to
 produce rather than a default.
 
-Verification: `tests/workflow/test_measurements.py`
+## A number drawn on a drawing is confirmed, never typed (#1251)
+
+GV's rule (decided 2026-10-12, #1181): people confirm readings; they do not type numbers drawn on
+the vendor's or the architect's drawing. `confirm_only` names those inputs — one value, read off a
+SHOP or ARCH drawing — and `app/api/measurements.py` refuses a typed one. The reviewer's own entries
+(`USER_INPUT`), the typed lists (cabinet runs, #1205) and the settings stay typable.
+
+**Values typed before 2026-10-14 still count here.** The store is append-only and a later save
+carries them forward, so a revision that already holds one keeps being judged on it exactly as
+before; nothing new of that kind can be typed. Stopping them counting would be a separate decision.
+
+Verification: `tests/workflow/test_measurements.py`, `tests/api/test_confirm_only_measurements.py`
 """
 
 from __future__ import annotations
 
+from typing import Final
 from uuid import UUID
 
 from sqlalchemy import select
@@ -35,7 +47,15 @@ from units.measurement import Measurement, Unit
 from verdict.operands import EvidenceStatus, VerdictOperand
 from workflow.classifications import classification_operands
 
-__all__ = ["SOURCE", "operands_for", "run_layer", "run_parameters_for"]
+__all__ = [
+    "DRAWN_SOURCES",
+    "SOURCE",
+    "confirm_only",
+    "operands_for",
+    "run_layer",
+    "run_parameters_for",
+    "typed_drawn_refusal",
+]
 
 #: The operand source recorded against a reviewer's reading.
 #:
@@ -51,6 +71,35 @@ SOURCE = "USER_INPUT"
 #: an ordinary input name can never be mistaken for an indexed one — rule ids and input names are
 #: identifiers and carry no `#`.
 LIST_MARKER = "#"
+
+
+#: The drawings a number is drawn on, with what a reviewer calls each one.
+DRAWN_SOURCES: Final[dict[str, str]] = {
+    "SHOP": "the vendor's drawing",
+    "ARCH": "the architect's drawing",
+}
+
+
+def confirm_only(source: str, *, many: bool) -> bool:
+    """Whether a rule input is one number drawn on a drawing, so it is confirmed and never typed.
+
+    One value on a SHOP or ARCH drawing is a reading; a `USER_INPUT` entry or a list is the
+    reviewer's own entry on Measurements. This is narrower than the waiting card's line
+    (`app/review/waiting_values.py`), which calls any single value that is not `USER_INPUT` drawn:
+    here a source that is not a drawing (`PRODUCT_SPEC`, which no rule reads today) is not refused.
+    """
+    return source in DRAWN_SOURCES and not many
+
+
+def typed_drawn_refusal(label: str, source: str, where: str) -> str:
+    """The plain sentence a typed drawn number is refused with (#1251), naming where it is drawn."""
+    drawing = DRAWN_SOURCES.get(source, "a drawing")
+    return (
+        f"{label} is a number drawn on {drawing}, so it is not typed here: people confirm a "
+        f"reading of it instead (GV's rule, 2026-10-12). It is drawn on {where[:1].lower()}"
+        f"{where[1:]} Confirm that reading on Measurements; until one is confirmed, the check "
+        "waits for it."
+    )
 
 
 def _latest_run_set(

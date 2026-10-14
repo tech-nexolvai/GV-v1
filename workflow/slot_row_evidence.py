@@ -510,7 +510,12 @@ def _row_wall(row: SlotRow) -> tuple[str | None, str | None, str | None]:
         source=source,
         held=held,
         reviewer_confirmed=confirmed,
+        wall_hold=row.wall_hold,
     )
+    if value is None and row.wall_hold is not None:
+        # A reviewer's earlier answer could not be carried here (#1241): say so, never the
+        # automatic walls' own words.
+        reason = row.wall_hold
     words = (
         None
         if value is None
