@@ -29,7 +29,10 @@ const STATUS_LABELS: Record<PackageStatus, string> = {
   AWAITING_REVIEW: 'Awaiting Review',
   APPROVED: 'Approved',
   CHANGES_REQUESTED: 'Changes Requested',
-  FAILED_RETRYABLE: 'Failed — Retrying',
+  // Neutral words, true for every cause (#1240 review): a reading or a check run that failed and
+  // will run again, and an out-of-credit stop that waits for a person. The restart wording belongs
+  // only to the Reading step while `reading.retrying` is true (lib/review-stage.ts).
+  FAILED_RETRYABLE: 'Stopped after a problem',
   FAILED_PERMANENT: 'Failed',
   NEEDS_INPUT: 'Needs Input',
   CANCELLED: 'Cancelled',

@@ -68,7 +68,7 @@ export interface ReadingProgress {
   unpricedCalls: number;
   /** When the worker last wrote a progress line (ISO time); null before its first. */
   updatedAt?: string | null;
-  /** A failed reading is being tried again (the package still says FAILED_RETRYABLE). */
+  /** A failed reading stage is starting again (the package still says FAILED_RETRYABLE). */
   retrying?: boolean;
 }
 
@@ -276,11 +276,17 @@ export function pageWords(reading: Pick<ReadingProgress, 'pagesDone' | 'pagesTot
   return `page ${Math.min(pagesDone + 1, pagesTotal)} of ${pagesTotal}`;
 }
 
+/**
+ * The words for a whole reading stage starting again after a crash (`reading.retrying`). "Trying
+ * again" is kept for one AI trying one item again (#1239), so the two are never confused.
+ */
+export const RESTARTING_WORDS = 'Starting the reading again after a problem';
+
 /** The Reading step's line: the part that is running and, where known, the page. */
 function readingNote(facts: ReviewFacts): string | null {
   const reading = facts.reading;
   if (reading) {
-    return [reading.retrying ? 'Retrying' : null, reading.label, pageWords(reading), quietWords(reading, facts.nowMs)]
+    return [reading.retrying ? RESTARTING_WORDS : null, reading.label, pageWords(reading), quietWords(reading, facts.nowMs)]
       .filter(Boolean)
       .join(' · ');
   }

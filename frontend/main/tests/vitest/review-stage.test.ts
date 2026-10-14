@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { RAISE_THE_LIMIT_FIRST, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { RAISE_THE_LIMIT_FIRST, RESTARTING_WORDS, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
+import { packageStatusLabel } from '@/components/ui/StatusBadge';
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -38,16 +39,43 @@ describe('reviewStage: one step per state', () => {
     expect(unpriced.next.reason).toContain('18 AI calls so far, at least $0.27');
   });
 
-  it('reading: a retry after a failure shows as Retrying on the Reading step, never as failed (#1178 review)', () => {
+  it('reading: a restart after a failure says so plainly on the Reading step, never as failed (#1178 review, #1239)', () => {
     const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 30, costUsd: '0.410000', unpricedCalls: 0, retrying: true };
     const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null });
     expect(stage.current).toBe('reading');
-    expect(stage.steps[1]).toMatchObject({ state: 'current', note: 'Retrying · AI readers reading the dimensions · page 1 of 9' });
-    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/problem|fail/i);
+    expect(stage.steps[1]).toMatchObject({ state: 'current', note: 'Starting the reading again after a problem · AI readers reading the dimensions · page 1 of 9' });
+    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/fail/i);
+    // "Trying again" is kept for the AI trying an item again (#1239), never for this restart.
+    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/retrying|trying again/i);
     expect(stage.next.kind).toBe('wait-reading');
     // Without a retry line, a failed package still says it hit a problem.
     const failed = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null });
     expect(failed.steps.find((step) => step.state === 'current')?.note).toBe('Processing hit a problem and will retry');
+  });
+
+  it('the package badge uses neutral words, true for every cause of FAILED_RETRYABLE (#1240 review)', () => {
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+    expect(packageStatusLabel('FAILED_RETRYABLE')).not.toMatch(/again|retry/i);
+  });
+
+  it('out of credit: the badge is neutral and nothing says the reading is starting again (#1240 review)', () => {
+    const stopReason = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+    const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null, stopReason });
+    const words = [...stage.steps.map((step) => step.note ?? ''), stage.next.label, stage.next.reason ?? ''].join(' ');
+    expect(words).not.toContain(RESTARTING_WORDS);
+    expect(stage.steps.find((step) => step.id === 'reading')?.note ?? null).toBeNull();
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+  });
+
+  it('checks failed into FAILED_RETRYABLE: no restart wording anywhere; only a running reading retry has it (#1240 review)', () => {
+    const checksFailed = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 9, readiness: null });
+    const words = [...checksFailed.steps.map((step) => step.note ?? ''), checksFailed.next.label, checksFailed.next.reason ?? ''].join(' ');
+    expect(words).not.toContain(RESTARTING_WORDS);
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+    // The one place the restart words appear: the Reading step while `reading.retrying` is true.
+    const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
+    const retry = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null });
+    expect(retry.steps.find((step) => step.id === 'reading')?.note).toBe(`${RESTARTING_WORDS} · AI readers reading the dimensions · page 1 of 9`);
   });
 
   it('reading: a worker quiet for too long is said, from the recorded time only', () => {
