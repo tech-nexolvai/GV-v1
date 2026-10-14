@@ -599,6 +599,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/architect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read each confirmed countertop's comparison with the architect's drawing
+         * @description For each live countertop item, whether its row is compared with the architect's drawing and
+         *     which pieces, by the piece items a person confirmed (#1273, `workflow/milan_items.py`).
+         *
+         *     **Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.
+         */
+        get: operations["countertop_items_architect_api_v1_projects__project_id__packages__package_id__countertop_items_architect_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/plan": {
         parameters: {
             query?: never;
@@ -4440,6 +4463,94 @@ export interface components {
             source?: string | null;
             /** Text */
             text: string;
+        };
+        /**
+         * ItemArchitectListOut
+         * @description Every confirmed countertop of a revision with its architect comparison, in page order.
+         */
+        ItemArchitectListOut: {
+            /** Items */
+            items: components["schemas"]["ItemArchitectOut"][];
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+        };
+        /**
+         * ItemArchitectOut
+         * @description Where one confirmed countertop stands with the architect's drawing. Read-only.
+         */
+        ItemArchitectOut: {
+            countertop: components["schemas"]["CountertopItemRefOut"];
+            /**
+             * Pairing Judgments
+             * @description Whose judgments the pairing rests on, e.g. "code and both AIs".
+             */
+            pairing_judgments: string | null;
+            /**
+             * Pairing Source
+             * @description Who paired its row; null when nobody did.
+             */
+            pairing_source: string | null;
+            /** Pairs */
+            pairs: components["schemas"]["ItemArchitectPairOut"][];
+            /**
+             * Reason
+             * @description Why it is not compared, or what the reviewer is asked; null when compared.
+             */
+            reason: string | null;
+            /**
+             * Row Id
+             * @description Its countertop row (`row_id` on the results); null if none.
+             */
+            row_id: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "compared" | "not_compared" | "waits_for_reviewer";
+        };
+        /**
+         * ItemArchitectPairOut
+         * @description One width compared with the architect: the overall, or one vendor piece.
+         */
+        ItemArchitectPairOut: {
+            /**
+             * Architect Candidate Id
+             * Format: uuid
+             */
+            architect_candidate_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "piece" | "overall";
+            /**
+             * Label
+             * @description "overall" or "piece 2", counted from one as the row shows it.
+             */
+            label: string;
+            /**
+             * Piece Item Id
+             * @description The piece a person confirmed for this place of the countertop's line; null for the overall, for a piece nobody confirmed, or when the line has no linked pieces.
+             */
+            piece_item_id: string | null;
+            /**
+             * Piece Item Type
+             * @description That piece's type; null when there is none.
+             */
+            piece_item_type: string | null;
+            /**
+             * Vendor Piece
+             * @description The piece's place from the left, 1 first; null for the overall.
+             */
+            vendor_piece: number | null;
         };
         /**
          * ItemPlanOut
@@ -8525,6 +8636,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    countertop_items_architect_api_v1_projects__project_id__packages__package_id__countertop_items_architect_get: {
+        parameters: {
+            query?: {
+                /** @description An earlier revision's number. Default: the newest revision. */
+                revision?: number | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemArchitectListOut"];
                 };
             };
             /** @description Validation Error */

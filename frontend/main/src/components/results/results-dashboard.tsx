@@ -1,7 +1,8 @@
 import { lazy, Suspense, useState } from 'react';
 import { Hourglass, RefreshCw, Search } from 'lucide-react';
 
-import { listRules, type CountertopResult, type PageWithoutCountertop } from '@/api/client';
+import { getCountertopItemsArchitect, listRules, type CountertopResult, type PageWithoutCountertop } from '@/api/client';
+import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
 import type { Finding } from '@/data/types';
 import {
@@ -21,6 +22,7 @@ import {
   type Filter,
 } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
+import { itemArchitectWords } from '@/lib/item-architect';
 import { architectItemKey } from '@/lib/needs-you-queue';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -133,6 +135,13 @@ export function ResultsDashboard({
   const rules = useAsync(() => listRules(), []);
   const ruleNames = new Map(rules.status === 'ready' ? rules.data.map((r) => [r.rule_id, r.name] as [string, string]) : []);
   const [deciding, setDeciding] = useState<{ finding: Finding; title: string; allowProblem?: boolean } | null>(null);
+  // Each confirmed countertop's one read-only line about the architect (#1273), asked only when a
+  // countertop is confirmed. A failed answer costs only those lines: no check reads them.
+  const confirmed = countertops.status === 'ready' && countertops.rows.some((row) => row.countertop_item);
+  const itemArchitect = useAsync(
+    () => (packageId && confirmed ? getCountertopItemsArchitect(projectId(), packageId) : Promise.resolve(null)),
+    [packageId, confirmed, countertops],
+  );
 
   if (countertops.status === 'loading') return <DashboardSkeleton />;
   if (countertops.status === 'error') {
@@ -195,6 +204,11 @@ export function ResultsDashboard({
   // filter, the search or a package with no countertop table leaves out puts them back in "Whole
   // package", so nothing that needs the reviewer is hidden.
   const { groups, wholePackage } = keepShownGroups(allGroups, others, cabinetOnly ? [] : visible);
+  const architectByItem = new Map(
+    itemArchitect.status === 'ready' && itemArchitect.data
+      ? itemArchitect.data.items.map((entry) => [entry.countertop.item_id, entry] as const)
+      : [],
+  );
 
   return (
     <section data-tw data-slot="results-dashboard" aria-label="Results" className="flex flex-col gap-4 p-4 font-sans sm:p-6">
@@ -299,6 +313,14 @@ export function ResultsDashboard({
                   ))}
                 </ul>
               )}
+              groupArchitect={(group) => {
+                const found = architectByItem.get(group.item.item_id);
+                return found ? (
+                  <span data-slot="countertop-group-architect" className="text-xs font-normal whitespace-normal text-muted-foreground">
+                    {itemArchitectWords(found, sharedReason)}
+                  </span>
+                ) : null;
+              }}
             />
           )}
         </>
