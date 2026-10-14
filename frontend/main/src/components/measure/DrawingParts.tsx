@@ -11,7 +11,13 @@ import {
   withdrawDrawingPart,
 } from '../../api/client';
 import { projectId } from '../../api/config';
-import { partCount, type PartDrawing, type PartKind, type SuggestedPart } from './drawingPartChoices.js';
+import {
+  partCount,
+  type NotPartReason,
+  type PartDrawing,
+  type PartKind,
+  type SuggestedPart,
+} from './drawingPartChoices.js';
 import type { SectionState, StepCount } from '../../lib/measure-steps';
 import { createDecisionSaver, type DecisionFeedback } from './decisionFeedback.js';
 import { DrawingPartsList, type NewPart } from './DrawingPartsList.js';
@@ -109,8 +115,10 @@ export function DrawingParts({
     );
   }
 
-  function withdraw(part: SuggestedPart) {
-    void save(part.proposal_id, () => withdrawDrawingPart(projectId(), packageId, part.proposal_id));
+  function withdraw(part: SuggestedPart, reason?: NotPartReason) {
+    void save(part.proposal_id, () =>
+      withdrawDrawingPart(projectId(), packageId, part.proposal_id, reason ?? null),
+    );
   }
 
   function add(drawing: PartDrawing, part: NewPart) {
