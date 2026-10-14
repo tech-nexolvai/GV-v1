@@ -53,9 +53,29 @@ describe('reviewStage: one step per state', () => {
     expect(failed.steps.find((step) => step.state === 'current')?.note).toBe('Processing hit a problem and will retry');
   });
 
-  it('the package badge says the same restart words, never "Retrying" (#1239)', () => {
-    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Starting the reading again after a problem');
-    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe(RESTARTING_WORDS);
+  it('the package badge uses neutral words, true for every cause of FAILED_RETRYABLE (#1240 review)', () => {
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+    expect(packageStatusLabel('FAILED_RETRYABLE')).not.toMatch(/again|retry/i);
+  });
+
+  it('out of credit: the badge is neutral and nothing says the reading is starting again (#1240 review)', () => {
+    const stopReason = 'The AI provider account is out of credit. Top it up, then run the reading again.';
+    const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null, stopReason });
+    const words = [...stage.steps.map((step) => step.note ?? ''), stage.next.label, stage.next.reason ?? ''].join(' ');
+    expect(words).not.toContain(RESTARTING_WORDS);
+    expect(stage.steps.find((step) => step.id === 'reading')?.note ?? null).toBeNull();
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+  });
+
+  it('checks failed into FAILED_RETRYABLE: no restart wording anywhere; only a running reading retry has it (#1240 review)', () => {
+    const checksFailed = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 9, readiness: null });
+    const words = [...checksFailed.steps.map((step) => step.note ?? ''), checksFailed.next.label, checksFailed.next.reason ?? ''].join(' ');
+    expect(words).not.toContain(RESTARTING_WORDS);
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+    // The one place the restart words appear: the Reading step while `reading.retrying` is true.
+    const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
+    const retry = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null });
+    expect(retry.steps.find((step) => step.id === 'reading')?.note).toBe(`${RESTARTING_WORDS} · AI readers reading the dimensions · page 1 of 9`);
   });
 
   it('reading: a worker quiet for too long is said, from the recorded time only', () => {

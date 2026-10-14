@@ -5,38 +5,34 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import {
   activityGlyph,
   activityLine,
-  linkedParts,
+  afterReadingSentence,
   readingHeadline,
   roleTag,
-  summarySentence,
-  unfinishedSentence,
+  whatStopped,
   type ReadingActivityItemOut,
   type ReadingActivityOut,
 } from '@/lib/reading-activity';
 import { cn } from '@/lib/utils';
 
-/** How many of the newest happenings the panel lists while reading; the rest are in the counts. */
+/** How many of the server's items the panel lists while reading; the rest are in its counts. */
 export const SHOWN_ITEMS = 4;
 
 /**
- * The live reading activity (#1239), under the review stepper and on the Measurements tab.
+ * The live reading activity (#1239), once, under the review stepper (it shows on every tab).
  *
- * While reading: the server's `now`, then the first happenings in the server's order — an inspector
- * stopping an AI (or the page sorter leaving a page unread), the
- * AI trying again and what changed, and whether that helped — each with a glyph by state and the
- * role that did it ("Line finder"; the agent's name on hover). After reading: the server's summary
- * sentence ("Tried again on 2 items: 1 now agree; 1 item waits for you."), whose counts open Decisions.
+ * While reading: the server's `now` (or the page count when `now` only repeats a row), then the
+ * server's first items in its order — an inspector stopping an AI, the page sorter leaving a page
+ * unread, an AI trying again and how it went — each with a glyph by state and its role tag (the
+ * agent's name on hover).
  *
- * A reading that did not finish shows only its sentence, plainly, with no counts or links. While a
- * reading runs, `activity` is null until its first event: the panel is then absent, and the stepper's
- * progress line still says where the reading is.
+ * After a finished reading: the server's summary sentence, an "Open Decisions" link while anything
+ * waits for a person, and a collapsed "Show what stopped (N)" list of every item the API returned
+ * that waits, so no stop reason becomes unreachable once the reading ends ("never silent"). After a
+ * reading that did not finish: only its sentence, plainly.
  *
- * Every sentence is the server's (#1238); the screen's own wording in `lib/reading-activity.ts` is
- * only a fallback for a sentence that is missing.
- *
- * One `aria-live="polite"` region that stays mounted, so a screen reader hears each new line without
- * being interrupted. With no activity (absent, null, or nothing to say) it renders nothing at all.
- * It shows recorded facts only; nothing here is a result.
+ * One `aria-live="polite"` region that stays mounted. With no activity (null before the running
+ * attempt's first event) it renders nothing, and the stepper's progress line still says where the
+ * reading is. Every sentence is the server's; nothing here is a result.
  */
 export function ReadingActivity({
   activity,
@@ -45,25 +41,24 @@ export function ReadingActivity({
   onOpenDecisions,
   className,
 }: {
-  /** `PackageOut.activity`, already read through `readActivity`. */
+  /** `PackageOut.activity`. */
   activity: ReadingActivityOut | null | undefined;
   /** The package is being read now (the Reading step is current). */
   reading: boolean;
   /** The worker's progress line, for "Reading page k of N…". */
   progress?: { pagesDone: number | null; pagesTotal: number | null } | null;
-  /** Opens Decisions; the summary's counts link there. */
+  /** Opens Decisions (the "Needs you" queue). */
   onOpenDecisions?: () => void;
   className?: string;
 }) {
   if (!activity) return null;
-  // A reading that did not finish says so plainly: no counts, no links (#1242).
   const unfinished = !reading && !activity.finished;
-  const summary = reading ? null : unfinished ? unfinishedSentence(activity) : summarySentence(activity.summary, activity.now);
-  if (!reading && !summary) return null;
+  const after = reading ? null : afterReadingSentence(activity);
+  if (!reading && !after) return null;
 
-  // The server's order: stops and tries first, answered pages only in places left. Never re-sorted.
-  const newest = activity.items.slice(0, SHOWN_ITEMS);
-  const headline = readingHeadline(progress, activity.now, newest[0] ? activityLine(newest[0]) : null);
+  const rows = activity.items.slice(0, SHOWN_ITEMS);
+  const stopped = reading || unfinished ? null : whatStopped(activity);
+  const waiting = activity.summary.waiting > 0;
   return (
     <section
       data-tw
@@ -78,60 +73,65 @@ export function ReadingActivity({
           <>
             <p className="flex items-center gap-1.5 font-medium">
               <ScanText className="size-4 shrink-0" aria-hidden="true" />
-              {headline}
+              {readingHeadline(progress, activity.now, rows.map(activityLine))}
             </p>
-            {newest.length > 0 && (
-              // Its own provider, so the panel works wherever it is placed (the Measurements tab too).
-              <TooltipProvider delayDuration={250}>
-                <ul className="flex flex-col gap-1">
-                  {newest.map((item) => <ActivityRow key={`${item.item}|${item.state}|${item.attempt ?? ''}|${item.at ?? ''}`} item={item} />)}
-                </ul>
-              </TooltipProvider>
-            )}
+            {rows.length > 0 && <ActivityRows items={rows} />}
           </>
         ) : unfinished ? (
-          <p className="text-muted-foreground">{summary}</p>
-        ) : summary && (
+          // A reading that did not finish says so plainly: no counts, no links (#1242).
+          <p className="text-muted-foreground">{after}</p>
+        ) : (
           <p>
-            {activity.summary && activity.summary.waiting > 0 && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mr-1.5 inline-block align-[-3px] text-outcome-review-fg" />}
-            <SummaryWithLinks sentence={summary} onOpen={onOpenDecisions} />
+            {waiting && <OutcomeIcon outcome="REVIEW_REQUIRED" size={15} className="mr-1.5 inline-block align-[-3px] text-outcome-review-fg" />}
+            {after}
+            {/* The server's counts are its own; the link only opens the queue, it claims no number. */}
+            {waiting && onOpenDecisions && (
+              <>
+                {' '}
+                <button type="button" onClick={onOpenDecisions} className="cursor-pointer rounded-sm font-medium underline underline-offset-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                  Open Decisions
+                </button>
+              </>
+            )}
           </p>
         )}
       </div>
+      {stopped && stopped.items.length > 0 && (
+        <details data-slot="what-stopped" className="group">
+          <summary className="cursor-pointer text-muted-foreground select-none hover:text-foreground">
+            Show what stopped (<span className="num">{stopped.total}</span>)
+          </summary>
+          <div className="mt-1.5 flex flex-col gap-1">
+            {stopped.items.length < stopped.total && (
+              <p className="text-xs text-muted-foreground">
+                showing <span className="num">{stopped.items.length}</span> of <span className="num">{stopped.total}</span>
+              </p>
+            )}
+            <ActivityRows items={stopped.items} />
+          </div>
+        </details>
+      )}
     </section>
   );
 }
 
-/**
- * The server's summary sentence, its counts ("3 now agree", "4 wait for you") made links to
- * Decisions. A sentence with no count to link gets one "Open Decisions" link after it.
- */
-function SummaryWithLinks({ sentence, onOpen }: { sentence: string; onOpen?: () => void }) {
-  const parts = linkedParts(sentence);
-  if (!onOpen) return <>{sentence}</>;
-  const linked = parts.some((part) => part.link);
+/** The rows, with their own tooltip provider so the panel works wherever it is placed. */
+function ActivityRows({ items }: { items: readonly ReadingActivityItemOut[] }) {
   return (
-    <>
-      {parts.map((part, index) => (part.link ? <DecisionsLink key={index} text={part.text} onOpen={onOpen} /> : <span key={index}>{part.text}</span>))}
-      {!linked && <> <DecisionsLink text="Open Decisions" onOpen={onOpen} /></>}
-    </>
+    <TooltipProvider delayDuration={250}>
+      <ul className="flex flex-col gap-1">
+        {/* The API has no document id on an item, and two files can share a page and question id:
+            the position keeps each key unique. */}
+        {items.map((item, index) => <ActivityRow key={`${item.agent}|${item.item}|${index}`} item={item} />)}
+      </ul>
+    </TooltipProvider>
   );
 }
 
-/** A link to Decisions; a count's number is mono. */
-function DecisionsLink({ text, onOpen }: { text: string; onOpen: () => void }) {
-  const [, number = '', words = text] = /^(\d+)(.*)$/.exec(text) ?? [];
-  return (
-    <button type="button" onClick={onOpen} className="cursor-pointer rounded-sm font-medium underline underline-offset-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-      {number && <span className="num">{number}</span>}{words}
-    </button>
-  );
-}
-
-/** One happening: a glyph, the sentence, and the role (the agent's name on hover). */
+/** One happening: a glyph, the server's sentence, and the role (the agent's name on hover). */
 function ActivityRow({ item }: { item: ReadingActivityItemOut }) {
   const line = activityLine(item);
-  // A try-again result names no page, so the page goes beside any line that does not say it.
+  // A line that does not name its page gets the page beside it.
   const page = !new RegExp(`\\bpage ${item.page}\\b`, 'i').test(line);
   return (
     <li data-state={item.state} className="flex items-start gap-1.5">

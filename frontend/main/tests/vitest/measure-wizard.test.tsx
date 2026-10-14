@@ -4,7 +4,6 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MeasurementPanel } from '@/pages/MeasurementPanel';
-import type { ReadingActivityOut } from '@/lib/reading-activity';
 import { CountertopRunsList } from '@/components/measure/CountertopRunsList';
 import { countOf, isComplete, stepAfter, stepBefore, sumCounts } from '@/lib/measure-steps';
 import { slotRowCount, unsavedRowCount } from '@/components/measure/slotReaderReview';
@@ -334,33 +333,5 @@ describe('measurements wizard: review fixes (#1124)', { timeout: 15_000 }, () =>
     await user.click(screen.getByRole('button', { name: 'Use the suggested layout: Island' }));
     await user.click(screen.getByRole('button', { name: 'Confirm this run' }));
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ countertop_item_id: 'top' }), ['a'], 'island');
-  });
-});
-
-describe('measurements: the live reading activity while reading (#1239)', () => {
-  it('shows what stopped beside "Reading these drawings", and nothing without activity', async () => {
-    const reading = { ...REQUIRED, still_reading: true, revision_state: 'EXTRACTING' };
-    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes('/required-inputs')) return json(reading);
-      if (url.endsWith('/slot-rows')) return json({ rows: [] });
-      return json({ error: 'unexpected', message: url, request_id: 'r' }, 500);
-    });
-    const activity: ReadingActivityOut = {
-      reading_id: 'r1', finished: false, updated_at: '2026-10-14T10:00:00Z', now: '',
-      items: [{ page: 2, agent: 'Akshara', role: 'the number reader', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look-2x', attempt: 1, line: 'Page 2: the number reader is trying again (try 1 of 3) with a 2× close-up.', at: '2026-10-14T10:00:00Z' }],
-      summary: { passed: 3, stopped: 1, tried_again: 1, helped: 0, waiting: 0, sentence: '' },
-    };
-    const view = render(<MeasurementPanel packageId="pkg" readingActivity={activity} readingPages={{ pagesDone: 1, pagesTotal: 4 }} />);
-    await screen.findAllByText('Reading these drawings');
-    const panel = document.querySelector('[data-slot="reading-activity"]') as HTMLElement;
-    expect(panel).not.toBeNull();
-    expect(within(panel).getByText('Reading page 2 of 4…')).toBeTruthy();
-    expect(within(panel).getByText('Page 2: the number reader is trying again (try 1 of 3) with a 2× close-up.')).toBeTruthy();
-    expect(within(panel).getByText('Number reader')).toBeTruthy();
-    // Its own live region, never nested in the reading block's.
-    expect(panel.closest('[data-slot="reading-progress"]')).toBeNull();
-    view.rerender(<MeasurementPanel packageId="pkg" readingActivity={null} readingPages={null} />);
-    expect(document.querySelector('[data-slot="reading-activity"]')).toBeNull();
   });
 });

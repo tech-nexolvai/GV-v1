@@ -88,8 +88,6 @@ import {
 import { candidateCropWarning } from '../components/measure/candidateCropWarning';
 import type { components } from '../api/schema';
 import { InForceNote } from '../components/measure/InForceNote';
-import { ReadingActivity } from '@/components/review/reading-activity';
-import type { ReadingActivityOut } from '@/lib/reading-activity';
 import { SinkEntryCard } from '../components/measure/SinkEntry';
 import { packageChanged, refreshFailureIsFatal } from './measureRefreshState';
 import {
@@ -288,16 +286,7 @@ const SOURCE_LABEL: Record<string, string> = {
  * reviewer waiting knows it is alive, roughly how long it has been, and which part of the work it
  * is in, without being told a number that was invented.
  */
-function ReadingProgress({
-  state,
-  activity,
-  pages,
-}: {
-  state: string;
-  /** What each AI is doing, stopped on or trying again (#1239); nothing is shown without it. */
-  activity?: ReadingActivityOut | null;
-  pages?: { pagesDone: number | null; pagesTotal: number | null } | null;
-}) {
+function ReadingProgress({ state }: { state: string }) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef(0);
 
@@ -310,28 +299,24 @@ function ReadingProgress({
   }, []);
 
   const stage = state.toLowerCase().replace(/_/g, ' ');
-  // The activity is its own live region beside this one, never nested inside it (#1239).
   return (
-    <div className="flex flex-col gap-2">
-      <div data-slot="reading-progress" className="flex flex-col gap-2 rounded-xl border bg-card p-4" role="status" aria-live="polite" aria-busy="true">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-          <ScanLine className="size-4" aria-hidden="true" />
-          <span className="font-semibold">Reading these drawings</span>
-          <span className="text-muted-foreground">{stage}</span>
-          <span className="num ml-auto text-muted-foreground">{(elapsed / 1000).toFixed(0)}s</span>
-        </div>
-        {/* Indeterminate: a pulse says "working" and claims no fraction nobody measured. */}
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15" aria-hidden="true">
-          <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
-        </div>
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          Usually about a minute; this page fills itself in.
-          <InfoTip label="About the reading">
-            <p>This usually takes about a minute. The page is watching and will fill itself in when the reading finishes — you do not need to reload.</p>
-          </InfoTip>
-        </p>
+    <div data-slot="reading-progress" className="flex flex-col gap-2 rounded-xl border bg-card p-4" role="status" aria-live="polite" aria-busy="true">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <ScanLine className="size-4" aria-hidden="true" />
+        <span className="font-semibold">Reading these drawings</span>
+        <span className="text-muted-foreground">{stage}</span>
+        <span className="num ml-auto text-muted-foreground">{(elapsed / 1000).toFixed(0)}s</span>
       </div>
-      <ReadingActivity activity={activity} reading progress={pages} />
+      {/* Indeterminate: a pulse says "working" and claims no fraction nobody measured. */}
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-primary/15" aria-hidden="true">
+        <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
+      </div>
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        Usually about a minute; this page fills itself in.
+        <InfoTip label="About the reading">
+          <p>This usually takes about a minute. The page is watching and will fill itself in when the reading finishes — you do not need to reload.</p>
+        </InfoTip>
+      </p>
     </div>
   );
 }
@@ -415,8 +400,6 @@ export function MeasurementPanel({
   onHeaderRun,
   runChecksBlocked,
   onRunStateChange,
-  readingActivity,
-  readingPages,
 }: {
   packageId?: string;
   onChoosePackage?: () => void;
@@ -451,10 +434,6 @@ export function MeasurementPanel({
   runChecksBlocked?: string | null;
   /** A run from this panel (step 4 or the header) is being saved and requested, until it is queued. */
   onRunStateChange?: (running: boolean) => void;
-  /** The live reading activity (#1239), shown while the drawings are read; the review page re-reads it. */
-  readingActivity?: ReadingActivityOut | null;
-  /** The worker's page count while reading, for "Reading page k of N…". */
-  readingPages?: { pagesDone: number | null; pagesTotal: number | null } | null;
 }) {
   const signedOff = useSignedOff();
   const [needed, setNeeded] = useState<Needed | null>(null);
@@ -1909,7 +1888,7 @@ export function MeasurementPanel({
                   Keyed on whether anything was attempted, so a failure before the first frame (a 413, a
                   404, a server that did not answer) is shown rather than swallowed. */}
               {needed.still_reading ? (
-                <ReadingProgress state={needed.revision_state} activity={readingActivity} pages={readingPages} />
+                <ReadingProgress state={needed.revision_state} />
               ) : !attempted && storedProposalCount > 0 ? (
                 /* **Already done, before the reviewer arrived.** The proposal is made when the drawings
                    are read and filed, so this panel reports a completed step rather than offering one. */

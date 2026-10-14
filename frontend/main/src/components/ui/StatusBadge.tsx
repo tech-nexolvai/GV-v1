@@ -29,9 +29,10 @@ const STATUS_LABELS: Record<PackageStatus, string> = {
   AWAITING_REVIEW: 'Awaiting Review',
   APPROVED: 'Approved',
   CHANGES_REQUESTED: 'Changes Requested',
-  // The same words as the Reading step's restart (`RESTARTING_WORDS` in lib/review-stage.ts; a test
-  // pins them equal). "Trying again" is kept for one AI trying one item again (#1239).
-  FAILED_RETRYABLE: 'Starting the reading again after a problem',
+  // Neutral words, true for every cause (#1240 review): a reading or a check run that failed and
+  // will run again, and an out-of-credit stop that waits for a person. The restart wording belongs
+  // only to the Reading step while `reading.retrying` is true (lib/review-stage.ts).
+  FAILED_RETRYABLE: 'Stopped after a problem',
   FAILED_PERMANENT: 'Failed',
   NEEDS_INPUT: 'Needs Input',
   CANCELLED: 'Cancelled',

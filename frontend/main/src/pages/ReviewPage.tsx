@@ -1245,8 +1245,6 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onHeaderRun={headerRunAnswered}
             runChecksBlocked={runChecksBlocked}
             onRunStateChange={setMeasureRunning}
-            readingActivity={activity}
-            readingPages={readingPages}
           />
         </div>
       )}
