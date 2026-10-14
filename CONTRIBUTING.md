@@ -276,8 +276,10 @@ make check
 
 CI runs the Python tests in four shards that are meant to finish together. `pytest-split` deals the
 tests out by the times recorded in `.test_durations`, and counts a test that is missing from the file at
-the average, so the shards drift apart as tests are added or get slower. When the shards' pytest times
-in a CI run are more than about 20% apart, or many tests have been added since the last refresh,
+the average, so the shards drift apart as tests are added or get slower. Refresh the file when the same
+shard is the slowest by more than about 20% run after run, or when many tests have been added since the
+last refresh. One run's spread alone is not a reason: GitHub's runners differ in speed (each shard prints
+its CPU in the "Runner CPU" step), and no split of the tests can fix that. To refresh,
 record new times **on CI** (a laptop runs the suite at a different speed, so its times balance nothing):
 
 1. Run the CI workflow by hand with `store_durations` ticked. Every shard runs its usual tests and also

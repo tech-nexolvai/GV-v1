@@ -132,6 +132,12 @@ jobs:
       DATABASE_URL: postgresql+psycopg://gv_test:gv_test@localhost:5432/gv_test
 
     steps:
+      # GitHub hands out runners of different speeds. Measured in #1283, the same tests ran up to about
+      # 1.5 times faster on one shard's runner than on another's in the same run, so a shard can be slow
+      # because of its machine, not its tests. This line says which machine it got.
+      - name: Runner CPU
+        run: lscpu | grep -E '^(Model name|CPU\(s\)):'
+
       # Every shard runs its own PostgreSQL 17 server and database, installed on the runner itself.
       #
       # **No container image, so no registry pull limit (#1260).** The database used to be a service
@@ -226,8 +232,11 @@ jobs:
       #
       # **Balancing.** `least_duration` deals tests out by their recorded times in `.test_durations`,
       # so the shards only finish together while those times are current. A test missing from the file
-      # is counted at the average. Refresh the file when the shards' pytest times drift more than about
-      # 20% apart, or when many tests have been added since the last refresh:
+      # is counted at the average. Refresh the file when the same shard is the slowest by more than about
+      # 20% run after run, or when many tests have been added since the last refresh (compare the count
+      # the shard-coverage check prints with the number of names in the file). One run's spread alone
+      # is not a reason: the
+      # runners differ in speed (see "Runner CPU" above), and no split of the tests can fix that.
       #
       #   1. Run this workflow by hand on any branch with `store_durations` ticked (Actions > CI > Run
       #      workflow, or `gh workflow run ci.yml --ref <branch> -f store_durations=true`). Every shard
