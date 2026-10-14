@@ -6,7 +6,8 @@ are read again, read-only, and the kind one source names for each keyed piece is
 wrong or unknown against a local kind key (`eval/pariksha/kinds.py`; build one with
 `scripts/pariksha_kind_key.py`).
 
-    # --source product: the kinds the run stored; face-tag: the measured face-tag rule
+    # --source product: the kinds the run stored; face-tag: the measured face-tag rule;
+    # bala: the kinds Bala filed (run the match stage on a copy first, #1266)
     python scripts/pariksha_kinds.py score --source product --db <database name or URL> \\
         --key ~/gv-local/<kind key>.json [--run <extraction run id>] \\
         --code-version <commit of the code that made the run> --out ~/gv-local/<card>.json

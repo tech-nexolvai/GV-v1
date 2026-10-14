@@ -125,7 +125,13 @@ describe("Bala's suggestions on the Measure page (#1236)", () => {
     renderList([unnamed]);
     expect(screen.queryByRole('button', { name: /^Confirm: / })).toBeNull();
     const choices = within(card(/4\. /)).getByRole('group', { name: /What is part 4/ });
-    for (const name of ['Cabinet', 'Filler', 'Appliance space (not a part)', 'Something else (not a part)']) {
+    for (const name of [
+      'Cabinet',
+      'Filler',
+      'Appliance space (not a part)',
+      'Side panel (not a part)',
+      'Something else (not a part)',
+    ]) {
       expect(within(choices).getByRole('button', { name })).toBeTruthy();
     }
   });
@@ -139,7 +145,46 @@ describe("Bala's suggestions on the Measure page (#1236)", () => {
     expect(onConfirm).toHaveBeenCalledWith(unnamed, 'filler', null);
 
     await userEvent.click(within(choices).getByRole('button', { name: 'Appliance space (not a part)' }));
-    expect(onWithdraw).toHaveBeenCalledWith(unnamed);
+    expect(onWithdraw).toHaveBeenLastCalledWith(unnamed, 'appliance-space');
+  });
+
+  // #1246, with phase 5 decision 6: each "not a part" answer is sent with its own reason.
+  it('sends each not-a-part answer with its own reason', async () => {
+    const onWithdraw = vi.fn();
+    renderList([unnamed], true, onWithdraw);
+    const choices = within(card(/4\. /)).getByRole('group', { name: /What is part 4/ });
+
+    await userEvent.click(within(choices).getByRole('button', { name: 'Side panel (not a part)' }));
+    await userEvent.click(within(choices).getByRole('button', { name: 'Something else (not a part)' }));
+
+    expect(onWithdraw.mock.calls).toEqual([
+      [unnamed, 'side-panel'],
+      [unnamed, 'other'],
+    ]);
+  });
+
+  it('shows the answer again after a reload', () => {
+    const decided = (reason: 'appliance-space' | 'side-panel' | 'other' | null, position: number) =>
+      part({
+        ...unnamed,
+        proposal_id: `p-${position}`,
+        position,
+        decision: {
+          decision: 'withdrawn',
+          kind: null,
+          code: null,
+          decided_by: 'reviewer',
+          decided_at: '2026-10-14T10:00:00Z',
+          by_code: false,
+          not_part_reason: reason,
+        },
+      });
+    renderList([decided('appliance-space', 5), decided('side-panel', 6), decided('other', 7), decided(null, 8)]);
+
+    expect(within(card(/^5\. /)).getByText('Not a part (appliance space), said reviewer.')).toBeTruthy();
+    expect(within(card(/^6\. /)).getByText('Not a part (side panel), said reviewer.')).toBeTruthy();
+    expect(within(card(/^7\. /)).getByText('Not a part (something else), said reviewer.')).toBeTruthy();
+    expect(within(card(/^8\. /)).getByText('Not a part, said reviewer.')).toBeTruthy();
   });
 
   it('says a picture is being made while the worker cuts it', () => {

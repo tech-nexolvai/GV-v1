@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from eval.pariksha.keys import KeyFormatError, load_key
 from eval.pariksha.kinds import (
+    BALA,
     FACE_TAG,
     KINDS_AGENT,
     KINDS_FAMILY,
@@ -335,6 +336,41 @@ def test_the_face_tag_rule_is_scored_on_the_same_pieces() -> None:
     assert _metric(card, "wrong") == (1, 5)
     b1 = next(c for c in card.cases if c.case_id.startswith("b") and c.case_id.endswith("piece1"))
     assert "two ways" in b1.readers[0].answer or "two ways" in b1.note
+
+
+def test_bala_s_filed_kinds_are_scored_named_only() -> None:
+    """#1266: a kind Bala filed counts only where it names it (the Measure page's pre-selection);
+    a suggestion that names nothing, or no suggestion, is unknown, never wrong."""
+    filed = {
+        ("a", 1): ("cabinet", True),
+        ("a", 2): ("cabinet", False),
+        ("b", 0): ("filler", True),
+    }
+    run = stored_run()
+    run = StoredPiecesRun(
+        **{
+            **_fields(run),
+            "pieces": tuple(
+                StoredPiece(
+                    **{
+                        **_piece_fields(piece),
+                        "bala": filed.get(("abcde"[piece.page_index], piece.slot)),
+                    }
+                )
+                for piece in run.pieces
+            ),
+        }
+    )
+
+    card = _score(run, BALA)
+
+    outcomes = _outcomes(card)
+    assert outcomes["a0"] == UNKNOWN  # Bala filed nothing for it
+    assert outcomes["a1"] == RIGHT
+    assert outcomes["a2"] == UNKNOWN  # suggested as a cabinet, but not named
+    assert outcomes["b0"] == WRONG  # a panel named a filler is still wrong
+    assert card.extractor_versions["kind_source"] == BALA
+    assert "kind_named" in card.extractor_versions["rule"]
 
 
 def test_a_case_the_run_did_not_read_says_why() -> None:

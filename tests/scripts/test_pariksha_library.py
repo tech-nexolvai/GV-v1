@@ -149,6 +149,25 @@ def test_register_refuses_a_library_inside_a_git_checkout_or_without_a_path(
     assert "inside a git" in capsys.readouterr().err
     assert not (REPO / "library.json").exists()
 
+    for command in (
+        ["list"],
+        [
+            "compare",
+            "--agent",
+            "akshara",
+            "--before-db",
+            "x",
+            "--before-code",
+            "a1b2c3d",
+            "--after-db",
+            "y",
+            "--after-code",
+            "b2c3d4e",
+        ],
+    ):
+        assert pariksha_library.main([*command, "--library", str(REPO / "library.json")]) == 2
+        assert "inside a git" in capsys.readouterr().err
+
     monkeypatch.delenv(LIBRARY_SETTING, raising=False)
     assert pariksha_library.main(["list"]) == 2
     assert "no default" in capsys.readouterr().err

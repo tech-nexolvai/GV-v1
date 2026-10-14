@@ -24,7 +24,8 @@ entry names a key file by its absolute path and records:
 
 **Local only.** The keys and the list hold client values (what drawings print), so the list's path
 is given each time (`--library`) or by the `GV_KEY_LIBRARY` setting, with no default in the
-repository, and a path inside any git working tree is refused.
+repository, and a list or a key inside any git working tree is refused (on register, list and
+compare alike).
 
 **Conflicts are refused**, never merged silently:
 
@@ -32,7 +33,8 @@ repository, and a path inside any git working tree is refused.
   version is a new file), or again with another label;
 * the same key (same hash) at a second path;
 * one name and version with other answers;
-* two keys of one agent giving one question different answers. An answer the key leaves
+* two keys of one agent giving one question different answers (checked on register, and again
+  each time the list is read, so a hand edit cannot slip one in). An answer the key leaves
   unsettled (a wall end `key_unsure`, an `open` depth, a piece word that names no kind) is no
   answer, so it never conflicts.
 
@@ -191,8 +193,8 @@ def outside_git(path: Path, what: str = "the key library") -> Path:
         or _inside_git_working_tree(resolved.parent)
     ):
         raise LibraryError(
-            f"{path} is inside a git working tree; {what} names keys that hold client values, so "
-            "write it outside any repository (for example under ~/gv-local/)"
+            f"{path} is inside a git working tree; {what} holds or names client values, so keep "
+            "it outside any repository (for example under ~/gv-local/)"
         )
     return resolved
 
@@ -315,7 +317,7 @@ def describe(
     """The entry a key file would get, read through its own loader, and the key itself."""
     confirmed_by = _text(confirmed_by, "confirmed_by")
     label = _text(label, "label")
-    resolved = path.expanduser().resolve()
+    resolved = outside_git(path, "an answer key")
     key = read_any_key(resolved)
     agent = key_agent(key)
     entry = LibraryEntry(
@@ -407,7 +409,10 @@ def _identity_conflict(entry: LibraryEntry, known: LibraryEntry) -> str | None:
 
 
 def read_library(path: Path, *, missing_ok: bool = False) -> Library:
-    """The list, strictly: unknown fields, a wrong kind or two clashing entries are refused."""
+    """The list, strictly: a list or a key inside a git working tree, unknown fields, a wrong
+    kind, two clashing entries, a changed key, or two keys of one agent giving one question
+    different answers (a hand edit can add one) are all refused."""
+    outside_git(path)
     resolved = path.expanduser()
     if not resolved.exists():
         if missing_ok:
@@ -435,8 +440,39 @@ def read_library(path: Path, *, missing_ok: bool = False) -> Library:
                 raise LibraryError(
                     f"the library holds one key twice or two keys that clash: {known} and {entry}"
                 )
+        outside_git(Path(entry.path), f"the key {entry}")
         entries.append(entry)
+    answers: dict[LibraryEntry, dict[str, str]] = {}
+    for entry in entries:
+        answers[entry] = key_answers(load_entry_key(entry))
+        for known in entries:
+            if known is entry:
+                break
+            if known.agent == entry.agent:
+                clash = _answer_clash(entry, answers[entry], known, answers[known])
+                if clash is not None:
+                    raise LibraryError(f"the library holds two keys that clash: {clash}")
     return Library(path=resolved, entries=tuple(entries))
+
+
+def _answer_clash(
+    entry: LibraryEntry, answers: Mapping[str, str], known: LibraryEntry, theirs: Mapping[str, str]
+) -> str | None:
+    """Why two keys of one agent cannot both judge changes: one question, different answers."""
+    differ = sorted(
+        question for question in set(answers) & set(theirs) if answers[question] != theirs[question]
+    )
+    if not differ:
+        return None
+    listed = "; ".join(
+        f"{question}: {theirs[question]!r} there, {answers[question]!r} here"
+        for question in differ[:_LISTED]
+    )
+    more = f", and {len(differ) - _LISTED} more" if len(differ) > _LISTED else ""
+    return (
+        f"{entry.name} gives {len(differ)} question(s) a different answer than the registered "
+        f"{known}: {listed}{more}. A person settles which is right before either judges a change"
+    )
 
 
 def register(library: Library, entry: LibraryEntry, key: LoadedKey) -> Library:
@@ -454,23 +490,9 @@ def register(library: Library, entry: LibraryEntry, key: LoadedKey) -> Library:
     for known in library.entries:
         if known.agent != entry.agent:
             continue
-        theirs = key_answers(load_entry_key(known))
-        differ = sorted(
-            question
-            for question in set(answers) & set(theirs)
-            if answers[question] != theirs[question]
-        )
-        if differ:
-            listed = "; ".join(
-                f"{question}: {theirs[question]!r} there, {answers[question]!r} here"
-                for question in differ[:_LISTED]
-            )
-            more = f", and {len(differ) - _LISTED} more" if len(differ) > _LISTED else ""
-            raise LibraryError(
-                f"{entry.name} gives {len(differ)} question(s) a different answer than the "
-                f"registered {known}: {listed}{more}. A person settles which is right before "
-                "either judges a change"
-            )
+        clash = _answer_clash(entry, answers, known, key_answers(load_entry_key(known)))
+        if clash is not None:
+            raise LibraryError(clash)
     return replace(library, entries=(*library.entries, entry))
 
 
