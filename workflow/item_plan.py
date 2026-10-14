@@ -58,6 +58,8 @@ from app.models import (
     PartProposalRow,
     RuleDefinition,
     RuleSnapshot,
+    TaskRun,
+    WorkflowRun,
 )
 from app.models.package import package_product
 from app.review.waiting_values import WAITING_RULES, missing_inputs_for
@@ -70,7 +72,7 @@ from rules.semantic_types import ProductType
 from verdict.outcomes import Outcome
 from vocabulary.part_kinds import PartKind
 from workflow.bala_items import _Box, _region_box, _slot_candidates, _stored_box
-from workflow.parts import outline_box
+from workflow.parts import CODE_ACTOR_PREFIX, outline_box
 from workflow.slot_row_scope import SlotRow, latest_slot_reader_run, slot_rows_and_unchosen_pages
 
 __all__ = [
@@ -243,19 +245,24 @@ def _follow_to_newest_rows(
 
     **How Bala skips** (`bala_items.propose_items`): a newest row's countertop is not suggested again
     when an older reading's Bala countertop suggestion on the same drawing, with the same outline
-    within the part finder's tolerance, has a current decision of any kind: confirmed, or withdrawn.
+    within the part finder's tolerance, has a **person's** current decision of any kind: confirmed,
+    or withdrawn. Code's own decisions (#1244) never make Bala skip, so they are not counted here.
     So a newest row with no link of its own may have been skipped for a *withdrawn* suggestion, or
     for another countertop's. Following it by nearness alone could hang a rejected row's results
     under this countertop.
 
     **The rule, all of it required:**
 
-    * this countertop's suggestion is **the only decided Bala countertop suggestion** from another
-      reading on any drawing of its page. Decisions are never removed (a correction supersedes a
-      decision on the same suggestion, so a decided suggestion stays decided), so the set of decided
-      suggestions only grows: if this one is the only one now, it was the only one when Bala
-      skipped, and Bala's skip on this page can only have been for it, within Bala's own tolerance,
-      whatever that tolerance was. No tolerance needs to be stored or guessed;
+    * **Bala has run on the newest reading**: it filed something for it, or `match` ran after it
+      (`_matched_since`). Before that, nothing says which rows Bala will skip;
+    * this countertop's suggestion is **the only Bala countertop suggestion a person decided** from
+      another reading on any drawing of its page. A person's decisions are never removed (a
+      correction supersedes a decision on the same suggestion, and code may never replace a
+      person's decision), so that set only grows: if this one is the only one now, it was the only
+      one when Bala skipped, and Bala's skip on this page can only have been for it, within Bala's
+      own tolerance, whatever that tolerance was. No tolerance needs to be stored or guessed. A
+      countertop code confirmed is never followed: Bala does not skip for it (code takes its own
+      item back and confirms the newer reading's instead, `confirm_automatic_countertops`);
     * the newest run has **exactly one** countertop row on the page with no countertop link of its
       own, so one row for this countertop and, by the first point, one countertop for this row;
     * Bala can outline that row exactly as it does (`bala_items`'s own helpers): every piece has a
@@ -270,6 +277,8 @@ def _follow_to_newest_rows(
     and the run.
     """
     pages = {entry.page_id for entry in stale}
+    current = aliased(PartConfirmation)
+    later = aliased(PartConfirmation)
     decided: dict[UUID, set[UUID]] = {}
     outlines: dict[UUID, PartProposal] = {}
     for proposal, page_id in session.execute(
@@ -280,7 +289,13 @@ def _follow_to_newest_rows(
             DrawingView.page_id.in_(pages),
             PartProposalRow.slot_index.is_(None),
             PartProposalRow.extraction_run_id != newest,
-            exists().where(PartConfirmation.part_proposal_id == PartProposal.id),
+            # A person's current decision, as Bala counts (`bala_items._decided_outlines`): code's
+            # own decision (#1244) is never a reason Bala skips a row.
+            exists().where(
+                current.part_proposal_id == PartProposal.id,
+                ~current.confirmed_by.startswith(CODE_ACTOR_PREFIX),
+                ~exists().where(later.supersedes_id == current.id),
+            ),
         )
     ).all():
         decided.setdefault(page_id, set()).add(proposal.id)
@@ -290,23 +305,22 @@ def _follow_to_newest_rows(
     }
     if not sole:
         return {}
-    linked = set(
-        session.scalars(
-            select(PartProposalRow.row_candidate_id).where(
-                PartProposalRow.extraction_run_id == newest,
-                PartProposalRow.slot_index.is_(None),
-            )
+    links = session.execute(
+        select(PartProposalRow.row_candidate_id, PartProposalRow.slot_index).where(
+            PartProposalRow.extraction_run_id == newest
         )
-    )
+    ).all()
+    run = session.get(ExtractionRun, newest)
+    if run is None or not (links or _matched_since(session, package_revision_id, run)):
+        # Bala has not run on the newest reading yet: nothing says which rows it will skip.
+        return {}
+    linked = {row_id for row_id, slot_index in links if slot_index is None}
     unlinked: dict[UUID, list[SlotRow]] = {}
     for row in slot_rows_and_unchosen_pages(session, package_revision_id, run_id=newest)[0]:
         if row.anchor.page_id in sole and row.anchor.id not in linked:
             unlinked.setdefault(row.anchor.page_id, []).append(row)
     single = {page_id: rows[0] for page_id, rows in unlinked.items() if len(rows) == 1}
     if not single:
-        return {}
-    run = session.get(ExtractionRun, newest)
-    if run is None:
         return {}
     page_by_id = {
         page.id: page for page in session.scalars(select(Page).where(Page.id.in_(single)))
@@ -336,6 +350,24 @@ def _follow_to_newest_rows(
             continue
         followed[sole[page_id].item_id] = row.anchor.id
     return followed
+
+
+def _matched_since(session: Session, package_revision_id: UUID, run: ExtractionRun) -> bool:
+    """Whether `match` (where Bala runs) has run on this revision since the reading `run` was made:
+    its stage claim is written with its work, so a claim later than the reading means Bala read it.
+    Asked only when Bala filed nothing at all for the reading (every part already decided)."""
+    return bool(
+        session.scalar(
+            select(
+                exists().where(
+                    TaskRun.task_type == "match",
+                    TaskRun.workflow_run_id == WorkflowRun.id,
+                    WorkflowRun.package_revision_id == package_revision_id,
+                    TaskRun.created_at > run.created_at,
+                )
+            )
+        )
+    )
 
 
 def _bala_outline(row: SlotRow, page: Page, run: ExtractionRun) -> _Box | None:

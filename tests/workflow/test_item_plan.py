@@ -37,7 +37,13 @@ from workflow.item_plan import (
     live_countertops,
 )
 from workflow.pariksha_run_check import run_check
-from workflow.parts import confirm_part, record_part_proposal, withdraw_part
+from workflow.parts import (
+    BALA_CONFIRMER,
+    confirm_part,
+    confirm_part_by_code,
+    record_part_proposal,
+    withdraw_part,
+)
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -526,3 +532,62 @@ def test_the_run_check_line_is_silent_on_a_cabinet_package(
     codes = [code for code, _ids in _codes(session, built.revision.id)]
 
     assert "countertop-item-without-width-result" not in codes
+
+
+def test_a_re_read_row_is_not_followed_to_before_bala_has_run_on_that_reading(
+    session: Session, store: LocalStore
+) -> None:
+    """Re-review of #1247 (Low 1). A re-read reads the row 5 pixels off. Before Bala has run on the
+    new reading nothing says whether it will skip that row, so the countertop is not followed to it.
+    Bala then files the row as a new countertop (its outline differs), so it never was this one."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    _confirm_bala_countertop(session, first)
+
+    newest = built.row(built.run(), page=0, shift=5)
+
+    (before_bala,) = live_countertops(session, built.revision.id)
+    assert before_bala.row_candidate_id is None
+    assert newest not in countertops_by_row(session, built.revision.id)
+
+    assert propose_items(session, built.revision.id).written >= 1
+    (after_bala,) = live_countertops(session, built.revision.id)
+    assert after_bala.row_candidate_id is None
+    assert newest not in countertops_by_row(session, built.revision.id)
+
+
+def test_code_s_decisions_on_the_page_do_not_stop_a_person_s_countertop_being_followed(
+    session: Session, store: LocalStore
+) -> None:
+    """Re-review of #1247 (Low 2). Since #1248 Bala skips a row only for a person's decision, never
+    for code's. Code confirms a countertop; a re-read takes it back; a person confirms the next
+    reading's countertop; after another re-read the person's countertop is still followed to its
+    row, because code's history on the page caused no skip."""
+    built = _Revision(session)
+    first = built.row(built.run(), page=0)
+    propose_items(session, built.revision.id)
+    codes = session.scalars(
+        select(PartProposal)
+        .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
+        .where(PartProposalRow.row_candidate_id == first, PartProposalRow.slot_index.is_(None))
+    ).one()
+    assert (
+        confirm_part_by_code(
+            session, proposal=codes, kind=PartKind.COUNTERTOP, reason="two synthetic judgments"
+        )
+        is not None
+    )
+
+    second = built.row(built.run(), page=0)
+    assert propose_items(session, built.revision.id).written >= 1
+    withdraw_part(session, proposal=codes, actor=BALA_CONFIRMER)
+    item = _confirm_bala_countertop(session, second)
+
+    newest = built.row(built.run(), page=0)
+    assert propose_items(session, built.revision.id).already_decided >= 1
+
+    (countertop,) = live_countertops(session, built.revision.id)
+    assert countertop.item_id == item
+    assert countertop.row_candidate_id == newest
+    assert countertop.row_followed
