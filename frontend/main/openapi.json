@@ -11597,6 +11597,10 @@
             "title": "Categories",
             "type": "array"
           },
+          "confirm_only": {
+            "title": "Confirm Only",
+            "type": "boolean"
+          },
           "consumers": {
             "items": {
               "additionalProperties": {
@@ -11629,6 +11633,7 @@
           "semantic_type",
           "source",
           "many",
+          "confirm_only",
           "consumers"
         ],
         "title": "QuantityOut",

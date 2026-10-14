@@ -7506,6 +7506,8 @@ export interface components {
              * @default []
              */
             categories: string[];
+            /** Confirm Only */
+            confirm_only: boolean;
             /** Consumers */
             consumers: {
                 [key: string]: string;

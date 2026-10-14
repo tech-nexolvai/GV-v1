@@ -119,7 +119,7 @@ from app.verdicts.rulebook import snapshot_store
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
 from rules.required_inputs import RequiredInputs, allowed_categories_for, required_inputs
-from rules.schema import Quantity, Rule
+from rules.schema import Cardinality, Quantity, Rule
 from rules.semantic_types import SemanticType
 from storage.store import ArtifactStore
 from units.imperial import format_inches
@@ -140,7 +140,7 @@ from workflow.layout_proposals import (
     record_layout_confirmation,
     stored_layout_proposals,
 )
-from workflow.measurements import LIST_MARKER
+from workflow.measurements import LIST_MARKER, confirm_only, typed_drawn_refusal
 from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.parameter_citations import (
@@ -986,6 +986,7 @@ def read_required_inputs(
                 semantic_type=quantity.semantic_type,
                 source=quantity.source,
                 many=quantity.many,
+                confirm_only=confirm_only(quantity.source, many=quantity.many),
                 consumers=tuple(
                     {"rule_id": consumer.rule_id, "input_name": consumer.input_name}
                     for consumer in quantity.consumers
@@ -1159,8 +1160,18 @@ def enter_measurements(
     # runs position by position, so reordering here would compare the wrong pair of cabinets.
     measurement_keys: set[str] = set()
     sized = _positive_size_inputs(session) if body.measurements else frozenset()
+    drawn = _confirm_only_inputs(session) if body.measurements else {}
     for measurement in body.measurements:
         label = f"{measurement.rule_id}.{measurement.name}"
+        # **A number drawn on the drawing is confirmed, never typed** (#1251; GV's rule, Anant
+        # 2026-10-12). Refused whichever form carried it, before anything is stored, so a typed
+        # depth can no longer reach the checks and beat a reading. Values typed before this stay
+        # and still count (`workflow/measurements.py`); nothing new of that kind is accepted.
+        if (measurement.rule_id, measurement.name) in drawn:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=typed_drawn_refusal(label, drawn[(measurement.rule_id, measurement.name)]),
+            )
         if measurement.values is not None:
             for index, raw in enumerate(measurement.values):
                 key = f"{measurement.rule_id}:{measurement.name}{LIST_MARKER}{index}"
@@ -1283,6 +1294,24 @@ def _positive_size_inputs(session: Session) -> frozenset[tuple[str, str]]:
         for name, selector in rule.inputs.items()
         if is_positive_size(selector.semantic_type.value)
     )
+
+
+def _confirm_only_inputs(session: Session) -> dict[tuple[str, str], str]:
+    """`(rule id, input name)` → drawing source, for every published input that is one number
+    drawn on the vendor's or the architect's drawing: confirmed from a reading, never typed (#1251).
+
+    Read from the published rulebook, as the form is, so the form's `confirm_only` and this refusal
+    cannot disagree. An input no published rule declares is not judged here.
+    """
+    return {
+        (rule.id, name): source
+        for rule in _published_rules(session)
+        for name, selector in rule.inputs.items()
+        if confirm_only(
+            source := str(getattr(selector.source, "value", selector.source)),
+            many=selector.cardinality is Cardinality.MANY,
+        )
+    }
 
 
 def _parse_size(

@@ -232,6 +232,10 @@ class QuantityOut(BaseModel):
     semantic_type: str
     source: str
     many: bool
+    #: One number drawn on the vendor's or the architect's drawing (#1251): the form offers no box
+    #: for it, only a reading to confirm, and `POST .../measurements` refuses a typed one. False for
+    #: the reviewer's own entries (`USER_INPUT`) and for lists, which stay typable.
+    confirm_only: bool
     #: The rule inputs this one measurement feeds, so a caller fans a single typed value out rather
     #: than asking for it once per rule.
     consumers: tuple[dict[str, str], ...]
