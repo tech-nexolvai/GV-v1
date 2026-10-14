@@ -350,3 +350,70 @@ def test_the_reviewers_list_takes_plain_names_only(tmp_path: Path) -> None:
     path.write_text(json.dumps({"format": REVIEWERS_FORMAT, "reviewers": [{"name": "reviewer-a"}]}))
     with pytest.raises(ReviewersFileError, match="non-empty names"):
         load_reviewers(path)
+
+
+# --- re-review of #1287: a capital I for l, duplicates, "ai" + "bot", more names ------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CIaude",
+        "cIaude",
+        "LIama",
+        "CopiIot",
+        "AIbot",
+        "Aibot",
+        "aibot",
+        "botai",
+        "Bot AI",
+        "perplexity",
+        "Cohere",
+        "doubao",
+        "MiniMax",
+    ],
+)
+def test_a_capital_i_for_l_ai_and_bot_joined_and_more_model_names_are_refused(name: str) -> None:
+    assert not_a_person(name) is not None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Claudia",
+        "Ali",
+        "Aiden",
+        "Ian",
+        "Isla",
+        "Lila Mae",
+        "Gim",
+        "Bard",
+        "Devin",
+        "Manus",
+        "Cursor",
+    ],
+)
+def test_real_names_with_i_or_a_tool_like_first_name_still_pass(name: str) -> None:
+    assert not_a_person(name) is None
+
+
+@pytest.mark.parametrize("which", ["reviewers", "confirmers"])
+@pytest.mark.parametrize(
+    "twice",
+    [
+        ["confirmer-b", "confirmer-b"],
+        ["confirmer-b", " Confirmer-B "],
+        [{"name": "confirmer-b", "app_names": ["cb"]}, "CONFIRMER-B"],
+    ],
+)
+def test_a_list_naming_one_person_twice_is_refused(
+    tmp_path: Path, which: str, twice: list[object]
+) -> None:
+    if which == "reviewers" and any(isinstance(entry, dict) for entry in twice):
+        pytest.skip("only the confirmers list takes app_names")
+    path = tmp_path / f"{which}.json"
+    fmt = REVIEWERS_FORMAT if which == "reviewers" else CONFIRMERS_FORMAT
+    path.write_text(json.dumps({"format": fmt, which: twice}))
+    load = load_reviewers if which == "reviewers" else load_confirmers
+    with pytest.raises(ReviewersFileError, match="same person twice"):
+        load(path)

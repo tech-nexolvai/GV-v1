@@ -34,17 +34,30 @@ refused (`not_a_person`), on both lists and as the confirmer typed on the review
   no digit, dot, underscore, "@" or non-ASCII letter, so "c1aude", "G.P.T" or a Cyrillic look-alike
   cannot pass for another name;
 * **an AI or model name.** The name is first normalised: the usual swaps are undone (0→o, 1→l or i,
-  3→e, 4→a, 5→s, 7→t, @→a), everything but letters is dropped, and it is lower-cased; runs of single
-  letters ("c l a u d e", "A.I.") are joined. Then the long, distinctive names (`_AI_NAMES`:
+  a capital I→l as in "CIaude" or "LIama", 3→e, 4→a, 5→s, 7→t, @→a; each mix is tried), everything
+  but letters is dropped, and it is lower-cased; runs of single letters ("c l a u d e", "A.I.") are
+  joined. A lowercase "i" is not read as "l": it does not look like one, and reading it so would
+  refuse real names ("Gim" as "glm", "Lila Mae" as holding "llama"). Then the long, distinctive names (`_AI_NAMES`:
   "claude", "anthropic", "openai", "gemini", "sonnet", "deepseek", ...) are refused anywhere, even
   inside a word ("claudebot", "ClaudeCode", "cla-ude"); "gpt" is also matched inside a word
   ("gptreviewer"), since no person's name holds it. Short tokens (`_MACHINE_WORDS`: "ai", "bot",
   "llm", "glm", "kimi", "agent", ...) are refused only as whole words (split at spaces, hyphens and
-  capitals: "ReviewBot", "AIReviewer"), so "Allman", "Hillman", "Kai" and "Abbott" pass.
+  capitals: "ReviewBot", "AIReviewer"), so "Allman", "Hillman", "Kai" and "Abbott" pass; "ai" and
+  "bot" joined ("AIbot", "botai") are refused anywhere.
 
 **Known cost:** a few real names hold a distinctive model name and are refused: "Claudette",
-"Haikuo", "Gemma", "Kimi". Such a person is listed under a plain-letters variant of their name (for
-example a nickname, or a surname alone), the same one they type on the review page.
+"Haikuo", "Gemma", "Kimi", and any name holding "argon" or "grok". Such a person is listed under a
+plain-letters variant of their name (for example a nickname, or a surname alone), the same one they
+type on the review page.
+
+**The reviewers list needs plain names too.** It holds names as the product records them, and the
+same check applies, so today it can only hold sign-in names that are plain letters. When real
+sign-in records e-mails or ids, the reviewers list will need an `app_names`-style mapping like the
+confirmers list (a later issue); until then such a reviewer cannot be listed, and their decisions
+are shown and never convertible.
+
+Each list names each person once: the same name twice (compared without case or spaces) is refused,
+so a second entry can never silently replace the first one's `app_names`.
 
 **Who confirms is a separate list (#1282).** Reviewers DECIDE in the app; a confirmer CONFIRMS a
 decision into a key case on the Smriti review page. Anant decided (2026-10-15) that he confirms,
@@ -118,13 +131,17 @@ CONFIRMERS_FORMAT: Final = "smriti-confirmers/1"
 #: "ClaudeCode", "gptreviewer"). Each is long or distinctive enough that no plain person's name
 #: holds it by chance (the few that do are listed under a variant; see the module docstring).
 _AI_NAMES: Final = (
+    "aibot",
     "anthropic",
     "argon",
+    "botai",
     "chatgpt",
     "claude",
     "codex",
+    "cohere",
     "copilot",
     "deepseek",
+    "doubao",
     "fable",
     "gemini",
     "gemma",
@@ -132,10 +149,12 @@ _AI_NAMES: Final = (
     "grok",
     "haiku",
     "llama",
+    "minimax",
     "mistral",
     "mythos",
     "openai",
     "opus",
+    "perplexity",
     "qwen",
     "sonnet",
 )
@@ -147,8 +166,11 @@ _MACHINE_WORDS: Final = frozenset(
 )
 #: A plain person's name: letters, with single spaces, hyphens or apostrophes between them.
 _PLAIN_NAME: Final = re.compile(r"[A-Za-z]+(?:[ '-][A-Za-z]+)*")
-#: The usual digit and symbol swaps for letters ("c1aude", "0pus", "4I"); "1" is tried as l and i.
+#: The usual digit and symbol swaps for letters ("c1aude", "0pus", "4I"). "1" and a capital "I"
+#: are read in more than one way (`_READINGS`), so they are tried each way.
 _SWAPS: Final = str.maketrans({"0": "o", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a"})
+#: The characters read in more than one way: "1" as l or i, a capital "I" as itself or as l.
+_READINGS: Final = {"1": ("l", "i"), "I": ("I", "l")}
 _WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 
 #: A candidate's `actor_status`: a name on the list; a name not on it (or no list); code (never a
@@ -181,20 +203,27 @@ def _folded(name: str) -> str:
     return name.strip().casefold()
 
 
+def _spaceless(name: str) -> str:
+    return "".join(name.split()).casefold()
+
+
 def _spellings(name: str) -> set[str]:
-    """The name with the usual swaps undone; each "1" as an "l" and as an "i" (every mix, up to a
-    bound beyond which both uniform readings are tried)."""
+    """The name with the usual swaps undone, each ambiguous character (`_READINGS`: "1", a capital
+    "I") read every way: every mix, up to a bound beyond which each uniform reading is tried."""
     base = name.translate(_SWAPS)
-    ones = [index for index, char in enumerate(base) if char == "1"]
-    if not ones:
+    places = [index for index, char in enumerate(base) if char in _READINGS]
+    if not places:
         return {base}
-    if len(ones) > 8:
-        return {base.replace("1", "l"), base.replace("1", "i")}
+    if len(places) > 10:
+        return {
+            "".join(_READINGS[char][pick] if char in _READINGS else char for char in base)
+            for pick in (0, 1)
+        }
     spellings = set()
-    for mask in range(1 << len(ones)):
+    for mask in range(1 << len(places)):
         chars = list(base)
-        for bit, index in enumerate(ones):
-            chars[index] = "i" if mask >> bit & 1 else "l"
+        for bit, index in enumerate(places):
+            chars[index] = _READINGS[base[index]][mask >> bit & 1]
         spellings.add("".join(chars))
     return spellings
 
@@ -342,6 +371,16 @@ def _load_names(
         names.append(name)
         if others:
             app_names[_folded(name)] = frozenset(others)
+    seen: dict[str, str] = {}
+    for name in names:
+        earlier = seen.get(_spaceless(name))
+        seen.setdefault(_spaceless(name), name)
+        if earlier is not None:
+            raise error(
+                f"{resolved.name} names the same person twice ({earlier!r} and {name!r}); list "
+                "each person once"
+                + (", with all their app_names in that one entry" if with_app_names else "")
+            )
     coded = [name for name in names if is_code_actor(name)]
     if coded:
         raise error(
@@ -374,10 +413,6 @@ def reviewers_from_environment() -> Reviewers:
     if not configured:
         return Reviewers(names=None, source=None)
     return load_reviewers(Path(configured))
-
-
-def _spaceless(name: str) -> str:
-    return "".join(name.split()).casefold()
 
 
 @dataclass(frozen=True, slots=True)

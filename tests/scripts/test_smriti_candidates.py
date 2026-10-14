@@ -867,3 +867,40 @@ def test_a_confirmer_never_confirms_a_decision_made_under_their_app_name(
     assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
     assert "their own decision" in capsys.readouterr().err
     assert not (tmp_path / "keys").exists()
+
+
+def test_a_confirmers_list_naming_one_person_twice_is_refused_cleanly(
+    engine: Engine,
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eval.smriti.actors import CONFIRMERS_ENV, CONFIRMERS_FORMAT
+
+    # The second entry would otherwise drop the first one's app names (the reviewer's own name).
+    twice = tmp_path / "local" / "confirmers.json"
+    twice.parent.mkdir()
+    twice.write_text(
+        json.dumps(
+            {
+                "format": CONFIRMERS_FORMAT,
+                "confirmers": [{"name": CONFIRMER, "app_names": [REVIEWER]}, CONFIRMER.upper()],
+            }
+        )
+    )
+    monkeypatch.setenv(CONFIRMERS_ENV, str(twice))
+    candidates = _one_yes(engine, session, tmp_path)
+    arguments = _confirm_args(
+        candidates,
+        tmp_path / "confirmations.json",
+        tmp_path / "keys",
+        tmp_path / "library.json",
+        "--db",
+        _url(engine),
+    )
+    capsys.readouterr()
+    assert smriti_candidates.main(arguments) == smriti_candidates.REFUSED
+    err = capsys.readouterr().err
+    assert err.startswith("smriti: ") and "same person twice" in err and "Traceback" not in err
+    assert not (tmp_path / "keys").exists()
