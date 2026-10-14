@@ -319,3 +319,69 @@ def test_a_missing_store_is_refused(
     assert smriti_review_page.main(arguments) == smriti_review_page.REFUSED
     assert "store" in capsys.readouterr().err
     assert not out.exists() and not (tmp_path / "nope").exists()
+
+
+# --- Anant's look at the proof page (2026-10-15) --------------------------------------------------
+
+#: The cases where a person accepts or rejects a proposed answer, and those where they state it.
+ACCEPTS = ("no_countertop_answers:1", "review_actions:5", "part_confirmations:7")
+STATES = (
+    "no_countertop_answers:2",
+    "no_countertop_answers:3",
+    "correction_ledger:4",
+    "slot_row_review_decisions:6:walls",
+)
+
+
+def _every_type_page() -> str:
+    export = _export(
+        _no_countertop(),
+        _countertop(),
+        _batch(),
+        _correction(),
+        _confirmed_reading(),
+        _walls(),
+        _piece(),
+    )
+    return smriti_review_page.build_page(
+        export,
+        candidates_sha256=FILE_SHA,
+        candidates_path="/local/candidates.json",
+        pictures={c.candidate_id: [_picture()] for c in ready_candidates(export)},
+    )
+
+
+def _card_of(page: str, candidate_id: str) -> str:
+    return page.split(f'data-id="{candidate_id}"', 1)[1].split("</section>", 1)[0]
+
+
+def test_a_case_with_no_proposed_answer_shows_one_instruction_and_no_proposed_answer_line() -> None:
+    page = _every_type_page()
+    for candidate_id in STATES:
+        card = _card_of(page, candidate_id)
+        assert "Proposed answer" not in card, candidate_id
+        assert 'class="instruction"' in card, candidate_id
+    assert "Tell us what the vendor drew at each end of the row." in _card_of(
+        page, "slot_row_review_decisions:6:walls"
+    )
+    for candidate_id in ACCEPTS:
+        card = _card_of(page, candidate_id)
+        assert "Proposed answer" in card and 'class="instruction"' not in card, candidate_id
+
+
+def test_where_the_person_states_the_answer_the_choices_are_the_answer() -> None:
+    page = _every_type_page()
+    for candidate_id in STATES:
+        card = _card_of(page, candidate_id)
+        assert 'data-v="yes"' not in card and 'data-v="no"' not in card, candidate_id
+        assert card.count('data-v="unsure"') == 1, candidate_id
+        assert ">Skip / unsure</button>" in card, candidate_id
+        assert 'data-mode="state"' in page.split(f'data-id="{candidate_id}"', 1)[1][:200]
+    for candidate_id in ACCEPTS:
+        card = _card_of(page, candidate_id)
+        for verdict in ("yes", "no", "unsure"):
+            assert card.count(f'data-v="{verdict}"') == 1, (candidate_id, verdict)
+
+
+def test_a_real_page_never_says_proof() -> None:
+    assert "proof" not in _every_type_page().lower()

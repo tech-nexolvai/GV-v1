@@ -15,13 +15,16 @@ order:
    asked again). A piece kind shows the pictures its piece's label question showed. A card whose
    picture cannot be found or does not match says why, and has no buttons;
 2. **the proposed answer and where it came from** (`answer_source`: `pdf-text`, the file's own text;
-   `ai-reading`, the AI's reading; `decision`, the reviewer's own decision), or that the person
-   states it from the picture;
+   `ai-reading`, the AI's reading; `decision`, the reviewer's own decision), or, where there is none,
+   one plain instruction (for walls: "Tell us what the vendor drew at each end of the row.");
 3. **the reviewer's decision**, in one plain sentence;
-4. **Yes / No / Unsure**, plus what that question needs: the box on the numbered picture, what the
-   vendor drew at each wall end, a batch page's own answer, and for a correction "AI misread / vendor
-   drew it wrong" with the printed text (pre-filled from the file's own text under the label where
-   there is exactly one run).
+4. **the answer**. Where there is a proposed answer (a printed number, "no countertop", a piece's
+   kind), **Yes / No / Unsure** accepts or rejects it. Where there is none, one plain instruction
+   replaces the proposed-answer line, and the choices themselves are the answer, with one
+   "Skip / unsure": the box on the numbered picture, what the vendor drew at each wall end, a batch
+   page's own answer, and for a correction "AI misread / vendor drew it wrong" with the printed text
+   (pre-filled from the file's own text under the label where there is exactly one run). There is
+   never a Yes/No under a person's own answer (Anant, 2026-10-15).
 
 **"Copy answers"** gives the `smriti-confirmations/2` JSON that `scripts/smriti_candidates.py confirm`
 takes, bound to the candidates file by its hash. Answers are kept in the browser (local storage) so
@@ -50,7 +53,7 @@ import html
 import json
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -403,6 +406,7 @@ img { width:100%; height:auto; border:1px solid var(--line); border-radius:6px; 
 .proposal b { font-size:22px; }
 .source { color:var(--muted); font-size:15px; }
 .decision { margin:10px 0; }
+.instruction { font-size:20px; font-weight:600; margin:12px 0 4px; }
 .ask { font-weight:600; }
 .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0; }
 .row .label { min-width:9ch; color:var(--muted); }
@@ -433,13 +437,21 @@ _SCRIPT: Final = """
   var cards = Array.prototype.slice.call(document.querySelectorAll(".card[data-id]"));
   function get(id) { state.answers = state.answers || {}; state.answers[id] = state.answers[id] || {};
     return state.answers[id]; }
+  function mistakeNeeded(card) { return card.getAttribute("data-mistake-needed") === "1"; }
+  // A proposed answer is accepted or rejected (Yes / No / Unsure). Where the person states the
+  // answer, a choice IS the answer (a Yes), and "Skip / unsure" is an Unsure.
+  function verdict(card, a) {
+    if (card.getAttribute("data-mode") === "accept") return a.v || null;
+    if (a.v === "unsure") return "unsure";
+    var picked = a.mistake || a.no_label || a.typed || a.box != null || a.own || a.left || a.right;
+    return picked ? "yes" : null;
+  }
   function needs(card, a) {
     var type = card.getAttribute("data-type"), out = [];
-    if (a.v !== "yes") return out;
+    if (verdict(card, a) !== "yes") return out;
     if (type === "label-stated") {
-      if (card.getAttribute("data-mistake-needed") === "1" && !a.mistake)
-        out.push("AI misread or vendor drew it wrong");
-      if ((a.mistake === "ai_misread" || card.getAttribute("data-mistake-needed") !== "1")
+      if (mistakeNeeded(card) && !a.mistake) out.push("AI misread or the vendor drew it wrong");
+      if ((a.mistake === "ai_misread" || !mistakeNeeded(card))
           && !a.no_label && !(a.texts && a.texts.trim())) out.push("the printed text, or No label");
     }
     if (type === "row-box" && a.box == null) out.push("the box");
@@ -448,7 +460,7 @@ _SCRIPT: Final = """
     return out;
   }
   function paint(card) {
-    var id = card.getAttribute("data-id"), a = get(id);
+    var id = card.getAttribute("data-id"), a = get(id), v = verdict(card, a);
     card.querySelectorAll("button[data-v]").forEach(function (b) {
       b.classList.toggle("on", a.v === b.getAttribute("data-v")); });
     card.querySelectorAll("button[data-mistake]").forEach(function (b) {
@@ -461,37 +473,38 @@ _SCRIPT: Final = """
       b.classList.toggle("on", a[b.getAttribute("data-end")] === b.getAttribute("data-drawn")); });
     card.querySelectorAll("button[data-nolabel]").forEach(function (b) {
       b.classList.toggle("on", !!a.no_label); });
-    ["yes", "no", "unsure"].forEach(function (v) { card.classList.toggle("done-" + v, a.v === v); });
+    ["yes", "no", "unsure"].forEach(function (x) { card.classList.toggle("done-" + x, v === x); });
     var t = card.querySelector("input.texts");
     if (t) { if (a.texts == null) a.texts = t.getAttribute("data-prefill") || "";
       if (document.activeElement !== t) t.value = a.texts; t.disabled = !!a.no_label; }
     var n = card.querySelector("input.note"); if (n && document.activeElement !== n) n.value = a.note || "";
     var m = card.querySelector(".missing"); var miss = needs(card, a);
-    if (m) m.textContent = miss.length ? "Still needed for Yes: " + miss.join(", ") : "";
+    if (m) m.textContent = miss.length ? "Still needed: " + miss.join(", ") : "";
   }
   function count() {
     var done = cards.filter(function (c) { var a = get(c.getAttribute("data-id"));
-      return a.v && !needs(c, a).length; }).length;
+      return verdict(c, a) && !needs(c, a).length; }).length;
     var el = document.getElementById("count");
     if (el) el.textContent = done + " of " + cards.length + " answered";
   }
   function toggle(a, field, value) { a[field] = a[field] === value ? null : value; }
   cards.forEach(function (card) {
-    var id = card.getAttribute("data-id");
+    var id = card.getAttribute("data-id"), accept = card.getAttribute("data-mode") === "accept";
     card.addEventListener("click", function (e) {
       var b = e.target.closest("button"); if (!b) return; var a = get(id);
-      if (b.hasAttribute("data-v")) toggle(a, "v", b.getAttribute("data-v"));
-      else if (b.hasAttribute("data-mistake")) toggle(a, "mistake", b.getAttribute("data-mistake"));
+      if (b.hasAttribute("data-v")) { toggle(a, "v", b.getAttribute("data-v")); save(); paint(card); count(); return; }
+      if (b.hasAttribute("data-mistake")) toggle(a, "mistake", b.getAttribute("data-mistake"));
       else if (b.hasAttribute("data-box")) { var x = b.getAttribute("data-box");
         a.box = String(a.box) === x ? null : (x === "not_among_boxes" ? x : parseInt(x, 10)); a.own = null; }
       else if (b.hasAttribute("data-own")) { toggle(a, "own", b.getAttribute("data-own")); a.box = null; }
       else if (b.hasAttribute("data-drawn")) toggle(a, b.getAttribute("data-end"), b.getAttribute("data-drawn"));
       else if (b.hasAttribute("data-nolabel")) a.no_label = !a.no_label;
       else return;
+      if (!accept) a.v = null;  // a choice is the answer: it replaces a Skip
       save(); paint(card); count();
     });
     card.addEventListener("input", function (e) { var a = get(id);
-      if (e.target.matches("input.texts")) a.texts = e.target.value;
+      if (e.target.matches("input.texts")) { a.texts = e.target.value; a.typed = true; if (!accept) a.v = null; }
       if (e.target.matches("input.note")) a.note = e.target.value;
       save(); paint(card); count(); });
     paint(card);
@@ -502,10 +515,11 @@ _SCRIPT: Final = """
   count();
   function entry(card) {
     var id = card.getAttribute("data-id"), type = card.getAttribute("data-type"), a = get(id);
-    if (!a.v) return null;
-    var e = { candidate: id, verdict: a.v };
+    var v = verdict(card, a);
+    if (!v) return null;
+    var e = { candidate: id, verdict: v };
     if (a.note && a.note.trim()) e.note = a.note.trim();
-    if (a.v !== "yes") return e;
+    if (v !== "yes") return e;
     if (type === "label-stated") {
       if (a.mistake) e.mistake = a.mistake;
       if (!a.mistake || a.mistake === "ai_misread") {
@@ -669,8 +683,7 @@ def _controls(candidate: Candidate, kind: str, boxes: int | None, prefill: str) 
             rows.append(
                 '<div class="row"><span class="label">Mistake</span>'
                 '<button data-mistake="ai_misread">AI misread</button>'
-                '<button data-mistake="vendor_drew_it">The vendor drew it wrong</button>'
-                '<button data-mistake="unsure">Not sure</button></div>'
+                '<button data-mistake="vendor_drew_it">The vendor drew it wrong</button></div>'
             )
         rows.append(
             '<div class="row"><span class="label">Printed</span>'
@@ -711,6 +724,35 @@ def _controls(candidate: Candidate, kind: str, boxes: int | None, prefill: str) 
     return "".join(rows)
 
 
+#: The cases with a proposed answer, which the person accepts (Yes) or rejects (No).
+ACCEPTED: Final = frozenset(
+    {QuestionType.LABEL_PROPOSED, QuestionType.ROW_STATED, QuestionType.PIECE_KIND}
+)
+MODE_ACCEPT: Final = "accept"
+MODE_STATE: Final = "state"
+
+
+def _label_instruction(candidate: Candidate) -> str:
+    typed = "type the label exactly as it is printed in the picture (or press No label)"
+    if candidate.mistake_needed == MISTAKE_UNANSWERED:
+        return (
+            "Say whether the AI misread this number or the vendor drew it wrong. If the AI "
+            f"misread it, {typed}."
+        )
+    return typed[0].upper() + typed[1:] + "."
+
+
+#: The one plain instruction on a case where the person states the answer.
+INSTRUCTIONS: Final[Mapping[str, Callable[[Candidate], str]]] = {
+    QuestionType.LABEL_STATED: _label_instruction,
+    QuestionType.ROW_BOX: lambda _c: (
+        "Pick the numbered box that is the countertop row, or Not among the boxes."
+    ),
+    QuestionType.ROW_BATCH: lambda _c: "Look at this page on its own and give its answer.",
+    QuestionType.WALLS: lambda _c: "Tell us what the vendor drew at each end of the row.",
+}
+
+
 def _card(
     number: int,
     candidate: Candidate,
@@ -721,24 +763,31 @@ def _card(
     kind = question_type(candidate)
     assert kind is not None and candidate.question is not None
     shown, usable = _pictures_html(pictures)
-    if candidate.answer is not None:
+    decision, ask = _sentences(candidate, kind)
+    mode = MODE_ACCEPT if kind in ACCEPTED else MODE_STATE
+    if mode == MODE_ACCEPT:
+        # A proposed answer to accept or reject: the answer, where it came from, then Yes/No/Unsure.
+        assert candidate.answer is not None
         source = candidate.answer_source or "decision"
-        proposal = (
+        lead = (
             f'<p class="proposal">Proposed answer: <b>{_e(_answer_words(candidate.answer))}</b>'
             f'<br><span class="source">from {_e(source)}: '
             f"{_e(SOURCES.get(source, source))}</span></p>"
         )
-    else:
-        proposal = (
-            '<p class="proposal">Proposed answer: <b>none</b><br><span class="source">you state '
-            "it from the picture</span></p>"
+        after = f'<p class="ask">{_e(ask)}</p>'
+        verdict = (
+            '<button class="yes" data-v="yes">Yes</button>'
+            '<button class="no" data-v="no">No</button>'
+            '<button class="unsure" data-v="unsure">Unsure</button>'
         )
-    decision, ask = _sentences(candidate, kind)
+    else:
+        # No proposal: one plain instruction, and the choices ARE the answer (no Yes/No under them).
+        lead = f'<p class="instruction">{_e(INSTRUCTIONS[kind](candidate))}</p>'
+        after = ""
+        verdict = '<button class="unsure" data-v="unsure">Skip / unsure</button>'
     answer = (
         f"{_controls(candidate, kind, boxes, prefill)}"
-        '<div class="row verdict"><button class="yes" data-v="yes">Yes</button>'
-        '<button class="no" data-v="no">No</button>'
-        '<button class="unsure" data-v="unsure">Unsure</button>'
+        f'<div class="row verdict">{verdict}'
         '<input class="note" placeholder="note (optional)"></div><p class="missing"></p>'
         if usable
         else ""
@@ -748,13 +797,13 @@ def _card(
     question = json.dumps(dict(candidate.question), ensure_ascii=False)
     return (
         f'<section class="card" data-id="{_e(candidate.candidate_id)}" data-type="{_e(kind)}" '
-        f'data-num="{number}" data-mistake-needed="{mistake}">'
+        f'data-mode="{mode}" data-num="{number}" data-mistake-needed="{mistake}">'
         f'<div class="head"><span class="num">{number}</span>'
         f'<span class="badge">{_e(candidate.agent)}: {_e(TYPE_WORDS[kind])}</span>'
         f'<span class="muted">{_e(page)}; decided by {_e(candidate.decided_by)} on '
         f"{_e(candidate.decided_at[:10])}</span></div>"
-        f"{shown}{proposal}"
-        f'<p class="decision">{_e(decision)}</p><p class="ask">{_e(ask)}</p>{answer}'
+        f"{shown}{lead}"
+        f'<p class="decision">{_e(decision)}</p>{after}{answer}'
         f"<details><summary>details</summary><code>{_e(candidate.candidate_id)}; decided "
         f"{_e(candidate.decided_at[:10])}; question {_e(question)}</code></details></section>"
     )
