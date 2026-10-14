@@ -5,7 +5,7 @@
  * where it is found. A setting for this job gets a box; the sink's size opens the job's sink entry; a
  * cabinet list, a cabinet's type or the site width says it is entered on Measurements (#1205); a
  * number drawn on the vendor's drawing gets no box at all — people confirm readings, they do not fill
- * in measurements (GV's rule, Anant 2026-10-12) — and its line says the check needs the drawing. One
+ * in measurements (GV's rule, Anant 2026-10-12) — and its line says where it is drawn. One
  * source note for the settings, one Save, through the same values endpoint Measurements uses. Nothing
  * is pre-filled. A saved value is shown with where it is from, and the check keeps saying it is
  * waiting until the checks run again — so the line under it says exactly that, with the review's own
@@ -204,7 +204,7 @@ function NeedsLine({
     );
   }
 
-  // A drawn number: said plainly, no box. The check waits for the drawing (or for a reader to read it).
+  // A drawn number: said plainly, no box. The check waits for a reading of it to be confirmed.
   if (!input.askable) {
     return (
       <li className="flex flex-col gap-0.5" data-scope={input.scope} data-key={input.key} data-askable="false">
@@ -215,11 +215,17 @@ function NeedsLine({
           </p>
         ) : (
           <>
+            {/* Where it is drawn, in the Measure page's own words (#1262). Nothing here knows whether a
+                drawing was supplied, so the line never says it was not. */}
             <p>
-              <span className="font-medium">Needs:</span> {input.label}{input.unit && <span className="num text-muted-foreground"> ({input.unit})</span>} from the
-              drawing (not supplied)
+              <span className="font-medium">Needs:</span> {input.label}
+              {input.unit && <span className="num text-muted-foreground"> ({input.unit})</span>}
+              <span className="text-muted-foreground"> — {input.where_to_find}</span>
             </p>
-            <p className="text-xs text-muted-foreground">{input.where_to_find} Read off the drawing, never typed here: this check waits until the drawing is supplied.</p>
+            <p className="text-xs text-muted-foreground">
+              A number drawn on the drawing is confirmed from a reading on Measurements, never typed here. Until one is
+              confirmed, this check waits for it.
+            </p>
           </>
         )}
       </li>

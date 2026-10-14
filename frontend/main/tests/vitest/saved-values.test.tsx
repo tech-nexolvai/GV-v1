@@ -38,8 +38,8 @@ const REQUIRED = {
   still_reading: false,
   revision_state: 'READY',
   saved_measurements: [
-    { key: 'USER_INPUT:top_width', values: [value('40 1/2"', '81', '2')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
-    { key: 'SHOP:piece_widths', values: [value('12"', '12', '1'), value('15 15/16"', '255', '16')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
+    { key: 'USER_INPUT:top_width', values: [value('40 1/2"', '81', '2')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true, held_by: ['R-SYNTH'], differs_for: [] },
+    { key: 'SHOP:piece_widths', values: [value('12"', '12', '1'), value('15 15/16"', '255', '16')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true, held_by: ['R-SYNTH'], differs_for: [] },
   ],
   saved_parameters: [
     { name: 'edge_thickness', layer: 'project' as const, value: value('1 1/2"', '3', '2'), source: 'G.C / Client', reference: 'Synthetic note 1', citation: null },

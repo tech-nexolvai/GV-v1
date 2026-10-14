@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { settingDate } from '@/components/settings/companySettings';
 import { MeasurementPanel } from '@/pages/MeasurementPanel';
 
 // Synthetic data only (#1251): nothing here comes from a client drawing or a client's values.
@@ -25,6 +26,12 @@ const REQUIRED = {
     { key: 'SHOP:CT004', semantic_type: 'CT004', source: 'SHOP', many: false, confirm_only: true, where_to_find: 'The vendor’s elevation.', confirmed_pages: [1], consumers: [{ rule_id: 'R-SINKCAB', input_name: 'sink_cabinet_width' }], categories: [] },
     { key: 'SHOP:CT007', semantic_type: 'CT007', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-OFFSET', input_name: 'front_offset' }], categories: [] },
     { key: 'SHOP:CT012', semantic_type: 'CT012', source: 'SHOP', many: false, confirm_only: true, consumers: [{ rule_id: 'R-CUTOUT', input_name: 'cutout_width' }], categories: [] },
+    // Typed before for one of its two checks only (#1262): the field names which check still uses it.
+    { key: 'SHOP:CT011', semantic_type: 'CT011', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [1], consumers: [{ rule_id: 'R-LEFT-A', input_name: 'left_clearance' }, { rule_id: 'R-LEFT-B', input_name: 'left_clearance' }], categories: [] },
+    // Typed before for one check, a different number for another, nothing for a third (#1262).
+    { key: 'SHOP:CT009', semantic_type: 'CT009', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [], consumers: [{ rule_id: 'R-BACK-A', input_name: 'back_offset' }, { rule_id: 'R-BACK-B', input_name: 'back_offset' }, { rule_id: 'R-BACK-C', input_name: 'back_offset' }], categories: [] },
+    // Confirmed on this page and a different reading on page 2 (#1262): the check sees two and waits.
+    { key: 'SHOP:CT013', semantic_type: 'CT013', source: 'SHOP', many: false, confirm_only: true, confirmed_pages: [1, 2], consumers: [{ rule_id: 'R-RIGHT', input_name: 'right_clearance' }], categories: [] },
     { key: 'SHOP:cabinet_width', semantic_type: 'cabinet_width', source: 'SHOP', many: true, confirm_only: false, consumers: [{ rule_id: 'R-CABS', input_name: 'shop_cabinets' }], categories: [] },
     { key: 'USER_INPUT:field_dimension', semantic_type: 'field_dimension', source: 'USER_INPUT', many: false, confirm_only: false, consumers: [{ rule_id: 'R-FILLER', input_name: 'field_width' }], categories: [] },
   ],
@@ -34,6 +41,8 @@ const REQUIRED = {
     { key: 'SHOP:CT012', source: 'SHOP', semantic_type: 'CT012', value: '16 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
     { key: 'SHOP:CT004', source: 'SHOP', semantic_type: 'CT004', value: '24 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
     { key: 'SHOP:CT004', source: 'SHOP', semantic_type: 'CT004', value: '25 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
+    { key: 'SHOP:CT011', source: 'SHOP', semantic_type: 'CT011', value: '2 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
+    { key: 'SHOP:CT013', source: 'SHOP', semantic_type: 'CT013', value: '3 in', page_index: 0, qualification: 'reviewer_confirmed' as const },
   ],
   proposed_readings: [],
   parameters: [],
@@ -43,7 +52,9 @@ const REQUIRED = {
   revision_state: 'READY',
   // Typed before #1251: kept (append-only) and still counted, but no longer typable.
   saved_measurements: [
-    { key: 'SHOP:CT007', values: [saved('4"', '4')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true },
+    { key: 'SHOP:CT007', values: [saved('4"', '4')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: true, held_by: ['R-OFFSET'], differs_for: [] },
+    { key: 'SHOP:CT011', values: [saved('1"', '1')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: false, held_by: ['R-LEFT-A'], differs_for: [] },
+    { key: 'SHOP:CT009', values: [saved('2"', '2')], set_by: 'synthetic reviewer', set_at: SAVED_AT, complete: false, held_by: ['R-BACK-A'], differs_for: ['R-BACK-B'] },
   ],
   saved_parameters: [],
 };
@@ -122,7 +133,9 @@ describe('a number drawn on the drawing is confirmed, never typed (#1251)', { ti
 
     const offset = field('SHOP:CT007')!;
     expect(offset.textContent).toContain('4"');
-    expect(offset.textContent).toContain('Typed before 2026-10-14');
+    // The value's own saved day (#1262), never a fixed date.
+    expect(offset.textContent).toContain(`Typed ${settingDate(SAVED_AT)}`);
+    expect(offset.textContent).not.toContain('2026-10-14');
     expect(offset.textContent).toContain('still counts');
     expect(offset.textContent).not.toContain('No reading confirmed yet');
   });
@@ -189,5 +202,48 @@ describe('a drawn field with no value says only what the screen knows (#1253 rev
     expect(depth.textContent).toContain('Confirm one of the AI readings listed below');
     expect(depth.textContent).not.toContain('not supplied');
     expect(within(depth).getByRole('button', { name: /1 reading from/ })).toBeTruthy();
+  });
+});
+
+describe('a drawn field says exactly what the checks will use (#1262)', { timeout: 15_000 }, () => {
+  it('names the checks that still use a value typed for only some of them', async () => {
+    await openValues();
+
+    const left = field('SHOP:CT011')!;
+    expect(left.textContent).toContain('1"');
+    expect(left.textContent).toContain('Only check R-LEFT-A still uses this typed value.');
+    expect(left.textContent).toContain('Check R-LEFT-B uses the confirmed reading instead.');
+    expect(left.textContent).not.toContain('the checks still use the typed value');
+  });
+
+  it('says which check waits for a reading and which holds a different typed value', async () => {
+    await openValues();
+
+    const back = field('SHOP:CT009')!;
+    expect(back.textContent).toContain('Only check R-BACK-A still uses this typed value.');
+    expect(back.textContent).toContain('Check R-BACK-B uses a different typed value.');
+    expect(back.textContent).toContain('Check R-BACK-C waits for a reading to be confirmed.');
+  });
+
+  it('a value typed for every check it feeds keeps the one plain line', async () => {
+    await openValues();
+
+    const offset = field('SHOP:CT007')!;
+    expect(offset.textContent).not.toContain('Only check');
+  });
+
+  it('a value shown here that is also confirmed on another page says so, and that the check waits', async () => {
+    await openValues();
+
+    const right = field('SHOP:CT013')!;
+    expect(right.textContent).toContain('3 in');
+    expect(right.textContent).toContain('Also confirmed on page 2.');
+    expect(right.textContent).toContain('the check sees two readings and waits');
+  });
+
+  it('a value confirmed only on this page says nothing about other pages', async () => {
+    await openValues();
+
+    expect(field('SHOP:CT012')!.textContent).not.toContain('Also confirmed');
   });
 });

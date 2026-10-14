@@ -132,11 +132,13 @@ describe('the "Needs" line (#1181)', () => {
     expect(onRunChecks).toHaveBeenCalled();
   });
 
-  it('a drawn number has no box and says the check needs the drawing', () => {
+  it('a drawn number has no box and says where it is drawn, never that a drawing was not supplied (#1262)', () => {
     render(<NeedsValues finding={waiting([drawnDepth])} packageId="package-1" onSaved={() => {}} />);
 
     const section = screen.getByRole('region', { name: 'Values this check needs' });
-    expect(section.textContent).toContain('Needs: Countertop depth, as drawn (in) from the drawing (not supplied)');
+    expect(section.textContent).toContain("Needs: Countertop depth, as drawn (in) — The vendor's plan view or section.");
+    expect(section.textContent).toContain('confirmed from a reading on Measurements');
+    expect(section.textContent).not.toContain('supplied');
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
   });

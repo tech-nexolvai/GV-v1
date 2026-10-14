@@ -88,7 +88,7 @@ from app.models.runs import ExtractionRun
 from app.review.setting_sizes import refused_size
 from app.review.settings_in_force import settings_in_force
 from app.review.sizes import NOT_ABOVE_ZERO, is_positive_size, typed_negative
-from app.review.waiting_values import DRAWING_GUIDE
+from app.review.waiting_values import where_drawn
 from app.schemas.measurements import (
     AssignmentEvent,
     AssignmentStepOut,
@@ -146,7 +146,7 @@ from workflow.layout_proposals import (
     record_layout_confirmation,
     stored_layout_proposals,
 )
-from workflow.measurements import DRAWN_SOURCES, LIST_MARKER, confirm_only, typed_drawn_refusal
+from workflow.measurements import LIST_MARKER, confirm_only, typed_drawn_refusal
 from workflow.model_call_recorder import ModelCallRecorder
 from workflow.outbox import enqueue
 from workflow.parameter_citations import (
@@ -816,6 +816,16 @@ def _saved_entries(
         latest = max(saved, key=lambda rows: max(row.set_at for row in rows))
         newest = max(latest, key=lambda row: row.set_at)
         exact = [(row.exact_value, row.unit) for row in latest]
+        # Which checks hold exactly these values, and which hold another typed value (#1262), so
+        # the screen can name the checks a partly typed field still feeds. Each check named once.
+        same: list[str] = []
+        other: list[str] = []
+        for consumer, rows in zip(quantity.consumers, held, strict=True):
+            if not rows:
+                continue
+            bucket = same if [(row.exact_value, row.unit) for row in rows] == exact else other
+            if consumer.rule_id not in bucket:
+                bucket.append(consumer.rule_id)
         measurements.append(
             SavedQuantityOut(
                 key=quantity.key,
@@ -825,6 +835,8 @@ def _saved_entries(
                 complete=all(
                     [(row.exact_value, row.unit) for row in rows] == exact for rows in held
                 ),
+                held_by=tuple(same),
+                differs_for=tuple(rule for rule in other if rule not in same),
             )
         )
 
@@ -999,7 +1011,7 @@ def read_required_inputs(
                 many=quantity.many,
                 confirm_only=confirm_only(quantity.source, many=quantity.many),
                 where_to_find=(
-                    _where_drawn(quantity.source, quantity.semantic_type)
+                    where_drawn(quantity.source, quantity.semantic_type)
                     if confirm_only(quantity.source, many=quantity.many)
                     else None
                 ),
@@ -1318,18 +1330,6 @@ def _declared_inputs(rules: Sequence[Rule]) -> dict[tuple[str, str], InputSelect
     return {(rule.id, name): selector for rule in rules for name, selector in rule.inputs.items()}
 
 
-def _where_drawn(source: str, semantic_type: str) -> str:
-    """Where a drawn number is read, in plain words: the view when it is known, else the drawing.
-
-    `DRAWING_GUIDE` names the vendor's views (the client lead: plan for the cut-out and offsets,
-    elevation for widths), so it is used only for the vendor's drawing.
-    """
-    if source == "SHOP" and semantic_type in DRAWING_GUIDE:
-        return DRAWING_GUIDE[semantic_type].where_to_find
-    drawing = DRAWN_SOURCES.get(source, "the drawing")
-    return f"{drawing[:1].upper()}{drawing[1:]}."
-
-
 def _refused_measurement(
     measurement: MeasurementEntry,
     label: str,
@@ -1363,7 +1363,7 @@ def _refused_measurement(
     source = str(getattr(selector.source, "value", selector.source))
     many = selector.cardinality is Cardinality.MANY
     if confirm_only(source, many=many):
-        return typed_drawn_refusal(label, source, _where_drawn(source, semantic_type))
+        return typed_drawn_refusal(label, source, where_drawn(source, semantic_type))
     if many and measurement.values is None:
         return (
             f"{label} is a list the checks read in order, so send it as `values`, even with one "
