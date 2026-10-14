@@ -9988,6 +9988,22 @@
             "title": "Complete",
             "type": "boolean"
           },
+          "differs_for": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Differs For",
+            "type": "array"
+          },
+          "held_by": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Held By",
+            "type": "array"
+          },
           "key": {
             "title": "Key",
             "type": "string"

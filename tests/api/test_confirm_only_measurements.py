@@ -494,3 +494,96 @@ def test_the_form_names_every_page_a_reading_is_confirmed_on(session: Session) -
     assert {q["key"]: q["confirmed_pages"] for q in on_page_one.json()["quantities"]}[
         "SHOP:CT010"
     ] == [1]
+
+
+def _typed_depths(session: Session, package: UUID, depths: dict[str, Fraction]) -> None:
+    """Countertop depths typed before #1251, one per rule input named, as the endpoint wrote them."""
+    revision = _revision(session, package)
+    earlier = ParameterSet(
+        project_id=str(PROJECT),
+        layer=ParameterLayer.RUN,
+        version=1,
+        parameters={
+            f"{rule_id}:countertop_depth": ParameterValue(
+                value=Quantity(value=depth, unit=Unit("in")),
+                provenance=Provenance.MEASURED,
+                set_by="reviewer-a",
+                set_at=datetime(2026, 10, 1, tzinfo=UTC),
+            )
+            for rule_id, depth in depths.items()
+        },
+    )
+    stored, rows = to_rows(earlier, package_revision_id=revision.id)
+    session.add(stored)
+    for row in rows:
+        session.add(row)
+    session.commit()
+
+
+def _saved_depth(session: Session, package: UUID) -> dict[str, Any]:
+    form = _client(session).get(f"/api/v1/projects/{PROJECT}/packages/{package}/required-inputs")
+    assert form.status_code == 200, form.text
+    return {q["key"]: q for q in form.json()["saved_measurements"]}["SHOP:CT010"]
+
+
+def test_a_value_typed_for_only_some_checks_names_the_checks_that_hold_it(
+    session: Session,
+) -> None:
+    """#1262: the countertop depth feeds two checks; typed for one, the form says which one."""
+    _publish(session, "ct_depth_001.yaml", "ct_back_offset_min_001.yaml")
+    package = _package(session)
+    _typed_depths(session, package, {"CT-DEPTH-001": Fraction(51, 2)})
+
+    saved = _saved_depth(session, package)
+
+    assert saved["complete"] is False
+    assert saved["held_by"] == ["CT-DEPTH-001"]
+    assert saved["differs_for"] == []
+
+
+def test_a_check_holding_a_different_typed_value_is_named_apart(session: Session) -> None:
+    """#1262: a check holding another typed number does not use the confirmed reading either."""
+    _publish(session, "ct_depth_001.yaml", "ct_back_offset_min_001.yaml")
+    package = _package(session)
+    _typed_depths(
+        session,
+        package,
+        {"CT-DEPTH-001": Fraction(51, 2), "CT-BACK-OFFSET-MIN-001": Fraction(26)},
+    )
+
+    saved = _saved_depth(session, package)
+
+    assert saved["complete"] is False
+    assert len(saved["held_by"]) == 1
+    assert len(saved["differs_for"]) == 1
+    assert {*saved["held_by"], *saved["differs_for"]} == {
+        "CT-DEPTH-001",
+        "CT-BACK-OFFSET-MIN-001",
+    }
+
+
+def test_a_value_typed_for_every_check_is_held_by_all_of_them(session: Session) -> None:
+    _publish(session, "ct_depth_001.yaml", "ct_back_offset_min_001.yaml")
+    package = _package(session)
+    _typed_depths(
+        session,
+        package,
+        {"CT-DEPTH-001": Fraction(51, 2), "CT-BACK-OFFSET-MIN-001": Fraction(51, 2)},
+    )
+
+    saved = _saved_depth(session, package)
+
+    assert saved["complete"] is True
+    assert sorted(saved["held_by"]) == ["CT-BACK-OFFSET-MIN-001", "CT-DEPTH-001"]
+    assert saved["differs_for"] == []
+
+
+def test_the_waiting_card_and_the_form_say_where_a_drawn_value_is_read_the_same_way() -> None:
+    """#1262: one sentence for both screens; a vendor's view is never named for the architect's."""
+    from app.review.waiting_values import DRAWING_GUIDE, where_drawn
+
+    assert where_drawn("SHOP", "CT010") == DRAWING_GUIDE["CT010"].where_to_find
+    assert where_drawn("ARCH", "CT010") == "The architect's drawing."
+    assert where_drawn("ARCH", "CT001") == "The architect's drawing."
+    for text in (where_drawn("SHOP", "CT010"), where_drawn("ARCH", "CT001")):
+        assert "not supplied" not in text
