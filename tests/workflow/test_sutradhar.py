@@ -175,6 +175,8 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         "part_finder": None,
         # Code's countertop items on two judgments (#1244): off unless GV_BALA_AUTO_ITEMS.
         "bala_auto_items": False,
+        # "Cabinet" pre-filled from one printed tag (#1266): off unless GV_BALA_CABINET_PREFILL.
+        "bala_cabinet_prefill": False,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -209,6 +211,7 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "part_pictures": None,
         "part_finder": None,
         "bala_auto_items": False,
+        "bala_cabinet_prefill": False,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }
@@ -529,6 +532,23 @@ def test_code_s_countertop_items_are_switched_on_only_by_their_setting(
 
     ((_args, kwargs),) = recorder.calls
     assert kwargs["bala_auto_items"] is expected
+
+
+@pytest.mark.parametrize(("stated", "expected"), [("1", True), ("true", True), ("0", False)])
+def test_the_cabinet_prefill_is_switched_on_only_by_its_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stated: str, expected: bool
+) -> None:
+    """#1266: code's "cabinet" pre-fill from one printed tag is off by default (the golden
+    arguments above) and on only with `GV_BALA_CABINET_PREFILL`."""
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, {**MINIMAL_ENVIRONMENT, "GV_BALA_CABINET_PREFILL": stated})
+    recorder = _record_stages(monkeypatch)
+
+    worker._stages()
+
+    ((_args, kwargs),) = recorder.calls
+    assert kwargs["bala_cabinet_prefill"] is expected
 
 
 def test_the_part_finder_refuses_a_partial_configuration(
