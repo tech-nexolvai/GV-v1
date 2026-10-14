@@ -30,8 +30,8 @@ const STATUS_LABELS: Record<PackageStatus, string> = {
   APPROVED: 'Approved',
   CHANGES_REQUESTED: 'Changes Requested',
   // Neutral words, true for every cause (#1240 review): a reading or a check run that failed and
-  // will run again, and an out-of-credit stop that waits for a person. The restart wording belongs
-  // only to the Reading step while `reading.retrying` is true (lib/review-stage.ts).
+  // will run again, and an out-of-credit stop that waits for a person. While a failed reading
+  // really restarts (`reading.retrying`), the badge says `RESTARTING_STATUS_WORDS` instead (#1249).
   FAILED_RETRYABLE: 'Stopped after a problem',
   FAILED_PERMANENT: 'Failed',
   NEEDS_INPUT: 'Needs Input',
@@ -63,8 +63,20 @@ export function OutcomeBadge({ outcome, size = 'md' }: OutcomeBadgeProps) {
 // The state is a bare `string` on the wire (`data/types.ts`), so an unknown one is shown by its own
 // name rather than taking the badge down.
 
-/** The words for a package state, shared with the shadcn status badge so both say the same thing. */
-export function packageStatusLabel(status: string): string {
+/**
+ * The badge's words for a FAILED_RETRYABLE package while its failed reading is really starting
+ * again (`reading.retrying`, #1249), so the badge agrees with the Reading step's "Starting the
+ * reading again after a problem" (`RESTARTING_WORDS`). "Trying again" stays the AI's own (#1239).
+ */
+export const RESTARTING_STATUS_WORDS = 'Restarting after a problem';
+
+/**
+ * The words for a package state, shared with the shadcn status badge so both say the same thing.
+ * `restarting` is the package's `reading.retrying`: only a FAILED_RETRYABLE package whose reading
+ * restarts says so; every other cause keeps the neutral words.
+ */
+export function packageStatusLabel(status: string, { restarting = false }: { restarting?: boolean } = {}): string {
+  if (restarting && status === 'FAILED_RETRYABLE') return RESTARTING_STATUS_WORDS;
   return STATUS_LABELS[status as PackageStatus] ?? humanise(status);
 }
 

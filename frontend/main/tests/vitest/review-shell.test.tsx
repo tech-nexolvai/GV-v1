@@ -26,6 +26,7 @@ vi.mock('@/api/client', () => ({
 }));
 
 const { AppShell, COLLAPSED_KEY } = await import('@/components/shell/AppShell');
+const { listPackages } = await import('@/api/client');
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -203,7 +204,7 @@ describe('app shell', () => {
     localStorage.clear();
   });
 
-  function Shell({ children, openPackage = 'p1' }: { children?: React.ReactNode; openPackage?: string | null }) {
+  function Shell({ children, openPackage = 'p1', liveRestarting = null }: { children?: React.ReactNode; openPackage?: string | null; liveRestarting?: { packageId: string; restarting: boolean } | null }) {
     return (
       <AppShell
         title="Synthetic vendor A"
@@ -213,6 +214,7 @@ describe('app shell', () => {
         theme="light"
         sidebarRefreshKey={0}
         liveNeedYou={null}
+        liveRestarting={liveRestarting}
         onNavigate={() => {}}
         onOpenPackage={() => {}}
         onNewReview={() => {}}
@@ -252,6 +254,24 @@ describe('app shell', () => {
     const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
     await waitFor(() => expect(sidebar.querySelector('[data-slot="need-you"]')?.textContent).toBe('Needs you'));
     expect(sidebar.querySelector('[data-slot="need-you"] [data-outcome-icon="REVIEW_REQUIRED"]')).not.toBeNull();
+  });
+
+  it('the open review\'s badge says "Restarting" with its header while its reading restarts; other reviews keep "Stopped" (#1249)', async () => {
+    const stopped = (id: string, vendor: string) => ({ id, vendor, state: 'FAILED_RETRYABLE', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: `r-${id}`, project_id: 'x', product_type: 'countertop' });
+    vi.mocked(listPackages).mockResolvedValueOnce({ items: [stopped('p1', 'Synthetic vendor A'), stopped('p2', 'Synthetic vendor B')], next_cursor: null } as Awaited<ReturnType<typeof listPackages>>);
+    render(<Shell liveRestarting={{ packageId: 'p1', restarting: true }} />);
+    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
+    await within(sidebar).findByText('Synthetic vendor B');
+    const badges = [...sidebar.querySelectorAll('[data-slot="package-status-badge"]')].map((badge) => badge.textContent);
+    expect(badges).toEqual(['Restarting after a problem', 'Stopped after a problem']);
+  });
+
+  it('the open review\'s badge keeps "Stopped" when nothing restarts (#1249)', async () => {
+    vi.mocked(listPackages).mockResolvedValueOnce({ items: [{ id: 'p1', vendor: 'Synthetic vendor A', state: 'FAILED_RETRYABLE', created_at: new Date().toISOString(), current_revision_number: 1, current_revision_id: 'r1', project_id: 'x', product_type: 'countertop' }], next_cursor: null } as Awaited<ReturnType<typeof listPackages>>);
+    render(<Shell liveRestarting={{ packageId: 'p1', restarting: false }} />);
+    const sidebar = document.querySelector('[data-slot="sidebar"]') as HTMLElement;
+    await within(sidebar).findByText('Synthetic vendor A');
+    expect(sidebar.querySelector('[data-slot="package-status-badge"]')?.textContent).toBe('Stopped after a problem');
   });
 
   it('keyboard order: skip link, navigation, header (where you are → status → action), then the page', async () => {

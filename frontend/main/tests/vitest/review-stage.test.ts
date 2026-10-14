@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { RAISE_THE_LIMIT_FIRST, RESTARTING_WORDS, reviewStage, UNPRICED_FIRST, type ReviewFacts, type StepId, type StepState } from '@/lib/review-stage';
-import { packageStatusLabel } from '@/components/ui/StatusBadge';
+import { packageStatusLabel, RESTARTING_STATUS_WORDS } from '@/components/ui/StatusBadge';
 
 const base: ReviewFacts = { state: 'AWAITING_REVIEW', findingsTotal: 9, readiness: { blockingFindings: 3, canApprove: false, reason: '3 findings need a decision' }, exports: null };
 
@@ -76,6 +76,17 @@ describe('reviewStage: one step per state', () => {
     const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 0, costUsd: '0', unpricedCalls: 0, retrying: true };
     const retry = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null });
     expect(retry.steps.find((step) => step.id === 'reading')?.note).toBe(`${RESTARTING_WORDS} · AI readers reading the dimensions · page 1 of 9`);
+  });
+
+  it('the badge says "Restarting" only while a failed reading really restarts (#1249)', () => {
+    // Same moment as the Reading step's restart line: never "Stopped" beside "Starting again".
+    expect(packageStatusLabel('FAILED_RETRYABLE', { restarting: true })).toBe(RESTARTING_STATUS_WORDS);
+    expect(RESTARTING_STATUS_WORDS).toBe('Restarting after a problem');
+    // Otherwise (checks failed, out of credit, no retry line yet): the neutral words.
+    expect(packageStatusLabel('FAILED_RETRYABLE', { restarting: false })).toBe('Stopped after a problem');
+    expect(packageStatusLabel('FAILED_RETRYABLE')).toBe('Stopped after a problem');
+    // Only a failed package restarts: a running reading keeps its own words.
+    expect(packageStatusLabel('EXTRACTING', { restarting: true })).toBe('Extracting');
   });
 
   it('reading: a worker quiet for too long is said, from the recorded time only', () => {

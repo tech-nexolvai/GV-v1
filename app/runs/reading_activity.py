@@ -24,6 +24,14 @@ naming each agent by its plain role ("the line finder", "the number reader"); th
 is a separate field the screen shows on hover (Anant, 2026-10-14, phase 3 decision 1). The backend
 owns every sentence: the screen shows `line`, `now` and `summary.sentence` as they are.
 
+**A page code proved blank is nothing to read (#1249).** The page sorter tells one `stopped` event
+per page it leaves unread (`workflow.stages._tell_unread`). A `blank-page` one is a page code proved
+blank from the PDF: it always carries its full proof (`workflow.unread_pages.UnreadPage`), and a
+proof needs no pasted drawing, picture or line, so none of the doubts that would make it wait can
+hold (`workflow.slot_row_scope.UnchosenRowPage.needs_answer` is false). It is counted with the
+items passed on, never as waiting for the reviewer, and is not listed among the items that need
+them; its `stopped` event still counts in `stopped`, as Pariksha's tally counts it.
+
 Nothing here decides anything about a drawing. It only reports what the reading did.
 
 Source: issue #1238 · Verification: `tests/workflow/test_reading_activity.py`,
@@ -61,6 +69,7 @@ from workflow.pariksha_gates import Agent
 __all__ = [
     "ACTIVITY_ITEMS_SHOWN",
     "DID_NOT_FINISH",
+    "PROVEN_BLANK",
     "ROLE_NAMES",
     "TRY_AGAIN_CHANGES",
     "TRY_AGAIN_RESULTS",
@@ -305,6 +314,10 @@ _PAGE_STOPS: Final[dict[str, str]] = {
     "blank-page": "the page sorter found this page blank.",
 }
 
+#: The page sorter's code for a page code proved blank (`workflow.unread_pages.BLANK_PAGE`; a test
+#: keeps them equal). Its stop is nothing to read, never waiting for the reviewer (#1249).
+PROVEN_BLANK: Final = "blank-page"
+
 #: Why the line finder's inspector stopped a page, after "Page N: ".
 _LINE_STOPS: Final[dict[str, str]] = {
     "readers-differ": "the line finder's two AIs picked different lines.",
@@ -427,13 +440,15 @@ class ActivityItem:
 @dataclass(frozen=True, slots=True)
 class ActivitySummary:
     passed: int
-    """Items whose newest event is a pass."""
+    """Items whose newest event is a pass, and pages the page sorter found proven blank: nothing to
+    read on them (#1249)."""
     stopped: int
     """Items an inspector stopped (whatever happened next)."""
     tried_again: int
     helped: int
     waiting: int
-    """Items that wait for a person: tried and not helped, plus stopped and never tried."""
+    """Items that wait for a person: tried and not helped, plus stopped and never tried, except a
+    page proven blank (#1249)."""
     sentence: str
     """The reading's summary in one plain sentence."""
 
@@ -577,12 +592,21 @@ def reading_activity_for(
         .subquery()
     )
     helped_code = newest.c.code == "helped"
+    # A page code proved blank: nothing to read, so it is counted with the passes (#1249).
+    # This trusts the event's `blank-page` code. Sign-off re-checks the stored proof against the
+    # current blank-page rule (`UnchosenRowPage.needs_answer`, app/review/no_countertop.py), so a
+    # rule change can only alter this display, and sign-off still waits for an answer.
+    blank = (
+        (newest.c.agent == Agent.BALA.value)
+        & (newest.c.kind == EventKind.STOPPED.value)
+        & (newest.c.code == PROVEN_BLANK)
+    )
     tallies = session.execute(
         select(
-            func.count().filter(newest.c.kind == EventKind.PASSED.value),
+            func.count().filter((newest.c.kind == EventKind.PASSED.value) | blank),
             func.count().filter((newest.c.kind == EventKind.TRY_AGAIN_RESULT.value) & helped_code),
             func.count().filter(
-                (newest.c.kind == EventKind.STOPPED.value)
+                ((newest.c.kind == EventKind.STOPPED.value) & ~blank)
                 | ((newest.c.kind == EventKind.TRY_AGAIN_RESULT.value) & ~helped_code)
             ),
         )
@@ -600,7 +624,7 @@ def reading_activity_for(
     def newest_of(*kinds: str, limit: int) -> list[ActivityItem]:
         rows = session.execute(
             select(newest)
-            .where(newest.c.kind.in_(kinds))
+            .where(newest.c.kind.in_(kinds), ~blank)
             .order_by(newest.c.created_at.desc(), newest.c.position.desc())
             .limit(limit)
         ).all()
@@ -626,7 +650,8 @@ def reading_activity_for(
         return found
 
     # Newest first: the items that need the reviewer's eye, then (only if room is left) pages whose
-    # AIs answered and nothing more has happened on them yet. Passes are only counted.
+    # AIs answered and nothing more has happened on them yet. Passes, and pages proven blank, are
+    # only counted.
     needs_eye = newest_of(
         EventKind.STOPPED.value,
         EventKind.TRYING_AGAIN.value,
