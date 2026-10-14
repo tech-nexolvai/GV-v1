@@ -341,7 +341,9 @@ def confirm_countertop_run(
     """A person saying which parts make up the run beneath one countertop. **The only code that
     writes `countertop_runs`.**
 
-    The countertop must be a confirmed countertop a person stands by, and each member a confirmed
+    The countertop must be a live confirmed countertop: a person's, or code's on two judgments
+    (#1244; a person's run beneath code's item then keeps it from being taken back by code, and
+    makes it a checked countertop: `workflow/parts.py:person_run_beneath`). Each member must be a confirmed
     cabinet or filler on the same drawing, each named once. The writer orders the members across
     the page itself, recomputes the suggestion with `edge_tolerance` to take each suggested member's
     sentence, and records the tolerance on every row. The decision replaces whichever one was

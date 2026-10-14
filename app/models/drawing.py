@@ -20,10 +20,14 @@ and is set by the same discipline that governs observations, never at constructi
 
 **A suggested part is not an item (#852).** The computer may suggest that a box on an elevation is a
 cabinet, a filler or a countertop (`PartProposal`). Outside tests, a `drawing_items` row is written
-only when a person confirms one (`PartConfirmation`): `workflow/parts.py:confirm_part` is the only
-code that writes it, and a guard test fails if another writer appears. The confirmation is the
-authority, as `ViewRoleConfirmation` is for a view's role, so an item a person confirmed is still
-created uncorroborated.
+only when a suggestion is confirmed (`PartConfirmation`): `workflow/parts.py:confirm_part` is the
+only code that writes it, and a guard test fails if another writer appears. A person confirms
+through the Measure page; **code confirms in one narrow case only** (ADR-0021 amendment, #1244): a
+countertop whose two independent judgments agree, through `confirm_part_by_code`, recorded under a
+`code:` name, behind `GV_BALA_AUTO_ITEMS`, undoable by any person, and never over a person's
+decision. A second guard fails if `confirm_part` is called from anywhere else. The confirmation is
+the authority, as `ViewRoleConfirmation` is for a view's role, so a confirmed item is still created
+uncorroborated, whoever confirmed it.
 
 **An alias is a small rule.** "Cab." meaning "cabinet" is a judgement somebody made, and it changes
 what matches what. So it carries who added it and why, and it is versioned alongside the rulebook
@@ -433,8 +437,9 @@ PART_DECISION_VALUES = ", ".join(f"'{decision.value}'" for decision in PartDecis
 class PartProposal(Base, TimestampedUUID, Immutable):
     """What the computer suggests one part of a drawing is: a cabinet, a filler or a countertop.
 
-    **A suggestion, never a part.** Writing one creates no `drawing_items` row; only a person's
-    `PartConfirmation` does. A suggestion nobody decides on stays a suggestion, and nothing that reads
+    **A suggestion, never a part.** Writing one creates no `drawing_items` row; only a
+    `PartConfirmation` does: a person's, or code's for a countertop whose two judgments agree
+    (#1244). A suggestion nobody decides on stays a suggestion, and nothing that reads
     `drawing_items` can find it there.
 
     **A code is kept as printed and never decoded.** A cabinet code names a model, not one cabinet, so
@@ -517,13 +522,19 @@ class PartProposal(Base, TimestampedUUID, Immutable):
 
 
 class PartConfirmation(Base, TimestampedUUID, Immutable):
-    """A person's decision on one suggested part: it is a part, or it is not.
+    """A decision on one suggested part: it is a part, or it is not.
 
     **The only thing that makes an item.** Confirming writes a new `drawing_items` row, with a
     `catalogue` identifier when the person kept a code, and names it in `drawing_item_id`. A
     withdrawal writes no item. `workflow/parts.py:confirm_part` is the only code that does this, and
     a guard in `tests/db/test_drawing_models.py` fails if any other module outside `tests/`
     constructs or inserts into either table.
+
+    **Almost always a person's.** The one exception (ADR-0021 amendment, #1244) is code confirming a
+    countertop whose two independent judgments agree (`confirm_part_by_code`): `confirmed_by` then
+    names code (`code:bala-two-judgments/v1`), never a person, and its audit event is evidence
+    qualification. Code never decides a suggestion anyone has decided, takes back only its own
+    item, and a person's later decision replaces code's like any other.
 
     **The confirmation is the authority, not the item.** The item is created with `corroborated` left
     `False`. What the person decided is this row, as `ViewRoleConfirmation` is for a view's role;

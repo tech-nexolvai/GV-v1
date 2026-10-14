@@ -842,6 +842,162 @@ def test_the_guard_leaves_readers_alone(source: str, tmp_path: Path) -> None:
     assert _writers(tmp_path) == []
 
 
+# -- who may call the one writer (#1244, ADR-0021 amendment) ---------------------------------------
+
+#: The only callers of `confirm_part`: code's one door, on two judgments, and the Measure page's own
+#: (a person confirming a suggestion, or adding a part), which refuses any actor naming code.
+CONFIRM_PART_CALLERS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("workflow/parts.py", "confirm_part_by_code"),
+        ("app/evidence/parts.py", "confirm_listed_part"),
+        ("app/evidence/parts.py", "add_part"),
+    }
+)
+
+
+def _confirm_part_uses(root: Path) -> list[tuple[str, str, int]]:
+    """Every use of `confirm_part` outside `tests/`, other than importing or defining it.
+
+    As `(file, enclosing function, line)`. **By the name, not by where it was imported from**
+    (review of #1248): a module that re-exports it (`app/evidence/parts.py` imports it), a relative
+    import, or any module object carries the same function under the same name. So a use is:
+
+    - the name `confirm_part`, or any name an import bound it to (`... import confirm_part as x`,
+      from any module, relative or not), read anywhere;
+    - an attribute `.confirm_part` of anything (`parts.confirm_part`,
+      `importlib.import_module(...).confirm_part`);
+    - the text `"confirm_part"` anywhere but `__all__` (`getattr(module, "confirm_part")`).
+    """
+    found: list[tuple[str, str, int]] = []
+    for path in _source_files(root):
+        relative = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        names: set[str] = {"confirm_part"}
+        exported: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.ImportFrom, ast.Import)):
+                names.update(
+                    alias.asname
+                    for alias in node.names
+                    if alias.name.rsplit(".", 1)[-1] == "confirm_part" and alias.asname
+                )
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(
+                    isinstance(target, ast.Name) and target.id == "__all__" for target in targets
+                ):
+                    exported.update(id(inner) for inner in ast.walk(node))
+        for function, node in _nodes_by_function(tree):
+            used = (
+                (isinstance(node, ast.Name) and node.id in names and isinstance(node.ctx, ast.Load))
+                or (isinstance(node, ast.Attribute) and node.attr == "confirm_part")
+                or (
+                    isinstance(node, ast.Constant)
+                    and node.value == "confirm_part"
+                    and id(node) not in exported
+                )
+            )
+            if used:
+                found.append((relative, function, getattr(node, "lineno", 0)))
+    return found
+
+
+def test_confirm_part_is_called_only_by_code_s_one_door_and_the_measure_page() -> None:
+    """**ADR-0021 amendment (#1244):** code may make an item, but only through
+    `confirm_part_by_code`, on two judgments agreeing. Any other caller of `confirm_part` would be
+    a second door for code, with no judgments at all."""
+    uses = _confirm_part_uses(REPO_ROOT)
+    elsewhere = [use for use in uses if use[:2] not in CONFIRM_PART_CALLERS]
+    assert not elsewhere, "confirm_part is used outside its callers:\n  " + "\n  ".join(
+        f"{path}:{line} in {function}" for path, function, line in elsewhere
+    )
+    # And the walk sees every caller that exists: a guard that found none would check nothing.
+    assert {use[:2] for use in uses} == CONFIRM_PART_CALLERS
+
+
+#: Each way of reaching `confirm_part`, each a module the guard must find on its own.
+CONFIRM_PART_FORMS: dict[str, str] = {
+    "imported": (
+        "from workflow.parts import confirm_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "renamed": (
+        "from workflow.parts import confirm_part as make\n"
+        "def go(session, proposal):\n"
+        "    make(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "module-attribute": (
+        "from workflow import parts\n"
+        "def go(session, proposal):\n"
+        "    parts.confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "imported-module": (
+        "import workflow.parts\n"
+        "def go(session, proposal):\n"
+        "    workflow.parts.confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "passed-on": (
+        "from workflow.parts import confirm_part\n"
+        "def go(run):\n"
+        "    return run(confirm_part)\n"
+    ),
+    # Review of #1248 (L2): the name reached some other way than from `workflow.parts` itself.
+    "re-exported": (
+        "from app.evidence.parts import confirm_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "re-exported-and-renamed": (
+        "from app.evidence.parts import confirm_part as make\n"
+        "def go(session, proposal):\n"
+        "    make(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "relative": (
+        "from .parts import confirm_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "another-module-attribute": (
+        "import app.evidence.parts as page\n"
+        "def go(session, proposal):\n"
+        "    page.confirm_part(session, proposal=proposal, kind=None, code=None, actor='x')\n"
+    ),
+    "getattr": (
+        "from workflow import parts\n"
+        "def go(session, proposal):\n"
+        "    return getattr(parts, 'confirm_part')\n"
+    ),
+    "importlib": (
+        "import importlib\n"
+        "def go(session, proposal):\n"
+        "    module = importlib.import_module('workflow.parts')\n"
+        "    return module.confirm_part\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("source", list(CONFIRM_PART_FORMS.values()), ids=list(CONFIRM_PART_FORMS))
+def test_the_caller_guard_finds_every_way_of_reaching_it(source: str, tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(source, encoding="utf-8")
+
+    assert [use[:2] for use in _confirm_part_uses(tmp_path)] == [("workflow/elsewhere.py", "go")]
+
+
+def test_the_caller_guard_leaves_the_door_and_other_names_alone(tmp_path: Path) -> None:
+    (tmp_path / "workflow").mkdir()
+    (tmp_path / "workflow" / "elsewhere.py").write_text(
+        "from workflow.parts import confirm_part_by_code, withdraw_part\n"
+        "def go(session, proposal):\n"
+        "    confirm_part_by_code(session, proposal=proposal, kind=None, reason='x')\n"
+        "    withdraw_part(session, proposal=proposal, actor='x')\n",
+        encoding="utf-8",
+    )
+
+    assert _confirm_part_uses(tmp_path) == []
+
+
 # -- the one writer of a run (#893) -------------------------------------------
 
 #: A confirmed run's members, and the decisions that confirm or withdraw a run.
@@ -945,6 +1101,9 @@ RUN_AWARE: frozenset[str] = frozenset(
         # Sign-off reads only when a run decision was recorded, never its run, to tell whether the
         # checks have seen it yet (#1137).
         "app/review/approval.py",
+        # Code never takes back its own countertop item a person decided a run beneath (re-review
+        # of #1248): it asks only whether such a decision exists, never reads a run's members.
+        "workflow/parts.py",
     }
 )
 

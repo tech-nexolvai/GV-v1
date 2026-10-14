@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 
 import {
+  FOUND_BY_CODE,
   FROM_COUNTERTOP_LINE,
   KIND_LABEL,
   PART_KINDS,
@@ -8,6 +9,7 @@ import {
   codeToSend,
   decisionLabel,
   drawingLabel,
+  foundByCode,
   oneClickKind,
   reasonToShow,
   startingCode,
@@ -57,6 +59,10 @@ export interface NewPart {
  * filler, an appliance space or something else (the last two are not parts).
  *
  * **A picture being made says so**: Bala's pictures are the worker's next job after the match stage.
+ *
+ * **A countertop code confirmed with no click (#1244)** says "Found by code: two checks agreed" and
+ * offers Undo, which is a person's withdrawal: a person can always undo it, and a person's decision
+ * always wins (the kind buttons stay, so a person may also confirm it themselves).
  */
 export function DrawingPartsList({
   drawings,
@@ -203,6 +209,15 @@ function PartRow({
         <Hint>{part.suggested_code ? `Code read on the drawing: “${part.suggested_code}”` : 'No code read.'}</Hint>
         <p className="text-xs font-medium">{decisionLabel(part)}</p>
       </div>
+      {foundByCode(part) && (
+        <div data-slot="found-by-code" className="flex flex-wrap items-center gap-1.5 text-xs font-medium">
+          <span>{FOUND_BY_CODE}</span>
+          <span aria-hidden="true">·</span>
+          <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => onWithdraw(part)}>
+            Undo
+          </Button>
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         <label htmlFor={codeId} className="text-xs text-muted-foreground">
           Code as printed (leave empty if none)
