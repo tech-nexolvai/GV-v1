@@ -30,17 +30,22 @@ Source: issues #987, #992, #1110 · Verification: `tests/extraction/slot_reader/
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from fractions import Fraction
 from typing import Final
 
 from evidence.corroborate import UNKNOWN_MODEL_VENDOR, independence_key
 from extraction.form_reader.mapping import REVIEWER_MARKUP_REASON
 from extraction.ink import InkAt, InkClass
-from extraction.slot_reader.labels import expand_label, odd_fraction, plain_dimension, row_hold
+from extraction.slot_reader.labels import (
+    expand_label,
+    is_inch_mm_pair,
+    mm_inch_refusal,
+    odd_fraction,
+    plain_dimension,
+    row_hold,
+)
 from extraction.slot_reader.runs import Lane, PlannedLabel
 from units.measurement import Measurement
 from units.normalise import fold_fractions
@@ -83,6 +88,8 @@ _QUOTES: Final = {
 #: 32 or 64 (#1199). Always the person's, with `labels.odd_fraction`'s reason. Text that is no
 #: plain dimension anyway (`457 / 18"`, a bare `24/36`) stays "not plain".
 _ODD_FRACTION: Final = "fraction-not-drawn"
+#: Two numbers, one in brackets, whose mm and inches are not one length (#1263; `labels.mm_inch_refusal`).
+_MM_INCH_DISAGREE: Final = "mm-inch-disagree"
 _CLAUDE_PAIR: Final = frozenset({"anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"})
 
 
@@ -348,6 +355,9 @@ def seal_label(
             refusal = odd_fraction(printed, allow_explicit_mm=claude_pair)
             if refusal is not None:
                 return review(_ODD_FRACTION, refusal, keep_suggestion=False)
+            disagree = mm_inch_refusal(printed, allow_explicit_mm=claude_pair)
+            if disagree is not None:
+                return review(_MM_INCH_DISAGREE, disagree, keep_suggestion=False)
             return review("not-plain", "the label has words or a sum; review the value")
     if not answers and held_before_reading is not None:
         return review(
@@ -375,13 +385,16 @@ def seal_label(
     refusal = odd_fraction(agreed, allow_explicit_mm=claude_pair)
     if refusal is not None:
         return review(_ODD_FRACTION, refusal, keep_suggestion=False)
-    if claude_pair and mm_corroborates_inch(agreed) is False:
-        return review("mm-inch-disagree", "the label's millimetre and inch halves disagree")
+    # Two numbers, one in brackets, that are not one length in mm and inches (#1263): for every
+    # reader pair, not only Claude's, since `plain_dimension` no longer takes the bracket on trust.
+    disagree = mm_inch_refusal(agreed, allow_explicit_mm=claude_pair)
+    if disagree is not None:
+        return review(_MM_INCH_DISAGREE, disagree, keep_suggestion=False)
     value = plain_dimension(agreed, allow_explicit_mm=claude_pair)
     if (
         value is not None
         and any(answer.combined for answer in answers)
-        and not (claude_pair and _is_explicit_mm_dual(agreed))
+        and not (claude_pair and is_inch_mm_pair(agreed, allow_explicit_mm=True))
     ):
         # A reader saw words or a sum the agreed text does not show: the crop holds more than the
         # label both copied, and which is the piece's width is the person's call.
@@ -406,56 +419,6 @@ def seal_label(
         flags=tuple(flags),
         reader_texts=reader_texts,
     )
-
-
-#: A metric label with its inch value in brackets, as these vendors print it: `305 [12]`,
-#: `38 [1 1/2]`, `18 [3/4]`, with or without `mm` and an inch mark.
-_BARE_DUAL: Final = re.compile(
-    r"\s*(?P<mm>[0-9]+(?:\.[0-9]+)?)\s*(?:mm)?\s*\[\s*"
-    r"(?P<inch>[0-9]+(?:\s+[0-9]+/[0-9]+)?|[0-9]+/[0-9]+)\s*\"?\s*\]\s*",
-    re.IGNORECASE,
-)
-_MM_PER_INCH: Final = Fraction(254, 10)
-
-
-def _is_explicit_mm_dual(text: str) -> bool:
-    """A printed mm [inch] dual label is a supported dimension, not an ambiguous worded label.
-
-    Both forms count: `305 mm [12"]` and the bare `305 [12]` the vendors actually print. Two
-    numbers in one label is what makes a reader call it "combined"; for this form that is no reason
-    to hold it — the inch half is the value (the client lead's Q12) and the mm half is checked against it.
-    """
-    from extraction.slot_reader.labels import _MM_DUAL
-
-    return _MM_DUAL.fullmatch(text) is not None or _BARE_DUAL.fullmatch(text) is not None
-
-
-def mm_corroborates_inch(text: str) -> bool | None:
-    """Whether a dual label's mm half agrees with its inch half; `None` if it is not a dual label.
-
-    The inch is authoritative and the mm only corroborates it (CLAUDE.md, the client lead's Q12). The vendor's
-    inch is the mm rounded to its own fraction, so the allowance is half that fraction's step plus
-    half a millimetre: `562 [22 1/8]` (561.98 mm) agrees, `305 [10]` does not. A disagreement is a
-    misread or a vendor slip, and either way the person looks.
-    """
-    match = _BARE_DUAL.fullmatch(text)
-    if match is None:
-        return None
-    millimetres = Fraction(match.group("mm"))
-    inch_text = match.group("inch").split()
-    inches = Fraction(0)
-    step = Fraction(1)
-    for part in inch_text:
-        if "/" in part:
-            numerator, denominator = part.split("/")
-            if int(denominator) == 0:
-                return False
-            inches += Fraction(int(numerator), int(denominator))
-            step = Fraction(1, int(denominator))
-        else:
-            inches += Fraction(int(part))
-    allowance = _MM_PER_INCH * step / 2 + Fraction(1, 2)
-    return abs(millimetres - inches * _MM_PER_INCH) <= allowance
 
 
 @dataclass(frozen=True, slots=True)
