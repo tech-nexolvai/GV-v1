@@ -1,11 +1,14 @@
 import { useState, type ReactNode } from 'react';
 
 import {
+  FROM_COUNTERTOP_LINE,
   KIND_LABEL,
   PART_KINDS,
   codeToSend,
   decisionLabel,
   drawingLabel,
+  oneClickKind,
+  reasonToShow,
   startingCode,
   stillToDecide,
   type PartDrawing,
@@ -45,6 +48,10 @@ export interface NewPart {
  *
  * **A picture that shows GV's own coloured marks says so under it (#921)**, because the marks are
  * baked into the vendor's drawing there and the picture cannot leave them out.
+ *
+ * **Bala's suggestions (#1236)** say they came from the countertop line the AI readers found, and
+ * offer one button that confirms the suggested kind in one click. It is still one part and one
+ * person's click: the other kinds and "Not a part" stay beside it.
  */
 export function DrawingPartsList({
   drawings,
@@ -153,6 +160,7 @@ function PartRow({
   const confirmedKind = part.decision?.decision === 'confirmed' ? part.decision.kind : null;
   const pending = saving || feedback?.kind === 'saving';
   const codeId = `part-code-${part.proposal_id}`;
+  const quickKind = oneClickKind(part);
   return (
     <li
       data-slot="drawing-part"
@@ -178,7 +186,12 @@ function PartRow({
           {part.position}. Suggested as a {KIND_LABEL[part.suggested_kind].toLowerCase()}
           {part.added_by_a_person ? ' (added by a person)' : ''}
         </p>
-        <Hint>{part.reason}</Hint>
+        {part.from_countertop_line && (
+          <p data-slot="from-countertop-line" className="text-xs font-medium text-muted-foreground">
+            {FROM_COUNTERTOP_LINE}
+          </p>
+        )}
+        <Hint>{reasonToShow(part)}</Hint>
         <Hint>{part.suggested_code ? `Code read on the drawing: “${part.suggested_code}”` : 'No code read.'}</Hint>
         <p className="text-xs font-medium">{decisionLabel(part)}</p>
       </div>
@@ -196,6 +209,16 @@ function PartRow({
           onChange={(event) => setCode(event.target.value)}
         />
       </div>
+      {quickKind && (
+        <Button
+          type="button"
+          size="sm"
+          disabled={!drawing.can_confirm || pending}
+          onClick={() => onConfirm(part, quickKind, codeToSend(code))}
+        >
+          Confirm: {KIND_LABEL[quickKind].toLowerCase()}
+        </Button>
+      )}
       <div
         className="flex flex-wrap gap-1.5"
         role="group"

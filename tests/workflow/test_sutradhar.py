@@ -170,6 +170,9 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         "form_reader": None,
         "slot_reader": None,
         "part_pictures": PartPictureSettings(margin_pt=Decimal(40), dpi=120),
+        # Code's part finder (#1236): off unless GV_PART_FINDER_ENABLED; the stages then use the
+        # association settings above when the localized reader is on.
+        "part_finder": None,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -202,6 +205,7 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "form_reader": None,
         "slot_reader": None,
         "part_pictures": None,
+        "part_finder": None,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }
@@ -447,7 +451,12 @@ def test_a_launcher_that_patches_the_slot_reader_factory_reaches_the_stages(
     import scripts.drain_outbox as worker
     from workflow import slot_reader
 
-    _environment(monkeypatch, tmp_path, MINIMAL_ENVIRONMENT)
+    # With the slot reader on, Bala suggests parts, so their pictures' settings are required (#1236).
+    _environment(
+        monkeypatch,
+        tmp_path,
+        {**MINIMAL_ENVIRONMENT, "GV_PART_PICTURE_MARGIN_PT": "36", "GV_PART_PICTURE_DPI": "150"},
+    )
     recorder = _record_stages(monkeypatch)
     replaced = object()
     seen: list[object] = []
@@ -464,3 +473,67 @@ def test_a_launcher_that_patches_the_slot_reader_factory_reaches_the_stages(
 
     assert [kwargs["slot_reader"] for _args, kwargs in recorder.calls] == [replaced, replaced]
     assert seen == [None, None], "the form reader built beside it is handed over"
+
+
+# ---------------------------------------------------------------------------
+# Code's part finder and Bala's pictures (#1236)
+# ---------------------------------------------------------------------------
+
+
+def _part_finder_environment() -> dict[str, str]:
+    """The synthetic settings with the localized reader off and code's part finder on."""
+    stated = {
+        name: value
+        for name, value in SYNTHETIC_ENVIRONMENT.items()
+        if not name.startswith("GV_READER_LOCALIZED_")
+    }
+    stated["GV_LOCALIZED_OCR_ENABLED"] = "0"
+    stated["GV_PART_FINDER_ENABLED"] = "1"
+    return stated
+
+
+def test_the_part_finder_takes_the_line_settings_without_turning_on_the_localized_reader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Decision 3 of 2026-10-14: code's geometry-only part finder runs in the worker, in memory,
+    as Bala's second judgment. It reads no page's pixels, so the localized reader stays off."""
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, _part_finder_environment())
+    recorder = _record_stages(monkeypatch)
+
+    worker._stages()
+
+    ((_args, kwargs),) = recorder.calls
+    assert kwargs["association"] is None and kwargs["localized_ocr"] is None
+    assert kwargs["part_finder"] == _expected_synthetic_arguments()["association"]
+
+
+def test_the_part_finder_refuses_a_partial_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.drain_outbox as worker
+
+    stated = _part_finder_environment()
+    del stated["GV_READER_WITNESS_TOLERANCE"]
+    _environment(monkeypatch, tmp_path, stated)
+    _record_stages(monkeypatch)
+
+    with pytest.raises(ValueError, match="part finder is enabled but missing GV_READER_WITNESS"):
+        worker._stages()
+
+
+def test_with_the_slot_reader_on_the_pictures_settings_are_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Bala suggests a part for every row the slot reader reads, and every suggested part gets a
+    picture (#897), so a worker that would suggest parts it cannot picture refuses to start."""
+    import scripts.drain_outbox as worker
+    from workflow import slot_reader
+
+    _environment(monkeypatch, tmp_path, MINIMAL_ENVIRONMENT)
+    _record_stages(monkeypatch)
+    monkeypatch.setattr(slot_reader, "configured_slot_reader", lambda *_args: object())
+
+    with pytest.raises(ValueError, match="missing GV_PART_PICTURE_MARGIN_PT, GV_PART_PICTURE_DPI"):
+        worker._stages()

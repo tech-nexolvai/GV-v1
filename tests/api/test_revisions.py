@@ -1015,9 +1015,9 @@ def test_the_carry_forward_migration_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(alembic_config())
     found = script.get_revision("0089_revision_carry_forward")
     assert found is not None and found.down_revision == "0088_outbox_abandoned"
-    # #1191 added 0090 on top, #1193 0091, #1195 0092, #1206 0093 and #1215 0094; 0089 is still
-    # in the chain below them.
-    assert script.get_heads() == ["0094_invocation_failure_reason"]
+    # #1191 added 0090 on top, #1193 0091, #1195 0092, #1206 0093, #1215 0094 and #1236 0095;
+    # 0089 is still in the chain below them.
+    assert script.get_heads() == ["0095_part_proposal_rows"]
     above = script.get_revision("0090_no_countertop_answers")
     assert above is not None and above.down_revision == found.revision
     reference = script.get_revision("0091_reference_view_suggestion")
@@ -1026,8 +1026,10 @@ def test_the_carry_forward_migration_is_the_single_head() -> None:
     assert batches is not None and batches.down_revision == reference.revision
     refusals = script.get_revision("0093_model_invocation_refusals")
     assert refusals is not None and refusals.down_revision == batches.revision
-    top = script.get_revision("0094_invocation_failure_reason")
-    assert top is not None and top.down_revision == refusals.revision
+    failures = script.get_revision("0094_invocation_failure_reason")
+    assert failures is not None and failures.down_revision == refusals.revision
+    top = script.get_revision("0095_part_proposal_rows")
+    assert top is not None and top.down_revision == failures.revision
 
 
 # --- carry-forward: the identity is strict ----------------------------------------------------------

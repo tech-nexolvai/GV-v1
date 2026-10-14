@@ -5199,6 +5199,11 @@ export interface components {
             /** @description The decision nothing has replaced, or null while nobody has decided. */
             decision: components["schemas"]["DecisionOut"] | null;
             /**
+             * From Countertop Line
+             * @description True when code suggested it from a countertop row the AI readers read (Bala, #1236): the countertop itself or one of its pieces, with its kind already suggested.
+             */
+            from_countertop_line: boolean;
+            /**
              * Has Crop
              * @description Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.
              */

@@ -56,6 +56,7 @@ from app.models import (
     PartDecision,
     PartPicture,
     PartProposal,
+    PartProposalRow,
     Project,
     ReadingPart,
     SourceArtifact,
@@ -429,6 +430,8 @@ PART_TABLES = (
     "countertop_run_decisions",
     "reading_parts",
     "part_pictures",
+    # Which countertop row and piece each of Bala's suggestions came from (#1236).
+    "part_proposal_rows",
 )
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTOR = "anant"
@@ -553,6 +556,7 @@ def test_the_part_tables_are_registered_and_append_only() -> None:
         CountertopRunDecision,
         ReadingPart,
         PartPicture,
+        PartProposalRow,
     ):
         assert issubclass(model, Immutable)
     assert set(PART_TABLES) <= set(immutable_table_names())
@@ -1647,6 +1651,19 @@ def _one_of_each(session: Session) -> None:
     )
     session.flush()
     _picture(session, session.scalars(select(PartProposal)).first())
+    # Bala's link from a suggestion to the countertop row it came from (#1236).
+    row = _code_reading(session, page, raw_text="20")
+    first = session.scalars(select(PartProposal)).first()
+    assert first is not None
+    session.add(
+        PartProposalRow(
+            part_proposal_id=first.id,
+            row_candidate_id=row.id,
+            slot_index=None,
+            extraction_run_id=row.extraction_run_id,
+        )
+    )
+    session.flush()
 
 
 #: How the pictures here are said to be cut: an inch round each part, at 150 dpi.

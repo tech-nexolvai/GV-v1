@@ -358,6 +358,7 @@ from workflow.association import (
     ReadItem,
     dimension_texts,
 )
+from workflow.bala_items import CodeFinding, CodePart, propose_items
 from workflow.config import READER_RASTER_DPI
 from workflow.evidence_operands import (
     evidence_operands,
@@ -1817,6 +1818,7 @@ class DatabaseStages:
         form_reader: FormReaderRuntime | None = None,
         slot_reader: SlotReaderRuntime | None = None,
         part_pictures: PartPictureSettings | None = None,
+        part_finder: AssociationSettings | None = None,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
@@ -1990,6 +1992,12 @@ class DatabaseStages:
         if part_pictures is not None and not isinstance(part_pictures, PartPictureSettings):
             raise TypeError("part_pictures must be PartPictureSettings")
         self._part_pictures = part_pictures
+        # **Code's geometry-only part finder, for Bala's second judgment (#1236, decision 3).** Run
+        # in memory by `match`, never written. The association settings when the localized reader
+        # is on, else the finder's own (`GV_PART_FINDER_ENABLED`), else off, and said so.
+        if part_finder is not None and not isinstance(part_finder, AssociationSettings):
+            raise TypeError("part_finder must be AssociationSettings")
+        self._part_finder = part_finder if part_finder is not None else association
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -5048,23 +5056,7 @@ class DatabaseStages:
             page_index=page.index,
             extractor_version=PROPOSER_VERSION,
         ):
-            outlines = [
-                ViewOutline(
-                    view_id=view.id,
-                    region=Polygon(
-                        # Kept as text by `record_panel_view`, so read back exactly.
-                        points=tuple(
-                            StoredPoint(Decimal(x), Decimal(y))
-                            for x, y in cast(list[list[str]], view.region["points"])
-                        ),
-                        space="stored",
-                        document_version_id=page.document_version_id,
-                        page=page.index,
-                    ),
-                    vendor=_view_role(session, view) == ViewRole.SHOP.value,
-                )
-                for view in views
-            ]
+            outlines = _view_outlines(session, page, views)
             detected = detect(
                 lines,
                 witness_tolerance=settings.witness_tolerance,
@@ -6486,6 +6478,122 @@ class DatabaseStages:
             self._ocr_engine = RapidOcrEngine()
         return self._ocr_engine
 
+    def _bala_items(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        """Bala's suggestions for the revision's newest slot-reader run, and their pictures (#1236).
+
+        Files a countertop and its pieces for each countertop row, linked to the row
+        (`workflow/bala_items.py`), with code's own part finder run in memory as the second judgment
+        on each page (`_code_parts_on`). Then cuts the picture of every suggestion still without
+        one, as for every other suggestion (`cut_part_pictures`, #897): every suggested part gets a
+        picture (2026-10-03). **No item is written** (`items_written` is always 0).
+        """
+        records = {
+            version: key
+            for version, key, _, _ in _document_records_for(session, package_revision_id)
+        }
+        loaded: dict[UUID, bytes] = {}
+
+        def code_parts(page: Page) -> CodeFinding | str:
+            return self._code_parts_on(session, page, records, loaded)
+
+        outcome = propose_items(session, package_revision_id, code_parts=code_parts)
+        payload = outcome.as_payload()
+        payload["pictures"] = (
+            dict(self.cut_part_pictures(session, package_revision_id))
+            if outcome.proposals
+            else {"ran": False, "reason": "Bala suggested nothing to picture"}
+        )
+        return payload
+
+    def _code_parts_on(
+        self,
+        session: Session,
+        page: Page,
+        records: Mapping[UUID, str],
+        loaded: dict[UUID, bytes],
+    ) -> CodeFinding | str:
+        """Code's geometry-only part finder on one page, **in memory**: what it suggests, or why it
+        did not run (#1236, decision 3).
+
+        The same strokes and the same suggester as the page stage's (`_propose_page_parts`): the
+        page's vector line-work and its drawings' line-work, detected under the finder's settings,
+        and `propose_parts` with its own witness tolerance. No printed text is given to it, so it
+        attaches no code; Bala compares only where its cabinets end. **It writes nothing**: no
+        suggestion, no reading, no run. $0: no model is asked anything.
+        """
+        settings = self._part_finder
+        if settings is None:
+            return "code's part finder is off: its settings are not stated"
+        if self._store is None:
+            return "code's part finder did not run: no artifact store is configured"
+        if page.render_failed:
+            return "code's part finder did not run: the page could not be rendered"
+        views = list(
+            session.scalars(
+                select(DrawingView)
+                .where(DrawingView.page_id == page.id)
+                .order_by(DrawingView.tag, DrawingView.id)
+            )
+        )
+        if not views:
+            return "code's part finder did not run: the page has no drawings"
+        key = records.get(page.document_version_id)
+        if key is None:
+            return "code's part finder did not run: the page's document is not in this revision"
+        if page.document_version_id not in loaded:
+            loaded[page.document_version_id] = _fetch(self._store, key)
+        data = loaded[page.document_version_id]
+        try:
+            contents = (
+                read_page_contents(
+                    data,
+                    page.index,
+                    document_version_id=page.document_version_id,
+                    dpi=self._dpi,
+                    missing_space=self._stated_missing_space(),
+                )
+                if page.has_vector_text
+                else None
+            )
+            layers = read_annotation_layers(
+                data,
+                page.index,
+                document_version_id=page.document_version_id,
+                dpi=self._dpi,
+                line_minimum_pt=settings.line_minimum_pt,
+                glyph_maximum_pt=settings.glyph_maximum_pt,
+                glyph_gap_pt=settings.glyph_gap_pt,
+                fraction_bar=settings.fraction_bar,
+            )
+        except (UnreadablePdf, ValueError) as error:
+            reason = str(error).strip() or type(error).__name__
+            return f"code's part finder did not run: {reason}"
+        detected = detect(
+            (contents.segments if contents is not None else ()) + layers.drawing_segments,
+            witness_tolerance=settings.witness_tolerance,
+            minimum_span=settings.minimum_span,
+            straightness=settings.straightness,
+            crossing_margin=settings.crossing_margin,
+        )
+        found = propose_parts(
+            _view_outlines(session, page, views),
+            detected,
+            (),
+            edge_tolerance=settings.witness_tolerance,
+        )
+        return CodeFinding(
+            parts=tuple(
+                CodePart(
+                    view_id=part.view_id,
+                    kind=part.kind,
+                    left=min(point.x for point in part.extent.points),
+                    right=max(point.x for point in part.extent.points),
+                )
+                for part in found.parts
+            ),
+            tolerance=settings.witness_tolerance,
+        )
+
     def match(self, session: Session, package_revision_id: UUID) -> Mapping[str, object]:
         """Propose which architectural item is which shop item, and write the proposals down.
 
@@ -6507,8 +6615,14 @@ class DatabaseStages:
         suggested part (`workflow/parts.py`). A withdrawn or corrected part keeps its row, so both
         queries this reads keep to `live_part_item_ids`. With none, it returns an honest zero with
         the reason, naming how many drawings were found and how many roles are confirmed.
+
+        **First, Bala suggests the items (#1236)**: a countertop for each countertop row the slot
+        reader read, and a part for each of its pieces, each with its picture, for a person to
+        confirm (`_bala_items`). Suggestions only: no item is written, so the matching below sees
+        exactly what it saw before.
         """
         self._watch(session, package_revision_id, "match")
+        bala = self._bala_items(session, package_revision_id)
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:
@@ -6522,6 +6636,7 @@ class DatabaseStages:
                     "reason": (
                         f"matching needs confirmed architectural and shop views; missing: {missing}"
                     ),
+                    "bala": bala,
                 }
             views = revision_views(session, package_revision_id)
             confirmed = [entry.view.role for entry in views if entry.view.role]
@@ -6536,6 +6651,7 @@ class DatabaseStages:
                     f"confirmed by a reviewer: {confirmed.count('arch')} architect, "
                     f"{confirmed.count('shop')} vendor"
                 ),
+                "bala": bala,
             }
         missing = _missing_role_names(role_summary.roles)
         if missing:
@@ -6547,6 +6663,7 @@ class DatabaseStages:
                 "reason": (
                     f"matching needs confirmed architectural and shop views; missing: {missing}"
                 ),
+                "bala": bala,
             }
 
         written = 0
@@ -6596,6 +6713,7 @@ class DatabaseStages:
             "items": len({item.item_id for item, _ in items}),
             "proposed": proposed,
             "candidates": written,
+            "bala": bala,
         }
 
     def validate_evidence(
@@ -8621,6 +8739,28 @@ def _confirmed_panel_roles(session: Session, page_id: UUID) -> dict[int, Confirm
         if view.tag.startswith("panel-") and number.isdigit() and view.role is not None:
             roles[int(number)] = ConfirmedRole(view.role, latest.get(view.id, "a reviewer"))
     return roles
+
+
+def _view_outlines(session: Session, page: Page, views: Sequence[DrawingView]) -> list[ViewOutline]:
+    """Each drawing on the page as the part suggester reads it: its region, exactly as stored, and
+    whether it is the vendor's (confirmed, or else as its label suggests, #710)."""
+    return [
+        ViewOutline(
+            view_id=view.id,
+            region=Polygon(
+                # Kept as text by `record_panel_view`, so read back exactly.
+                points=tuple(
+                    StoredPoint(Decimal(x), Decimal(y))
+                    for x, y in cast(list[list[str]], view.region["points"])
+                ),
+                space="stored",
+                document_version_id=page.document_version_id,
+                page=page.index,
+            ),
+            vendor=_view_role(session, view) == ViewRole.SHOP.value,
+        )
+        for view in views
+    ]
 
 
 def _view_role(session: Session, view: DrawingView) -> str | None:

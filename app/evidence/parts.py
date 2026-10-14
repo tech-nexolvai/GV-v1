@@ -58,12 +58,14 @@ from app.models import (
     Page,
     PartConfirmation,
     PartProposal,
+    PartProposalRow,
     ViewRole,
 )
 from app.models.evidence import EvidenceArtifact, EvidenceArtifactKind
 from vocabulary.part_kinds import PartKind
 from workflow.part_pictures import GvMarks, pictured
 from workflow.parts import confirm_part, record_part_proposal, withdraw_part
+from workflow.slot_row_scope import latest_slot_reader_run
 from workflow.view_roles import revision_views
 
 __all__ = [
@@ -151,6 +153,11 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
 
     In page order, each drawing's suggestions left to right. **Reads only.** A vendor's drawing with
     no suggestion is listed too, so a person can add the parts the suggester missed.
+
+    **Bala's suggestions from the newest reading only (#1236).** Bala files a countertop and its
+    pieces for each row of a slot-reader run, so a re-read files them again. One from an earlier run
+    is listed only while a person's decision stands on it: a decision is never hidden, and an
+    undecided suggestion the newer reading has replaced would be the same part asked twice.
     """
     views = revision_views(session, package_revision_id)
     proposals = list(
@@ -161,6 +168,7 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
         )
     )
     decisions = _current_decisions(session, [proposal.id for proposal in proposals])
+    proposals = _without_replaced_bala(session, package_revision_id, proposals, decisions)
     pictures = pictured(session, [proposal.id for proposal in proposals])
     cropped = _cropped_candidates(session, proposals)
     by_view: dict[UUID, list[PartProposal]] = {}
@@ -191,6 +199,31 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
             )
         )
     return tuple(drawings)
+
+
+def _without_replaced_bala(
+    session: Session,
+    package_revision_id: UUID,
+    proposals: list[PartProposal],
+    decisions: dict[UUID, PartConfirmation],
+) -> list[PartProposal]:
+    """The suggestions less Bala's undecided ones from an earlier slot-reader run (#1236)."""
+    runs = {
+        link.part_proposal_id: link.extraction_run_id
+        for link in session.scalars(
+            select(PartProposalRow).where(
+                PartProposalRow.part_proposal_id.in_([proposal.id for proposal in proposals])
+            )
+        )
+    }
+    if not runs:
+        return proposals
+    newest = latest_slot_reader_run(session, package_revision_id)
+    return [
+        proposal
+        for proposal in proposals
+        if proposal.id not in runs or runs[proposal.id] == newest or proposal.id in decisions
+    ]
 
 
 def defining_ends(proposal: PartProposal) -> tuple[tuple[str, str], tuple[str, str]] | None:

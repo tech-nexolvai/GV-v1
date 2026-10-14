@@ -6809,6 +6809,11 @@
             ],
             "description": "The decision nothing has replaced, or null while nobody has decided."
           },
+          "from_countertop_line": {
+            "description": "True when code suggested it from a countertop row the AI readers read (Bala, #1236): the countertop itself or one of its pieces, with its kind already suggested.",
+            "title": "From Countertop Line",
+            "type": "boolean"
+          },
           "has_crop": {
             "description": "Whether the crop of the reading its code came from is stored, so a suggestion with no code has none.",
             "title": "Has Crop",
@@ -6900,6 +6905,7 @@
           "suggested_code",
           "reason",
           "added_by_a_person",
+          "from_countertop_line",
           "left_end",
           "right_end",
           "has_picture",

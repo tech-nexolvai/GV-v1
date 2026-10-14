@@ -38,6 +38,25 @@ export const KIND_LABEL: Record<PartKind, string> = {
   countertop: 'Countertop',
 };
 
+/**
+ * What a suggestion Bala made from a countertop row says it is (#1236): code read the row the AI
+ * readers found and suggested the countertop and each of its pieces, with the kind filled in.
+ */
+export const FROM_COUNTERTOP_LINE = 'Suggested by code from the countertop line';
+
+/** The reason, less the words the card already shows above it. */
+export function reasonToShow(part: SuggestedPart): string {
+  const prefix = `${FROM_COUNTERTOP_LINE}: `;
+  if (!part.from_countertop_line || !part.reason.startsWith(prefix)) return part.reason;
+  const rest = part.reason.slice(prefix.length);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
+/** Whether a part may be confirmed as suggested with one click: one of Bala's, still undecided. */
+export function oneClickKind(part: SuggestedPart): PartKind | null {
+  return part.from_countertop_line && !part.decision ? part.suggested_kind : null;
+}
+
 /** Whose drawing it is, as a person would say it. */
 export function drawingLabel(drawing: PartDrawing): string {
   if (drawing.role === 'shop') return "the vendor's drawing";
