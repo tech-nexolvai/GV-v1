@@ -52,7 +52,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
@@ -827,7 +827,7 @@ def main(argv: list[str] | None = None) -> int:
         path = args.candidates.expanduser()
         export = read_candidates(path)
         sha = json.loads(path.read_text(encoding="utf-8"))["sha256"]
-        day = datetime.now(UTC).date().isoformat()
+        day = datetime.now().astimezone().date().isoformat()  # the person's own date
         out = _outside_git(args.out if args.out is not None else default_out(export.database, day))
         if out.exists():
             raise Refused(f"{out} already exists; a page is written once (choose another --out)")
