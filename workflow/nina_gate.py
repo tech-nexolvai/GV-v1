@@ -14,10 +14,13 @@ no rule is left exactly as it was, so on a correct run it does nothing.
 **How a hold is written.** Findings are append-only (`app/verdicts/record.py`), so the faulted
 result's own check run is superseded (marked replaced, never deleted) and a new run and finding are
 written in the same transaction with the same rule snapshot, engine version, defaults, inputs
-(`verdict_inputs`, copied exactly), scope, severity and variant. The new finding is REVIEW_REQUIRED
-with the check's plain reason. Its notes keep the engine's own result first (`engine_result_note`,
-the shape `confirm_unwitnessed_pass` uses), then one `Pariksha gate (Nina, safety-rules)` line per
-rule it broke, then the original notes. The decided trace is not kept, so nothing on record reads as
+(`verdict_inputs`, copied exactly), evidence links (`finding_evidence`), scope, severity and
+variant. The new finding is REVIEW_REQUIRED with a reason in the reviewer's words: what the result
+rests on and what to do (`workflow.pariksha_gates.REVIEWER_HOLD_SENTENCES`), never an agent name.
+Its notes keep the engine's own result first (`engine_result_note`, the shape
+`confirm_unwitnessed_pass` uses), then one such sentence per rule it broke, then the original
+notes. The run check's own words, with the agent each points to, go to the stage summary and the
+run check report only. The decided trace is not kept, so nothing on record reads as
 decided. The superseded result stays in the database as history.
 
 **What it cannot hold.** A rule in scope with no result, a countertop row with no width result, a
@@ -39,11 +42,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.base import utc_now
-from app.models.verdicts import CheckRun, Finding, VerdictInput
+from app.models.verdicts import CheckRun, Finding, FindingEvidence, VerdictInput
 from app.verdicts.trace import abstention_trace
 from verdict.outcomes import DECISIVE_OUTCOMES, Outcome
 from vocabulary.drawn_length import engine_result_note
-from workflow.pariksha_gates import Agent, GateDecision, GateResult, GateScope
+from workflow.pariksha_gates import (
+    Agent,
+    GateDecision,
+    GateResult,
+    GateScope,
+    reviewer_hold_sentence,
+)
 from workflow.pariksha_run_check import RunCheckItem, decision_faults
 
 __all__ = [
@@ -82,16 +91,20 @@ class NinaGateOutcome:
 
 
 def nina_hold_reason(items: Sequence[RunCheckItem]) -> str:
-    """The held result's reason: the first broken rule's sentence, and how many more there are."""
+    """The held result's reason, in the reviewer's words: what the first broken rule means and
+    what to do, and how many more there are to confirm (each is in the notes)."""
     if not items:
         raise ValueError("a hold needs the rule it broke")
-    reason = f"Held for a person by Pariksha: {items[0].found}"
-    if len(items) > 1:
-        reason += f" ({len(items) - 1} more safety rule(s) broken; see the notes.)"
+    reason = reviewer_hold_sentence(items[0].code)
+    others = len({item.code for item in items}) - 1
+    if others > 0:
+        reason += f" There {'is' if others == 1 else 'are'} {others} more to confirm in the notes."
     return reason
 
 
 def _gate_results(items: Sequence[RunCheckItem], scope_id: str) -> tuple[GateResult, ...]:
+    """The gate's own record of each broken rule, with the run check's words and the agent it
+    points to (for the stage summary and the run check, never shown to the reviewer)."""
     return tuple(
         GateResult(
             agent=Agent.NINA,
@@ -145,7 +158,9 @@ def _hold(session: Session, finding: Finding, items: Sequence[RunCheckItem]) -> 
             )
         )
     reason = nina_hold_reason(items)
-    gate_lines = [result.note for result in _gate_results(items, str(finding.id))]
+    # One reviewer sentence per broken rule: it is what the reviewer reads, and it is the record
+    # the run check counts (`workflow.pariksha_gates.nina_hold_code`).
+    gate_lines = list(dict.fromkeys(reviewer_hold_sentence(item.code) for item in items))
     held = Finding(
         check_run_id=held_run.id,
         package_revision_id=finding.package_revision_id,
@@ -168,6 +183,19 @@ def _hold(session: Session, finding: Finding, items: Sequence[RunCheckItem]) -> 
         ],
     )
     session.add(held)
+    session.flush()
+    for link in session.scalars(
+        select(FindingEvidence)
+        .where(FindingEvidence.finding_id == finding.id)
+        .order_by(FindingEvidence.role, FindingEvidence.canonical_observation_id)
+    ):
+        session.add(
+            FindingEvidence(
+                finding_id=held.id,
+                canonical_observation_id=link.canonical_observation_id,
+                role=link.role,
+            )
+        )
     session.flush()
     return held
 

@@ -479,13 +479,15 @@ def _split_reason(
 
 
 def _rekha_stop_reason(picks: tuple[tuple[str, int | None], ...]) -> str:
-    """Why a page whose chosen line Rekha's gate stopped waits for the reviewer (#1228)."""
+    """Why a page whose chosen line Rekha's gate stopped waits for the reviewer (#1228), and where
+    to act, as `_split_reason` says it."""
     lines = sorted({pick for _, pick in picks if pick})
     chose = f"Both AIs chose line {lines[0]}" if len(lines) == 1 else "The AIs chose a line"
     return (
-        f"{REKHA_NO_NUMBERS_REASON} {chose}, but code sees no printed dimension on any of its "
-        "pieces (it may be the outline of the stone top, or a band of material tags), so nothing "
-        "on it was read or checked."
+        f"{REKHA_NO_NUMBERS_REASON} {chose}, but no printed dimension stands on any of its pieces "
+        "(it may be the outline of the stone top, or a band of material tags), so nothing on it "
+        "was read or checked. The reviewer sets up this page's countertop line on the "
+        "Measurements screen, or decides this page."
     )
 
 

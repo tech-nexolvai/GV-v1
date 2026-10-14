@@ -62,11 +62,14 @@ __all__ = [
     "REKHA_READ_THROUGH_KEPT",
     "REKHA_READ_THROUGH_KEPT_REASON",
     "REKHA_ROW_GATE",
+    "REVIEWER_HOLD_SENTENCES",
     "Agent",
     "GateDecision",
     "GateResult",
     "GateScope",
     "gate_results_in",
+    "nina_hold_code",
+    "reviewer_hold_sentence",
     "stopped_by_rekha",
 ]
 
@@ -197,6 +200,62 @@ class GateResult:
             "code": self.code,
             "reason": self.reason,
         }
+
+
+#: What a reviewer reads when Nina's gate holds a PASS or FAIL (#1228 review): what the result
+#: rests on and what to do, with no agent name and no talk of the pipeline. One sentence per run
+#: check item code the gate can hold (`workflow.pariksha_run_check.decision_faults`); each is also
+#: the note line that records the hold, so the run check can count it (`nina_hold_code`).
+_CONFIRM: Final = "Held for you to confirm: "
+REVIEWER_HOLD_SENTENCES: Final[dict[str, str]] = {
+    "pass-on-unwitnessed-reading": _CONFIRM
+    + "this PASS rests on a reading whose drawn length was not checked. Confirm the reading "
+    "or correct it.",
+    "pass-on-automatic-walls": _CONFIRM
+    + "this PASS rests on walls set automatically from the vendor's drawing. Confirm the wall "
+    "layout or correct it.",
+    "decision-on-one-judgment-pairing": _CONFIRM
+    + "only one judgment paired the architect's dimension with the vendor's. Confirm the "
+    "pairing or correct it.",
+    "decision-without-pairing-record": _CONFIRM
+    + "the pairing this comparison used cannot be shown. Confirm the pairing or correct it.",
+    "decision-on-one-route-value": _CONFIRM
+    + "a value this result uses has only one reading on record. Confirm the value or correct it.",
+    "malformed-supporting-reading": _CONFIRM
+    + "the readings behind a value this result uses cannot be shown. Confirm the value or "
+    "correct it.",
+    "decision-without-inputs": _CONFIRM
+    + "the values behind this result were not all kept. Check the values before you rely on it.",
+    "decision-without-calculation": _CONFIRM
+    + "the calculation behind this result was not kept. Check the result before you rely on it.",
+    "decision-on-unqualified-evidence": _CONFIRM
+    + "a value this result uses is not confirmed (the readers disagreed, or it was not checked). "
+    "Confirm the value or correct it.",
+    "decision-in-unknown-unit": _CONFIRM
+    + "a value this result uses has a unit the checks do not know. Check the value's unit.",
+    "decision-on-value-without-source": _CONFIRM
+    + "a value this result uses has nothing on the drawings behind it. Check where it comes "
+    "from.",
+    "decision-on-advisory-value": _CONFIRM
+    + "a value this result uses may not decide a check on its own. Confirm the value or "
+    "correct it.",
+}
+_DEFAULT_HOLD_SENTENCE: Final = (
+    _CONFIRM + "this result breaks a safety rule. Confirm it or correct it."
+)
+_HOLD_CODES: Final = {sentence: code for code, sentence in REVIEWER_HOLD_SENTENCES.items()}
+
+
+def reviewer_hold_sentence(code: str) -> str:
+    """The reviewer's sentence for a held result (`REVIEWER_HOLD_SENTENCES`)."""
+    return REVIEWER_HOLD_SENTENCES.get(code, _DEFAULT_HOLD_SENTENCE)
+
+
+def nina_hold_code(note: str) -> str | None:
+    """The run check item code a held result's note line records, or `None` if it records none."""
+    if note == _DEFAULT_HOLD_SENTENCE:
+        return "safety-rule"
+    return _HOLD_CODES.get(note)
 
 
 _AGENTS: Final = {agent.value.lower(): agent for agent in Agent}

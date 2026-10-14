@@ -41,6 +41,9 @@ __all__ = ["CENTRED_SHARE", "numbered_pieces", "rekha_row_gate"]
 #: reach stands off to one side. Measured on the stored runs (#1228, $0 replay): on every row both
 #: readers agreed on, the most centred possible number stood at most 0.095 of its piece's width
 #: from the middle; on the stone-outline line, the nearest stood 0.128 off. 0.11 sits between.
+#: With pieces narrower than their label skipped (`numbered_pieces`), the review's replay of 37
+#: stored databases (42 distinct agreed rows, AI Sets 1-3 only) stops 0 of 38 real rows and 4 of 4
+#: wrong lines.
 CENTRED_SHARE: Final = Fraction(11, 100)
 
 #: Marks that make a text label read as a dimension even with letters in it (`2" BLACK`, `[24]VIF`).
@@ -81,9 +84,27 @@ def _numbered(labels: Sequence[SlotLabel], x0: Decimal, x1: Decimal) -> bool:
     return any(_could_be_a_number(label) and _centred(label, x0, x1) for label in labels)
 
 
+def _wider_than(label: SlotLabel, x0: Decimal, x1: Decimal) -> bool:
+    """Whether the label is wider than the span it stands in."""
+    return label.box.x1 - label.box.x0 > x1 - x0
+
+
 def numbered_pieces(row: CountertopRowCandidate) -> tuple[int, ...]:
-    """The pieces (slot indices) on which code sees a printed number centred on the piece."""
-    return tuple(slot.index for slot in row.slots if _numbered(slot.labels, slot.x0, slot.x1))
+    """The pieces (slot indices) on which code sees a printed number centred on the piece.
+
+    A label wider than its piece is never that piece's number (#1228 review, rule R10): on a sliver
+    piece (a couple of points wide, between two close ticks) any stroke standing over it is
+    "centred" by chance. A material-tag band passed that way; a real dimension of a sliver piece
+    is printed outside it with a leader, and the row's other pieces carry their own numbers."""
+    return tuple(
+        slot.index
+        for slot in row.slots
+        if _numbered(
+            [label for label in slot.labels if not _wider_than(label, slot.x0, slot.x1)],
+            slot.x0,
+            slot.x1,
+        )
+    )
 
 
 def rekha_row_gate(
@@ -96,8 +117,8 @@ def rekha_row_gate(
 
     **Rule.** Code looks at each piece band of the chosen line (`CountertopRowCandidate.slots` and
     the labels the row builder found in them). A piece carries a printed number when one of its
-    labels may be a number (`_could_be_a_number`) and stands at the middle of the piece
-    (`CENTRED_SHARE`). The line passes when at least one piece does. A line no piece of which
+    labels may be a number (`_could_be_a_number`), is no wider than the piece, and stands at the
+    middle of the piece (`CENTRED_SHARE`). The line passes when at least one piece does. A line no piece of which
     does (a box around the stone top's own outline, or around material tags) is stopped: "the
     chosen line has no printed numbers; the reviewer picks the row".
 

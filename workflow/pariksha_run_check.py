@@ -92,12 +92,12 @@ from workflow.architect_row_plan import (
     pairing_source_from_notes,
 )
 from workflow.pariksha_gates import (
-    NOTE_PREFIX,
     Agent,
     GateDecision,
     GateResult,
     GateScope,
     gate_results_in,
+    nina_hold_code,
 )
 from workflow.part_operands import CountertopScope, countertop_scopes, manual_run_pages
 from workflow.slot_row_scope import (
@@ -116,6 +116,7 @@ __all__ = [
     "MILAN_GATE",
     "NINA_GATE_NAME",
     "READERS_AGREE_GATE",
+    "RECORD_MISSING",
     "RECORD_ONLY_PAIRING",
     "UNWITNESSED_FLAG_ONLY",
     "VANI_GATE_NOT_STORED",
@@ -162,8 +163,12 @@ UNWITNESSED_FLAG_ONLY: Final = (
 )
 
 #: The report item Nina's gate leaves to the report when the result's own note names two
-#: judgments (`decision_faults`).
+#: judgments and only the record it names is missing (`decision_faults`).
 RECORD_ONLY_PAIRING: Final = "decision-without-pairing-record"
+RECORD_MISSING: Final = "the pairing record its note names does not exist"
+
+#: How a result Nina's gate held starts its reason (`workflow.pariksha_gates`).
+HELD_FOR_YOU: Final = "Held for you to confirm: "
 
 #: The four contract gates of `eval/release_gates.py`, by the same names (production may not import
 #: `eval/`; `tests/workflow/test_pariksha_gates.py` checks they are equal).
@@ -499,7 +504,7 @@ def _noted_pairing(
     except ValueError:
         record = None
     if record is None:
-        return source, "the pairing record its note names does not exist"
+        return source, RECORD_MISSING
     if record.row_anchor_candidate_id != finding.scope_row_candidate_id:
         return source, "the pairing record its note names belongs to another row"
     if record.created_at > run.created_at:
@@ -1071,12 +1076,12 @@ def decision_faults(
     Coverage and silent pages are about the run, not one result, and stay in the report
     (`run_check`): Nina's gate cannot hold them (`workflow/nina_gate.py`).
 
-    **One report item is not a fault of the result** (`RECORD_ONLY_PAIRING`): an architect result
-    whose own note says code and both AIs, or the reviewer, paired it, but whose pairing record
-    cannot be found or does not agree. The result rests on two judgments by what it recorded; what
-    is in doubt is the record store, so the report lists it and the gate does not hold it (#1228:
-    the product's own test suites inject such pairings, and holding them would be false holds). A
-    note naming one judgment, or no source at all, is still held.
+    **One report item is not a fault of the result** (`RECORD_ONLY_PAIRING`, only when the record
+    is missing): an architect result whose own note says code and both AIs, or the reviewer,
+    paired it, but the pairing record its note names does not exist (`RECORD_MISSING`). The result
+    rests on two judgments by what it recorded; what is in doubt is the record store, so the report
+    lists it and the gate does not hold it. A record on another row, written after the result or
+    saying another source is held, as is a note naming one judgment or no source at all.
     """
     live = [entry for entry in _live_results(session, package_revision_id) if entry.decided]
     if not live:
@@ -1100,11 +1105,13 @@ def decision_faults(
     items = _two_judgments(session, live, inputs, values, rows)
     items += _inputs(live, inputs).items
     items += _contract_gates(live, inputs, values)
-    automatic_note = {
-        str(entry.finding.id)
-        for entry in live
-        if pairing_source_from_notes(entry.finding.notes) in AUTOMATIC_SOURCES
-    }
+    record_missing: set[str] = set()
+    for entry in live:
+        if entry.rule_id != ARCHITECT_CHECK_RULE_ID:
+            continue
+        source, untrusted = _noted_pairing(session, entry.finding, entry.run)
+        if source in AUTOMATIC_SOURCES and untrusted == RECORD_MISSING:
+            record_missing.add(str(entry.finding.id))
     faults: dict[UUID, list[RunCheckItem]] = defaultdict(list)
     for item in sorted(items, key=lambda item: (_CHECK_ORDER[item.check], item.code)):
         if item.action is not Action.HOLD:
@@ -1112,7 +1119,7 @@ def decision_faults(
         finding_id = next((value for kind, value in item.ids if kind == "finding"), None)
         if finding_id is None:
             continue
-        if item.code == RECORD_ONLY_PAIRING and finding_id in automatic_note:
+        if item.code == RECORD_ONLY_PAIRING and finding_id in record_missing:
             continue
         faults[UUID(finding_id)].append(item)
     return {finding_id: tuple(found) for finding_id, found in faults.items()}
@@ -1157,24 +1164,24 @@ VANI_GATE_NOT_STORED: Final = (
 
 
 def _note_gate_results(finding: Finding) -> tuple[GateResult, ...]:
-    """Nina's gate results kept in a held finding's notes (`GateResult.note`)."""
+    """Nina's gate results kept in a held finding's notes (`workflow.pariksha_gates.nina_hold_code`)."""
+    if not (finding.reason or "").startswith(HELD_FOR_YOU):
+        return ()
     found: list[GateResult] = []
-    prefix = f"{NOTE_PREFIX} ({Agent.NINA.value}, {NINA_GATE_NAME}): {GateDecision.STOP.value} ["
     for note in finding.notes or ():
-        if isinstance(note, str) and note.startswith(prefix):
-            code, _, reason = note.removeprefix(prefix).partition("]: ")
-            if code and reason.strip():
-                found.append(
-                    GateResult(
-                        Agent.NINA,
-                        NINA_GATE_NAME,
-                        GateScope.FINDING,
-                        GateDecision.STOP,
-                        code,
-                        reason,
-                        str(finding.id),
-                    )
+        code = nina_hold_code(note) if isinstance(note, str) else None
+        if code is not None:
+            found.append(
+                GateResult(
+                    Agent.NINA,
+                    NINA_GATE_NAME,
+                    GateScope.FINDING,
+                    GateDecision.STOP,
+                    code,
+                    note,
+                    str(finding.id),
                 )
+            )
     return tuple(found)
 
 
