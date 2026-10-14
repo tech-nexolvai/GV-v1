@@ -951,7 +951,10 @@ def _codes_judgment(
     if _PIECES_DO_NOT_TILE_FLAG in _flags(row):
         why.append("its pieces do not tile its printed overall")
     if not _one_reading_per_slot(row):
-        why.append(f"it does not have exactly one reading for each of its {row.piece_count} pieces")
+        why.append(
+            f"it does not have exactly one reading for each of its {row.piece_count} pieces and "
+            "its overall"
+        )
     boxes = [box for _, _, box in pieces]
     if any(box is None for box in boxes) or not _end_to_end(judged.by_slot, row.piece_count):
         why.append("its pieces do not run end to end")
