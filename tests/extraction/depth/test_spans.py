@@ -421,3 +421,101 @@ def test_cut_out_words_about_another_hole_do_not_name_the_sinks_cut_out() -> Non
     assert not cutout_judgment(sink, [elsewhere]).code_allows
     inside = phrase("CUT-OUT", 200, 220, Orientation.UPRIGHT)
     assert cutout_judgment(sink, [inside]).code_allows
+
+
+# --- review #1274, round 4: $0 fixes ---------------------------------------------------------
+
+
+def test_a_witness_line_a_cad_gap_short_of_the_stone_edge_still_meets_it() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(93, 196, 400, 196)]  # the front edge stops 3 pt short of the witness line (47..90)
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.OUTLINE
+    far = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(96, 196, 400, 196)]  # 6 pt short: something else
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(far), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_an_end_at_the_corner_of_a_side_edge_running_the_whole_span_is_on_the_outline() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 100, 400, 196)]  # the stone's side edge, wall to front; no front edge drawn
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.low_end.kind is EndKind.WALL_BAND
+    assert depth.high_end.kind is EndKind.OUTLINE and "corner" in depth.high_end.reason
+    shorter = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 100, 400, 180)]  # stops short of the span's end: not its corner
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(shorter), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_drawn_length_within_a_quarter_inch_and_a_tenth() -> None:
+    depth = span(1, Axis.VERTICAL, 0, 96)
+    scale = view_scale(span(2, Axis.HORIZONTAL, 0, 340), Fraction(85))  # 4 pt per inch
+    quarter = Fraction(1, 4)
+    assert drawn_length_check(
+        depth, Fraction(24), scale, tolerance=Fraction(1, 10), within_inches=quarter
+    ).agrees
+    assert drawn_length_check(
+        depth, Fraction(95, 4), scale, tolerance=Fraction(1, 10), within_inches=quarter
+    ).agrees
+    assert not drawn_length_check(
+        depth, Fraction(189, 8), scale, tolerance=Fraction(1, 10), within_inches=quarter
+    ).agrees
+    # Without the quarter inch, a tenth lets 22" through.
+    assert drawn_length_check(depth, Fraction(22), scale, tolerance=Fraction(1, 10)).agrees
+    assert not drawn_length_check(
+        depth, Fraction(22), scale, tolerance=Fraction(1, 10), within_inches=quarter
+    ).agrees
+
+
+def test_a_millimetre_number_printed_with_its_own_bracket_elsewhere_is_another_label() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    other_mm = phrase("20", 1001, 161, Orientation.UPRIGHT, size=3)
+    other_in = phrase("[3/4]", 1001, 167.5, Orientation.UPRIGHT, size=3)  # beyond the reach
+    lanes = text_lanes([line_span], [own_mm, own_in, other_mm, other_in], S, chars=[])
+    assert lanes[1].inches == 22, lanes[1].reason
+    assert "'20'" in lanes[1].reason
+    assert set(lanes[1].boxes) == {own_mm.box, own_in.box}
+    # A lone number with no bracket of its own still holds (a stacked fraction's digit).
+    lone = text_lanes([line_span], [own_mm, own_in, other_mm], S, chars=[])
+    assert lone[1].inches is None and "not its millimetres" in lone[1].reason
+
+
+def test_a_side_edge_must_run_the_whole_span_from_end_to_end() -> None:
+    lines = (
+        wall_hatch(90, 100, 60, 400)
+        + [line(60, 100, 400, 100), line(60, 90, 400, 90)]
+        + [line(400, 150, 400, 196)]  # ends at the span's end but starts half-way: not the stone
+        + vertical_dimension(50, 100, 196)
+    )
+    (depth,) = [s for s in find_spans(ink(lines), VIEW, S).spans if s.axis is Axis.VERTICAL]
+    assert depth.high_end.kind is EndKind.NOTHING
+
+
+def test_a_number_whose_bracket_is_not_its_millimetres_still_holds() -> None:
+    line_span = span(1, Axis.HORIZONTAL, 1000, 1088, offset=153)
+    own_mm = phrase("559", 1044, 150, Orientation.UPRIGHT, size=3)
+    own_in = phrase("[22]", 1044, 156.5, Orientation.UPRIGHT, size=3)
+    stray = phrase("90", 1001, 161, Orientation.UPRIGHT, size=3)
+    bracket = phrase("[3/4]", 1001, 167.5, Orientation.UPRIGHT, size=3)
+    lanes = text_lanes([line_span], [own_mm, own_in, stray, bracket], S, chars=[])
+    assert lanes[1].inches is None and "not its millimetres" in lanes[1].reason

@@ -34,8 +34,9 @@ holds with a plain reason, and a hold never moves toward PASS.
      front edge (`front_offset_start.code_allows`), so **a strip measured from the stone's edge is
      never CT007**;
    * the number: the vector text at the dimension equals the sealed reading exactly, or (where the
-     number is pen strokes) its drawn length agrees within 1/10 at the view's own scale, taken from
-     a different dimension (the view's horizontal overall). With neither, it holds: no code check
+     number is pen strokes) its drawn length agrees within 1/4" (and 1/10) at the view's own
+     scale, taken from a different dimension (the view's horizontal overall), or the links of the
+     chain it is the overall of sum to it exactly. With neither, it holds: no code check
      confirmed the number. Any check that disagrees holds, as does a chain whose parts do not sum to
      its overall;
    * a depth whose two-reader readings on two views of one panel disagree holds on both;
@@ -180,12 +181,14 @@ __all__ = [
     "build_depth_request",
     "decide_view_kind",
     "depth_reader_enabled",
+    "label_areas",
     "label_boxes",
     "prepare_pdf_page",
     "prepare_view",
     "question_packet",
     "read_depth",
     "stacked_by_bar",
+    "two_stones",
     "with_projected_plans",
 ]
 
@@ -277,7 +280,10 @@ class PreparedView:
     panel_headings: tuple[Box, ...]
     """Every heading printed on the view's panel: each is painted out of every picture."""
     label_boxes: Mapping[int, tuple[Box, ...]] = field(default_factory=dict)
-    """Per span, every stroke's box in its close-up: what the fraction-bar detector looks at."""
+    """Per span, every stroke's box where its own label is printed: what the fraction-bar
+    detector looks at."""
+    label_areas: Mapping[int, Box] = field(default_factory=dict)
+    """Per span, where its own label is printed: where the reviewer-ink check looks."""
     page_height: Decimal = Decimal(0)
 
     @property
@@ -345,6 +351,7 @@ def prepare_view(
     )
     return PreparedView(
         label_boxes=label_boxes(ink, found.spans, settings),
+        label_areas=label_areas(ink, found.spans, lanes, settings),
         page_height=ink.height,
         page_index=page_index,
         panel=panel,
@@ -481,37 +488,114 @@ def prepare_pdf_page(
     )
 
 
+def _band(span: Span, reach: Decimal) -> Box:
+    if span.axis is Axis.HORIZONTAL:
+        return Box(span.start_pt, span.offset_pt - reach, span.end_pt, span.offset_pt + reach)
+    return Box(span.offset_pt - reach, span.start_pt, span.offset_pt + reach, span.end_pt)
+
+
+def _across(span: Span, box: Box) -> Decimal:
+    return box.centre_y if span.axis is Axis.HORIZONTAL else box.centre_x
+
+
+def _along(span: Span, box: Box) -> Decimal:
+    return box.centre_x if span.axis is Axis.HORIZONTAL else box.centre_y
+
+
+def _middle(span: Span, box: Box) -> bool:
+    quarter = span.length_pt / 4
+    return span.start_pt + quarter <= _along(span, box) <= span.end_pt - quarter
+
+
+def _ink_boxes(ink: PageInk, area: Box) -> list[Box]:
+    boxes = [
+        Box(
+            min(line.x0, line.x1),
+            min(line.y0, line.y1),
+            max(line.x0, line.x1),
+            max(line.y0, line.y1),
+        )
+        for line in ink.lines
+        if _inside(line.x0, line.y0, area) and _inside(line.x1, line.y1, area)
+    ]
+    boxes.extend(
+        curve.box
+        for curve in ink.curves
+        if _inside(curve.box.x0, curve.box.top, area)
+        and _inside(curve.box.x1, curve.box.bottom, area)
+    )
+    return boxes
+
+
+def _straddles(span: Span, box: Box) -> bool:
+    low, high = (box.top, box.bottom) if span.axis is Axis.HORIZONTAL else (box.x0, box.x1)
+    return low <= span.offset_pt <= high
+
+
+def _own_side(span: Span, boxes: Sequence[Box]) -> bool:
+    """Whether the label is drawn on its own side of the line: above a horizontal line, left of a
+    vertical one (where these vendors print it), seen by a mark beside the middle of the line that
+    does not cross the line (the line and its witness lines do)."""
+    return any(
+        not _straddles(span, box) and _across(span, box) < span.offset_pt and _middle(span, box)
+        for box in boxes
+    )
+
+
 def label_boxes(
     ink: PageInk, spans: Sequence[Span], settings: DepthReaderSettings
 ) -> dict[int, tuple[Box, ...]]:
-    """Per span, the box of every stroke and curve where its label is printed: along the span, and
-    within `label_reach_pt` of its line either side (where `spans.text_lanes` owns a label). The
-    whole close-up is wider and holds hatching and other labels, which the detector misreads."""
+    """Per span, the box of every stroke and curve where **its own** label is printed: along the
+    span, within `label_reach_pt` of its line, on the label's own side (above a horizontal line,
+    left of a vertical one); both sides only when nothing is drawn beside the middle of the line on
+    its own side (#1265 review: every run-2 hit of the fraction-bar detector was a neighbour's
+    label on the far side of the line)."""
     found: dict[int, tuple[Box, ...]] = {}
-    reach = settings.spans.label_reach_pt
     for span in spans:
-        if span.axis is Axis.HORIZONTAL:
-            area = Box(span.start_pt, span.offset_pt - reach, span.end_pt, span.offset_pt + reach)
-        else:
-            area = Box(span.offset_pt - reach, span.start_pt, span.offset_pt + reach, span.end_pt)
-        boxes = [
-            Box(
-                min(line.x0, line.x1),
-                min(line.y0, line.y1),
-                max(line.x0, line.x1),
-                max(line.y0, line.y1),
-            )
-            for line in ink.lines
-            if _inside(line.x0, line.y0, area) and _inside(line.x1, line.y1, area)
-        ]
-        boxes.extend(
-            curve.box
-            for curve in ink.curves
-            if _inside(curve.box.x0, curve.box.top, area)
-            and _inside(curve.box.x1, curve.box.bottom, area)
-        )
+        boxes = _ink_boxes(ink, _band(span, settings.spans.label_reach_pt))
+        if _own_side(span, boxes):
+            boxes = [box for box in boxes if _across(span, box) <= span.offset_pt]
         found[span.number] = tuple(boxes)
     return found
+
+
+def label_areas(
+    ink: PageInk,
+    spans: Sequence[Span],
+    lanes: Mapping[int, TextLane],
+    settings: DepthReaderSettings,
+) -> dict[int, Box]:
+    """Per span, where its own label is printed, for the reviewer-ink check (#1265 review: the
+    whole close-up reached GV's box round another number): the label's own printed text where it
+    is text; otherwise the middle half of the line, on the label's own side when something is
+    drawn there."""
+    areas: dict[int, Box] = {}
+    reach = settings.spans.label_reach_pt
+    for span in spans:
+        lane = lanes.get(span.number)
+        if lane is not None and lane.boxes:
+            union = lane.boxes[0]
+            for box in lane.boxes[1:]:
+                union = union.union(box)
+            areas[span.number] = union
+            continue
+        quarter = span.length_pt / 4
+        own = _own_side(span, _ink_boxes(ink, _band(span, reach)))
+        if span.axis is Axis.HORIZONTAL:
+            areas[span.number] = Box(
+                span.start_pt + quarter,
+                span.offset_pt - reach,
+                span.end_pt - quarter,
+                span.offset_pt if own else span.offset_pt + reach,
+            )
+        else:
+            areas[span.number] = Box(
+                span.offset_pt - reach,
+                span.start_pt + quarter,
+                span.offset_pt if own else span.offset_pt + reach,
+                span.end_pt - quarter,
+            )
+    return areas
 
 
 def stacked_by_bar(
@@ -598,7 +682,7 @@ class ValueReading:
     drawing whose agreed readings differ hold on both)."""
     confirmed_by: Literal["vector-text", "chain", "drawn-length-only"] | None = None
     """The strongest code check that confirmed a usable value's number. `drawn-length-only` (a
-    pen-stroke label, ±1/10 at the view's scale) is the weakest, and part 4 may refuse it."""
+    pen-stroke label, within 1/4" at the view's scale) is the weakest, and part 4 may refuse it."""
     scale_source: Literal["vector-text", "readers"] | None = None
     """Where the view's scale came from: the overall's printed text, or (weaker) the same two
     readers' reading of the overall."""
@@ -1185,6 +1269,30 @@ def _depth_place(kind: ViewKind, span: Span) -> str | None:
     return None
 
 
+def two_stones(view: PreparedView, settings: SpanSettings) -> str | None:
+    """Why a plan holds every depth on it, or `None`: two dimensions each run from the wall band to
+    a front edge, with different lengths, and neither is a link of a chain (#1265 review: one plan
+    draws two stones, 24" and 28" deep; reading "the" depth there could take the wrong one)."""
+    links = {part.number for chain in view.found.chains for part in chain.parts}
+    depths = [
+        span
+        for span in view.found.spans
+        if span.axis is Axis.VERTICAL
+        and span.number not in links
+        and {span.low_end.kind, span.high_end.kind} == {EndKind.WALL_BAND, EndKind.OUTLINE}
+    ]
+    lengths: list[Decimal] = []
+    for span in depths:
+        if all(abs(span.length_pt - length) > 2 * settings.end_meet_pt for length in lengths):
+            lengths.append(span.length_pt)
+    if len(lengths) < 2:
+        return None
+    return (
+        f"the view draws {len(lengths)} different depths from the wall to a front edge (two stones, "
+        "or a stepped stone): which is this countertop's is not known, so every depth here is held"
+    )
+
+
 def _cutout_place(
     view: PreparedView, span: Span, axis: Axis, hole: str | None, hole_reason: str
 ) -> tuple[Outline | None, str | None]:
@@ -1275,7 +1383,11 @@ def _number_checks(
         confirmed = "vector-text"
     if scale.scale is not None and scale.scale.overall_number != span.number:
         drawn = drawn_length_check(
-            span, inches, scale.scale, tolerance=settings.drawn_length_tolerance
+            span,
+            inches,
+            scale.scale,
+            tolerance=settings.drawn_length_tolerance,
+            within_inches=settings.drawn_length_within_in,
         )
         if not drawn.agrees:
             return drawn.reason, (), None
@@ -1403,7 +1515,7 @@ def _values(
         says[asked_number] = tuple(pair[0] for pair in pairs)
         present = [pair[1] for pair in pairs if pair[1] is not None]
         span = view.span(asked_number)
-        box = page.pixels(_closeup_box(span, settings))
+        box = page.pixels(view.label_areas.get(asked_number, _closeup_box(span, settings)))
         ink[asked_number] = None if page.ink_at is None else page.ink_at(box)
         sealed[asked_number] = _seal(
             present,
@@ -1420,9 +1532,14 @@ def _values(
     known.update({key: got.inches for key, got in sealed.items() if got.inches is not None})
 
     depth_number, depth_reason = _agreed_span(state.roles, "depth")
+    # First, before any span end is trusted: two stones (or two depths) in one plan hold every
+    # depth on it, so a reading can never take one stone's depth for the other's.
+    stones = two_stones(view, spans_settings) if state.kind is ViewKind.PLAN else None
     depth_span = None
     if depth_number is not None:
-        if _depth_place(state.kind, view.span(depth_number)) is None:
+        if stones is not None:
+            depth_reason = stones
+        elif _depth_place(state.kind, view.span(depth_number)) is None:
             depth_span = view.span(depth_number)
         else:
             depth_reason = _depth_place(state.kind, view.span(depth_number)) or depth_reason
@@ -1479,7 +1596,7 @@ def _values(
         outline_letter: str | None = None
         place: str | None
         if field_name == CT010:
-            place = _depth_place(state.kind, span)
+            place = stones if stones is not None else _depth_place(state.kind, span)
         elif field_name in (CT012, CT008):
             axis = Axis.HORIZONTAL if field_name == CT012 else Axis.VERTICAL
             chosen, place = _cutout_place(view, span, axis, hole_letter, hole_reason)
@@ -1727,6 +1844,14 @@ def read_depth(
             ):
                 continue
             wanted.append(number)
+            if role == "depth" and state.view.lanes[number].inches is None:
+                # A depth drawn as a chain's overall: its links' numbers let the chain's sum
+                # confirm it exactly (the only extra questions; asked once each).
+                for closure in state.view.found.closures:
+                    if closure.overall.number == number:
+                        wanted.extend(
+                            part.number for part in closure.parts if part.number not in wanted
+                        )
         if not wanted:
             continue
         overall = overall_horizontal(state.view.found.spans)

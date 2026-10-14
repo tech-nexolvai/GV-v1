@@ -38,6 +38,7 @@ from extraction.depth.read import (
     ValueReading,
     decide_view_kind,
     depth_reader_enabled,
+    label_areas,
     label_boxes,
     read_depth,
 )
@@ -126,6 +127,12 @@ def prepared(
         ),
         panel_headings=(),
         label_boxes=label_boxes(page_ink, found.spans, MEASURED_DEPTH_READER_SETTINGS),
+        label_areas=label_areas(
+            page_ink,
+            found.spans,
+            text_lanes(found.spans, [], MEASURED_SPAN_SETTINGS, chars=[]),
+            MEASURED_DEPTH_READER_SETTINGS,
+        ),
         page_height=page_ink.height,
     )
 
@@ -497,12 +504,17 @@ def with_depth(readers: FakeReaders, said: Reply | str) -> FakeReaders:
     return readers
 
 
-@pytest.mark.parametrize("read_as", ['22"', '24 3/4"', '25 1/2"'])
-def test_a_value_confirmed_only_by_drawn_length_says_so(read_as: str) -> None:
-    # H2: drawn 24" long, read by both readers as something within 1/10. Drawn length cannot tell,
-    # so the value says it rests on drawn length alone (with the scale from the readers' overall).
+@pytest.mark.parametrize("read_as", ['22"', '23 5/8"', '24 3/8"', '24 3/4"', '25 1/2"'])
+def test_a_reading_a_quarter_inch_off_the_drawn_length_holds(read_as: str) -> None:
+    # The depth is drawn exactly 24" long: within 1/10 these all agreed; within 1/4" none does.
     view = prepared()
     found = values(read(view, with_depth(FakeReaders(view), read_as)))[CT010]
+    assert not found.usable and "outside" in found.reason
+
+
+def test_a_value_confirmed_only_by_drawn_length_says_so() -> None:
+    view = prepared()
+    found = values(read(view, with_depth(FakeReaders(view), '24 1/8"')))[CT010]
     assert found.usable
     assert found.confirmed_by == "drawn-length-only"
     assert found.scale_source == "readers"
@@ -517,9 +529,10 @@ def fraction_strokes(x: float, y: float) -> list[InkLine]:
     ]
 
 
-@pytest.mark.parametrize("read_as", ['22"', '24 3/4"', '25 1/2"'])
+@pytest.mark.parametrize("read_as", ['24"', '24 1/8"'])
 def test_a_stacked_fraction_the_bar_detector_finds_holds(read_as: str) -> None:
-    view = prepared(lines=plan_lines() + fraction_strokes(56, 150))
+    # The depth's own label, drawn on its own side (left of the vertical line), is stacked.
+    view = prepared(lines=plan_lines() + fraction_strokes(38, 150))
     found = values(read(view, with_depth(FakeReaders(view), read_as)))[CT010]
     assert not found.usable and found.inches is None
     assert "stacked" in found.reason
@@ -826,3 +839,80 @@ def test_no_question_is_paid_for_a_view_not_cut_apart() -> None:
     (only,) = read(held, readers).views
     assert readers.asked == []
     assert only.kind is None and [says.says for says in only.kinds] == ["held", "held"]
+
+
+def test_a_neighbours_stacked_label_across_the_line_does_not_hold_the_depth() -> None:
+    # The depth's own label (a plain mark left of the line) and a neighbour's stacked fraction
+    # just right of it: the detector looks only at the label's own side.
+    own_label = [line(42, 140, 46, 156)]
+    view = prepared(lines=plan_lines() + own_label + fraction_strokes(53, 150))
+    found = values(read(view, with_depth(FakeReaders(view), '24"')))[CT010]
+    assert found.usable, found.reason
+    # With nothing drawn on its own side, both sides are looked at, and the stacked label holds.
+    lonely = prepared(lines=plan_lines() + fraction_strokes(53, 150))
+    assert not values(read(lonely, with_depth(FakeReaders(lonely), '24"')))[CT010].usable
+
+
+def test_two_stones_in_one_plan_hold_every_depth_first() -> None:
+    from extraction.depth.read import two_stones
+
+    # A second depth from the same wall to a second front edge, drawn deeper (two stones).
+    second = (
+        [line(400, 100, 560, 100), line(400, 90, 560, 90)]
+        + wall_hatch(90, 100, 400, 560)
+        + [line(460, 212, 560, 212)]
+        + vertical_dimension(440, 100, 212)
+    )
+    view = prepared(lines=plan_lines() + second)
+    assert two_stones(view, MEASURED_SPAN_SETTINGS) is not None
+    found = values(read(view, FakeReaders(view)))
+    assert not found[CT010].usable and "different depths" in found[CT010].reason
+    assert not found[CT007].usable  # the strip needs the stone's front edge: not known
+    assert two_stones(prepared(), MEASURED_SPAN_SETTINGS) is None
+
+
+def test_reviewers_ink_away_from_the_label_does_not_hold_it() -> None:
+    view = prepared()
+    depth_area = view.label_areas[number_of(view, Axis.VERTICAL, 100, 196)]
+    page = page_of(view)
+
+    def ink_at(box: tuple[int, int, int, int]) -> InkAt:
+        # GV's ink only far below the depth's label (still inside its close-up).
+        return InkAt(InkClass.GV if box[3] > 200 else InkClass.VENDOR, "")
+
+    assert int(depth_area.bottom) <= 200
+    found = values(
+        read_depth([replace(page, ink_at=ink_at)], ask=FakeReaders(view), fraction_bar=GEOMETRY)  # type: ignore[arg-type]
+    )
+    assert found[CT010].usable, found[CT010].reason
+
+
+def test_a_depth_drawn_as_a_chains_overall_asks_its_links_and_the_sum_confirms_it() -> None:
+    # The depth (wall to front, 96 pt) and, beside it, its chain 40 + 56 pt. The overall's number
+    # is not read, so there is no scale: only the chain's exact sum can confirm the depth.
+    chain = vertical_dimension(20, 100, 140) + vertical_dimension(20, 140, 196)
+    view = prepared(lines=plan_lines() + chain)
+    depth = number_of(view, Axis.VERTICAL, 100, 196)
+    links = [number_of(view, Axis.VERTICAL, 100, 140), number_of(view, Axis.VERTICAL, 140, 196)]
+    assert any(c.overall.number == depth for c in view.found.closures)
+    readers = FakeReaders(view)
+    overall = number_of(view, Axis.HORIZONTAL, 60, 400)
+
+    def numbers(first: str, second: str) -> None:
+        readers.numbers = {
+            model: {
+                **readers.numbers[model],
+                overall: NoAnswer("abstained"),
+                links[0]: first,
+                links[1]: second,
+            }
+            for model in CLAUDE_PAIR
+        }
+
+    numbers('10"', '14"')
+    found = values(read(view, readers))[CT010]
+    asked = {a.key.rsplit(":n", 1)[1] for a in readers.asked if ":n" in a.key}
+    assert {str(n) for n in links} <= asked
+    assert found.usable and found.confirmed_by == "chain", found.reason
+    numbers('10"', '13"')
+    assert not values(read(view, readers))[CT010].usable
