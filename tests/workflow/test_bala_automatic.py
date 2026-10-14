@@ -16,7 +16,9 @@ is never automatic, and no automatic item reaches a check (`countertop_scopes` s
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from uuid import UUID
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import Engine, func, select
@@ -33,21 +35,40 @@ from app.evidence.parts import (
     withdraw_listed_part,
 )
 from app.models import (
+    CheckRun,
     DrawingItem,
     DrawingView,
     ItemIdentifier,
     ObservationCandidate,
+    PackageRevision,
+    PackageRevisionDocument,
+    Page,
     PartConfirmation,
     PartProposal,
+    RuleSnapshot,
     SlotRowReviewDecision,
     ViewRole,
 )
-from app.models.runs import ExtractionRun
+from app.models.runs import ExtractionRun, WorkflowRun
+from app.models.verdicts import Finding
+from storage.local import LocalStore
 from tests.workflow.test_bala_items import _links, _Revision
+from tests.workflow.test_part_operands import Assembly, form_widths
 from tests.workflow.test_part_proposals_route import _upgrade
+from tests.workflow.test_reading_parts import REGION as PARTS_REGION
+from tests.workflow.test_reading_parts import _box as _parts_box
 from vocabulary.part_kinds import PartKind
 from vocabulary.semantic_types import SemanticType
-from workflow.bala_items import PIECES_STAY_ONE_CLICK, plan_items, propose_items
+from workflow.bala_items import (
+    AUTOMATIC_REASON,
+    BALA_SOURCE,
+    BALA_VERSION,
+    FROM_THE_COUNTERTOP_LINE,
+    PIECES_STAY_ONE_CLICK,
+    plan_items,
+    propose_items,
+)
+from workflow.countertop_runs import confirm_countertop_run
 from workflow.part_operands import countertop_scopes, manual_run_pages, reviewer_owned_pages
 from workflow.parts import (
     BALA_CONFIRMER,
@@ -55,6 +76,7 @@ from workflow.parts import (
     confirm_part_by_code,
     current_decision,
     live_part_item_ids,
+    record_part_proposal,
     release_contradicted_code_part,
     withdraw_part,
 )
@@ -670,3 +692,321 @@ def test_a_code_confirmation_needs_its_reason(session: Session) -> None:
 def test_the_stage_refuses_a_switch_that_is_not_a_bool() -> None:
     with pytest.raises(TypeError, match="bala_auto_items"):
         DatabaseStages(bala_auto_items="1")  # type: ignore[arg-type]
+
+
+# -- review of #1248: code's item changes no finding, even beside a person's run (H1) ----------------
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> LocalStore:
+    return LocalStore(root=tmp_path, ticket_secret=b"synthetic-test-only")
+
+
+def _codes_countertop_on_a_second_page(session: Session, assembly: Assembly) -> PartConfirmation:
+    """A countertop code confirmed on two judgments, on a second vendor page of the revision."""
+    page = Page(
+        document_version_id=assembly.page.document_version_id,
+        index=1,
+        content_hash="c" * 64,
+        width_pt=400,
+        height_pt=100,
+        rotation=0,
+        has_vector_text=True,
+        render_failed=False,
+    )
+    session.add(page)
+    session.flush()
+    view = DrawingView(page_id=page.id, tag="SYNTHETIC CODE", region=PARTS_REGION)
+    session.add(view)
+    session.flush()
+    confirm_view_role(session, view=view, role=ViewRole.SHOP, actor=PERSON)
+    extent = _parts_box("0.20", "0.80", "0.42", "0.70")
+    proposal = record_part_proposal(
+        session,
+        drawing_view_id=view.id,
+        kind=PartKind.COUNTERTOP,
+        extent=extent,
+        defining_line=(extent[0], extent[1]),
+        code_as_printed=None,
+        code_candidate_id=None,
+        reason=FROM_THE_COUNTERTOP_LINE,
+        source=BALA_SOURCE,
+        source_version=BALA_VERSION,
+        find_existing=False,
+    )
+    made = confirm_part_by_code(
+        session, proposal=proposal, kind=PartKind.COUNTERTOP, reason=AUTOMATIC_REASON
+    )
+    assert made is not None
+    return made
+
+
+def _live_findings(session: Session, revision_id: UUID) -> list[tuple[str, ...]]:
+    rows = session.execute(
+        select(
+            RuleSnapshot.snapshot_id,
+            Finding.scope_label,
+            Finding.outcome,
+            Finding.severity,
+            Finding.reason,
+            Finding.delta_numerator,
+            Finding.delta_denominator,
+        )
+        .join(CheckRun, CheckRun.id == Finding.check_run_id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .where(Finding.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
+    ).all()
+    return sorted(tuple(str(value) for value in row) for row in rows)
+
+
+def test_codes_item_changes_no_finding_beside_a_persons_run(
+    session: Session, store: LocalStore
+) -> None:
+    """The reviewer's case: a person confirmed a countertop's run on page 1, and code made a
+    countertop item on page 2. The findings are exactly those of the same revision without code's
+    item: code's item is no countertop the checks are scoped to, and its page is no person's."""
+    without = Assembly(session, store)
+    with_code = Assembly(session, store)
+    _codes_countertop_on_a_second_page(session, with_code)
+
+    for assembly in (without, with_code):
+        scopes = countertop_scopes(session, assembly.revision.id)
+        assert scopes is not None and [scope.page_index for scope in scopes] == [0]
+        assert reviewer_owned_pages(session, assembly.revision.id) == {0}
+        DatabaseStages(
+            store,
+            discriminators={"wall_config": "back_left_right"},
+            operands={"CT-WIDTH-001": form_widths()},
+        ).run_checks(session, assembly.revision.id)
+
+    assert _live_findings(session, with_code.revision.id) == _live_findings(
+        session, without.revision.id
+    )
+
+
+def test_a_persons_run_on_codes_item_makes_it_a_checked_countertop(
+    session: Session, store: LocalStore
+) -> None:
+    """Code's item is checked once a person has confirmed a run beneath it: that run is a person's
+    decision about this countertop."""
+    assembly = Assembly(session, store, run=False)
+    persons = session.get_one(PartProposal, assembly.proposals[0])
+    # Code's countertop over the same members (written directly: the test needs the item, not
+    # the two judgments), then the person's own countertop taken back.
+    extent = _parts_box("0.20", "0.80", "0.42", "0.70")
+    codes = confirm_part(
+        session,
+        proposal=record_part_proposal(
+            session,
+            drawing_view_id=assembly.view.id,
+            kind=PartKind.COUNTERTOP,
+            extent=extent,
+            defining_line=(extent[0], extent[1]),
+            code_as_printed=None,
+            code_candidate_id=None,
+            reason=FROM_THE_COUNTERTOP_LINE,
+            source=BALA_SOURCE,
+            source_version=BALA_VERSION,
+            find_existing=False,
+        ),
+        kind=PartKind.COUNTERTOP,
+        code=None,
+        actor=BALA_CONFIRMER,
+    )
+    assert codes.drawing_item_id is not None
+    withdraw_part(session, proposal=persons, actor=PERSON)
+    assert countertop_scopes(session, assembly.revision.id) is None
+
+    confirm_countertop_run(
+        session,
+        countertop_item_id=codes.drawing_item_id,
+        member_item_ids=assembly.parts[1:],
+        edge_tolerance=Decimal(0),
+        actor=PERSON,
+        wall_config="back_left_right",
+    )
+
+    scopes = countertop_scopes(session, assembly.revision.id)
+    assert scopes is not None and [scope.item_id for scope in scopes] == [codes.drawing_item_id]
+
+
+# -- review of #1248: a person's countertop over code's replaces it (M1) ----------------------------
+
+
+def test_a_person_adding_a_countertop_over_codes_item_replaces_it(session: Session) -> None:
+    built, anchor = _qualifying(session)
+    _match(session, built)
+    codes = current_decision(session, _countertop(session, anchor))
+    assert codes is not None and codes.confirmed_by == BALA_CONFIRMER
+    added = add_part(
+        session,
+        package_revision_id=built.revision.id,
+        view_id=built.views[0].id,
+        kind=PartKind.COUNTERTOP,
+        code=None,
+        ends=(("0.2", "0.44"), ("0.6", "0.44")),
+        actor=PERSON,
+    )
+    assert isinstance(added, PartConfirmation)
+
+    bala = _match(session, built, on=False)
+
+    automatic = bala["automatic"]
+    assert isinstance(automatic, dict)
+    assert automatic["released"] == [
+        "Countertop row on page 1: a person decided a countertop at the same place"
+    ]
+    assert [item.id for item in _live_items(session)] == [added.drawing_item_id]
+
+
+def test_a_person_deciding_an_older_suggestion_wins_over_codes_newer_item(
+    session: Session,
+) -> None:
+    """The race: a person decides an older reading's countertop on a page they opened before the
+    re-read, while match confirms the newer reading's overlapping one. The next match takes code's
+    item back."""
+    built, first = _qualifying(session)
+    propose_items(session, built.revision.id)
+    second = built.row(built.run(), pieces=3, shift=60)
+    _match(session, built)
+    codes = current_decision(session, _countertop(session, second))
+    assert codes is not None and codes.confirmed_by == BALA_CONFIRMER
+    persons = confirm_listed_part(
+        session,
+        package_revision_id=built.revision.id,
+        proposal_id=_countertop(session, first).id,
+        kind=PartKind.COUNTERTOP,
+        code=None,
+        actor=PERSON,
+    )
+    assert isinstance(persons, PartConfirmation)
+
+    bala = _match(session, built)
+
+    automatic = bala["automatic"]
+    assert isinstance(automatic, dict)
+    assert automatic["released"] == [
+        "Countertop row on page 1: a person decided a countertop at the same place"
+    ]
+    assert automatic["confirmed"] == []
+    assert [item.id for item in _live_items(session)] == [persons.drawing_item_id]
+
+
+# -- review of #1248: never across revisions (M2) ---------------------------------------------------
+
+
+def _next_revision(session: Session, built: _Revision) -> PackageRevision:
+    """Revision 2 of the same package, carrying the same document at the same version (as
+    `app/lifecycle/supersede.py` carries an unchanged one), with its own workflow; `built` now
+    reads and writes revision 2. Returns revision 1."""
+    first = built.revision
+    carried = session.scalars(
+        select(PackageRevisionDocument).where(
+            PackageRevisionDocument.package_revision_id == first.id
+        )
+    ).one()
+    second = PackageRevision(package_id=first.package_id, revision_number=2, state="MATCHING")
+    session.add(second)
+    session.flush()
+    session.add(
+        PackageRevisionDocument(
+            package_revision_id=second.id,
+            package_id=carried.package_id,
+            document_id=carried.document_id,
+            document_version_id=carried.document_version_id,
+        )
+    )
+    built.workflow = WorkflowRun(package_revision_id=second.id, engine_run_id=str(uuid4()))
+    session.add(built.workflow)
+    session.flush()
+    built.revision = second
+    return first
+
+
+def test_a_new_revision_never_writes_on_a_signed_off_revisions_item(session: Session) -> None:
+    built, first_anchor = _qualifying(session)
+    _match(session, built)
+    signed = current_decision(session, _countertop(session, first_anchor))
+    assert signed is not None and signed.confirmed_by == BALA_CONFIRMER
+    first = _next_revision(session, built)
+    first.state = "APPROVED"
+    session.flush()
+    before = _count(session, PartConfirmation)
+    second_anchor = built.row(built.run(), pieces=3, shift=60)
+
+    bala = _match(session, built)
+
+    # Revision 1 gains no row: its item is not revision 2's to take back.
+    assert _count(session, PartConfirmation) == before
+    still = current_decision(session, _countertop(session, first_anchor))
+    assert still is not None and still.id == signed.id
+    # Revision 2 makes nothing over it, and says why.
+    automatic = bala["automatic"]
+    assert isinstance(automatic, dict)
+    assert automatic["released"] == []
+    assert automatic["confirmed"] == []
+    assert automatic["left_to_a_person"] == [
+        "Countertop row on page 1: an earlier revision's countertop stands here"
+    ]
+    assert current_decision(session, _countertop(session, second_anchor)) is None
+    assert [item.id for item in _live_items(session)] == [signed.drawing_item_id]
+    # Revision 2's Measure page lists the live item, with code's decision, so a person can Undo it.
+    shown = {
+        part.proposal.id: part.decision
+        for drawing in revision_parts(session, built.revision.id)
+        for part in drawing.parts
+    }
+    assert shown[_countertop(session, first_anchor).id] is not None
+    assert shown[_countertop(session, first_anchor).id].id == signed.id  # type: ignore[union-attr]
+    assert shown[_countertop(session, second_anchor).id] is None
+    undone = withdraw_listed_part(
+        session,
+        package_revision_id=built.revision.id,
+        proposal_id=_countertop(session, first_anchor).id,
+        actor=PERSON,
+    )
+    assert isinstance(undone, PartConfirmation)
+    assert _live_items(session) == []
+
+
+def test_code_confirms_nothing_over_any_live_countertop(session: Session) -> None:
+    """Whoever made it: here code's own item from another revision's reading."""
+    built, _anchor = _qualifying(session)
+    _match(session, built)
+    _next_revision(session, built)
+    reread = built.row(built.run(), pieces=3, shift=60)
+    propose_items(session, built.revision.id)
+
+    assert (
+        confirm_part_by_code(
+            session,
+            proposal=_countertop(session, reread),
+            kind=PartKind.COUNTERTOP,
+            reason=AUTOMATIC_REASON,
+        )
+        is None
+    )
+    assert len(_live_items(session)) == 1
+
+
+# -- review of #1248: code withdraws only its own current item (L2) ----------------------------------
+
+
+def test_code_withdraws_nothing_but_its_own_current_confirmation(session: Session) -> None:
+    built, anchor = _qualifying(session)
+    propose_items(session, built.revision.id)
+    countertop = _countertop(session, anchor)
+
+    with pytest.raises(ValueError, match="only its own"):
+        withdraw_part(session, proposal=countertop, actor=BALA_CONFIRMER)
+    confirm_listed_part(
+        session,
+        package_revision_id=built.revision.id,
+        proposal_id=countertop.id,
+        kind=PartKind.COUNTERTOP,
+        code=None,
+        actor=PERSON,
+    )
+    with pytest.raises(ValueError, match="only its own"):
+        withdraw_part(session, proposal=countertop, actor=BALA_CONFIRMER)
+    assert len(_live_items(session)) == 1

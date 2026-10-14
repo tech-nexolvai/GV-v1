@@ -21,10 +21,12 @@ taken back stops being read.
   named the row, and code places it wholly inside one drawing a confirmation says is the vendor's,
   outlined by its printed overall that its pieces tile). It is recorded under `BALA_CONFIRMER`,
   audited as `EVIDENCE_QUALIFICATION`, never sets `corroborated`, and **a person always wins**: it
-  writes nothing on a suggestion anyone has decided, or where a person has decided a countertop at
-  the same place on the same drawing. A person undoes it by withdrawing it, like any decision.
-  `release_contradicted_code_part` takes back only code's own item when a later read no longer
-  agrees. Pieces (cabinets, fillers) are never confirmed by code (decision 2 of 2026-10-14).
+  writes nothing on a suggestion anyone has decided, where a person has decided a countertop at
+  the same place on the same drawing, or where any live countertop already stands
+  (`why_code_may_not_confirm`). A person undoes it by withdrawing it, like any decision.
+  `release_contradicted_code_part` takes back only code's own item: when a later read no longer
+  agrees, or when a person has since decided a countertop at the same place. Pieces (cabinets,
+  fillers) are never confirmed by code (decision 2 of 2026-10-14).
 
 A second guard in `tests/db/test_drawing_models.py` fails if `confirm_part` is called from anywhere
 else.
@@ -66,6 +68,9 @@ from app.models import (
 from vocabulary.part_kinds import PartKind
 
 __all__ = [
+    "ALREADY_DECIDED",
+    "ANOTHER_COUNTERTOP_STANDS",
+    "A_PERSON_DECIDED_HERE",
     "BALA_CONFIRMER",
     "CODE_ACTOR_PREFIX",
     "CODE_IDENTIFIER_KIND",
@@ -79,8 +84,11 @@ __all__ = [
     "live_part_item_ids",
     "live_parts_on",
     "outline_box",
+    "person_decided_countertop_here",
+    "persons_part_item_ids",
     "record_part_proposal",
     "release_contradicted_code_part",
+    "why_code_may_not_confirm",
     "withdraw_part",
 ]
 
@@ -208,6 +216,16 @@ def live_part_item_ids() -> Select[tuple[UUID | None]]:
     )
 
 
+def persons_part_item_ids() -> Select[tuple[UUID | None]]:
+    """The live items a person confirmed: `live_part_item_ids` less code's own (#1244).
+
+    Code's countertop is an item a reader may treat as a part, but not a person's word that it is
+    one; the countertop checks are scoped only to a person's (`workflow/part_operands.py:
+    countertop_scopes`, review of #1248).
+    """
+    return live_part_item_ids().where(~PartConfirmation.confirmed_by.startswith(CODE_ACTOR_PREFIX))
+
+
 def confirm_part(
     session: Session,
     *,
@@ -272,12 +290,18 @@ def withdraw_part(session: Session, *, proposal: PartProposal, actor: str) -> Pa
 
     An item made by an earlier confirmation keeps its row and stops being current, because the
     decision that made it has been replaced. Code withdraws only its own item, through
-    `release_contradicted_code_part`, as `BALA_CONFIRMER`.
+    `release_contradicted_code_part`, as `BALA_CONFIRMER`: with code's name, this refuses unless the
+    current decision is code's own confirmation (review of #1248).
     """
     _require_actor(actor)
     if by_code(actor) and actor != BALA_CONFIRMER:
         raise ValueError(f"code withdraws a part only as {BALA_CONFIRMER!r}")
     replaced = current_decision(session, proposal)
+    if by_code(actor) and not _codes_own_confirmation(replaced):
+        raise ValueError(
+            "code withdraws only its own current confirmation; a person's decision, or no "
+            "decision, is never code's to take back"
+        )
     confirmation = PartConfirmation(
         part_proposal_id=proposal.id,
         supersedes_id=None if replaced is None else replaced.id,
@@ -302,10 +326,11 @@ def confirm_part_by_code(
     **Only a countertop.** Pieces stay one click for a person (decision 2): any other kind is
     refused.
 
-    **A person always wins.** Nothing is written, and `None` is returned, when the suggestion has
-    any decision at all (a person's, or code's own earlier one, kept or taken back: code never
-    repeats itself), or when a person's current decision stands on a countertop at the same place
-    on the same drawing (`_a_person_decided_this_countertop`), on whatever suggestion it was made.
+    **A person always wins, and one place holds one countertop.** Nothing is written, and `None` is
+    returned, whenever `why_code_may_not_confirm` gives a reason: the suggestion has any decision
+    at all; a person's current decision stands on a countertop at the same place on the same
+    drawing; or any live countertop, whoever made it, already stands there (code's own item from
+    an earlier revision that shares the drawing; review of #1248).
     """
     if kind is not PartKind.COUNTERTOP:
         raise ValueError("code confirms only a countertop; a piece stays a person's click")
@@ -313,9 +338,35 @@ def confirm_part_by_code(
         raise ValueError("code confirms only a suggestion of a countertop")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("a code confirmation needs the reason both judgments gave")
-    if _any_decision(session, proposal) or _a_person_decided_this_countertop(session, proposal):
+    if why_code_may_not_confirm(session, proposal) is not None:
         return None
     return confirm_part(session, proposal=proposal, kind=kind, code=None, actor=BALA_CONFIRMER)
+
+
+#: Why code may not confirm a countertop suggestion (`why_code_may_not_confirm`), in plain words.
+ALREADY_DECIDED: Final = "a decision already stands on it"
+A_PERSON_DECIDED_HERE: Final = "a person decided a countertop at the same place"
+ANOTHER_COUNTERTOP_STANDS: Final = "an earlier revision's countertop stands here"
+
+
+def why_code_may_not_confirm(session: Session, proposal: PartProposal) -> str | None:
+    """Why code may not confirm this countertop suggestion, or `None` when it may (#1244).
+
+    In order: the suggestion has any decision (a person's, or code's own earlier one, kept or taken
+    back: code never repeats itself); a person's current decision stands on a countertop at the
+    same place on the same drawing (`person_decided_countertop_here`), on whatever suggestion it
+    was made; or a live countertop of code's stands there. Code's own items of this revision's
+    older readings are taken back before code confirms (`workflow/bala_items.py`), so the one left
+    is another revision's, on a drawing the two revisions share (review of #1248): code never
+    writes onto another revision's records, and never makes two live countertops at one place.
+    """
+    if _any_decision(session, proposal):
+        return ALREADY_DECIDED
+    if person_decided_countertop_here(session, proposal):
+        return A_PERSON_DECIDED_HERE
+    if _overlapping_countertops(session, proposal, live_only=True):
+        return ANOTHER_COUNTERTOP_STANDS
+    return None
 
 
 def release_contradicted_code_part(
@@ -325,21 +376,25 @@ def release_contradicted_code_part(
     `workflow/view_roles.py:release_contradicted_code_role`.
 
     The caller says whether the two judgments still agree on this suggestion's row
-    (`judgments_agree`): `False` when a later read of the same run disagrees, or when a newer
-    slot-reader run has replaced the row. Only then, and **only when the current decision is code's
+    (`judgments_agree`): `False` when a later read of the same run disagrees, when a newer
+    slot-reader run has replaced the row, or when a person has since decided a countertop at the
+    same place (`person_decided_countertop_here`: a person always wins). Only then, and **only when the current decision is code's
     own confirmation**, is it withdrawn, as `BALA_CONFIRMER`; a person's decision, of either kind,
     is never touched. Returns the withdrawal, or `None` when nothing was withdrawn.
     """
     if judgments_agree:
         return None
-    current = current_decision(session, proposal)
-    if (
-        current is None
-        or current.confirmed_by != BALA_CONFIRMER
-        or current.decision != PartDecision.CONFIRMED.value
-    ):
+    if not _codes_own_confirmation(current_decision(session, proposal)):
         return None
     return withdraw_part(session, proposal=proposal, actor=BALA_CONFIRMER)
+
+
+def _codes_own_confirmation(decision: PartConfirmation | None) -> bool:
+    return (
+        decision is not None
+        and decision.confirmed_by == BALA_CONFIRMER
+        and decision.decision == PartDecision.CONFIRMED.value
+    )
 
 
 def _any_decision(session: Session, proposal: PartProposal) -> bool:
@@ -353,30 +408,50 @@ def _any_decision(session: Session, proposal: PartProposal) -> bool:
     )
 
 
-def _a_person_decided_this_countertop(session: Session, proposal: PartProposal) -> bool:
+def person_decided_countertop_here(session: Session, proposal: PartProposal) -> bool:
     """Whether a person's current decision stands on a countertop suggestion on the same drawing
     whose outline overlaps this one from left to right: confirmed (a live countertop there, added
     or suggested) or withdrawn (a person said it is not one, or undid code's).
 
     Overlap, not equality: a re-read may draw the row a little elsewhere, and a person's countertop
     on the same stretch of the drawing is the same countertop as far as code may tell. Two
-    countertops side by side on one drawing do not overlap and do not block each other.
+    countertops side by side on one drawing do not overlap and do not block each other. Code asks
+    this before confirming, and again of each of its own items on every match, so a person's
+    decision made after code's item (a countertop added over it, or an older suggestion decided
+    while code confirmed a newer one) takes code's item back (review of #1248).
     """
+    return _overlapping_countertops(session, proposal, live_only=False, persons_only=True)
+
+
+def _overlapping_countertops(
+    session: Session, proposal: PartProposal, *, live_only: bool, persons_only: bool = False
+) -> bool:
+    """Whether another suggestion on the same drawing, overlapping this one from left to right,
+    carries a current decision about a countertop: a confirmation of one (`live_only`), or any
+    decision on a countertop suggestion; only a person's with `persons_only`."""
     left, _top, right, _bottom = outline_box(proposal.extent)
     later = aliased(PartConfirmation)
-    rows = session.execute(
-        select(PartProposal.extent)
-        .join(PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id)
-        .where(
-            PartProposal.drawing_view_id == proposal.drawing_view_id,
-            PartProposal.id != proposal.id,
-            ~PartConfirmation.confirmed_by.startswith(CODE_ACTOR_PREFIX),
-            ~exists().where(later.supersedes_id == PartConfirmation.id),
-            (PartProposal.kind == PartKind.COUNTERTOP.value)
-            | (PartConfirmation.kind == PartKind.COUNTERTOP.value),
+    query = select(PartProposal.extent).join(
+        PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id
+    )
+    query = query.where(
+        PartProposal.drawing_view_id == proposal.drawing_view_id,
+        PartProposal.id != proposal.id,
+        ~exists().where(later.supersedes_id == PartConfirmation.id),
+    )
+    if live_only:
+        query = query.where(
+            PartConfirmation.decision == PartDecision.CONFIRMED.value,
+            PartConfirmation.kind == PartKind.COUNTERTOP.value,
         )
-    ).scalars()
-    for extent in rows:
+    else:
+        query = query.where(
+            (PartProposal.kind == PartKind.COUNTERTOP.value)
+            | (PartConfirmation.kind == PartKind.COUNTERTOP.value)
+        )
+    if persons_only:
+        query = query.where(~PartConfirmation.confirmed_by.startswith(CODE_ACTOR_PREFIX))
+    for extent in session.execute(query).scalars():
         other_left, _, other_right, _ = outline_box(extent)
         if other_left < right and left < other_right:
             return True

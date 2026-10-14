@@ -178,10 +178,11 @@ def revision_parts(session: Session, package_revision_id: UUID) -> tuple[Drawing
 
     **Bala's suggestions from its newest reading only (#1236).** Bala files a countertop and its
     pieces for each row of a slot-reader run, so a re-read files them again. One from an earlier run
-    is listed only while a person's decision stands on it: a person's decision is never hidden, and
-    an undecided suggestion the newer reading has replaced would be the same part asked twice. Code's
-    own decision on an older reading (#1244) is not a person's: the newer reading's suggestion is the
-    one code decides on, so the older one is not listed.
+    is listed only while a decision stands on it: a person's decision is never hidden, and an
+    undecided suggestion the newer reading has replaced would be the same part asked twice. Code's
+    own item (#1244) is listed while it stands, whichever reading or revision made it, so a person
+    can always Undo it (review of #1248); code taking back its own item is no one's word, so that
+    older suggestion is not listed.
     """
     views = revision_views(session, package_revision_id)
     proposals = list(
@@ -273,9 +274,19 @@ def _without_replaced_bala(
         for proposal in proposals
         if proposal.id not in runs
         or runs[proposal.id] == newest
-        or (proposal.id in decisions and not by_code(decisions[proposal.id].confirmed_by))
+        or _never_hidden(decisions.get(proposal.id))
     ]
     return kept, {link.part_proposal_id: link.kind_named for link in links}
+
+
+def _never_hidden(decision: PartConfirmation | None) -> bool:
+    """Whether an older reading's suggestion stays listed for its decision: a person's, of either
+    kind, and code's own item while it stands, wherever it came from (review of #1248: another
+    revision's on a shared drawing, or a re-read that match has not followed yet), so a person can
+    always see it and Undo it. Code taking back its own is no one's word, and is not listed."""
+    if decision is None:
+        return False
+    return not by_code(decision.confirmed_by) or decision.decision == PartDecision.CONFIRMED.value
 
 
 def defining_ends(proposal: PartProposal) -> tuple[tuple[str, str], tuple[str, str]] | None:

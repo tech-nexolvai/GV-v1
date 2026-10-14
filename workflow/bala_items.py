@@ -31,11 +31,14 @@ code's own for a **countertop** whose two independent judgments agree (`WouldBeA
   person's, or code's two-judgment one) says is the vendor's.
 
 Either judgment missing leaves a suggestion for a person's one click, with the reason recorded. A
-later read that no longer agrees, or a newer reading, takes back only code's own item
-(`release_contradicted_code_part`). **Pieces are never automatic** (decision 2): nothing printed
-names 130 of every 131 of them, and even a named one stays a person's click in this version.
-Automatic items cannot create a PASS: the countertop checks read items only once a person has
-confirmed a countertop's run (`workflow/part_operands.py:countertop_scopes`).
+later read that no longer agrees, a newer reading, or a person's later decision on a countertop at
+the same place takes back only code's own item (`release_contradicted_code_part`), and only one
+this revision's reading made: never another revision's, on a drawing the two share (review of
+#1248). Where any live countertop already stands, code makes none. **Pieces are never automatic**
+(decision 2): nothing printed names 130 of every 131 of them, and even a named one stays a person's
+click in this version. Automatic items cannot create a PASS or change a finding: the countertop
+checks are scoped only to a countertop a person confirmed or confirmed a run beneath
+(`workflow/part_operands.py:countertop_scopes`).
 
 **The countertop's outline is its own, never the union of its pieces** (`app/models/drawing.py`,
 `PartProposal.extent`): the box code drew round the row's printed overall length (`slot:overall`'s
@@ -79,7 +82,6 @@ from app.evidence.sides import ReadingSides
 from app.models import (
     DrawingView,
     ObservationCandidate,
-    PackageRevisionDocument,
     Page,
     PartConfirmation,
     PartDecision,
@@ -88,7 +90,7 @@ from app.models import (
     ViewRole,
     ViewRoleConfirmation,
 )
-from app.models.runs import ExtractionRun
+from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
 from app.review.row_location import slot_location
 from evidence.coordinates import StoredPoint
 from evidence.polygon import Polygon
@@ -96,12 +98,16 @@ from vocabulary.check_holds import NO_STONE_FLAG
 from vocabulary.part_kinds import PartKind
 from workflow.pariksha_gates import stopped_by_rekha
 from workflow.parts import (
+    A_PERSON_DECIDED_HERE,
+    ALREADY_DECIDED,
     BALA_CONFIRMER,
     CODE_ACTOR_PREFIX,
     confirm_part_by_code,
     outline_box,
+    person_decided_countertop_here,
     record_part_proposal,
     release_contradicted_code_part,
+    why_code_may_not_confirm,
 )
 from workflow.slot_row_scope import (
     SlotRow,
@@ -449,12 +455,18 @@ def confirm_automatic_countertops(
     """Code's countertop items for the rows whose two judgments agree, and code's own items taken
     back where they no longer do (#1244). Call after `propose_items`, with its outcome.
 
-    **Taking back runs whatever the switch says**: an item of code's whose row a newer slot-reader
-    run replaced, or whose judgments the newest read no longer gives, is withdrawn as
-    `BALA_CONFIRMER` (`release_contradicted_code_part`); a person's decision is never touched.
+    **Taking back runs whatever the switch says**, and only on **this revision's** readings (review
+    of #1248): an item of code's whose link names a slot-reader run of this revision is withdrawn as
+    `BALA_CONFIRMER` (`release_contradicted_code_part`) when a newer run of this revision replaced
+    its row, when the newest read no longer gives both judgments, or when a person has since
+    decided a countertop at the same place on the same drawing (a person always wins). A person's
+    decision is never touched, and an item another revision's reading made is never this
+    revision's to take back, even on a drawing the two share: that revision may be signed off.
     **Making items needs `switched_on`** (`GV_BALA_AUTO_ITEMS`, off by default): for each row whose
     `WouldBeAutomatic.countertop` holds, its countertop suggestion is confirmed through
-    `confirm_part_by_code`, which writes nothing where any decision already stands. Pieces never.
+    `confirm_part_by_code`, which writes nothing where any decision already stands, where a person
+    decided a countertop at the same place, or where any live countertop stands (another
+    revision's), and the reason is recorded. Pieces never.
     """
     plan = outcome.plan
     result = AutomaticOutcome(switched_on=switched_on)
@@ -466,8 +478,11 @@ def confirm_automatic_countertops(
         select(PartProposal, PartProposalRow)
         .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
         .join(PartConfirmation, PartConfirmation.part_proposal_id == PartProposal.id)
+        .join(ExtractionRun, ExtractionRun.id == PartProposalRow.extraction_run_id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
         .where(
-            PartProposal.drawing_view_id.in_(_revision_view_ids(session, plan.revision_id)),
+            WorkflowRun.package_revision_id == plan.revision_id,
             PartProposalRow.slot_index.is_(None),
             PartConfirmation.confirmed_by == BALA_CONFIRMER,
             PartConfirmation.decision == PartDecision.CONFIRMED.value,
@@ -475,20 +490,16 @@ def confirm_automatic_countertops(
         )
         .order_by(PartProposal.created_at, PartProposal.id)
     ).all()
-    newest = session.get_one(ExtractionRun, plan.run_id)
     for proposal, link in held_by_code:
         row = rows.get(link.row_candidate_id)
         if link.extraction_run_id != plan.run_id:
-            read = session.get_one(ExtractionRun, link.extraction_run_id)
-            if (read.created_at, str(read.id)) > (newest.created_at, str(newest.id)):
-                # Read after this revision's newest reading (another revision sharing the drawing):
-                # that reading is the newer one, so its item stands.
-                continue
             why = "a newer reading of the countertop rows replaced it"
         elif row is None or not row.automatic.countertop:
             why = "; ".join(
                 row.automatic.countertop_why_not if row is not None else ("its row is gone",)
             )
+        elif person_decided_countertop_here(session, proposal):
+            why = A_PERSON_DECIDED_HERE
         else:
             continue
         if release_contradicted_code_part(session, proposal=proposal, judgments_agree=False):
@@ -503,11 +514,16 @@ def confirm_automatic_countertops(
             result.left_to_a_person.append(f"{row.label}: a person already decided it")
             continue
         proposal = session.get_one(PartProposal, proposal_id)
-        made = confirm_part_by_code(
-            session, proposal=proposal, kind=PartKind.COUNTERTOP, reason=AUTOMATIC_REASON
+        why_not = why_code_may_not_confirm(session, proposal)
+        made = (
+            None
+            if why_not is not None
+            else confirm_part_by_code(
+                session, proposal=proposal, kind=PartKind.COUNTERTOP, reason=AUTOMATIC_REASON
+            )
         )
         if made is None:
-            result.left_to_a_person.append(f"{row.label}: a decision already stands on it")
+            result.left_to_a_person.append(f"{row.label}: {why_not or ALREADY_DECIDED}")
         else:
             result.confirmed.append(row.label)
     session.flush()
@@ -524,22 +540,6 @@ def _label(session: Session, row: PlannedRow | None, link: PartProposalRow) -> s
         .where(ObservationCandidate.id == link.row_candidate_id)
     ).scalar_one()
     return f"Countertop row on page {page_index + 1} (an earlier reading)"
-
-
-def _revision_view_ids(session: Session, revision_id: UUID) -> set[UUID]:
-    """Every drawing on the revision's pages: code's items are looked for on all of them, so one
-    on a page the newest reading read no row on is still found and taken back."""
-    return set(
-        session.scalars(
-            select(DrawingView.id)
-            .join(Page, Page.id == DrawingView.page_id)
-            .join(
-                PackageRevisionDocument,
-                PackageRevisionDocument.document_version_id == Page.document_version_id,
-            )
-            .where(PackageRevisionDocument.package_revision_id == revision_id)
-        )
-    )
 
 
 def _decided_outlines(session: Session, plan: BalaPlan) -> dict[UUID, list[tuple[bool, _Box]]]:

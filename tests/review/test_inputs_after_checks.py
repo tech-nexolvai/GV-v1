@@ -74,6 +74,7 @@ from evidence.canonical import Authority, EvidenceStatus
 from tests.review.test_session import _upgrade
 from units.measurement import Unit
 from vocabulary.semantic_types import DocumentRole, SemanticType
+from workflow.parts import BALA_CONFIRMER
 from workflow.view_roles import CODE_CONFIRMER
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -580,6 +581,25 @@ def test_machine_records_do_not_block(postgres_engine: Engine) -> None:
                 source="automatic",
                 status="needs_reviewer",
                 extraction_run_id=sheet.reading.extraction_run_id,
+            )
+        )
+        # Code's own decision on a countertop (#1244), here taking back its own item: like code's
+        # drawing role, no reviewer input (review of #1248).
+        proposal = PartProposal(
+            drawing_view_id=sheet.view.id,
+            kind="countertop",
+            extent=STORED_BOX,
+            source="bala.slot-row",
+            source_version="1",
+            reason="suggested by code from the countertop line",
+        )
+        db.add(proposal)
+        db.flush()
+        db.add(
+            PartConfirmation(
+                part_proposal_id=proposal.id,
+                decision=PartDecision.WITHDRAWN.value,
+                confirmed_by=BALA_CONFIRMER,
             )
         )
         db.flush()

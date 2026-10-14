@@ -6530,11 +6530,13 @@ class DatabaseStages:
         (`workflow/bala_items.py`), with code's own part finder run in memory as the second judgment
         on each page (`_code_parts_on`).
 
-        **Then code's countertop items (#1244).** Code's own items whose row a newer reading
-        replaced, or whose two judgments no longer agree, are taken back (always). With
+        **Then code's countertop items (#1244).** Code's own items of this revision's readings whose
+        row a newer reading replaced, whose two judgments no longer agree, or where a person has
+        since decided a countertop at the same place, are taken back (always). With
         `GV_BALA_AUTO_ITEMS` on, a countertop whose two judgments agree is confirmed by code with no
-        click (`confirm_automatic_countertops`); a person's decision always wins, and pieces are
-        never automatic. `items_written` counts code's items; it is 0 with the switch off.
+        click (`confirm_automatic_countertops`); a person's decision always wins, code makes none
+        where any live countertop stands, and pieces are never automatic. `items_written` counts
+        code's items; it is 0 with the switch off.
 
         **The pictures are the worker's next job, not this stage's** (review of #1243: cutting them
         here took a 60-page set's match from under a second to two minutes). Every suggestion still
