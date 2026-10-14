@@ -40,13 +40,16 @@ const FINDINGS: Finding[] = [
   finding('pkg-depth', 'NOT_FOUND', { scope_label: 'Package revision' }),
 ];
 
-function setup(rows: CountertopResult[]) {
+function setup(
+  rows: CountertopResult[],
+  { filter = 'all', countertopsChecked }: { filter?: 'all' | 'needs-you' | 'fail'; countertopsChecked?: boolean } = {},
+) {
   const props = {
-    countertops: { status: 'ready', rows } as CountertopsState,
+    countertops: { status: 'ready', rows, countertopsChecked } as CountertopsState,
     findings: FINDINGS,
     blockingIds: new Set(['own-a', 'pkg-depth']),
     busy: false,
-    filter: 'all' as const,
+    filter,
     onFilterChange: vi.fn(),
     onRetry: vi.fn(),
     onRefresh: vi.fn(),
@@ -124,5 +127,74 @@ describe('results grouped per countertop on screen (#1245)', () => {
     expect(table().querySelectorAll('[data-slot="countertop-group"]')).toHaveLength(0);
     expect(screen.getByRole('region', { name: 'Other checks' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Whole package' })).toBeNull();
+  });
+});
+
+describe('a countertop hidden by the filter never hides its results (#1247 review, M2)', () => {
+  // Only the ungrouped row needs the reviewer, so "Needs you" (the default) shows only it.
+  const NEEDS: CountertopResult[] = GROUPED.map((row) =>
+    row.row_id === 'row-p3' ? { ...row, outcome: 'REVIEW_REQUIRED', needs_decision: true } : row,
+  );
+
+  async function wholePackage({ openedAlready = false } = {}) {
+    const whole = screen.getByRole('region', { name: 'Whole package' });
+    if (!openedAlready) await userEvent.click(within(whole).getByRole('button', { name: /Whole package/ }));
+    return whole;
+  }
+
+  async function expectBothInWholePackage({ openedAlready = false } = {}) {
+    const whole = await wholePackage({ openedAlready });
+    expect(within(whole).getByText('Synthetic own-a')).toBeTruthy();
+    expect(within(whole).getByText('Synthetic row-b')).toBeTruthy();
+    expect(within(whole).getByText('Synthetic pkg-depth')).toBeTruthy();
+    // Each shown exactly once on the whole screen.
+    expect(screen.getAllByText('Synthetic own-a')).toHaveLength(1);
+    expect(screen.getAllByText('Synthetic row-b')).toHaveLength(1);
+  }
+
+  it('"Needs you": a countertop whose own row is filtered out keeps its results in "Whole package", with Decide', async () => {
+    setup(NEEDS, { filter: 'needs-you' });
+
+    expect(table().querySelectorAll('tr[data-slot="countertop-group"][data-item-id]')).toHaveLength(0);
+    await expectBothInWholePackage();
+    // Its result that needs the reviewer can still be decided, from "Whole package".
+    const whole = screen.getByRole('region', { name: 'Whole package' });
+    const own = within(whole).getByText('Synthetic own-a').closest('li') as HTMLElement;
+    expect(within(own).getByRole('button', { name: 'Decide' })).toBeTruthy();
+  });
+
+  it('a search that leaves out a countertop keeps its results in "Whole package"', async () => {
+    setup(GROUPED);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Find a page or countertop' }), '3');
+
+    expect(table().querySelectorAll('tr[data-slot="countertop-group"][data-item-id]')).toHaveLength(0);
+    await expectBothInWholePackage();
+  });
+
+  it('no row matches at all: every countertop\'s results are in "Whole package"', async () => {
+    setup(GROUPED, { filter: 'fail' });
+
+    expect(document.querySelector('[data-slot="countertop-table"]')).toBeNull();
+    await expectBothInWholePackage();
+  });
+
+  it('a package whose checks include no countertop shows no table: the results stay in the list', async () => {
+    setup(GROUPED, { countertopsChecked: false });
+
+    expect(document.querySelector('[data-slot="countertop-table"]')).toBeNull();
+    // On such a package the list is open from the start (#1205).
+    await expectBothInWholePackage({ openedAlready: true });
+  });
+
+  it('a countertop still shown keeps its results under it, and only the hidden one\'s move', async () => {
+    setup(GROUPED);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Find a page or countertop' }), '1');
+
+    const headings = [...table().querySelectorAll<HTMLElement>('tr[data-slot="countertop-group"]')];
+    expect(headings.map((h) => h.dataset.itemId)).toEqual(['item-a']);
+    expect(within(headings[0]).getByText('Synthetic own-a')).toBeTruthy();
+    const whole = await wholePackage();
+    expect(within(whole).getByText('Synthetic row-b')).toBeTruthy();
+    expect(within(whole).queryByText('Synthetic own-a')).toBeNull();
   });
 });

@@ -10,6 +10,7 @@ import {
   failsNeedingYou,
   groupByCountertop,
   isSplitPage,
+  keepShownGroups,
   kpis as computeKpis,
   matchesFilter,
   notCheckedHint,
@@ -159,7 +160,7 @@ export function ResultsDashboard({
   const others = findings.filter((f) => !countertopIds.has(f.id));
   // Grouped per confirmed countertop on screen (#1245): a countertop's other results go under it,
   // and "Whole package" holds the rest. Results stay keyed by the row.
-  const { groups, wholePackage } = groupByCountertop(rows, others);
+  const allGroups = groupByCountertop(rows, others).groups;
   const blocking = signedOff ? new Set<string>() : (blockingIds ?? new Set<string>());
   // Said once above the table when every countertop shares it (#1126); per row otherwise.
   const sharedReason = sharedNotComparedReason(rows);
@@ -190,6 +191,10 @@ export function ResultsDashboard({
   // Measurements, so countertop rows, pages "with no countertop" and their questions are not this
   // review's. The server's own line is said once instead.
   const cabinetOnly = countertops.countertopsChecked === false;
+  // Only a countertop whose heading is on screen keeps its results under it (#1247 review): one the
+  // filter, the search or a package with no countertop table leaves out puts them back in "Whole
+  // package", so nothing that needs the reviewer is hidden.
+  const { groups, wholePackage } = keepShownGroups(allGroups, others, cabinetOnly ? [] : visible);
 
   return (
     <section data-tw data-slot="results-dashboard" aria-label="Results" className="flex flex-col gap-4 p-4 font-sans sm:p-6">
@@ -312,7 +317,7 @@ export function ResultsDashboard({
 
       <OtherChecks
         findings={wholePackage}
-        title={groups.length > 0 ? 'Whole package' : undefined}
+        title={allGroups.length > 0 ? 'Whole package' : undefined}
         ruleNames={ruleNames}
         blocking={blocking}
         onDecide={(finding) => setDeciding({ finding, title: finding.scope_label ?? finding.name })}

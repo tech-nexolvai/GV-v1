@@ -461,6 +461,24 @@ export function groupByCountertop(
 }
 
 /**
+ * The groups the table can show, and the whole package with every other group's results put back
+ * (#1247 review). A countertop's results are drawn under its heading, and its heading only above its
+ * rows; when a filter, a search or a package with no countertop table leaves none of its rows on
+ * screen, its results go back to "Whole package", so a result that needs the reviewer is never
+ * hidden. `others` keeps its order; nothing is listed twice.
+ */
+export function keepShownGroups(
+  groups: readonly CountertopGroup[],
+  others: readonly Finding[],
+  shownRows: readonly Pick<CountertopResult, 'row_id'>[],
+): { groups: CountertopGroup[]; wholePackage: Finding[] } {
+  const shownIds = new Set(shownRows.map((row) => row.row_id));
+  const kept = groups.filter((group) => group.rowIds.some((id) => shownIds.has(id)));
+  const underHeadings = new Set(kept.flatMap((group) => group.findings.map((finding) => finding.id)));
+  return { groups: kept, wholePackage: others.filter((finding) => !underHeadings.has(finding.id)) };
+}
+
+/**
  * The table's rows in sections (#1245): each countertop's rows under it, in group order, keeping
  * the order they came in, then the rows no countertop was confirmed from (`group: null`). With no
  * groups, one section of every row, unchanged.
