@@ -38,12 +38,14 @@ describe('reviewStage: one step per state', () => {
     expect(unpriced.next.reason).toContain('18 AI calls so far, at least $0.27');
   });
 
-  it('reading: a retry after a failure shows as Retrying on the Reading step, never as failed (#1178 review)', () => {
+  it('reading: a restart after a failure says so plainly on the Reading step, never as failed (#1178 review, #1239)', () => {
     const reading = { label: 'AI readers reading the dimensions', pagesDone: 0, pagesTotal: 9, calls: 30, costUsd: '0.410000', unpricedCalls: 0, retrying: true };
     const stage = reviewStage({ ...base, state: 'FAILED_RETRYABLE', reading, findingsTotal: 0, readiness: null });
     expect(stage.current).toBe('reading');
-    expect(stage.steps[1]).toMatchObject({ state: 'current', note: 'Retrying · AI readers reading the dimensions · page 1 of 9' });
-    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/problem|fail/i);
+    expect(stage.steps[1]).toMatchObject({ state: 'current', note: 'Starting the reading again after a problem · AI readers reading the dimensions · page 1 of 9' });
+    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/fail/i);
+    // "Trying again" is kept for the AI trying an item again (#1239), never for this restart.
+    expect(stage.steps.map((step) => step.note).join(' ')).not.toMatch(/retrying|trying again/i);
     expect(stage.next.kind).toBe('wait-reading');
     // Without a retry line, a failed package still says it hit a problem.
     const failed = reviewStage({ ...base, state: 'FAILED_RETRYABLE', findingsTotal: 0, readiness: null });

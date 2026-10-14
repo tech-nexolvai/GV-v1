@@ -335,3 +335,31 @@ describe('measurements wizard: review fixes (#1124)', { timeout: 15_000 }, () =>
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ countertop_item_id: 'top' }), ['a'], 'island');
   });
 });
+
+describe('measurements: the live reading activity while reading (#1239)', () => {
+  it('shows what stopped beside "Reading these drawings", and nothing without activity', async () => {
+    const reading = { ...REQUIRED, still_reading: true, revision_state: 'EXTRACTING' };
+    vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/required-inputs')) return json(reading);
+      if (url.endsWith('/slot-rows')) return json({ rows: [] });
+      return json({ error: 'unexpected', message: url, request_id: 'r' }, 500);
+    });
+    const activity = {
+      reading_id: 'r1', updated_at: null, now: null,
+      items: [{ page: 2, agent: 'Akshara', item: 'p1:slot1:0', state: 'trying_again', code: 'readers-differ', change: 'closer-look', line: null, at: null }],
+      summary: { stopped: 1, tried_again: 1, helped: 0, waiting: 0 },
+    };
+    const view = render(<MeasurementPanel packageId="pkg" readingActivity={activity} readingPages={{ pagesDone: 1, pagesTotal: 4 }} />);
+    await screen.findAllByText('Reading these drawings');
+    const panel = document.querySelector('[data-slot="reading-activity"]') as HTMLElement;
+    expect(panel).not.toBeNull();
+    expect(within(panel).getByText('Reading page 2 of 4…')).toBeTruthy();
+    expect(within(panel).getByText('Trying again on a number on page 2 with a closer look.')).toBeTruthy();
+    expect(within(panel).getByText('Number reader')).toBeTruthy();
+    // Its own live region, never nested in the reading block's.
+    expect(panel.closest('[data-slot="reading-progress"]')).toBeNull();
+    view.rerender(<MeasurementPanel packageId="pkg" readingActivity={null} readingPages={null} />);
+    expect(document.querySelector('[data-slot="reading-activity"]')).toBeNull();
+  });
+});

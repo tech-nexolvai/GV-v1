@@ -47,6 +47,8 @@ import { useAsync } from '../api/useAsync';
 import { HeaderActions, HeaderTitleExtra } from '../components/shell/ShellHeader';
 import { reviewStage, type NextActionKind } from '@/lib/review-stage';
 import { ReviewStepper } from '@/components/review/review-stepper';
+import { ReadingActivity } from '@/components/review/reading-activity';
+import { readActivity, type ReadingActivityOut } from '@/lib/reading-activity';
 import { NextActionButton, type SecondaryAction } from '@/components/review/next-action';
 import { ChangedValuesBadge } from '@/components/review/changed-values-badge';
 import { RecordIdsDialog } from '@/components/review/record-ids-dialog';
@@ -184,6 +186,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
   const [recordedStopReason, setRecordedStopReason] = useState<string | null | undefined>(undefined);
   const [recordedPagesWaiting, setRecordedPagesWaiting] = useState<readonly number[] | undefined>(undefined);
   const [recordedBudgetLimit, setRecordedBudgetLimit] = useState<PackageDetail['budget_limit'] | undefined>(undefined);
+  // What each AI is doing, stopped on or trying again (#1239), re-read with the package.
+  const [recordedActivity, setRecordedActivity] = useState<ReadingActivityOut | null | undefined>(undefined);
   // "Run the reading again" / "Read the unread pages" (#1206), while the request is being sent.
   const [readAgainPending, setReadAgainPending] = useState(false);
   const [downloadState, setDownloadState] = useState<DownloadState>({ status: 'idle' });
@@ -306,6 +310,7 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       setRecordedStopReason(detail.stop_reason ?? null);
       setRecordedPagesWaiting(detail.pages_waiting_for_budget ?? []);
       setRecordedBudgetLimit(detail.budget_limit ?? null);
+      setRecordedActivity(activityOf(detail));
       setCountertopsVersion(n => n + 1);
       const changed = fresh.map(f => f.id).sort().join(',') !== checksBaseline.current;
       const finished = changed && detail.state === 'AWAITING_REVIEW';
@@ -718,6 +723,10 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
     pagesWaitingForBudget: recordedPagesWaiting !== undefined ? recordedPagesWaiting : (remote.status === 'ready' ? remote.data.detail.pages_waiting_for_budget ?? [] : []),
     budgetLimit: recordedBudgetLimit !== undefined ? recordedBudgetLimit : (remote.status === 'ready' ? remote.data.detail.budget_limit ?? null : null),
   });
+  // The live reading activity (#1239): while reading, and its summary until the review is signed off.
+  const activity = recordedActivity !== undefined ? recordedActivity : (remote.status === 'ready' ? activityOf(remote.data.detail) : null);
+  const readingNow = stage.current === 'reading';
+  const readingPages = readingLine ? { pagesDone: readingLine.pages_done ?? null, pagesTotal: readingLine.pages_total ?? null } : null;
   // Once approved (even if the page could not re-read the package), nothing offers Sign off again.
   const signOffBlocked = isSigningOff || !canSignOff(readiness) || waitingForChecks || isApproved;
   // No second run (#1179), from the recorded stage as well as this page's own flags: a reload forgets
@@ -1030,6 +1039,15 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
       />
 
       <ReviewStepper steps={stage.steps} />
+      {!isApproved && (
+        <ReadingActivity
+          activity={activity}
+          reading={readingNow}
+          progress={readingPages}
+          onOpenDecisions={() => act('review')}
+          className="mx-4 mt-2 sm:mx-6"
+        />
+      )}
 
       {/* Download receipts and export problems, said where the reviewer is looking. */}
       {!reportPanelShown && downloadState.status === 'loading' && <p className="mx-4 mt-2 text-sm sm:mx-6" role="status">Requesting {downloadState.format} report…</p>}
@@ -1227,6 +1245,8 @@ export function ReviewPage({ sessionId, onBackToDocuments, onTitleChange, onNeed
             onHeaderRun={headerRunAnswered}
             runChecksBlocked={runChecksBlocked}
             onRunStateChange={setMeasureRunning}
+            readingActivity={activity}
+            readingPages={readingPages}
           />
         </div>
       )}
@@ -1366,4 +1386,12 @@ function ReviewSkeleton() {
       </div>
     </div>
   );
+}
+
+/**
+ * `PackageOut.activity` (#1238), read tolerantly: until the API sends it, or when it is null, there
+ * is no activity and the panel shows nothing.
+ */
+function activityOf(detail: PackageDetail): ReadingActivityOut | null {
+  return readActivity((detail as { activity?: unknown }).activity);
 }
