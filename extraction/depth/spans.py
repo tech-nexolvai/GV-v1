@@ -793,7 +793,7 @@ class OffsetStart(StrEnum):
 
     STONE_EDGE = "stone edge"
     """It ends where the depth ends at the stone's front edge: it measures from the stone's edge,
-    which includes the overhang, so it is never the front offset (Raj's slide-8 formula)."""
+    which includes the overhang, so it is never the front offset (the client's own depth formula)."""
     INSIDE = "inside the stone"
     """It stops short of the stone's front edge: it may start at the cabinet face; the readers say."""
     UNKNOWN = "unknown"
