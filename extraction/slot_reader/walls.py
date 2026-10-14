@@ -345,7 +345,9 @@ class WallSettings:
     outside, `hatch_inside_pt` inside, never reaching further into the row), over at least this
     fraction of the drawing's height (#1202). No wider than `band_max_width_pt` (the widest real wall
     band measured is 18 pt; a grey tall cabinet or fridge is far wider), holding nothing drawn but
-    hatch, and rising `tall_rise_pt` above the cabinets beside the end (a shaded filler is not)."""
+    hatch, and rising `tall_rise_pt` above the cabinets beside the end (a shaded filler is not).
+    Since #1204 the minimum width is a filler's: a shaded strip narrower than that, even drawn full
+    height, is a filler or a panel (1 to 3 inches at the usual drawing scales), not a wall."""
     tall_rise_pt: Decimal
     tall_casework_fraction: Decimal
     tall_casework_gap_pt: Decimal
@@ -362,6 +364,7 @@ class WallSettings:
     number_reach_pt: Decimal
     wall_body_min_pt: Decimal
     wall_body_max_pt: Decimal
+    frame_open_pt: Decimal
     """A tall wall line: a vertical stroke (off upright by at most `vertical_slack_pt`, at least
     `tall_line_min_pt` long) within `hatch_reach_pt` outside the end or `tall_inside_pt` inside it,
     whose top rises at least `tall_rise_pt` above the cabinets beside the end (the ink starting
@@ -372,12 +375,18 @@ class WallSettings:
 
     Since the #1202 review only a wall **drawn in section** counts: a second upright line
     `wall_body_min_pt` to `wall_body_max_pt` further out (away from the row), as tall, with nothing
-    drawn between ("inside" is `inner_margin_pt` in from the sides). A single tall line may be the
-    elevation's outline, a frame round the row, an end panel, a cabinet edge or a grid line, so it
-    never counts. Never a dimension or extension line either: one crossed by a tick or arrow (a
-    short stroke of at most `mark_max_pt` within `mark_reach_pt` of it) or with a number within
-    `number_reach_pt`; nor a face whose line closes (with a line meeting its top within
-    `join_slack_pt`) a box further out with things drawn in it, a tall cabinet or fridge."""
+    drawn between ("inside" is `inner_margin_pt` in from the sides). Since #1204 the minimum is
+    more than a panel's thickness: two lines a panel apart are an end panel or a cabinet's side
+    (the closest measured is 4.81 pt). It stays under the thinnest wall to keep, a 4.5" wall at
+    1:48 (6.75 pt); the real walls in section measured are 18.6 pt.
+    Nor a double frame: both faces meeting their own level line (within `frame_open_pt`, as a
+    frame's corners may be left open), the outer one further out, each spanning the whole row.
+    A single tall line may be the elevation's outline, a frame round the row, an end panel, a
+    cabinet edge or a grid line, so it never counts. Never a dimension or extension line either:
+    one crossed by a tick or arrow (a short stroke of at most `mark_max_pt` within `mark_reach_pt`
+    of it) or with a number within `number_reach_pt`; nor a face whose line closes (with a line
+    meeting its top within `join_slack_pt`) a box further out with things drawn in it, a tall
+    cabinet or fridge."""
     picture_max_side_px: int
     """A picture is shrunk until its longer side is at most this."""
 
@@ -417,7 +426,7 @@ E3_WALL_SETTINGS = WallSettings(
     hatch_through_pt=Decimal(30),
     hatch_through_fraction=Decimal("0.5"),
     band_max_lightness=Decimal("0.9"),
-    band_min_width_pt=Decimal("1.5"),
+    band_min_width_pt=Decimal(12),
     band_max_width_pt=Decimal(24),
     band_height_fraction=Decimal("0.4"),
     tall_rise_pt=Decimal(40),
@@ -434,8 +443,9 @@ E3_WALL_SETTINGS = WallSettings(
     mark_max_pt=Decimal(12),
     mark_reach_pt=Decimal(3),
     number_reach_pt=Decimal(10),
-    wall_body_min_pt=Decimal(2),
+    wall_body_min_pt=Decimal("5.75"),
     wall_body_max_pt=Decimal(40),
+    frame_open_pt=Decimal(6),
     picture_max_side_px=1600,
 )
 
@@ -536,6 +546,10 @@ def hatch_at(
     Many parallel strokes (or a cross-hatch) beside the end, over the drawing's height, that also
     form a band running **up** the end (#1202): taller than wide, and not running on into the row.
     A plan's back wall drawn across the end window is a band lying across it, not a wall at it.
+    A hatch band only a panel wide is still counted (#1204 review): real walls are hatched as
+    narrow as 6 pt, and their tops can sit below the cabinets' reference height (which includes
+    dimension lines), so a hatched end panel cannot be told from a wall here. Automatic walls
+    still need both AIs and the stone running to the walls.
     """
     x_low, x_high = _end_window(x_end, side, settings)
     through = settings.hatch_through_pt
@@ -626,6 +640,11 @@ def _strictly_inside(box: Box, outer: Box, margin: Decimal) -> bool:
     )
 
 
+_FILLER_STRIP: Final = (
+    "a shaded strip beside the end only a filler's width: a filler or panel, not a wall"
+)
+
+
 def band_at(
     ink: PageInk,
     *,
@@ -642,7 +661,8 @@ def band_at(
     the end and never reaching into the row, over a good part of the drawing's height and rising
     above the cabinets beside the end, with nothing drawn on it but hatch. A white or near-white
     fill is paper; a grey tall cabinet or fridge is wider and has its doors drawn on it; a shaded
-    filler stops at the cabinets' height.
+    filler stops at the cabinets' height, and one drawn full height is only a filler's width
+    (#1204).
     """
     height = y_high - y_low
     if height <= 0:
@@ -658,12 +678,13 @@ def band_at(
         y_high=y_high,
         settings=settings,
     )
+    why = "no solid band beside the end"
     for curve in ink.curves:
         lightness = curve.fill_lightness
         if lightness is None or lightness > settings.band_max_lightness:
             continue
         box = curve.box
-        if not settings.band_min_width_pt <= box.width <= settings.band_max_width_pt:
+        if box.width > settings.band_max_width_pt:
             continue
         if box.height < box.width:
             continue
@@ -677,8 +698,11 @@ def band_at(
             continue
         if _holds_drawing(ink, box, settings):
             continue
+        if box.width < settings.band_min_width_pt:
+            why = _FILLER_STRIP
+            continue
         return True, "a solid grey or black band beside the end"
-    return False, "no solid band beside the end"
+    return False, why
 
 
 def _holds_drawing(ink: PageInk, box: Box, settings: WallSettings) -> bool:
@@ -817,7 +841,9 @@ def tall_line_at(
     nothing drawn between: a wall drawn as a tall empty box. `y_high` is the floor side of the
     drawing. Never the pasted drawing's own frame, a single tall line (an outline, a frame, an end
     panel, a cabinet edge, a grid line), a dimension or extension line (ticks, arrows or a number
-    on it), nor the edge of a tall cabinet or fridge further out with things drawn in it.
+    on it), nor the edge of a tall cabinet or fridge further out with things drawn in it. Since
+    #1204, never two lines only a panel apart (an end panel, a cabinet's side), nor a double frame
+    line round the drawing (both lines meeting their own level line across the whole row).
     """
     height = y_high - y_low
     if height <= 0:
@@ -840,9 +866,12 @@ def tall_line_at(
         return False, "nothing drawn beside the end to measure a wall line against"
     floor_reach = y_high - settings.tall_floor_fraction * height
     frame = settings.tall_frame_fraction * frame_height
+    far_end = x_end + row_width if side == "left" else x_end - row_width
+    row_ends = (min(x_end, far_end), max(x_end, far_end))
     segments = _segments(ink)
     verticals = _vertical_strokes(ink, settings)
-    why = "no tall wall line at the end"
+    nothing = "no tall wall line at the end"
+    why = nothing
     for x, top, bottom in verticals:
         if not x_low <= x <= x_high or bottom < floor_reach or bottom - top >= frame:
             continue
@@ -851,9 +880,22 @@ def tall_line_at(
         if _marked(ink, segments, x, top, bottom, settings):
             why = "a tall line at the end is a dimension or extension line"
             continue
-        body = _wall_body(shapes, ink, verticals, x, top, bottom, side, settings)
-        if body is None:
-            why = "a single tall line at the end, not a wall drawn in section"
+        found = _wall_body(shapes, ink, verticals, x, top, bottom, side, settings)
+        if found is None:
+            # The weakest reason: it never hides a frame, a dimension or a cabinet named before.
+            if why == nothing:
+                why = "a single tall line at the end, not a wall drawn in section"
+            continue
+        body, outer_top, outer_bottom = found
+        outer_x = x - body if side == "left" else x + body
+        if _double_frame(
+            segments,
+            (x, top, bottom),
+            (outer_x, outer_top, outer_bottom),
+            row_ends,
+            settings,
+        ):
+            why = "a double frame line round the drawing at the end, not a wall"
             continue
         # The wall's own faces may close a room outline across the row (a ceiling line); what
         # must not happen is a box further out than the wall's thickness with things drawn in it:
@@ -883,10 +925,13 @@ def _wall_body(
     bottom: Decimal,
     side: Literal["left", "right"],
     settings: WallSettings,
-) -> Decimal | None:
-    """The wall's thickness when the line is the inner face of a wall drawn in section: a second
-    upright line further out (away from the row), a wall's thickness away, as tall, with nothing
-    drawn between. `None` otherwise."""
+) -> tuple[Decimal, Decimal, Decimal] | None:
+    """The wall's thickness, and its outer face's top and bottom, when the line is the inner face
+    of a wall drawn in section: a second upright line further out (away from the row), a wall's
+    thickness away (more than a panel's, #1204), as tall, with nothing drawn between: not even an
+    upright line between them running more than `join_slack_pt` past the strip's top or bottom,
+    such as a cabinet side's other face with its doors beyond (#1204). An upright no longer than
+    the two faces (a finish line in the wall) does not refuse it. `None` otherwise."""
     length = bottom - top
     for other_x, other_top, other_bottom in verticals:
         gap = x - other_x if side == "left" else other_x - x
@@ -898,9 +943,70 @@ def _wall_body(
         strip = Box(
             min(x, other_x), max(top, other_top), max(x, other_x), min(bottom, other_bottom)
         )
-        if not _holds_any(shapes, ink, strip, settings):
-            return gap
+        if _holds_any(shapes, ink, strip, settings):
+            continue
+        margin, join = settings.inner_margin_pt, settings.join_slack_pt
+        if any(
+            strip.x0 + margin < between_x < strip.x1 - margin
+            and between_top < strip.bottom
+            and between_bottom > strip.top
+            and (between_top < strip.top - join or between_bottom > strip.bottom + join)
+            for between_x, between_top, between_bottom in verticals
+        ):
+            continue  # an upright running on past the two: a panel's other face, not a wall
+        return gap, other_top, other_bottom
     return None
+
+
+def _spanning_levels(
+    segments: Sequence[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]],
+    x: Decimal,
+    y: Decimal,
+    row_ends: tuple[Decimal, Decimal],
+    settings: WallSettings,
+) -> list[Decimal]:
+    """The heights of the level lines that meet an upright line's end at `(x, y)` (within
+    `frame_open_pt`: a frame's corners may be left open) and run across the whole row."""
+    near = settings.frame_open_pt
+    slack = settings.join_slack_pt
+    levels: list[Decimal] = []
+    for (ax, ay), (bx, by) in segments:
+        if abs(ay - by) > settings.vertical_slack_pt:
+            continue
+        level = (ay + by) / 2
+        low, high = min(ax, bx), max(ax, bx)
+        if abs(level - y) > near or not low - near <= x <= high + near:
+            continue
+        if low <= row_ends[0] + slack and high >= row_ends[1] - slack:
+            levels.append(level)
+    return levels
+
+
+def _double_frame(
+    segments: Sequence[tuple[tuple[Decimal, Decimal], tuple[Decimal, Decimal]]],
+    inner: tuple[Decimal, Decimal, Decimal],
+    outer: tuple[Decimal, Decimal, Decimal],
+    row_ends: tuple[Decimal, Decimal],
+    settings: WallSettings,
+) -> bool:
+    """Whether the two upright lines `(x, top, bottom)` are the sides of a double frame round the
+    drawing (#1204): at their tops, or at their bottoms, each meets its own level line spanning the
+    whole row, the outer face's line further out than the inner face's. One floor or ceiling line
+    shared by both faces is not a double line."""
+    (inner_x, inner_top, inner_bottom), (outer_x, outer_top, outer_bottom) = inner, outer
+    ends = ((inner_top, outer_top, Decimal(-1)), (inner_bottom, outer_bottom, Decimal(1)))
+    for inner_y, outer_y, outward in ends:
+        inner_levels = _spanning_levels(segments, inner_x, inner_y, row_ends, settings)
+        if not inner_levels:
+            continue
+        outer_levels = _spanning_levels(segments, outer_x, outer_y, row_ends, settings)
+        if any(
+            (out_level - in_level) * outward > settings.vertical_slack_pt
+            for in_level in inner_levels
+            for out_level in outer_levels
+        ):
+            return True
+    return False
 
 
 def _holds_any(shapes: Sequence[Box], ink: PageInk, box: Box, settings: WallSettings) -> bool:
@@ -1015,10 +1121,20 @@ def wall_pictures(
         min(frame.bottom, bottom + settings.row_below_pt),
     )
     left = hatch_at(
-        ink, x_end=xs0, side="left", y_low=hatch_low, y_high=hatch_high, settings=settings
+        ink,
+        x_end=xs0,
+        side="left",
+        y_low=hatch_low,
+        y_high=hatch_high,
+        settings=settings,
     )
     right = hatch_at(
-        ink, x_end=xs1, side="right", y_low=hatch_low, y_high=hatch_high, settings=settings
+        ink,
+        x_end=xs1,
+        side="right",
+        y_low=hatch_low,
+        y_high=hatch_high,
+        settings=settings,
     )
     seen: dict[str, tuple[bool, str]] = {}
     ends: tuple[tuple[Literal["left", "right"], Decimal, tuple[bool, str]], ...] = (
@@ -1041,7 +1157,7 @@ def wall_pictures(
         if band[0]:
             seen[side] = band
             continue
-        seen[side] = tall_line_at(
+        tall = tall_line_at(
             ink,
             x_end=x_end,
             side=side,
@@ -1051,6 +1167,13 @@ def wall_pictures(
             frame_height=frame.height,
             settings=settings,
         )
+        # Never silent (#1204): a hatch or a shaded strip that was found but refused (a panel, a
+        # filler) is named in the end's reason, not only the tall line's.
+        refused = [
+            *([f"hatch: {hatch[1]}"] if ", but " in hatch[1] else []),
+            *([band[1]] if band[1] == _FILLER_STRIP else []),
+        ]
+        seen[side] = tall if tall[0] or not refused else (False, " / ".join([*refused, tall[1]]))
     return WallPictures(
         row=row_box,
         view=frame,
