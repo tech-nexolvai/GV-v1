@@ -16,7 +16,19 @@ it rather than only a number.
 compares the first half of the window with the second, so a vendor who has fixed something is not
 told they still do it.
 
-Source: issue #241; ADR-0006. Verification: ``tests/reports/test_vendor_patterns.py``.
+**Person-confirmed only, on request (`confirmed_only`, #1272).** A FAIL nobody looked at may rest on
+a number the AI misread, so it is as likely the AI's mistake as the vendor's. With `confirmed_only`
+a FAIL counts only when a person stood behind it: their newest decision on that finding is a
+`confirm`, or they signed the revision (`approved_findings`) and did not dismiss or correct that
+finding (sign-off covers every finding, including the dismissed ones). The newest decision counts,
+so a later dismiss replaces an earlier confirm. Code is never a person: a `code:` actor
+(`workflow.parts.CODE_ACTOR_PREFIX`) confirming or signing is ignored. A confirm carried to a re-run
+(`finding_decision_carryovers`) is a copy, not a new confirmation: the original FAIL counts once.
+The default (`confirmed_only=False`) is unchanged. Correction hotspots are not filtered; which
+agent a correction belongs to (AI misread or vendor drew it) is Smriti's report
+(`eval/smriti/report.py`).
+
+Source: issues #241, #1272; ADR-0006. Verification: ``tests/reports/test_vendor_patterns.py``.
 """
 
 from __future__ import annotations
@@ -32,9 +44,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.package import Package, PackageRevision
-from app.models.review import ReviewAction, ReviewActionKind
+from app.models.review import (
+    Approval,
+    ApprovedFinding,
+    FindingDecisionCarryover,
+    ReviewAction,
+    ReviewActionKind,
+)
 from app.models.verdicts import CheckRun, Finding
 from verdict.outcomes import Outcome
+from workflow.parts import CODE_ACTOR_PREFIX
 
 #: How a vendor's failure rate moved across the window. `steady` is the honest default: with few
 #: findings either side, a change of one or two is noise, and reporting it as a direction invites a
@@ -76,6 +95,10 @@ class VendorReport:
 
     trend: Trend
 
+    confirmed_only: bool = False
+    """Whether only FAILs a person confirmed or signed were counted (see the module docstring).
+    Said on the report, so a person-confirmed count is never read as every FAIL, or the reverse."""
+
     @property
     def has_findings(self) -> bool:
         """False when nothing was decided for this vendor in the window.
@@ -103,6 +126,74 @@ def _failures(
         )
     ).all()
     return [(str(snapshot), finding, when) for snapshot, finding, when in rows]
+
+
+def _is_code(actor: str | None) -> bool:
+    return isinstance(actor, str) and actor.strip().casefold().startswith(CODE_ACTOR_PREFIX)
+
+
+#: A signed FAIL still counts after these decisions: the person stood behind the failure (a
+#: confirm), or accepted the deviation for this drawing (an exception), which still says it is one.
+_SIGNED_STILL_STANDS: frozenset[str] = frozenset(
+    {ReviewActionKind.CONFIRM.value, ReviewActionKind.EXCEPT.value}
+)
+
+
+def _person_confirmed(session: Session, finding_ids: list[UUID]) -> set[UUID]:
+    """The FAILs among these a person confirmed or signed (see the module docstring)."""
+    if not finding_ids:
+        return set()
+    # Every person decision on each finding, its own and those carried to it, newest last.
+    decisions: dict[UUID, list[tuple[datetime, str, str, bool]]] = {}
+    own = session.execute(
+        select(
+            ReviewAction.finding_id,
+            ReviewAction.created_at,
+            ReviewAction.id,
+            ReviewAction.action,
+            ReviewAction.actor,
+        ).where(ReviewAction.finding_id.in_(finding_ids))
+    ).all()
+    carried = session.execute(
+        select(
+            FindingDecisionCarryover.new_finding_id,
+            ReviewAction.created_at,
+            ReviewAction.id,
+            ReviewAction.action,
+            ReviewAction.actor,
+        )
+        .join(ReviewAction, ReviewAction.id == FindingDecisionCarryover.review_action_id)
+        .where(FindingDecisionCarryover.new_finding_id.in_(finding_ids))
+    ).all()
+    for rows, is_carried in ((own, False), (carried, True)):
+        for finding_id, when, action_id, action, actor in rows:
+            if _is_code(actor):
+                continue
+            decisions.setdefault(finding_id, []).append((when, str(action_id), action, is_carried))
+    signed = {
+        finding_id
+        for finding_id, approver in session.execute(
+            select(ApprovedFinding.finding_id, Approval.approved_by)
+            .join(Approval, Approval.id == ApprovedFinding.approval_id)
+            .where(ApprovedFinding.finding_id.in_(finding_ids))
+        )
+        if not _is_code(approver)
+    }
+    confirmed: set[UUID] = set()
+    for finding_id in finding_ids:
+        made = sorted(decisions.get(finding_id, ()))
+        newest = made[-1] if made else None
+        # The person's own newest decision is a confirm (a carried one is a copy, not new) ...
+        own_confirm = (
+            newest is not None and newest[2] == ReviewActionKind.CONFIRM.value and not newest[3]
+        )
+        # ... or they signed the revision and did not dismiss or correct this finding.
+        signed_standing = finding_id in signed and (
+            newest is None or newest[2] in _SIGNED_STILL_STANDS
+        )
+        if own_confirm or signed_standing:
+            confirmed.add(finding_id)
+    return confirmed
 
 
 def _corrections(
@@ -184,12 +275,20 @@ def _trend(failures: list[tuple[str, UUID, datetime]], since: datetime, until: d
 
 
 def vendor_patterns(
-    session: Session, vendor: str, window: timedelta, *, now: datetime | None = None
+    session: Session,
+    vendor: str,
+    window: timedelta,
+    *,
+    now: datetime | None = None,
+    confirmed_only: bool = False,
 ) -> VendorReport:
     """What this vendor repeatedly got wrong in the last `window`, with the findings.
 
     `now` is injectable so a report is reproducible: a function that read the clock could not be
     tested for the boundary, and the boundary is where a windowed report is most often wrong.
+
+    `confirmed_only` counts only the FAILs a person confirmed or signed (#1272); the trend is then
+    the trend of those.
 
     Reads only. This is reporting, and ADR-0006 keeps vendor identity out of every decision path —
     nothing here selects a rule, resolves a parameter or influences a verdict.
@@ -210,6 +309,9 @@ def vendor_patterns(
     since = until - window
 
     failures = _failures(session, vendor, since, until)
+    if confirmed_only:
+        kept = _person_confirmed(session, [finding for _, finding, _ in failures])
+        failures = [failure for failure in failures if failure[1] in kept]
     corrections = _corrections(session, vendor, since, until)
 
     return VendorReport(
@@ -219,4 +321,5 @@ def vendor_patterns(
         recurring_failures=_group([(key, finding) for key, finding, _ in failures]),
         correction_hotspots=_group(corrections),
         trend=_trend(failures, since, until),
+        confirmed_only=confirmed_only,
     )
