@@ -135,8 +135,9 @@ export function ResultsDashboard({
   const rules = useAsync(() => listRules(), []);
   const ruleNames = new Map(rules.status === 'ready' ? rules.data.map((r) => [r.rule_id, r.name] as [string, string]) : []);
   const [deciding, setDeciding] = useState<{ finding: Finding; title: string; allowProblem?: boolean } | null>(null);
-  // Each confirmed countertop's one read-only line about the architect (#1273), asked only when a
-  // countertop is confirmed. A failed answer costs only those lines: no check reads them.
+  // The confirmed pieces' kinds for each countertop's architect line (#1273), asked only when a
+  // countertop is confirmed. The line itself comes from the row's own result; a failed answer
+  // costs only the piece kinds.
   const confirmed = countertops.status === 'ready' && countertops.rows.some((row) => row.countertop_item);
   const itemArchitect = useAsync(
     () => (packageId && confirmed ? getCountertopItemsArchitect(projectId(), packageId) : Promise.resolve(null)),
@@ -314,10 +315,13 @@ export function ResultsDashboard({
                 </ul>
               )}
               groupArchitect={(group) => {
-                const found = architectByItem.get(group.item.item_id);
-                return found ? (
+                // From its row's own architect result, as the table shows it; the endpoint only names
+                // the confirmed pieces (#1279 review).
+                const row = rows.find((candidate) => group.rowIds.includes(candidate.row_id));
+                const words = itemArchitectWords(row?.architect, architectByItem.get(group.item.item_id)?.pairs ?? [], sharedReason);
+                return words ? (
                   <span data-slot="countertop-group-architect" className="text-xs font-normal whitespace-normal text-muted-foreground">
-                    {itemArchitectWords(found, sharedReason)}
+                    {words}
                   </span>
                 ) : null;
               }}

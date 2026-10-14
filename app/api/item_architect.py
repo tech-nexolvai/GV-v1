@@ -1,9 +1,9 @@
 """Each confirmed countertop's architect comparison, read by countertop (#1273, Milan by item).
 
-One read endpoint: for every live countertop item of a revision, whether its row is compared with
-the architect's drawing ("not compared" with the stored reason, "waits for the reviewer", or the
-compared pairs, each vendor piece named by its confirmed piece item). The results screen shows it
-as one small line under each countertop's heading.
+One read endpoint: for every live countertop item of a revision, where its row stands with the
+architect's drawing, as the countertop results show that row (the recorded result when there is
+one), with each compared vendor piece named by its confirmed piece item. The results screen adds
+those piece names to the one small line under each countertop's heading.
 
 **Read-only, and it feeds no check.** It writes nothing, runs no check and asks no model; the
 lookup it serves (`workflow/milan_items.py`) is imported by nothing else outside the tests.
@@ -29,7 +29,7 @@ router = APIRouter(tags=["countertop architect comparison"])
 
 
 class ItemArchitectPairOut(BaseModel):
-    """One width compared with the architect: the overall, or one vendor piece."""
+    """One width the check compared with the architect: the overall, or one vendor piece."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -45,7 +45,6 @@ class ItemArchitectPairOut(BaseModel):
         )
     )
     piece_item_type: str | None = Field(description="That piece's type; null when there is none.")
-    architect_candidate_id: UUID
 
 
 class ItemArchitectOut(BaseModel):
@@ -57,11 +56,22 @@ class ItemArchitectOut(BaseModel):
     row_id: UUID | None = Field(
         description="Its countertop row (`row_id` on the results); null if none."
     )
-    state: Literal["compared", "not_compared", "waits_for_reviewer"]
-    reason: str | None = Field(
-        description="Why it is not compared, or what the reviewer is asked; null when compared."
+    state: Literal["compared", "for_reviewer", "not_checked_yet", "not_compared"] = Field(
+        description=(
+            "As the countertop results show its row: a recorded PASS or FAIL (`compared`), a "
+            "recorded result the check could not decide (`for_reviewer`), no result yet for "
+            "something a check run would compare (`not_checked_yet`), or nothing comparable "
+            "(`not_compared`)."
+        )
     )
-    pairs: tuple[ItemArchitectPairOut, ...]
+    reason: str | None = Field(
+        description="The recorded result's reason; with no result, why nothing is compared."
+    )
+    finding_id: UUID | None = Field(description="Its row's architect result; null when none.")
+    outcome: str | None = Field(description="That result's outcome; null when none.")
+    pairs: tuple[ItemArchitectPairOut, ...] = Field(
+        description="The pairs the recorded result compared, overall first; empty with no result."
+    )
     pairing_source: str | None = Field(description="Who paired its row; null when nobody did.")
     pairing_judgments: str | None = Field(
         description='Whose judgments the pairing rests on, e.g. "code and both AIs".'
@@ -90,6 +100,8 @@ def _item_out(found: ItemArchitectStatus) -> ItemArchitectOut:
         row_id=countertop.row_candidate_id,
         state=found.state,
         reason=found.reason,
+        finding_id=found.finding_id,
+        outcome=None if found.outcome is None else found.outcome.value,
         pairs=tuple(
             ItemArchitectPairOut(
                 kind=pair.kind,
@@ -97,7 +109,6 @@ def _item_out(found: ItemArchitectStatus) -> ItemArchitectOut:
                 vendor_piece=None if pair.vendor_slot is None else pair.vendor_slot + 1,
                 piece_item_id=pair.piece_item_id,
                 piece_item_type=pair.piece_item_type,
-                architect_candidate_id=pair.architect_candidate_id,
             )
             for pair in found.pairs
         ),
@@ -126,8 +137,9 @@ def countertop_items_architect(
         ),
     ] = None,
 ) -> ItemArchitectListOut:
-    """For each live countertop item, whether its row is compared with the architect's drawing and
-    which pieces, by the piece items a person confirmed (#1273, `workflow/milan_items.py`).
+    """For each live countertop item, where its row stands with the architect's drawing, as the
+    countertop results show that row: its recorded result when there is one, with each compared
+    piece named by the piece item a person confirmed (#1273, `workflow/milan_items.py`).
 
     **Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.
     """

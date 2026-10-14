@@ -5261,6 +5261,31 @@
           "countertop": {
             "$ref": "#/components/schemas/CountertopItemRefOut"
           },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its row's architect result; null when none.",
+            "title": "Finding Id"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "That result's outcome; null when none.",
+            "title": "Outcome"
+          },
           "pairing_judgments": {
             "anyOf": [
               {
@@ -5286,6 +5311,7 @@
             "title": "Pairing Source"
           },
           "pairs": {
+            "description": "The pairs the recorded result compared, overall first; empty with no result.",
             "items": {
               "$ref": "#/components/schemas/ItemArchitectPairOut"
             },
@@ -5301,7 +5327,7 @@
                 "type": "null"
               }
             ],
-            "description": "Why it is not compared, or what the reviewer is asked; null when compared.",
+            "description": "The recorded result's reason; with no result, why nothing is compared.",
             "title": "Reason"
           },
           "row_id": {
@@ -5318,10 +5344,12 @@
             "title": "Row Id"
           },
           "state": {
+            "description": "As the countertop results show its row: a recorded PASS or FAIL (`compared`), a recorded result the check could not decide (`for_reviewer`), no result yet for something a check run would compare (`not_checked_yet`), or nothing comparable (`not_compared`).",
             "enum": [
               "compared",
-              "not_compared",
-              "waits_for_reviewer"
+              "for_reviewer",
+              "not_checked_yet",
+              "not_compared"
             ],
             "title": "State",
             "type": "string"
@@ -5332,6 +5360,8 @@
           "row_id",
           "state",
           "reason",
+          "finding_id",
+          "outcome",
           "pairs",
           "pairing_source",
           "pairing_judgments"
@@ -5340,13 +5370,8 @@
         "type": "object"
       },
       "ItemArchitectPairOut": {
-        "description": "One width compared with the architect: the overall, or one vendor piece.",
+        "description": "One width the check compared with the architect: the overall, or one vendor piece.",
         "properties": {
-          "architect_candidate_id": {
-            "format": "uuid",
-            "title": "Architect Candidate Id",
-            "type": "string"
-          },
           "kind": {
             "enum": [
               "piece",
@@ -5403,8 +5428,7 @@
           "label",
           "vendor_piece",
           "piece_item_id",
-          "piece_item_type",
-          "architect_candidate_id"
+          "piece_item_type"
         ],
         "title": "ItemArchitectPairOut",
         "type": "object"
@@ -13689,7 +13713,7 @@
     },
     "/api/v1/projects/{project_id}/packages/{package_id}/countertop-items/architect": {
       "get": {
-        "description": "For each live countertop item, whether its row is compared with the architect's drawing and\nwhich pieces, by the piece items a person confirmed (#1273, `workflow/milan_items.py`).\n\n**Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.",
+        "description": "For each live countertop item, where its row stands with the architect's drawing, as the\ncountertop results show that row: its recorded result when there is one, with each compared\npiece named by the piece item a person confirmed (#1273, `workflow/milan_items.py`).\n\n**Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.",
         "operationId": "countertop_items_architect_api_v1_projects__project_id__packages__package_id__countertop_items_architect_get",
         "parameters": [
           {

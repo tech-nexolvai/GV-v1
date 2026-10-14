@@ -608,8 +608,9 @@ export interface paths {
         };
         /**
          * Read each confirmed countertop's comparison with the architect's drawing
-         * @description For each live countertop item, whether its row is compared with the architect's drawing and
-         *     which pieces, by the piece items a person confirmed (#1273, `workflow/milan_items.py`).
+         * @description For each live countertop item, where its row stands with the architect's drawing, as the
+         *     countertop results show that row: its recorded result when there is one, with each compared
+         *     piece named by the piece item a person confirmed (#1273, `workflow/milan_items.py`).
          *
          *     **Read-only, and it decides nothing**: no check runs, no result changes, and no check reads it.
          */
@@ -4492,6 +4493,16 @@ export interface components {
         ItemArchitectOut: {
             countertop: components["schemas"]["CountertopItemRefOut"];
             /**
+             * Finding Id
+             * @description Its row's architect result; null when none.
+             */
+            finding_id: string | null;
+            /**
+             * Outcome
+             * @description That result's outcome; null when none.
+             */
+            outcome: string | null;
+            /**
              * Pairing Judgments
              * @description Whose judgments the pairing rests on, e.g. "code and both AIs".
              */
@@ -4501,11 +4512,14 @@ export interface components {
              * @description Who paired its row; null when nobody did.
              */
             pairing_source: string | null;
-            /** Pairs */
+            /**
+             * Pairs
+             * @description The pairs the recorded result compared, overall first; empty with no result.
+             */
             pairs: components["schemas"]["ItemArchitectPairOut"][];
             /**
              * Reason
-             * @description Why it is not compared, or what the reviewer is asked; null when compared.
+             * @description The recorded result's reason; with no result, why nothing is compared.
              */
             reason: string | null;
             /**
@@ -4515,20 +4529,16 @@ export interface components {
             row_id: string | null;
             /**
              * State
+             * @description As the countertop results show its row: a recorded PASS or FAIL (`compared`), a recorded result the check could not decide (`for_reviewer`), no result yet for something a check run would compare (`not_checked_yet`), or nothing comparable (`not_compared`).
              * @enum {string}
              */
-            state: "compared" | "not_compared" | "waits_for_reviewer";
+            state: "compared" | "for_reviewer" | "not_checked_yet" | "not_compared";
         };
         /**
          * ItemArchitectPairOut
-         * @description One width compared with the architect: the overall, or one vendor piece.
+         * @description One width the check compared with the architect: the overall, or one vendor piece.
          */
         ItemArchitectPairOut: {
-            /**
-             * Architect Candidate Id
-             * Format: uuid
-             */
-            architect_candidate_id: string;
             /**
              * Kind
              * @enum {string}
