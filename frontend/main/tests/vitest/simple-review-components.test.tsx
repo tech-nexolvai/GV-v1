@@ -311,7 +311,7 @@ describe('NotCheckedGroup', () => {
       '#/settings/company?focus=countertop_overhang&project=proj-demo',
     ]);
     expect(within(rows[2]).getByRole('link', { name: 'Set Countertop overhang in Company settings' })).toBeTruthy();
-    expect(screen.getAllByRole('link')).toHaveLength(3);
+    expect(within(screen.getByRole('list')).getAllByRole('link')).toHaveLength(3);
   });
 
   it('says a setting saved since the run was set, with no link, and to run the checks again (#1382)', async () => {
@@ -345,6 +345,134 @@ describe('NotCheckedGroup', () => {
     expect(rows[2].textContent).toContain(
       'Cabinet depth and Countertop overhang were set after this check ran. Run the checks again.',
     );
+  });
+
+  describe('summary (#1403)', () => {
+    type Held = { value_now?: string | null; value_from?: 'gv_standard' | 'project' | null };
+    const setting = (key: string, name: string, held: Held = {}) => ({
+      key,
+      name,
+      project_id: 'proj-demo',
+      set_now: Boolean(held.value_now),
+      value_now: held.value_now ?? null,
+      value_from: held.value_from ?? null,
+    });
+    const depth = () => setting('cabinet_depth', 'Cabinet depth');
+    const overhang = () => setting('countertop_overhang', 'Countertop overhang');
+    const backsplash = () => setting('backsplash_thickness', 'Backsplash thickness');
+    const renderGroup = (items: ReturnType<typeof reviewItems>['not_checked']) =>
+      render(<NotCheckedGroup items={items} note={null} busy={false} error={null} onClearAll={() => {}} />);
+
+    it('counts the countertops and names each setting once, as links to this job, with the list folded', async () => {
+      const waiting = reviewItems((draft) => {
+        // Countertop 1 twice (depth and sink), 2 and 3 once each: three countertops, three settings.
+        draft.not_checked[0].settings = [depth(), overhang()];
+        draft.not_checked[1].settings = [depth()];
+        draft.not_checked[2].settings = [depth(), overhang()];
+        draft.not_checked[3].settings = [depth(), overhang(), backsplash()];
+      });
+      renderGroup(waiting.not_checked);
+      const line = screen.getByTestId('not-checked-waiting');
+      expect(line.textContent).toBe(
+        '3 countertops are waiting for 3 settings: Cabinet depth · Countertop overhang · Backsplash thickness',
+      );
+      expect(within(line).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
+        '#/settings/company?focus=cabinet_depth&project=proj-demo',
+        '#/settings/company?focus=countertop_overhang&project=proj-demo',
+        '#/settings/company?focus=backsplash_thickness&project=proj-demo',
+      ]);
+      expect(within(line).getByRole('link', { name: 'Set Backsplash thickness for this job in Company settings' })).toBeTruthy();
+      // The full per-check list stays folded under "Show all 6".
+      expect(screen.getByRole('list', { hidden: true }).hidden).toBe(true);
+      await userEvent.click(screen.getByRole('button', { name: 'Show all 6' }));
+      expect(screen.getByRole('list').hidden).toBe(false);
+      expect(screen.getAllByRole('listitem')).toHaveLength(6);
+      expect(screen.getByRole('button', { name: 'Hide the list' })).toBeTruthy();
+    });
+
+    it('counts a countertop row as a countertop, once per row, and checks when neither is named', () => {
+      const rows = reviewItems((draft) => {
+        for (const [index, entry] of draft.not_checked.entries()) {
+          entry.countertop = null;
+          entry.row_label = `Countertop row on page ${entry.page}`;
+          entry.settings = index < 4 ? [depth()] : [];
+        }
+      });
+      const { unmount } = renderGroup(rows.not_checked);
+      // Entries 0-3 sit on pages 3, 3, 4 and 5: three rows.
+      expect(screen.getByTestId('not-checked-waiting').textContent).toBe('3 countertops are waiting for 1 setting: Cabinet depth');
+      unmount();
+      rows.not_checked[3].row_label = null;
+      renderGroup(rows.not_checked);
+      expect(screen.getByTestId('not-checked-waiting').textContent).toBe('3 checks are waiting for 1 setting: Cabinet depth');
+    });
+
+    it('with no GV standard for them, says so and that an admin can set them once', () => {
+      const empty = reviewItems((draft) => {
+        draft.not_checked[0].settings = [depth(), overhang()];
+      });
+      renderGroup(empty.not_checked);
+      const standards = screen.getByTestId('not-checked-standards');
+      expect(standards.textContent).toBe(
+        "GV standards are not set for these settings yet. An admin can set them once in Company settings, and every job's next check run then uses them.",
+      );
+      expect(within(standards).getByRole('link', { name: 'Company settings' }).getAttribute('href')).toBe('#/settings');
+      expect(screen.getByTestId('not-checked-waiting').textContent).toBe(
+        '1 countertop is waiting for 2 settings: Cabinet depth · Countertop overhang',
+      );
+    });
+
+    it('says which settings are held since, by GV standard or this job, and names the ones with none, never filled', () => {
+      const mixed = reviewItems((draft) => {
+        const held = () => [
+          setting('cabinet_depth', 'Cabinet depth', { value_now: '24"', value_from: 'gv_standard' }),
+          setting('countertop_overhang', 'Countertop overhang', { value_now: '1"', value_from: 'project' }),
+          backsplash(),
+        ];
+        draft.not_checked[0].settings = held();
+        draft.not_checked[2].settings = held();
+      });
+      renderGroup(mixed.not_checked);
+      expect(screen.getByTestId('not-checked-held').textContent).toBe(
+        'Set since these checks ran: Cabinet depth 24" (GV standard) · Countertop overhang 1" (this job\'s value). Run the checks again to use them.',
+      );
+      // Only the one nobody holds still waits, and it is named, not filled.
+      expect(screen.getByTestId('not-checked-waiting').textContent).toBe(
+        '2 countertops are waiting for 1 setting: Backsplash thickness',
+      );
+      expect(screen.getByTestId('not-checked-standards').textContent).toBe(
+        'No GV standard for Backsplash thickness: set it for this job.',
+      );
+      // Nothing on the group saves a value: its only buttons fold the list and clear the group.
+      expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
+        'Not checked6',
+        'Clear all as not checked',
+        'Show all 6',
+      ]);
+    });
+
+    it('with every setting held since, says only to run the checks again', () => {
+      const allHeld = reviewItems((draft) => {
+        draft.not_checked[0].settings = [setting('cabinet_depth', 'Cabinet depth', { value_now: '24"', value_from: 'gv_standard' })];
+      });
+      renderGroup(allHeld.not_checked);
+      expect(screen.getByTestId('not-checked-held').textContent).toBe(
+        'Set since these checks ran: Cabinet depth 24" (GV standard). Run the checks again to use it.',
+      );
+      expect(screen.queryByTestId('not-checked-waiting')).toBeNull();
+      expect(screen.queryByTestId('not-checked-standards')).toBeNull();
+    });
+
+    it('shows no summary when the server names no setting, or once the group is cleared', () => {
+      const { unmount } = renderGroup(data.not_checked);
+      expect(screen.queryByTestId('not-checked-waiting')).toBeNull();
+      expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull();
+      unmount();
+      const cleared = allSettled();
+      cleared.not_checked[0].settings = [depth()];
+      renderGroup(cleared.not_checked);
+      expect(screen.queryByTestId('not-checked-waiting')).toBeNull();
+    });
   });
 
   it('offers no setting link when the API names none', async () => {

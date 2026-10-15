@@ -572,3 +572,109 @@ def test_a_setting_saved_since_the_run_says_so(session: Session, tmp_path: Path)
         listed == {"cabinet_depth": True, "countertop_overhang": False}
         for listed in depth_settings()
     )
+
+
+def _admin(session: Session, project_id: UUID) -> TestClient:
+    app = create_app(Settings(database_url="postgresql+psycopg://gv:gv@localhost:5434/unused"))
+    app.dependency_overrides[authenticate] = lambda: Principal(
+        id="an admin", roles=frozenset({Role.ADMIN}), projects=frozenset({project_id})
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    return TestClient(app)
+
+
+def test_a_setting_says_whether_a_gv_standard_or_this_jobs_value_holds_it_now(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1403: the summary of the not-checked group says, per setting, what holds it now and where
+    it comes from: GV's standard (Company settings, admin-only) or this job's own value, which wins.
+    Nothing is held before anyone saves; nothing is guessed."""
+    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    client = _client(session, project_id)
+    url = f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
+
+    def depth_settings() -> list[dict[str, tuple[str | None, str | None]]]:
+        response = client.get(url)
+        assert response.status_code == 200, response.text
+        listed = [
+            {need["key"]: (need["value_now"], need["value_from"]) for need in entry["settings"]}
+            for entry in response.json()["not_checked"]
+            if entry["rule_id"] == "CT-DEPTH-001"
+        ]
+        assert listed, "the fixture must leave the depth check not checked"
+        return listed
+
+    nothing = (None, None)
+    assert all(
+        listed == {"cabinet_depth": nothing, "countertop_overhang": nothing}
+        for listed in depth_settings()
+    )
+
+    standard = _admin(session, project_id).post(
+        f"{API_PREFIX}/company-settings",
+        json={"values": [{"name": "cabinet_depth", "value": '24"'}]},
+    )
+    assert standard.status_code == 201, standard.text
+    assert all(
+        listed == {"cabinet_depth": ('24"', "gv_standard"), "countertop_overhang": nothing}
+        for listed in depth_settings()
+    )
+
+    own = client.post(
+        f"{API_PREFIX}/company-settings/projects/{project_id}",
+        json={"values": [{"name": "cabinet_depth", "value": '22"', "source": "G.C / Client"}]},
+    )
+    assert own.status_code == 201, own.text
+    assert all(
+        listed == {"cabinet_depth": ('22"', "project"), "countertop_overhang": nothing}
+        for listed in depth_settings()
+    )
+
+
+def test_a_gv_standard_reaches_the_next_check_run_with_no_value_written_for_the_job(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1403's research question, answered by the code: a GV standard saved on Company settings is
+    read by every project's next check run on its own (`workflow/stages._layered`), so the depth
+    check stops waiting for it. Nothing is written for the project: no project settings version."""
+    from app.models.parameters import ParameterSet as StoredParameterSet
+    from rules.parameters import ParameterLayer
+
+    project_id, package_id, _anchors = _package_rows(session, unsealed_page=0)
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    saved = _admin(session, project_id).post(
+        f"{API_PREFIX}/company-settings",
+        json={
+            "values": [
+                {"name": "cabinet_depth", "value": '24"'},
+                {"name": "countertop_overhang", "value": '1"'},
+            ]
+        },
+    )
+    assert saved.status_code == 201, saved.text
+
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items"
+    )
+    assert response.status_code == 200, response.text
+    keys = {
+        need["key"]
+        for entry in response.json()["not_checked"]
+        if entry["rule_id"] == "CT-DEPTH-001"
+        for need in entry["settings"]
+    }
+    assert keys.isdisjoint({"cabinet_depth", "countertop_overhang"}), keys
+    assert (
+        session.scalars(
+            select(StoredParameterSet).where(
+                StoredParameterSet.layer == ParameterLayer.PROJECT.value,
+                StoredParameterSet.project_id == project_id,
+            )
+        ).first()
+        is None
+    )

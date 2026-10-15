@@ -74,7 +74,7 @@ __all__ = [
     "WaitingFinding",
     "missing_inputs_for",
     "missing_settings_for",
-    "settings_set_now",
+    "settings_held_now",
 ]
 
 Scope = Literal["project", "sink", "drawing", "measurements"]
@@ -490,19 +490,27 @@ def missing_settings_for(session: Session, items: Sequence[CitingFinding]) -> di
     return found
 
 
-def settings_set_now(session: Session, project_id: UUID, names: Iterable[str]) -> frozenset[str]:
-    """Which of `names` the newest company or project settings versions hold now (#1382).
+def settings_held_now(
+    session: Session, project_id: UUID, names: Iterable[str]
+) -> dict[str, SavedInputOut]:
+    """The value the newest company or project settings versions hold now for each of `names`, and
+    which layer it is from (#1382, #1403): the project's own value wins over GV's standard.
 
     The waiting card's own lookup (`_on_record_now`), asked for the two layers Company settings
     saves. A setting a run lacked that is held now was saved since that run: the screen says to run
     the checks again rather than linking to a field that already has a value. Saving a setting
-    never re-runs a check.
+    never re-runs a check. A name held by neither layer is left out: nothing is defaulted here.
     """
     wanted = set(names)
     if not wanted:
-        return frozenset()
+        return {}
     now = _on_record_now(session, project_id, ())
-    return frozenset(name for name in wanted if now.setting(name, None) is not None)
+    held: dict[str, SavedInputOut] = {}
+    for name in sorted(wanted):
+        value = now.setting(name, None)
+        if value is not None:
+            held[name] = value
+    return held
 
 
 def missing_inputs_for(

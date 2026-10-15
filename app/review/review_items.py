@@ -85,9 +85,10 @@ from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.reviewed_readings import ReviewedReading, reviewed_readings
 from app.review.row_location import RowLocation
-from app.review.waiting_values import missing_settings_for, settings_set_now
+from app.review.waiting_values import missing_settings_for, settings_held_now
 from app.review.wall_cases import unavailable_reason
 from app.schemas.findings import DepthReadingOut
+from app.schemas.review import optional_in_schema
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
 from rules.required_inputs import categories_for
@@ -259,6 +260,29 @@ class NotCheckedSettingOut(BaseModel):
             "screen says to run the checks again instead of linking to a field that has a value."
         ),
     )
+    value_now: str | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "The value held now (`24\"`), or null where neither GV's standard nor this project "
+            "holds one (#1403). The value the next check run reads; never a guess."
+        ),
+    )
+    value_from: Literal["gv_standard", "project"] | None = Field(
+        default=None,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "Where `value_now` is from: GV's standard (Company settings, admin-only; every "
+            "project's next run reads it on its own) or this project's own value, which wins."
+        ),
+    )
+
+
+#: The settings layer a held value is from, in the words the screen uses (#1403).
+_HELD_BY: Final[dict[str, Literal["gv_standard", "project"]]] = {
+    "company": "gv_standard",
+    "project": "project",
+}
 
 
 class CabinetChoiceOut(BaseModel):
@@ -1019,20 +1043,26 @@ def review_items_for_revision(
     )
 
     # Which of them are held now (#1382): saved since the run, so the checks need running again.
-    held_now = settings_set_now(
+    # And by what (#1403): GV's standard, or this job's own value, which wins over it.
+    held_now = settings_held_now(
         session, project_id, {name for names in missing.values() for name in names}
     )
 
     def settings_for(finding_id: UUID) -> list[NotCheckedSettingOut]:
-        return [
-            NotCheckedSettingOut(
-                key=name,
-                name=setting_name(name),
-                project_id=project_id,
-                set_now=name in held_now,
+        listed = []
+        for name in missing.get(finding_id, []):
+            held = held_now.get(name)
+            listed.append(
+                NotCheckedSettingOut(
+                    key=name,
+                    name=setting_name(name),
+                    project_id=project_id,
+                    set_now=held is not None,
+                    value_now=None if held is None else held.text,
+                    value_from=None if held is None else _HELD_BY[held.layer],
+                )
             )
-            for name in missing.get(finding_id, [])
-        ]
+        return listed
 
     cabinet_runs: list[tuple[tuple[CabinetRowOut, ...], datetime | None] | None] = []
 

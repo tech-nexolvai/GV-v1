@@ -5526,6 +5526,16 @@ export interface components {
              * @default false
              */
             set_now: boolean;
+            /**
+             * Value From
+             * @description Where `value_now` is from: GV's standard (Company settings, admin-only; every project's next run reads it on its own) or this project's own value, which wins.
+             */
+            value_from?: ("gv_standard" | "project") | null;
+            /**
+             * Value Now
+             * @description The value held now (`24"`), or null where neither GV's standard nor this project holds one (#1403). The value the next check run reads; never a guess.
+             */
+            value_now?: string | null;
         };
         /**
          * NotPartReason

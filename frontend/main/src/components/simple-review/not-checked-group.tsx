@@ -8,6 +8,7 @@ import { whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { OutcomeIcon } from '@/components/ui/OutcomeIcon';
 import type { SaveError } from './failures-strip';
+import { andList, notCheckedSummary, type NotCheckedSummary } from './not-checked-summary-lib';
 import { PageTag } from './words';
 
 /**
@@ -17,6 +18,12 @@ import { PageTag } from './words';
  * when the API names it: the screen never works out which setting a check needs. Saving a setting
  * does not re-run the check, so one the API says is set now (`set_now`, #1382) is not linked again:
  * the line says it was set after this check ran, and to run the checks again.
+ *
+ * Above the folded list, a short summary (#1403): how many countertops wait for which settings (each a
+ * link to this job's field), which are held since the checks ran (GV's standard or this job's value),
+ * and, where GV has no standard for them, that an admin can set one once. A GV standard already
+ * reaches every job's next check run on its own (`workflow/stages._layered`), so the screen writes no
+ * value for the job: it says what is held and to run the checks again.
  */
 export function NotCheckedGroup({
   items,
@@ -45,6 +52,7 @@ export function NotCheckedGroup({
   };
   if (items.length === 0) return null;
   const waiting = items.filter((item) => item.status === 'open').length;
+  const summary = notCheckedSummary(items);
 
   return (
     <section aria-labelledby="not-checked-title" data-slot="not-checked-group" className="rounded-xl border border-dashed border-border">
@@ -84,6 +92,7 @@ export function NotCheckedGroup({
           </p>
         )}
       </div>
+      {summary && <Summary summary={summary} total={items.length} open={open} onToggle={() => setOpen((value) => !value)} />}
       <div
         className={cn('grid transition-[grid-template-rows] duration-150 ease-out motion-reduce:transition-none', open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]')}
       >
@@ -115,8 +124,73 @@ function settingHref(setting: NotCheckedSetting): string {
 
 /** "A", "A and B", "A, B and C". */
 function names(settings: readonly NotCheckedSetting[]): string {
-  const all = settings.map((setting) => setting.name);
-  return all.length < 2 ? all.join('') : `${all.slice(0, -1).join(', ')} and ${all[all.length - 1]}`;
+  return andList(settings.map((setting) => setting.name));
+}
+
+const COMPANY_SETTINGS = formatRoute({ page: 'settings', packageId: null });
+
+/**
+ * The group in a few lines (#1403), from the settings the server names: what waits, what is held
+ * since, and where GV has no standard. Nothing here saves a value.
+ */
+function Summary({ summary, total, open, onToggle }: { summary: NotCheckedSummary; total: number; open: boolean; onToggle: () => void }) {
+  const { places, placeWord, waiting, heldSince, anyGvStandard } = summary;
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+  return (
+    <div data-slot="not-checked-summary" className="flex flex-col gap-1.5 border-t border-dashed border-border px-4 py-3 pl-11 text-[13px] leading-5 text-muted-foreground sm:px-6 sm:pl-[3.25rem]">
+      {waiting.length > 0 && (
+        <p data-testid="not-checked-waiting">
+          <span className="num">{plural(places, placeWord)}</span> {places === 1 ? 'is' : 'are'} waiting for {plural(waiting.length, 'setting')}:{' '}
+          {waiting.map((setting, index) => (
+            <Fragment key={setting.key}>
+              {index > 0 && ' · '}
+              <a href={settingHref(setting)} aria-label={`Set ${setting.name} for this job in Company settings`} className={LINK}>
+                {setting.name}
+              </a>
+            </Fragment>
+          ))}
+        </p>
+      )}
+      {heldSince.length > 0 && (
+        <p data-testid="not-checked-held">
+          Set since these checks ran:{' '}
+          {heldSince.map((entry, index) => (
+            <Fragment key={entry.setting.key}>
+              {index > 0 && ' · '}
+              <span className="text-foreground">
+                {entry.setting.name} <span className="num">{entry.value}</span>
+              </span>{' '}
+              ({entry.from === 'gv_standard' ? 'GV standard' : "this job's value"})
+            </Fragment>
+          ))}
+          . Run the checks again to use {heldSince.length === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+      {waiting.length > 0 &&
+        (anyGvStandard ? (
+          <p data-testid="not-checked-standards">
+            No GV standard for {names(waiting)}: set {waiting.length === 1 ? 'it' : 'them'} for this job.
+          </p>
+        ) : (
+          <p data-testid="not-checked-standards">
+            GV standards are not set for {waiting.length === 1 ? 'this setting' : 'these settings'} yet. An admin can set{' '}
+            {waiting.length === 1 ? 'it' : 'them'} once in <a href={COMPANY_SETTINGS} className={LINK}>Company settings</a>, and every
+            job's next check run then uses {waiting.length === 1 ? 'it' : 'them'}.
+          </p>
+        ))}
+      <p>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="not-checked-list"
+          onClick={onToggle}
+          className="rounded-sm text-foreground underline underline-offset-2 outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {open ? 'Hide the list' : `Show all ${total}`}
+        </button>
+      </p>
+    </div>
+  );
 }
 
 /**
