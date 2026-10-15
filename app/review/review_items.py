@@ -13,7 +13,9 @@ write, no guess.
   confirm, or any other result that waits for a person (`other_result`).
 * `failures`: FAIL results. Each stays blocking and needs one Agree (Anant, decision 2).
 * `not_checked`: the depth and sink checks that could not run because nothing was read for them
-  (Anant, decision 1: one quiet group).
+  (Anant, decision 1: one quiet group). Each names the Company settings fields its run also lacked
+  (`settings`, #1373), worked out from the rule and the settings its run cited, so the screen can
+  link to them; none when it lacked only drawn values.
 
 `unaccounted` lists any blocking result, or any page that blocks sign-off, that is in none of the
 groups or in more than one. It must be empty; it is computed here, on every read, so the screen can
@@ -65,6 +67,7 @@ from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
+from app.review.waiting_values import missing_settings_for
 from app.review.wall_cases import unavailable_reason
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
@@ -73,6 +76,7 @@ from rules.semantic_types import SemanticType
 from units.imperial import format_inches, parse_imperial
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
+from vocabulary.setting_names import setting_name
 from vocabulary.wall_layouts import wall_case_words
 from workflow.slot_row_scope import SlotRow, candidate_is_sealed, slot_rows
 from workflow.wall_cases import is_every_wall_case
@@ -266,6 +270,19 @@ class FailureOut(BaseModel):
     decided_at: datetime | None = None
 
 
+class NotCheckedSettingOut(BaseModel):
+    """A setting a not-checked check is waiting for, as listed on Company settings (#1373)."""
+
+    key: str = Field(
+        description=(
+            "The setting's name (`countertop_overhang`): the field "
+            "`#/settings/company?focus=<key>&project=<project_id>` opens."
+        )
+    )
+    name: str = Field(description="The setting's plain name.")
+    project_id: UUID = Field(description="The project whose setting it is.")
+
+
 class NotCheckedOut(BaseModel):
     """A check that could not run because nothing was read for it."""
 
@@ -277,6 +294,15 @@ class NotCheckedOut(BaseModel):
     countertop: CountertopItemRefOut | None = None
     row_label: str | None = None
     why: str
+    settings: list[NotCheckedSettingOut] = Field(
+        default_factory=list,
+        description=(
+            "The company or project settings the check was missing when it ran, each a field on "
+            "Company settings (#1373). Worked out from the rule and what its run had "
+            "(`missing_settings_for`), never from the words; empty when it lacked none (a drawn value, "
+            "say). The sink's sizes are on the project's sink card, not a field, so never listed."
+        ),
+    )
     status: Status
     decided_by: str | None = None
     decided_at: datetime | None = None
@@ -526,6 +552,15 @@ def _live_findings(session: Session, revision_id: UUID) -> list[_Live]:
 
 
 @dataclass(frozen=True, slots=True)
+class _Cited:
+    """What `missing_settings_for` reads of a result."""
+
+    id: UUID
+    rule_snapshot_id: UUID
+    parameter_set_versions: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
 class _DepthItem:
     """What `depth_readings_for` reads of a result."""
 
@@ -672,6 +707,24 @@ def review_items_for_revision(
         ],
     )
 
+    # The settings each depth and sink check was missing when it ran (#1373): from the rule as run
+    # and the settings versions it cited, never from the reason's words. Only fields on Company
+    # settings are listed; the sink's sizes live on its card.
+    missing = missing_settings_for(
+        session,
+        [
+            _Cited(entry.finding.id, entry.rule_snapshot_id, entry.finding.parameter_set_versions)
+            for entry in blocking
+            if entry.rule_id in DEPTH_AND_SINK_RULES
+        ],
+    )
+
+    def settings_for(finding_id: UUID) -> list[NotCheckedSettingOut]:
+        return [
+            NotCheckedSettingOut(key=name, name=setting_name(name), project_id=project_id)
+            for name in missing.get(finding_id, [])
+        ]
+
     items: list[ReviewItemOut] = []
     failures: list[FailureOut] = []
     not_checked: list[NotCheckedOut] = []
@@ -736,6 +789,7 @@ def review_items_for_revision(
                         countertop=countertop,
                         row_label=row_label,
                         why=why,
+                        settings=settings_for(finding.id),
                         status=state,
                         decided_by=decided_by,
                         decided_at=decided_at,
