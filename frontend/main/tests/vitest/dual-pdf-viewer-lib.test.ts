@@ -10,6 +10,7 @@ import {
   regionRect,
   step,
   toggleLink,
+  withCounts,
 } from '@/components/simple-review/dual-pdf-viewer-lib';
 
 // Synthetic sizes only.
@@ -97,5 +98,22 @@ describe('pictures are never upscaled (#1355)', () => {
 
   it('reads an architect region box from exact decimal text', () => {
     expect(regionRect({ x0: '0.25', y0: '0.5', x1: '0.75', y1: '1' })).toEqual({ x: 0.25, y: 0.5, w: 0.5, h: 0.5 });
+  });
+});
+
+describe('new page counts after Check again (#1362)', () => {
+  it('takes the new counts and keeps the pages shown, held inside the new counts', () => {
+    const nav = openNav({ vendor: 3, architect: 12 }, { vendor: 6, architect: 14 }, false);
+    const more = withCounts(nav, { vendor: 8, architect: 14 });
+    expect(more.counts).toEqual({ vendor: 8, architect: 14 });
+    expect(more.pages).toEqual({ vendor: 3, architect: 12 });
+    expect(step(more, 5).pages.vendor).toBe(8);
+    const fewer = withCounts(nav, { vendor: 2, architect: 10 });
+    expect(fewer.pages).toEqual({ vendor: 2, architect: 10 });
+  });
+
+  it('a combined set keeps both sides on the one file', () => {
+    const nav = openNav({ vendor: 2, architect: 2 }, { vendor: 3, architect: 3 }, true);
+    expect(withCounts(nav, { vendor: 5, architect: 1 }).counts).toEqual({ vendor: 5, architect: 5 });
   });
 });
