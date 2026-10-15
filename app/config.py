@@ -22,6 +22,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.review.chat_models import ChatModelChoice
 
+#: The gates `GV_TRY_AGAIN_GATES` may name (#1309), in step with
+#: `extraction/slot_reader/try_again.TRY_AGAIN_GATES` (`tests/workflow/test_try_again.py` checks).
+TRY_AGAIN_GATE_NAMES: frozenset[str] = frozenset(
+    {
+        "rekha:two-readers-agree",
+        "rekha:row-has-printed-numbers",
+        "rekha:other-numbered-lines",
+        "akshara:seal",
+    }
+)
+
 
 class Settings(BaseSettings):
     """Everything the API needs, stated rather than discovered.
@@ -147,6 +158,12 @@ class Settings(BaseSettings):
     # model, prompt id, pictures and packet) instead of asking again (#1112): $0 and repeatable.
     # Off for a proof run that must ask every question again.
     reader_reuse_answers: bool = True
+    # Phase 3's try-again (#1309): the gates on which the reading asks both AIs again, up to three
+    # smarter ways, before an item waits for a person. Comma-separated; EMPTY (the default) switches
+    # nothing on, and the reading is byte for byte as before. Each gate is switched on only after
+    # its Pariksha scorecard passes (Anant, 2026-10-14). Kept in step with
+    # `extraction/slot_reader/try_again.py` `TRY_AGAIN_GATES`.
+    try_again_gates: str = ""
     # The admin's yes/no (#987): may a stacked fraction seal when two readers of different makers
     # give the identical text on a code-made crop? Off: a stacked fraction goes to the person.
     slot_reader_stacked_agreement: bool = False
@@ -224,6 +241,20 @@ class Settings(BaseSettings):
     is recorded on every run a person confirms, so a run can be read again under the number it was
     decided with. Stored units are the normalised `0..1` page space, not a distance: the same number
     is a different physical size on different sheets."""
+
+    @field_validator("try_again_gates")
+    @classmethod
+    def _known_try_again_gates(cls, value: str) -> str:
+        names = [name.strip() for name in value.split(",") if name.strip()]
+        unknown = sorted(set(names) - TRY_AGAIN_GATE_NAMES)
+        if unknown:
+            raise ValueError(
+                "GV_TRY_AGAIN_GATES names unknown gates: "
+                + ", ".join(unknown)
+                + "; known: "
+                + ", ".join(sorted(TRY_AGAIN_GATE_NAMES))
+            )
+        return ",".join(sorted(set(names)))
 
     @field_validator("run_edge_tolerance")
     @classmethod

@@ -64,6 +64,7 @@ from extraction.slot_reader.bedrock import (
     CROP_PROMPT_ID,
     ROW_BOX_COLOURS,
     ROW_PROMPT_ID,
+    ROW_TIEBREAK_PROMPT_ID,
     ArchMatchAnswer,
     ArchPairAnswer,
     CounterBreakAnswer,
@@ -113,6 +114,24 @@ from extraction.slot_reader.seal import (
     seal_label,
 )
 from extraction.slot_reader.stop import ReadingStop
+from extraction.slot_reader.try_again import (
+    AKSHARA_CHANGES,
+    AKSHARA_SEAL,
+    AKSHARA_TRY_CODES,
+    MAX_TRIES,
+    REKHA_CHANGES,
+    REKHA_OTHER_LINES,
+    REKHA_PRINTED_NUMBERS,
+    REKHA_READERS_AGREE,
+    TRY_ANSWER_FLAG,
+    TRY_FIRST_PICK_FLAG,
+    TryAgainGuard,
+    TryOutcome,
+    TryRecord,
+    parse_try_again_gates,
+    try_again_allowance,
+    try_key,
+)
 from extraction.slot_reader.veto import (
     DrawnReading,
     drawn_length_vetoes,
@@ -144,7 +163,7 @@ from workflow.layout_proposals import (
     WALLS_SEALED_FLAG,
 )
 from workflow.pariksha_gates import GateResult
-from workflow.rekha_gate import rekha_row_gate
+from workflow.rekha_gate import numbered_pieces, rekha_row_gate
 
 if TYPE_CHECKING:
     from app.runs.reading_activity import ActivityEvent, ActivityHook
@@ -242,6 +261,10 @@ class SlotReaderRuntime:
     """Reuse a stored answer to an identical question instead of asking again (#1112,
     `GV_READER_REUSE_ANSWERS`). Off, every question is asked, as a proof run that must re-ask
     needs. Applies only where questions carry packets (the Claude readers)."""
+    try_again_gates: frozenset[str] = frozenset()
+    """The gates on which both Claude readers are asked again, up to three smarter ways, before an
+    item waits for a person (#1309, `GV_TRY_AGAIN_GATES`). Empty (the default): nothing is tried
+    again, and the run's identity is exactly as before."""
 
     @property
     def prompt_id(self) -> str:
@@ -274,6 +297,12 @@ class SlotReaderRuntime:
                 else ""
             )
             + ("" if self.architect_pairing is None else f";arch-pair={self.architect_pairing}")
+            + (
+                ""
+                if not self.try_again_gates
+                else f";try-again={','.join(sorted(self.try_again_gates))},"
+                f"tries={MAX_TRIES},allowance=1/10,prompt={ROW_TIEBREAK_PROMPT_ID}"
+            )
         )
 
     @property
@@ -347,6 +376,12 @@ def configured_slot_reader(
     """The slot reader's runtime, or `None` when it is off (the default)."""
     if not bool(getattr(settings, "slot_reader_enabled", False)):
         return None
+    try_again_gates = parse_try_again_gates(str(getattr(settings, "try_again_gates", "") or ""))
+    if try_again_gates and not bool(getattr(settings, "claude_reader_enabled", False)):
+        raise ValueError(
+            "GV_TRY_AGAIN_GATES requires GV_CLAUDE_READER_ENABLED: only the two Claude readers are "
+            "asked again, within a share of their own AI cap"
+        )
     if form is None:
         raise ValueError(
             "GV_SLOT_READER_ENABLED requires GV_FORM_READER_ENABLED: the slot reader uses the form "
@@ -426,6 +461,7 @@ def configured_slot_reader(
         claude_effort=effort if claude_enabled else DEFAULT_CLAUDE_EFFORT,
         claude_route=(OPENROUTER_ROUTE if claude_enabled and provider == "openrouter" else None),
         reuse_answers=bool(getattr(settings, "reader_reuse_answers", True)),
+        try_again_gates=try_again_gates,
     )
 
 
@@ -449,6 +485,11 @@ class LabelResult:
     outcome: LabelOutcome
     box_px: tuple[int, int, int, int]
     crop_px: tuple[int, int, int, int]
+    try_again: tuple[TryRecord, ...] = ()
+    """Each try made on this label (#1309), in order; empty when none was."""
+    try_answers: tuple[str, ...] = ()
+    """When a try settled the label: `<model>:<try>` for each of the two answers it was sealed on,
+    so the run check can see the seal rests on two try answers, never a mixed pair."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -554,6 +595,12 @@ class PageSlotResult:
     """The counter-break readers that said no stone top is drawn over the row (`no_stone`, #1111).
     Recorded on the row as `no-stone:<model>` and named in its reason text; it holds nothing and
     clears nothing."""
+    row_try_again: tuple[TryRecord, ...] = ()
+    """Each try the line finder made on this page (#1309), in order; empty when none was."""
+    row_first_picks: tuple[tuple[str, int | None], ...] = ()
+    """Each row reader's first-round pick when the page was tried again (#1309); the
+    `row_choice_picks` are then the pair the page was settled on (or the first round, when no try
+    helped)."""
 
 
 def _pixels(rows: RowsAndInk, box: Box, rendered: RenderedPage) -> tuple[int, int, int, int]:
@@ -732,6 +779,24 @@ def _marked_close_up_png(
     and never asked. The evidence crop, the ink check and the drawn-length check still use the
     close-up's box as cut, never these pixels.
     """
+    from PIL import Image
+
+    canvas = _close_up_canvas(rendered, crop, span)
+    if canvas.width < _CLOSE_UP_NARROW_PX:
+        canvas = canvas.resize((canvas.width * 2, canvas.height * 2), Image.Resampling.LANCZOS)
+    if canvas.width > max_long_edge:
+        canvas = canvas.resize(
+            (max_long_edge, max(1, round(canvas.height * (max_long_edge / canvas.width)))),
+            Image.Resampling.LANCZOS,
+        )
+    return encode_png(canvas.width, canvas.height, canvas.tobytes())
+
+
+def _close_up_canvas(
+    rendered: RenderedPage, crop: tuple[int, int, int, int], span: tuple[int, int, int, int]
+) -> Any:
+    """The close-up as cut, with the white strips and the span's two magenta end marks
+    (`_marked_close_up_png`), at the render's own size."""
     from PIL import Image, ImageDraw
 
     dpi = rendered.dpi
@@ -750,13 +815,47 @@ def _marked_close_up_png(
             (x - half, height + strip + gap, x + half, height + 2 * strip - 1),
             fill=tuple(_MAGENTA),
         )
-    if canvas.width < _CLOSE_UP_NARROW_PX:
-        canvas = canvas.resize((canvas.width * 2, canvas.height * 2), Image.Resampling.LANCZOS)
-    if canvas.width > max_long_edge:
-        canvas = canvas.resize(
-            (max_long_edge, max(1, round(canvas.height * (max_long_edge / canvas.width)))),
-            Image.Resampling.LANCZOS,
-        )
+    return canvas
+
+
+#: The tighter crop's reach past each end of the span (#1309): 25 px at 300 dpi, against the first
+#: close-up's 50 px or 15% of the span (`_claude_span_plan`).
+_TIGHTER_REACH_PX: Final = 25
+
+
+def _tighter_crop_px(
+    crop: tuple[int, int, int, int], span: tuple[int, int, int, int], dpi: int
+) -> tuple[int, int, int, int]:
+    """The close-up cut closer round the span (#1309, `tighter-crop`): the same height, and only a
+    little past each end, so fewer of the neighbours' labels are in it. Never wider than the first
+    cut."""
+    reach = _at_label_dpi(_TIGHTER_REACH_PX, dpi)
+    left = max(crop[0], span[0] - reach)
+    right = min(crop[2], span[2] + reach)
+    return left, crop[1], max(left + 1, right), crop[3]
+
+
+def _zoomed_close_up_png(
+    rendered: RenderedPage,
+    crop: tuple[int, int, int, int],
+    span: tuple[int, int, int, int],
+    *,
+    zoom: int,
+    readers: Sequence[str],
+) -> bytes | None:
+    """A try's close-up (#1309): the first close-up (`_marked_close_up_png`) enlarged `zoom` times
+    as the readers saw it, or `None` when that would pass a reader's picture limit (`cannot-zoom`):
+    a try is never shrunk back to the size that did not settle the label."""
+    from PIL import Image
+
+    from extraction.slot_reader.claude_output import picture_fits
+
+    canvas = _close_up_canvas(rendered, crop, span)
+    factor = zoom * (2 if canvas.width < _CLOSE_UP_NARROW_PX else 1)
+    width, height = canvas.width * factor, canvas.height * factor
+    if not all(picture_fits(width, height, model) for model in readers):
+        return None
+    canvas = canvas.resize((width, height), Image.Resampling.LANCZOS)
     return encode_png(canvas.width, canvas.height, canvas.tobytes())
 
 
@@ -833,8 +932,13 @@ def _question_packet(
     store: ArtifactStore | None,
     upright_png: bytes | None = None,
     effort: str | None = None,
+    try_again: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Bind the exact encoded images, prompt, candidate key and coordinate transform.
+
+    A try's question (#1309) also records `try_again`: which question it tries again, why, what it
+    changed and which try it is. That, and its own question id, make it a question of its own, so a
+    stored first answer is never taken as a try's answer.
 
     A Claude question also records the effort it was asked at and, for a sideways label, the
     upright third picture (#1051). For the grounded Claude label question the `full_view` key holds
@@ -880,6 +984,7 @@ def _question_packet(
             ),
         },
         **({} if effort is None else {"effort": effort}),
+        **({} if try_again is None else {"try_again": dict(try_again)}),
     }
     packet_body["packet_sha256"] = hashlib.sha256(
         json.dumps(packet_body, sort_keys=True, separators=(",", ":")).encode()
@@ -894,8 +999,14 @@ def _row_question_packet(
     numbered_view_png: bytes,
     store: ArtifactStore | None,
     effort: str | None = None,
+    try_again: Mapping[str, object] | None = None,
+    shown_rows: Sequence[int] | None = None,
+    question_id: str | None = None,
 ) -> dict[str, object]:
-    """Bind the exact numbered vendor view and the ordered code candidates to a row attempt."""
+    """Bind the exact numbered vendor view and the ordered code candidates to a row attempt.
+
+    A try (#1309) is asked `slot-row-tiebreak-v1` under its own `question_id` and also records
+    `try_again` and the lines it shows; without one the packet is exactly as before."""
     from io import BytesIO
 
     digest = hashlib.sha256(numbered_view_png).hexdigest()
@@ -909,17 +1020,24 @@ def _row_question_packet(
         saved = store.put(storage_key, BytesIO(numbered_view_png), content_type="image/png")
         if saved.sha256 != digest:
             raise ValueError("stored numbered row image hash does not match its request bytes")
+    if not ((try_again is None) == (shown_rows is None) == (question_id is None)):
+        raise ValueError("a try's row question names its id, what it tries again and its lines")
     packet: dict[str, object] = {
-        "question_id": f"p{page.page_index}:row-choice",
+        "question_id": f"p{page.page_index}:row-choice" if question_id is None else question_id,
         "document_version_id": str(page.document_version_id),
         "page_index": page.page_index,
         "source_page_sha256": page.rendered.page_content_hash,
-        "prompt_id": ROW_PROMPT_ID,
+        "prompt_id": ROW_PROMPT_ID if try_again is None else ROW_TIEBREAK_PROMPT_ID,
         "candidate_ids": [str(candidate_id) for candidate_id in candidate_ids],
         "candidate_count": len(candidate_ids),
         "page_transform": _transform_packet(page.transform),
         "images": {"numbered_vendor_view": {"sha256": digest, "storage_key": storage_key}},
         **({} if effort is None else {"effort": effort}),
+        **(
+            {}
+            if try_again is None or shown_rows is None
+            else {"try_again": dict(try_again), "shown_rows": list(shown_rows)}
+        ),
     }
     packet["packet_sha256"] = hashlib.sha256(
         json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
@@ -1075,6 +1193,28 @@ def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandid
     if not candidates:
         return _crop_png(page.rendered, (0, 0, page.rendered.width_px, page.rendered.height_px)), ()
     scale = Fraction(page.rendered.dpi, _PROTOTYPE_ROWS_DPI)
+    outlines = _row_outlines(page, candidates)
+    full_page = (0, 0, page.rendered.width_px, page.rendered.height_px)
+    image = _marked_png(
+        page.rendered,
+        full_page,
+        ends_x=(),
+        line=None,
+        thickness=max(2, round(5 * scale)),
+        max_side=1800,
+        numbered_outlines=outlines,
+        badge_scale=max(2, round(48 * scale / 7)),
+        badge_beside=True,
+    )
+    return image, candidates
+
+
+def _row_outlines(
+    page: SlotPage, candidates: Sequence[CountertopRowCandidate]
+) -> list[tuple[tuple[int, int, int, int], bytes, int]]:
+    """Each candidate line's numbered box on the page (`_numbered_rows_png`): its outline in page
+    pixels, its colour and its number, box 1 first."""
+    scale = Fraction(page.rendered.dpi, _PROTOTYPE_ROWS_DPI)
     pad_x, pad_y = round(6 * scale), round(14 * scale)
     outlines: list[tuple[tuple[int, int, int, int], bytes, int]] = []
     for number, row in enumerate(candidates, start=1):
@@ -1094,19 +1234,84 @@ def _numbered_rows_png(page: SlotPage) -> tuple[bytes, tuple[CountertopRowCandid
                 number,
             )
         )
-    full_page = (0, 0, page.rendered.width_px, page.rendered.height_px)
-    image = _marked_png(
-        page.rendered,
-        full_page,
-        ends_x=(),
-        line=None,
-        thickness=max(2, round(5 * scale)),
-        max_side=1800,
-        numbered_outlines=outlines,
-        badge_scale=max(2, round(48 * scale / 7)),
-        badge_beside=True,
+    return outlines
+
+
+#: The line finder's try-again pictures (#1309), in rendered-page pixels at 300 dpi: each shown
+#: line's area reaches 150 px past its box to the left and right (room for its number badge) and
+#: 300 px above and below; panels stand 24 px apart; the whole is scaled to 1,800 px on its long side.
+_FOCUS_REACH_X_PX: Final = 150
+_FOCUS_REACH_Y_PX: Final = 300
+_FOCUS_PANEL_GAP_PX: Final = 24
+_FOCUS_LONG_SIDE_PX: Final = 1800
+
+
+def _focused_rows_png(page: SlotPage, shown: Sequence[int], *, alone: bool) -> bytes:
+    """A try's numbered-lines picture (#1309): only the lines `shown` (by their number in the first
+    picture, keeping its number and colour), cut close round them and scaled to 1,800 px on the
+    long side; with `alone`, each line in a panel of its own, one under another.
+
+    Deterministic: the same page and lines give the same bytes, so a stored try answer is reused.
+    """
+    from PIL import Image
+
+    candidates = page.rows.candidates.rows.candidates[:6]
+    if not shown or any(not 1 <= number <= len(candidates) for number in shown):
+        raise ValueError("a try shows some of the page's numbered candidate lines")
+    dpi = page.rendered.dpi
+    scale = Fraction(dpi, _PROTOTYPE_ROWS_DPI)
+    outlines = {outline[2]: outline for outline in _row_outlines(page, candidates)}
+    reach_x = _at_label_dpi(_FOCUS_REACH_X_PX, dpi)
+    reach_y = _at_label_dpi(_FOCUS_REACH_Y_PX, dpi)
+
+    def area(numbers: Sequence[int]) -> tuple[int, int, int, int]:
+        boxes = [outlines[number][0] for number in numbers]
+        return (
+            max(0, min(box[0] for box in boxes) - reach_x),
+            max(0, min(box[1] for box in boxes) - reach_y),
+            min(page.rendered.width_px, max(box[2] for box in boxes) + reach_x),
+            min(page.rendered.height_px, max(box[3] for box in boxes) + reach_y),
+        )
+
+    def drawn(numbers: Sequence[int]) -> Any:
+        box = area(numbers)
+        png = _marked_png(
+            page.rendered,
+            box,
+            ends_x=(),
+            line=None,
+            thickness=max(2, round(5 * scale)),
+            max_side=max(box[2] - box[0], box[3] - box[1]),
+            numbered_outlines=[outlines[number] for number in numbers],
+            badge_scale=max(2, round(48 * scale / 7)),
+            badge_beside=True,
+        )
+        width, height, rgb = decode_rgb_png(png)
+        return Image.frombytes("RGB", (width, height), rgb)
+
+    if alone:
+        panels = [drawn((number,)) for number in sorted(shown)]
+        gap = _at_label_dpi(_FOCUS_PANEL_GAP_PX, dpi)
+        image = Image.new(
+            "RGB",
+            (
+                max(panel.width for panel in panels),
+                sum(panel.height for panel in panels) + gap * (len(panels) - 1),
+            ),
+            _WHITE,
+        )
+        top = 0
+        for panel in panels:
+            image.paste(panel, (0, top))
+            top += panel.height + gap
+    else:
+        image = drawn(sorted(shown))
+    factor = Fraction(_FOCUS_LONG_SIDE_PX, max(image.width, image.height))
+    image = image.resize(
+        (max(1, round(image.width * factor)), max(1, round(image.height * factor))),
+        Image.Resampling.LANCZOS,
     )
-    return image, candidates
+    return encode_png(image.width, image.height, image.tobytes())
 
 
 type _WallJobPictures = tuple[
@@ -1178,6 +1383,22 @@ def _upright_png(png: bytes) -> bytes:
     pixels = np.frombuffer(rgb, dtype=np.uint8).reshape(height, width, 3)
     turned = np.ascontiguousarray(np.rot90(pixels, k=-1))
     return encode_png(height, width, turned.tobytes())
+
+
+def _sideways_owners(
+    page: SlotPage, source_plan: SlotPlan, runtime: SlotReaderRuntime
+) -> set[int | None]:
+    """The owners (slot index, `None` for the overall) whose label code found drawn sideways."""
+    return {
+        owner.index
+        for owner in (
+            *source_plan.slots,
+            *((source_plan.overall,) if source_plan.overall is not None else ()),
+        )
+        if any(
+            _sideways(label, page.rows.ink.height, runtime.fraction_bar) for label in owner.labels
+        )
+    }
 
 
 def _stacked_by_bar(label: PlannedLabel, height: Decimal, geometry: FractionBarGeometry) -> bool:
@@ -1294,37 +1515,93 @@ def _line_events(
     kinds: Mapping[int, tuple[tuple[str, str], ...]],
     gates: Mapping[int, GateResult],
     left: frozenset[int],
+    told: frozenset[int] = frozenset(),
 ) -> list[ActivityEvent]:
     """The line finder's events, right after the row choice (#1238), per page it was asked about:
     `answered` when an AI answered, and `stopped` when the page is kept as a row-choice record the
     reviewer answers (exactly as `persist_slot_readings` keeps it). Its passes wait for the end of
     the reading (`_after_reading_events`): a chosen line whose own numbers the budget then stops is
     not a row the reading keeps. A page in `left` (its row question was never sent: the budget
-    stopped the reading first) is the page sorter's, told by the stage with the unread pages.
+    stopped the reading first) is the page sorter's, told by the stage with the unread pages. A page
+    in `told` was told already, before it was tried again (#1309, `_first_round_line_events`).
     """
+    events = _Events()
+    for page, plan in planned:
+        if page.page_index not in asked or page.page_index in left or page.page_index in told:
+            continue
+        _page_line_events(
+            events,
+            page,
+            picks.get(page.page_index, ()),
+            kinds.get(page.page_index, ()),
+            gates.get(page.page_index),
+            stopped=plan.row is None,
+        )
+    return events.events
+
+
+def _page_line_events(
+    events: _Events,
+    page: SlotPage,
+    page_picks: Sequence[tuple[str, int | None]],
+    page_kinds: Sequence[tuple[str, str]],
+    gate: GateResult | None,
+    *,
+    stopped: bool,
+) -> None:
+    """One page's line-finder events (`_line_events`): `answered`, and `stopped` with its code."""
     from app.runs.reading_activity import EventKind
     from workflow.pariksha_gates import Agent
 
-    told = _Events()
-    for page, plan in planned:
-        if page.page_index not in asked or page.page_index in left:
-            continue
-        number, item = page.page_index + 1, _row_key(page.page_index)
-        document = page.document_version_id
-        page_picks = picks.get(page.page_index, ())
-        answered = sum(pick is not None for _, pick in page_picks)
-        if answered:
-            code = "all-answered" if answered == len(page_picks) else "some-answered"
-            told.add(
-                number, Agent.REKHA, item, EventKind.ANSWERED, code, document_version_id=document
-            )
-        if plan.row is not None:
-            continue
-        code = _line_stop_code(
-            page_picks, kinds.get(page.page_index, ()), gates.get(page.page_index)
+    number, item = page.page_index + 1, _row_key(page.page_index)
+    document = page.document_version_id
+    answered = sum(pick is not None for _, pick in page_picks)
+    if answered:
+        code = "all-answered" if answered == len(page_picks) else "some-answered"
+        events.add(
+            number, Agent.REKHA, item, EventKind.ANSWERED, code, document_version_id=document
         )
-        told.add(number, Agent.REKHA, item, EventKind.STOPPED, code, document_version_id=document)
-    return told.events
+    if not stopped:
+        return
+    code = _line_stop_code(page_picks, page_kinds, gate)
+    events.add(number, Agent.REKHA, item, EventKind.STOPPED, code, document_version_id=document)
+
+
+def _try_events(
+    agent: str,
+    tried: Sequence[tuple[SlotPage, str, str, str, int, TryRecord | None]],
+) -> list[ActivityEvent]:
+    """The try-again events (#1309): for each `(page, item, because, change, try, record)`,
+    `trying_again` with why and what changed while `record` is `None` (the try is about to be
+    asked), else the try's result."""
+    from app.runs.reading_activity import EventKind
+    from workflow.pariksha_gates import Agent
+
+    who = Agent.REKHA if agent == "rekha" else Agent.AKSHARA
+    events = _Events()
+    for page, item, because, change, attempt, record in tried:
+        if record is None:
+            events.add(
+                page.page_index + 1,
+                who,
+                item,
+                EventKind.TRYING_AGAIN,
+                because,
+                change=change,
+                attempt=attempt,
+                document_version_id=page.document_version_id,
+            )
+        else:
+            events.add(
+                page.page_index + 1,
+                who,
+                item,
+                EventKind.TRY_AGAIN_RESULT,
+                record.outcome,
+                attempt=attempt,
+                document_version_id=page.document_version_id,
+            )
+    return events.events
 
 
 #: A reason code the event table takes (`app.models.runs.READING_EVENT_CODE_PATTERN`).
@@ -1339,7 +1616,11 @@ def _after_reading_events(
     number reader's `answered` per page and, per piece and the overall, `passed` when its reading is
     sealed and offered to the form, else `stopped` with its reason code. Pages in `left` (the budget
     stopped their own reading) are skipped: the stage lists them as unread, and tells them as the
-    page sorter's stops."""
+    page sorter's stops.
+
+    An item a try settled (#1309) is not told `passed` again: its newest event stays the try's
+    `helped`, which the screen counts as passed on. A number a try settled that a later check then
+    stopped (the drawn length) is told `stopped`, as any other."""
     from app.runs.reading_activity import EventKind
     from workflow.pariksha_gates import Agent
 
@@ -1351,7 +1632,7 @@ def _after_reading_events(
             continue
         number = result.page_index + 1
         document = result.document_version_id
-        if result.page_index in asked:
+        if result.page_index in asked and not any(record.helped for record in result.row_try_again):
             gate = result.row_gate
             told.add(
                 number,
@@ -1390,7 +1671,15 @@ def _after_reading_events(
                 if outcome.label_index is not None
                 else set()
             )
+            tries = (
+                owner.labels[outcome.label_index].try_again
+                if outcome.label_index is not None
+                else ()
+            )
+            helped = any(record.helped for record in tries)
             if sealed and index in offered and len(sources) in (0, 2):
+                if helped:
+                    continue
                 told.add(
                     number,
                     Agent.AKSHARA,
@@ -1400,11 +1689,16 @@ def _after_reading_events(
                     document_version_id=document,
                 )
                 continue
+            if tries and not helped:
+                # Told `stopped` before it was tried again; its tries' results follow it (#1309).
+                continue
             if sealed:
                 code = (
                     "not-sealed"
                     if index in offered
-                    else "row-held" if result.row_hold is not None else "not-offered"
+                    else "row-held"
+                    if result.row_hold is not None
+                    else "not-offered"
                 )
             else:
                 reason = outcome.reason_code or ""
@@ -1542,6 +1836,9 @@ def read_slot_pages(
     def run_jobs(
         items: Sequence[CropJob],
         batch: str = "architect_pairing",
+        *,
+        try_guard: TryAgainGuard | None = None,
+        try_stop: ReadingStop | None = None,
     ) -> dict[
         tuple[str, str],
         ReaderAnswer
@@ -1562,7 +1859,13 @@ def read_slot_pages(
             | ArchMatchAnswer
             | None,
         ] = {}
-        answered = _watched(progress, batch, items)
+        # A try batch (#1309) has its own guard and stop: a try refused for its allowance stops only
+        # the tries, never the main reading. It is not shown as a reading stage of its own.
+        trying = try_stop is not None
+        if trying and try_guard is None:
+            raise ValueError("a try batch is asked only within its allowance")
+        batch_stop = try_stop if try_stop is not None else reading_stop
+        answered = None if trying else _watched(progress, batch, items)
         if stored_answers is not None and runtime.reuse_answers and runtime.question_packets:
             from workflow.reader_reuse import reuse_stored_answers
 
@@ -1582,10 +1885,10 @@ def read_slot_pages(
             items = to_ask
             if not items:
                 return reused
-        if reading_stop.stopped:
+        if reading_stop.stopped or batch_stop.stopped:
             # Stopped in an earlier batch (#1206): nothing more is sent.
             for job in items:
-                reading_stop.not_asked(job)
+                batch_stop.not_asked(job)
                 if answered is not None:
                     answered(job)
             return reused | {(job.key, job.model_id): None for job in items}
@@ -1600,12 +1903,14 @@ def read_slot_pages(
             retry_backoff_seconds=runtime.form.retry_backoff_seconds,
             record_attempt=record_attempt,
             product=runtime.product,
-            spend_guard=shared_spend_guard,
-            spend_cap_usd=runtime.spend_cap_usd if shared_spend_guard is None else None,
+            spend_guard=try_guard if trying else shared_spend_guard,
+            spend_cap_usd=(
+                runtime.spend_cap_usd if shared_spend_guard is None and not trying else None
+            ),
             pacer=shared_pacer,
             claude_effort=runtime.claude_effort,
             on_answered=answered,
-            stop=reading_stop,
+            stop=batch_stop,
         )
 
     def label_jobs(
@@ -1626,19 +1931,7 @@ def read_slot_pages(
         # Spans whose label code found drawn sideways (#1051): the Claude span is the slot's band,
         # so the label runs come from the plan code made before the spans replaced them.
         sideways_owners = (
-            {
-                owner.index
-                for owner in (
-                    *source_plan.slots,
-                    *((source_plan.overall,) if source_plan.overall is not None else ()),
-                )
-                if any(
-                    _sideways(label, page.rows.ink.height, runtime.fraction_bar)
-                    for label in owner.labels
-                )
-            }
-            if runtime.claude_row_reader
-            else set()
+            _sideways_owners(page, source_plan, runtime) if runtime.claude_row_reader else set()
         )
         # The grounded Claude label question's Picture 1 shows the drawing around the row (#1213).
         row_x = (
@@ -1732,6 +2025,36 @@ def read_slot_pages(
         return found
 
     row_answers = run_jobs(row_jobs, "rows") if row_jobs else {}
+    # **Try again (#1309)**, all off unless `GV_TRY_AGAIN_GATES` names a gate: a try batch has its
+    # own guard (a tenth of this reading's cap, on top of the shared one) and its own stop.
+    try_stop = ReadingStop()
+    try_guard = (
+        TryAgainGuard(
+            try_again_allowance(runtime.spend_cap_usd), runtime.form.rates, shared_spend_guard
+        )
+        if runtime.try_again_gates
+        and runtime.claude_row_reader
+        and runtime.spend_cap_usd is not None
+        and runtime.form.rates is not None
+        else None
+    )
+    row_settled: dict[int, list[Any]] = {}
+    row_tries: dict[int, tuple[TryRecord, ...]] = {}
+    row_first_picks: dict[int, tuple[tuple[str, int | None], ...]] = {}
+    if try_guard is not None and runtime.try_again_gates & {
+        REKHA_READERS_AGREE,
+        REKHA_PRINTED_NUMBERS,
+    }:
+        row_settled, row_tries, row_first_picks = _rekha_tries(
+            pages,
+            row_answers,
+            row_ids=row_ids,
+            runtime=runtime,
+            store=store,
+            ask=lambda items: run_jobs(items, "try_again", try_guard=try_guard, try_stop=try_stop),
+            stop=try_stop,
+            activity=activity,
+        )
     planned: list[
         tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, RowHold | None]
     ] = []
@@ -1757,46 +2080,19 @@ def read_slot_pages(
             if runtime.claude_row_reader and page.page_index in row_ids
             else []
         )
-        row_choice, row_number = _agreed_row(asked_rows)
+        if page.page_index in row_settled:
+            # A try settled the line (#1309): the page is read on the try's pair, never a mix.
+            asked_rows = row_settled[page.page_index]
         row_picks[page.page_index] = _row_picks(readers, asked_rows)
         row_kinds[page.page_index], row_also[page.page_index] = _row_kinds_and_also(
             readers, asked_rows
         )
         candidates = page_rows[page.page_index].candidates[:6]
-        selected_row = (
-            candidates[row_number - 1]
-            if row_number is not None and 0 < row_number <= len(candidates)
-            else None
+        row_choice, row_number, selected_row, gate = _choose_row(
+            page, asked_rows, candidates, runtime
         )
-        if runtime.claude_row_reader and selected_row is not None:
-            # **Rekha's gate (#1228)**, before any label, walls or counter-break question is
-            # planned for the row: the line both readers chose must carry a printed number on its
-            # pieces, as code sees them. A line with none (the stone top's own outline, a band of
-            # material tags) is stopped: the page goes to the reviewer exactly as a page whose row
-            # the readers did not agree on, and nothing more is asked about it. Code only; it can
-            # only stop. When the vendor's equal-shares line could give the widths (#1086), the
-            # issue is recorded and the row is read as before (nothing the reviewer gets is lost).
-            gate = rekha_row_gate(
-                selected_row,
-                read_through_possible=equal_share_partner(
-                    selected_row,
-                    candidates,
-                    page.rows.ink.drawing_boxes,
-                    end_tolerance_pt=runtime.row_settings.overall_end_pt,
-                    frame_slack_pt=runtime.wall_settings.frame_slack_pt,
-                )
-                is not None,
-                page_number=page.page_index + 1,
-            )
+        if gate is not None:
             row_gates[page.page_index] = gate
-            if gate.stopped:
-                row_choice = RowChoiceAnswer(
-                    " + ".join(readers),
-                    0,
-                    f"{gate.reason} (Both AIs chose line {row_number}.)",
-                )
-                row_number = 0
-                selected_row = None
         source_plan = plan_slots(
             page.rows.candidates.rows,
             page.rows.ink,
@@ -1910,6 +2206,7 @@ def read_slot_pages(
             kinds=row_kinds,
             gates=row_gates,
             left=_budget_left(reading_stop),
+            told=frozenset(row_tries),
         ),
     )
     answers = run_jobs(jobs, "dimensions")
@@ -1979,6 +2276,20 @@ def read_slot_pages(
             for key, answer in run_jobs(chain_jobs, "chains").items()
             if isinstance(answer, ReaderAnswer)
         )
+    label_tries: dict[str, tuple[tuple[TryRecord, ...], tuple[str, ...]]] = {}
+    if try_guard is not None and AKSHARA_SEAL in runtime.try_again_gates:
+        label_tries = _akshara_tries(
+            planned,
+            crops=crops,
+            answers=label_answers,
+            candidate_ids=owner_candidate_ids,
+            runtime=runtime,
+            store=store,
+            ask=lambda items: run_jobs(items, "try_again", try_guard=try_guard, try_stop=try_stop),
+            stop=try_stop,
+            activity=activity,
+            left=_budget_left(reading_stop),
+        )
     results: list[PageSlotResult] = []
     for page, plan, source_plan, row_choice, row_number, held in planned:
 
@@ -1999,6 +2310,7 @@ def read_slot_pages(
                 runtime=runtime,
                 wall_ends=wall_ends(page),
                 held_before_reading=None if held is None else held.reason,
+                tries=label_tries,
             )
 
         slots = tuple(owner_result(owner, len(plan.slots)) for owner in plan.slots)
@@ -2199,6 +2511,8 @@ def read_slot_pages(
                 no_stone_readers=tuple(
                     answer.model_id for answer in line_answers if answer.stone_ends == "no_stone"
                 ),
+                row_try_again=row_tries.get(page.page_index, ()),
+                row_first_picks=row_first_picks.get(page.page_index, ()),
             )
         )
     read = _with_budget_holds(
@@ -2223,6 +2537,476 @@ def read_slot_pages(
         lambda: _after_reading_events(read, asked=row_ids, left=_budget_left(reading_stop)),
     )
     return read
+
+
+def _choose_row(
+    page: SlotPage,
+    asked_rows: Sequence[object],
+    candidates: Sequence[CountertopRowCandidate],
+    runtime: SlotReaderRuntime,
+) -> tuple[RowChoiceAnswer | None, int | None, CountertopRowCandidate | None, GateResult | None]:
+    """The line both readers agree on and Rekha's gate on it: `(row choice, row number, the row,
+    the gate)`. The same for a page's first answers and for a try's (#1309): nothing about which
+    line is read, or when it is stopped, depends on which round the answers came from."""
+    row_choice, row_number = _agreed_row(asked_rows)  # type: ignore[arg-type]
+    selected_row = (
+        candidates[row_number - 1]
+        if row_number is not None and 0 < row_number <= len(candidates)
+        else None
+    )
+    gate: GateResult | None = None
+    if runtime.claude_row_reader and selected_row is not None:
+        # **Rekha's gate (#1228)**, before any label, walls or counter-break question is
+        # planned for the row: the line both readers chose must carry a printed number on its
+        # pieces, as code sees them. A line with none (the stone top's own outline, a band of
+        # material tags) is stopped: the page goes to the reviewer exactly as a page whose row
+        # the readers did not agree on, and nothing more is asked about it. Code only; it can
+        # only stop. When the vendor's equal-shares line could give the widths (#1086), the
+        # issue is recorded and the row is read as before (nothing the reviewer gets is lost).
+        gate = rekha_row_gate(
+            selected_row,
+            read_through_possible=equal_share_partner(
+                selected_row,
+                candidates,
+                page.rows.ink.drawing_boxes,
+                end_tolerance_pt=runtime.row_settings.overall_end_pt,
+                frame_slack_pt=runtime.wall_settings.frame_slack_pt,
+            )
+            is not None,
+            page_number=page.page_index + 1,
+        )
+        if gate.stopped:
+            row_choice = RowChoiceAnswer(
+                " + ".join(runtime.form.reader_ids),
+                0,
+                f"{gate.reason} (Both AIs chose line {row_number}.)",
+            )
+            row_number = 0
+            selected_row = None
+    return row_choice, row_number, selected_row, gate
+
+
+#: At most this many other numbered lines are shown by `other-numbered-lines` (#1309).
+_OTHER_LINES_SHOWN: Final = 3
+
+
+@dataclass(frozen=True, slots=True)
+class _LineTry:
+    """A page the line finder tries again (#1309): why, which lines are in dispute, and the other
+    lines where code sees printed numbers (only when that switch is on)."""
+
+    page: SlotPage
+    gate: str
+    because: str
+    disputed: tuple[int, ...]
+    others: tuple[int, ...]
+
+    def shown(self, change: str) -> tuple[int, ...] | None:
+        """The lines a try shows, or `None` when this try cannot change anything for the page."""
+        if change == "tie-break-disputed-lines":
+            return self.disputed if len(self.disputed) >= 2 else None
+        lines = tuple(sorted({*self.disputed, *self.others}))
+        if change == "other-numbered-lines":
+            return lines if self.others else None
+        return lines if len(lines) >= 2 else None
+
+
+def _line_try(
+    page: SlotPage,
+    asked_rows: Sequence[object],
+    candidates: Sequence[CountertopRowCandidate],
+    runtime: SlotReaderRuntime,
+) -> _LineTry | None:
+    """Whether the page's first round may be tried again, and how (#1309): the two readers each
+    named a different numbered line (`two-readers-agree`), or both named one that Rekha's gate
+    stopped (`row-has-printed-numbers`), and that gate is switched on. Any other answer (a reader
+    missing, unsure, "no countertop", "not among the lines") is not tried again."""
+    gates = runtime.try_again_gates
+    choices = [answer for answer in asked_rows if isinstance(answer, RowChoiceAnswer)]
+    if not candidates or len(choices) != len(runtime.form.reader_ids):
+        return None
+    _choice, _number, _row, gate = _choose_row(page, asked_rows, candidates, runtime)
+    picked = {choice.row for choice in choices}
+    lines = all(choice.row > 0 and choice.kind in (None, "row") for choice in choices)
+    if lines and len(picked) > 1 and REKHA_READERS_AGREE in gates:
+        name, because, disputed = "two-readers-agree", "readers-differ", tuple(sorted(picked))
+    elif gate is not None and gate.stopped and REKHA_PRINTED_NUMBERS in gates:
+        name, because, disputed = "row-has-printed-numbers", gate.code, tuple(sorted(picked))
+    else:
+        return None
+    others = (
+        tuple(
+            number
+            for number, row in enumerate(candidates, start=1)
+            if number not in disputed and numbered_pieces(row)
+        )[:_OTHER_LINES_SHOWN]
+        if REKHA_OTHER_LINES in gates
+        else ()
+    )
+    tried = _LineTry(page, name, because, disputed, others)
+    # A page no try could change (one line stopped, no other numbered line shown) is not tried.
+    return tried if any(tried.shown(change) is not None for change in REKHA_CHANGES) else None
+
+
+def _rekha_tries(
+    pages: Sequence[SlotPage],
+    row_answers: Mapping[tuple[str, str], object],
+    *,
+    row_ids: Mapping[int, tuple[UUID, ...]],
+    runtime: SlotReaderRuntime,
+    store: ArtifactStore | None,
+    ask: Callable[[Sequence[CropJob]], Mapping[tuple[str, str], object]],
+    stop: ReadingStop,
+    activity: ActivityHook | None,
+) -> tuple[
+    dict[int, list[Any]],
+    dict[int, tuple[TryRecord, ...]],
+    dict[int, tuple[tuple[str, int | None], ...]],
+]:
+    """The line finder's tries (#1309): up to three, in `REKHA_CHANGES` order, one batch per try.
+
+    Each try asks both readers the try-again question (`slot-row-tiebreak-v1`) with a picture of
+    only the lines it shows (`_focused_rows_png`). A page is settled by the first try on which both
+    readers name the same line *and* Rekha's gate passes it (`_choose_row`, exactly as the first
+    round); its pages are then read on that pair alone. A try the allowance refused ends the page's
+    tries (`allowance-used`); a try that cannot change anything for a page (one disputed line, no
+    other numbered line) is not made. The first round's events are told before the first try.
+
+    Returns, per page: the try answers it was settled on, every try made, and the first picks.
+    """
+    readers = runtime.form.reader_ids
+    pending: dict[int, _LineTry] = {}
+    first: dict[int, tuple[tuple[str, int | None], ...]] = {}
+    events = _Events()
+    for page in pages:
+        if page.page_index not in row_ids:
+            continue
+        asked = [row_answers.get((_row_key(page.page_index), model)) for model in readers]
+        candidates = page.rows.candidates.rows.candidates[:6]
+        tried = _line_try(page, asked, candidates, runtime)
+        if tried is None:
+            continue
+        pending[page.page_index] = tried
+        first[page.page_index] = _row_picks(readers, asked)  # type: ignore[arg-type]
+        kinds, _also = _row_kinds_and_also(readers, asked)  # type: ignore[arg-type]
+        _page_line_events(
+            events,
+            page,
+            first[page.page_index],
+            kinds,
+            _choose_row(page, asked, candidates, runtime)[3],
+            stopped=True,
+        )
+    _tell(activity, lambda: events.events)
+    settled: dict[int, list[Any]] = {}
+    records: dict[int, list[TryRecord]] = {index: [] for index in pending}
+    for attempt, change in enumerate(REKHA_CHANGES, start=1):
+        batch: list[CropJob] = []
+        asked_now: dict[int, tuple[str, tuple[int, ...]]] = {}
+        for index, tried in pending.items():
+            if index in settled or any(
+                record.outcome == TryOutcome.ALLOWANCE_USED for record in records[index]
+            ):
+                continue
+            shown = tried.shown(change)
+            if shown is None:
+                continue
+            page = tried.page
+            key = try_key(_row_key(index), attempt)
+            png = _focused_rows_png(page, shown, alone=change == "each-line-alone")
+            candidates = page.rows.candidates.rows.candidates[:6]
+            packet = (
+                _row_question_packet(
+                    page,
+                    candidate_ids=row_ids[index],
+                    numbered_view_png=png,
+                    store=store,
+                    effort=runtime.claude_effort,
+                    try_again={
+                        "of": _row_key(index),
+                        "because": tried.because,
+                        "change": change,
+                        "attempt": attempt,
+                    },
+                    shown_rows=shown,
+                    question_id=key,
+                )
+                if runtime.question_packets
+                else None
+            )
+            batch.extend(
+                CropJob(
+                    key=key,
+                    model_id=model,
+                    page_index=index,
+                    png=png,
+                    row_question=True,
+                    candidate_count=len(candidates),
+                    question_packet=packet,
+                    shown_rows=shown,
+                )
+                for model in readers
+            )
+            asked_now[index] = (key, shown)
+        if not batch:
+            continue
+        trying: list[tuple[SlotPage, str, str, str, int, TryRecord | None]] = [
+            (pending[index].page, _row_key(index), pending[index].because, change, attempt, None)
+            for index in asked_now
+        ]
+        _tell(activity, functools.partial(_try_events, "rekha", trying))
+        answers = ask(batch)
+        results: list[tuple[SlotPage, str, str, str, int, TryRecord | None]] = []
+        for index, (key, _shown) in asked_now.items():
+            tried = pending[index]
+            jobs = [job for job in batch if job.key == key]
+            new = [answers.get((key, model)) for model in readers]
+            if any(stop.missed(job) for job in jobs):
+                outcome = TryOutcome.ALLOWANCE_USED
+            else:
+                candidates = tried.page.rows.candidates.rows.candidates[:6]
+                _choice, number, row, gate = _choose_row(tried.page, new, candidates, runtime)
+                helped = bool(number) and row is not None and (gate is None or not gate.stopped)
+                outcome = TryOutcome.HELPED if helped else TryOutcome.NOT_HELPED
+                if helped:
+                    settled[index] = new
+            record = TryRecord("rekha", tried.gate, tried.because, change, outcome)
+            records[index].append(record)
+            results.append((tried.page, _row_key(index), tried.because, change, attempt, record))
+        _tell(activity, functools.partial(_try_events, "rekha", results))
+    return (
+        settled,
+        {index: tuple(made) for index, made in records.items() if made},
+        {index: first[index] for index, made in records.items() if made},
+    )
+
+
+def _only_the_readers_hold(
+    page: SlotPage,
+    plan: SlotPlan,
+    label: PlannedLabel,
+    ink: InkAt | None,
+    runtime: SlotReaderRuntime,
+) -> bool:
+    """Whether the label would seal if both readers agreed on a plain number (#1309): none of code's
+    own guards (reviewer ink or ink not checked, a row or slot in doubt, a stacked fraction, the
+    edge, crowding) holds it. Asking again cannot change those, so such a label is never tried."""
+    probe = [
+        ReaderAnswer(model, '1"', readable=True, no_dimension=False, stacked=False, combined=False)
+        for model in runtime.form.reader_ids
+    ]
+    return _seal(page, plan, label, probe, ink, runtime).reason_code is None
+
+
+@dataclass(frozen=True, slots=True)
+class _NumberTry:
+    """A label the number reader tries again (#1309)."""
+
+    page: SlotPage
+    plan: SlotPlan
+    owner: PlannedOwner
+    label: PlannedLabel
+    key: str
+    because: str
+    sideways: bool
+
+
+def _number_try_pictures(
+    tried: _NumberTry,
+    change: str,
+    box_px: tuple[int, int, int, int],
+    crop_px: tuple[int, int, int, int],
+    readers: Sequence[str],
+) -> tuple[bytes, bytes | None] | None:
+    """A try's close-up and its upright copy (#1309), or `None` when it cannot be zoomed within the
+    readers' picture limit. Only the close-up changes: Picture 1, the evidence crop and the ink and
+    drawn-length checks keep the label's own box."""
+    rendered = tried.page.rendered
+    if change == "closer-look-2x":
+        png = _zoomed_close_up_png(rendered, crop_px, box_px, zoom=2, readers=readers)
+        upright = tried.sideways
+    elif change == "closer-look-3x-upright":
+        png = _zoomed_close_up_png(rendered, crop_px, box_px, zoom=3, readers=readers)
+        upright = True
+    else:
+        tight = _tighter_crop_px(crop_px, box_px, rendered.dpi)
+        png = _zoomed_close_up_png(rendered, tight, box_px, zoom=2, readers=readers)
+        upright = tried.sideways
+    if png is None:
+        return None
+    return png, _upright_png(png) if upright else None
+
+
+def _akshara_tries(
+    planned: Sequence[
+        tuple[SlotPage, SlotPlan, SlotPlan, RowChoiceAnswer | None, int | None, RowHold | None]
+    ],
+    *,
+    crops: Mapping[str, tuple[tuple[int, int, int, int], tuple[int, int, int, int], InkAt | None]],
+    answers: dict[tuple[str, str], ReaderAnswer | None],
+    candidate_ids: Mapping[int, Mapping[str, UUID]],
+    runtime: SlotReaderRuntime,
+    store: ArtifactStore | None,
+    ask: Callable[[Sequence[CropJob]], Mapping[tuple[str, str], object]],
+    stop: ReadingStop,
+    activity: ActivityHook | None,
+    left: frozenset[int],
+) -> dict[str, tuple[tuple[TryRecord, ...], tuple[str, ...]]]:
+    """The number reader's tries (#1309): up to three, in `AKSHARA_CHANGES` order, one batch each.
+
+    Tried: a label of a chosen row that was read (not held before reading, its page not left unread
+    by the budget) whose seal held it for the readers alone (`AKSHARA_TRY_CODES`, and
+    `_only_the_readers_hold`). The equal-shares chain's labels are not tried: they count only on
+    an exact chain match. Each try asks both readers the same span question with a new close-up,
+    under its own question id. A label is settled by the first try on which both readers answered
+    and `seal_label` passes the new pair alone; both try answers then replace the first ones in
+    `answers` (never one: rounds are never mixed), and the drawn-length veto and every later check
+    still run on them. A close-up too large for the readers is `cannot-zoom` (that try is skipped);
+    a try the allowance refused ends the label's tries (`allowance-used`). The first round's stop
+    is told before the first try.
+
+    Returns, by label key: every try made, and the try answers the label was settled on.
+    """
+    from app.runs.reading_activity import EventKind
+    from workflow.pariksha_gates import Agent
+
+    readers = runtime.form.reader_ids
+    pending: list[_NumberTry] = []
+    stopped = _Events()
+    for page, plan, source_plan, _choice, _number, held in planned:
+        if held is not None or plan.row is None or page.page_index in left:
+            continue
+        sideways = _sideways_owners(page, source_plan, runtime)
+        for owner in (*plan.slots, *((plan.overall,) if plan.overall is not None else ())):
+            result = _owner_result(
+                page,
+                plan,
+                owner,
+                len(plan.slots),
+                crops=crops,
+                answers=answers,
+                runtime=runtime,
+                wall_ends=frozenset(),
+            )
+            for position, item in enumerate(result.labels):
+                code = item.outcome.reason_code
+                key = _key(page.page_index, owner.index, position)
+                if code not in AKSHARA_TRY_CODES or not _only_the_readers_hold(
+                    page, plan, item.label, crops[key][2], runtime
+                ):
+                    continue
+                pending.append(
+                    _NumberTry(page, plan, owner, item.label, key, code, owner.index in sideways)
+                )
+                stopped.add(
+                    page.page_index + 1,
+                    Agent.AKSHARA,
+                    key,
+                    EventKind.STOPPED,
+                    code,
+                    document_version_id=page.document_version_id,
+                )
+    _tell(activity, lambda: stopped.events)
+    records: dict[str, list[TryRecord]] = {tried.key: [] for tried in pending}
+    settled_on: dict[str, tuple[str, ...]] = {}
+    for attempt, change in enumerate(AKSHARA_CHANGES, start=1):
+        batch: list[CropJob] = []
+        asked_now: dict[str, _NumberTry] = {}
+        told: list[tuple[SlotPage, str, str, str, int, TryRecord | None]] = []
+        for tried in pending:
+            made = records[tried.key]
+            if tried.key in settled_on or any(
+                record.outcome == TryOutcome.ALLOWANCE_USED for record in made
+            ):
+                continue
+            box_px, crop_px, _ink = crops[tried.key]
+            pictures = _number_try_pictures(tried, change, box_px, crop_px, readers)
+            if pictures is None:
+                record = TryRecord("akshara", "seal", tried.because, change, TryOutcome.CANNOT_ZOOM)
+                made.append(record)
+                told.append((tried.page, tried.key, tried.because, change, attempt, record))
+                continue
+            png, upright = pictures
+            view_png = _row_area_png(tried.page.rendered, _row_x_px(tried.page, tried.plan), box_px)
+            key = try_key(tried.key, attempt)
+            packet = (
+                _question_packet(
+                    tried.page,
+                    question_id=key,
+                    candidate_id=candidate_ids[tried.page.page_index][
+                        _owner_candidate_key(tried.owner.index)
+                    ],
+                    prompt_id=runtime.prompt_id,
+                    full_view_png=view_png,
+                    close_up_png=png,
+                    store=store,
+                    upright_png=upright,
+                    effort=runtime.claude_effort,
+                    try_again={
+                        "of": tried.key,
+                        "because": tried.because,
+                        "change": change,
+                        "attempt": attempt,
+                    },
+                )
+                if runtime.question_packets
+                else None
+            )
+            batch.extend(
+                CropJob(
+                    key,
+                    model,
+                    tried.page.page_index,
+                    png,
+                    view_png,
+                    grounded_claude=True,
+                    question_packet=packet,
+                    upright_png=upright,
+                )
+                for model in readers
+            )
+            asked_now[key] = tried
+        if told:
+            _tell(activity, functools.partial(_try_events, "akshara", told))
+        if not batch:
+            continue
+        trying = [
+            (tried.page, tried.key, tried.because, change, attempt, None)
+            for tried in asked_now.values()
+        ]
+        _tell(activity, functools.partial(_try_events, "akshara", trying))
+        replies = ask(batch)
+        results: list[tuple[SlotPage, str, str, str, int, TryRecord | None]] = []
+        for key, tried in asked_now.items():
+            jobs = [job for job in batch if job.key == key]
+            new = [
+                reply
+                for model in readers
+                if isinstance(reply := replies.get((key, model)), ReaderAnswer)
+            ]
+            if any(stop.missed(job) for job in jobs):
+                outcome = TryOutcome.ALLOWANCE_USED
+            else:
+                sealed = (
+                    len(new) == len(readers)
+                    and (
+                        _seal(
+                            tried.page, tried.plan, tried.label, new, crops[tried.key][2], runtime
+                        )
+                    ).reason_code
+                    is None
+                )
+                outcome = TryOutcome.HELPED if sealed else TryOutcome.NOT_HELPED
+                if sealed:
+                    # Both first answers are replaced by the try's pair: never a mix of rounds.
+                    for reply in new:
+                        answers[(tried.key, reply.model_id)] = reply
+                    settled_on[tried.key] = tuple(f"{reply.model_id}:{attempt}" for reply in new)
+            record = TryRecord("akshara", "seal", tried.because, change, outcome)
+            records[tried.key].append(record)
+            results.append((tried.page, tried.key, tried.because, change, attempt, record))
+        _tell(activity, functools.partial(_try_events, "akshara", results))
+    return {key: (tuple(made), settled_on.get(key, ())) for key, made in records.items() if made}
 
 
 #: The row hold of a page read in full whose later questions the AI budget stopped (#1206).
@@ -2711,12 +3495,14 @@ def _owner_result(
     wall_ends: frozenset[WallEnd],
     row_key: str = "",
     held_before_reading: str | None = None,
+    tries: Mapping[str, tuple[tuple[TryRecord, ...], tuple[str, ...]]] | None = None,
 ) -> OwnerResult:
     """Seal each of a slot's (or the overall's) labels, take its one reading, name its kind.
 
     `held_before_reading` is the page's hold reason when its labels were never sent (#1114).
+    `tries` (#1309) holds, by label key, the tries made on a label and the try answers it was
+    settled on; they are kept on its `LabelResult`. `answers` already holds those try answers.
     """
-    height = page.rows.ink.height
     labels: list[LabelResult] = []
     for position, label in enumerate(owner.labels):
         key = _key(page.page_index, owner.index, position, row_key)
@@ -2726,18 +3512,9 @@ def _owner_result(
             for model in runtime.form.reader_ids
             if (answer := answers.get((key, model))) is not None
         ]
-        sealed = seal_label(
-            label,
-            answers=present,
-            ink=ink,
-            stacked_by_bar=label.lane is Lane.GLYPHS
-            and _stacked_by_bar(label, height, runtime.fraction_bar),
-            allow_stacked=runtime.allow_stacked,
-            row_ambiguity=plan.ambiguity,
-            allow_claude_pair=runtime.claude_row_reader,
-            held_before_reading=held_before_reading,
-        )
-        labels.append(LabelResult(label, sealed, box_px, crop_px))
+        sealed = _seal(page, plan, label, present, ink, runtime, held_before_reading)
+        records, settled_on = (tries or {}).get(key, ((), ()))
+        labels.append(LabelResult(label, sealed, box_px, crop_px, records, settled_on))
     outcome = owner_outcome([item.outcome for item in labels])
     # Only the vendor's own words name a piece: never the reviewer's ink, never an unchecked label.
     words = tuple(
@@ -2762,6 +3539,29 @@ def _owner_result(
         outcome=outcome,
         kind=kind,
         words=words,
+    )
+
+
+def _seal(
+    page: SlotPage,
+    plan: SlotPlan,
+    label: PlannedLabel,
+    present: Sequence[ReaderAnswer],
+    ink: InkAt | None,
+    runtime: SlotReaderRuntime,
+    held_before_reading: str | None = None,
+) -> LabelOutcome:
+    """`seal_label` on one label with the answers present, as the reading seals every label."""
+    return seal_label(
+        label,
+        answers=present,
+        ink=ink,
+        stacked_by_bar=label.lane is Lane.GLYPHS
+        and _stacked_by_bar(label, page.rows.ink.height, runtime.fraction_bar),
+        allow_stacked=runtime.allow_stacked,
+        row_ambiguity=plan.ambiguity,
+        allow_claude_pair=runtime.claude_row_reader,
+        held_before_reading=held_before_reading,
     )
 
 
@@ -2909,6 +3709,9 @@ def persist_slot_readings(
             if result.row_gate is not None and index == 0:
                 # Rekha's gate result (#1228), kept once per row, on the row's anchor.
                 flags.append(result.row_gate.flag)
+            if index == 0:
+                # The line finder's tries (#1309) and each reader's first pick, on the anchor.
+                flags.extend(_row_try_flags(result))
             if result.plan.ambiguity is not None:
                 flags.append("row-ambiguous")
             if result.row_hold is not None:
@@ -2931,6 +3734,7 @@ def persist_slot_readings(
                 polygon = _polygon(chosen.box_px)
                 flags.append(_box_flag("crop-box", chosen.crop_px))
                 flags.extend(chosen.outcome.flags)
+                flags.extend(_label_try_flags(chosen))
                 flags.extend(f"reader-id:{source}" for source, _text in chosen.outcome.reader_texts)
                 if chosen.outcome.ink is not None:
                     flags.append(f"ink:{chosen.outcome.ink.value}")
@@ -2942,6 +3746,7 @@ def persist_slot_readings(
                 )
             else:
                 for label in owner.labels:
+                    flags.extend(_label_try_flags(label))
                     flags.extend(
                         f"reader:{source}:{text}" for source, text in label.outcome.reader_texts
                     )
@@ -3139,6 +3944,27 @@ def _row_also_flags(result: PageSlotResult) -> list[str]:
     ]
 
 
+def _row_try_flags(result: PageSlotResult) -> list[str]:
+    """The line finder's try flags (#1309): one `try-again:` per try, then each reader's first pick
+    as `try-again-first-pick:<model>:<n>` (`none` for no answer)."""
+    return [
+        *(record.flag for record in result.row_try_again),
+        *(
+            f"{TRY_FIRST_PICK_FLAG}{_short_model(model)}:{'none' if pick is None else pick}"
+            for model, pick in result.row_first_picks
+        ),
+    ]
+
+
+def _label_try_flags(label: LabelResult) -> list[str]:
+    """The number reader's try flags (#1309): one `try-again:` per try, then, when a try settled
+    the label, `try-again-answer:<model>:<try>` for each of the two answers it rests on."""
+    return [
+        *(record.flag for record in label.try_again),
+        *(f"{TRY_ANSWER_FLAG}{answer}" for answer in label.try_answers),
+    ]
+
+
 def _short_model(model_id: str) -> str:
     return model_id.removeprefix("anthropic.").removeprefix("claude-")
 
@@ -3196,6 +4022,8 @@ def _persist_unselected_row_choice(
             # Rekha's gate stopped the row both readers chose (#1228): the page waits for the
             # reviewer to pick the row, with the gate's reason.
             *(() if result.row_gate is None else (result.row_gate.flag,)),
+            # The line finder's tries (#1309), when it tried again and no try settled the page.
+            *_row_try_flags(result),
             *(
                 f"row-candidate:{i}:{candidate_id}"
                 for i, candidate_id in enumerate(result.row_candidate_ids, start=1)

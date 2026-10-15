@@ -107,6 +107,8 @@ __all__ = [
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
+    "ROW_TIEBREAK_PROMPT",
+    "ROW_TIEBREAK_PROMPT_ID",
     "ArchMatchAnswer",
     "ArchPairAnswer",
     "CounterBreakAnswer",
@@ -154,6 +156,13 @@ same question said red numbers are the reviewer's)."""
 ROW_PROMPT_IDS: Final = frozenset(
     {ROW_PROMPT_ID, "slot-row-choice-v3", "slot-row-choice-v2", "slot-row-choice-v1"}
 )
+ROW_TIEBREAK_PROMPT_ID: Final = "slot-row-tiebreak-v1"
+"""The line finder's try-again question (#1309), asked of both readers only when a try-again gate
+is switched on: the first row question split, or Rekha's gate stopped the line both chose. The
+picture shows only some of the numbered boxes, each keeping its number and colour from the first
+picture (a close-up of the part of the sheet around them, or each box in a panel of its own). The
+answer fields, examples and shape are `slot-row-choice-v4`'s, word for word; a box that was not
+shown counts as unsure (`read_row_choice`)."""
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v5"
 """v5 (#1213): the wording the demo-test measured (2026-10-13), asked with new pictures
 (`workflow/slot_reader.py`): Picture 1 is the drawing around the row with the span boxed, and
@@ -292,6 +301,21 @@ ROW_PROMPT: Final = (
     'row."}\n'
     "Reply with ONLY one JSON object of that shape: "
     '{"row": <number>, "kind": "<kind>", "also": [<numbers>], "why": "<one short sentence>"}'
+)
+
+
+#: The try-again row question (`ROW_TIEBREAK_PROMPT_ID`): a first paragraph of its own, then the row
+#: question's task, answer fields and examples, word for word (`ROW_PROMPT` from "Task:").
+ROW_TIEBREAK_PROMPT: Final = (
+    "This is part of a vendor's cabinet shop drawing sheet. The vendor drew it in black ink. A "
+    "reviewer may have marked it up: red or blue text, yellow boxes, clouds and small green or "
+    "purple ticks are the reviewer's markup, not the vendor's; ignore them. "
+    "This is a second, closer look: only some of the numbered coloured boxes from the whole sheet "
+    "are shown, either as a close-up of the part of the sheet around them or each box in a panel "
+    "of its own cut from the sheet around it. Each box keeps its number and colour from the whole "
+    "sheet, so the numbers shown may skip some. Each box's number is in the filled square of the "
+    "same colour just left of it. Answer only with the number of a box you can see.\n"
+    + ROW_PROMPT[ROW_PROMPT.index("Task:") :]
 )
 
 
@@ -780,8 +804,12 @@ def build_row_request(
     page_png: bytes,
     max_tokens: int,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+    tiebreak: bool = False,
 ) -> dict[str, Any]:
-    """Ask Opus to choose only among the code-ranked, numbered vendor-page candidates."""
+    """Ask Opus to choose only among the code-ranked, numbered vendor-page candidates.
+
+    `tiebreak` (#1309) asks the try-again wording (`ROW_TIEBREAK_PROMPT`) with the same answer
+    shape; without it the request is exactly as before."""
     if not model_id.strip():
         raise ValueError("a row reader model id must be stated")
     if not page_png.startswith(_PNG_SIGNATURE):
@@ -795,7 +823,7 @@ def build_row_request(
                 "role": "user",
                 "content": [
                     {"image": {"format": "png", "source": {"bytes": page_png}}},
-                    {"text": ROW_PROMPT},
+                    {"text": ROW_TIEBREAK_PROMPT if tiebreak else ROW_PROMPT},
                 ],
             }
         ],
@@ -1381,16 +1409,26 @@ def read_row_choice(
     record_attempt: Callable[[AttemptUsage], None],
     question_packet: Mapping[str, object] | None = None,
     claude_effort: ClaudeEffort = DEFAULT_CLAUDE_EFFORT,
+    shown_rows: tuple[int, ...] | None = None,
 ) -> RowChoiceAnswer:
-    """Ask once, re-asking only malformed JSON; an out-of-range row is a reviewer decision."""
+    """Ask once, re-asking only malformed JSON; an out-of-range row is a reviewer decision.
+
+    `shown_rows` (#1309) makes it the try-again question (`ROW_TIEBREAK_PROMPT_ID`): only those
+    boxes were shown, and an answer naming any other box counts as unsure, never as a row."""
     if not 1 <= candidate_count <= 6:
         raise ValueError("row choice requires one to six code-ranked candidates")
+    if shown_rows is not None and (
+        not shown_rows or any(not 1 <= row <= candidate_count for row in shown_rows)
+    ):
+        raise ValueError("a try-again row question shows some of the numbered candidates")
+    prompt_id = ROW_PROMPT_ID if shown_rows is None else ROW_TIEBREAK_PROMPT_ID
     for attempt in range(2):
         request = build_row_request(
             model_id=model_id,
             page_png=page_png,
             max_tokens=max_tokens,
             claude_effort=claude_effort,
+            tiebreak=shown_rows is not None,
         )
         if attempt:
             request["messages"][0]["content"].append(
@@ -1403,8 +1441,8 @@ def read_row_choice(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    ROW_PROMPT_ID,
-                    ROW_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     None,
                     None,
                     int((monotonic() - started) * 1000),
@@ -1434,8 +1472,8 @@ def read_row_choice(
             record_attempt(
                 AttemptUsage(
                     model_id,
-                    ROW_PROMPT_ID,
-                    ROW_PROMPT_ID,
+                    prompt_id,
+                    prompt_id,
                     input_tokens,
                     output_tokens,
                     elapsed,
@@ -1454,8 +1492,8 @@ def read_row_choice(
         record_attempt(
             AttemptUsage(
                 model_id,
-                ROW_PROMPT_ID,
-                ROW_PROMPT_ID,
+                prompt_id,
+                prompt_id,
                 input_tokens,
                 output_tokens,
                 elapsed,
@@ -1466,12 +1504,28 @@ def read_row_choice(
                 question_packet=question_packet,
             )
         )
+        if shown_rows is not None and parsed.row > 0 and parsed.row not in shown_rows:
+            # A box the try-again picture did not show (#1309): not an answer to this question.
+            return RowChoiceAnswer(
+                model_id=model_id,
+                row=0,
+                why=f"named box {parsed.row}, which this picture did not show",
+                kind="unsure",
+            )
         return RowChoiceAnswer(
             model_id=model_id,
             row=parsed.row,
             why=parsed.why[:300],
             kind=parsed.kind,
-            also=tuple(sorted({other for other in parsed.also if other != parsed.row})),
+            also=tuple(
+                sorted(
+                    {
+                        other
+                        for other in parsed.also
+                        if other != parsed.row and (shown_rows is None or other in shown_rows)
+                    }
+                )
+            ),
         )
     raise AssertionError("unreachable")
 
@@ -1801,6 +1855,9 @@ class CropJob:
     depth: DepthQuestion | None = None
     """A depth and sink reader question (#1265): asked by `extraction.depth.read` under its own
     pinned prompt id, with its own pictures (`png` is the first of them)."""
+    shown_rows: tuple[int, ...] | None = None
+    """With `row_question` (#1309): the line finder's try-again question, asked
+    `slot-row-tiebreak-v1`; `png` shows only these numbered boxes, by their first-picture numbers."""
 
     @property
     def pictures(self) -> tuple[bytes, ...]:
@@ -1826,7 +1883,7 @@ def job_prompt_id(job: CropJob, product: ProductType | None) -> str:
     if job.arch_pair_question:
         return ARCH_PAIR_2PANEL_PROMPT_ID if job.arch_pair_two_panel else ARCH_PAIR_PROMPT_ID
     if job.row_question:
-        return ROW_PROMPT_ID
+        return ROW_PROMPT_ID if job.shown_rows is None else ROW_TIEBREAK_PROMPT_ID
     if job.counter_break_question:
         return COUNTER_BREAK_PROMPT_ID
     if job.wall_question or (
@@ -1923,6 +1980,7 @@ def _ask(
             record_attempt=record_attempt,
             question_packet=job.question_packet,
             claude_effort=claude_effort,
+            shown_rows=job.shown_rows,
         )
     if job.counter_break_question:
         if job.view_png is None:

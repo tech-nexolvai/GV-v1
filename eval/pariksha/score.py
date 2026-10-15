@@ -43,7 +43,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Final
@@ -82,6 +82,7 @@ from extraction.slot_reader.bedrock import (
     replay_stored_answer,
 )
 from extraction.slot_reader.seal import Belongs, ReaderAnswer, normalise_text, parse_belongs
+from extraction.slot_reader.try_again import MAX_TRIES, is_try_key, try_key
 
 __all__ = [
     "AGREED_RIGHT",
@@ -132,7 +133,13 @@ _PROMPT_VERSION: Final = re.compile(r"-v(\d+)$")
 #: The first prompt version of each family whose stored replies today's strict reader reads
 #: (`claude-slot-span-v4` made `belongs` a word; `slot-row-choice-v3` added `kind`). Older
 #: replies are read by `_older_shape`.
-_STRICT_FROM: Final[Mapping[str, int]] = {"claude-slot-span": 4, "slot-row-choice": 3}
+_STRICT_FROM: Final[Mapping[str, int]] = {
+    "claude-slot-span": 4,
+    "slot-row-choice": 3,
+    "slot-row-tiebreak": 1,
+}
+#: The row question families: the first round's and the line finder's try-again question (#1309).
+_ROW_FAMILIES: Final = frozenset({"slot-row-choice", "slot-row-tiebreak"})
 #: A code version is a commit (7 to 40 hex characters), or this word, which the scorecard flags.
 UNRECORDED: Final = "unrecorded"
 _COMMIT: Final = re.compile(r"^[0-9a-f]{7,40}$")
@@ -236,9 +243,16 @@ def _replay(question: StoredQuestion, attempt: StoredAttempt) -> object | None:
     page_index = packet.get("page_index")
     page = page_index if isinstance(page_index, int) and not isinstance(page_index, bool) else 0
     job: CropJob
-    if question.identity.family == "slot-row-choice":
+    if question.identity.family in _ROW_FAMILIES:
         count = _candidate_count(question)
         if count is None:
+            return None
+        shown = packet.get("shown_rows")
+        if question.identity.family == "slot-row-tiebreak" and not (
+            isinstance(shown, list)
+            and shown
+            and all(isinstance(row, int) and not isinstance(row, bool) for row in shown)
+        ):
             return None
         job = CropJob(
             key=question.identity.question_id,
@@ -248,6 +262,11 @@ def _replay(question: StoredQuestion, attempt: StoredAttempt) -> object | None:
             row_question=True,
             candidate_count=count,
             question_packet=packet,
+            shown_rows=(
+                tuple(shown)
+                if question.identity.family == "slot-row-tiebreak" and isinstance(shown, list)
+                else None
+            ),
         )
     else:
         images = packet.get("images")
@@ -503,6 +522,68 @@ def _match(case: KeyCase, index: _Index) -> StoredQuestion | str:
     return question
 
 
+@dataclass(frozen=True, slots=True)
+class _Pair:
+    outcome: str
+    verdicts: dict[str, str]
+    shown: dict[str, str]
+    read: _Read
+
+
+def _pair(
+    case: KeyCase, question: StoredQuestion, readers: Sequence[str], held_outcome: str
+) -> _Pair:
+    """Both readers' answers to one question, judged against the case, and the pair's outcome."""
+    read = _answers(question, readers)
+    answers = read.answers
+    verdicts: dict[str, str] = {}
+    shown: dict[str, str] = {}
+    definite: dict[str, object] = {}
+    for model in readers:
+        if isinstance(case.truth, LabelTruth):
+            state = _label_state(answers[model])
+            verdicts[model] = _label_verdict(state, case.truth)
+            shown[model] = _label_shown(state)
+            if state[0] == "yes":
+                definite[model] = state[1]
+        else:
+            choice = _row_choice(answers[model])
+            verdicts[model] = _row_verdict(choice, case.truth)
+            shown[model] = _row_shown(choice)
+            if choice[0] in _AGREEABLE_ROW_KINDS:
+                definite[model] = choice
+    first, second = readers
+    agreed = first in definite and second in definite and definite[first] == definite[second]
+    if agreed:
+        outcome = AGREED_RIGHT if verdicts[first] == RIGHT else AGREED_WRONG
+    else:
+        outcome = held_outcome
+    return _Pair(outcome, verdicts, shown, read)
+
+
+#: The try-again question family per agent (`eval/pariksha/stored.TRY_FAMILIES`, #1309).
+_TRY_FAMILY: Final[Mapping[str, str]] = {
+    "akshara": "claude-slot-span",
+    "rekha": "slot-row-tiebreak",
+}
+
+
+def _last_try(agent: str, question: StoredQuestion, index: _Index) -> StoredQuestion | None:
+    """The last try the run asked of a held question (#1309), or `None`. The product stops at the
+    first try that settles the item, so the last one asked is the one that decided it."""
+    for attempt in range(MAX_TRIES, 0, -1):
+        found = index.by_identity.get(
+            QuestionIdentity(
+                family=_TRY_FAMILY[agent],
+                page_sha256=question.identity.page_sha256,
+                question_id=try_key(question.identity.question_id, attempt),
+            )
+        )
+        if found is not None:
+            return found
+    return None
+
+
 def _score_pairs(
     agent: str,
     key: AnswerKey,
@@ -511,10 +592,21 @@ def _score_pairs(
     code_version: str,
     scorer_version: str,
     created_at: str | None,
+    with_try_again: bool = False,
 ) -> Scorecard:
     _provenance(code_version)
     if key.agent != agent:
         raise ValueError(f"the key is {key.agent}'s, not {agent}'s")
+    if not with_try_again:
+        # The first round only (#1309): a try's question is never scored as a question of its own.
+        run = replace(
+            run,
+            questions=tuple(
+                question
+                for question in run.questions
+                if not is_try_key(question.identity.question_id)
+            ),
+        )
     _check_run(run)
     readers = _readers(run)
     index = _Index.of(run)
@@ -528,45 +620,41 @@ def _score_pairs(
     older_shape = 0
     unreadable: list[str] = []
     keyed: set[QuestionIdentity] = set()
+    try_outcomes: Counter[str] = Counter()
     for case in key.cases:
         matched = _match(case, index)
         if isinstance(matched, str):
             cases.append(_not_asked(case, matched))
             continue
         keyed.add(matched.identity)
-        read = _answers(matched, readers)
-        answers = read.answers
-        older_shape += read.older_shape
-        unreadable += [str(matched.identity)] * read.unreadable
-        verdicts: dict[str, str] = {}
-        shown: dict[str, str] = {}
-        definite: dict[str, object] = {}
-        for model in readers:
-            if isinstance(case.truth, LabelTruth):
-                state = _label_state(answers[model])
-                verdicts[model] = _label_verdict(state, case.truth)
-                shown[model] = _label_shown(state)
-                if state[0] == "yes":
-                    definite[model] = state[1]
-            else:
-                choice = _row_choice(answers[model])
-                verdicts[model] = _row_verdict(choice, case.truth)
-                shown[model] = _row_shown(choice)
-                if choice[0] in _AGREEABLE_ROW_KINDS:
-                    definite[model] = choice
-        first, second = readers
-        agreed = first in definite and second in definite and definite[first] == definite[second]
-        if agreed:
-            outcome = AGREED_RIGHT if verdicts[first] == RIGHT else AGREED_WRONG
-        else:
-            outcome = held_outcome
+        judged = _pair(case, matched, readers, held_outcome)
+        older_shape += judged.read.older_shape
+        unreadable += [str(matched.identity)] * judged.read.unreadable
+        question_cost = _cost(matched)
+        attempts += len(matched.attempts)
+        reused += sum(1 for attempt in matched.attempts if attempt.reused)
+        note = ""
+        tried = _last_try(agent, matched, index) if with_try_again else None
+        if tried is not None and judged.outcome == held_outcome:
+            # The item was tried again (#1309): it is judged on the last try's pair alone, never on
+            # a mix of rounds; what both rounds cost is counted.
+            keyed.add(tried.identity)
+            after = _pair(case, tried, readers, held_outcome)
+            older_shape += after.read.older_shape
+            unreadable += [str(tried.identity)] * after.read.unreadable
+            question_cost += _cost(tried)
+            attempts += len(tried.attempts)
+            reused += sum(1 for attempt in tried.attempts if attempt.reused)
+            try_outcomes[after.outcome] += 1
+            note = (
+                f"tried again: {tried.identity.question_id} ({judged.outcome} -> {after.outcome})"
+            )
+            judged = after
+        outcome, verdicts, shown = judged.outcome, judged.verdicts, judged.shown
         pair[outcome] += 1
         for model in readers:
             per_reader[model][verdicts[model]] += 1
-        question_cost = _cost(matched)
         cost += question_cost
-        attempts += len(matched.attempts)
-        reused += sum(1 for attempt in matched.attempts if attempt.reused)
         cases.append(
             CaseScore(
                 case_id=case.case_id,
@@ -578,6 +666,7 @@ def _score_pairs(
                     for model in readers
                 ),
                 cost_micros=question_cost,
+                note=note,
             )
         )
     if unreadable:
@@ -620,6 +709,20 @@ def _score_pairs(
         "accepted answers of an older prompt version, read by that version's parser",
     )
     metrics["unreadable_stored_answers"] = _rate("unreadable_stored_answers", 0, readable)
+    if with_try_again:
+        tried_count = sum(try_outcomes.values())
+        metrics["try_again_tried"] = _rate(
+            "try_again_tried", tried_count, asked, "held cases the run tried again (#1309)"
+        )
+        metrics["try_again_helped"] = _rate(
+            "try_again_helped", try_outcomes[AGREED_RIGHT], tried_count, "held -> agreed right"
+        )
+        metrics["try_again_new_wrong"] = _rate(
+            "try_again_new_wrong",
+            try_outcomes[AGREED_WRONG],
+            tried_count,
+            "held -> agreed wrong: a new wrong answer",
+        )
     unkeyed = sum(1 for question in run.questions if question.identity not in keyed)
     metrics["unkeyed_questions"] = _rate(
         "unkeyed_questions",
@@ -643,6 +746,7 @@ def _score_pairs(
             "config_hash": run.config_hash,
             "reader_settings": run.reader_settings or "not found",
             **_code_note(code_version),
+            **({"try_again": "with the last try of each held case"} if with_try_again else {}),
         },
         source={"database": run.database, "extraction_run_id": run.extraction_run_id},
         metrics=metrics,
@@ -658,8 +762,11 @@ def score_akshara(
     code_version: str,
     scorer_version: str = "unknown",
     created_at: str | None = None,
+    with_try_again: bool = False,
 ) -> Scorecard:
-    """The number reader's scorecard: per reader and per pair, and cost per question."""
+    """The number reader's scorecard: per reader and per pair, and cost per question.
+
+    `with_try_again` (#1309) judges each held case on the last try the run asked of it."""
     return _score_pairs(
         "akshara",
         key,
@@ -667,6 +774,7 @@ def score_akshara(
         code_version=code_version,
         scorer_version=scorer_version,
         created_at=created_at,
+        with_try_again=with_try_again,
     )
 
 
@@ -677,8 +785,11 @@ def score_rekha(
     code_version: str,
     scorer_version: str = "unknown",
     created_at: str | None = None,
+    with_try_again: bool = False,
 ) -> Scorecard:
-    """The row choice's scorecard: agreed-right, agreed-wrong and split; per reader."""
+    """The row choice's scorecard: agreed-right, agreed-wrong and split; per reader.
+
+    `with_try_again` (#1309) judges each split case on the last try the run asked of it."""
     return _score_pairs(
         "rekha",
         key,
@@ -686,6 +797,7 @@ def score_rekha(
         code_version=code_version,
         scorer_version=scorer_version,
         created_at=created_at,
+        with_try_again=with_try_again,
     )
 
 

@@ -29,6 +29,11 @@ database holding several runs needs `--run`; the refusal lists them. Vastu also 
 person") and the key's values per status and field. Their compare is `eval/pariksha/depth.py`'s:
 an expected hold counts as right, and a value given where the key holds is agreed-wrong.
 
+`--with-try-again` (#1309, Akshara and Rekha): judge each held or split case on the last try the run
+asked of it (the reading's try-again, `GV_TRY_AGAIN_GATES`). Compare such a scorecard with one made
+without it, of the same run, to see what trying again changed: held -> agreed-right is fixed,
+held -> agreed-wrong is a new wrong answer and rejects.
+
 `--smriti <candidates file>` (from `scripts/smriti_candidates.py export`, #1232) also prints how many
 reviewer decisions concern this agent; printed only, never stored in the scorecard.
 
@@ -183,6 +188,8 @@ def _score_depth(args: argparse.Namespace) -> int:
 
 
 def _score(args: argparse.Namespace) -> int:
+    if args.with_try_again and args.agent not in ("akshara", "rekha"):
+        raise Refused(f"--with-try-again applies to akshara and rekha, not {args.agent}")
     if args.agent in DEPTH_AGENTS:
         return _score_depth(args)
     if args.db is None or args.answers is not None:
@@ -216,7 +223,11 @@ def _score(args: argparse.Namespace) -> int:
                     )
                 else:
                     stored = load_stored_run(
-                        session, agent=args.agent, database=database, extraction_run_id=args.run
+                        session,
+                        agent=args.agent,
+                        database=database,
+                        extraction_run_id=args.run,
+                        with_try_again=args.with_try_again,
                     )
                     scorer = score_akshara if args.agent == "akshara" else score_rekha
                     card = scorer(
@@ -224,6 +235,7 @@ def _score(args: argparse.Namespace) -> int:
                         stored,
                         code_version=args.code_version,
                         scorer_version=_scorer_version(),
+                        with_try_again=args.with_try_again,
                     )
             finally:
                 session.rollback()
@@ -289,6 +301,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--code-version", required=True, help="the commit of the code that made the stored run"
     )
     score.add_argument("--out", type=Path, required=True, help="the new scorecard file")
+    score.add_argument(
+        "--with-try-again",
+        action="store_true",
+        help="akshara, rekha: judge each held case on the last try the run asked of it (#1309)",
+    )
     score.add_argument(
         "--smriti",
         type=Path,
