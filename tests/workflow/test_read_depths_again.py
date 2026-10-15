@@ -42,6 +42,7 @@ from tests.evidence.test_bridge import _upgrade
 from tests.extraction.slot_reader.test_bedrock import PNG
 from tests.workflow.test_depth_evidence import _Set
 from tests.workflow.test_depth_reader import _match_stage_run
+from workflow.ai_budget import AiBudget
 from workflow.depth_again import (
     AGAIN_MARK,
     BUDGET_USED_UP,
@@ -53,6 +54,8 @@ from workflow.depth_again import (
     SWITCHED_OFF,
     UNPRICED,
     DepthsAgainRefused,
+    SpendLimits,
+    budget_left_usd,
     estimate,
     last_request,
 )
@@ -428,14 +431,9 @@ def _spent(session: Session, run: ExtractionRun, micros: int | None) -> None:
     session.flush()
 
 
-def test_a_used_up_budget_is_refused_before_anything_is_asked(
-    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    sheet = _read_set(session, store)
-    # No depth reading yet, so every question would be new; and everything the set may spend is
-    # spent already.
-    run = sheet.run
-    workflow_run = session.get_one(TaskRun, run.task_run_id).workflow_run_id
+def _spent_reading_the_set(session: Session, sheet: _Set, micros: int) -> None:
+    """The set's own reading (not a depth reading) spent `micros`."""
+    workflow_run = session.get_one(TaskRun, sheet.run.task_run_id).workflow_run_id
     ledger = TaskRun(
         workflow_run_id=workflow_run,
         idempotency_key=f"synthetic-{uuid4()}",
@@ -449,9 +447,19 @@ def test_a_used_up_budget_is_refused_before_anything_is_asked(
         task_run_id=ledger.id, extractor="synthetic", extractor_version="synthetic", config_hash="x"
     )
     session.add(slot_run)
-    session.delete(run)
     session.flush()
-    _spent(session, slot_run, 50_000_000)
+    _spent(session, slot_run, micros)
+
+
+def test_a_used_up_budget_is_refused_before_anything_is_asked(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _read_set(session, store)
+    # No depth reading yet, so every question would be new; and everything the set may spend is
+    # spent already.
+    _spent_reading_the_set(session, sheet, 50_000_000)
+    session.delete(sheet.run)
+    session.flush()
     ran = _view_kind_reading(monkeypatch, sheet, views=2)
     clients = _Answering()
 
@@ -460,6 +468,35 @@ def test_a_used_up_budget_is_refused_before_anything_is_asked(
 
     assert refused.value.plain_reason == BUDGET_USED_UP
     assert ran == [] and clients.calls == 0 and _again_runs(session, sheet) == []
+
+
+def test_a_used_up_budget_still_reads_when_every_answer_is_stored_and_pays_nothing(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1317: the up-front refusal is only for a question with no stored answer. A set whose budget
+    is used up may still read its depths again when every question has a stored answer: it costs
+    nothing, so refusing it would only take the reading away."""
+    sheet = _read_set(session, store)
+    ran = _view_kind_reading(monkeypatch, sheet, views=2)
+    paying = _Answering()
+    _stages(store, paying).read_depths_again(session, sheet.revision.id, str(uuid4()))
+    assert paying.calls == 4
+    # Then everything the set may spend is spent, and every question has a stored answer.
+    _spent_reading_the_set(session, sheet, 50_000_000)
+    left = budget_left_usd(
+        session, sheet.revision.id, SpendLimits(AiBudget(), fixed_usd=None, claude_ceiling_usd=None)
+    )
+    assert left == 0
+    shown = estimate(session, sheet.revision.id)
+    assert (shown.questions_high, shown.stored_answers) == (4, 4)
+    paid_before = _paid_calls(session)
+
+    free = _MustNotBeCalled()
+    result = _stages(store, free).read_depths_again(session, sheet.revision.id, str(uuid4()))
+
+    assert result["ran"] is True and ran == [1, 1]
+    assert free.calls == 0 and _paid_calls(session) == paid_before
+    assert len(_again_runs(session, sheet)) == 2
 
 
 def test_an_unpriced_call_is_refused_before_anything_is_asked(
