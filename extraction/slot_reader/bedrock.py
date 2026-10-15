@@ -174,8 +174,8 @@ ROW_TIEBREAK_PROMPT_ID: Final = "slot-row-tiebreak-v1"
 is switched on: the first row question split, or Rekha's gate stopped the line both chose. The
 picture shows only some of the numbered boxes, each keeping its number and colour from the first
 picture (a close-up of the part of the sheet around them, or each box in a panel of its own). The
-answer fields, examples and shape are `slot-row-choice-v4`'s, word for word; a box that was not
-shown counts as unsure (`read_row_choice`)."""
+task, rules, answer fields, examples and shape are `slot-row-choice-v5`'s, word for word; a box that
+was not shown counts as unsure (`read_row_choice`)."""
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v5"
 """v5 (#1213): the wording the demo-test measured (2026-10-13), asked with new pictures
 (`workflow/slot_reader.py`): Picture 1 is the drawing around the row with the span boxed, and
@@ -320,10 +320,11 @@ ROW_PROMPT: Final = (
 )
 
 
-#: The try-again row question (`ROW_TIEBREAK_PROMPT_ID`): its own fixed wording of what the piece row
-#: is (the line whose outer ticks are the stone top's two ends), then the row question's answer
-#: fields, examples and shape word for word (`ROW_PROMPT` from "Answer fields:"), so its answers
-#: parse as the row question's do. It never says the stone's own chain is not the row.
+#: The try-again row question (`ROW_TIEBREAK_PROMPT_ID`): its own opening (a second, closer look at
+#: only some of the numbered boxes, keeping their numbers), then the row question's task, rules,
+#: answer fields, examples and shape word for word (`ROW_PROMPT` from "Task:", `slot-row-choice-v5`).
+#: Pinned by its SHA-256 (`tests/extraction/slot_reader/test_try_again.py`): a change to the row
+#: question changes this text too, and then needs a new id.
 ROW_TIEBREAK_PROMPT: Final = (
     "This is part of a vendor's cabinet shop drawing sheet. The vendor drew it in black ink. A "
     "reviewer may have marked it up: red or blue text, yellow boxes, clouds and small green or "
@@ -332,15 +333,8 @@ ROW_TIEBREAK_PROMPT: Final = (
     "are shown, either as a close-up of the part of the sheet around them or each box in a panel "
     "of its own cut from the sheet around it. Each box keeps its number and colour from the whole "
     "sheet, so the numbers shown may skip some. Each box's number is in the filled square of the "
-    "same colour just left of it. Answer only with the number of a box you can see.\n"
-    "Task: which numbered box marks the COUNTERTOP PIECE ROW - the horizontal chain of piece widths "
-    "(fillers, cabinets, appliance spaces) on the vendor's FRONT VIEW / ELEVATION that measures the "
-    "pieces under the stone countertop? Its two outer ticks are the two ends of the stone top, and "
-    "its inner ticks line up with the pieces under the stone. It may be drawn anywhere on the front "
-    "view. It is NOT a wall-to-wall or room dimension, NOT a row inside a plan (top) view or a "
-    "section view, and NOT the architect's small drawing. A box around a line that carries no "
-    "printed numbers - for example the outline of the stone top itself - or around a row of "
-    "material tags is never the piece row.\n" + ROW_PROMPT[ROW_PROMPT.index("Answer fields:") :]
+    "same colour just left of it. Answer only with the number of a box you can see. "
+    + ROW_PROMPT[ROW_PROMPT.index("Task:") :]
 )
 
 

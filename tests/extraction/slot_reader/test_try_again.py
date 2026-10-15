@@ -271,3 +271,23 @@ def test_a_stored_tie_break_answer_is_read_by_the_same_code() -> None:
     assert replayed is not None
     answer, attempt = replayed
     assert (answer.row, answer.kind, attempt.prompt_id) == (0, "unsure", ROW_TIEBREAK_PROMPT_ID)
+
+
+#: The tie-break question's exact wording, pinned: a change to it (or to the row question it
+#: shares its rules with) needs a new prompt id, so a stored answer is never reused for another text.
+TIE_BREAK_SHA256 = "7f3a557bf87ac98410fa02333f34ed6781a4fb20ab427afff99be1f9f7fe9fb1"
+
+
+def test_the_tie_break_wording_is_pinned_and_shares_the_v5_row_rules() -> None:
+    import hashlib
+
+    from extraction.slot_reader.bedrock import ROW_PROMPT
+
+    assert (
+        ROW_PROMPT_ID == "slot-row-choice-v5" and ROW_TIEBREAK_PROMPT_ID == "slot-row-tiebreak-v1"
+    )
+    assert hashlib.sha256(ROW_TIEBREAK_PROMPT.encode()).hexdigest() == TIE_BREAK_SHA256
+    assert ROW_TIEBREAK_PROMPT.endswith(ROW_PROMPT[ROW_PROMPT.index("Task:") :])
+    assert "its two outer ticks are the stone top's two ends" in ROW_TIEBREAK_PROMPT
+    # v4's sentence, which ended at "under it.", is never asked again.
+    assert "fillers under it. A box around" not in ROW_TIEBREAK_PROMPT
