@@ -1128,6 +1128,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Both drawings' pages and their pictures, for the side-by-side viewer
+         * @description Every document of the latest revision, vendor first, with each page's picture readiness.
+         */
+        get: operations["review_pages_api_v1_projects__project_id__packages__package_id__pages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/pages/pictures": {
         parameters: {
             query?: never;
@@ -2704,6 +2724,26 @@ export interface components {
             supersedes_id: string | null;
         };
         /**
+         * ArchitectRegionOut
+         * @description One architect's drawing on a page: where the viewer zooms the architect side to.
+         */
+        ArchitectRegionOut: {
+            bbox: components["schemas"]["BoundsOut"];
+            /** Heading */
+            heading: string | null;
+            /** Polygon */
+            polygon: string[][];
+            /** Role Confirmed */
+            role_confirmed: boolean;
+            /** Tag */
+            tag: string;
+            /**
+             * View Id
+             * Format: uuid
+             */
+            view_id: string;
+        };
+        /**
          * ArchitectResultOut
          * @description The vendor-vs-architect check (CT-ARCH-WIDTH-001) for one countertop row (#1054).
          *
@@ -3057,6 +3097,20 @@ export interface components {
              * @description Paths painted only in white, which leave no mark.
              */
             white_paint: number;
+        };
+        /**
+         * BoundsOut
+         * @description The smallest box around a region, in stored space (exact decimal text).
+         */
+        BoundsOut: {
+            /** X0 */
+            x0: string;
+            /** X1 */
+            x1: string;
+            /** Y0 */
+            y0: string;
+            /** Y1 */
+            y1: string;
         };
         /**
          * CabinetInput
@@ -5414,6 +5468,19 @@ export interface components {
              */
             page_number: number;
         };
+        /** PagePictureOut */
+        PagePictureOut: {
+            /** Dpi */
+            dpi: number;
+            /** Height Px */
+            height_px: number;
+            /** Media Type */
+            media_type: string;
+            /** Url */
+            url: string;
+            /** Width Px */
+            width_px: number;
+        };
         /** PagePicturesQueuedOut */
         PagePicturesQueuedOut: {
             /** Queued */
@@ -6453,6 +6520,32 @@ export interface components {
             /** Items */
             items: components["schemas"]["ReviewActionOut"][];
         };
+        /** ReviewDocumentOut */
+        ReviewDocumentOut: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Document Version Id
+             * Format: uuid
+             */
+            document_version_id: string;
+            /** File Name */
+            file_name: string | null;
+            /** Kind */
+            kind: string;
+            /** Page Count */
+            page_count: number;
+            /** Pages */
+            pages: components["schemas"]["ReviewPageOut"][];
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "vendor" | "architect" | "other";
+        };
         /**
          * ReviewExceptionOut
          * @description A granted exception, with the terms a later reader needs.
@@ -6488,6 +6581,42 @@ export interface components {
              * Format: uuid
              */
             scope_id: string;
+        };
+        /** ReviewPageOut */
+        ReviewPageOut: {
+            /** Architect Regions */
+            architect_regions: components["schemas"]["ArchitectRegionOut"][];
+            /**
+             * Page Id
+             * Format: uuid
+             */
+            page_id: string;
+            /** Page Number */
+            page_number: number;
+            picture: components["schemas"]["PagePictureOut"] | null;
+            /**
+             * Picture Status
+             * @enum {string}
+             */
+            picture_status: "ready" | "not_ready" | "render_failed";
+            /** Sheet Number */
+            sheet_number: string | null;
+        };
+        /** ReviewPagesOut */
+        ReviewPagesOut: {
+            /** Combined Set */
+            combined_set: boolean;
+            /** Documents */
+            documents: components["schemas"]["ReviewDocumentOut"][];
+            /**
+             * Package Revision Id
+             * Format: uuid
+             */
+            package_revision_id: string;
+            /** Pages Without Pictures */
+            pages_without_pictures: number;
+            /** Revision Number */
+            revision_number: number;
         };
         /**
          * ReviewSessionOut
@@ -9659,6 +9788,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CountertopResultsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_pages_api_v1_projects__project_id__packages__package_id__pages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewPagesOut"];
                 };
             };
             /** @description Validation Error */
