@@ -32,6 +32,7 @@ from units.measurement import Measurement
 from verdict.operands import VerdictOperand
 from vocabulary.part_kinds import PartKind
 from workflow.countertop_runs import current_run_decision, live_run_rows
+from workflow.depth_evidence import DEPTH_RULE_IDS, depth_operands
 from workflow.parts import (
     CODE_ACTOR_PREFIX,
     live_part,
@@ -237,6 +238,39 @@ _INPUTS = {
 
 
 def part_operands(
+    session: Session,
+    revision_id: UUID,
+    rules: Sequence[Rule],
+    observations: Mapping[UUID, tuple[DomainObservation, tuple[str, UUID]]],
+    *,
+    scope_item_id: UUID | None = None,
+) -> PartOperands:
+    """The run-owned widths (`_run_operands`) and, for one countertop, its depth and sink values.
+
+    **The depth and sink checks (#1290)** are filled only for one countertop (`scope_item_id`), from
+    the depth reader's readings tied to it (`workflow/depth_evidence.py`), and every one of their
+    inputs is owned: no form value, no unscoped reading, and no other countertop's reading can fill
+    them. The check stage scopes them to a countertop only when `GV_DEPTH_READER` is on.
+    """
+    result = _run_operands(session, revision_id, rules, observations, scope_item_id=scope_item_id)
+    if scope_item_id is None:
+        return result
+    for rule in rules:
+        if rule.id not in DEPTH_RULE_IDS:
+            continue
+        found = depth_operands(session, revision_id, rule, scope_item_id)
+        result.owned[rule.id] = frozenset((rule.inputs or {}).keys())
+        if found.operands:
+            result.operands[rule.id] = dict(found.operands)
+        if found.ambiguous:
+            result.ambiguous[rule.id] = dict(found.ambiguous)
+        if found.missing is not None:
+            result.missing[rule.id] = found.missing
+        result.notes[rule.id] = found.notes
+    return result
+
+
+def _run_operands(
     session: Session,
     revision_id: UUID,
     rules: Sequence[Rule],

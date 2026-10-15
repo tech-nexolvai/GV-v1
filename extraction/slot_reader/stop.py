@@ -38,7 +38,12 @@ OWN_READING: Final = frozenset({"row", "dimension"})
 
 def question_kind(job: object) -> str:
     """What a reader question (`CropJob`) asks, in words: `row`, `dimension`, `walls`,
-    `stone ends`, `equal-share chain`, `architect pairing` or `architect match`."""
+    `stone ends`, `equal-share chain`, `architect pairing`, `architect match` or `depth`.
+
+    A depth reader question (#1290) is `depth`, never `dimension`: it is not a page's own reading,
+    so a depth question refused or not sent never lists the page as unread."""
+    if getattr(job, "depth", None) is not None:
+        return "depth"
     if getattr(job, "row_question", False):
         return "row"
     if getattr(job, "wall_question", False):

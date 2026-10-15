@@ -177,6 +177,7 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         "bala_auto_items": False,
         # "Cabinet" pre-filled from one printed tag (#1266): off unless GV_BALA_CABINET_PREFILL.
         "bala_cabinet_prefill": False,
+        "depth_reader": False,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -212,6 +213,7 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "part_finder": None,
         "bala_auto_items": False,
         "bala_cabinet_prefill": False,
+        "depth_reader": False,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }
@@ -549,6 +551,35 @@ def test_the_cabinet_prefill_is_switched_on_only_by_its_setting(
 
     ((_args, kwargs),) = recorder.calls
     assert kwargs["bala_cabinet_prefill"] is expected
+
+
+@pytest.mark.parametrize(("stated", "expected"), [("true", True), ("on", True), ("0", False)])
+def test_the_depth_reader_is_switched_on_only_by_its_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stated: str, expected: bool
+) -> None:
+    """#1290: the depth and sink reader is off by default (the golden arguments above) and on only
+    with `GV_DEPTH_READER`."""
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, {**MINIMAL_ENVIRONMENT, "GV_DEPTH_READER": stated})
+    recorder = _record_stages(monkeypatch)
+
+    worker._stages()
+
+    ((_args, kwargs),) = recorder.calls
+    assert kwargs["depth_reader"] is expected
+
+
+def test_the_depth_reader_refuses_a_word_it_does_not_know(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, {**MINIMAL_ENVIRONMENT, "GV_DEPTH_READER": "maybe"})
+    _record_stages(monkeypatch)
+
+    with pytest.raises(ValueError, match="GV_DEPTH_READER"):
+        worker._stages()
 
 
 def test_the_part_finder_refuses_a_partial_configuration(

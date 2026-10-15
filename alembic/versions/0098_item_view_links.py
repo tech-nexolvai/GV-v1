@@ -92,9 +92,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_item_view_links_part_proposal_id", "item_view_links", ["part_proposal_id"]
-    )
+    op.create_index("ix_item_view_links_part_proposal_id", "item_view_links", ["part_proposal_id"])
     op.create_index(
         "ix_item_view_links_extraction_run_id", "item_view_links", ["extraction_run_id"]
     )
