@@ -408,7 +408,9 @@ describe('SimpleReviewPage (#1343)', () => {
     const user = userEvent.setup();
     await user.keyboard('j');
     await user.keyboard('o');
-    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' });
+    // The viewer is a lazy chunk (pdf.js), loaded cold here: on CI that first import alone has run
+    // 0.9-1.1 s, past Testing Library's 1 s default, so the wait is the chunk's, not the page's.
+    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' }, { timeout: 5000 });
     expect(dialog.textContent).toContain('Opened at Overall countertop width');
     await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('3 / 5'));
     expect(within(screen.getByRole('region', { name: /Architect/ })).getByTestId('page-counter').textContent).toBe('12 / 14');

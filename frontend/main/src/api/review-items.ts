@@ -18,6 +18,8 @@ export type ReviewItemsHeader = Schemas['ReviewHeaderOut'];
 export type ReviewItem = Schemas['ReviewItemOut'];
 export type ReviewFailure = Schemas['FailureOut'];
 export type NotCheckedItem = Schemas['NotCheckedOut'];
+/** A Company settings field a not-checked check waits for (#1373). */
+export type NotCheckedSetting = Schemas['NotCheckedSettingOut'];
 export type UnaccountedRecord = Schemas['UnaccountedOut'];
 export type BestGuess = Schemas['BestGuessOut'];
 export type ReaderText = Schemas['ReaderTextOut'];
