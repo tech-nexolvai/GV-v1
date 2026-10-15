@@ -1,16 +1,27 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 
-import type { ReviewFailure } from '@/api/review-items';
 import { whereWord } from '@/lib/review-items';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { liveRecordedNumbers, type RecordedNumbers, type RecordedNumbersLoader } from './recorded-numbers-lib';
+import { liveRecordedNumbers, type RecordedNumbers, type RecordedNumbersLoader, type RecordedSubject } from './recorded-numbers-lib';
 import { NumText } from './words';
 
 type LoadState = { status: 'loading' } | { status: 'error'; error: Error } | { status: 'ready'; numbers: RecordedNumbers };
 
-/** Beside the drawings when opened from a wrong row: what the check recorded, and why it is wrong. */
+/**
+ * What the panel is opened for: a wrong row (#1388), or a countertop item to check by hand (#1399).
+ * `tone` colours its reason: a wrong result's in the fail colour, a question's in the plain one.
+ */
+export interface RecordedPanelSubject extends RecordedSubject {
+  why: string;
+  page?: number | null;
+  countertop?: { label: string } | null;
+  row_label?: string | null;
+  tone: 'fail' | 'review';
+}
+
+/** Beside the drawings when opened from a countertop: what the check recorded, and why it is listed. */
 export function RecordedNumbersPanel({
   projectId,
   packageId,
@@ -19,7 +30,7 @@ export function RecordedNumbersPanel({
 }: {
   projectId: string;
   packageId: string;
-  failure: ReviewFailure;
+  failure: RecordedPanelSubject;
   load?: RecordedNumbersLoader;
 }) {
   const [state, setState] = useState<{ key: string; attempt: number; state: LoadState } | null>(null);
@@ -51,7 +62,7 @@ export function RecordedNumbersPanel({
           {failure.page != null && <>, <span className="num">p.{failure.page}</span></>}
         </p>
       </div>
-      <NumText text={failure.why} className="text-[13px] leading-5 text-outcome-fail-fg" />
+      <NumText text={failure.why} className={failure.tone === 'fail' ? 'text-[13px] leading-5 text-outcome-fail-fg' : 'text-[13px] leading-5 text-foreground'} />
       {shown.status === 'loading' && (
         <div role="status" className="flex flex-col gap-2">
           <Skeleton className="h-4 w-full" />
@@ -75,12 +86,17 @@ export function RecordedNumbersPanel({
           {shown.numbers.lines.map((line, index) => (
             <li key={index} className="flex items-baseline justify-between gap-3 py-1.5">
               <span className="text-muted-foreground">{line.label}</span>
-              {line.value === null ? <span className="text-muted-foreground italic">not read</span> : <span className="num font-medium text-foreground">{line.value}</span>}
+              {line.value === null ? <span className="text-right text-muted-foreground italic">{line.missing ?? 'not read'}</span> : <span className="num text-right font-medium text-foreground">{line.value}</span>}
             </li>
           ))}
         </ul>
       )}
       {shown.status === 'ready' && shown.numbers.comparison && <p className="num text-[12px] leading-4 text-muted-foreground">{shown.numbers.comparison}</p>}
+      {shown.status === 'ready' && shown.numbers.note && (
+        <p data-testid="recorded-note" className="text-[12px] leading-4 text-muted-foreground">
+          {shown.numbers.note}
+        </p>
+      )}
     </section>
   );
 }

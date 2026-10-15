@@ -650,9 +650,12 @@ describe('SimpleReviewPage: Look on a wrong row (#1388)', () => {
                 { index: 1, kind: 'filler', source: 'sealed', value: exact('3/4"') },
                 { index: 2, kind: 'cabinet', source: 'typed', value: null },
               ],
+              // Deliberately not 24 + 3/4: the panel shows the recorded total, never its own sum.
+              pieces_add_up_to: exact('30"'),
               field_cut_per_end: exact('1/2"'),
               field_cut_count: 2,
               expected_total: exact('47 7/8"'),
+              delta: exact('5/8"'),
               wall_cases: { cases: [] },
             },
           ],
@@ -686,16 +689,17 @@ describe('SimpleReviewPage: Look on a wrong row (#1388)', () => {
     await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('10 / 12'));
 
     const numbers = await within(dialog).findByRole('region', { name: 'What the check recorded' });
-    await within(numbers).findByText('48 1/2"');
+    await within(numbers).findByText('48 1/2" (overall)');
     const lines = within(numbers).getAllByRole('listitem').map((line) => line.textContent);
     expect(lines).toEqual([
-      'The vendor wrote48 1/2"',
-      'Piece 1, cabinet24"',
-      'Piece 2, filler3/4"',
-      'Piece 3, cabinetnot read',
+      'The vendor wrote48 1/2" (overall)',
+      'Pieces24" + 3/4" + not read = 30"',
+      'Pieces arecabinet, filler, cabinet',
       'Field cut1/2" at each of 2 ends',
       'Needed overall47 7/8"',
+      'Difference5/8"',
     ]);
+    expect(within(numbers).queryByTestId('recorded-note')).toBeNull();
     expect(numbers.textContent).toContain('The countertop is 1/2" longer than the cabinets under it add up to.');
     // Nothing was posted: looking is not answering.
     expect(posted).toEqual([]);
@@ -743,6 +747,63 @@ describe('SimpleReviewPage: Look on a wrong row (#1388)', () => {
     const lines = within(numbers).getAllByRole('listitem').map((line) => line.textContent);
     expect(lines).toEqual(['countertop width70"', 'piece widths[0]36"']);
     expect(numbers.textContent).toContain('70" is not 72"');
+  });
+
+  it('O on a check-by-hand countertop opens both drawings with what its check recorded beside them (#1399)', async () => {
+    pagesListed();
+    server.use(
+      http.get(`${API}/countertop-results`, () =>
+        HttpResponse.json({
+          package_id: 'pkg-demo',
+          items: [
+            {
+              finding_id: 'find-5',
+              row_id: 'row-5',
+              page_number: 5,
+              label: 'Island',
+              printed_overall: exact('60"'),
+              // Given on the drawing only as "N equal": no piece was read one by one.
+              pieces: [
+                { index: 0, kind: null, source: 'missing', value: null },
+                { index: 1, kind: null, source: 'missing', value: null },
+              ],
+              pieces_add_up_to: null,
+              field_cut_per_end: null,
+              field_cut_count: null,
+              expected_total: null,
+              delta: null,
+              hold: null,
+              wall_cases: { cases: [] },
+            },
+          ],
+        }),
+      ),
+    );
+    renderWithViewer();
+    await screen.findByTestId('ai-read-line');
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Check this countertop by hand'));
+    await user.keyboard('o');
+    const dialog = await viewerDialog();
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('5 / 12'));
+    const numbers = await within(dialog).findByRole('region', { name: 'What the check recorded' });
+    await within(numbers).findByText('60" (overall)');
+    const lines = within(numbers).getAllByRole('listitem').map((line) => line.textContent);
+    expect(lines).toEqual(['The vendor wrote60" (overall)', 'Piecesnot read one by one']);
+    expect(within(numbers).getByTestId('recorded-note').textContent).toBe('The check recorded no total for the pieces.');
+    expect(posted).toEqual([]);
+  });
+
+  it('O on a plain number item opens both drawings with nothing beside them', async () => {
+    pagesListed();
+    renderWithViewer();
+    await screen.findByTestId('ai-read-line');
+    const user = userEvent.setup();
+    await user.keyboard('j');
+    await user.keyboard('o');
+    const dialog = await viewerDialog();
+    expect(dialog.textContent).toContain('Opened at Overall countertop width');
+    expect(within(dialog).queryByRole('region', { name: 'What the check recorded' })).toBeNull();
   });
 
   it('O on a selected wrong row hands it to an Open PDFs hook at its page', async () => {

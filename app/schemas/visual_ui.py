@@ -368,6 +368,13 @@ class CountertopResultOut(BaseModel):
     field_cut_per_end: ExactValueOut | None
     field_cut_count: int | None
     expected_total: ExactValueOut | None
+    pieces_add_up_to: ExactValueOut | None = Field(
+        default=None,
+        description=(
+            "What the row's pieces add up to, as the check recorded it (its row-total step, "
+            "#1399). Null when the check recorded none; never added up by the server or screen."
+        ),
+    )
     delta: ExactValueOut | None
     wall_layout: WallLayoutOut
     agreement: AgreementFactsOut

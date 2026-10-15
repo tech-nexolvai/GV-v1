@@ -117,6 +117,8 @@ def test_each_wall_choice_shows_its_needed_overall_and_result_with_nothing_chose
 
     result = _result(session, package_id, anchors[0])
     assert [case.layout for case in result.wall_cases.cases] == list(cases)
+    # #1399: the row's own sum is the one every wall case recorded.
+    assert result.pieces_add_up_to is not None and result.pieces_add_up_to.display == '41"'
     assert result.wall_layout.line is None, "the walls are still open"
     assert result.field_cut_per_end is not None and result.field_cut_per_end.display == '1"'
     assert result.field_cut_in_force == '1"'

@@ -22,7 +22,7 @@ import { PicturesProvider, type PictureLoader } from '@/components/simple-review
 import { PagesChoice } from '@/components/simple-review/pages-choice';
 import { ArchitectProvider } from '@/components/simple-review/architect-choices';
 import { liveArchitectLoader, type ArchitectLoader } from '@/components/simple-review/architect-choices-lib';
-import { RecordedNumbersPanel } from '@/components/simple-review/recorded-numbers';
+import { RecordedNumbersPanel, type RecordedPanelSubject } from '@/components/simple-review/recorded-numbers';
 import { liveRecordedNumbers, type RecordedNumbersLoader } from '@/components/simple-review/recorded-numbers-lib';
 import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
 
@@ -92,6 +92,15 @@ function useLivePictures(project: string | null, packageId: string): PictureLoad
 }
 
 /** A failed save in words. 501 is W3's "not built yet"; 404 and 409 keep their own meaning. */
+/** The item kinds about one countertop's width check: their recorded numbers sit beside the drawings (#1399). */
+const COUNTERTOP_KINDS: ReadonlySet<ReviewItem['kind']> = new Set(['countertop_by_hand', 'wall_choice']);
+
+/** A countertop item, as the "What the check recorded" panel's subject; null for any other item. */
+function countertopSubject(item: ReviewItem | null): RecordedPanelSubject | null {
+  if (!item || !COUNTERTOP_KINDS.has(item.kind) || (!item.finding_id && !item.row_id)) return null;
+  return { key: item.key, finding_id: item.finding_id, row_id: item.row_id, why: item.why, page: item.page, countertop: item.countertop, row_label: item.row_label, tone: 'review' };
+}
+
 function errorWords(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 501) return `This answer cannot be saved yet: ${error.message}`;
@@ -193,8 +202,9 @@ export function SimpleReviewPage({
   const proposals = useRef(new Map<string, { findingId: string | null; extra: ActionExtra | null }>());
   // Bumped to read the open architect question again (after a stale answer, #1368).
   const [architectAsk, setArchitectAsk] = useState(0);
-  // Opened from a wrong row (#1388), `failure` is that row: its recorded numbers sit beside the drawings.
-  const [viewer, setViewer] = useState<{ opening: number; item: ViewerItem | null; failure: ReviewFailure | null } | null>(null);
+  // Opened from a wrong row (#1388) or a countertop item (#1399), `recorded` is what it is about: the
+  // numbers its check recorded sit beside the drawings.
+  const [viewer, setViewer] = useState<{ opening: number; item: ViewerItem | null; recorded: RecordedPanelSubject | null } | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -416,7 +426,7 @@ export function SimpleReviewPage({
 
   const openPdfs = useCallback((item: ReviewItem | null) => {
     if (onOpenPdfs) onOpenPdfs(item);
-    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item, failure: null }));
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item, recorded: countertopSubject(item) }));
   }, [onOpenPdfs]);
 
   // A wrong row's Look (or O once it is selected, #1388): both drawings at its page and spot.
@@ -424,7 +434,7 @@ export function SimpleReviewPage({
     setActiveKey(failure.key);
     const at: ViewerItem = { key: failure.key, page: failure.page ?? null, what: whereWord(failure), status: failure.status, vendor_ref: failure.vendor_ref ?? null, architect_ref: null };
     if (onOpenPdfs) onOpenPdfs(at);
-    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, failure }));
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, recorded: { ...failure, tone: 'fail' } }));
   }
 
   async function runDraft() {
@@ -766,7 +776,7 @@ export function SimpleReviewPage({
             projectId={project}
             packageId={packageId}
             item={viewer.item}
-            aside={viewer.failure ? <RecordedNumbersPanel projectId={project} packageId={packageId} failure={viewer.failure} load={recorded} /> : null}
+            aside={viewer.recorded ? <RecordedNumbersPanel projectId={project} packageId={packageId} failure={viewer.recorded} load={recorded} /> : null}
             onClose={() => setViewer(null)}
           />
         </Suspense>

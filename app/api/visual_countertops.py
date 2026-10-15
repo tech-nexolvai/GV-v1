@@ -175,6 +175,23 @@ def _intermediate(trace: dict[str, Any], name: str) -> Fraction | None:
     return None
 
 
+def _recorded_row_width(finding: Finding | None) -> Fraction | None:
+    """What the row's pieces add up to, as the check recorded it (its `row_width` step, #1399).
+
+    Read back from the stored trace only: the single-layout step, else the one every wall case
+    shares. `None` when the check recorded none (no result, or one that held); never added up here.
+    """
+    if finding is None:
+        return None
+    trace = finding.trace or {}
+    recorded = _intermediate(trace, "row_width")
+    if recorded is not None:
+        return recorded
+    return next(
+        (case.row_width for case in stored_wall_cases(trace) if case.row_width is not None), None
+    )
+
+
 def _scale_inputs(trace: dict[str, Any]) -> tuple[Fraction | None, int | None]:
     """Read the stored field-cut operands from the serialized scale-operation trace.
 
@@ -1137,6 +1154,7 @@ def _countertop_results_for_revision(
                 field_cut_per_end=_exact(field_per_end),
                 field_cut_count=field_count,
                 expected_total=_exact(expected),
+                pieces_add_up_to=_exact(_recorded_row_width(finding)),
                 delta=_exact(delta),
                 wall_layout=_wall(row, wall_origins, finding),
                 wall_cases=(
