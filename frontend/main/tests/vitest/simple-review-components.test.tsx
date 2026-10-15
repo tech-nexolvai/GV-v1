@@ -568,6 +568,18 @@ describe('pages to decide are never in the one-click proposal (#1394)', () => {
     expect(onThereIsOne).toHaveBeenCalledWith(toDecide[0]);
   });
 
+  it('renders when no page is proposed at all: every page is "Decide this page" (live set 1 crash)', () => {
+    const pages = reviewItems((draft) => {
+      const page = draft.items.find((entry) => entry.key === 'page:rec-9')!;
+      page.proposed_no_countertop = false;
+    }).items;
+    const toDecide = openPagesToDecide(pages);
+    expect(openNoCountertopPages(pages)).toEqual([]);
+    render(<PagesChoice pages={[]} toDecide={toDecide} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={vi.fn()} onThereIsOne={vi.fn()} onNoCountertop={vi.fn()} onLook={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /have no countertop|has no countertop/ })).toBeNull();
+    expect(document.querySelector('[data-slot="pages-to-decide"]')!.textContent).toContain('Decide this page');
+  });
+
   it('a page with no proposal flag is never proposed', () => {
     const pages = reviewItems((draft) => {
       delete (draft.items.find((entry) => entry.key === 'page:rec-9') as { proposed_no_countertop?: boolean }).proposed_no_countertop;
