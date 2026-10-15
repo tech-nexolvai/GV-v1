@@ -38,7 +38,9 @@ holds with a plain reason, and a hold never moves toward PASS.
      scale, taken from a different dimension (the view's horizontal overall), or the links of the
      chain it is the overall of sum to it exactly. With neither, it holds: no code check
      confirmed the number. Any check that disagrees holds, as does a chain whose parts do not sum to
-     its overall;
+     its overall. A number confirmed by its drawn length alone also holds where GV's ink (a tick
+     too) is anywhere in the close-up the readers saw, not only on the label (#1348): the drawn
+     length cannot tell the vendor's number from a GV correction within 1/8" written beside it;
    * a depth whose two-reader readings on two views of one panel disagree holds on both;
    * a label the fraction-bar detector (#735) finds stacked holds.
 
@@ -146,7 +148,7 @@ from extraction.form_reader.bedrock import (
 from extraction.geometry.dimension_lines import Axis
 from extraction.geometry.rows import Box, PageInk
 from extraction.glyph_bands import FractionBarGeometry, stacked_fractions
-from extraction.ink import InkAt
+from extraction.ink import InkAt, InkClass
 from extraction.slot_reader.claude_output import (
     DEFAULT_CLAUDE_EFFORT,
     OUTPUT_CONFIG_KEY,
@@ -524,7 +526,12 @@ def prepare_panel(
         default=0,
     )
     paint = paint_panel_headings(
-        prepared, panel_chars, pixels, pad, settings.spans.witness_tolerance_pt
+        prepared,
+        panel_chars,
+        pixels,
+        pad,
+        settings.spans.witness_tolerance_pt,
+        view_pad=settings.view_pad_pt,
     )
     notes.extend(f"panel {panel}: {note}" for note in paint.notes)
     views: list[PreparedView] = []
@@ -563,7 +570,8 @@ class _NeededInk:
     pixels: PixelBox
     what: str
     views: tuple[int, ...]
-    """The views it belongs to (a character: every view whose extent holds its middle)."""
+    """The views it belongs to: a dimension's own view, and every view whose picture (its extent
+    grown by the picture's pad) it touches (#1349)."""
     text: str = ""
     """A character's text; empty for a dimension."""
 
@@ -595,6 +603,7 @@ def _needed_ink(
     chars: Sequence[TextChar],
     pixels: PixelsOf,
     end_reach: Decimal,
+    view_pad: Decimal,
 ) -> list[_NeededInk]:
     """Ink the readers may need, each grown by a pixel (its edge is drawn into the next one):
 
@@ -606,8 +615,16 @@ def _needed_ink(
 
     A dimension's line between its ends is not needed: the pictures that ask about a dimension
     draw it over the drawing in colour, and a stretch of line hidden under a label changes no
-    end and no number. A dimension lying wholly inside a label box is the label's underline."""
+    end and no number. A dimension lying wholly inside a label box is the label's underline.
+
+    Each belongs to every view whose picture shows any of it: the view's extent grown by
+    `view_pad`, as every picture of the view is cut (#1349). A number just outside a view's extent
+    but inside its picture is that view's too, so hiding it holds that view."""
     labels = [view.view for view in views if view.view.heading_box is not None]
+    crops = [(view.view.number, pixels(_pad(view.view.extent, view_pad))) for view in views]
+
+    def shown_in(place: PixelBox, own: tuple[int, ...] = ()) -> tuple[int, ...]:
+        return tuple(number for number, crop in crops if number in own or _touch(crop, place))
 
     def own(x: Decimal, y: Decimal) -> bool:
         return any(
@@ -619,20 +636,12 @@ def _needed_ink(
             for label in labels
         )
 
-    needed = [
-        _NeededInk(
-            _grown(pixels(char.box), 1),
-            f"the character {char.text!r}",
-            tuple(
-                view.view.number
-                for view in views
-                if _inside(char.box.centre_x, char.box.centre_y, view.view.extent)
-            ),
-            char.text,
-        )
-        for char in chars
-        if char.text.strip() and not own(char.box.centre_x, char.box.centre_y)
-    ]
+    needed: list[_NeededInk] = []
+    for char in chars:
+        if not char.text.strip() or own(char.box.centre_x, char.box.centre_y):
+            continue
+        place = _grown(pixels(char.box), 1)
+        needed.append(_NeededInk(place, f"the character {char.text!r}", shown_in(place), char.text))
     for view in views:
         for span in view.found.spans:
             ends = [span.point(span.start_pt), span.point(span.end_pt)]
@@ -643,21 +652,17 @@ def _needed_ink(
             ):
                 continue
             what = f"dimension {span.number} of view {view.view.number}"
-            needed.extend(
-                _NeededInk(
-                    _grown(pixels(_pad(Box(x, y, x, y), end_reach)), 1),
-                    f"an end of {what}",
-                    (view.view.number,),
-                )
+            places = [
+                (_grown(pixels(_pad(Box(x, y, x, y), end_reach)), 1), f"an end of {what}")
                 for x, y in ends
-            )
+            ]
             area = view.label_areas.get(span.number)
             if area is not None and not own(area.centre_x, area.centre_y):
-                needed.append(
-                    _NeededInk(
-                        _grown(pixels(area), 1), f"the number of {what}", (view.view.number,)
-                    )
-                )
+                places.append((_grown(pixels(area), 1), f"the number of {what}"))
+            needed.extend(
+                _NeededInk(place, words, shown_in(place, (view.view.number,)))
+                for place, words in places
+            )
     return needed
 
 
@@ -683,6 +688,8 @@ def paint_panel_headings(
     pixels: PixelsOf,
     pad: int,
     end_reach: Decimal,
+    *,
+    view_pad: Decimal,
 ) -> PanelPaint:
     """What every picture of a panel paints out so no reader sees a view's name (#1327).
 
@@ -693,10 +700,11 @@ def paint_panel_headings(
     is painted (title, scale note, bubble letters), where that touches none of it; the bubble's
     ring and the line under the title stay, and name nothing.
     Where even that would hide needed ink (or the label is a caption's, with no lettering), the
-    whole box is painted and every view that ink belongs to is held: a partly hidden number could
-    be read wrong. Never silent: each case leaves a note.
+    whole box is painted and every view whose picture shows that ink (its extent grown by
+    `view_pad`, #1349) is held: a partly hidden number could be read wrong. Never silent: each
+    case leaves a note.
     """
-    needed = _needed_ink(views, chars, pixels, end_reach)
+    needed = _needed_ink(views, chars, pixels, end_reach, view_pad)
     boxes: list[Box] = []
     held: dict[int, list[str]] = {}
     notes: list[str] = []
@@ -931,7 +939,8 @@ class ValueReading:
     drawing whose agreed readings differ hold on both)."""
     confirmed_by: Literal["vector-text", "chain", "drawn-length-only"] | None = None
     """The strongest code check that confirmed a usable value's number. `drawn-length-only` (a
-    pen-stroke label, under 1/8" off at the view's scale) is the weakest, and part 4 may refuse it."""
+    pen-stroke label, under 1/8" off at the view's scale) is the weakest, and part 4 may refuse it;
+    it is never given where GV's ink is anywhere in the number's close-up (held instead, #1348)."""
     scale_source: Literal["vector-text", "readers"] | None = None
     """Where the view's scale came from: the overall's printed text, or (weaker) the same two
     readers' reading of the overall."""
@@ -1676,6 +1685,35 @@ def _number_checks(
     return None, tuple(agreed), confirmed or "drawn-length-only"
 
 
+def _markup_in_closeup(page: PreparedPage, span: Span, settings: DepthReaderSettings) -> str | None:
+    """Why a number confirmed only by its drawn length is held: GV's ink (any of it, a tick too)
+    anywhere in the close-up the readers were shown, or that ink unknown (#1348). `None` where the
+    close-up holds only the vendor's ink.
+
+    The label check (`seal_label`) looks only at the label's own area. Printed text must then equal
+    the reading exactly, but the drawn length agrees with anything within 1/8": a GV correction
+    written beside the label could be read by both readers and pass it."""
+    if page.ink_at is None:
+        return (
+            "whose ink the readers' close-up holds could not be read, and only this number's "
+            "drawn length confirms it"
+        )
+    found = page.ink_at(page.pixels(_closeup_box(span, settings)))
+    if found.ink is InkClass.VENDOR:
+        return None
+    what = "GV's tick" if found.tick_only else "GV's markup"
+    wrote = (
+        f" (reviewer wrote {found.reviewer_text})"
+        if found.reviewer_text and not found.tick_only
+        else ""
+    )
+    return (
+        f"{what} is in the close-up the readers saw{wrote}, and only this number's drawn length "
+        "confirms it; the drawn length cannot tell the vendor's number from a GV correction "
+        "written beside it, so the readers may have read GV's number"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
@@ -1916,6 +1954,8 @@ def _values(
         objection, checks, confirmed_by = _number_checks(
             view, span, found_number.inches, scale, known, spans_settings
         )
+        if objection is None and confirmed_by == "drawn-length-only":
+            objection = _markup_in_closeup(page, span, settings)
         if objection is not None:
             readings.append(
                 ValueReading(
