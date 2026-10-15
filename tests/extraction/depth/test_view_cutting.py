@@ -166,19 +166,91 @@ def test_two_captions_split_at_the_gap_between_their_drawings_not_halfway() -> N
     assert plan.extent == Box(d(480), d(300), d(760), d(480))
 
 
+def test_the_split_follows_the_gap_between_drawings_past_a_captions_edge() -> None:
+    """The section's caption is printed left of its drawing, 5 points from the front view's: the
+    gap between the drawings runs on over the caption, and is what divides the two (#1313
+    review: looking only between the captions found 5 points and held both)."""
+    captions = word("FRONT VIEW", 60, 500) + word("SECTION", 330, 500)
+    views, _notes = find(captions, panel(rect(50, 100, 325, 480) + rect(370, 100, 750, 480)))
+    front, section = views["FRONT VIEW"], views["SECTION"]
+    assert front.cut_apart and section.cut_apart
+    assert front.extent == Box(d(50), d(100), d(325), d(480))
+    assert section.extent == Box(d(370), d(100), d(750), d(480))
+
+
 # --- never wrongly: what a cut must never take in ----------------------------------------------
 
 
 def test_the_next_views_dimension_printed_beside_a_caption_belongs_to_no_view() -> None:
-    """The front view's top dimension is printed level with the plan's caption: it could be either
-    view's, so it is in neither cut, and a note says so."""
+    """The front view's top dimension number is printed level with the plan's caption: it could be
+    either view's, so it is in neither cut; and since a view read without its own number could be
+    misread, both views beside it are held, and a note says what was left out (#1313 review)."""
     number = word("96", 500, 203, height=8)
     dimension = [line(100, 215, 700, 215), line(100, 215, 100, 260), line(700, 215, 700, 260)]
     views, notes = find(CAPTIONS + number, panel(PLAN + FRONT + dimension, text=number))
-    plan = views["PLAN"]
-    assert plan.cut_apart
-    assert not any(within(char.box, plan.extent) for char in number)
+    for view in views.values():
+        assert not any(within(char.box, view.extent) for char in number)
+        assert not view.cut_apart
+        assert "printed level with a row of captions (a number or a long stroke)" in view.reason
     assert any("level with a row of captions" in note for note in notes)
+
+
+def test_a_dimension_on_a_captions_line_is_never_taken_as_its_label() -> None:
+    """The section's overall depth (its line and number) starts 3 points from the front view's
+    caption, on its line. It is joined to the caption but runs far past it, so it is no label
+    (never painted out); it is left out, and the section, which would be read with only a partial
+    dimension, is held (#1313 review)."""
+    captions = word("FRONT VIEW", 100, 200) + word("SECTION", 350, 560)
+    number = word("24", 420, 201, height=6)
+    overall = [line(175, 208, 700, 208), line(175, 213, 175, 257), line(700, 213, 700, 257)]
+    part = word("20", 300, 245, height=6)
+    partial = [line(175, 252, 600, 252), line(600, 250, 600, 257)]
+    ink = panel(
+        rect(100, 40, 700, 180) + rect(175, 260, 700, 540) + overall + partial,
+        text=number + part,
+    )
+    views, notes = find(captions + number + part, ink)
+    front, section = views["FRONT VIEW"], views["SECTION"]
+    assert front.heading_box is not None and front.heading_box.x1 < d(200)
+    assert not section.cut_apart
+    assert "printed level with a row of captions (a number or a long stroke)" in section.reason
+    assert any("level with a row of captions" in note for note in notes)
+
+
+def test_a_captions_own_bubble_and_scale_are_its_label_with_a_note() -> None:
+    """A tall caption's scale note under it and its bubble beside it are its label (hidden in
+    every picture, with a note), never the drawing of the view below, whose cut starts under them.
+    """
+    bubble = InkCurve(
+        Box(d(333), d(198), d(349), d(214)),
+        ((d(333), d(198)), (d(349), d(198)), (d(349), d(214)), (d(333), d(214))),
+        closed=True,
+    )
+    scale = word("1:18", 352, 213, height=5)
+    front = rect(100, 222, 700, 540)
+    views, notes = find(
+        word("PLAN", 350, 200) + scale + word("FRONT VIEW", 350, 560),
+        panel(PLAN + front, (bubble,), text=scale),
+    )
+    plan, front_view = views["PLAN"], views["FRONT VIEW"]
+    assert plan.heading_box is not None
+    assert all(within(char.box, plan.heading_box) for char in scale)
+    assert within(bubble.box, plan.heading_box)
+    assert not any(within(char.box, front_view.extent) for char in scale)
+    assert front_view.extent.top == d(222)
+    assert any("taken as the label of 'PLAN'" in note for note in notes)
+
+
+def test_readable_ink_left_out_inside_a_views_cut_holds_it() -> None:
+    """A note printed level with the plan's caption, inside the box of the plan's cut (the plan's
+    wall runs down beside the caption) but not joined to it, is no part of the plan: the picture
+    would show it, so the plan is held with that reason (#1313 review)."""
+    note = word("NOTE", 500, 202, height=4)
+    views, _notes = find(word("PLAN", 350, 200) + note, panel(rect(100, 40, 700, 210), text=note))
+    plan = views["PLAN"]
+    assert all(within(char.box, plan.extent) for char in note)
+    assert not plan.cut_apart
+    assert "ink that are not its drawing's" in plan.reason
 
 
 def test_a_view_whose_cut_takes_in_a_caption_sized_title_is_held() -> None:
@@ -262,6 +334,19 @@ def test_a_drawings_own_long_line_is_never_taken_for_the_frame() -> None:
     # A wall line across the whole drawing, above every caption, with the drawing's ink beyond it.
     ink = panel(rect(100, 40, 700, 180) + [line(90, 60, 710, 60), line(400, 20, 400, 40)])
     assert sheet_frame(ink, captions, PANEL, MEASURED_VIEW_SETTINGS) == (ink, 0)
+
+
+def test_a_drawing_against_the_frame_keeps_its_own_edge() -> None:
+    """Once the frame is off, a drawing's top edge may be the outermost stroke left; it ends on
+    nothing frame-like, so it is never taken (#1313 review)."""
+    from extraction.depth.view_kind import sheet_frame
+
+    captions = [Box(d(350), d(520), d(379), d(532))]
+    body = rect(10, 10, 600, 300) + [line(30, 300, 30, 340), line(600, 300, 600, 340)]
+    ink = panel(body, (frame(10, 10, 790, 590),))
+    unframed, peeled = sheet_frame(ink, captions, PANEL, MEASURED_VIEW_SETTINGS)
+    assert peeled == 4
+    assert set(body) <= set(unframed.lines)
 
 
 def test_lone_parallel_lines_are_not_a_frame() -> None:

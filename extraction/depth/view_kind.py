@@ -636,11 +636,11 @@ def sheet_frame(
     the border and rejects it, and the caption cut gave the frame to one view, which then covered
     every other view. A frame stroke is a straight horizontal or vertical stroke that runs past
     every caption on the panel, on the far side of all of them, from one end of the panel's ink to
-    the other, with no ink beyond it but other frame strokes (it is peeled from the outside in),
-    and with an end on another such side or on the panel's edge (where the paste cut the frame
-    off); and a frame has a corner, so strokes are taken only when sides both across and up the
-    panel are. A drawing's own long line has the drawing's other ink beyond it or past its ends,
-    or ends on nothing of the kind, so it is never taken; nothing else is.
+    the other, with no ink beyond it but other frame strokes (peeled from the outside in), and with
+    both ends on other such strokes or on the panel's edge (where the paste cut the frame off), so
+    a drawing whose edge the frame's going leaves outermost keeps it. A frame has a corner, so strokes are taken only when sides both across and up the panel
+    are. A drawing's own long line has the drawing's other ink beyond it or past its ends, or ends
+    on nothing of the kind; a drawing line drawn exactly on the frame cannot be told from it.
     """
     if not captions:
         return ink, 0
@@ -665,7 +665,9 @@ def sheet_frame(
     if not sides:
         return ink, 0
 
-    def meets(index: int) -> bool:
+    def ends_meet(index: int, among: Iterable[int], *, both: bool) -> bool:
+        """Whether one end (or, with `both`, each end) of side `index` lies on the panel's edge
+        or on one of the perpendicular sides `among`."""
         box = boxes[index]
         across = sides[index] in ("top", "bottom")
         ends = (
@@ -673,23 +675,20 @@ def sheet_frame(
             if across
             else ((box.x0, box.top), (box.x0, box.bottom))
         )
-        for x, y in ends:
-            if across and (x - panel.x0 <= slack or panel.x1 - x <= slack):
-                return True
-            if not across and (y - panel.top <= slack or panel.bottom - y <= slack):
-                return True
-            for other, side in sides.items():
-                if (side in ("top", "bottom")) == across:
-                    continue
-                edge = boxes[other]
-                if (
-                    edge.x0 - slack <= x <= edge.x1 + slack
-                    and edge.top - slack <= y <= edge.bottom + slack
-                ):
-                    return True
-        return False
+        others = [boxes[other] for other in among if (sides[other] in ("top", "bottom")) != across]
+        met = [
+            (across and (x - panel.x0 <= slack or panel.x1 - x <= slack))
+            or (not across and (y - panel.top <= slack or panel.bottom - y <= slack))
+            or any(
+                edge.x0 - slack <= x <= edge.x1 + slack
+                and edge.top - slack <= y <= edge.bottom + slack
+                for edge in others
+            )
+            for x, y in ends
+        ]
+        return all(met) if both else any(met)
 
-    sides = {index: side for index, side in sides.items() if meets(index)}
+    sides = {index: side for index, side in sides.items() if ends_meet(index, sides, both=False)}
     if not sides:
         return ink, 0
     characters = [char.box for char in ink.characters]
@@ -704,6 +703,7 @@ def sheet_frame(
         right = max(box.x1 for box in rest)
         top = min(box.top for box in rest)
         bottom = max(box.bottom for box in rest)
+        outer: set[int] = set()
         for index, side in sides.items():
             box = boxes[index]
             if index in peeled:
@@ -717,6 +717,12 @@ def sheet_frame(
                 outermost = box.x0 - left <= slack if side == "left" else right - box.x1 <= slack
                 across = box.top - top <= slack and bottom - box.bottom <= slack
             if outermost and across:
+                outer.add(index)
+        # A stroke is taken only where both its ends lie on the panel's edge or on frame-like
+        # sides (strokes past every caption, on the far side of them all): never a drawing's own
+        # edge that the frame's going has left outermost (#1313 review).
+        for index in outer:
+            if ends_meet(index, sides, both=True):
                 peeled.add(index)
                 grew = True
     # A frame has a corner: sides across and up the panel. Lone parallel lines are drawing.
@@ -809,7 +815,12 @@ def _captions(chars: Sequence[TextChar], settings: ViewFinderSettings) -> list[_
         if not above:
             continue
         title = max(above, key=lambda phrase: phrase.box.bottom)
-        if any(caption.box.meets(title.box) for caption in captions):
+        meeting = [index for index, caption in enumerate(captions) if caption.box.meets(title.box)]
+        if meeting:
+            # A tall caption's own scale note, printed under it, is part of its label: the row
+            # of captions ends below it, so it never falls into the next view's part (#1313).
+            for index in meeting:
+                captions[index] = replace(captions[index], box=captions[index].box.union(scale.box))
             continue
         captions.append(_Caption(title.text, title.box.union(scale.box), title.height))
     return captions
@@ -837,30 +848,33 @@ def _rows(captions: Sequence[_Caption], settings: ViewFinderSettings) -> list[li
 
 
 def _gutter(
-    pieces: Sequence[Box], left: Box, right: Box, top: Decimal, bottom: Decimal
+    pieces: Sequence[Box], left: Box, right: Box, top: Decimal, band: Decimal
 ) -> tuple[Decimal, int, Decimal]:
-    """Where two captions' columns split: the middle of the widest gap between them crossed by the
-    fewest pieces of ink standing in the row (#1313: halfway between the captions cut through a
-    drawing whose caption is printed at one end of it, and gave its other end to the neighbour). A
-    narrow slit inside a hatch is never preferred to the wide gap between two drawings. Also says
-    how many pieces cross the split and how wide the gap is, for the caller's check that the two
-    parts are clearly apart."""
+    """Where two captions' columns split: in the widest gap between their drawings crossed by the
+    fewest pieces of ink standing in the row above the captions (#1313: halfway between the
+    captions cut through a drawing whose caption is printed at one end of it). The gap is looked
+    for across both captions' whole width, since a caption printed to one side of its drawing
+    leaves the real gap partly over it; the split itself stays between the two captions. A narrow
+    slit inside a hatch is never preferred to the wide gap between two drawings. Also says how many
+    pieces cross the split and how wide the gap is, for the caller's check that the two parts are
+    clearly apart."""
     low, high = left.x1, right.x0
     middle = (left.centre_x + right.centre_x) / _TWO
     if high <= low:
         return middle, 1, _ZERO
+    start, end = left.x0, right.x1
     events: list[tuple[Decimal, int]] = []
     for box in pieces:
-        if box.bottom < top or box.top > bottom or box.x1 < low or box.x0 > high:
+        if box.bottom < top or box.top >= band or box.x1 < start or box.x0 > end:
             continue
-        events.append((max(box.x0, low), 1))
-        events.append((min(box.x1, high), -1))
+        events.append((max(box.x0, start), 1))
+        events.append((min(box.x1, end), -1))
     events.sort(key=lambda event: (event[0], -event[1]))
     best: tuple[int, Decimal, Decimal, Decimal] | None = None
-    depth, previous = 0, low
-    for at, change in [*events, (high, 0)]:
-        if at > previous:
-            here = (previous + at) / _TWO
+    depth, previous = 0, start
+    for at, change in [*events, (end, 0)]:
+        if at > previous and at > low and previous < high:
+            here = min(max((previous + at) / _TWO, low), high)
             candidate = (depth, previous - at, abs(here - middle), here)
             if best is None or candidate[:3] < best[:3]:
                 best = candidate
@@ -979,7 +993,7 @@ def _views_by_heading_words(
         row_top = min(caption.box.top for caption in row)
         row_bottom = max(caption.box.bottom for caption in row)
         gutters = [
-            _gutter(stroke_boxes + char_boxes, left.box, right.box, previous_bottom, row_bottom)
+            _gutter(stroke_boxes + char_boxes, left.box, right.box, previous_bottom, row_top)
             for left, right in pairwise(row)
         ]
         for (left, right), (_at, crossed, width) in zip(pairwise(row), gutters, strict=True):
@@ -1084,18 +1098,39 @@ def _views_by_heading_words(
     # wall drawn down beside its caption); anything else there (the next view's top dimension
     # printed beside the caption) could belong to the view above or to the one below: neither.
     labels: dict[int, Box] = {}
+    label_ink: list[tuple[str, list[tuple[Box, bool]]]] = []
+    """Per caption, the ink taken as its label besides the caption's own words."""
+    level_ink: list[tuple[Box, bool]] = []
     char_set = set(char_boxes)
+    digits = frozenset(char.box for char in ink.characters if char.text.isdigit())
+    beside = settings.views.bubble_reach_em + settings.views.bubble_maximum_em
     for index, pieces in level_with.items():
-        caption_box = regions[index].caption.box
-        label = caption_box
+        caption = regions[index].caption
+        top, bottom = regions[index].band
+        # A label is the caption's own line: its bubble, underline and scale note, no further to
+        # either side than a bubble stands, nor above or below than a bubble is tall (`page_views`'
+        # bubble reach and size). Ink joined to the caption that runs further (a dimension printed
+        # on the caption's line) is no label, and nor is anything joined to it.
+        tall = settings.views.bubble_maximum_em * caption.line
+        zone = Box(
+            caption.box.x0 - beside * caption.line,
+            min(top, caption.box.top) - tall,
+            caption.box.x1 + beside * caption.line,
+            max(bottom, caption.box.bottom) + tall,
+        )
+        label = caption.box
+        taken: list[tuple[Box, bool]] = []
         rest: list[Box] = []
-        for group in _joined([*pieces, caption_box], join):
+        for group in _joined([*pieces, caption.box], join):
             members = [pieces[member] for member in group if member < len(pieces)]
-            if len(pieces) in group:
+            if len(pieces) in group and all(_within(box, zone) for box in members):
                 label = _union_all([label, *members])
+                taken.extend((box, box in char_set) for box in members)
             else:
                 rest.extend(members)
         labels[index] = label
+        if taken:
+            label_ink.append((caption.text, taken))
         mine = owned[index]
         for group in _joined([*rest, *mine], join):
             members = [rest[member] for member in group if member < len(rest)]
@@ -1104,6 +1139,7 @@ def _views_by_heading_words(
             else:
                 level += len(members)
                 loose.extend((box, box in char_set) for box in members)
+                level_ink.extend((box, box in char_set) for box in members)
 
     notes: list[str] = []
     if outside:
@@ -1115,6 +1151,11 @@ def _views_by_heading_words(
         notes.append(
             f"left out: {level} piece(s) of ink printed level with a row of captions and not joined "
             "to the drawing above: they could belong to the view above or to the one below"
+        )
+    for text, taken in label_ink:
+        notes.append(
+            f"taken as the label of {text!r} and hidden in every picture: {len(taken)} piece(s) "
+            "of ink on its line (its bubble, underline or scale note)"
         )
     if hanging:
         notes.append(
@@ -1229,6 +1270,17 @@ def _views_by_heading_words(
                     + repr((second if caption is first else first).text)
                     + " on its row: code cannot tell which drawing the ink near the split belongs to"
                 )
+        # Ink on a caption row next to this cut (left out as level with the captions, or taken
+        # as a caption's label) that could be read: it may be this view's own dimension or label.
+        level_near = _near_readable(
+            level_ink, extent, join=join, reach=reach, characters=0, numbers=digits
+        )
+        if level_near:
+            held.append(
+                f"{level_near} piece(s) of ink printed level with a row of captions (a number or a "
+                "long stroke) stand within twice the joining reach of its cut: they may be its own "
+                "dimension"
+            )
         if index in near:
             held.append(
                 f"{near[index]} piece(s) of readable ink (a long stroke or a word) stand just beyond "
@@ -1292,6 +1344,32 @@ def _foreign(
     count = 0
     for group in _joined([box for box, _is_char in inside], join):
         if _readable([inside[member] for member in group], reach, settings):
+            count += len(group)
+    return count
+
+
+def _near_readable(
+    ink: Sequence[tuple[Box, bool]],
+    extent: Box,
+    *,
+    join: Decimal,
+    reach: Decimal,
+    characters: int,
+    numbers: frozenset[Box],
+) -> int:
+    """How many pieces of `ink` stand within twice `reach` of `extent` in groups that could be
+    read: holding `characters` characters or more (0: no number of characters is enough), a digit
+    (one of `numbers`: a dimension's number), or a straight stroke at least `reach` long."""
+    close = [(box, is_char) for box, is_char in ink if _gap(box, extent) <= _TWO * reach]
+    count = 0
+    for group in _joined([box for box, _is_char in close], join) if close else []:
+        members = [close[member] for member in group]
+        letters = sum(1 for _box, is_char in members if is_char)
+        if (
+            (characters and letters >= characters)
+            or any(box in numbers for box, _is_char in members)
+            or any(not is_char and max(box.width, box.height) >= reach for box, is_char in members)
+        ):
             count += len(group)
     return count
 
