@@ -24,9 +24,9 @@ tests/api/test_drawing_parts.py.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -63,6 +63,8 @@ from app.models import (
     PartPicture,
     VendorPagePicture,
 )
+from app.review.depth_readings import LinkedView, linked_views_by_proposal
+from app.schemas.review import optional_in_schema
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from vocabulary.part_kinds import PartKind
@@ -136,6 +138,19 @@ class DecisionOut(BaseModel):
     )
 
 
+class LinkedViewOut(BaseModel):
+    """One view of the drawing tied to this countertop, and its kind (#1295, `item_view_links`)."""
+
+    view: Literal["plan", "section", "side", "front", "detail"] = Field(
+        description="The view's kind in plain words: a vendor's elevation is the front view."
+    )
+    page_number: int
+    heading: str | None = Field(description="The vendor's heading over the view, when one is read.")
+    by_person: bool = Field(
+        description="True when a person tied it; false when code and the AI did."
+    )
+
+
 class PartOut(BaseModel):
     """One suggested part, as a person needs it to decide what it is."""
 
@@ -198,6 +213,15 @@ class PartOut(BaseModel):
     )
     decision: DecisionOut | None = Field(
         description="The decision nothing has replaced, or null while nobody has decided."
+    )
+    linked_views: list[LinkedViewOut] = Field(
+        default_factory=list,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "For a countertop: the plan, section or side views the depth and sink reader tied to it "
+            "(#1295), each with its kind. Empty when the reader never read the set (it is off by "
+            "default)."
+        ),
     )
 
 
@@ -309,7 +333,11 @@ def _decision(row: PartConfirmation | None) -> DecisionOut | None:
     )
 
 
-def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
+def _part_out(
+    drawing: DrawingParts,
+    listed: ListedPart,
+    views: Mapping[UUID, Sequence[LinkedView]] | None = None,
+) -> PartOut:
     proposal = listed.proposal
     ends = defining_ends(proposal)
     return PartOut(
@@ -330,11 +358,25 @@ def _part_out(drawing: DrawingParts, listed: ListedPart) -> PartOut:
         picture_gv_marks=listed.picture_gv_marks,
         has_crop=listed.has_crop,
         decision=_decision(listed.decision),
+        linked_views=[
+            LinkedViewOut(
+                view=view.view,
+                page_number=view.page_number,
+                heading=view.heading,
+                by_person=view.by_person,
+            )
+            for view in (views or {}).get(proposal.id, ())
+        ],
     )
 
 
 def _drawing_out(
-    drawing: DrawingParts, session: Session, request: Request, project_id: UUID, package_id: UUID
+    drawing: DrawingParts,
+    session: Session,
+    request: Request,
+    project_id: UUID,
+    package_id: UUID,
+    views: Mapping[UUID, Sequence[LinkedView]] | None = None,
 ) -> DrawingOut:
     return DrawingOut(
         view_id=drawing.view.id,
@@ -343,7 +385,7 @@ def _drawing_out(
         role=drawing.view.role,
         can_confirm=drawing.refusal is None,
         why_not=None if drawing.refusal is None else drawing.refusal.detail,
-        parts=[_part_out(drawing, listed) for listed in drawing.parts],
+        parts=[_part_out(drawing, listed, views) for listed in drawing.parts],
         page_picture=_vendor_page_picture_out(
             session, request, drawing.view.id, drawing.view.page_id, project_id, package_id
         ),
@@ -382,10 +424,11 @@ def _vendor_page_picture_out(
 
 def _listed(session: Session, revision_id: UUID, proposal_id: UUID) -> PartOut:
     """The part as the list now shows it, read back after a decision was committed."""
+    views = linked_views_by_proposal(session, revision_id)
     for drawing in revision_parts(session, revision_id):
         for listed in drawing.parts:
             if listed.proposal.id == proposal_id:
-                return _part_out(drawing, listed)
+                return _part_out(drawing, listed, views)
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=NOT_FOUND_DETAIL)
 
 
@@ -446,9 +489,11 @@ def list_parts(
 ) -> PartsOut:
     """Read only: listing never makes a part, however many times it is called."""
     revision = _revision(session, project_id, package_id)
+    # The views the depth and sink reader tied to each countertop, read once for the list (#1295).
+    views = linked_views_by_proposal(session, revision.id)
     return PartsOut(
         drawings=[
-            _drawing_out(d, session, request, project_id, package_id)
+            _drawing_out(d, session, request, project_id, package_id, views)
             for d in revision_parts(session, revision.id)
         ]
     )

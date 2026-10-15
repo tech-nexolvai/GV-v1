@@ -620,7 +620,13 @@ def test_with_no_sink_nothing_is_in_use(session: Session) -> None:
 
     in_use = client.get(f"/api/v1/projects/{PROJECT}/packages/{package}/sink-in-use").json()
 
-    assert in_use == {"model_name": None, "inside_width": None, "inside_depth": None}
+    # The vendor's sink note is listed only where the depth and sink reader read the set (#1295).
+    assert in_use == {
+        "model_name": None,
+        "inside_width": None,
+        "inside_depth": None,
+        "vendor_notes": [],
+    }
 
 
 # ---------------------------------------------------------------------------

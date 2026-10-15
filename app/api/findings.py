@@ -65,6 +65,7 @@ from app.models import (
 )
 from app.models.review import ReviewActionKind
 from app.review.carry_over import decision_records
+from app.review.depth_readings import depth_readings_for
 from app.review.exceptions import ExceptionGrant, FindingRef, decide
 from app.review.row_location import row_location
 from app.review.session import exceptions_for_revision
@@ -543,6 +544,10 @@ def list_findings(
     waiting = missing_inputs_for(session, project_id, items)
     for item in items:
         item.missing_inputs = waiting.get(item.id, [])
+    # A waiting depth or sink check says what the depth and sink reader read, per countertop (#1295).
+    read = depth_readings_for(session, items)
+    for item in items:
+        item.depth_readings = read.get(item.id, [])
 
     next_cursor = None
     if len(rows) > limit and items:
