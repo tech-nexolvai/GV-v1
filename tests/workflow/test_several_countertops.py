@@ -154,7 +154,9 @@ def _run(
 
 
 def _whole(found: dict[str, list[Any]], rule_id: str) -> Any:
-    (finding,) = [f for f in found[rule_id] if f.scope_item_id is None]
+    (finding,) = [
+        f for f in found[rule_id] if f.scope_item_id is None and f.scope_row_candidate_id is None
+    ]
     return finding
 
 
@@ -766,8 +768,8 @@ def test_reader_on_a_countertop_with_no_run_decided_gets_a_held_result(
     session: Session, store: LocalStore
 ) -> None:
     """The review's probe: countertop A's run is decided, countertop B is only a row on page 2.
-    A has its own five results; B is never silent: each check also writes one held whole-package
-    result, naming B in its notes."""
+    A has its own five results; B is never silent: since #1201 it gets a held result of its own
+    for each check, scoped to its row (`test_one_result_per_countertop.py` has the wording)."""
     sheet = _Set(session, store)
     _project_depth_parameters(session, sheet.revision)
     _publish_rulebook(session)
@@ -780,17 +782,12 @@ def test_reader_on_a_countertop_with_no_run_decided_gets_a_held_result(
     for rule_id in DEPTH_RULE_IDS:
         mine = [f for f in found[rule_id] if f.scope_item_id == sheet.item]
         assert len(mine) == 1, rule_id
-        held = _whole(found, rule_id)
+        (held,) = [f for f in found[rule_id] if f.scope_row_candidate_id is not None]
         assert held.outcome == Outcome.REVIEW_REQUIRED.value, held.reason
-        assert held.reason.startswith(
-            "This package has 2 countertops, and 1 of them has no result of its own for this check"
-        ), held.reason
-        assert PER_COUNTERTOP in held.reason
-        assert held.notes == [
-            "Countertops with no result of their own for this check: Countertop row on page 2."
-        ]
-    cabinet = _whole(found, SINK_CABINET)
-    assert cabinet.outcome == Outcome.REVIEW_REQUIRED.value and cabinet.reason.startswith(TWO)
+        assert held.scope_label == "Countertop row on page 2"
+        assert "this countertop is confirmed and its run decided on Measurements" in held.reason
+    assert all(f.outcome == Outcome.REVIEW_REQUIRED.value for f in found[SINK_CABINET])
+    assert len(found[SINK_CABINET]) == 2
 
 
 def test_reader_on_every_countertop_with_its_own_result_adds_nothing(
@@ -809,6 +806,24 @@ def test_reader_on_every_countertop_with_its_own_result_adds_nothing(
 
 
 # -- a decision carries over while the countertops stay the same ---------------------------------
+
+
+def _own_holds(session: Session, revision_id: UUID) -> set[UUID]:
+    """Each countertop's own held results of the six checks (#1201)."""
+    from app.models import CheckRun
+    from app.models.verdicts import Finding as FindingRow
+
+    return set(
+        session.scalars(
+            select(FindingRow.id)
+            .join(CheckRun, CheckRun.id == FindingRow.check_run_id)
+            .where(
+                FindingRow.package_revision_id == revision_id,
+                CheckRun.superseded_at.is_(None),
+                FindingRow.reason.startswith("Waiting for "),
+            )
+        ).all()
+    )
 
 
 def _whole_package_holds(session: Session, revision_id: UUID) -> set[UUID]:
@@ -846,7 +861,7 @@ def test_confirming_the_countertops_asks_no_decision_again_and_a_new_one_does(
     _publish_rulebook(session)
     stages = DatabaseStages(store)
     stages.run_checks(session, made.revision.id)
-    assert len(_whole_package_holds(session, made.revision.id)) == 6
+    assert len(_own_holds(session, made.revision.id)) == 12
     _decide_everything(session, made.revision.id)
     session.flush()
 
@@ -855,17 +870,21 @@ def test_confirming_the_countertops_asks_no_decision_again_and_a_new_one_does(
         _confirm_bala_countertop(session, anchor)
     stages.run_checks(session, made.revision.id)
     session.flush()
-    holds = _whole_package_holds(session, made.revision.id)
+    holds = _own_holds(session, made.revision.id)
     blocking = set(approval_readiness(session, made.revision.id).blocking_finding_ids)
-    assert len(holds) == 6 and not holds & blocking, "the same two countertops asked again"
+    assert len(holds) == 12 and not holds & blocking, "the same two countertops asked again"
 
-    # A third countertop: the six are asked again.
+    # A third countertop, confirmed from no row (#1201 review): it has no result of its own, so the
+    # six whole-package holds name it and ask; the first two's own results are about those two
+    # countertops alone, so a decision on them stands.
     _unlinked_countertop(session, made, 2)
     stages.run_checks(session, made.revision.id)
     session.flush()
-    holds = _whole_package_holds(session, made.revision.id)
+    holds = _own_holds(session, made.revision.id)
     blocking = set(approval_readiness(session, made.revision.id).blocking_finding_ids)
-    assert len(holds) == 6 and holds <= blocking
+    assert len(holds) == 12 and not holds & blocking
+    whole = _whole_package_holds(session, made.revision.id)
+    assert len(whole) == 6 and whole <= blocking
 
 
 def test_the_screens_find_the_notes_by_the_server_s_own_opening_words() -> None:

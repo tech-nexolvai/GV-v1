@@ -409,6 +409,30 @@ export function confirmManyWords(count: number): string {
   return count === 1 ? 'Confirm this page' : `Confirm these ${count} pages`;
 }
 
+/**
+ * The one check whose row-scoped result is the row's own, shown on the row (#1201 review): the
+ * countertop width. Every other result scoped to a row (its depth and sink holds, and any check
+ * added later) is a check of its own and is listed. Held the same as the server's width rule by a
+ * backend test.
+ */
+export const ROW_WIDTH_CHECK = 'CT-WIDTH-001';
+
+/**
+ * A result's name in the "Other checks" list (#1201): its check's name and, when the result is one
+ * countertop's own, which countertop. A package with several countertops gets one depth or sink
+ * result per countertop, and a countertop whose heading is not on screen lists its results there,
+ * where six "Countertop depth verification" lines would not say whose they are.
+ */
+export function checkWithCountertop(
+  finding: Pick<Finding, 'check_id' | 'name' | 'scope_label'>,
+  ruleNames: ReadonlyMap<string, string>,
+): string {
+  const countertop = finding.scope_label && finding.scope_label !== 'Package revision' ? finding.scope_label : null;
+  const check = ruleNames.get(finding.check_id);
+  if (check && countertop) return `${check}: ${countertop}`;
+  return check ?? countertop ?? finding.name;
+}
+
 /** A live countertop item (#1245), as the results name it under a row. */
 export type CountertopItem = NonNullable<CountertopResult['countertop_item']>;
 

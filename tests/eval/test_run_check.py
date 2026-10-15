@@ -49,6 +49,7 @@ from tests.app.postgres_fixture import alembic_config
 from workflow.architect_pairing_contract import EffectivePairing
 from workflow.architect_row_plan import pairing_source_note
 from workflow.nina_gate import NinaGateOutcome
+from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
 from workflow.slot_row_scope import latest_slot_reader_run
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -130,6 +131,11 @@ def _live_for(
         for finding, run, rule in _live(session, revision_id)
         if rule == rule_id and (row is None or finding.scope_row_candidate_id == row)
     ]
+    if row is None and rule_id in WHOLE_PACKAGE_RULE_IDS and len(matches) > 1:
+        # Since #1201 a depth or sink check gives each countertop row of a package with several
+        # its own result, and no whole-package one: take the first row's, by its name.
+        assert all(finding.scope_row_candidate_id is not None for finding, _run in matches)
+        matches = sorted(matches, key=lambda match: match[0].scope_label or "")[:1]
     assert len(matches) == 1, (rule_id, row, len(matches))
     return matches[0]
 
@@ -153,7 +159,11 @@ def _forge(
     scope_label: str | None = None,
     notes: tuple[str, ...] = (),
 ) -> Finding:
-    """Write the result a broken check stage would have written in place of `replaces`."""
+    """Write the result a broken check stage would have written in place of `replaces`, for the
+    same countertop row unless told otherwise."""
+    if scope_row is None and scope_label is None:
+        replaced = session.scalars(select(Finding).where(Finding.check_run_id == replaces.id)).one()
+        scope_row, scope_label = replaced.scope_row_candidate_id, replaced.scope_label
     _supersede(session, replaces)
     run = CheckRun(
         package_revision_id=revision_id,
@@ -358,8 +368,10 @@ def test_a_rule_in_scope_with_no_result_points_to_kautilya(
     session: Session, tmp_path: Path
 ) -> None:
     revision_id, _anchors = _rows(session, tmp_path)
-    _finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
-    _supersede(session, run)
+    # Every result of the rule: since #1201 each countertop row has its own.
+    for _finding, run, rule in _live(session, revision_id):
+        if rule == "CT-DEPTH-001":
+            _supersede(session, run)
 
     item = _only(run_check(session, revision_id), "rule-without-result")
     assert item.check is Check.COVERAGE

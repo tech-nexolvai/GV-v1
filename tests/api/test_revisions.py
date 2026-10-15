@@ -1329,10 +1329,12 @@ def test_what_changed_waits_for_the_new_revision_to_be_read(
 # --- sign-off: carried answers are confirmed by the signer, on the server ----------------------------
 
 
-def _scoped_finding(session: Session, revision: PackageRevision, row_id: UUID) -> None:
+def _scoped_finding(
+    session: Session, revision: PackageRevision, row_id: UUID, rule_id: str | None = None
+) -> None:
     from app.models import CheckRun, Finding, RuleDefinition, RuleSnapshot
 
-    definition = RuleDefinition(rule_id=f"CT-{uuid4().hex[:6]}")
+    definition = RuleDefinition(rule_id=rule_id or f"CT-{uuid4().hex[:6]}")
     session.add(definition)
     session.flush()
     body = f'{{"id":"{definition.rule_id}"}}'
@@ -1367,7 +1369,9 @@ def _scoped_finding(session: Session, revision: PackageRevision, row_id: UUID) -
     session.flush()
 
 
-def _ready_to_sign(session: Session, *, carried: bool) -> tuple[PackageRevision, UUID]:
+def _ready_to_sign(
+    session: Session, *, carried: bool, rule_id: str | None = None
+) -> tuple[PackageRevision, UUID]:
     """Revision 2, checked and waiting for sign-off; its one countertop result rests on a wall
     answer carried from revision 1 (or, with `carried=False`, on one given on revision 2)."""
     from app.review.session import open_session
@@ -1381,12 +1385,21 @@ def _ready_to_sign(session: Session, *, carried: bool) -> tuple[PackageRevision,
     _answer(session, old_row if carried else new_row)
     session.commit()
     carry_after_reading(session, two.id)
-    _scoped_finding(session, two, new_row)
+    _scoped_finding(session, two, new_row, rule_id)
     two.state = PackageState.AWAITING_REVIEW.value
     session.flush()
     review = open_session(session, package_revision_id=two.id, reviewer="synthetic-reviewer")
     session.commit()
     return two, review.id
+
+
+def test_a_row_s_depth_hold_rests_on_no_carried_wall_answer(session: Session) -> None:
+    """Review of #1201: a countertop row's own depth or sink hold rests on no wall answer, so it
+    never asks the signer to confirm the row's carried one; a width result does (as before)."""
+    from app.lifecycle.carry_forward import carried_answers_driving_results
+
+    held, _review = _ready_to_sign(session, carried=True, rule_id="CT-DEPTH-001")
+    assert carried_answers_driving_results(session, held.id) == ()
 
 
 def _signer() -> Principal:

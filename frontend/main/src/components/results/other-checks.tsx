@@ -17,7 +17,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { bulkEligible, decisionWords } from '@/lib/countertop-results';
+import { bulkEligible, checkWithCountertop, decisionWords } from '@/lib/countertop-results';
 import { CarriedOver } from './carried-over';
 import { NeedsValues } from './needs-values';
 
@@ -67,7 +67,8 @@ export function OtherChecks({
   if (findings.length === 0) return null;
 
   const eligible = bulkEligible(findings, blocking);
-  const nameOf = (f: Finding) => ruleNames.get(f.check_id) ?? (f.scope_label && f.scope_label !== 'Package revision' ? f.scope_label : f.name);
+  // With the countertop a result is for, when it is one countertop's own (#1201).
+  const nameOf = (f: Finding) => checkWithCountertop(f, ruleNames);
   const waiting = findings.filter((f) => blocking.has(f.id)).length;
 
   async function confirm() {

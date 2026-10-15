@@ -30,7 +30,12 @@ from app.review.approval import approval_readiness
 from app.review.session import open_session, record_action
 from app.schemas.visual_ui import CountertopResultsOut
 from storage.local import LocalStore
-from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
+from tests.api.test_slot_rows import (
+    _package_rows,
+    _row_holds,
+    _run_current_checks,
+    _save_all_row_widths,
+)
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_part_operands import Assembly, _slot_reader_extraction_run
 from workflow.slot_row_scope import latest_slot_reader_run
@@ -116,7 +121,7 @@ def _unchosen_record(
     return record.id
 
 
-def _live(session: Session, revision_id: UUID) -> list[Finding]:
+def _all_live(session: Session, revision_id: UUID) -> list[Finding]:
     return list(
         session.scalars(
             select(Finding)
@@ -127,11 +132,23 @@ def _live(session: Session, revision_id: UUID) -> list[Finding]:
     )
 
 
+def _live(session: Session, revision_id: UUID) -> list[Finding]:
+    """The live results, less each countertop row's own depth and sink holds (#1201)."""
+    holds = _row_holds(session, revision_id)
+    return [f for f in _all_live(session, revision_id) if f.id not in holds]
+
+
 def _decide(session: Session, revision_id: UUID, *, skip: UUID | None = None) -> None:
-    """Confirm every FAIL and dismiss every abstention except `skip`, each with a TEST ONLY note."""
+    """Confirm every FAIL and dismiss every abstention except `skip`'s own result (not its depth
+    and sink holds, #1201), each with a TEST ONLY note."""
     review = open_session(session, package_revision_id=revision_id, reviewer="anant")
-    for finding in _live(session, revision_id):
-        if finding.scope_row_candidate_id is not None and finding.scope_row_candidate_id == skip:
+    holds = _row_holds(session, revision_id)
+    for finding in _all_live(session, revision_id):
+        if (
+            finding.scope_row_candidate_id is not None
+            and finding.scope_row_candidate_id == skip
+            and finding.id not in holds
+        ):
             continue
         if finding.outcome == "FAIL":
             action = ReviewActionKind.CONFIRM
@@ -696,3 +713,28 @@ def test_a_page_rekhas_gate_stopped_is_a_page_to_pick_the_row_on_where_both_agre
     assert "on the Measurements screen" in item.hold.reason
     assert item.agreement.both_readers_agreed_on_row is True
     assert item.pieces == () and item.needs_decision
+
+
+def test_a_split_page_with_only_its_depth_and_sink_holds_is_not_checked(
+    session: Session, tmp_path: Path
+) -> None:
+    """Review of #1201: a split page's own depth and sink holds say nothing about its width, so
+    without its width result the page still has "no check result yet", as before them."""
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session, revision.id, page_index=2, flags=SPLIT_PICKS, reason=CODE_SPLIT_WHY
+    )
+    _run_current_checks(session, package_id, tmp_path)
+    holds = _row_holds(session, revision.id)
+    on_page = [f for f in _all_live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert len([f for f in on_page if f.id in holds]) == 6
+    assert approval_readiness(session, revision.id).unchecked_countertop_pages == ()
+
+    # Its width result goes (as a faulty run leaves it): only its holds are left on the page.
+    (width,) = [f for f in on_page if f.id not in holds]
+    run = session.get_one(CheckRun, width.check_run_id)
+    run.superseded_at = run.created_at
+    session.flush()
+
+    assert approval_readiness(session, revision.id).unchecked_countertop_pages == (3,)

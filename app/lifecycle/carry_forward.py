@@ -1070,6 +1070,7 @@ def carried_answers_driving_results(
     still a person's answer, but not one given while looking at these drawings.
     """
     from app.models.verdicts import CheckRun, Finding
+    from app.review.no_countertop import held_depth_and_sink_runs
 
     live = list(
         session.execute(
@@ -1078,9 +1079,22 @@ def carried_answers_driving_results(
             .where(Finding.package_revision_id == revision_id, CheckRun.superseded_at.is_(None))
         )
     )
+    # A row's own depth and sink holds (#1201) rest on no wall answer: only the row's other
+    # results make its carried wall answer one a result rests on, as before them.
+    walled = set(
+        session.scalars(
+            select(Finding.scope_row_candidate_id)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .where(
+                Finding.package_revision_id == revision_id,
+                CheckRun.superseded_at.is_(None),
+                CheckRun.id.not_in(held_depth_and_sink_runs()),
+            )
+        )
+    )
     if not live:
         return ()
-    checked_rows = {row_id for (row_id,) in live if row_id is not None}
+    checked_rows = {row_id for row_id in walled if row_id is not None}
     rows = [row for row in slot_rows(session, revision_id) if row.anchor.id in checked_rows]
     walls = wall_answer_origins(session, (row.decision for row in rows))
     described: list[tuple[int, str]] = []
