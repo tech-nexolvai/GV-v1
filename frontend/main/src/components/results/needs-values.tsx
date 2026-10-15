@@ -14,6 +14,9 @@
  * A depth or sink check the depth and sink reader read (#1295) also says, per countertop, what was
  * read and how it was checked, a reading to confirm ("Confirm this reading", the existing confirm
  * path), or why a value was not used. Without readings the card is exactly as it was.
+ *
+ * With the depth and sink reader switched on, a depth or sink check also offers "Read depths again"
+ * (#1308), for a set read before the reader existed or was switched on; it asks first, as it costs money.
  */
 import { useId, useState } from 'react';
 
@@ -26,6 +29,7 @@ import { Label } from '@/components/ui/label';
 import { SIGNED_OFF_NOTE, useSignedOff } from '@/lib/signed-off';
 import { SinkEntryDialog } from '@/components/measure/SinkEntry';
 import { DepthReadings } from '@/components/results/depth-readings';
+import { ReadDepthsAgain } from '@/components/results/read-depths-again';
 import {
   overridable,
   saveState,
@@ -108,6 +112,8 @@ export function NeedsValues({
       {readings.length > 0 && (
         <DepthReadings readings={readings} packageId={packageId} canAct onConfirmed={onSaved} onRunChecks={onRunChecks} />
       )}
+      {/* Read the depths again on a set already read (#1308): only when the reader is switched on. */}
+      <ReadDepthsAgain packageId={packageId} checkId={finding.check_id} />
       {inputs.length > 0 && (
         <ul className="flex flex-col gap-2.5">
           {inputs.map((input) => (

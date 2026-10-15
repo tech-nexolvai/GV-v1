@@ -45,18 +45,13 @@ from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import exists, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.evidence.sides import page_transform_at
 from app.models import (
-    DrawingItem,
     DrawingView,
     ItemViewLink,
-    PartConfirmation,
-    PartDecision,
-    PartProposal,
-    PartProposalRow,
 )
 from app.models.document import Page
 from app.models.evidence import ObservationCandidate
@@ -78,8 +73,7 @@ from extraction.depth.view_kind import ViewKind
 from extraction.form_reader.bedrock import AttemptUsage
 from extraction.slot_reader.bedrock import CropJob, read_crops_parallel
 from extraction.slot_reader.stop import ReadingStop
-from vocabulary.part_kinds import PartKind
-from workflow.bala_items import BALA_SOURCE
+from workflow.depth_again import countertops_by_drawing
 from workflow.depth_evidence import (
     AGREED_PREFIX,
     CONFIRM_ONLY,
@@ -99,7 +93,6 @@ from workflow.depth_evidence import (
 )
 from workflow.parts import outline_box
 from workflow.reader_reuse import StoredAnswerSource, reuse_stored_answers
-from workflow.slot_row_scope import latest_slot_reader_run
 
 __all__ = [
     "LINKED_KINDS",
@@ -118,56 +111,6 @@ QUALIFYING_CHECKS: Final = frozenset({"vector-text", "chain"})
 LINKED_KINDS: Final = {ViewKind.PLAN: "plan", ViewKind.SECTION: "section"}
 #: The longest reason kept on a row (`observation_candidates.review_reason`).
 _REASON_LIMIT: Final = 300
-
-
-def countertops_by_drawing(session: Session, revision_id: UUID) -> dict[UUID, tuple[UUID, ...]]:
-    """Each drawing view's countertops, by Bala's countertop suggestion.
-
-    A suggestion counts when it is Bala's for the newest slot-reader run and nobody withdrew it, or
-    when it is behind a live countertop item (an older reading's, after a re-read). Each counts once.
-    """
-    later = aliased(PartConfirmation)
-    current = (
-        select(PartConfirmation.decision)
-        .where(
-            PartConfirmation.part_proposal_id == PartProposal.id,
-            ~exists().where(later.supersedes_id == PartConfirmation.id),
-        )
-        .order_by(PartConfirmation.created_at.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
-    held: dict[UUID, set[UUID]] = {}
-    newest = latest_slot_reader_run(session, revision_id)
-    if newest is not None:
-        for proposal_id, view_id, decision in session.execute(
-            select(PartProposal.id, PartProposal.drawing_view_id, current)
-            .join(PartProposalRow, PartProposalRow.part_proposal_id == PartProposal.id)
-            .where(
-                PartProposalRow.extraction_run_id == newest,
-                PartProposalRow.slot_index.is_(None),
-                PartProposal.kind == PartKind.COUNTERTOP.value,
-                PartProposal.source == BALA_SOURCE,
-            )
-        ):
-            if decision != PartDecision.WITHDRAWN.value:
-                held.setdefault(view_id, set()).add(proposal_id)
-    from workflow.item_plan import live_countertops
-
-    live = live_countertops(session, revision_id, follow_rows=False)
-    if live:
-        rows = session.execute(
-            select(PartConfirmation.part_proposal_id, DrawingItem.drawing_view_id)
-            .join(DrawingItem, DrawingItem.id == PartConfirmation.drawing_item_id)
-            .where(
-                PartConfirmation.drawing_item_id.in_([item.item_id for item in live]),
-                PartConfirmation.decision == PartDecision.CONFIRMED.value,
-                ~exists().where(later.supersedes_id == PartConfirmation.id),
-            )
-        ).all()
-        for proposal_id, view_id in rows:
-            held.setdefault(view_id, set()).add(proposal_id)
-    return {view: tuple(sorted(found, key=str)) for view, found in held.items()}
 
 
 @dataclass(frozen=True, slots=True)

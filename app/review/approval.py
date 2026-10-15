@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Subquery, func, select, union_all
+from sqlalchemy import Subquery, func, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
@@ -68,6 +68,7 @@ from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.session import complete_session
 from evidence.canonical import EvidenceStatus
 from rules.parameters import ParameterLayer
+from workflow.depth_evidence import DEPTH_EXTRACTOR
 from workflow.parts import CODE_ACTOR_PREFIX
 from workflow.view_roles import CODE_CONFIRMERS
 
@@ -283,8 +284,9 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
       part_operands.py`), and a person's drawing-role confirmation. Code's own part decisions
       (#1244: a countertop on two judgments, or code taking its own back) and code's drawing roles
       are not reviewer input (review of #1248);
-    - a new reading of the countertop rows (#1206, "Read the unread pages" on this revision): the
-      checks have not seen what it read;
+    - a new reading of the countertop rows (#1206, "Read the unread pages" on this revision), or a
+      new depth and sink reading (#1308, "Read depths again"): the checks have not seen what it
+      read;
     - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
       action produced. An evidence confirm/correct writes one too, but it is a decision on its
       finding, already governed by `decision_holds` and the correction rule, so it is not counted
@@ -370,7 +372,12 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
         .join(ExtractionRun, ExtractionRun.task_run_id == TaskRun.id)
         .where(
             WorkflowRun.package_revision_id.in_(ids),
-            ExtractionRun.extractor_version.like("slot-reader%"),
+            or_(
+                ExtractionRun.extractor_version.like("slot-reader%"),
+                # A depth and sink reading newer than the checks (#1308: "Read depths again"
+                # reads on the same revision): the checks have not seen it yet either.
+                ExtractionRun.extractor == DEPTH_EXTRACTOR,
+            ),
         ),
     )
     return union_all(*branches).subquery()
