@@ -34,13 +34,16 @@ from app.models import (
     PackageState,
     SlotRowReviewDecision,
 )
+from app.models.evidence import CanonicalObservation
 from app.models.outbox import OutboxEntry
 from app.models.review import ReviewAction, ReviewSession
 from app.review import review_item_actions
 from app.review.review_items import ReviewItemsOut, review_items_for_revision
 from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
+from tests.api.test_wall_cases_api import _sealed
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_no_countertop_answers import _listed_page
+from verdict.operands import EvidenceStatus
 
 pytest_plugins = ("tests.app.postgres_fixture",)
 
@@ -190,18 +193,16 @@ def test_checked_by_hand_records_the_finding_action_with_a_fixed_note_in_a_sessi
     assert again.status_code == 409, again.text
     assert len(_actions(session, str(item["finding_id"]))) == 1
 
-    # The next action reuses the person's open session.
-    other = next(
-        entry
-        for entry in _of_kind(body["review_items"], "countertop_by_hand")
-        if entry["page"] == 2
-    )
+    # The next action reuses the person's open session. (Page 2's countertop is not held: its one
+    # open question is its walls, a wall choice with no right or wrong, #1358.)
+    assert [entry["page"] for entry in _of_kind(body["review_items"], "countertop_by_hand")] == [1]
+    other = body["review_items"]["not_checked"][0]
     second = _act(
         client,
         project_id,
         package_id,
         str(other["key"]),
-        "checked_right",
+        "clear-not-checked",
         {"expected_finding_id": other["finding_id"]},
     )
     assert second.status_code == 201, second.text
@@ -288,7 +289,7 @@ def _mixed(page_index: int, _row: int, slot: str) -> list[str]:
     return []
 
 
-def test_a_number_is_501_until_confirming_a_number_arrives(
+def test_a_number_is_confirmed_through_w2_with_the_value_shown(
     session: Session, tmp_path: Path
 ) -> None:
     project_id, package_id, _anchors = _package_rows(
@@ -297,20 +298,70 @@ def test_a_number_is_501_until_confirming_a_number_arrives(
     _run_current_checks(session, package_id, tmp_path)
     session.commit()
     client = _client(session, project_id)
-    number = _of_kind(_items(client, project_id, package_id), "number")[0]
+    number = next(
+        item
+        for item in _of_kind(_items(client, project_id, package_id), "number")
+        if item["what"] == "Piece 1 width"
+    )
+    assert number["best_guess"]["text"] == '20"'
 
-    for action, body in (("confirm", {}), ("fix", {"value": '21"'})):
-        response = _act(
+    # Confirm names the value the person saw (#1358): missing is 422, another value is 409.
+    for shown, code in ((None, 422), ('28"', 409), ("not a width", 409)):
+        refused = _act(
             client,
             project_id,
             package_id,
             str(number["key"]),
-            action,
-            {"expected_finding_id": number["finding_id"], **body},
+            "confirm",
+            {"expected_finding_id": number["finding_id"], "shown_value": shown},
         )
-        assert response.status_code == 501, response.text
-        assert response.json()["message"] == review_item_actions.NUMBERS_NOT_YET
+        assert refused.status_code == code, refused.text
+
     assert session.scalars(select(ReviewAction)).first() is None
+
+    # A fix in millimetres is refused, never converted (W2, #1339): nothing saved.
+    mm = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "fix",
+        {"expected_finding_id": number["finding_id"], "value": "520 mm"},
+    )
+    assert mm.status_code == 422, mm.text
+    assert session.scalars(select(ReviewAction)).first() is None
+
+    # Confirm the value shown: W2 records exactly the stored reading, and the checks run again.
+    confirmed = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "confirm",
+        {"expected_finding_id": number["finding_id"], "shown_value": '20"'},
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    assert confirmed.json()["recorded"].startswith("Confirmed")
+    person = session.scalars(
+        select(CanonicalObservation).where(
+            CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value
+        )
+    ).all()
+    assert [(o.value_numerator, o.value_denominator) for o in person] == [(20, 1)]
+    assert session.scalars(
+        select(OutboxEntry).where(OutboxEntry.workflow == RUN_CHECKS_WORKFLOW)
+    ).all()
+
+    # The same answer again is refused as already answered: nothing new is written.
+    again = _act(
+        client,
+        project_id,
+        package_id,
+        str(number["key"]),
+        "confirm",
+        {"expected_finding_id": number["finding_id"], "shown_value": '20"'},
+    )
+    assert again.status_code in (409, 422), again.text
 
 
 def test_a_result_held_on_several_numbers_is_never_settled_from_one_of_them(
@@ -536,25 +587,44 @@ def _pretend_kind(monkeypatch: pytest.MonkeyPatch, key: str, kind: str, actions:
 
 
 def test_a_wall_choice_goes_through_the_wall_review_and_queues_one_recheck(
-    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    session: Session, tmp_path: Path
 ) -> None:
-    project_id, package_id, anchors = _package_rows(session, wall_source="readers")
+    """The real wall-only row (#1358): its `wall_choice` item is answered with one of the layouts
+    it offers, through the existing wall review, and waits for the re-check."""
+    project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
     _run_current_checks(session, package_id, tmp_path)
     session.commit()
     revision = _revision(session, package_id)
     client = _client(session, project_id)
-    item = _first_by_hand(_items(client, project_id, package_id))
-    _pretend_kind(monkeypatch, str(item["key"]), "wall_choice", ["choose_wall"])
-
-    missing = _act(
-        client,
-        project_id,
-        package_id,
-        str(item["key"]),
-        "answer",
-        {"expected_finding_id": item["finding_id"], "answer": "choose_wall"},
+    item = next(
+        entry
+        for entry in _of_kind(_items(client, project_id, package_id), "wall_choice")
+        if entry["row_id"] == str(anchors[0])
     )
-    assert missing.status_code == 422, missing.text
+    assert item["actions"] == ["choose_wall"]
+
+    for refused_body in ({}, {"wall_config": "a garage"}):
+        refused = _act(
+            client,
+            project_id,
+            package_id,
+            str(item["key"]),
+            "answer",
+            {"expected_finding_id": item["finding_id"], "answer": "choose_wall", **refused_body},
+        )
+        assert refused.status_code == 422, refused.text
+    # No right or wrong on a wall choice.
+    for not_offered in ("checked_right", "checked_wrong"):
+        refused = _act(
+            client,
+            project_id,
+            package_id,
+            str(item["key"]),
+            "answer",
+            {"expected_finding_id": item["finding_id"], "answer": not_offered},
+        )
+        assert refused.status_code == 422, refused.text
+    assert session.scalars(select(SlotRowReviewDecision)).first() is None
 
     response = _act(
         client,
@@ -565,7 +635,7 @@ def test_a_wall_choice_goes_through_the_wall_review_and_queues_one_recheck(
         {
             "expected_finding_id": item["finding_id"],
             "answer": "choose_wall",
-            "wall_config": "back_left_right",
+            "wall_config": "back_and_left",
         },
     )
 
@@ -573,7 +643,7 @@ def test_a_wall_choice_goes_through_the_wall_review_and_queues_one_recheck(
     (decision,) = session.scalars(select(SlotRowReviewDecision))
     assert (decision.row_candidate_id, decision.wall_config, decision.confirmed_by) == (
         anchors[0],
-        "back_left_right",
+        "back_and_left",
         REVIEWER,
     )
     assert decision.measurements == {}
@@ -581,6 +651,11 @@ def test_a_wall_choice_goes_through_the_wall_review_and_queues_one_recheck(
     assert len(_queued_runs(session, revision.id)) == 1
     # The wall answer is the row's, not a finding decision.
     assert session.scalars(select(ReviewAction)).first() is None
+    # The item now waits for the re-check that reads the answer; nothing more is asked.
+    after = response.json()["review_items"]
+    (waiting,) = [entry for entry in after["items"] if entry["key"] == item["key"]]
+    assert (waiting["status"], waiting["actions"]) == ("rechecking", [])
+    assert after["unaccounted"] == []
 
 
 def test_an_architect_answer_goes_through_the_pairing_post_and_rechecks(
@@ -605,7 +680,11 @@ def test_an_architect_answer_goes_through_the_pairing_post_and_rechecks(
     )
     session.commit()
     client = _client(session, project_id)
-    item = _first_by_hand(_items(client, project_id, package_id))
+    item = next(
+        entry
+        for entry in _items(client, project_id, package_id)["items"]
+        if entry["row_id"] == str(anchors[0]) and entry["finding_id"] is not None
+    )
     _pretend_kind(monkeypatch, str(item["key"]), "architect", ["answer"])
 
     neither = _act(
@@ -696,9 +775,9 @@ def test_rechecks_coalesce_to_one_waiting_run_and_never_refuse(
     # Through the endpoint: a wall answer on each countertop, each 201 and never 409; both join
     # the runs already waiting, so no run is added.
     client = _client(session, project_id)
-    for item in _of_kind(_items(client, project_id, package_id), "countertop_by_hand"):
-        monkeypatch.undo()
-        _pretend_kind(monkeypatch, str(item["key"]), "wall_choice", ["choose_wall"])
+    walls = _of_kind(_items(client, project_id, package_id), "wall_choice")
+    assert len(walls) == 2, "each countertop's one open question is its walls (#1358)"
+    for item in walls:
         response = _act(
             client,
             project_id,
@@ -725,3 +804,173 @@ def test_a_recheck_while_checks_run_queues_one_follow_up(session: Session, tmp_p
     session.commit()
     assert len(_queued_runs(session, revision.id)) == 1
     assert session.scalars(select(Finding)).first() is not None
+
+
+# --- #1358: groups name what was seen; nothing new is not "Confirmed"; settings; no asserts --------
+
+
+@pytest.mark.parametrize(
+    ("group", "action", "answer"),
+    [
+        ("not-checked", "clear-not-checked", None),
+        ("no-countertop-pages", "answer", "confirm_no_countertop"),
+    ],
+)
+def test_a_group_click_without_the_keys_seen_is_refused_and_records_nothing(
+    session: Session, tmp_path: Path, group: str, action: str, answer: str | None
+) -> None:
+    project_id, package_id = (
+        _held_page(session, tmp_path)
+        if group == "not-checked"
+        else _listed_page(session, tmp_path)[:2]
+    )
+    client = _client(session, project_id)
+    body = {} if answer is None else {"answer": answer}
+    actions_before = len(list(session.scalars(select(ReviewAction))))
+
+    response = _act(client, project_id, package_id, group, action, body)
+
+    assert response.status_code == 422, response.text
+    assert "expected_keys" in response.json()["message"]
+    assert len(list(session.scalars(select(ReviewAction)))) == actions_before
+    assert session.scalars(select(NoCountertopAnswer)).first() is None
+
+
+def _keep_open(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    """Show an item as still open (the screen loaded before another answer landed)."""
+    real = review_items_for_revision
+
+    def patched(*args: object, **kwargs: object) -> ReviewItemsOut:
+        listed = real(*args, **kwargs)  # type: ignore[arg-type]
+        for index, item in enumerate(listed.items):
+            if item.key == key:
+                listed.items[index] = item.model_copy(
+                    update={
+                        "status": "open",
+                        "actions": ["confirm_no_countertop", "there_is_a_countertop"],
+                    }
+                )
+        return listed
+
+    monkeypatch.setattr(review_item_actions, "review_items_for_revision", patched)
+
+
+def test_a_page_answer_already_recorded_is_nothing_new_not_confirmed(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_id, package_id, _revision_row, _record = _listed_page(session, tmp_path)
+    client = _client(session, project_id)
+    (page,) = _of_kind(_items(client, project_id, package_id), "no_countertop_page")
+    first = _act(
+        client,
+        project_id,
+        package_id,
+        str(page["key"]),
+        "answer",
+        {"answer": "confirm_no_countertop"},
+    )
+    assert first.status_code == 201, first.text
+    _keep_open(monkeypatch, str(page["key"]))
+
+    again = _act(
+        client,
+        project_id,
+        package_id,
+        str(page["key"]),
+        "answer",
+        {"answer": "confirm_no_countertop"},
+    )
+
+    assert again.status_code == 200, again.text
+    assert again.json()["recorded"].startswith("Nothing new")
+    assert len(list(session.scalars(select(NoCountertopAnswer)))) == 1
+
+    group = _act(
+        client,
+        project_id,
+        package_id,
+        "no-countertop-pages",
+        "answer",
+        {"answer": "confirm_no_countertop", "expected_keys": [page["key"]]},
+    )
+    assert group.status_code == 200, group.text
+    assert group.json()["recorded"].startswith("Nothing new")
+    assert len(list(session.scalars(select(NoCountertopAnswer)))) == 1
+
+
+def test_a_recheck_runs_the_same_settings_check_as_run_checks(
+    session: Session, tmp_path: Path
+) -> None:
+    """A confirmed discriminator the rulebook does not offer is refused (422), as `POST .../checks`
+    refuses it, rather than queued to abstain silently."""
+    from fastapi import HTTPException
+
+    from workflow.layout_proposals import record_layout_confirmation
+
+    _project_id, package_id = _held_page(session, tmp_path)
+    revision = _revision(session, package_id)
+    record_layout_confirmation(
+        session,
+        package_revision_id=revision.id,
+        discriminator_name="wall_config",
+        value="a garage",
+        actor=REVIEWER,
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        queue_recheck(session, revision)
+
+    assert refused.value.status_code == 422
+    assert _queued_runs(session, revision.id) == []
+
+
+def test_an_item_with_nothing_to_answer_on_is_422_not_a_crash(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route's former `assert`s are plain 422s: a finding answer on an item with no result, and
+    a row answer on an item with no row."""
+    project_id, package_id = _held_page(session, tmp_path)
+    client = _client(session, project_id)
+    item = _first_by_hand(_items(client, project_id, package_id))
+    real = review_items_for_revision
+
+    def patched(*args: object, **kwargs: object) -> ReviewItemsOut:
+        listed = real(*args, **kwargs)  # type: ignore[arg-type]
+        for index, entry in enumerate(listed.items):
+            if entry.key == item["key"]:
+                listed.items[index] = entry.model_copy(
+                    update={
+                        "kind": "wall_choice",
+                        "actions": ["choose_wall"],
+                        "row_id": None,
+                    }
+                )
+        return listed
+
+    monkeypatch.setattr(review_item_actions, "review_items_for_revision", patched)
+    no_row = _act(
+        client,
+        project_id,
+        package_id,
+        str(item["key"]),
+        "answer",
+        {
+            "expected_finding_id": item["finding_id"],
+            "answer": "choose_wall",
+            "wall_config": "back_left_right",
+        },
+    )
+    assert no_row.status_code == 422, no_row.text
+
+    def no_result(*args: object, **kwargs: object) -> ReviewItemsOut:
+        listed = real(*args, **kwargs)  # type: ignore[arg-type]
+        for index, entry in enumerate(listed.items):
+            if entry.key == item["key"]:
+                listed.items[index] = entry.model_copy(update={"finding_id": None})
+        return listed
+
+    monkeypatch.setattr(review_item_actions, "review_items_for_revision", no_result)
+    no_finding = _act(client, project_id, package_id, str(item["key"]), "checked_right", {})
+    assert no_finding.status_code == 422, no_finding.text
+    assert session.scalars(select(ReviewAction)).first() is None
+    assert session.scalars(select(SlotRowReviewDecision)).first() is None

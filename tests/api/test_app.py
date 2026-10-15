@@ -516,6 +516,11 @@ def test_the_span_name_never_contains_the_requested_path(client: TestClient) -> 
             if isinstance(name, str):
                 names.append(name)
 
+    from app.telemetry.tracing import configure_tracing
+
+    # The request path installs the provider on a worker's first request; this test may be that first
+    # request (test order under xdist), so install it now, exactly as that request would.
+    configure_tracing()
     provider = otel.get_tracer_provider()
     assert isinstance(provider, SdkProvider), "tracing is not configured, so this proves nothing"
     recorder = Recorder()
@@ -550,6 +555,9 @@ def test_a_matched_route_is_named_by_its_template(client: TestClient) -> None:
             if isinstance(name, str):
                 names.append(name)
 
+    from app.telemetry.tracing import configure_tracing
+
+    configure_tracing()  # as the first request would: see the test above
     provider = otel.get_tracer_provider()
     assert isinstance(provider, SdkProvider)
     provider.add_span_processor(Recorder())

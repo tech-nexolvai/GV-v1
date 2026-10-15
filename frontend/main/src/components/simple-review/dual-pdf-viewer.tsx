@@ -3,13 +3,13 @@ import { Link2, Link2Off, MoveHorizontal, RefreshCw, X } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
 import { cn } from '@/lib/utils';
-import { outlineOf } from '@/lib/drawing-viewer';
+import { outlineOf, type Point } from '@/lib/drawing-viewer';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { liveReviewPagesApi, PictureStore, type ReviewDocument, type ReviewPagesApi, type ReviewPagesOut } from './dual-pdf-viewer-api';
-import { browserDecoder, goTo, openNav, step, toggleLink, type Decoder, type Nav, type Side } from './dual-pdf-viewer-lib';
-import { DualPane, type PaneCommand, type PaneSpot } from './dual-pdf-viewer-pane';
+import { browserDecoder, goTo, openNav, step, toggleLink, withCounts, type Decoder, type Nav, type Side } from './dual-pdf-viewer-lib';
+import { DualPane, type PaneCommand, type PaneMark, type PaneSpot } from './dual-pdf-viewer-pane';
 
 export type { ReviewPagesApi, ReviewPagesOut } from './dual-pdf-viewer-api';
 
@@ -50,12 +50,16 @@ export function DualPdfViewer({
   const [data, setData] = useState<ReviewPagesOut | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [nav, setNav] = useState<Nav | null>(null);
+  /** The listing `nav` was last placed or counted from. */
+  const [placedFor, setPlacedFor] = useState<ReviewPagesOut | null>(null);
   const [command, setCommand] = useState<{ side: Side | 'both'; order: PaneCommand } | null>(null);
-  const store = useMemo(() => new PictureStore((page, dvid) => api.loadPicture(projectId, packageId, page, dvid)), [api, projectId, packageId]);
+  const store = useMemo(() => new PictureStore((page, dvid, signal) => api.loadPicture(projectId, packageId, page, dvid, signal)), [api, projectId, packageId]);
 
   useEffect(() => {
     let live = true;
-    api.loadPages(projectId, packageId).then(
+    // Closing the viewer (or loading again) cancels a listing still on its way (#1362).
+    const cancel = new AbortController();
+    api.loadPages(projectId, packageId, cancel.signal).then(
       (out) => {
         if (!live) return;
         setData(out);
@@ -65,17 +69,23 @@ export function DualPdfViewer({
     );
     return () => {
       live = false;
+      cancel.abort();
     };
   }, [api, projectId, packageId, attempt]);
 
-  const vendor = data?.documents.find((doc) => doc.side === 'vendor') ?? null;
+  // Each side shows the file that holds the item's spot, else its first file (#1362).
+  const documents = data?.documents ?? [];
   const combined = data?.combined_set ?? false;
-  const architect = combined ? vendor : (data?.documents.find((doc) => doc.side === 'architect') ?? null);
-  const others = data?.documents.filter((doc) => doc.side === 'other').length ?? 0;
+  const vendor = pickFile(documents, 'vendor', item?.vendor_ref?.document_version_id);
+  const architect = combined ? vendor : pickFile(documents, 'architect', item?.architect_ref?.location?.document_version_id);
+  const notShown = notShownLine(documents, [vendor, architect]);
 
-  // The first listing places both sides: at the item's spots, or page 1.
-  if (data && nav === null && (vendor || architect)) {
-    setNav(openNav(startPages(item, architect, combined), { vendor: countOf(vendor), architect: countOf(architect) }, combined));
+  // The first listing places both sides: at the item's spots, or page 1. A later one ("Check again")
+  // only brings the page counts up to date, keeping the pages shown.
+  if (data && data !== placedFor && (vendor || architect)) {
+    const counts = { vendor: countOf(vendor), architect: countOf(architect) };
+    setPlacedFor(data);
+    setNav(nav === null ? openNav(startPages(item, architect, combined), counts, combined) : withCounts(nav, counts));
   }
 
   const order = (side: Side | 'both', kind: PaneCommand['kind'], dx = 0, dy = 0) =>
@@ -127,7 +137,7 @@ export function DualPdfViewer({
                   <span className="num">{data.revision_number}</span>
                 </>
               )}
-              {others > 0 && `. ${others} other ${others === 1 ? 'file is' : 'files are'} not shown here.`}
+              {notShown && `. ${notShown}`}
             </DialogDescription>
           </div>
           <p className="hidden text-[12px] text-muted-foreground lg:block">
@@ -172,6 +182,7 @@ export function DualPdfViewer({
               count={nav.counts.vendor}
               combined={false}
               spot={spotOn(item, 'vendor', vendor, nav.pages.vendor)}
+              mark={markOf(item, 'vendor', vendor)}
               store={store}
               decoder={decoder}
               command={commandFor('vendor')}
@@ -212,6 +223,8 @@ export function DualPdfViewer({
               count={nav.counts.architect}
               combined={combined}
               spot={spotOn(item, 'architect', architect, nav.pages.architect)}
+              focus={combined ? focusOn(item, architect, nav.pages.architect) : null}
+              mark={combined ? null : markOf(item, 'architect', architect)}
               store={store}
               decoder={decoder}
               command={commandFor('architect')}
@@ -236,6 +249,27 @@ function countOf(doc: ReviewDocument | null): number {
   return doc ? Math.max(doc.page_count, doc.pages.length, 1) : 1;
 }
 
+/** The side's file holding the item's spot, else its first file. */
+function pickFile(documents: ReviewDocument[], side: Side, documentVersionId: string | undefined): ReviewDocument | null {
+  const files = documents.filter((doc) => doc.side === side);
+  return files.find((doc) => doc.document_version_id === documentVersionId) ?? files[0] ?? null;
+}
+
+/** Never silent: every file of the set that neither side shows is counted, by kind. */
+function notShownLine(documents: ReviewDocument[], shown: (ReviewDocument | null)[]): string | null {
+  const hidden = documents.filter((doc) => !shown.includes(doc));
+  const parts = (['vendor', 'architect', 'other'] as const)
+    .map((side) => {
+      const n = hidden.filter((doc) => doc.side === side).length;
+      const kind = side === 'other' ? 'other' : `more ${side}`;
+      return n > 0 ? `${n} ${kind} ${n === 1 ? 'file' : 'files'}` : null;
+    })
+    .filter((part): part is string => part !== null);
+  if (parts.length === 0) return null;
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return `${list} ${hidden.length === 1 ? 'is' : 'are'} not shown here.`;
+}
+
 function startPages(item: ReviewItem | null, architect: ReviewDocument | null, combined: boolean) {
   const vendorPage = item?.vendor_ref?.page_number ?? item?.page ?? 1;
   const location = item?.architect_ref?.location ?? null;
@@ -250,5 +284,25 @@ function spotOn(item: ReviewItem | null, side: Side, doc: ReviewDocument | null,
   if (!ref || ref.document_version_id !== doc.document_version_id || ref.page_number !== page) return null;
   const polygon = outlineOf(ref.polygon);
   if (!polygon) return null;
-  return { polygon, label: side === 'vendor' ? item.what : `${item.what}, architect`, emphasis: side === 'vendor' ? 'item' : 'reference' };
+  return { polygon, label: side === 'vendor' ? item.what : `${item.what}, architect`, emphasis: side === 'vendor' ? (item.status === 'done' ? 'checked' : 'item') : 'reference' };
+}
+
+/** The page of this side's file that holds the item, kept marked in the page strip while turning away. */
+function markOf(item: ReviewItem | null, side: Side, doc: ReviewDocument | null): PaneMark | null {
+  if (!item || !doc) return null;
+  const ref = side === 'vendor' ? (item.vendor_ref ?? null) : (item.architect_ref?.location ?? null);
+  if (!ref || ref.document_version_id !== doc.document_version_id) return null;
+  return { page: ref.page_number, tone: side === 'vendor' && item.status !== 'done' ? 'item' : 'neutral' };
+}
+
+/** Combined sheet: where the item is on this page (its architect spot, else its vendor spot), to pick the architect drawing that holds it. */
+function focusOn(item: ReviewItem | null, doc: ReviewDocument | null, page: number): Point[] | null {
+  if (!item || !doc) return null;
+  for (const ref of [item.architect_ref?.location ?? null, item.vendor_ref ?? null]) {
+    if (ref && ref.document_version_id === doc.document_version_id && ref.page_number === page) {
+      const polygon = outlineOf(ref.polygon);
+      if (polygon) return polygon;
+    }
+  }
+  return null;
 }

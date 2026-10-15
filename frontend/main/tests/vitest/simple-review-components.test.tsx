@@ -130,7 +130,7 @@ describe('ItemDetail', () => {
     const guess = screen.getByTestId('best-guess');
     expect(guess.textContent).toBe('96 1/4"');
     expect(guess.className).toContain('num');
-    expect(screen.getByText("Picked from the AIs' readings")).toBeTruthy();
+    expect(screen.getByText('The stored reading; the readings beside it differ')).toBeTruthy();
     expect(screen.getByText('AI 2').parentElement?.textContent).toContain('96 3/4');
   });
 
@@ -140,7 +140,7 @@ describe('ItemDetail', () => {
     expect(onAct).toHaveBeenCalledWith('confirm');
     await userEvent.click(screen.getByRole('button', { name: /Fix/ }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /96 3\/4"/ }));
-    expect(onAct).toHaveBeenCalledWith('fix', '96 3/4"');
+    expect(onAct).toHaveBeenCalledWith('fix', { value: '96 3/4"' });
     expect(document.querySelector('input, textarea')).toBeNull();
   });
 

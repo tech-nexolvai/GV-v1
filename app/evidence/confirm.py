@@ -48,7 +48,12 @@ from evidence.normalize import NormalizationRefusal, normalize
 from rules.semantic_types import SemanticType
 from units.measurement import Measurement, Unit
 
-__all__ = ["ConfirmationRefused", "RefusalReason", "confirm_candidate_type"]
+__all__ = [
+    "ConfirmationRefused",
+    "RefusalReason",
+    "confirm_candidate_type",
+    "observation_from_candidate",
+]
 
 
 class RefusalReason(StrEnum):
@@ -142,6 +147,42 @@ def confirm_candidate_type(
             "this reading has already been confirmed; correct the observation instead",
         )
 
+    return observation_from_candidate(
+        session,
+        row,
+        semantic_type=semantic_type,
+        status=EvidenceStatus.HUMAN_CONFIRMED,
+        actor=confirmed_by,
+    )
+
+
+def observation_from_candidate(
+    session: Session,
+    row: ObservationCandidate,
+    *,
+    semantic_type: str,
+    status: EvidenceStatus,
+    actor: str,
+) -> CanonicalObservation | ConfirmationRefused:
+    """The canonical observation a person's answer about `row` mints, citing `row` (#530, #1339).
+
+    `confirm_candidate_type`'s own body, shared with the held-reading actions
+    (`app/review/evidence_actions.py`, #1339), which keep their own history of answers and so do not
+    take the once-only check above. The side comes from `ReadingSides` exactly as before, and the
+    value is the reading's own, never re-entered. `status` is `HUMAN_CONFIRMED` for a person's
+    confirmation, or, for the AI's reading a person's answer is recorded against (the original of
+    their review action), `REJECTED` when they corrected it (found invalid) or `RAW_CANDIDATE` when
+    they confirmed it (one unverified route read it); the gate seals neither. The person who
+    answered is on the audit event either way.
+    """
+    if status not in (
+        EvidenceStatus.HUMAN_CONFIRMED,
+        EvidenceStatus.REJECTED,
+        EvidenceStatus.RAW_CANDIDATE,
+    ):
+        raise ValueError(
+            "a person's answer mints a HUMAN_CONFIRMED, REJECTED or RAW_CANDIDATE observation only"
+        )
     page = session.get(Page, row.page_id)
     run = session.get(ExtractionRun, row.extraction_run_id)
     if page is None or run is None:
@@ -210,7 +251,7 @@ def confirm_candidate_type(
         # **The status `normalize` could not give it.** Normalisation produces a `RAW_CANDIDATE`,
         # because normalising is not qualifying. What qualifies this is the person who looked at the
         # crop and the value and said what it is, and their name is on the review action beside it.
-        status=EvidenceStatus.HUMAN_CONFIRMED.value,
+        status=status.value,
         authority=Authority.AUTHORITATIVE.value,
         evidence_crop_uri=None,
     )
@@ -232,7 +273,7 @@ def confirm_candidate_type(
     emit(
         session,
         category=AuditCategory.REVIEW_ACTION,
-        actor=confirmed_by,
+        actor=actor,
         target_id=observation.id,
         target_type="canonical_observation",
     )

@@ -19,6 +19,7 @@ import type {
 
 /** The AIs as a reviewer knows them. */
 export function readerWord(reader: string): string {
+  if (reader === 'pdf-text-layer') return 'PDF text';
   if (reader === 'MODEL_A') return 'AI 1';
   if (reader === 'MODEL_B') return 'AI 2';
   return reader.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase());
@@ -27,7 +28,7 @@ export function readerWord(reader: string): string {
 export const GUESS_SOURCE_WORDS: Record<BestGuess['source'], string> = {
   pdf_text: "Printed in the PDF's own text",
   agreed_text: 'Both AIs read this',
-  suggestion: "Picked from the AIs' readings",
+  suggestion: 'The stored reading; the readings beside it differ',
 };
 
 /** The button words for each answer. Each says what happens when it is pressed. */
@@ -57,6 +58,11 @@ export function agreeAction(item: Pick<ReviewItem, 'actions' | 'status'>): ItemA
 export function disagreeAction(item: Pick<ReviewItem, 'actions' | 'status'>): ItemAction | null {
   if (item.status !== 'open') return null;
   return item.actions.filter(isItemAction).find((action) => DISAGREE.includes(action)) ?? null;
+}
+
+/** The wall layout the C key picks on a wall choice: the readers' proposal, or null (none). */
+export function proposedWall(item: Pick<ReviewItem, 'wall_choices'>): string | null {
+  return (item.wall_choices ?? []).find((choice) => choice.proposed)?.layout ?? null;
 }
 
 function bare(text: string): string {

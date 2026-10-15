@@ -833,7 +833,8 @@ def _carry_row_answers(
             row_candidate_id=row.anchor.id,
             supersedes_id=None,
             wall_config=source.wall_config,
-            measurements=dict(source.measurements),
+            # Widths once typed on a row fill nothing since #1339 (confirm-only): not copied.
+            measurements={},
             confirmed_by=source.confirmed_by,
             carried_from_id=source.id,
         )
