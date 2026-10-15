@@ -143,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         depth_again,
         distribution,
         documents,
+        draft_cloud,
         drawing_parts,
         drawing_views,
         finding_chain,
@@ -159,6 +160,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         reading_parts,
         review,
         review_assistant,
+        review_items,
+        review_pages,
         reviewer_chat,
         revisions,
         rules,
@@ -190,6 +193,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # withdrawn or added by a person, never all at once (#882).
     app.include_router(drawing_parts.router, prefix=API_PREFIX)
     app.include_router(page_pictures.router, prefix=API_PREFIX)
+    # Both drawings' pages and picture readiness, for the side-by-side viewer (#1342). Reads only.
+    app.include_router(review_pages.router, prefix=API_PREFIX)
     # Which confirmed parts sit beneath each confirmed countertop: suggested by the computer,
     # confirmed, corrected or withdrawn by a person, one countertop at a time (#893).
     app.include_router(countertop_runs.router, prefix=API_PREFIX)
@@ -203,8 +208,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # corrected or taken back by a person, one part at a time (#913).
     app.include_router(reading_parts.router, prefix=API_PREFIX)
     app.include_router(approvals.router, prefix=API_PREFIX)
+    # The draft cloud PDF any time before sign-off (#1340): queued, never rendered here.
+    app.include_router(draft_cloud.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(visual_countertops.router, prefix=API_PREFIX)
+    # The simple review screen's one list (#1338): read-only, over the projections above.
+    app.include_router(review_items.router, prefix=API_PREFIX)
     # Each confirmed countertop's comparison with the architect, read by countertop (#1273): it
     # reads only, and no check reads it.
     app.include_router(item_architect.router, prefix=API_PREFIX)

@@ -894,6 +894,7 @@ def consume(
     `process_package_revision` has no consumer here and is refused like any other unknown name.
     """
     from workflow.depth_again import READ_DEPTHS_AGAIN_WORKFLOW
+    from workflow.draft_cloud import DRAFT_CLOUD_WORKFLOW
     from workflow.part_pictures import CUT_PART_PICTURES_WORKFLOW
     from workflow.slot_row_scope import READ_UNREAD_PAGES_WORKFLOW
     from workflow.vendor_page_pictures import RENDER_VENDOR_PAGE_PICTURES_WORKFLOW
@@ -917,6 +918,17 @@ def consume(
         )
         bundle = generate_signed_outputs(session, store, approval_id)
         return {"bundle_id": str(bundle.id)}
+    if workflow == DRAFT_CLOUD_WORKFLOW:
+        # A reviewer asked for the draft cloud PDF before sign-off (#1340). It decides nothing;
+        # a failure is raised with its sentence, and the outbox parks the request with it.
+        from storage.local import LocalStore
+        from workflow.draft_cloud_render import consume_draft_request
+
+        draft_store = LocalStore(
+            root=pathlib.Path(os.environ["GV_DEV_STORAGE"]).resolve(),
+            ticket_secret=b"local-review-worker-never-issues-tickets",
+        )
+        return consume_draft_request(session, draft_store, payload, idempotency_key)  # type: ignore[arg-type]
     if workflow == "extract_package":
         return run_extraction(
             session,

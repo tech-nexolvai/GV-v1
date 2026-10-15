@@ -469,10 +469,13 @@ def test_no_redline_is_produced_without_typed_located_evidence(
         OutputArtifactKind.FINDINGS_WORKBOOK.value,
         OutputArtifactKind.FINDINGS_PDF.value,
     }
+    # `draft_redline` (#1340) is the draft a reviewer asks for before sign-off, made only by the
+    # draft job, never by this stage and never served as the signed redline.
     assert [member.value for member in OutputArtifactKind] == [
         "findings_workbook",
         "findings_pdf",
         "redline",
+        "draft_redline",
     ]
 
 

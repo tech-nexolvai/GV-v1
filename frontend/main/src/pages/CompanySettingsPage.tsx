@@ -1,10 +1,12 @@
 /**
- * Company settings: GV's standard numbers, set once and used on every project (#812).
+ * Company settings: GV's standard numbers, set once and used on every project (#812), and each
+ * project's own values under Projects (#1341), so a review never has to ask for a setting.
  *
  * Many checks need numbers that are on no drawing — the usual cabinet depth, a side panel's
  * thickness, the sink clearance, the filler limits. They are GV's house rules, the same on every job,
  * so they belong here rather than being typed again for each project. Anyone may look; only an admin
- * can save, because a standard changes every future check on every project.
+ * can save, because a standard changes every future check on every project. A project's own values
+ * (its sink, cabinet width limits, overrides) are saved by its reviewers in the Projects section.
  */
 
 import { useEffect, useState } from 'react';
@@ -16,6 +18,7 @@ import {
   type CompanySettings,
 } from '../api/client';
 import { CompanySettingsList } from '../components/settings/CompanySettingsList';
+import { ProjectSettingsSection } from '../components/settings/ProjectSettings';
 import { changedValues } from '../components/settings/companySettings';
 import { PageFrame, PageLoadError } from '@/components/ui/PageFrame';
 import { Button } from '@/components/ui/button';
@@ -87,10 +90,10 @@ export function CompanySettingsPage() {
       ) : (
         <>
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            Set once here, these apply to every project.
+            Set once here, these apply to every project. Only an admin can change GV&apos;s standards.
             <InfoTip label="About company settings">
-              <p>These are GV&apos;s standards only. Any of them can still be set differently for one project, in that review&apos;s Measurements.</p>
-              <p>Overhang, backsplash, side panel and cabinet depth are project defaults: empty until GV sets them, and a value typed for a project wins. The cabinet width limits are entered per project, in each review&apos;s Measurements.</p>
+              <p>These are GV&apos;s standards only. Any of them can still be set differently for one project, under Projects below.</p>
+              <p>Overhang, backsplash, side panel and cabinet depth are project defaults: empty until GV sets them, and a value set for a project wins. The cabinet width limits and the sink are entered per project, under Projects below.</p>
               <p>A check whose number is set nowhere says &ldquo;not found&rdquo; rather than guessing. Only an admin can save.</p>
             </InfoTip>
           </p>
@@ -111,6 +114,7 @@ export function CompanySettingsPage() {
           </div>
         </>
       )}
+      <ProjectSettingsSection />
       </div>
     </PageFrame>
   );
