@@ -6627,6 +6627,7 @@ class DatabaseStages:
         from extraction.reader import UnreadablePdf
         from extraction.slot_reader.anthropic import BatchSpendGuard
         from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION
+        from workflow.depth_evidence import RUN_FAILED as DEPTH_RUN_FAILED
         from workflow.depth_reader import (
             countertops_by_drawing,
             depth_asker,
@@ -6653,29 +6654,53 @@ class DatabaseStages:
         if task_run is None:
             return {"ran": False, "reason": "no stage run to record the depth reading under"}
         settings = MEASURED_DEPTH_READER_SETTINGS
-        config_hash = (
+        base_hash = (
             f"dpi={settings.dpi};readers={'|'.join(runtime.form.reader_ids)};"
             f"effort={settings.effort}"
         )
         # The run is opened only once the reading is done, and in the stage's own transaction, so
-        # its being there means this stage run read already (a failed attempt rolled it back).
-        recorded = session.scalar(
-            select(ExtractionRun.id)
-            .where(
-                ExtractionRun.task_run_id == task_run.id,
-                ExtractionRun.extractor == DEPTH_EXTRACTOR,
-                ExtractionRun.extractor_version == DEPTH_READER_VERSION,
-                ExtractionRun.config_hash == config_hash,
+        # its being there means this stage run read already (a failed attempt rolled it back). A
+        # reading recorded as failed is not "already recorded": it is tried again, as a run of its
+        # own (`;retry=<n>`), so the failed one keeps what it said.
+        earlier = list(
+            session.scalars(
+                select(ExtractionRun).where(
+                    ExtractionRun.task_run_id == task_run.id,
+                    ExtractionRun.extractor == DEPTH_EXTRACTOR,
+                    ExtractionRun.extractor_version == DEPTH_READER_VERSION,
+                    or_(
+                        ExtractionRun.config_hash == base_hash,
+                        ExtractionRun.config_hash.startswith(
+                            f"{base_hash};retry=", autoescape=True
+                        ),
+                    ),
+                )
             )
-            .limit(1)
+        )
+        recorded = next(
+            (
+                run
+                for run in earlier
+                if session.scalar(
+                    select(ObservationCandidate.id)
+                    .where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.ambiguity_flags.contains([DEPTH_RUN_FAILED]),
+                    )
+                    .limit(1)
+                )
+                is None
+            ),
+            None,
         )
         if recorded is not None:
             # Checked before anything is prepared or asked: a redelivered stage reads nothing again.
             return {
                 "ran": True,
-                "run": str(recorded),
+                "run": str(recorded.id),
                 "reason": "this stage's depth reading is already recorded",
             }
+        config_hash = base_hash if not earlier else f"{base_hash};retry={len(earlier)}"
         countertops = countertops_by_drawing(session, package_revision_id)
         if not countertops:
             return {"ran": False, "reason": "Bala filed no countertop, so there is nothing to read"}
@@ -6731,8 +6756,15 @@ class DatabaseStages:
                         settings=settings,
                     )
                 )
-            except (UnreadablePdf, ValueError) as error:
-                not_prepared[page.id] = f"code could not prepare this page for the reader: {error}"
+            except Exception as error:  # noqa: BLE001 - held on the page's countertops, with why
+                kind = (
+                    ""
+                    if isinstance(error, (UnreadablePdf, ValueError))
+                    else f"{type(error).__name__}: "
+                )
+                not_prepared[page.id] = (
+                    f"code could not prepare this page for the reader: {kind}{error}"
+                )
         budget_micros = (
             self._ai_budget_fixed_micros
             if self._ai_budget_fixed_micros is not None
@@ -6741,8 +6773,14 @@ class DatabaseStages:
             )
         )
         spent_micros, unpriced = _revision_spend(session, package_revision_id)
+        # The smaller of the configured Claude ceiling and what the set's budget has left, as the
+        # slot reader takes it.
         cap_usd = _remaining_claude_budget(
-            Decimal(budget_micros) / 1_000_000,
+            (
+                Decimal(budget_micros) / 1_000_000
+                if runtime.spend_cap_usd is None
+                else min(runtime.spend_cap_usd, Decimal(budget_micros) / 1_000_000)
+            ),
             cap_micros=budget_micros,
             spent_micros=spent_micros,
             unpriced_calls=unpriced,
@@ -6778,22 +6816,31 @@ class DatabaseStages:
             )
         except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
             failure = f"{type(error).__name__}: {error}"
-        run = open_extraction_run(
-            session,
-            task_run_id=task_run.id,
-            extractor=DEPTH_EXTRACTOR,
-            extractor_version=DEPTH_READER_VERSION,
-            config_hash=config_hash,
-            dpi=settings.dpi,
-        )
-        meter, self._meter = self._meter, _SpendMeter(cap_micros=_micros(cap_usd))
         try:
-            self._record_reader_attempts(
-                session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
-            )
-            spent = self._meter.as_payload()
-        finally:
-            self._meter = meter
+            with session.begin_nested():
+                run = open_extraction_run(
+                    session,
+                    task_run_id=task_run.id,
+                    extractor=DEPTH_EXTRACTOR,
+                    extractor_version=DEPTH_READER_VERSION,
+                    config_hash=config_hash,
+                    dpi=settings.dpi,
+                )
+                meter, self._meter = self._meter, _SpendMeter(cap_micros=_micros(cap_usd))
+                try:
+                    self._record_reader_attempts(
+                        session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
+                    )
+                    spent = self._meter.as_payload()
+                finally:
+                    self._meter = meter
+        except Exception as error:  # noqa: BLE001 - never stops the package
+            # Its paid calls are in the call ledger already, committed on their own.
+            return {
+                "ran": False,
+                "reason": "the depth reading could not be recorded, so nothing was read: "
+                f"{type(error).__name__}: {error}",
+            }
         by_id = {page.id: page for page in pages}
         written: dict[str, object] = {}
         if failure is None:
@@ -6808,18 +6855,27 @@ class DatabaseStages:
                         {(str(page.document_version_id), page.index): page for page in pages},
                         dpi=settings.dpi,
                     )
+                    persist_page_notes(
+                        session, package_revision_id, run, by_id, not_prepared, failed=False
+                    )
                 written = persisted.as_payload()
             except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
                 failure = f"its readings could not be saved: {type(error).__name__}: {error}"
         if failure is not None:
-            persist_page_notes(
-                session,
-                package_revision_id,
-                run,
-                by_id,
-                dict.fromkeys(by_id, f"the depth reading failed, so nothing was read: {failure}"),
-                failed=True,
-            )
+            try:
+                with session.begin_nested():
+                    persist_page_notes(
+                        session,
+                        package_revision_id,
+                        run,
+                        by_id,
+                        dict.fromkeys(
+                            by_id, f"the depth reading failed, so nothing was read: {failure}"
+                        ),
+                        failed=True,
+                    )
+            except Exception as error:  # noqa: BLE001 - reported below; the package goes on
+                failure = f"{failure}; and the failure could not be noted: {error}"
             return {
                 "ran": False,
                 "run": str(run.id),
@@ -6827,7 +6883,6 @@ class DatabaseStages:
                 "spend": spent,
                 "pages_not_prepared": len(not_prepared),
             }
-        persist_page_notes(session, package_revision_id, run, by_id, not_prepared, failed=False)
         return {
             "ran": True,
             "run": str(run.id),

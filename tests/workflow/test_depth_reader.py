@@ -21,7 +21,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.db.session import session_factory
-from app.models import ItemViewLink, ObservationCandidate
+from app.models import DrawingView, ItemViewLink, ObservationCandidate
 from app.models.runs import ModelInvocation, TaskRun, WorkflowRun
 from extraction.depth.read import Asked, DepthReading, ReaderSays, ValueReading, ViewReading
 from extraction.depth.view_kind import ViewKind
@@ -409,7 +409,7 @@ class _Clients:
         return _Refusing()
 
 
-def _claude_stages(store: LocalStore) -> DatabaseStages:
+def _claude_stages(store: LocalStore, ceiling: Decimal | None = None) -> DatabaseStages:
     from app.runs.rates import load_model_rates
     from tests.workflow.test_slot_reader import FRACTION_ENV
     from workflow.form_reader import FormReaderRuntime
@@ -440,6 +440,7 @@ def _claude_stages(store: LocalStore) -> DatabaseStages:
         fraction_bar=fraction_bar_from_environment(FRACTION_ENV),
         allow_stacked=True,
         claude_row_reader=True,
+        spend_cap_usd=ceiling,
     )
     return DatabaseStages(store, form_reader=form, slot_reader=slot, depth_reader=True)
 
@@ -649,3 +650,127 @@ def test_readings_that_cannot_be_saved_mark_the_reading_failed_and_never_stop_ma
         )
     ).all()
     assert len(failed) == 1 and f"unplaced-among:{sheet.proposal}" in failed[0].ambiguity_flags
+
+
+# -- re-review of #1294 ----------------------------------------------------------------------------
+
+
+def test_a_view_also_a_tenth_inside_another_drawing_is_in_neither() -> None:
+    from evidence.coordinates import StoredPoint
+    from workflow.depth_reader import drawings_holding
+
+    first, second = uuid4(), uuid4()
+    drawings = [
+        (first, (Decimal(0), Decimal(0), Decimal(1), Decimal(1))),
+        (second, (Decimal("0.4"), Decimal(0), Decimal(1), Decimal(1))),
+    ]
+    view = [
+        StoredPoint(Decimal("0.3"), Decimal("0.1")),
+        StoredPoint(Decimal("0.5"), Decimal("0.2")),
+    ]
+    # Wholly inside the first, and half inside the second, which overlaps it: in neither.
+    assert drawings_holding(drawings, view) == []
+    small = [
+        StoredPoint(Decimal("0.1"), Decimal("0.1")),
+        StoredPoint(Decimal("0.3"), Decimal("0.2")),
+    ]
+    assert drawings_holding(drawings, small) == [first]
+
+
+def test_a_person_s_link_wins_when_the_view_is_read_again(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    read = _Reading(sheet)
+    read.view((_value("CT010", 24),))
+    read.persist()
+    (code_link,) = session.scalars(select(ItemViewLink)).all()
+    second = DrawingView(page_id=sheet.page.id, tag="SECOND", region=sheet.view.region)
+    session.add(second)
+    session.flush()
+    other, _item = _confirmed(session, second, PartKind.COUNTERTOP, "0.20", "0.80")
+    persons = ItemViewLink(
+        part_proposal_id=other,
+        page_id=sheet.page.id,
+        region=code_link.region,
+        view_kind="plan",
+        judged_by="person",
+        supersedes_id=code_link.id,
+        linked_by="reviewer@example.com",
+    )
+    session.add(persons)
+    session.flush()
+
+    again = _Reading(sheet)
+    again.view((_value("CT010", 24),))
+    again.persist()
+
+    newest = [row for row in _rows(session, sheet) if SUPPORT_FLAG not in row.ambiguity_flags][-1]
+    assert f"item:{other}" in newest.ambiguity_flags
+    assert f"link:{persons.id}" in newest.ambiguity_flags
+
+
+def test_the_cap_is_never_above_the_configured_claude_ceiling(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workflow.depth_reader as reader_module
+
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    guards: list[object] = []
+
+    def capture(jobs: object, **kwargs: object) -> dict[object, object]:
+        guards.append(kwargs["spend_guard"])
+        return {}
+
+    monkeypatch.setattr(reader_module, "read_crops_parallel", capture)
+    _fake_reading(monkeypatch, rounds=1)
+
+    _claude_stages(store, ceiling=Decimal("0.2"))._depth_pass(session, sheet.revision.id)
+
+    assert guards[0]._maximum_usd == Decimal("0.2")  # type: ignore[attr-defined]
+
+
+def test_a_failed_reading_in_the_same_stage_run_is_tried_again(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    _fake_reading(monkeypatch, fail=RuntimeError("the reader broke"), rounds=0)
+    stages = _claude_stages(store)
+    assert stages._depth_pass(session, sheet.revision.id)["ran"] is False
+
+    ran = _fake_reading(monkeypatch, rounds=0)
+    again = stages._depth_pass(session, sheet.revision.id)
+
+    assert again["ran"] is True and len(ran) == 1
+    assert "already recorded" not in str(again.get("reason", ""))
+    assert stages._depth_pass(session, sheet.revision.id)["reason"] == (
+        "this stage's depth reading is already recorded"
+    )
+
+
+def test_nothing_the_depth_pass_does_can_stop_match(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import extraction.depth.read as read_module
+
+    sheet = _Set(session, store)
+    _match_stage_run(session, sheet)
+    _fake_reading(monkeypatch, rounds=0)
+
+    def odd(*_: object, **__: object) -> object:
+        raise KeyError("an odd page")
+
+    monkeypatch.setattr(read_module, "prepare_pdf_page", odd)
+
+    def broken(*_: object, **__: object) -> None:
+        raise RuntimeError("the ledger is down")
+
+    monkeypatch.setattr(DatabaseStages, "_record_reader_attempts", broken)
+
+    result = _claude_stages(store).match(session, sheet.revision.id)
+
+    depth = result["depth"]
+    assert isinstance(depth, dict) and depth["ran"] is False
+    assert "the ledger is down" in str(depth["reason"])

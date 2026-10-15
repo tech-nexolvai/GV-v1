@@ -809,7 +809,7 @@ def test_a_failed_re_read_falls_back_to_the_earlier_good_one(
     found = sheet.operands()
 
     assert found.operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
-    assert any("failed" in note for note in found.notes)
+    assert any("failed" in note and "Boom" in note for note in found.notes), "and why"
 
 
 def test_a_reader_that_only_failed_says_so_on_the_countertop(
@@ -867,3 +867,90 @@ def test_a_person_s_correction_of_a_link_moves_the_reading_to_the_other_countert
     assert sheet.operands().operands == {}
     moved = depth_operands(session, sheet.revision.id, _rule("CT-DEPTH-001"), other_item)
     assert moved.operands["countertop_depth"].value.exact == 24  # type: ignore[union-attr]
+
+
+# -- re-review of #1294: a person's earlier number never hides a new one ---------------------------
+
+
+def _confirmed_plan(sheet: _Set, link: ItemViewLink) -> None:
+    first = sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=link, view="p0:v1.1", confirmed_by="drawn-length-only"
+    )
+    confirm_candidate_type(
+        sheet.session, candidate_id=first.id, semantic_type=CT010, confirmed_by=ACTOR
+    )
+
+
+def test_a_new_section_with_another_number_holds_a_person_s_earlier_depth(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    plan, section = sheet.link(), sheet.link(kind="section")
+    _confirmed_plan(sheet, plan)
+    sheet.rerun()
+    sheet.reading(
+        CT010, 24, CONFIRM_ONLY, link=plan, view="p0:v1.1", confirmed_by="drawn-length-only"
+    )
+    sheet.reading(CT010, 26, QUALIFIED, link=section, view="p0:v1.2", kind="section")
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert '24" and 26"' in found.ambiguous["countertop_depth"]
+
+
+def test_a_person_s_depth_is_not_carried_when_the_re_read_does_not_read_it_again(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    _confirmed_plan(sheet, sheet.link())
+    sheet.rerun()
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert "does not read that dimension" in found.ambiguous["countertop_depth"]
+
+
+def test_a_person_s_depth_is_not_carried_when_the_re_read_ties_the_view_elsewhere(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    _confirmed_plan(sheet, sheet.link())
+    sheet.rerun()
+    sheet.reading(CT010, 26, CONFIRM_ONLY, unplaced=(uuid4(),), view="p0:v1.1")
+
+    found = sheet.operands()
+
+    assert found.operands == {} and "countertop_depth" in found.ambiguous
+
+
+def test_a_person_s_depth_and_a_qualified_other_number_in_one_reading_hold(
+    session: Session, store: LocalStore
+) -> None:
+    sheet = _Set(session, store)
+    _confirmed_plan(sheet, sheet.link())
+    sheet.reading(CT010, 26, QUALIFIED, link=sheet.link(kind="section"), kind="section")
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert '24" and 26"' in found.ambiguous["countertop_depth"]
+
+
+@pytest.mark.parametrize("tied", [True, False])
+def test_a_reading_held_without_an_agreed_number_holds_the_other(
+    session: Session, store: LocalStore, tied: bool
+) -> None:
+    sheet = _Set(session, store)
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    disagreed = "the two readers' reading is held: readers differ"
+    if tied:
+        sheet.reading(CT010, None, HELD, link=sheet.link(kind="section"), reason=disagreed)
+    else:
+        sheet.reading(CT010, None, HELD, unplaced=(sheet.proposal, uuid4()), reason=disagreed)
+
+    found = sheet.operands()
+
+    assert found.operands == {}
+    assert "readers differ" in found.ambiguous["countertop_depth"]

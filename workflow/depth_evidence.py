@@ -180,6 +180,14 @@ RETYPED_EARLIER: Final = (
     "A person said earlier that the {earlier} on this view is not the {what}, and the new reading "
     "of it says {now}: held for a person."
 )
+NOT_AGAIN: Final = (
+    "A person confirmed {earlier} for this countertop's {what} on an earlier reading, and the new "
+    "reading does not read that dimension for this countertop again: held for a person."
+)
+UNAGREED: Final = (
+    "Another reading of this countertop's {what} was held without a number both readers agreed "
+    "on ({reason}), so {value} is not used: held for a person."
+)
 READER_FAILED: Final = "The depth and sink reader failed on this drawing set: {reason}"
 
 _QUOTES: Final = {"“": '"', "”": '"', "„": '"', "″": '"', "ʺ": '"', "‘": "'", "’": "'", "′": "'"}
@@ -660,6 +668,7 @@ def _decide(
     unplaced: Sequence[_Reading],
     people: Sequence[_Person],
     notes: list[str],
+    run_id: UUID,
 ) -> _Decision:
     what = DEPTH_FIELDS[semantic]
     for_field = [reading for reading in mine if reading.field == semantic]
@@ -686,43 +695,65 @@ def _decide(
         if (reading.dimension, reading.agreed) not in retyped_dimensions
         and not any(p.reading.row.id == reading.row.id for p in retyped)
     ]
+    # Every reading of this field that may be this countertop's, on the newest reading: tied to it,
+    # or on its drawing and tied to no one countertop.
+    field_rows = [*for_field, *(r for r in unplaced if r.field == semantic)]
+    numbers = [r.agreed for r in field_rows if r.agreed is not None]
+    unagreed = [r for r in field_rows if r.agreed is None and VIEW_NOTE not in r.flags]
+
+    def conflict(value: Fraction) -> tuple[str, str] | None:
+        """**Another number holds both**, and so does a reading held with no agreed number."""
+        if len({value, *numbers}) > 1:
+            return ("ambiguous", TWO_VALUES.format(what=what, values=_values([value, *numbers])))
+        if unagreed:
+            return (
+                "ambiguous",
+                UNAGREED.format(
+                    what=what, reason=min(r.reason for r in unagreed), value=_inches(value)
+                ),
+            )
+        return None
+
     confirmed = [p for p in people if p.canonical.semantic_type == semantic]
     if confirmed:
         values = [p.value for p in confirmed]
         if len(set(values)) > 1:
             return ("ambiguous", PEOPLE_DIFFER.format(what=what, values=_values(values)))
+        value = values[0]
         for decision in confirmed:
-            for reading in (*for_field, *unplaced):
-                if (
-                    reading.field == semantic
-                    and reading.dimension == decision.reading.dimension
-                    and reading.agreed != decision.value
-                ):
+            if decision.reading.row.extraction_run_id == run_id:
+                continue
+            # Carried over only on an identical reading (design §9.5): the same dimension, read
+            # again for this countertop with the same number.
+            again = [r for r in for_field if r.dimension == decision.reading.dimension]
+            if not again:
+                return ("ambiguous", NOT_AGAIN.format(earlier=_inches(value), what=what))
+            for reading in again:
+                if reading.agreed != value:
                     return (
                         "ambiguous",
                         PERSON_EARLIER.format(
-                            earlier=_inches(decision.value), what=what, now=_text(reading.agreed)
+                            earlier=_inches(value), what=what, now=_text(reading.agreed)
                         ),
                     )
+        held = conflict(value)
+        if held is not None:
+            return held
         operand = _sealed(session, confirmed[0].canonical, name)
         if operand is not None:
             notes.append(
-                f"{what.capitalize()}: {_inches(values[0])}, confirmed by a person "
+                f"{what.capitalize()}: {_inches(value)}, confirmed by a person "
                 f"(observation {confirmed[0].canonical.id})."
             )
             return operand
 
     qualified = [r for r in for_field if QUALIFIED in r.flags and r.value is not None]
     confirm = [r for r in for_field if CONFIRM_ONLY in r.flags and r.value is not None]
-    if qualified or confirm:
-        # **Any other reading that may be this countertop's, with another number, holds both**:
-        # a held value the readers agreed on, or a view on its drawing tied to no one countertop.
-        others = [
-            r for r in (*for_field, *unplaced) if r.field == semantic and r.agreed is not None
-        ]
-        values = [r.agreed for r in (*qualified, *confirm, *others) if r.agreed is not None]
-        if len(set(values)) > 1:
-            return ("ambiguous", TWO_VALUES.format(what=what, values=_values(values)))
+    chosen = next((r.value for r in (*qualified, *confirm) if r.value is not None), None)
+    if chosen is not None:
+        held = conflict(chosen)
+        if held is not None:
+            return held
     if qualified:
         reading = qualified[0]
         if not answers_on_record(session, reading):
@@ -841,7 +872,11 @@ def depth_operands(
     shared = countertops_by_view(session, revision_id).get(view_id, ())
     notes: list[str] = [f"Depth reader run {run.id}; countertop suggestion {proposal_id}."]
     if runs[0] is not run:
-        notes.append(f"A later depth reading (run {runs[0].id}) failed; this earlier one is used.")
+        why = sorted({r.reason for r in _readings(session, runs[0]) if RUN_FAILED in r.flags})
+        notes.append(
+            f"A later depth reading (run {runs[0].id}) failed ({' '.join(why[:1]) or 'no reason'}); "
+            "this earlier one is used."
+        )
     operands: dict[str, VerdictOperand] = {}
     ambiguous: dict[str, str] = {}
     missing: list[str] = []
@@ -855,7 +890,7 @@ def depth_operands(
             else:
                 missing.append(why)
             continue
-        decided = _decide(session, name, semantic, mine, unplaced, people, notes)
+        decided = _decide(session, name, semantic, mine, unplaced, people, notes, run.id)
         if isinstance(decided, VerdictOperand):
             operands[name] = decided
         elif decided[0] == "ambiguous":
