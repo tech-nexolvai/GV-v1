@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
@@ -61,7 +63,9 @@ if (
 
 __all__ = [
     "ENGINE_VERSION",
+    "QUEUED_PACKAGE_WAITS_UP_TO",
     "STAGES",
+    "STAGE_TAKES_UP_TO",
     "WORKFLOW_NAME",
     "NoStages",
     "PackageReviewInput",
@@ -99,6 +103,34 @@ STAGES: Final[tuple[tuple[str, PackageState], ...]] = (
     ("validate_evidence", PackageState.VALIDATING_EVIDENCE),
     ("run_checks", PackageState.RUNNING_CHECKS),
     ("generate_outputs", PackageState.GENERATING_OUTPUTS),
+)
+
+
+#: How long a package may wait for its turn before the engine cancels it (SDK default: 5 minutes).
+#: Packages are processed `max_concurrent_packages` at a time (1 by default), so an upload waits behind
+#: every earlier package's whole walk, up to about an hour each on the 13 Oct AI Set 3 read. A day lets a busy
+#: day's uploads all run; the default would cancel the second upload of the day before it started.
+QUEUED_PACKAGE_WAITS_UP_TO: Final = timedelta(hours=24)
+
+#: How long each stage may run once started (SDK default: 60 seconds, which would cancel every real
+#: reading part way). Sized from the 13 Oct AI Set 3 read (60 pages, one package) with wide headroom, and
+#: never unbounded, so a stage that hangs is ended rather than holding the package's only turn for ever.
+STAGE_TAKES_UP_TO: Final[Mapping[str, timedelta]] = MappingProxyType(
+    {
+        # Re-hashes and re-opens the uploaded files: 2 seconds.
+        "ingest": timedelta(minutes=30),
+        # The reading (page text, architect, preparing pages, AI questions): 55 minutes, 34 of them
+        # with the Mac asleep, so about 25 of work. AI calls are rate limited: a bigger set is slower.
+        "extract_pages": timedelta(hours=4),
+        # Proposes matches from confirmed parts: under a second.
+        "match": timedelta(minutes=30),
+        # Cuts the evidence pictures: 2.2 minutes.
+        "validate_evidence": timedelta(hours=1),
+        # Under a second here; the same limit as a check run on its own (`CHECK_RUN_TAKES_UP_TO`).
+        "run_checks": timedelta(minutes=30),
+        # Writes the workbook and the PDF: 38 seconds.
+        "generate_outputs": timedelta(minutes=30),
+    }
 )
 
 
@@ -657,6 +689,9 @@ def register(
             retries=budget.retries,
             backoff_factor=budget.backoff_factor,
             backoff_max_seconds=budget.backoff_max_seconds,
+            # Stated, never the SDK's defaults: see `QUEUED_PACKAGE_WAITS_UP_TO` and `STAGE_TAKES_UP_TO`.
+            schedule_timeout=QUEUED_PACKAGE_WAITS_UP_TO,
+            execution_timeout=STAGE_TAKES_UP_TO[stage],
         )
         previous = decorate(step)
 
