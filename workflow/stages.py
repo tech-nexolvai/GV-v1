@@ -108,6 +108,7 @@ from app.models.runs import (
     ModelInvocation,
     ModelInvocationOutcome,
     TaskRun,
+    WorkflowRun,
 )
 from app.models.verdicts import CheckRun, OutputArtifact, OutputArtifactKind
 from app.models.verdicts import Finding as FindingRow
@@ -370,6 +371,7 @@ from workflow.bala_items import (
     propose_items,
 )
 from workflow.config import READER_RASTER_DPI
+from workflow.depth_evidence import DEPTH_RULE_IDS
 from workflow.evidence_operands import (
     evidence_operands,
     order_sentences,
@@ -427,7 +429,7 @@ from workflow.reader_pictures import (
     printed_runs,
     reader_picture,
 )
-from workflow.reader_reuse import StoredReaderAnswers
+from workflow.reader_reuse import StoredAnswerSource, StoredReaderAnswers
 from workflow.reading_agent import ReadingAgentSettings, RegionCrops, crop_box_px
 from workflow.reading_watch import (
     CallLedger,
@@ -1835,6 +1837,8 @@ class DatabaseStages:
         part_finder: AssociationSettings | None = None,
         bala_auto_items: bool = False,
         bala_cabinet_prefill: bool = False,
+        depth_reader: bool = False,
+        depth_stored_answers: Callable[[Session], StoredAnswerSource] | None = None,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
         architect_pairing: PairingLookup | None = None,
@@ -2026,6 +2030,14 @@ class DatabaseStages:
         if not isinstance(bala_cabinet_prefill, bool):
             raise TypeError("bala_cabinet_prefill must be a bool")
         self._bala_cabinet_prefill = bala_cabinet_prefill
+        # **The depth and sink reader (#1290).** Off unless `GV_DEPTH_READER` is on: `match` then
+        # reads each countertop's plan and section views after Bala, and the five depth and sink
+        # checks are scoped to each countertop (`workflow/depth_evidence.py`). Off, nothing changes.
+        if not isinstance(depth_reader, bool):
+            raise TypeError("depth_reader must be a bool")
+        self._depth_reader = depth_reader
+        # Where the depth reader finds stored answers to reuse; the database's by default.
+        self._depth_stored_answers = depth_stored_answers
         self._bounded_agent_planner = (
             _default_bounded_agent_planner
             if (bounded_agent is not None or reading_agent is not None)
@@ -6589,6 +6601,302 @@ class DatabaseStages:
         )
         return payload
 
+    def _depth_pass(self, session: Session, package_revision_id: UUID) -> dict[str, object]:
+        """Read each countertop's plan and section views, once, after Bala (#1290).
+
+        `workflow/depth_reader.py` says what is read and written. Here:
+
+        * **once per stage run**: a run already recorded under this stage's task run is reported and
+          nothing is prepared or asked again;
+        * the pages that hold one of Bala's countertops, read by the slot reader's Claude pair through
+          the shared route, under the reader's **own** stop;
+        * **one spend guard for the whole reading** (its three rounds of questions reserve against one
+          cap), and the cap is what the drawing set's AI budget has left: its page-scaled budget for
+          all its pages (or the fixed amount stated), less everything its readers already spent;
+        * every attempt recorded through the shared call ledger under the reader's own run;
+        * a page code cannot prepare is held on each countertop of the page with code's reason;
+        * **a failure never stops the package**: the run is kept marked failed (`state:run-failed`,
+          with the reason on each countertop's page), so the checks fall back to an earlier good
+          reading or say the reader failed; the calls made are still recorded.
+        """
+        from extraction.depth.read import (
+            MEASURED_DEPTH_READER_SETTINGS,
+            prepare_pdf_page,
+            read_depth,
+        )
+        from extraction.reader import UnreadablePdf
+        from extraction.slot_reader.anthropic import BatchSpendGuard
+        from workflow.depth_evidence import DEPTH_EXTRACTOR, DEPTH_READER_VERSION
+        from workflow.depth_evidence import RUN_FAILED as DEPTH_RUN_FAILED
+        from workflow.depth_reader import (
+            countertops_by_drawing,
+            depth_asker,
+            persist_depth_reading,
+            persist_page_notes,
+        )
+
+        runtime = self._slot_reader
+        if runtime is None or not runtime.claude_row_reader or self._form_reader is None:
+            return {
+                "ran": False,
+                "reason": "the depth reader is read by the Claude pair: it needs the Claude slot "
+                "reader (GV_CLAUDE_READER_ENABLED)",
+            }
+        revision = session.get_one(PackageRevision, package_revision_id)
+        product = package_product(session.get_one(Package, revision.package_id))
+        if product not in (None, ProductType.COUNTERTOP):
+            return {"ran": False, "reason": "the countertop checks are not in scope for this set"}
+        task_run = _task_run_for(session, package_revision_id, "match")
+        if task_run is None:
+            newest = latest_slot_reader_run(session, package_revision_id)
+            run_row = None if newest is None else session.get(ExtractionRun, newest)
+            task_run = None if run_row is None else session.get(TaskRun, run_row.task_run_id)
+        if task_run is None:
+            return {"ran": False, "reason": "no stage run to record the depth reading under"}
+        settings = MEASURED_DEPTH_READER_SETTINGS
+        base_hash = (
+            f"dpi={settings.dpi};readers={'|'.join(runtime.form.reader_ids)};"
+            f"effort={settings.effort}"
+        )
+        # The run is opened only once the reading is done, and in the stage's own transaction, so
+        # its being there means this stage run read already (a failed attempt rolled it back). A
+        # reading recorded as failed is not "already recorded": it is tried again, as a run of its
+        # own (`;retry=<n>`), so the failed one keeps what it said.
+        earlier = list(
+            session.scalars(
+                select(ExtractionRun).where(
+                    ExtractionRun.task_run_id == task_run.id,
+                    ExtractionRun.extractor == DEPTH_EXTRACTOR,
+                    ExtractionRun.extractor_version == DEPTH_READER_VERSION,
+                    or_(
+                        ExtractionRun.config_hash == base_hash,
+                        ExtractionRun.config_hash.startswith(
+                            f"{base_hash};retry=", autoescape=True
+                        ),
+                    ),
+                )
+            )
+        )
+        recorded = next(
+            (
+                run
+                for run in earlier
+                if session.scalar(
+                    select(ObservationCandidate.id)
+                    .where(
+                        ObservationCandidate.extraction_run_id == run.id,
+                        ObservationCandidate.ambiguity_flags.contains([DEPTH_RUN_FAILED]),
+                    )
+                    .limit(1)
+                )
+                is None
+            ),
+            None,
+        )
+        if recorded is not None:
+            # Checked before anything is prepared or asked: a redelivered stage reads nothing again.
+            return {
+                "ran": True,
+                "run": str(recorded.id),
+                "reason": "this stage's depth reading is already recorded",
+            }
+        config_hash = base_hash if not earlier else f"{base_hash};retry={len(earlier)}"
+        countertops = countertops_by_drawing(session, package_revision_id)
+        if not countertops:
+            return {"ran": False, "reason": "Bala filed no countertop, so there is nothing to read"}
+        view_pages = dict(
+            session.execute(
+                select(DrawingView.id, DrawingView.page_id).where(
+                    DrawingView.id.in_(list(countertops))
+                )
+            ).all()
+        )
+        pages = list(
+            session.scalars(
+                select(Page)
+                .where(Page.id.in_(set(view_pages.values())))
+                .order_by(Page.document_version_id, Page.index)
+            )
+        )
+        kinds = dict(
+            session.execute(
+                select(DocumentVersion.id, Document.kind)
+                .join(Document, Document.id == DocumentVersion.document_id)
+                .where(DocumentVersion.id.in_({page.document_version_id for page in pages}))
+            ).all()
+        )
+        separate = has_separate_architect_file(session, package_revision_id)
+        records = {
+            version: (key, sha)
+            for version, key, sha, _ in _document_records_for(session, package_revision_id)
+        }
+        loaded: dict[UUID, bytes] = {}
+        prepared = []
+        not_prepared: dict[UUID, str] = {}
+        for page in pages:
+            record = records.get(page.document_version_id)
+            if record is None:
+                not_prepared[page.id] = "its document is not in this revision"
+                continue
+            if page.document_version_id not in loaded:
+                data = _fetch(self._store, record[0]) if self._store is not None else b""
+                if hashlib.sha256(data).hexdigest() != record[1]:
+                    not_prepared[page.id] = "the stored file does not match its digest"
+                    continue
+                loaded[page.document_version_id] = data
+            try:
+                prepared.append(
+                    prepare_pdf_page(
+                        loaded[page.document_version_id],
+                        page.index,
+                        page_sha256=page.content_hash,
+                        document_version_id=str(page.document_version_id),
+                        vendor_file=separate
+                        and kinds.get(page.document_version_id) == DocumentKind.SHOP.value,
+                        settings=settings,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - held on the page's countertops, with why
+                kind = (
+                    ""
+                    if isinstance(error, (UnreadablePdf, ValueError))
+                    else f"{type(error).__name__}: "
+                )
+                not_prepared[page.id] = (
+                    f"code could not prepare this page for the reader: {kind}{error}"
+                )
+        budget_micros = (
+            self._ai_budget_fixed_micros
+            if self._ai_budget_fixed_micros is not None
+            else _micros(
+                self._ai_budget.for_pages(_revision_page_count(session, package_revision_id))
+            )
+        )
+        spent_micros, unpriced = _revision_spend(session, package_revision_id)
+        # The smaller of the configured Claude ceiling and what the set's budget has left, as the
+        # slot reader takes it.
+        cap_usd = _remaining_claude_budget(
+            (
+                Decimal(budget_micros) / 1_000_000
+                if runtime.spend_cap_usd is None
+                else min(runtime.spend_cap_usd, Decimal(budget_micros) / 1_000_000)
+            ),
+            cap_micros=budget_micros,
+            spent_micros=spent_micros,
+            unpriced_calls=unpriced,
+        )
+        stop = ReadingStop()
+        recorder = self._call_ledger(session, task_run.id, reader_version=DEPTH_READER_VERSION)
+        stored = (
+            None
+            if not runtime.reuse_answers
+            else (
+                self._depth_stored_answers(session)
+                if self._depth_stored_answers is not None
+                else StoredReaderAnswers(session)
+            )
+        )
+        ask = depth_asker(
+            clients=runtime.form.clients,
+            rates=runtime.form.rates,
+            calls_per_minute=runtime.form.calls_per_minute,
+            max_concurrent_calls=runtime.form.max_concurrent_calls,
+            max_throttle_retries=runtime.form.max_throttle_retries,
+            retry_backoff_seconds=runtime.form.retry_backoff_seconds,
+            settings=settings,
+            record_attempt=recorder.record,
+            stored=stored,
+            stop=stop,
+            spend_guard=BatchSpendGuard(cap_usd, runtime.form.rates),
+        )
+        failure: str | None = None
+        try:
+            reading = read_depth(
+                prepared, ask=ask, fraction_bar=runtime.fraction_bar, settings=settings
+            )
+        except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
+            failure = f"{type(error).__name__}: {error}"
+        try:
+            with session.begin_nested():
+                run = open_extraction_run(
+                    session,
+                    task_run_id=task_run.id,
+                    extractor=DEPTH_EXTRACTOR,
+                    extractor_version=DEPTH_READER_VERSION,
+                    config_hash=config_hash,
+                    dpi=settings.dpi,
+                )
+                meter, self._meter = self._meter, _SpendMeter(cap_micros=_micros(cap_usd))
+                try:
+                    self._record_reader_attempts(
+                        session, run.id, recorder.snapshot(), ledgered=recorder.ledgered_in(session)
+                    )
+                    spent = self._meter.as_payload()
+                finally:
+                    self._meter = meter
+        except Exception as error:  # noqa: BLE001 - never stops the package
+            # Its paid calls are in the call ledger already, committed on their own.
+            return {
+                "ran": False,
+                "reason": "the depth reading could not be recorded, so nothing was read: "
+                f"{type(error).__name__}: {error}",
+            }
+        by_id = {page.id: page for page in pages}
+        written: dict[str, object] = {}
+        if failure is None:
+            try:
+                with session.begin_nested():
+                    persisted = persist_depth_reading(
+                        session,
+                        package_revision_id,
+                        run,
+                        reading,
+                        prepared,
+                        {(str(page.document_version_id), page.index): page for page in pages},
+                        dpi=settings.dpi,
+                    )
+                    persist_page_notes(
+                        session, package_revision_id, run, by_id, not_prepared, failed=False
+                    )
+                written = persisted.as_payload()
+            except Exception as error:  # noqa: BLE001 - recorded and reported, never a value
+                failure = f"its readings could not be saved: {type(error).__name__}: {error}"
+        if failure is not None:
+            try:
+                with session.begin_nested():
+                    persist_page_notes(
+                        session,
+                        package_revision_id,
+                        run,
+                        by_id,
+                        dict.fromkeys(
+                            by_id, f"the depth reading failed, so nothing was read: {failure}"
+                        ),
+                        failed=True,
+                    )
+            except Exception as error:  # noqa: BLE001 - reported below; the package goes on
+                failure = f"{failure}; and the failure could not be noted: {error}"
+            return {
+                "ran": False,
+                "run": str(run.id),
+                "reason": f"the depth reading failed, so nothing was read: {failure}",
+                "spend": spent,
+                "pages_not_prepared": len(not_prepared),
+            }
+        return {
+            "ran": True,
+            "run": str(run.id),
+            "pages": len(prepared),
+            "pages_not_prepared": len(not_prepared),
+            "views": len(reading.views),
+            "kinds_settled": sum(view.kind is not None for view in reading.views),
+            "questions": reading.questions_asked,
+            "stopped": stop.cause,
+            "cap_usd": str(cap_usd),
+            "spend": spent,
+            **written,
+        }
+
     def _code_parts_on(
         self,
         session: Session,
@@ -6722,6 +7030,10 @@ class DatabaseStages:
         """
         self._watch(session, package_revision_id, "match")
         bala = self._bala_items(session, package_revision_id)
+        # The depth and sink reader, once, right after Bala (#1290); nothing at all when it is off.
+        depth = (
+            {"depth": self._depth_pass(session, package_revision_id)} if self._depth_reader else {}
+        )
         role_summary = _match_role_summary(session, package_revision_id)
         items = _matchable_items(session, package_revision_id)
         if not items:
@@ -6737,6 +7049,7 @@ class DatabaseStages:
                     "candidates": 0,
                     "reason": reason,
                     "bala": bala,
+                    **depth,
                     "live_items": _live_item_report(
                         session, package_revision_id, items, set(), not_run=reason
                     ),
@@ -6755,6 +7068,7 @@ class DatabaseStages:
                     f"{confirmed.count('shop')} vendor"
                 ),
                 "bala": bala,
+                **depth,
                 "live_items": _live_item_report(session, package_revision_id, items, set()),
             }
         missing = _missing_role_names(role_summary.roles)
@@ -6767,6 +7081,7 @@ class DatabaseStages:
                 "candidates": 0,
                 "reason": reason,
                 "bala": bala,
+                **depth,
                 "live_items": _live_item_report(
                     session, package_revision_id, items, set(), not_run=reason
                 ),
@@ -6822,6 +7137,7 @@ class DatabaseStages:
             "proposed": proposed,
             "candidates": written,
             "bala": bala,
+            **depth,
             "live_items": _live_item_report(session, package_revision_id, items, matched),
         }
 
@@ -7480,6 +7796,10 @@ class DatabaseStages:
             else False
         )
         scoped_rules = frozenset({"CT-WIDTH-001", "CAB-FILLER-001"})
+        if self._depth_reader:
+            # The five depth and sink checks, one per countertop, from the depth reader's readings
+            # tied to it (#1290). Off, they stay one revision-wide check each, exactly as before.
+            scoped_rules |= DEPTH_RULE_IDS
 
         # **The products the reviewer said this set is for, or every product (#994).** The resolver
         # keys candidates on an exact product-type match. A package created before #994 says nothing
@@ -8747,6 +9067,51 @@ def _stopped_at_budget(
     ]
     already = {page.page_id for page in unread}
     return kept, [*unread, *(page for page in listed if page.page_id not in already)]
+
+
+def _revision_page_count(session: Session, package_revision_id: UUID) -> int:
+    """How many pages the revision's documents hold: the drawing set's page-scaled budget's pages."""
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(DocumentVersion.page_count), 0))
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id == DocumentVersion.id,
+            )
+            .where(PackageRevisionDocument.package_revision_id == package_revision_id)
+        )
+        or 0
+    )
+
+
+def _revision_spend(session: Session, package_revision_id: UUID) -> tuple[int, int]:
+    """What every reader of this revision has spent, in micros, and how many calls had no price.
+
+    Every call recorded under any run of the revision's workflow runs, the call ledger's own runs
+    included (a twin row costs nothing, so each call counts once). The layout classifier's and the
+    assignment's rows are not reading spend (`UNMETERED_PROMPT_FAMILIES`), as for the stage's meter.
+    """
+    spent, unpriced = session.execute(
+        select(
+            func.coalesce(func.sum(ModelInvocation.cost_micros), 0),
+            func.count().filter(ModelInvocation.cost_micros.is_(None)),
+        )
+        .join(ExtractionRun, ModelInvocation.extraction_run_id == ExtractionRun.id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(WorkflowRun.package_revision_id == package_revision_id)
+        .where(
+            not_(
+                or_(
+                    *(
+                        ModelInvocation.prompt_id.startswith(family, autoescape=True)
+                        for family in UNMETERED_PROMPT_FAMILIES
+                    )
+                )
+            )
+        )
+    ).one()
+    return int(spent or 0), int(unpriced or 0)
 
 
 def _remaining_claude_budget(

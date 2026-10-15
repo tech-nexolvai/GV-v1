@@ -47,6 +47,7 @@ from rules.semantic_types import SemanticType
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from units.imperial import format_inches
+from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
 
 router = APIRouter(tags=["confirmations"])
 
@@ -222,6 +223,9 @@ def list_candidates(
             # the proposal queue on the next load; showing it again would invite a second type and
             # turn the review screen into a conflict the reviewer did not create.
             ObservationCandidate.id.not_in(select(EvidenceSupportingCandidate.candidate_id)),
+            # A depth reading's two per-reader rows (#1290) are what its evidence stands on, not
+            # readings of their own: the person confirms the reading itself, listed once.
+            ~ObservationCandidate.ambiguity_flags.contains([DEPTH_SUPPORT_FLAG]),
         )
         .order_by(Page.index, ObservationCandidate.created_at, ObservationCandidate.id)
         .limit(MAX_CANDIDATES + 1)

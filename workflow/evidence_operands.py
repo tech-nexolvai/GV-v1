@@ -63,6 +63,7 @@ from app.models.evidence import (
     CanonicalObservation,
     EvidenceCorroborationLane,
     EvidenceSupportingCandidate,
+    ObservationCandidate,
 )
 from evidence.canonical import Authority, CorroborationLane, EvidenceStatus
 from evidence.canonical import CanonicalObservation as DomainObservation
@@ -74,6 +75,7 @@ from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Measurement, Unit
 from verdict.operands import VerdictOperand
 from verdict.operations import POSITION_SENSITIVE_OPERATIONS
+from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
 from workflow.item_plan import countertops_by_view
 from workflow.part_operands import part_operands
 
@@ -378,6 +380,23 @@ def evidence_operands(
     by_need: dict[tuple[str, str], list[tuple[DomainObservation, UUID, _Drawing]]] = {}
     observations: dict[UUID, tuple[DomainObservation, _Drawing]] = {}
     sides = ReadingSides(session)
+    # The depth reader's readers' rows (#1290): what its code+AI observations stand on. Such an
+    # observation belongs to one countertop and is used only by that countertop's scoped check
+    # (`workflow/depth_evidence.py`), never by a revision-wide one; a person's stays usable.
+    depth_supports = set(
+        session.scalars(
+            select(ObservationCandidate.id)
+            .join(
+                PackageRevisionDocument,
+                PackageRevisionDocument.document_version_id
+                == ObservationCandidate.document_version_id,
+            )
+            .where(
+                PackageRevisionDocument.package_revision_id == package_revision_id,
+                ObservationCandidate.ambiguity_flags.contains([DEPTH_SUPPORT_FLAG]),
+            )
+        )
+    )
     # The live countertop items on each drawing (#1245): which countertop a reading belongs to.
     countertops = countertops_by_view(session, package_revision_id)
     # Readings on a drawing that holds two or more countertops, for the reviewer's sentence.
@@ -407,6 +426,10 @@ def evidence_operands(
         except ValueError:
             # A stored lane unknown to this code must cost the rule its operand.  Treating it as a
             # known qualifier would let a newer database declaration bypass this older gate.
+            continue
+        if row.status != EvidenceStatus.HUMAN_CONFIRMED.value and any(
+            UUID(candidate) in depth_supports for candidate in supported_by
+        ):
             continue
         observation = _domain(
             row,

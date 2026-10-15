@@ -61,6 +61,7 @@ __all__ = [
     "carry_forward",
     "consume",
     "cut_part_pictures",
+    "depth_reader_configuration",
     "drop_closed_revision",
     "ensure_workflow_run",
     "hunt_package_values",
@@ -215,6 +216,18 @@ def bala_auto_items_configuration() -> bool:
     reader and the drawings' confirmations already recorded, and nothing here asks a model.
     """
     return _switched_on(BALA_AUTO_ITEMS_VARIABLE)
+
+
+def depth_reader_configuration() -> bool:
+    """Whether the depth and sink reader runs after Bala (`GV_DEPTH_READER`, #1290).
+
+    Off unless switched on; an unrecognised word is refused, never read as on. On, it reads with the
+    slot reader's Claude pair, so without `GV_CLAUDE_READER_ENABLED` the match stage reads nothing
+    and says why.
+    """
+    from extraction.depth.read import depth_reader_enabled
+
+    return depth_reader_enabled(os.environ)
 
 
 def bala_cabinet_prefill_configuration() -> bool:
@@ -463,6 +476,8 @@ def build_stages(
         bala_auto_items=bala_auto_items_configuration(),
         # Off unless GV_BALA_CABINET_PREFILL: "cabinet" pre-filled from one printed tag (#1266).
         bala_cabinet_prefill=bala_cabinet_prefill_configuration(),
+        # Off unless GV_DEPTH_READER: each countertop's plan and section views read (#1290).
+        depth_reader=depth_reader_configuration(),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).
