@@ -29,8 +29,9 @@ function sentence(text: string): string {
 }
 
 /**
- * The bottom of the page (#1368): the final cloud PDF. It is honest about what blocks it: the
- * server's own reason (`blocked_reason`) and what is left, counted from the lists. The button is
+ * The bottom of the page (#1368): the final cloud PDF. It says what is left in plain words, with
+ * the counts of the header the page prints (#1394); the server's `blocked_reason` only when no
+ * count explains it. The button is
  * unlocked only by the server's `can_finalise`; it opens the existing sign-off, then the signed
  * files are made and the cloud PDF can be downloaded here.
  */
@@ -45,7 +46,7 @@ export function FinalBar({
   onSigned,
 }: {
   summary: ReviewSummary;
-  /** What is left, in words ("2 items to answer"), from the lists the server sent. */
+  /** What is left, in words ("9 items need you · 54 not checked"), from the page's W1 header. */
   left: readonly string[];
   api: FinalCloudApi;
   projectId: string | null;
@@ -257,8 +258,10 @@ export function FinalBar({
     );
   } else {
     icon = <Lock aria-hidden="true" className="size-4 text-muted-foreground" />;
-    headline = summary.finalBlocked;
-    sub = left.length > 0 ? left.join(' · ') : null;
+    // Plain words with the header's own counts (#1394). The server's sentence is shown only when
+    // there is no count to say what is left; it never decides what the bar says is open.
+    headline = left.length > 0 ? left.join(' · ') : 'Not ready for sign-off yet.';
+    sub = left.length > 0 ? 'The final cloud PDF unlocks once these are settled.' : summary.finalBlocked;
     action = (
       <Button disabled>
         <FileCheck2 aria-hidden="true" />

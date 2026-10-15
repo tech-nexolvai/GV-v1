@@ -282,6 +282,19 @@ describe('DualPdfViewer follow-ups (#1362)', () => {
     expect(screen.getByText(/not shown here/).textContent).toMatch(/1 more vendor file, 1 more architect file and 1 other file are not shown here/);
   });
 
+  it('a file stored without a name shows its side and page count, never "No file" (#1394)', async () => {
+    const unnamed = () => {
+      const data = twoFiles();
+      for (const doc of data.documents) doc.file_name = null;
+      return data;
+    };
+    setup(unnamed);
+    await waitFor(() => expect(counter(vendorPane())).toBe('3 / 6'));
+    expect(fileLine(vendorPane())).toContain('Vendor drawing · 6 pages');
+    expect(fileLine(architectPane())).toContain('Architect drawing · 14 pages');
+    expect(screen.queryByText(/No file/)).toBeNull();
+  });
+
   it('cancels the page-list request when the viewer closes before it answers', () => {
     let seen: AbortSignal | undefined;
     const loadPages = vi.fn((_p: string, _k: string, signal?: AbortSignal) => {

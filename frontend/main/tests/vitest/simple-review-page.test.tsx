@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { ReviewItemsOut } from '@/api/review-items';
 import type { FinalCloudApi } from '@/api/final-cloud';
+import type { DraftCloudApi, DraftCloudStatus } from '@/api/draft-cloud';
 import type { ArchitectPairing, ArchitectViewMatch } from '@/api/client';
 import type { ArchitectLoader } from '@/components/simple-review/architect-choices-lib';
 import { allSettled, reviewItems } from './fixtures/review-items';
@@ -295,6 +296,40 @@ describe('SimpleReviewPage (#1343)', () => {
     expect(await screen.findByText('Nothing needs you')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('The checks are running again.')).toBeTruthy();
+  });
+
+  it('Draft cloud PDF asks the server, waits while it is made, then downloads it (#1394)', async () => {
+    const createObjectURL = vi.fn(() => 'blob:draft');
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const preparing: DraftCloudStatus = { status: 'preparing', request_id: 'req-1' };
+    const ready: DraftCloudStatus = { status: 'ready', request_id: 'req-1', bytes: 4, findings: 3 };
+    const status = vi.fn().mockResolvedValueOnce(preparing).mockResolvedValue(ready);
+    const cloud: DraftCloudApi = { start: vi.fn(async () => preparing), status, download: vi.fn(async () => new Blob(['%PDF'])) };
+    renderPage({ cloud, draftPollMs: 0 });
+    await screen.findByTestId('ai-read-line');
+    const button = screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await userEvent.click(button);
+    expect(cloud.start).toHaveBeenCalledWith('proj-demo', 'pkg-demo');
+    expect(await screen.findByText('Draft cloud PDF downloaded. It is not signed off.')).toBeTruthy();
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(cloud.download).toHaveBeenCalledWith('proj-demo', 'pkg-demo');
+    expect(createObjectURL).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it('a draft the worker could not make is named with its reason, and Retry asks again (#1394)', async () => {
+    const failed: DraftCloudStatus = { status: 'failed', request_id: 'req-1', reason: 'The drawing could not be read.' };
+    const cloud: DraftCloudApi = { start: vi.fn(async () => failed), status: vi.fn(), download: vi.fn() };
+    renderPage({ cloud, draftPollMs: 0 });
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(screen.getByRole('button', { name: /Draft cloud PDF/ }));
+    expect((await screen.findByRole('alert')).textContent).toBe('The draft cloud PDF could not be made: The drawing could not be read.');
+    expect(cloud.download).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(cloud.start).toHaveBeenCalledTimes(2));
   });
 
   it('Fix sends the typed value in inches through W3, and the save is announced (#1368)', async () => {

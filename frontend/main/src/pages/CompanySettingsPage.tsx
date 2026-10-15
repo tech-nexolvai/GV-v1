@@ -100,8 +100,8 @@ export function CompanySettingsPage({ focus, project }: {
 
   return (
     <PageFrame title="Company settings" description={<>
-          GV&apos;s standard numbers, the same on every job. Type a value with its unit, such as{' '}
-          <span className="num whitespace-nowrap">24&quot;</span> or <span className="num whitespace-nowrap">610 mm</span>.
+          GV&apos;s standard numbers, the same on every job. Type inches, e.g.{' '}
+          <span className="num whitespace-nowrap">24&quot;</span>.
         </>}>
       {error && current === null && <PageLoadError title="Company settings could not be loaded" message={error} onRetry={() => { setError(null); setAttempt((value) => value + 1); }} />}
       <div className="flex flex-col gap-3" ref={page}>

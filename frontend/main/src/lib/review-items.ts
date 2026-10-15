@@ -14,6 +14,7 @@ import type {
   PageRef,
   ReviewFailure,
   ReviewItem,
+  ReviewItemsHeader,
   ReviewItemsOut,
   ReviewStatus,
 } from '@/api/review-items';
@@ -152,20 +153,15 @@ export function summarize(data: ReviewItemsOut): ReviewSummary {
 }
 
 /**
- * What is left, counted from the lists the server sent, for the final bar: never a judgment of
+ * What is left, for the final bar (#1394): plain words with the counts of the same W1 header the page
+ * prints (`open`, `not_checked`, `rechecking`), never counted again here and never a judgment of
  * whether the review may be signed (that is `header.can_finalise`). Only counts above zero.
  */
-export function leftWords(data: ReviewItemsOut): string[] {
-  const items = data.items.filter((item) => item.status === 'open').length;
-  const failures = data.failures.filter((failure) => failure.status === 'open').length;
-  const notChecked = data.not_checked.filter((check) => check.status === 'open').length;
-  const rechecking = data.header.rechecking;
+export function leftWords(header: Pick<ReviewItemsHeader, 'open' | 'not_checked' | 'rechecking'>): string[] {
   const words: string[] = [];
-  if (items > 0) words.push(`${plural(items, 'item')} to answer`);
-  if (failures > 0) words.push(`${plural(failures, 'wrong result')} to agree`);
-  if (notChecked > 0) words.push(`${plural(notChecked, 'check')} not run`);
-  if (rechecking > 0) words.push(`${plural(rechecking, 'item')} re-checking`);
-  if (data.unaccounted.length > 0) words.push(`${plural(data.unaccounted.length, 'record')} missing from this page`);
+  if (header.open > 0) words.push(`${plural(header.open, 'item')} ${header.open === 1 ? 'needs' : 'need'} you`);
+  if (header.not_checked > 0) words.push(`${header.not_checked} not checked`);
+  if (header.rechecking > 0) words.push(`${plural(header.rechecking, 'item')} re-checking`);
   return words;
 }
 
