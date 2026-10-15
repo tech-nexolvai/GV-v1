@@ -107,6 +107,15 @@ class WallLayoutOut(BaseModel):
     carried_given_at: datetime | None = Field(
         default=None, description="When the carried answer was originally given."
     )
+    chosen_by_reviewer: bool = Field(
+        default=False,
+        json_schema_extra=optional_in_schema,
+        description=(
+            "True when a reviewer chose the walls (#1332). Usually `source` says `reviewer`; on a "
+            "row whose stone stops between side panels `source` stays `between panels` (it says "
+            "where the field cut goes), and this flag is the one place that says who chose."
+        ),
+    )
 
 
 class WallCaseOut(BaseModel):

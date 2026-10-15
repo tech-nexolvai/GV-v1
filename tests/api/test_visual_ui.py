@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -94,6 +95,7 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
     assert item["field_cut_count"] == 2
     # #1202: code's wall ink at both ends with both AIs, said in the results line.
     assert item["wall_layout"]["source"] == "code ink and both AIs"
+    assert item["wall_layout"]["chosen_by_reviewer"] is False
     assert item["wall_layout"]["line"] == (
         "walls at both ends — seen on the drawing at both ends and confirmed by both AIs"
     )
@@ -153,10 +155,62 @@ def test_between_panels_pass_requires_row_confirmation_and_has_no_end_cut(
     )
     assert finding.outcome == "PASS"
     assert item["wall_layout"]["source"] == "between panels"
+    assert item["wall_layout"]["chosen_by_reviewer"] is True  # #1332
     # #1138: said as "no field cut", never "back wall only": nothing was said about the walls.
     assert item["wall_layout"]["label"] == "no field cut: the stone stops at panels"
     assert item["field_cut_count"] == 0
     assert item["expected_total"]["display"] == '20"'
+
+
+def _wall_layout(
+    session: Session, project_id: UUID, package_id: UUID, row_id: UUID
+) -> dict[str, Any]:
+    response = _client(session, project_id).get(
+        f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/countertop-results"
+    )
+    assert response.status_code == 200, response.text
+    item = next(row for row in response.json()["items"] if row["row_id"] == str(row_id))
+    layout: dict[str, Any] = item["wall_layout"]
+    return layout
+
+
+def test_a_reviewers_choice_between_panels_stays_the_reviewers(
+    session: Session, tmp_path: Path
+) -> None:
+    """#1332: "between panels" says where the stone stops; it never hides who chose the walls."""
+    project_id, package_id, anchors = _package_rows(
+        session,
+        unsealed_all=True,
+        check_hold_page=0,
+        wall_source="code-ink-and-both-ais",
+        overall_override=20,
+    )
+    _run_current_checks(session, package_id, tmp_path)
+
+    # No one has chosen the walls yet: only the side panels speak, so this is not a choice.
+    before = _wall_layout(session, project_id, package_id, anchors[0])
+    assert before["source"] == "between panels"
+    assert before["chosen_by_reviewer"] is False
+
+    principal = Principal(
+        id="reviewer", roles=frozenset({Role.REVIEWER}), projects=frozenset({project_id})
+    )
+    review_slot_row(
+        principal,
+        principal,
+        session,
+        project_id,
+        package_id,
+        anchors[0],
+        SlotRowReviewIn(wall_config="back_only"),
+    )
+    # Chosen after the run, before the checks run again: still between panels, and the reviewer's.
+    # The screen reads this flag to stop listing the run's wall cases under the row (#1332).
+    after = _wall_layout(session, project_id, package_id, anchors[0])
+    assert after["source"] == "between panels"
+    assert after["chosen_by_reviewer"] is True
+    assert after["config"] == "back_only"
+    assert after["line"] is not None and "chosen by reviewer" in after["line"]
 
 
 def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
@@ -199,6 +253,7 @@ def test_a_wall_at_one_end_is_labelled_and_takes_one_field_cut(
         "carried_given_at": None,
         # Which walls were used and who decided (#1202).
         "line": "wall at the left end — chosen by reviewer",
+        "chosen_by_reviewer": True,
     }
     assert item["field_cut_count"] == 1
     assert item["expected_total"]["display"] == '21"'

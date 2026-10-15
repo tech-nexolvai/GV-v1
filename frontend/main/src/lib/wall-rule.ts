@@ -121,9 +121,17 @@ type NeededRow = Pick<CountertopResult, 'expected_total' | 'outcome' | 'wall_lay
  */
 const WALLS_USED: ReadonlySet<CountertopResult['wall_layout']['source']> = new Set(['reviewer', 'code ink and both AIs']);
 
+/**
+ * True when the row's walls are settled. A reviewer's choice on a row between side panels keeps the
+ * source "between panels" (where the field cut goes), so the API's `chosen_by_reviewer` says it (#1332).
+ */
+function wallsUsed(layout: CountertopResult['wall_layout']): boolean {
+  return WALLS_USED.has(layout.source) || layout.chosen_by_reviewer === true;
+}
+
 export function neededAcrossWalls(row: NeededRow): NeededAcrossWalls | null {
   // Walls chosen after an every-case run keep the table's usual "—" until the checks run again.
-  if (row.expected_total || WALLS_USED.has(row.wall_layout.source)) return null;
+  if (row.expected_total || wallsUsed(row.wall_layout)) return null;
   const recorded = row.wall_cases;
   const cases = (recorded?.cases ?? []).filter((item) => item.expected_total);
   if (!recorded || cases.length === 0) return null;

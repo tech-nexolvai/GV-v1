@@ -7997,6 +7997,11 @@ export interface components {
              * @description When the carried answer was originally given.
              */
             carried_given_at?: string | null;
+            /**
+             * Chosen By Reviewer
+             * @description True when a reviewer chose the walls (#1332). Usually `source` says `reviewer`; on a row whose stone stops between side panels `source` stays `between panels` (it says where the field cut goes), and this flag is the one place that says who chose.
+             */
+            chosen_by_reviewer?: boolean;
             /** Config */
             config: string | null;
             /** Label */
