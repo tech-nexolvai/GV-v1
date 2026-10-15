@@ -439,6 +439,11 @@ from workflow.reading_watch import (
 )
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
+from workflow.several_countertops import (
+    hold_for_several,
+    hold_for_unchecked,
+    package_countertops,
+)
 from workflow.slot_reader import (
     SLOT_READER_VERSION,
     PageSlotResult,
@@ -7796,9 +7801,44 @@ class DatabaseStages:
             else False
         )
         scoped_rules = frozenset({"CT-WIDTH-001", "CAB-FILLER-001"})
+        # **Several countertops (#1297).** A depth or sink check run once for the whole package has
+        # one value per input, so on a package with two or more countertops it is held, whatever
+        # the value's source: one countertop's number must never decide for another. Only a
+        # whole-package result is touched, and only ever toward REVIEW_REQUIRED.
+        countertops = package_countertops(session, package_revision_id)
+
+        def whole_package(finding: Finding) -> Finding:
+            return hold_for_several(finding, countertops, depth_reader=self._depth_reader)
+
+        def hold_unchecked(snapshot: RuleSnapshot) -> int:
+            """With the reader on, a held whole-package result for any countertop none of this
+            check's per-countertop results is for, so it is never left with no result (#1297)."""
+            held = hold_for_unchecked(
+                rule_id=snapshot.rule.id,
+                severity=snapshot.rule.severity,
+                snapshot_id=snapshot.snapshot_id,
+                engine_version=ENGINE_VERSION,
+                countertops=countertops,
+                scoped_item_ids={subject.item_id for subject in countertop_subjects or ()},
+            )
+            if held is None:
+                return 0
+            record_finding(
+                session,
+                package_revision_id=package_revision_id,
+                finding=held,
+                operands={},
+                parameter_set_ids=cited,
+                defaults_set_id=defaults_set_id,
+                defaults_canonical_json=defaults_canonical_json,
+                missing=_declared_inputs(snapshot.rule),
+            )
+            return 1
+
         if self._depth_reader:
             # The five depth and sink checks, one per countertop, from the depth reader's readings
-            # tied to it (#1290). Off, they stay one revision-wide check each, exactly as before.
+            # tied to it (#1290). Off, they stay one revision-wide check each, held when the package
+            # has several countertops (#1297).
             scoped_rules |= DEPTH_RULE_IDS
 
         # **The products the reviewer said this set is for, or every product (#994).** The resolver
@@ -7878,10 +7918,12 @@ class DatabaseStages:
                         record_finding(
                             session,
                             package_revision_id=package_revision_id,
-                            finding=replace(
-                                _unresolved(snapshot, abstention),
-                                outcome=Outcome.NOT_FOUND,
-                                reason="No live confirmed countertop run remains for this check.",
+                            finding=whole_package(
+                                replace(
+                                    _unresolved(snapshot, abstention),
+                                    outcome=Outcome.NOT_FOUND,
+                                    reason="No live confirmed countertop run remains for this check.",
+                                )
                             ),
                             operands={},
                             parameter_set_ids=cited,
@@ -7928,11 +7970,13 @@ class DatabaseStages:
                             scope_label=scoped_subject.label,
                         )
                         written += 1
+                    if countertop_subjects:
+                        written += hold_unchecked(snapshot)
                     continue
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
-                    finding=_unresolved(snapshot, abstention),
+                    finding=whole_package(_unresolved(snapshot, abstention)),
                     operands={},
                     parameter_set_ids=cited,
                     defaults_set_id=defaults_set_id,
@@ -7952,6 +7996,7 @@ class DatabaseStages:
                 session,
                 package_revision_id,
                 [applicable.snapshot.rule for applicable in resolution.applicable],
+                depth_reader=self._depth_reader,
             )
             for applicable in resolution.applicable:
                 rule_id = applicable.snapshot.rule.id
@@ -7974,13 +8019,15 @@ class DatabaseStages:
                     record_finding(
                         session,
                         package_revision_id=package_revision_id,
-                        finding=Finding(
-                            rule_id=rule_id,
-                            outcome=Outcome.NOT_FOUND,
-                            severity=applicable.snapshot.rule.severity,
-                            reason="No live confirmed countertop run remains for this check.",
-                            snapshot_id=applicable.snapshot.snapshot_id,
-                            engine_version=ENGINE_VERSION,
+                        finding=whole_package(
+                            Finding(
+                                rule_id=rule_id,
+                                outcome=Outcome.NOT_FOUND,
+                                severity=applicable.snapshot.rule.severity,
+                                reason="No live confirmed countertop run remains for this check.",
+                                snapshot_id=applicable.snapshot.snapshot_id,
+                                engine_version=ENGINE_VERSION,
+                            )
                         ),
                         operands={},
                         parameter_set_ids=cited,
@@ -8097,6 +8144,8 @@ class DatabaseStages:
                             *self._discriminator_notes(applicable.snapshot.rule),
                         ),
                     )
+                    if not scoped:
+                        finding = whole_package(finding)
                     record_finding(
                         session,
                         package_revision_id=package_revision_id,
@@ -8110,6 +8159,8 @@ class DatabaseStages:
                         scope_label=None if subject is None else subject.label,
                     )
                     written += 1
+                if subjects and subjects[0] is not None:
+                    written += hold_unchecked(applicable.snapshot)
 
         # The per-countertop width check is a countertop rule: it runs only when countertops are in
         # scope, exactly as the resolver loop above runs it only for them.

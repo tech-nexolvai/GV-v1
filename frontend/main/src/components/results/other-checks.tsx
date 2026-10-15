@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Info } from 'lucide-react';
 
 import type { Finding } from '@/data/types';
+import { countertopNotes } from '@/lib/countertop-notes';
 import { OutcomeBadge } from '@/components/ui/outcome-badge';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Button } from '@/components/ui/button';
@@ -118,7 +119,12 @@ export function OtherChecks({
                           <Info className="size-3.5" aria-hidden="true" />
                         </button>
                       </TooltipTrigger>
-                      <TooltipContent className="max-w-80">{finding.reason}</TooltipContent>
+                      <TooltipContent className="max-w-80">
+                        {finding.reason}
+                        {countertopNotes(finding).map((note) => (
+                          <span key={note} data-slot="countertop-note" className="mt-1 block">{note}</span>
+                        ))}
+                      </TooltipContent>
                     </Tooltip>
                   )}
                   <span className="num hidden text-xs text-muted-foreground sm:inline">{finding.check_id}</span>
