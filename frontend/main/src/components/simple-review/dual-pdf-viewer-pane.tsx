@@ -34,11 +34,35 @@ export interface PaneCommand {
   dy?: number;
 }
 
-/** The item's spot on this page: ringed in the item's colour on the vendor side, grey on the architect's. */
+/**
+ * The item's spot on this page: ringed in the item's colour on the vendor side (neutral once the item
+ * is checked), grey and dashed on the architect's.
+ */
 export interface PaneSpot {
   polygon: Point[];
   label: string;
-  emphasis: 'item' | 'reference';
+  emphasis: 'item' | 'checked' | 'reference';
+}
+
+/** The page of this file that holds the item: its dot in the page strip stays while turning away. */
+export interface PaneMark {
+  page: number;
+  tone: 'item' | 'neutral';
+}
+
+/** The server's code for a page whose picture is not made yet (`app/api/page_pictures.py`). */
+const PICTURE_NOT_READY = 'page_picture_not_ready';
+
+/** The architect drawing whose box holds the centre of `focus`, else the first. */
+function regionHolding(regions: ArchitectRegion[], focus: Point[] | null): number {
+  if (!focus || focus.length === 0) return 0;
+  const b = boundsOf(focus);
+  const [cx, cy] = [b.x + b.w / 2, b.y + b.h / 2];
+  const index = regions.findIndex((entry) => {
+    const r = regionRect(entry.bbox);
+    return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+  });
+  return Math.max(index, 0);
 }
 
 const SIDE_WORDS: Record<Side, string> = { vendor: "Vendor's drawing", architect: "Architect's drawing" };
@@ -50,6 +74,8 @@ export function DualPane({
   count,
   combined,
   spot,
+  focus = null,
+  mark,
   store,
   decoder,
   command,
@@ -66,6 +92,9 @@ export function DualPane({
   /** The architect side of a combined sheet: the vendor's page, zoomed to its architect drawing. */
   combined: boolean;
   spot: PaneSpot | null;
+  /** Combined sheet: where the item is on this page, so the pane opens on the architect drawing holding it. */
+  focus?: Point[] | null;
+  mark: PaneMark | null;
   store: PictureStore;
   decoder: Decoder;
   command: PaneCommand | null;
@@ -78,14 +107,14 @@ export function DualPane({
   const words = SIDE_WORDS[side];
   const page = doc?.pages.find((entry) => entry.page_number === pageNumber) ?? null;
   const regions = combined ? (page?.architect_regions ?? []) : [];
-  const [regionIndex, setRegionIndex] = useState(0);
+  const [regionIndex, setRegionIndex] = useState(() => regionHolding(regions, focus));
   const region: ArchitectRegion | null = regions[Math.min(regionIndex, regions.length - 1)] ?? null;
   const pageKey = doc ? `${doc.document_version_id}:${pageNumber}` : null;
-  // A new page starts at its first architect drawing (derived, not reset in an effect).
+  // A new page starts at the architect drawing holding the item, else its first (derived, not reset in an effect).
   const [regionFor, setRegionFor] = useState(pageKey);
   if (regionFor !== pageKey) {
     setRegionFor(pageKey);
-    setRegionIndex(0);
+    setRegionIndex(regionHolding(regions, focus));
   }
   const showPicture = !combined || region !== null;
   const title = combined ? `${words} (same sheet)` : words;
@@ -148,7 +177,7 @@ export function DualPane({
         />
       )}
 
-      {!combined && doc && <PageStrip side={side} doc={doc} count={count} current={pageNumber} spotPage={spot?.emphasis === 'item' ? pageNumber : null} onPick={onPickPage} />}
+      {!combined && doc && <PageStrip side={side} doc={doc} count={count} current={pageNumber} mark={mark} onPick={onPickPage} />}
     </section>
   );
 }
@@ -317,7 +346,7 @@ function PageView({
       (blob) => live && setPicture({ status: 'ready', blob }),
       (error: unknown) => {
         if (!live) return;
-        if (error instanceof ApiError && error.status === 404 && /not ready/i.test(error.message)) setPicture({ status: 'not-ready' });
+        if (error instanceof ApiError && error.status === 404 && error.code === PICTURE_NOT_READY) setPicture({ status: 'not-ready' });
         else setPicture({ status: 'error', error: error instanceof Error ? error.message : String(error) });
       },
     );
@@ -352,6 +381,8 @@ function PageView({
   // Zoomed in: once the view rests, decode only the visible part at the screen's size.
   useEffect(() => {
     if (!blob || !natural || !view || !baseSize) return;
+    // A browser that cannot decode part of a picture would stretch the whole page into the crop (#1362).
+    if (decoder.canDecodeParts && !decoder.canDecodeParts()) return;
     let live = true;
     const timer = window.setTimeout(() => {
       const crop = detailCrop(natural, view, box, dpr, baseSize);
@@ -470,7 +501,7 @@ function PageView({
                 );
               })}
               {spot && ring && (
-                <g data-testid="item-spot" aria-label={`${spot.label}, ringed`}>
+                <g data-testid="item-spot" data-emphasis={spot.emphasis} aria-label={`${spot.label}, ringed`}>
                   <rect x={ring.x} y={ring.y} width={ring.w} height={ring.h} vectorEffect="non-scaling-stroke" strokeWidth={7} className="fill-none stroke-white/90" />
                   <rect
                     x={ring.x}
@@ -478,8 +509,8 @@ function PageView({
                     width={ring.w}
                     height={ring.h}
                     vectorEffect="non-scaling-stroke"
-                    strokeWidth={spot.emphasis === 'item' ? 2.5 : 1.75}
-                    className={spot.emphasis === 'item' ? 'fill-outcome-review/10 stroke-outcome-review-fg' : 'fill-neutral-900/[0.06] stroke-neutral-700 [stroke-dasharray:6_4]'}
+                    strokeWidth={spot.emphasis === 'reference' ? 1.75 : 2.5}
+                    className={RING[spot.emphasis]}
                   />
                   <polygon points={svgPoints(spot.polygon)} vectorEffect="non-scaling-stroke" strokeWidth={1} className={spot.emphasis === 'item' ? 'fill-none stroke-outcome-review-fg/70' : 'fill-none stroke-neutral-700/60'} />
                 </g>
@@ -489,7 +520,7 @@ function PageView({
               <span
                 className={cn(
                   'pointer-events-none absolute max-w-64 truncate rounded-md px-1.5 py-0.5 text-[12px] font-medium whitespace-nowrap shadow-sm',
-                  spot.emphasis === 'item' ? 'bg-outcome-review-fg text-white' : 'border border-neutral-300 bg-white text-neutral-800',
+                  spot.emphasis === 'item' ? 'bg-outcome-review-fg text-white' : spot.emphasis === 'checked' ? 'bg-neutral-700 text-white' : 'border border-neutral-300 bg-white text-neutral-800',
                 )}
                 style={{ left: `${ring.x * 100}%`, top: `${ring.y * 100}%`, transform: 'translate(0, calc(-100% - 4px))' }}
                 aria-hidden="true"
@@ -574,6 +605,13 @@ function PageView({
   );
 }
 
+const RING: Record<PaneSpot['emphasis'], string> = {
+  item: 'fill-outcome-review/10 stroke-outcome-review-fg',
+  // Already checked: nothing to act on, so no outcome colour.
+  checked: 'fill-neutral-900/[0.04] stroke-neutral-700',
+  reference: 'fill-neutral-900/[0.06] stroke-neutral-700 [stroke-dasharray:6_4]',
+};
+
 function padded(rect: { x: number; y: number; w: number; h: number }, pad: number) {
   return { x: rect.x - pad, y: rect.y - pad, w: rect.w + 2 * pad, h: rect.h + 2 * pad };
 }
@@ -611,7 +649,8 @@ function PaneNote({ icon, line, why, action, role = 'status' }: { icon: React.Re
  * Every page of one file as a numbered strip. No pictures: a thumbnail of a 17-megapixel page would
  * cost a full download and decode, so the strip shows the page and sheet numbers and each page's state.
  */
-function PageStrip({ side, doc, count, current, spotPage, onPick }: { side: Side; doc: ReviewDocument; count: number; current: number; spotPage: number | null; onPick: (page: number) => void }) {
+function PageStrip({ side, doc, count, current, mark, onPick }: { side: Side; doc: ReviewDocument; count: number; current: number; mark: PaneMark | null; onPick: (page: number) => void }) {
+  const spotPage = mark?.page ?? null;
   const list = useRef<HTMLOListElement>(null);
   useEffect(() => {
     list.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -642,7 +681,7 @@ function PageStrip({ side, doc, count, current, spotPage, onPick }: { side: Side
               >
                 <span className="num text-[12px] font-medium">{n}</span>
                 {entry?.sheet_number && <span className={cn('num mt-0.5 max-w-16 truncate text-[12px]', n === current ? 'text-background/70' : 'text-muted-foreground')}>{entry.sheet_number}</span>}
-                {n === spotPage && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-outcome-review" aria-hidden="true" />}
+                {n === spotPage && <span className={cn('absolute top-0.5 right-0.5 size-1.5 rounded-full', mark?.tone === 'item' ? 'bg-outcome-review' : 'bg-neutral-500')} aria-hidden="true" />}
                 {state && <span className="absolute inset-x-1.5 bottom-0.5 border-b border-dashed border-current opacity-60" aria-hidden="true" />}
               </button>
             </li>

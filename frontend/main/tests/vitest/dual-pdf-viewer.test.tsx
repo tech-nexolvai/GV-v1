@@ -270,7 +270,7 @@ describe('DualPdfViewer follow-ups (#1362)', () => {
     expect(fileLine(vendorPane())).toContain('sample-shop-part2.pdf');
     expect(counter(architectPane())).toBe('2 / 4');
     expect(fileLine(architectPane())).toContain('sample-arch-part2.pdf');
-    expect(within(vendorPane()).getByTestId('item-spot')).toBeTruthy();
+    expect(await within(vendorPane()).findByTestId('item-spot')).toBeTruthy();
     expect(screen.getByText(/not shown here/).textContent).toMatch(/1 more vendor file, 1 more architect file and 1 other file are not shown here/);
   });
 

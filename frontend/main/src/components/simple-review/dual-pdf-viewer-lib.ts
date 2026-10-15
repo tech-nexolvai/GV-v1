@@ -34,6 +34,17 @@ export function openNav(start: Pages, counts: Pages, combined: boolean): Nav {
   return { pages: { vendor, architect }, counts: fixed, linked: true, active: 'vendor', combined, offset: architect - vendor, position: vendor };
 }
 
+/**
+ * The page counts after the list is loaded again ("Check again", #1362): the pages shown stay, held
+ * inside the new counts. A linked pair keeps its offset.
+ */
+export function withCounts(nav: Nav, counts: Pages): Nav {
+  const fixed = nav.combined ? { vendor: counts.vendor, architect: counts.vendor } : counts;
+  const now = { ...nav, counts: fixed };
+  if (nav.linked) return linkedAt(now, nav.position);
+  return { ...now, pages: { vendor: clamp(nav.pages.vendor, 1, fixed.vendor), architect: clamp(nav.pages.architect, 1, fixed.architect) } };
+}
+
 /** The linked pair at `position`: the range lets the longer file keep going after the shorter ends. */
 function linkedAt(nav: Nav, position: number): Nav {
   const lo = Math.min(1, 1 - nav.offset);
@@ -141,13 +152,16 @@ export interface Decoded {
   close: () => void;
 }
 
-/** Decode `blob` (or one part of it) at `size`. Tests pass their own. */
-export type Decoder = (blob: Blob, crop: Omit<Crop, 'size'> | null, size: Size) => Promise<Decoded>;
+/**
+ * Decode `blob` (or one part of it) at `size`. Tests pass their own. `canDecodeParts` says whether a
+ * part can be decoded at all (#1362); left out, it can.
+ */
+export type Decoder = ((blob: Blob, crop: Omit<Crop, 'size'> | null, size: Size) => Promise<Decoded>) & { canDecodeParts?: () => boolean };
 
 /** True when the browser can decode one part of a picture at a chosen size. */
 export const canDecodeParts = () => typeof createImageBitmap === 'function';
 
-export const browserDecoder: Decoder = async (blob, crop, size) => {
+const decodeInBrowser = async (blob: Blob, crop: Omit<Crop, 'size'> | null, size: Size): Promise<Decoded> => {
   if (canDecodeParts()) {
     const options: ImageBitmapOptions = { resizeWidth: size.w, resizeHeight: size.h, resizeQuality: 'high' };
     const bitmap = crop ? await createImageBitmap(blob, crop.x, crop.y, crop.w, crop.h, options) : await createImageBitmap(blob, options);
@@ -156,3 +170,6 @@ export const browserDecoder: Decoder = async (blob, crop, size) => {
   const url = URL.createObjectURL(blob);
   return { source: url, width: size.w, height: size.h, close: () => URL.revokeObjectURL(url) };
 };
+
+/** Without `createImageBitmap` it can only hand over the whole picture, so it never decodes a part. */
+export const browserDecoder: Decoder = Object.assign(decodeInBrowser, { canDecodeParts });

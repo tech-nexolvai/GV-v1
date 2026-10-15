@@ -1455,10 +1455,12 @@ export async function downloadPagePicture(
   packageId: string,
   pageNumber: number,
   documentVersionId?: string,
+  /** Cancels the download (#1362): the side-by-side viewer drops a page nobody looks at any more. */
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const response = await fetch(
     `${BASE}/projects/${projectId}/packages/${packageId}/pages/${pageNumber}/picture${documentVersionId ? `?document_version_id=${encodeURIComponent(documentVersionId)}` : ''}`,
-    { headers: { Accept: 'image/png,image/*;q=0.8' } },
+    { headers: { Accept: 'image/png,image/*;q=0.8' }, signal },
   );
   if (!response.ok) {
     let envelope: ErrorEnvelope;
