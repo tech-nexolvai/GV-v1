@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
 import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
-import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, orderItems, proposedWall, summarize } from '@/lib/review-items';
+import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
 import { HeaderActions } from '@/components/shell/ShellHeader';
@@ -22,6 +22,9 @@ import { PicturesProvider, type PictureLoader } from '@/components/simple-review
 import { PagesChoice } from '@/components/simple-review/pages-choice';
 import { ArchitectProvider } from '@/components/simple-review/architect-choices';
 import { liveArchitectLoader, type ArchitectLoader } from '@/components/simple-review/architect-choices-lib';
+import { RecordedNumbersPanel } from '@/components/simple-review/recorded-numbers';
+import { liveRecordedNumbers, type RecordedNumbersLoader } from '@/components/simple-review/recorded-numbers-lib';
+import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
 
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
 const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
@@ -47,10 +50,12 @@ export interface SimpleReviewPageProps {
   /** The architect view match and pairing reads behind an architect question (#1368). */
   architect?: ArchitectLoader;
   /**
-   * "Open PDFs" (O): `item` is the spot to open both documents at, null for the whole set. Without
-   * it the side-by-side viewer (U3, #1355) opens.
+   * "Open PDFs" (O): `item` is the spot to open both documents at (a list item or a wrong result),
+   * null for the whole set. Without it the side-by-side viewer (U3, #1355) opens.
    */
-  onOpenPdfs?: (item: ReviewItem | null) => void;
+  onOpenPdfs?: (item: ViewerItem | null) => void;
+  /** What a wrong result's check recorded, shown beside the drawings when opened from it (#1388). */
+  recorded?: RecordedNumbersLoader;
   /** The old tabs and wizard, `#/review/<id>/advanced`. */
   onOpenAdvanced: () => void;
   onTitleChange?: (title: string, revision: number | null) => void;
@@ -149,6 +154,7 @@ export function SimpleReviewPage({
   cloud = { draft: null },
   finalCloud = liveFinalCloudApi,
   architect = liveArchitectLoader,
+  recorded = liveRecordedNumbers,
   onOpenPdfs,
   onOpenAdvanced,
   onTitleChange,
@@ -187,7 +193,8 @@ export function SimpleReviewPage({
   const proposals = useRef(new Map<string, { findingId: string | null; extra: ActionExtra | null }>());
   // Bumped to read the open architect question again (after a stale answer, #1368).
   const [architectAsk, setArchitectAsk] = useState(0);
-  const [viewer, setViewer] = useState<{ opening: number; item: ReviewItem | null } | null>(null);
+  // Opened from a wrong row (#1388), `failure` is that row: its recorded numbers sit beside the drawings.
+  const [viewer, setViewer] = useState<{ opening: number; item: ViewerItem | null; failure: ReviewFailure | null } | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -409,8 +416,16 @@ export function SimpleReviewPage({
 
   const openPdfs = useCallback((item: ReviewItem | null) => {
     if (onOpenPdfs) onOpenPdfs(item);
-    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item }));
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item, failure: null }));
   }, [onOpenPdfs]);
+
+  // A wrong row's Look (or O once it is selected, #1388): both drawings at its page and spot.
+  function lookAtFailure(failure: ReviewFailure) {
+    setActiveKey(failure.key);
+    const at: ViewerItem = { key: failure.key, page: failure.page ?? null, what: whereWord(failure), status: failure.status, vendor_ref: failure.vendor_ref ?? null, architect_ref: null };
+    if (onOpenPdfs) onOpenPdfs(at);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, failure }));
+  }
 
   async function runDraft() {
     if (cloud.draft === null) return;
@@ -446,6 +461,8 @@ export function SimpleReviewPage({
       const key = event.key.toLowerCase();
       const targetKey = openKey ?? activeKey;
       const item = ordered.find((entry) => entry.key === targetKey) ?? null;
+      // A wrong row the reviewer clicked (#1388): O opens it, the other keys stay with the list.
+      const failure = data?.failures.find((entry) => entry.key === activeKey) ?? null;
       if (key === 'j' || key === 'k') {
         if (keys.length === 0) return;
         event.preventDefault();
@@ -454,7 +471,7 @@ export function SimpleReviewPage({
         focusRow(keys[next]);
       } else if (event.key === 'Enter') {
         // A focused row is a button and opens itself; this covers the list with nothing focused.
-        if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement || activeKey === null) return;
+        if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement || activeKey === null || failure) return;
         event.preventDefault();
         toggle(activeKey);
       } else if (event.key === 'Escape') {
@@ -481,7 +498,8 @@ export function SimpleReviewPage({
         }
       } else if (key === 'o') {
         event.preventDefault();
-        openPdfs(item);
+        if (failure) lookAtFailure(failure);
+        else openPdfs(item);
       }
     }
     document.addEventListener('keydown', onKey);
@@ -650,7 +668,15 @@ export function SimpleReviewPage({
                 </p>
 
                 <div className="flex flex-col gap-10 pt-2">
-                  <FailuresStrip failures={data.failures} busyKey={busy?.key ?? null} errors={errors} onAgree={agree} />
+                  <FailuresStrip
+                    failures={data.failures}
+                    busyKey={busy?.key ?? null}
+                    errors={errors}
+                    selectedKey={activeKey}
+                    onAgree={agree}
+                    onLook={lookAtFailure}
+                    onSelect={(failure) => setActiveKey(failure.key)}
+                  />
 
                   {summary.nothingNeedsYou && pagesAsked.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} />}
 
@@ -735,7 +761,14 @@ export function SimpleReviewPage({
 
       {viewer && project !== null && (
         <Suspense fallback={null}>
-          <DualPdfViewer key={viewer.opening} projectId={project} packageId={packageId} item={viewer.item} onClose={() => setViewer(null)} />
+          <DualPdfViewer
+            key={viewer.opening}
+            projectId={project}
+            packageId={packageId}
+            item={viewer.item}
+            aside={viewer.failure ? <RecordedNumbersPanel projectId={project} packageId={packageId} failure={viewer.failure} load={recorded} /> : null}
+            onClose={() => setViewer(null)}
+          />
         </Suspense>
       )}
       </ArchitectProvider>

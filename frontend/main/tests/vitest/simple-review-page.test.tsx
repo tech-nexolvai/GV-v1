@@ -607,3 +607,152 @@ describe('SimpleReviewPage after the independent review (#1368)', () => {
     expect(notice.textContent).toContain('Confirmed.');
   });
 });
+
+describe('SimpleReviewPage: Look on a wrong row (#1388)', () => {
+  /** Both drawings: a 12-page vendor file and a 14-page architect file (invented). */
+  function pagesListed() {
+    server.use(
+      http.get(`${API}/pages`, () =>
+        HttpResponse.json({
+          package_revision_id: 'rev-1',
+          revision_number: 2,
+          combined_set: false,
+          pages_without_pictures: 2,
+          documents: [
+            { document_id: 'doc-v', document_version_id: 'docv-vendor', kind: 'shop', side: 'vendor', file_name: 'sample-shop.pdf', page_count: 12, pages: [] },
+            { document_id: 'doc-a', document_version_id: 'docv-arch', kind: 'architectural', side: 'architect', file_name: 'sample-arch.pdf', page_count: 14, pages: [] },
+          ],
+        }),
+      ),
+    );
+  }
+
+  const exact = (display: string) => ({ numerator: '0', denominator: '1', display });
+
+  /**
+   * The countertop results as recorded (invented). The needed overall is deliberately not the sum of
+   * the pieces shown: the panel must show what was recorded, never add anything up itself.
+   */
+  function countertopsRecorded() {
+    server.use(
+      http.get(`${API}/countertop-results`, () =>
+        HttpResponse.json({
+          package_id: 'pkg-demo',
+          items: [
+            {
+              finding_id: 'find-10',
+              row_id: 'row-10',
+              page_number: 10,
+              label: 'Mudroom bench',
+              printed_overall: exact('48 1/2"'),
+              pieces: [
+                { index: 0, kind: 'cabinet', source: 'sealed', value: exact('24"') },
+                { index: 1, kind: 'filler', source: 'sealed', value: exact('3/4"') },
+                { index: 2, kind: 'cabinet', source: 'typed', value: null },
+              ],
+              field_cut_per_end: exact('1/2"'),
+              field_cut_count: 2,
+              expected_total: exact('47 7/8"'),
+              wall_cases: { cases: [] },
+            },
+          ],
+        }),
+      ),
+    );
+  }
+
+  function renderWithViewer() {
+    render(<SimpleReviewPage packageId="pkg-demo" pictures={pictures} assistantAvailable={false} onOpenAdvanced={vi.fn()} />);
+  }
+
+  async function viewerDialog() {
+    // The viewer is a lazy chunk (pdf.js), loaded cold: the wait is the chunk's (see #1355's test).
+    return screen.findByRole('dialog', { name: 'Both drawings' }, { timeout: 5000 });
+  }
+
+  it('Look on a wrong row opens both drawings at its page, with the numbers the check recorded', async () => {
+    pagesListed();
+    countertopsRecorded();
+    renderWithViewer();
+    await screen.findByTestId('ai-read-line');
+    const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
+    const row = within(strip).getAllByRole('listitem')[0];
+    // Look sits left of Agree.
+    const buttons = within(row).getAllByRole('button').map((button) => button.textContent);
+    expect(buttons).toEqual(['Look', 'Agree']);
+    await userEvent.click(within(row).getByRole('button', { name: 'Look at Countertop 6, page 10' }));
+    const dialog = await viewerDialog();
+    expect(dialog.textContent).toContain('Opened at Countertop 6');
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('10 / 12'));
+
+    const numbers = await within(dialog).findByRole('region', { name: 'What the check recorded' });
+    await within(numbers).findByText('48 1/2"');
+    const lines = within(numbers).getAllByRole('listitem').map((line) => line.textContent);
+    expect(lines).toEqual([
+      'The vendor wrote48 1/2"',
+      'Piece 1, cabinet24"',
+      'Piece 2, filler3/4"',
+      'Piece 3, cabinetnot read',
+      'Field cut1/2" at each of 2 ends',
+      'Needed overall47 7/8"',
+    ]);
+    expect(numbers.textContent).toContain('The countertop is 1/2" longer than the cabinets under it add up to.');
+    // Nothing was posted: looking is not answering.
+    expect(posted).toEqual([]);
+  });
+
+  it('clicking a wrong row selects it, and O opens both drawings at its page', async () => {
+    pagesListed();
+    server.use(
+      http.get(`${API}/countertop-results`, () => HttpResponse.json({ package_id: 'pkg-demo', items: [] })),
+      http.get(`${API}/findings/find-11/chain`, () =>
+        HttpResponse.json({
+          finding_id: 'find-11',
+          operands: [],
+          trace: {
+            kind: 'calculation',
+            operation: 'sum_matches',
+            operation_version: '1',
+            engine_version: '1',
+            arithmetic_unit: 'in',
+            intermediates: [],
+            comparison: '70" is not 72"',
+            operands: [
+              { name: 'countertop_width', value: '70"', source: 'SHOP' },
+              { name: 'piece_widths[0]', value: '36"', source: 'SHOP' },
+            ],
+          },
+        }),
+      ),
+    );
+    renderWithViewer();
+    await screen.findByTestId('ai-read-line');
+    const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
+    const row = within(strip).getAllByRole('listitem')[1];
+    const user = userEvent.setup();
+    await user.click(within(row).getByText('Countertop 7'));
+    expect(row.getAttribute('aria-current')).toBe('true');
+    expect(document.activeElement).toBe(row);
+    await user.keyboard('o');
+    const dialog = await viewerDialog();
+    expect(dialog.textContent).toContain('Opened at Countertop 7');
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('11 / 12'));
+    // No countertop result carries this finding: the check's own recorded trace is shown, as stored.
+    const numbers = await within(dialog).findByRole('region', { name: 'What the check recorded' });
+    await within(numbers).findByText('70"');
+    const lines = within(numbers).getAllByRole('listitem').map((line) => line.textContent);
+    expect(lines).toEqual(['countertop width70"', 'piece widths[0]36"']);
+    expect(numbers.textContent).toContain('70" is not 72"');
+  });
+
+  it('O on a selected wrong row hands it to an Open PDFs hook at its page', async () => {
+    const { onOpenPdfs } = renderPage();
+    await screen.findByTestId('ai-read-line');
+    const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
+    const row = within(strip).getAllByRole('listitem')[0];
+    const user = userEvent.setup();
+    await user.click(within(row).getByText('Countertop 6'));
+    await user.keyboard('o');
+    expect(onOpenPdfs).toHaveBeenCalledWith(expect.objectContaining({ key: 'failure:find-10', page: 10, vendor_ref: expect.objectContaining({ page_number: 10 }) }));
+  });
+});

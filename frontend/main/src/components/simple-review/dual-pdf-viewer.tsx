@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link2, Link2Off, MoveHorizontal, RefreshCw, X } from 'lucide-react';
 
 import type { ReviewItem } from '@/api/review-items';
@@ -12,6 +12,12 @@ import { browserDecoder, goTo, openNav, step, toggleLink, withCounts, type Decod
 import { DualPane, type PaneCommand, type PaneMark, type PaneSpot } from './dual-pdf-viewer-pane';
 
 export type { ReviewPagesApi, ReviewPagesOut } from './dual-pdf-viewer-api';
+
+/**
+ * What the viewer opens at: a list item, or a wrong result (#1388), which has a vendor spot and no
+ * architect one. Only the fields the viewer reads.
+ */
+export type ViewerItem = Pick<ReviewItem, 'key' | 'page' | 'what' | 'status'> & Partial<Pick<ReviewItem, 'vendor_ref' | 'architect_ref'>>;
 
 /** How far one arrow key moves a page, in screen pixels. */
 const PAN_STEP = 80;
@@ -34,6 +40,7 @@ export function DualPdfViewer({
   projectId,
   packageId,
   item,
+  aside = null,
   onClose,
   api = liveReviewPagesApi,
   decoder = browserDecoder,
@@ -41,7 +48,9 @@ export function DualPdfViewer({
   projectId: string;
   packageId: string;
   /** The item to open at, or null for the whole set from page 1. */
-  item: ReviewItem | null;
+  item: ViewerItem | null;
+  /** Shown beside the drawings (right on a wide screen, above them on a narrow one), e.g. a wrong result's recorded numbers. */
+  aside?: ReactNode;
   onClose: () => void;
   api?: ReviewPagesApi;
   decoder?: Decoder;
@@ -174,66 +183,69 @@ export function DualPdfViewer({
         )}
 
         {data && nav && (vendor || architect) && (
-          <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-            <DualPane
-              side="vendor"
-              doc={vendor}
-              pageNumber={nav.pages.vendor}
-              count={nav.counts.vendor}
-              combined={false}
-              spot={spotOn(item, 'vendor', vendor, nav.pages.vendor)}
-              mark={markOf(item, 'vendor', vendor)}
-              store={store}
-              decoder={decoder}
-              command={commandFor('vendor')}
-              onStep={(delta) => setNav((now) => now && step({ ...now, active: 'vendor' }, delta))}
-              onActive={() => setNav((now) => (now && now.active !== 'vendor' ? { ...now, active: 'vendor' } : now))}
-              onRefresh={() => setAttempt((n) => n + 1)}
-              onPickPage={(page) => setNav((now) => now && goTo(now, 'vendor', page))}
-            />
-
-            {/* The seam: where the two drawings meet, and whether their pages turn together. */}
-            <div className={cn('relative flex h-11 shrink-0 items-center justify-center border-y border-border bg-muted/40 md:block md:h-auto md:w-px md:border-y-0 md:bg-border', !linked && 'md:border-l md:border-dashed md:bg-transparent')}>
-              <div className="z-10 md:absolute md:top-3 md:left-1/2 md:-translate-x-1/2">
-                {combined ? (
-                  <span className="flex h-7 items-center rounded-full border border-border bg-background px-2.5 text-[12px] whitespace-nowrap text-muted-foreground shadow-sm" title="The architect's drawing is on the vendor's sheet: both sides show the same page.">
-                    Same sheet
-                  </span>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-pressed={linked}
-                    aria-label={linked ? 'Pages linked: they turn together. Press to unlink.' : 'Pages not linked: each side turns alone. Press to link.'}
-                    title={linked ? 'Pages turn together (L)' : 'Each side turns alone (L)'}
-                    onClick={() => setNav((now) => now && toggleLink(now))}
-                    className={cn('h-7 rounded-full bg-background px-2.5 text-[12px] shadow-sm', !linked && 'border-dashed text-muted-foreground')}
-                  >
-                    {linked ? <Link2 /> : <Link2Off />}
-                    {linked ? 'Linked' : 'Unlinked'}
-                  </Button>
-                )}
+          <div className="flex min-h-0 flex-1 flex-col md:flex-row-reverse">
+            {aside}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+              <DualPane
+                side="vendor"
+                doc={vendor}
+                pageNumber={nav.pages.vendor}
+                count={nav.counts.vendor}
+                combined={false}
+                spot={spotOn(item, 'vendor', vendor, nav.pages.vendor)}
+                mark={markOf(item, 'vendor', vendor)}
+                store={store}
+                decoder={decoder}
+                command={commandFor('vendor')}
+                onStep={(delta) => setNav((now) => now && step({ ...now, active: 'vendor' }, delta))}
+                onActive={() => setNav((now) => (now && now.active !== 'vendor' ? { ...now, active: 'vendor' } : now))}
+                onRefresh={() => setAttempt((n) => n + 1)}
+                onPickPage={(page) => setNav((now) => now && goTo(now, 'vendor', page))}
+              />
+  
+              {/* The seam: where the two drawings meet, and whether their pages turn together. */}
+              <div className={cn('relative flex h-11 shrink-0 items-center justify-center border-y border-border bg-muted/40 md:block md:h-auto md:w-px md:border-y-0 md:bg-border', !linked && 'md:border-l md:border-dashed md:bg-transparent')}>
+                <div className="z-10 md:absolute md:top-3 md:left-1/2 md:-translate-x-1/2">
+                  {combined ? (
+                    <span className="flex h-7 items-center rounded-full border border-border bg-background px-2.5 text-[12px] whitespace-nowrap text-muted-foreground shadow-sm" title="The architect's drawing is on the vendor's sheet: both sides show the same page.">
+                      Same sheet
+                    </span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-pressed={linked}
+                      aria-label={linked ? 'Pages linked: they turn together. Press to unlink.' : 'Pages not linked: each side turns alone. Press to link.'}
+                      title={linked ? 'Pages turn together (L)' : 'Each side turns alone (L)'}
+                      onClick={() => setNav((now) => now && toggleLink(now))}
+                      className={cn('h-7 rounded-full bg-background px-2.5 text-[12px] shadow-sm', !linked && 'border-dashed text-muted-foreground')}
+                    >
+                      {linked ? <Link2 /> : <Link2Off />}
+                      {linked ? 'Linked' : 'Unlinked'}
+                    </Button>
+                  )}
+                </div>
               </div>
+  
+              <DualPane
+                side="architect"
+                doc={architect}
+                pageNumber={nav.pages.architect}
+                count={nav.counts.architect}
+                combined={combined}
+                spot={spotOn(item, 'architect', architect, nav.pages.architect)}
+                focus={combined ? focusOn(item, architect, nav.pages.architect) : null}
+                mark={combined ? null : markOf(item, 'architect', architect)}
+                store={store}
+                decoder={decoder}
+                command={commandFor('architect')}
+                linkedNote={!combined && item && !item.architect_ref?.location ? (item.architect_ref?.reason ?? 'This item has no spot on the architect\'s drawing.') : null}
+                onStep={(delta) => setNav((now) => now && step({ ...now, active: 'architect' }, delta))}
+                onActive={() => setNav((now) => (now && now.active !== 'architect' ? { ...now, active: 'architect' } : now))}
+                onRefresh={() => setAttempt((n) => n + 1)}
+                onPickPage={(page) => setNav((now) => now && goTo(now, combined ? 'vendor' : 'architect', page))}
+              />
             </div>
-
-            <DualPane
-              side="architect"
-              doc={architect}
-              pageNumber={nav.pages.architect}
-              count={nav.counts.architect}
-              combined={combined}
-              spot={spotOn(item, 'architect', architect, nav.pages.architect)}
-              focus={combined ? focusOn(item, architect, nav.pages.architect) : null}
-              mark={combined ? null : markOf(item, 'architect', architect)}
-              store={store}
-              decoder={decoder}
-              command={commandFor('architect')}
-              linkedNote={!combined && item && !item.architect_ref?.location ? (item.architect_ref?.reason ?? 'This item has no spot on the architect\'s drawing.') : null}
-              onStep={(delta) => setNav((now) => now && step({ ...now, active: 'architect' }, delta))}
-              onActive={() => setNav((now) => (now && now.active !== 'architect' ? { ...now, active: 'architect' } : now))}
-              onRefresh={() => setAttempt((n) => n + 1)}
-              onPickPage={(page) => setNav((now) => now && goTo(now, combined ? 'vendor' : 'architect', page))}
-            />
           </div>
         )}
       </DialogContent>
@@ -270,7 +282,7 @@ function notShownLine(documents: ReviewDocument[], shown: (ReviewDocument | null
   return `${list} ${hidden.length === 1 ? 'is' : 'are'} not shown here.`;
 }
 
-function startPages(item: ReviewItem | null, architect: ReviewDocument | null, combined: boolean) {
+function startPages(item: ViewerItem | null, architect: ReviewDocument | null, combined: boolean) {
   const vendorPage = item?.vendor_ref?.page_number ?? item?.page ?? 1;
   const location = item?.architect_ref?.location ?? null;
   const architectPage = combined ? vendorPage : location && architect && location.document_version_id === architect.document_version_id ? location.page_number : 1;
@@ -278,7 +290,7 @@ function startPages(item: ReviewItem | null, architect: ReviewDocument | null, c
 }
 
 /** The item's spot on this side's current page, from its stored outline only. */
-function spotOn(item: ReviewItem | null, side: Side, doc: ReviewDocument | null, page: number): PaneSpot | null {
+function spotOn(item: ViewerItem | null, side: Side, doc: ReviewDocument | null, page: number): PaneSpot | null {
   if (!item || !doc) return null;
   const ref = side === 'vendor' ? (item.vendor_ref ?? null) : (item.architect_ref?.location ?? null);
   if (!ref || ref.document_version_id !== doc.document_version_id || ref.page_number !== page) return null;
@@ -288,7 +300,7 @@ function spotOn(item: ReviewItem | null, side: Side, doc: ReviewDocument | null,
 }
 
 /** The page of this side's file that holds the item, kept marked in the page strip while turning away. */
-function markOf(item: ReviewItem | null, side: Side, doc: ReviewDocument | null): PaneMark | null {
+function markOf(item: ViewerItem | null, side: Side, doc: ReviewDocument | null): PaneMark | null {
   if (!item || !doc) return null;
   const ref = side === 'vendor' ? (item.vendor_ref ?? null) : (item.architect_ref?.location ?? null);
   if (!ref || ref.document_version_id !== doc.document_version_id) return null;
@@ -296,7 +308,7 @@ function markOf(item: ReviewItem | null, side: Side, doc: ReviewDocument | null)
 }
 
 /** Combined sheet: where the item is on this page (its architect spot, else its vendor spot), to pick the architect drawing that holds it. */
-function focusOn(item: ReviewItem | null, doc: ReviewDocument | null, page: number): Point[] | null {
+function focusOn(item: ViewerItem | null, doc: ReviewDocument | null, page: number): Point[] | null {
   if (!item || !doc) return null;
   for (const ref of [item.architect_ref?.location ?? null, item.vendor_ref ?? null]) {
     if (ref && ref.document_version_id === doc.document_version_id && ref.page_number === page) {
