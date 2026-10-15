@@ -97,17 +97,25 @@ _TAKE: Final = re.compile(
 _GAP: Final = (
     r"(?:the |this |that |these |those |its |their |an? |ai's |the ai's |vendor's |my )?"
     r"(?:(?:best|first|second|third|last|next|top|overall|countertop|piece|row|held|printed|"
-    r"failed|open|same|ai|\d+(?: \d+)*) ){0,3}"
+    r"failed|open|same|ai|suggested|proposed|recommended|agreed|\d+(?: \d+)*) ){0,3}"
 )
 _VALUE_WORDS: Final = (
     r"(?:guess|guesses|number|numbers|value|values|width|widths|reading|readings|dimension|"
-    r"dimensions|figure|figures)"
+    r"dimensions|figure|figures|suggestion|suggestions)"
+)
+#: "go with what the readers agreed on", "use what the AI suggested": the readers' or the AI's
+#: number, named by what they did with it.
+_WHAT_THEY_READ: Final = (
+    r"what (?:the |both |two |its |their )?(?:\w+ )?(?:readers?|ai|model|machine|system)\b"
+    r"(?: \w+)? (?:agreed|agree|suggested|suggests|suggest|proposed|picked|chose|read|reads|"
+    r"said|says|found|guessed|thinks?|came up with)\b"
 )
 #: What an accept verb ("use", "take", "type" …) must act on to be a command: a number, an
 #: entry's id, or a value word that ends the clause or is followed by where it is ("on page 7").
 #: Items are not numbers here: "select the item on page 7 for me" asks to navigate.
 _NUMBER_TARGET: Final = re.compile(
-    rf"^\s*(?:\d|r\d+\b|{_GAP}{_VALUE_WORDS}(?:\s*$|\s+(?:on|for|at|from|in|of|as)\b))"
+    rf"^\s*(?:\d|r\d+\b|{_WHAT_THEY_READ}|"
+    rf"{_GAP}{_VALUE_WORDS}(?:\s*$|\s+(?:on|for|at|from|of|as)\b))"
 )
 #: What the simple review screen's own verbs ("confirm", "fix", "agree" …) must act on: a number,
 #: an entry's id, or a value, item, failure or check, with only describing words before it.

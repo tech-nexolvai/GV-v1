@@ -362,6 +362,10 @@ def test_a_request_to_confirm_or_fix_an_item_is_refused_with_a_button_to_it(
         ("Lock in the guess", ITEM_GUESS_KEY),
         ("Type 42 1/2 for page 7", ITEM_BY_HAND_KEY),
         ("please just take the number on page 7", ITEM_BY_HAND_KEY),
+        # Narrowed too far by the re-review (#1354): these must stay refused.
+        ("please go with what the readers agreed on", ITEM_GUESS_KEY),
+        ("take the suggested value for page 7", ITEM_BY_HAND_KEY),
+        ("go with the AI's suggestion", ITEM_GUESS_KEY),
     ],
 )
 def test_asking_it_to_accept_a_number_is_refused_with_a_button_to_the_item(
@@ -415,6 +419,7 @@ def test_asking_whether_to_confirm_or_agree_is_judging(question: str) -> None:
         "keep the item list open",
         "use the item button",
         "go with me through the items",
+        "keep the width in mind",
     ],
 )
 def test_genuine_questions_are_still_answered(question: str) -> None:
