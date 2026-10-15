@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ReviewHeader } from '@/components/simple-review/review-header';
@@ -14,7 +15,7 @@ import { PagesChoice } from '@/components/simple-review/pages-choice';
 import type { FinalCloudApi } from '@/api/final-cloud';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider } from '@/components/simple-review/item-pictures';
-import { leftWords, summarize } from '@/lib/review-items';
+import { leftWords, openNoCountertopPages, openPagesToDecide, summarize } from '@/lib/review-items';
 import { ApiError } from '@/api/client';
 import { allSettled, reviewItems } from './fixtures/review-items';
 
@@ -28,24 +29,57 @@ describe('ReviewHeader', () => {
     render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Sample Stoneworks' })).toBeTruthy();
     const line = screen.getByTestId('ai-read-line');
-    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 confirmed by AI');
+    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 settled by both AIs (89%) · 17 need you');
     expect(within(line).getByText('148').className).toContain('num');
     expect(screen.getByRole('button', { name: /Open PDFs/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Draft cloud PDF/ })).toBeTruthy();
+  });
+
+  it("says how often the AI was right on the numbers you checked, all from the server (#1386)", () => {
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('accuracy-line').textContent).toBe('Your answers so far: 12 · AI right on 11 (92%)');
+    // A number both AIs settled that a person corrected stays in sight.
+    expect(screen.getByTestId('settled-check-line').textContent).toBe('Of the numbers both AIs settled that you checked: 2 right of 3');
+  });
+
+  it('with nothing checked it shows no accuracy at all, never 0% or 100% (#1386)', () => {
+    const header = { ...data.header, readings_checked: 0, ai_right: 0, ai_right_percent: null, settled_checked: 0, settled_right: 0 };
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('accuracy-line').textContent).toBe('Accuracy: shown after you check some numbers');
+    expect(screen.queryByTestId('settled-check-line')).toBeNull();
+  });
+
+  it('prints the percentages the server sent, never its own (#1386)', () => {
+    // Deliberately not 131/148: the screen must print the server's number, not work one out.
+    const header = { ...data.header, settled_percent: 7, ai_right_percent: 3 };
+    render(<ReviewHeader title="Sample Stoneworks" revision={2} header={header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
+    expect(screen.getByTestId('ai-read-line').textContent).toContain('131 settled by both AIs (7%)');
+    expect(screen.getByTestId('accuracy-line').textContent).toContain('AI right on 11 (3%)');
+  });
+
+  it('a draft being made says so; a failed one is named with Retry (#1394)', async () => {
+    const onDraft = vi.fn();
+    const { rerender } = render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'working' }} />);
+    expect((screen.getByRole('button', { name: /Making draft/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('status').textContent).toContain('Making the draft cloud PDF');
+    rerender(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'error', message: 'Run the checks first.' }} />);
+    expect(screen.getByRole('alert').textContent).toBe('The draft cloud PDF could not be made: Run the checks first.');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onDraft).toHaveBeenCalledTimes(1);
   });
 
   it('a draft that cannot be made yet is named, not hidden', () => {
     render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={null} draft={{ status: 'idle' }} />);
     const button = screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(button.title).toMatch(/not available/i);
+    expect(button.title).toMatch(/cannot be asked for/i);
   });
 });
 
 describe('FailuresStrip', () => {
   it('lists each result to be clouded as wrong with a glyph, the word and one Agree', async () => {
     const onAgree = vi.fn();
-    render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={onAgree} />);
+    render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={onAgree} onLook={() => {}} onSelect={() => {}} />);
     const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
     expect(within(strip).getAllByText('Wrong')).toHaveLength(2);
     expect(strip.querySelectorAll('[data-slot="failure-row"] [data-outcome-icon="FAIL"]')).toHaveLength(2);
@@ -53,16 +87,32 @@ describe('FailuresStrip', () => {
     expect(onAgree).toHaveBeenCalledWith(data.failures[0]);
   });
 
-  it('an agreed result says so and offers no button', () => {
+  it('an agreed result says so and offers no Agree, only Look', () => {
     const agreed = reviewItems((draft) => { draft.failures[0].status = 'done'; draft.failures[0].actions = []; });
-    render(<FailuresStrip failures={agreed.failures} busyKey={null} errors={{}} onAgree={() => {}} />);
+    render(<FailuresStrip failures={agreed.failures} busyKey={null} errors={{}} onAgree={() => {}} onLook={() => {}} onSelect={() => {}} />);
     expect(screen.getAllByRole('button', { name: /Agree/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Look at/ })).toHaveLength(2);
     expect(screen.getByText('Agreed')).toBeTruthy();
   });
 
   it('shows nothing when no result fails', () => {
-    const { container } = render(<FailuresStrip failures={[]} busyKey={null} errors={{}} onAgree={() => {}} />);
+    const { container } = render(<FailuresStrip failures={[]} busyKey={null} errors={{}} onAgree={() => {}} onLook={() => {}} onSelect={() => {}} />);
     expect(container.textContent).toBe('');
+  });
+
+  it('Look opens a row at its page without selecting it; a click on the row text selects it (#1388)', async () => {
+    const onLook = vi.fn();
+    const onSelect = vi.fn();
+    const { rerender } = render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={() => {}} onLook={onLook} onSelect={onSelect} />);
+    const rows = screen.getAllByRole('listitem');
+    await userEvent.click(within(rows[1]).getByRole('button', { name: /^Look at/ }));
+    expect(onLook).toHaveBeenCalledWith(data.failures[1]);
+    expect(onSelect).not.toHaveBeenCalled();
+    await userEvent.click(within(rows[1]).getByText('Countertop 7'));
+    expect(onSelect).toHaveBeenCalledWith(data.failures[1]);
+    rerender(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} selectedKey={data.failures[1].key} onAgree={() => {}} onLook={onLook} onSelect={onSelect} />);
+    expect(rows[1].getAttribute('aria-current')).toBe('true');
+    expect(rows[0].getAttribute('aria-current')).toBeNull();
   });
 });
 
@@ -324,16 +374,35 @@ describe('FinalBar (#1368)', () => {
   }
   function renderBar(source = data, api = finalApi(), approved = false) {
     const onSigned = vi.fn();
-    render(<FinalBar summary={summarize(source)} left={leftWords(source)} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={approved} onSigned={onSigned} />);
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={approved} onSigned={onSigned} />);
     return { api, onSigned };
   }
 
-  it("stays locked while the server says so: its reason, and what is left in counts", () => {
-    renderBar();
+  it("stays locked while the server says so, in plain words with the header's counts (#1394)", () => {
+    const technical = reviewItems((draft) => {
+      draft.header.open = 9;
+      draft.header.not_checked = 54;
+      draft.header.rechecking = 0;
+      draft.header.blocked_reason = '61 findings still need a valid reviewer decision or a check rerun after correction.';
+    });
+    renderBar(technical);
     const button = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByRole('status').textContent).toBe('6 items still need you.');
-    expect(screen.getByText('6 items to answer · 2 wrong results to agree · 6 checks not run · 1 item re-checking')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('9 items need you · 54 not checked');
+    expect(screen.queryByText(/valid reviewer decision/)).toBeNull();
+  });
+
+  it('under StrictMode the sign-off dialog still names the signer and can be confirmed (#1394)', async () => {
+    const api = finalApi();
+    render(
+      <StrictMode>
+        <FinalBar summary={summarize(allSettled())} left={[]} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />
+      </StrictMode>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(await within(dialog).findByText('Sample Reviewer')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Sign off and create' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('follows the server even when the screen shows nothing open', () => {
@@ -342,7 +411,9 @@ describe('FinalBar (#1368)', () => {
     settled.header.blocked_reason = 'The checks are running again.';
     renderBar(settled);
     expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole('status').textContent).toBe('The checks are running again.');
+    // No count says what is left, so the server's own reason explains it.
+    expect(screen.getByRole('status').textContent).toBe('Not ready for sign-off yet.');
+    expect(screen.getByText('The checks are running again.')).toBeTruthy();
   });
 
   it('unlocked: confirms the sign-off first, then signs, makes the PDF and offers the download', async () => {
@@ -457,7 +528,8 @@ describe('ChoiceCard and PagesChoice (#1368)', () => {
     const onLook = vi.fn();
     render(<PagesChoice pages={pages} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={onConfirmAll} onThereIsOne={onThereIsOne} onLook={onLook} />);
     const all = screen.getByRole('button', { name: /These 2 pages have no countertop/ });
-    expect(all.textContent).toContain('p.9 and p.11');
+    expect(all.textContent).toContain('Will be marked as no countertop: p.9 and p.11');
+    expect(all.textContent).not.toContain('Confirmed for');
     expect(all.textContent).toContain('Nothing on them is checked');
     await userEvent.click(all);
     expect(onConfirmAll).toHaveBeenCalledTimes(1);
@@ -465,6 +537,43 @@ describe('ChoiceCard and PagesChoice (#1368)', () => {
     expect(onThereIsOne).toHaveBeenCalledWith(pages[1]);
     await userEvent.click(screen.getByRole('button', { name: 'Look at page 9' }));
     expect(onLook).toHaveBeenCalledWith(pages[0]);
+  });
+});
+
+describe('pages to decide are never in the one-click proposal (#1394)', () => {
+  it('an older reading is listed apart as "Decide this page", with both answers and nothing proposed', async () => {
+    const pages = reviewItems((draft) => {
+      const older = structuredClone(draft.items.find((entry) => entry.key === 'page:rec-9')!);
+      older.key = 'page:rec-4';
+      older.page = 4;
+      older.what = 'Decide this page';
+      older.proposed_no_countertop = false;
+      draft.items.push(older);
+    }).items;
+    const proposed = openNoCountertopPages(pages);
+    const toDecide = openPagesToDecide(pages);
+    expect(proposed.map((page) => page.key)).toEqual(['page:rec-9']);
+    expect(toDecide.map((page) => page.key)).toEqual(['page:rec-4']);
+    const onNoCountertop = vi.fn();
+    const onThereIsOne = vi.fn();
+    render(<PagesChoice pages={proposed} toDecide={toDecide} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={vi.fn()} onThereIsOne={onThereIsOne} onNoCountertop={onNoCountertop} onLook={vi.fn()} />);
+    const all = screen.getByRole('button', { name: /Page 9 has no countertop/ });
+    expect(all.textContent).not.toContain('p.4');
+    const decide = document.querySelector('[data-slot="pages-to-decide"]')!;
+    expect(decide.textContent).toContain('Decide this page');
+    expect(decide.textContent).not.toContain('AI proposal');
+    await userEvent.click(screen.getByRole('button', { name: 'No countertop on page 4' }));
+    expect(onNoCountertop).toHaveBeenCalledWith(toDecide[0]);
+    await userEvent.click(screen.getByRole('button', { name: 'There is a countertop on page 4' }));
+    expect(onThereIsOne).toHaveBeenCalledWith(toDecide[0]);
+  });
+
+  it('a page with no proposal flag is never proposed', () => {
+    const pages = reviewItems((draft) => {
+      delete (draft.items.find((entry) => entry.key === 'page:rec-9') as { proposed_no_countertop?: boolean }).proposed_no_countertop;
+    }).items;
+    expect(openNoCountertopPages(pages)).toEqual([]);
+    expect(openPagesToDecide(pages).map((page) => page.key)).toEqual(['page:rec-9']);
   });
 });
 

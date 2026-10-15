@@ -15,9 +15,13 @@ prevents unrelated readers that both call their version ``1.0`` from being merge
 keeps the count pair visible and uses an exact ``Fraction``; no reviewed evidence is reported as
 ``NOT MEASURED``, never as a perfect zero-correction rate.
 
+The simple review header (#1386) shows the same count for one package revision
+(`app/review/reviewed_readings.py`): the same actions (`reviewed_actions`, defined there
+because production never imports `eval/`), scoped to the revision instead of a window.
+
 Source: ``AGENTS.md`` section 9 and backend proposal section 12.
 Design: ``docs/DESIGN_PRODUCT.md`` section 4.
-Verification: ``tests/eval/test_correction_rate.py``.
+Verification: ``tests/eval/test_correction_rate.py``, ``tests/api/test_review_header_accuracy.py``.
 """
 
 from __future__ import annotations
@@ -26,19 +30,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.db.base import utc_now
-from app.models.evidence import (
-    EvidenceCandidateRole,
-    EvidenceSupportingCandidate,
-    ObservationCandidate,
-)
-from app.models.review import CorrectionLedgerEntry, ReviewAction, ReviewActionKind
+from app.models.review import CorrectionLedgerEntry, ReviewAction
 from app.models.rules import RuleSnapshot
 from app.models.runs import ExtractionRun
-from app.models.verdicts import CheckRun, Finding
+from app.review.reviewed_readings import reviewed_actions
 from eval.metrics import MetricResult
 
 __all__ = ["CorrectionRateKey", "correction_rate", "report"]
@@ -64,62 +63,34 @@ def _start(window: timedelta, *, now: datetime | None) -> datetime:
     return instant - window
 
 
-def _query(since: datetime) -> Select[tuple[str, str, str, int, int]]:
+def _query(since: datetime) -> Select[str, str, str, int, int]:
     """Build the one authoritative query used by the metric.
 
     ``COUNT(DISTINCT action.id)`` prevents an observation supported by duplicate relational paths
-    from inflating the denominator.  The primary-candidate link attributes the reading to the
-    extractor that produced it; corroborating readers did not supply the value being reviewed.
+    from inflating the denominator.  Which actions count is `reviewed_actions`'s
+    (`app/review/reviewed_readings.py`), shared with the simple review header.
     """
 
     reviewed = func.count(func.distinct(ReviewAction.id))
     corrected = func.count(func.distinct(CorrectionLedgerEntry.review_action_id))
-    return (
+    statement = reviewed_actions(
         select(
             RuleSnapshot.check_type,
             ExtractionRun.extractor,
             ExtractionRun.extractor_version,
             corrected,
             reviewed,
-        )
-        .select_from(ReviewAction)
-        .join(Finding, Finding.id == ReviewAction.finding_id)
-        .join(CheckRun, CheckRun.id == Finding.check_run_id)
-        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
-        .join(
-            EvidenceSupportingCandidate,
-            and_(
-                EvidenceSupportingCandidate.canonical_observation_id
-                == ReviewAction.original_observation_id,
-                EvidenceSupportingCandidate.role == EvidenceCandidateRole.PRIMARY.value,
-            ),
-        )
-        .join(
-            ObservationCandidate,
-            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
-        )
-        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
-        .outerjoin(
-            CorrectionLedgerEntry,
-            CorrectionLedgerEntry.review_action_id == ReviewAction.id,
-        )
-        .where(
-            ReviewAction.created_at >= since,
-            ReviewAction.original_observation_id.is_not(None),
-            ReviewAction.action.in_(
-                (ReviewActionKind.CONFIRM.value, ReviewActionKind.CORRECT.value)
-            ),
-        )
-        .group_by(
-            RuleSnapshot.check_type,
-            ExtractionRun.extractor,
-            ExtractionRun.extractor_version,
-        )
-        .order_by(
-            RuleSnapshot.check_type,
-            ExtractionRun.extractor,
-            ExtractionRun.extractor_version,
-        )
+        ),
+        since=since,
+    )
+    return statement.group_by(
+        RuleSnapshot.check_type,
+        ExtractionRun.extractor,
+        ExtractionRun.extractor_version,
+    ).order_by(
+        RuleSnapshot.check_type,
+        ExtractionRun.extractor,
+        ExtractionRun.extractor_version,
     )
 
 

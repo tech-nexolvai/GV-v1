@@ -355,8 +355,11 @@ def test_a_waiting_check_a_person_settled_is_still_printed_not_checked(
     )
     session.commit()
     items = open_items(session, revision.id, _live_rows(session, revision.id))
+    # Still printed NOT CHECKED on the drawing, but no longer an open item (#1394).
     assert items.not_checked_ids == {waiting.id}
-    assert items.not_checked[0].reason.endswith("(A person settled it as not checked.)")
+    assert items.not_checked == ()
+    (settled,) = items.settled
+    assert settled.reason.endswith("(A person settled it as not checked.)")
     assert len(items.failures) == 1 and len(items.needs_a_person) == 1
 
 

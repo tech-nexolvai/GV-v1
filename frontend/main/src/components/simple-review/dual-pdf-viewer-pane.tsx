@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { PictureStore, type ArchitectRegion, type ReviewDocument, type ReviewPage } from './dual-pdf-viewer-api';
 import {
   decodeSize,
+  fileWords,
   detailCrop,
   fitWidth,
   maxScale,
@@ -130,8 +131,8 @@ export function DualPane({
       <header className={cn('flex h-12 shrink-0 items-center gap-2 border-b border-border px-3', side === 'vendor' ? 'md:pr-16' : 'md:pl-16')}>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[13px] leading-4 font-semibold">{title}</h3>
-          <p className="truncate text-[12px] leading-4 text-muted-foreground" title={doc?.file_name ?? undefined}>
-            {doc?.file_name ?? 'No file'}
+          <p className="truncate text-[12px] leading-4 text-muted-foreground" title={doc ? fileWords(side, doc) : undefined}>
+            {doc ? fileWords(side, doc) : 'No file'}
             {page?.sheet_number && (
               <>
                 {', sheet '}

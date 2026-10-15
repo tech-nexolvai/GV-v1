@@ -53,8 +53,8 @@ each number's own status should be read from it.
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
-Source: issues #1338, #1360. Verification: `tests/api/test_review_items.py`,
-`tests/api/test_review_item_depth.py`.
+Source: issues #1338, #1360, #1386. Verification: `tests/api/test_review_items.py`,
+`tests/api/test_review_item_depth.py`, `tests/api/test_review_header_accuracy.py`.
 """
 
 from __future__ import annotations
@@ -83,6 +83,7 @@ from app.models.evidence import (
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
+from app.review.reviewed_readings import ReviewedReading, reviewed_readings
 from app.review.row_location import RowLocation
 from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
@@ -115,7 +116,9 @@ __all__ = [
     "account",
     "best_guess",
     "parsed_inches",
+    "plain_architect_note",
     "review_items_for_revision",
+    "whole_percent",
 ]
 
 ItemKind = Literal[
@@ -328,6 +331,15 @@ class ReviewItemOut(BaseModel):
         default=None,
         description="`wall_choice` only: the vendor's printed overall the choices were checked against.",
     )
+    proposed_no_countertop: bool = Field(
+        default=False,
+        description=(
+            '`no_countertop_page` only: true when every AI reader positively answered "no '
+            'countertop on the sheet" (#1394), so the page is in the one-click proposal (the '
+            "`no-countertop-pages` group). False for an older or doubtful reading: the person "
+            "decides that page on its own, with nothing proposed."
+        ),
+    )
     cabinets: list[CabinetRowOut] = Field(
         default_factory=list,
         description="`cabinet_kinds` only: each cabinet of the run, left to right, to mark.",
@@ -397,9 +409,51 @@ class UnaccountedOut(BaseModel):
 
 
 class ReviewHeaderOut(BaseModel):
+    """The top of the simple review page (#1338), with the AI's share and accuracy (#1386).
+
+    Every count is exact and worked out here; the screen only prints them. Each percentage is a
+    whole number of its own count over its own total, shown beside the counts (`whole_percent`).
+
+    **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
+    reading. Each is in exactly one of two groups, by the one test the rest of the page uses
+    (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and
+    code accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with
+    no value). So `confirmed_by_ai + need_you == numbers` always.
+
+    **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
+    `eval/correction_rate.py` counts (`app/review/reviewed_readings.py`): every `confirm` or
+    `correct` evidence action, a held-reading answer included; an Agree on a FAIL or any other
+    decision on a result is not one. `readings_checked` is how many answers (one number answered
+    twice counts twice, as in the metric; the screen says "Your answers"); `ai_right` is the
+    confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
+    `settled_checked` judged a reading both AIs settled, and `settled_right` of them were
+    confirmed: a settled number a person corrected shows as `settled_checked - settled_right`.
+    Nothing checked means no percentage (`None`), never 0% or 100%. No other set's answers count.
+    """
+
     pages_read: int = Field(description="Vendor pages the reader looked at for a countertop.")
     numbers: int = Field(description="Width numbers on the countertop rows read.")
-    confirmed_by_ai: int = Field(description="Of those, numbers both AI readers settled.")
+    confirmed_by_ai: int = Field(
+        description="Of those, numbers both AI readers settled (agreed, and code accepted)."
+    )
+    settled_percent: int | None = Field(
+        description="confirmed_by_ai as a whole percent of numbers; None when there are none."
+    )
+    need_you: int = Field(
+        description="Of those, numbers a person must settle: numbers - confirmed_by_ai, always."
+    )
+    readings_checked: int = Field(
+        description="Answers on AI readings (confirm or correct) on this revision, as the "
+        "correction rate counts them; one number answered twice counts twice."
+    )
+    ai_right: int = Field(description="Of those, how many the person confirmed.")
+    ai_right_percent: int | None = Field(
+        description="ai_right as a whole percent of readings_checked; None when none checked."
+    )
+    settled_checked: int = Field(
+        description="Of readings_checked, those both AI readers had settled."
+    )
+    settled_right: int = Field(description="Of settled_checked, how many the person confirmed.")
     checked_by_you: int = Field(
         description="Items, failures and not-checked results a person decided."
     )
@@ -423,6 +477,63 @@ class ReviewItemsOut(BaseModel):
     unaccounted: list[UnaccountedOut] = Field(
         description="Must be empty. Anything here is a blocking result the list did not place once."
     )
+
+
+def _settled_reading_actions(session: Session, readings: Sequence[ReviewedReading]) -> set[UUID]:
+    """The review actions, of `readings`, that judged a number both AIs had settled (#1386).
+
+    A settled number's evidence cites each AI reader's own reading as a `slot-reader-support` child
+    of the sealed row label (`supports:<label id>`), not the label itself; a held label's answer
+    cites the label. So a reading counts as settled when a reader it cites is sealed itself
+    (`candidate_is_sealed`) or supports a sealed label. Labels not already loaded are read in one
+    statement.
+    """
+    from app.api.visual_countertops import _supported_candidate
+
+    wanted = {
+        supported
+        for reading in readings
+        for candidate in reading.readers
+        if (supported := _supported_candidate(candidate.ambiguity_flags)) is not None
+    }
+    labels = (
+        {
+            label.id: label
+            for label in session.scalars(
+                select(ObservationCandidate).where(ObservationCandidate.id.in_(wanted))
+            )
+        }
+        if wanted
+        else {}
+    )
+
+    def settled(candidate: ObservationCandidate) -> bool:
+        if candidate_is_sealed(candidate):
+            return True
+        supported = _supported_candidate(candidate.ambiguity_flags)
+        return supported in labels and candidate_is_sealed(labels[supported])
+
+    return {
+        reading.action_id
+        for reading in readings
+        if any(settled(candidate) for candidate in reading.readers)
+    }
+
+
+def whole_percent(part: int, whole: int) -> int | None:
+    """`part` of `whole` as a whole percent, rounded half up; None when `whole` is 0 (#1386).
+
+    Never 100 unless every one, never 0 unless none: 199 of 200 is 99%, not 100%, so the header
+    never says "all" (or "none") for a set where it is not true.
+    """
+    if whole <= 0:
+        return None
+    if not 0 <= part <= whole:
+        raise ValueError(f"{part} is not a part of {whole}")
+    percent = (200 * part + whole) // (2 * whole)
+    if 0 < part < whole:
+        percent = min(max(percent, 1), 99)
+    return percent
 
 
 # --- the best guess -------------------------------------------------------------------------------
@@ -861,9 +972,11 @@ def review_items_for_revision(
         if located is not None:
             return ArchitectRefOut(location=located)
         return ArchitectRefOut(
-            reason=result.architect.not_compared_reason
-            or result.architect.reason
-            or "No architect number was placed for this row."
+            reason=plain_architect_note(
+                result.architect.not_compared_reason
+                or result.architect.reason
+                or "No architect number was placed for this row."
+            )
         )
 
     depth_lines = depth_readings_for(
@@ -1102,7 +1215,7 @@ def review_items_for_revision(
                     page=result.page_number,
                     countertop=result.countertop_item,
                     row_label=result.label,
-                    what="This countertop",
+                    what=countertop_name(result.page_number),
                     why=plain_why(
                         None if result.hold is None else result.hold.reason,
                         "Waiting for the next check run.",
@@ -1121,13 +1234,24 @@ def review_items_for_revision(
             continue
         confirmation = listed.confirmation
         page_state: Status = "open" if confirmation is None else "done"
+        # Only a page every AI reader positively said has no countertop is proposed (#1394); an
+        # older or doubtful reading is decided on its own, with nothing proposed.
+        proposed = listed.readers_said_none
         items.append(
             ReviewItemOut(
                 key=f"page:{listed.record_id}",
                 kind="no_countertop_page",
                 page=listed.page_number,
-                what="No countertop on this page?",
-                why=plain_why(listed.reason, "Every AI said this page has no countertop."),
+                what="No countertop on this page?" if proposed else "Decide this page",
+                why=plain_why(
+                    listed.reason,
+                    (
+                        "Every AI said this page has no countertop."
+                        if proposed
+                        else "The AIs did not clearly say whether this page has a countertop."
+                    ),
+                ),
+                proposed_no_countertop=proposed,
                 architect_ref=ArchitectRefOut(
                     reason="Not compared: no countertop was found on this page."
                 ),
@@ -1161,13 +1285,26 @@ def review_items_for_revision(
         for entry in everything
         if entry.status == "done" and entry.decided_by
     }
+    settled = [candidate for candidate in numbers if candidate_is_sealed(candidate)]
+    need_you = [candidate for candidate in numbers if not candidate_is_sealed(candidate)]
+    checked = reviewed_readings(session, revision_id=revision.id)
+    right = [reading for reading in checked if not reading.corrected]
+    settled_ids = _settled_reading_actions(session, checked)
+    checked_settled = [reading for reading in checked if reading.action_id in settled_ids]
     header = ReviewHeaderOut(
         pages_read=len(
             {result.page_number for result in projection.items}
             | {page.page_number for page in projection.pages_without_countertop}
         ),
         numbers=len(numbers),
-        confirmed_by_ai=sum(1 for candidate in numbers if candidate_is_sealed(candidate)),
+        confirmed_by_ai=len(settled),
+        settled_percent=whole_percent(len(settled), len(numbers)),
+        need_you=len(need_you),
+        readings_checked=len(checked),
+        ai_right=len(right),
+        ai_right_percent=whole_percent(len(right), len(checked)),
+        settled_checked=len(checked_settled),
+        settled_right=sum(1 for reading in checked_settled if not reading.corrected),
         checked_by_you=len(decided),
         open=sum(1 for item in items if item.status == "open")
         + sum(1 for failure in failures if failure.status == "open"),
@@ -1222,7 +1359,7 @@ def _width_items(
             ReviewItemOut(
                 key=f"countertop:{finding.id}",
                 kind="countertop_by_hand",
-                what="This countertop",
+                what=countertop_name(result.page_number),
                 why=plain_why(hold.reason, why),
                 vendor_ref=result.row_location,
                 actions=actions("countertop_by_hand", state),
@@ -1285,7 +1422,11 @@ def _width_items(
             ReviewItemOut(
                 key=f"countertop:{finding.id}",
                 kind="countertop_by_hand",
-                what="Check by hand: " + ", ".join(named) if named else "This countertop",
+                what=(
+                    "Check by hand: " + ", ".join(named)
+                    if named
+                    else countertop_name(result.page_number)
+                ),
                 why=plain_why(
                     next((reason for reason in reasons if reason), None)
                     or (None if hold is None else hold.reason),
@@ -1309,7 +1450,7 @@ def _width_items(
         ReviewItemOut(
             key=f"countertop:{finding.id}",
             kind="countertop_by_hand",
-            what="This countertop",
+            what=countertop_name(result.page_number),
             why=why,
             vendor_ref=result.row_location,
             actions=actions("countertop_by_hand", state),
@@ -1501,3 +1642,35 @@ def _cabinet_run(
         .limit(1)
     ).first()
     return tuple(rows), marked_at
+
+
+def countertop_name(page: int | None) -> str:
+    """A countertop checked by hand, named by its page (#1394), never just "This countertop"."""
+    where = "" if page is None else f" on page {page}"
+    return f"Countertop{where} — check the widths by hand"
+
+
+#: Words in an architect-side reason that only a drafter reads (#1394): what the architect's
+#: numbers measure instead of the countertop.
+_ARCHITECT_JARGON: Final = (
+    "centre line",
+    "center line",
+    "fixture centre",
+    "fixture center",
+    "blocking or backing",
+    "hatched",
+    "not the countertop",
+)
+PLAIN_NO_ARCHITECT_WIDTH: Final = (
+    "The architect gives no width for this countertop (their numbers measure to fixtures or walls)."
+)
+
+
+def plain_architect_note(reason: str) -> str:
+    """The architect-side note in plain words (#1394): a reason that says the architect's numbers
+    measure fixture centre lines, blocking or other things than the countertop becomes one plain
+    sentence with the same meaning; any other reason is kept as written."""
+    lowered = reason.lower()
+    if any(word in lowered for word in _ARCHITECT_JARGON):
+        return PLAIN_NO_ARCHITECT_WIDTH
+    return reason

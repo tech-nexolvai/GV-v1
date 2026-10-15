@@ -200,6 +200,20 @@ class UnchosenRowPage:
         return self.kind == "split"
 
     @property
+    def readers_said_none(self) -> bool:
+        """Whether every AI reader positively answered "no countertop on the sheet" (#1394): kind
+        "none" with a `row-kind:no_countertop` from each reader, and nothing to doubt. Only such a
+        page may be proposed in one click; an older reading (no kinds), a page code found no row
+        on, or a doubtful page is decided on its own."""
+        return (
+            self.kind == "none"
+            and bool(self.kinds)
+            and all(kind == "no_countertop" for _, kind in self.kinds)
+            and not self.found_by_code
+            and not self.doubtful
+        )
+
+    @property
     def label(self) -> str:
         return f"Countertop row on page {self.page_number}"
 

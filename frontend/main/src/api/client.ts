@@ -1322,6 +1322,39 @@ export function prepareSignedExports(projectId: string, packageId: string) {
   return request<SignedExportStatus>(`/projects/${projectId}/packages/${packageId}/signed-exports`, { method: 'POST' });
 }
 
+export type DraftCloudStatus = components['schemas']['DraftCloudOut'];
+
+/** Ask the worker for a draft cloud PDF of the current revision, before sign-off (W4b, #1340): 202. */
+export function requestDraftCloud(projectId: string, packageId: string) {
+  return request<DraftCloudStatus>(`/projects/${projectId}/packages/${packageId}/draft-cloud`, { method: 'POST' });
+}
+
+/** Where the newest draft cloud PDF request stands. */
+export function getDraftCloud(projectId: string, packageId: string) {
+  return request<DraftCloudStatus>(`/projects/${projectId}/packages/${packageId}/draft-cloud`);
+}
+
+/** The newest draft cloud PDF, as bytes (`409` with the server's reason while it is not ready). */
+export async function downloadDraftCloud(projectId: string, packageId: string): Promise<Blob> {
+  const response = await fetch(`${BASE}/projects/${projectId}/packages/${packageId}/draft-cloud.pdf`, {
+    headers: { Accept: 'application/pdf' },
+  });
+  if (!response.ok) {
+    let envelope: ErrorEnvelope;
+    try {
+      envelope = (await response.json()) as ErrorEnvelope;
+    } catch {
+      envelope = {
+        error: 'unreadable_response',
+        message: `The draft cloud PDF could not be downloaded (HTTP ${response.status}).`,
+        request_id: response.headers.get('x-request-id') ?? 'unknown',
+      };
+    }
+    throw new ApiError(response.status, envelope);
+  }
+  return response.blob();
+}
+
 /**
  * The signed-off review, as workbook bytes.
  *

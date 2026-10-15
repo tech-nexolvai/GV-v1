@@ -99,11 +99,14 @@ describe('simple review rules', () => {
     expect(summarize(noWords).finalBlocked).toBe('The server has not unlocked the final cloud PDF yet.');
   });
 
-  it('says what is left in counts from the lists, only those above zero (#1368)', () => {
-    expect(leftWords(data)).toEqual(['6 items to answer', '2 wrong results to agree', '6 checks not run', '1 item re-checking']);
-    const missing = allSettled();
-    missing.unaccounted = [{ kind: 'finding', finding_id: 'find-x', why: 'Synthetic: not placed.' }];
-    expect(leftWords(missing)).toEqual(['1 record missing from this page']);
+  it('says what is left in plain words with the header\'s own counts, only those above zero (#1394)', () => {
+    expect(leftWords(data.header)).toEqual(['6 items need you', '6 not checked', '1 item re-checking']);
+    expect(leftWords({ open: 9, not_checked: 54, rechecking: 0 })).toEqual(['9 items need you', '54 not checked']);
+    expect(leftWords({ open: 1, not_checked: 0, rechecking: 0 })).toEqual(['1 item needs you']);
+    // The lists are never counted again: the header's numbers are the ones printed.
+    const listsDisagree = reviewItems((draft) => { draft.header.open = 9; });
+    expect(leftWords(listsDisagree.header)[0]).toBe('9 items need you');
+    expect(leftWords(allSettled().header)).toEqual([]);
   });
 
   it('a Fix typed as a bare number is in inches; anything else is sent as typed (#1368)', () => {

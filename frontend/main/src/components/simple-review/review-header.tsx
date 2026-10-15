@@ -1,19 +1,22 @@
-import { FileStack, FileText, Loader2 } from 'lucide-react';
+import { FileStack, FileText, Loader2, RotateCcw } from 'lucide-react';
 
 import type { ReviewItemsHeader } from '@/api/review-items';
 import { Button } from '@/components/ui/button';
 import { Kbd } from './words';
 
-/** Where a requested cloud PDF is: nothing asked yet, being made, or a named failure. */
-export type CloudState = { status: 'idle' } | { status: 'working' } | { status: 'error'; message: string };
+/** Where a requested draft cloud PDF is: nothing asked yet, being made, downloaded, or a named failure. */
+export type CloudState = { status: 'idle' } | { status: 'working' } | { status: 'ready' } | { status: 'error'; message: string };
 
 function Count({ value }: { value: number }) {
   return <span className="num font-medium text-foreground">{value}</span>;
 }
 
 /**
- * The top of the page: the set's name, what the AI did on its own, and the two ways out to the
- * drawings — both PDFs, and a draft of the cloud PDF that can be made at any time.
+ * The top of the page: the set's name, what the AI did on its own, how often it was right on the
+ * numbers a person checked (#1386), and the two ways out to the drawings — both PDFs, and a draft
+ * of the cloud PDF that can be made at any time. Every count and percentage is the server's
+ * (`ReviewHeaderOut`); nothing here works one out. With nothing checked there is no accuracy at all,
+ * never 0% or 100%.
  */
 export function ReviewHeader({
   title,
@@ -27,7 +30,7 @@ export function ReviewHeader({
   revision: number | null;
   header: ReviewItemsHeader;
   onOpenPdfs: () => void;
-  /** Null until the draft cloud PDF exists on this server (W4b): the button says so instead of hiding. */
+  /** Ask for the draft cloud PDF (W4b); null when it cannot be asked for here: the button says so instead of hiding. */
   onDraftCloud: (() => void) | null;
   draft: CloudState;
 }) {
@@ -38,16 +41,37 @@ export function ReviewHeader({
         <h2 className="truncate text-[28px] leading-9 font-semibold tracking-[-0.015em] text-foreground">{title}</h2>
         <p data-testid="ai-read-line" className="text-[15px] leading-6 text-muted-foreground">
           AI read <Count value={header.pages_read} /> pages · <Count value={header.numbers} /> numbers ·{' '}
-          <Count value={header.confirmed_by_ai} /> confirmed by AI
+          <Count value={header.confirmed_by_ai} /> settled by both AIs
+          {header.settled_percent !== null && (
+            <>
+              {' '}(<span className="num">{header.settled_percent}%</span>)
+            </>
+          )}{' '}
+          · <Count value={header.need_you} /> need you
         </p>
+        <p data-testid="accuracy-line" className="text-[13px] leading-5 text-muted-foreground">
+          {header.readings_checked > 0 ? (
+            <>
+              Your answers so far: <Count value={header.readings_checked} /> · AI right on <Count value={header.ai_right} />
+              {header.ai_right_percent !== null && (
+                <>
+                  {' '}(<span className="num">{header.ai_right_percent}%</span>)
+                </>
+              )}
+            </>
+          ) : (
+            'Accuracy: shown after you check some numbers'
+          )}
+        </p>
+        {header.settled_checked > 0 && (
+          <p data-testid="settled-check-line" className="text-[13px] leading-5 text-muted-foreground">
+            Of the numbers both AIs settled that you checked: <Count value={header.settled_right} /> right of{' '}
+            <Count value={header.settled_checked} />
+          </p>
+        )}
         {revision !== null && (
           <p className="text-[13px] leading-5 text-muted-foreground">
             Revision <span className="num">{revision}</span>
-            {header.checked_by_you > 0 && (
-              <>
-                {' '}· <span className="num">{header.checked_by_you}</span> checked by you
-              </>
-            )}
           </p>
         )}
       </div>
@@ -61,16 +85,34 @@ export function ReviewHeader({
           variant="outline"
           onClick={onDraftCloud ?? undefined}
           disabled={onDraftCloud === null || working}
-          title={onDraftCloud === null ? 'The draft cloud PDF is not available on this server yet.' : 'A draft with every item marked as it stands now. Not signed off.'}
+          title={onDraftCloud === null ? 'The draft cloud PDF cannot be asked for here: no project is configured.' : 'A draft with every item marked as it stands now. Not signed off.'}
         >
           {working ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <FileText aria-hidden="true" />}
           {working ? 'Making draft…' : 'Draft cloud PDF'}
         </Button>
       </div>
-      {draft.status === 'error' && (
-        <p role="alert" className="text-[13px] text-outcome-fail-fg sm:basis-full">
-          The draft cloud PDF could not be made: {draft.message}
+      {working && (
+        <p role="status" className="text-[13px] text-muted-foreground sm:basis-full">
+          Making the draft cloud PDF. This takes a minute; it downloads by itself when ready.
         </p>
+      )}
+      {draft.status === 'ready' && (
+        <p role="status" className="text-[13px] text-muted-foreground sm:basis-full">
+          Draft cloud PDF downloaded. It is not signed off.
+        </p>
+      )}
+      {draft.status === 'error' && (
+        <div className="flex flex-wrap items-center gap-2 sm:basis-full">
+          <p role="alert" className="text-[13px] text-outcome-fail-fg">
+            The draft cloud PDF could not be made: {draft.message}
+          </p>
+          {onDraftCloud && (
+            <Button size="sm" variant="outline" onClick={onDraftCloud}>
+              <RotateCcw aria-hidden="true" />
+              Retry
+            </Button>
+          )}
+        </div>
       )}
     </header>
   );

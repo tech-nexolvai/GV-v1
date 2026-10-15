@@ -207,7 +207,7 @@ def test_a_project_value_wins_over_gvs_standard(session: Session) -> None:
 @pytest.mark.parametrize(
     ("entry", "says"),
     [
-        ({"name": "countertop_overhang", "value": "1"}, "with its unit"),
+        ({"name": "countertop_overhang", "value": "1"}, "Add the unit"),
         ({"name": "sink_interior_width", "value": '28"'}, "sink"),
         ({"name": "no_such_setting", "value": '1"'}, "not a setting"),
         # Two sources are honest for the clearance; the person says which (#827).
