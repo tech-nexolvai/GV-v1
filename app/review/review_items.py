@@ -19,11 +19,19 @@ write, no guess.
 groups or in more than one. It must be empty; it is computed here, on every read, so the screen can
 never hide a result by accident (never silent).
 
-**The best guess, and what is never one.** For a held number the guess is, in this order: the PDF's
-own text for the label, the text both AI readers wrote identically (held by a guard such as an odd
-fraction), or the stored suggestion. A number under GV's markup has no guess and no reader texts:
-GV's markup is the answer key, never a reading source. The hold text "reviewer wrote X" is never
-shown. A number with no guess is checked by hand, with no typing (confirm-only).
+**The best guess, and what is never one.** For a held number the guess is exactly its stored value,
+the one a person's Confirm records (W2, #1339), never the PDF text or one reader's text when they
+differ from it (#1358). Every reading (the PDF's own text, each AI reader's) is listed beside it, so
+a disagreement is in sight. A number with no stored value in inches has no guess. A number under
+GV's markup has no guess and no reader texts: GV's markup is the answer key, never a reading
+source. The hold text "reviewer wrote X" is never shown. A number with no guess is checked by hand,
+with no typing (confirm-only).
+
+**A countertop whose only open question is its walls is one wall choice** (#1358): every number
+settled, nothing held, no layout set by a person and the check not run on any walls. It is listed
+as `wall_choice` even when the readers proposed a layout, never as checked by hand (whose "It is
+right" would confirm a result that depends on walls nobody chose). Each layout is offered with the
+result the width check recorded for it, the readers' proposal pre-selected.
 
 **Status is the result's, not the number's.** Several `number` items of one width result share its
 finding id and its status. Nothing records a decision on one held number yet; when W3/W2 add one,
@@ -57,11 +65,15 @@ from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
+from app.review.wall_cases import unavailable_reason
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from units.imperial import format_inches, parse_imperial
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
+from vocabulary.wall_layouts import wall_case_words
+from workflow.countertop_runs import published_wall_layouts
 from workflow.slot_row_scope import SlotRow, candidate_is_sealed, slot_rows
+from workflow.wall_cases import is_every_wall_case
 
 __all__ = [
     "DEPTH_AND_SINK_RULES",
@@ -69,8 +81,10 @@ __all__ = [
     "BestGuessOut",
     "ReviewItemOut",
     "ReviewItemsOut",
+    "WallChoiceOut",
     "account",
     "best_guess",
+    "parsed_inches",
     "review_items_for_revision",
 ]
 
@@ -135,16 +149,17 @@ _ACTIONS: Final[Mapping[str, tuple[str, ...]]] = {
 
 
 class BestGuessOut(BaseModel):
-    """What the AI or the file suggests a held number is. Shown to confirm, never a value."""
+    """The held number's stored value, shown to confirm: exactly what a Confirm records."""
 
-    text: str = Field(description='The guess as written, e.g. `42 1/2"`.')
+    text: str = Field(description='The stored value in inches, e.g. `42 1/2"`.')
     value: ExactValueOut | None = Field(
         default=None, description="The exact inches, when the text is a plain dimension."
     )
     source: GuessSource = Field(
         description=(
-            "`pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote "
-            "it identically, but a guard held it. `suggestion`: the stored suggestion."
+            "Who wrote the stored value. `pdf_text`: the PDF's own text for the label. "
+            "`agreed_text`: both AI readers wrote it identically, but a guard held it. "
+            "`suggestion`: neither; it is the stored suggestion, and `readers` show the readings."
         )
     )
 
@@ -152,6 +167,29 @@ class BestGuessOut(BaseModel):
 class ReaderTextOut(BaseModel):
     reader: str
     text: str
+
+
+class WallChoiceOut(BaseModel):
+    """One wall layout a person may pick for a countertop, with the result it would give.
+
+    The result is the width check's own, recorded for every wall case when only the walls were
+    open (#1202): nothing is worked out here. Null when there is no such recorded result.
+    """
+
+    layout: str = Field(description="The published wall layout, sent back as `wall_config`.")
+    words: str = Field(
+        description='The layout in the field-cut rule\'s words, e.g. "walls at both ends".'
+    )
+    proposed: bool = Field(description="True for the AI readers' proposal: shown pre-selected.")
+    result: Outcome | None = Field(
+        default=None, description="PASS or FAIL with these walls, as the width check recorded it."
+    )
+    needed: ExactValueOut | None = Field(
+        default=None, description="The overall these walls need, as the width check worked it out."
+    )
+    difference: ExactValueOut | None = Field(
+        default=None, description="The vendor's printed overall minus the needed overall."
+    )
 
 
 class ArchitectRefOut(BaseModel):
@@ -189,6 +227,24 @@ class ReviewItemOut(BaseModel):
     finding_id: UUID | None = None
     row_id: UUID | None = None
     candidate_id: UUID | None = None
+    wall_choices: list[WallChoiceOut] = Field(
+        default_factory=list,
+        description=(
+            "`wall_choice` only: every wall layout, one click each, the readers' proposal marked "
+            "`proposed`, each with the result it would give. Empty for every other kind."
+        ),
+    )
+    wall_results_note: str | None = Field(
+        default=None,
+        description=(
+            "`wall_choice` only: why the choices carry no result (e.g. the checks must run first). "
+            "Null when each choice shows its result."
+        ),
+    )
+    vendor_wrote: ExactValueOut | None = Field(
+        default=None,
+        description="`wall_choice` only: the vendor's printed overall the choices were checked against.",
+    )
 
 
 class FailureOut(BaseModel):
@@ -314,6 +370,11 @@ def _exact(value: Fraction | None) -> ExactValueOut | None:
     )
 
 
+def parsed_inches(text: str) -> Fraction | None:
+    """A shown value read back exactly (`20"`, `20 in`, `12 1/4`); None when it is not one."""
+    return _parsed(text)
+
+
 def _parsed(text: str) -> Fraction | None:
     cleaned = text.strip().removesuffix('"').removesuffix(" in").strip()
     try:
@@ -323,40 +384,46 @@ def _parsed(text: str) -> Fraction | None:
     return value if value > 0 else None
 
 
+def stored_inches(candidate: object) -> Fraction | None:
+    """The held number's own stored value in inches, above zero: what a person's Confirm writes
+    (W2, #1339). None when nothing is stored, or it is not in inches."""
+    numerator = getattr(candidate, "value_numerator", None)
+    denominator = getattr(candidate, "value_denominator", None)
+    if numerator is None or not denominator or getattr(candidate, "unit", None) != "in":
+        return None
+    value = Fraction(numerator, denominator)
+    return value if value > 0 else None
+
+
 def best_guess(candidate: object) -> BestGuessOut | None:
-    """The held number's guess: the PDF text, else both readers' identical text, else the stored
-    suggestion. None under GV's markup, and None when nothing was guessed."""
+    """The held number's guess: exactly its stored value, the one a Confirm records, never another
+    reading. `source` says who wrote that value: the PDF's own text, both readers identically, or
+    neither (the stored suggestion). The other readings are the item's `readers`, so a
+    disagreement is in sight. None under GV's markup, and None when nothing is stored."""
     flags = _flags(candidate)
     if not vendor_ink_only(flags):
         return None
+    stored = stored_inches(candidate)
+    if stored is None:
+        return None
     texts = reader_texts(flags)
     pdf = next((text for source, text in texts if source == TEXT_LAYER_SOURCE), None)
-    if pdf:
-        return BestGuessOut(text=pdf, value=_exact(_parsed(pdf)), source="pdf_text")
     readers = [text for source, text in texts if source != TEXT_LAYER_SOURCE]
-    if len(readers) >= 2 and len({" ".join(text.split()) for text in readers}) == 1:
-        return BestGuessOut(
-            text=readers[0], value=_exact(_parsed(readers[0])), source="agreed_text"
-        )
-    numerator = getattr(candidate, "value_numerator", None)
-    denominator = getattr(candidate, "value_denominator", None)
-    if numerator is not None and denominator and getattr(candidate, "unit", None) == "in":
-        value = Fraction(numerator, denominator)
-        return BestGuessOut(
-            text=f'{format_inches(value)}"', value=_exact(value), source="suggestion"
-        )
-    return None
+    source: GuessSource = "suggestion"
+    if pdf is not None and _parsed(pdf) == stored:
+        source = "pdf_text"
+    elif len(readers) >= 2 and all(_parsed(text) == stored for text in readers):
+        source = "agreed_text"
+    return BestGuessOut(text=f'{format_inches(stored)}"', value=_exact(stored), source=source)
 
 
 def _readers(candidate: object) -> list[ReaderTextOut]:
+    """Every reading of the number as recorded: the PDF's own text (`pdf-text-layer`) and each AI
+    reader's. Empty unless the record is positively the vendor's one label."""
     flags = _flags(candidate)
     if not vendor_ink_only(flags):
         return []
-    return [
-        ReaderTextOut(reader=source, text=text)
-        for source, text in reader_texts(flags)
-        if source != TEXT_LAYER_SOURCE
-    ]
+    return [ReaderTextOut(reader=source, text=text) for source, text in reader_texts(flags)]
 
 
 def plain_why(text: str | None, fallback: str) -> str:
@@ -546,6 +613,14 @@ def review_items_for_revision(
             return "done", None, None
         return "done", decision.action.actor, decision.action.created_at
 
+    published: list[tuple[str, ...]] = []
+
+    def layouts() -> tuple[str, ...]:
+        """The published wall layouts, read once and only when a wall choice needs them."""
+        if not published:
+            published.append(published_wall_layouts(session))
+        return published[0]
+
     def actions(kind: str, status: Status) -> list[str]:
         return list(_ACTIONS[kind]) if status == "open" else []
 
@@ -678,6 +753,7 @@ def review_items_for_revision(
                     actions=actions,
                     zoom=zoom,
                     architect=architect_ref(result),
+                    layouts=layouts,
                 )
             )
             continue
@@ -815,6 +891,7 @@ def _width_items(
     actions: Callable[[str, Status], list[str]],
     zoom: Callable[[ObservationCandidate], str | None],
     architect: ArchitectRefOut,
+    layouts: Callable[[], tuple[str, ...]],
 ) -> list[ReviewItemOut]:
     """One width result's questions: a held row is one countertop to check by hand; otherwise one
     item per held number with a guess, one more for the held numbers without, or the walls."""
@@ -916,18 +993,8 @@ def _width_items(
         )
     if found:
         return found
-    if result.wall_layout.config is None and result.wall_layout.source == "not established":
-        return [
-            ReviewItemOut(
-                key=f"walls:{finding.id}",
-                kind="wall_choice",
-                what="Which ends of this countertop meet a wall",
-                why=plain_why(result.wall_layout.line, why),
-                vendor_ref=result.row_location,
-                actions=actions("wall_choice", state),
-                **common,  # type: ignore[arg-type]
-            )
-        ]
+    if _walls_only_open(result, row, finding):
+        return [_wall_item(result, row, finding=finding, why=why, common=common, layouts=layouts)]
     return [
         ReviewItemOut(
             key=f"countertop:{finding.id}",
@@ -939,3 +1006,108 @@ def _width_items(
             **common,  # type: ignore[arg-type]
         )
     ]
+
+
+def _walls_only_open(result: CountertopResultOut, row: SlotRow | None, finding: Finding) -> bool:
+    """Whether the walls are this result's open question (#1358): a result waiting for a person
+    whose width check ran on no walls (for every wall case, or not at all), with no automatic
+    layout and no person's wall answer it already used. Called once nothing on the row is held and
+    every number is settled."""
+    if result.wall_layout.config is None and result.wall_layout.source == "not established":
+        return True
+    if finding.outcome != Outcome.REVIEW_REQUIRED.value:
+        return False
+    if result.wall_layout.source in ("code ink and both AIs", "not needed"):
+        return False
+    if not is_every_wall_case(finding.trace) and finding.variant:
+        # The check ran on a layout: the walls are not the question.
+        return False
+    return not _answer_used(row, finding)
+
+
+def _answer_newer(row: SlotRow | None, finding: Finding) -> bool:
+    """A person's wall answer saved after this result: it waits for the re-check."""
+    decision = None if row is None else row.decision
+    return (
+        decision is not None
+        and decision.wall_config is not None
+        and decision.created_at is not None
+        and finding.created_at is not None
+        and decision.created_at > finding.created_at
+    )
+
+
+def _answer_used(row: SlotRow | None, finding: Finding) -> bool:
+    """A person's wall answer this result was checked after: the walls were answered already."""
+    decision = None if row is None else row.decision
+    return (
+        decision is not None
+        and decision.wall_config is not None
+        and not _answer_newer(row, finding)
+    )
+
+
+def _readers_proposal(result: CountertopResultOut, row: SlotRow | None) -> str | None:
+    """The layout the AI readers proposed for this row, as the wall review shows it; None when a
+    person chose, the readers' walls were held, or a person's earlier answer is asked again."""
+    layout = result.wall_layout
+    if layout.chosen_by_reviewer or layout.config is None:
+        return None
+    if row is not None:
+        if row.wall_hold is not None:
+            return None
+        flags = () if row.wall_candidate is None else row.wall_candidate.ambiguity_flags or ()
+        if any(str(flag).startswith("walls-held:") for flag in flags):
+            return None
+    return layout.config
+
+
+def _wall_item(
+    result: CountertopResultOut,
+    row: SlotRow | None,
+    *,
+    finding: Finding,
+    why: str,
+    common: Mapping[str, object],
+    layouts: Callable[[], tuple[str, ...]],
+) -> ReviewItemOut:
+    """One click: every wall layout with the result the width check recorded for it, the readers'
+    proposal pre-selected. No right/wrong: the walls are chosen, then the checks run again."""
+    proposal = _readers_proposal(result, row)
+    cases = result.wall_cases
+    if cases.cases:
+        choices = [
+            WallChoiceOut(
+                layout=case.layout,
+                words=case.words,
+                proposed=case.layout == proposal,
+                result=case.outcome,
+                needed=case.expected_total,
+                difference=case.difference,
+            )
+            for case in cases.cases
+        ]
+        note = None
+    else:
+        choices = [
+            WallChoiceOut(layout=layout, words=wall_case_words(layout), proposed=layout == proposal)
+            for layout in layouts()
+        ]
+        note = cases.unavailable_reason or unavailable_reason(finding, saved_after=False)
+    fields = dict(common)
+    # A person's wall answer the result has not used yet: it waits for the re-check.
+    if _answer_newer(row, finding) and fields["status"] == "open":
+        fields.update(status="rechecking", decided_by=None, decided_at=None)
+    state = fields["status"]
+    return ReviewItemOut(
+        key=f"walls:{finding.id}",
+        kind="wall_choice",
+        what="Which ends of this countertop meet a wall",
+        why=plain_why(result.wall_layout.line, why),
+        vendor_ref=result.row_location,
+        actions=list(_ACTIONS["wall_choice"]) if state == "open" else [],
+        wall_choices=choices,
+        wall_results_note=note,
+        vendor_wrote=cases.vendor_wrote,
+        **fields,  # type: ignore[arg-type]
+    )

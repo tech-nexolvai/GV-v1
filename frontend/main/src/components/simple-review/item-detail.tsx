@@ -1,6 +1,6 @@
 import { Check, ChevronDown, FileStack, Loader2, PenLine, X } from 'lucide-react';
 
-import type { ItemAction, ReviewItem } from '@/api/review-items';
+import type { ActionExtra, ItemAction, ReviewItem } from '@/api/review-items';
 import {
   ACTION_LABELS,
   GUESS_SOURCE_WORDS,
@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { PagePicture, PictureUnavailable, ZoomPicture } from './item-pictures';
 import type { SaveError } from './failures-strip';
+import { WallChoices } from './wall-choices';
 import { Kbd, NumText } from './words';
 
 /** The pictures side by side: the close-up large, the vendor page and the architect page beside it. */
@@ -136,10 +137,12 @@ export function ItemDetail({
   /** The Fix menu, opened by the F key as well as by a click. Uncontrolled when left out. */
   fixOpen?: boolean;
   onFixOpenChange?: (open: boolean) => void;
-  onAct: (action: ItemAction, value?: string) => void;
+  onAct: (action: ItemAction, extra?: ActionExtra) => void;
   onOpenPdfs: (item: ReviewItem) => void;
 }) {
-  const agree = agreeAction(item);
+  const walls = item.kind === 'wall_choice';
+  // A wall choice is answered by clicking a layout; it has no separate agree or disagree button.
+  const agree = walls ? null : agreeAction(item);
   const disagree = disagreeAction(item);
   const choices = fixChoices(item);
   const saving = busy !== null;
@@ -147,7 +150,7 @@ export function ItemDetail({
   return (
     <div id={detailId(item.key)} data-slot="item-detail" className="flex flex-col gap-6 border-t border-border bg-muted/30 px-4 pt-5 pb-6 sm:px-6 sm:pl-[3.25rem]">
       <Evidence item={item} />
-      <Guess item={item} />
+      {walls ? <WallChoices item={item} busy={saving} onChoose={(layout) => onAct('choose_wall', { wall_config: layout })} /> : <Guess item={item} />}
       <NumText text={item.why} className="block max-w-[68ch] text-[13px] leading-5 text-muted-foreground" />
 
       {error && (
@@ -184,7 +187,7 @@ export function ItemDetail({
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               {choices.map((choice) => (
-                <DropdownMenuItem key={choice.text} onSelect={() => onAct('fix', choice.text)} className="flex items-center justify-between gap-3">
+                <DropdownMenuItem key={choice.text} onSelect={() => onAct('fix', { value: choice.text })} className="flex items-center justify-between gap-3">
                   <span className="num text-[15px] font-medium">{choice.text}</span>
                   <span className="text-[13px] text-muted-foreground">read by {choice.readers.join(' and ')}</span>
                 </DropdownMenuItem>

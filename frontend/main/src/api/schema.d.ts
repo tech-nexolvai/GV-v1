@@ -1676,11 +1676,14 @@ export interface paths {
          *     `answer` carries the answer's own name in the body: `{"answer": "checked_right"}`,
          *     `{"answer": "checked_wrong"}`, `{"answer": "choose_wall", "wall_config": "..."}`,
          *     `{"answer": "confirm_no_countertop"}`, `{"answer": "there_is_a_countertop"}`, or for an
-         *     architect item `{"architect_view": {...}}` / `{"architect_pairing": {...}}`.
+         *     architect item `{"architect_view": {...}}` / `{"architect_pairing": {...}}`. `confirm` on a
+         *     number names the value shown (`shown_value`).
          *
          *     Group keys: `not-checked` with `clear-not-checked` dismisses every open "Not checked" result in
          *     one transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every
-         *     listed page at once. Both take `expected_keys` (409 when the group changed).
+         *     listed page at once. Both require `expected_keys` (409 when the group changed).
+         *
+         *     201 when something was recorded; 200 when the answer was already recorded (nothing new).
          */
         post: operations["answer_review_item_api_v1_projects__project_id__packages__package_id__review_items__key___action__post"];
         delete?: never;
@@ -3201,18 +3204,18 @@ export interface components {
         };
         /**
          * BestGuessOut
-         * @description What the AI or the file suggests a held number is. Shown to confirm, never a value.
+         * @description The held number's stored value, shown to confirm: exactly what a Confirm records.
          */
         BestGuessOut: {
             /**
              * Source
-             * @description `pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote it identically, but a guard held it. `suggestion`: the stored suggestion.
+             * @description Who wrote the stored value. `pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote it identically, but a guard held it. `suggestion`: neither; it is the stored suggestion, and `readers` show the readings.
              * @enum {string}
              */
             source: "pdf_text" | "agreed_text" | "suggestion";
             /**
              * Text
-             * @description The guess as written, e.g. `42 1/2"`.
+             * @description The stored value in inches, e.g. `42 1/2"`.
              */
             text: string;
             /** @description The exact inches, when the text is a plain dimension. */
@@ -7072,9 +7075,14 @@ export interface components {
             expected_finding_id?: string | null;
             /**
              * Expected Keys
-             * @description With a group key: the open keys the screen showed. 409 when the group differs now.
+             * @description With a group key (`not-checked`, `no-countertop-pages`): the open keys the screen showed. Required for a group (422 without); 409 when the group differs now (#1358).
              */
             expected_keys?: string[] | null;
+            /**
+             * Shown Value
+             * @description With `confirm` on a number: the value the screen showed (`best_guess.text`), e.g. `20"`. Required; 409 when the stored value differs now (#1358). Confirm records exactly the stored value, never another reading.
+             */
+            shown_value?: string | null;
             /**
              * Value
              * @description With `fix`: the reading the person picked, with its unit (W2, #1339).
@@ -7162,6 +7170,18 @@ export interface components {
              */
             status: "open" | "done" | "rechecking";
             vendor_ref?: components["schemas"]["RowLocation"] | null;
+            /** @description `wall_choice` only: the vendor's printed overall the choices were checked against. */
+            vendor_wrote?: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Wall Choices
+             * @description `wall_choice` only: every wall layout, one click each, the readers' proposal marked `proposed`, each with the result it would give. Empty for every other kind.
+             */
+            wall_choices?: components["schemas"]["WallChoiceOut"][];
+            /**
+             * Wall Results Note
+             * @description `wall_choice` only: why the choices carry no result (e.g. the checks must run first). Null when each choice shows its result.
+             */
+            wall_results_note?: string | null;
             /**
              * What
              * @description What is being checked, in plain words.
@@ -8760,6 +8780,36 @@ export interface components {
             unavailable_reason?: string | null;
             /** @description The vendor's printed overall the cases were checked against. */
             vendor_wrote?: components["schemas"]["ExactValueOut"] | null;
+        };
+        /**
+         * WallChoiceOut
+         * @description One wall layout a person may pick for a countertop, with the result it would give.
+         *
+         *     The result is the width check's own, recorded for every wall case when only the walls were
+         *     open (#1202): nothing is worked out here. Null when there is no such recorded result.
+         */
+        WallChoiceOut: {
+            /** @description The vendor's printed overall minus the needed overall. */
+            difference?: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Layout
+             * @description The published wall layout, sent back as `wall_config`.
+             */
+            layout: string;
+            /** @description The overall these walls need, as the width check worked it out. */
+            needed?: components["schemas"]["ExactValueOut"] | null;
+            /**
+             * Proposed
+             * @description True for the AI readers' proposal: shown pre-selected.
+             */
+            proposed: boolean;
+            /** @description PASS or FAIL with these walls, as the width check recorded it. */
+            result?: components["schemas"]["Outcome"] | null;
+            /**
+             * Words
+             * @description The layout in the field-cut rule's words, e.g. "walls at both ends".
+             */
+            words: string;
         };
         /** WallLayoutOut */
         WallLayoutOut: {

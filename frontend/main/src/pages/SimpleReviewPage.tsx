@@ -3,8 +3,8 @@ import { MessageSquare, MoreHorizontal, SlidersHorizontal } from 'lucide-react';
 
 import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
-import { apiUrl, liveReviewItemsApi, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
-import { agreeAction, disagreeAction, orderItems, pointsOf, summarize } from '@/lib/review-items';
+import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
+import { agreeAction, disagreeAction, orderItems, pointsOf, proposedWall, summarize } from '@/lib/review-items';
 import type { ViewerTarget } from '@/lib/drawing-viewer';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
@@ -243,9 +243,9 @@ export function SimpleReviewPage({
     return entry ? (entry.finding_id ?? null) : fallback;
   }
 
-  async function send(key: string, action: ItemAction, findingId: string | null, value?: string) {
+  async function send(key: string, action: ItemAction, findingId: string | null, extra?: ActionExtra) {
     if (project === null) return;
-    await api.act(project, packageId, key, action, value === undefined ? { expected_finding_id: findingId } : { expected_finding_id: findingId, value });
+    await api.act(project, packageId, key, action, { expected_finding_id: findingId, ...extra });
   }
 
   function failed(errorKey: string, error: unknown, retry: () => void) {
@@ -262,35 +262,59 @@ export function SimpleReviewPage({
     });
   }
 
-  async function act(key: string, action: ItemAction, findingId: string | null, value?: string) {
+  async function act(key: string, action: ItemAction, findingId: string | null, extra?: ActionExtra) {
     setBusy({ key, action });
     setFixOpenKey(null);
     try {
-      await send(key, action, findingId, value);
+      await send(key, action, findingId, extra);
       cleared(key);
       reload();
     } catch (error) {
-      failed(key, error, () => void act(key, action, findingNow(key, findingId), value));
+      failed(key, error, () => void act(key, action, findingNow(key, findingId), retried(key, action, extra)));
     } finally {
       setBusy(null);
     }
   }
 
-  const actOnItem = (item: ReviewItem, action: ItemAction, value?: string) => void act(item.key, action, item.finding_id ?? null, value);
+  // A Confirm on a number sends the value it showed: after a 409 reload, Retry sends the value the
+  // reviewer now sees, never the stale one (#1358).
+  function retried(key: string, action: ItemAction, extra?: ActionExtra): ActionExtra | undefined {
+    if (action !== 'confirm' || extra?.shown_value === undefined) return extra;
+    const now = latest.current?.items.find((entry) => entry.key === key);
+    return now?.best_guess ? { ...extra, shown_value: now.best_guess.text } : extra;
+  }
+
+  function actOnItem(item: ReviewItem, action: ItemAction, extra?: ActionExtra) {
+    let body = extra;
+    if (action === 'confirm' && item.kind === 'number' && item.best_guess) {
+      // The value the reviewer saw: W2 records exactly the stored value, and refuses another (#1358).
+      body = { ...extra, shown_value: item.best_guess.text };
+    }
+    if (action === 'choose_wall' && !body?.wall_config) {
+      // The C key on a wall choice picks the readers' proposal; with none, the reviewer clicks one.
+      const proposal = proposedWall(item);
+      if (proposal === null) {
+        setOpenKey(item.key);
+        return;
+      }
+      body = { ...body, wall_config: proposal };
+    }
+    void act(item.key, action, item.finding_id ?? null, body);
+  }
   const agree = (failure: ReviewFailure) => void act(failure.key, 'agree', failure.finding_id);
 
-  // "Clear all as not checked": one call per unchecked result, each with its own key and finding, as
-  // W3 records every decision on its own (#1351). Stops at the first refusal and names it.
+  // "Clear all as not checked": one group call naming exactly the results the reviewer sees
+  // (`expected_keys`, #1358). W3 records each in one transaction, or nothing when the group changed
+  // (409: the list reloads, and Retry sends the group as it is shown then).
   async function clearNotChecked() {
-    const rows = (latest.current?.not_checked ?? []).filter((row) => row.status === 'open');
+    const keys = (latest.current?.not_checked ?? []).filter((row) => row.status === 'open').map((row) => row.key);
     setBusy({ key: NOT_CHECKED, action: 'settle_group' });
     try {
-      for (const row of rows) await send(row.key, 'settle_group', findingNow(row.key, row.finding_id));
+      await send(NOT_CHECKED_GROUP, 'settle_group', null, { expected_keys: keys });
       cleared(NOT_CHECKED);
       reload();
     } catch (error) {
       failed(NOT_CHECKED, error, () => void clearNotChecked());
-      reload();
     } finally {
       setBusy(null);
     }
@@ -430,7 +454,7 @@ export function SimpleReviewPage({
                     error={errors[item.key] ?? null}
                     fixOpen={fixOpenKey === item.key}
                     onFixOpenChange={(next) => setFixOpenKey(next ? item.key : null)}
-                    onAct={(action, value) => actOnItem(item, action, value)}
+                    onAct={(action, extra) => actOnItem(item, action, extra)}
                     onOpenPdfs={openPdfs}
                   />
                 </div>
