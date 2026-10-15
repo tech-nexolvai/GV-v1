@@ -25,7 +25,13 @@ required; 409 when the group changed), and a Confirm on a number names the value
 (`shown_value`, required; 409 when the stored value differs now). "Checked by hand: wrong" is a
 DISMISS with the shared note `app.review.signed_record.CHECKED_WRONG_NOTE`, printed as WRONG.
 
-Source: issues #1351, #1358. Verification: `tests/api/test_review_item_actions.py`.
+**A cabinet run's marks (#648).** `mark_cabinets` names one kind per cabinet shown
+(`cabinet_kinds`, left to right): 422 without them or with a kind not offered, 409 when the run now
+has another number of cabinets. They are recorded through the existing classification path
+(`workflow/classifications.py:record_classifications`, what `CAB-FILLER-001` reads), never a new one.
+
+Source: issues #1351, #1358, #648. Verification: `tests/api/test_review_item_actions.py`,
+`tests/api/test_review_item_cabinet_kinds.py`.
 """
 
 from __future__ import annotations
@@ -46,6 +52,8 @@ from app.models.document import PackageRevisionDocument
 from app.models.evidence import CanonicalObservation, EvidenceSupportingCandidate
 from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
 from app.review.review_items import (
+    CABINET_RULE,
+    CABINET_TYPE_INPUT,
     FailureOut,
     NotCheckedOut,
     ReviewItemOut,
@@ -56,6 +64,7 @@ from app.review.review_items import (
 from app.review.session import open_session, record_action
 from app.review.signed_record import CHECKED_WRONG_NOTE
 from verdict.operands import EvidenceStatus
+from workflow.classifications import record_classifications
 
 __all__ = [
     "AGREE_NOTE",
@@ -73,6 +82,7 @@ __all__ = [
     "current_items",
     "find_entry",
     "numbers_answered",
+    "record_cabinet_marks",
     "record_finding_actions",
     "reviewer_session",
 ]
@@ -104,6 +114,7 @@ _TAKES: Final[dict[str, frozenset[str]]] = {
     "no_countertop_page": frozenset({"confirm_no_countertop", "there_is_a_countertop"}),
     "architect": frozenset({"answer"}),
     "depth_reading": frozenset({"confirm", "not_this"}),
+    "cabinet_kinds": frozenset({"mark_cabinets"}),
     "failure": frozenset({"agree"}),
     "not_checked": frozenset({"clear_not_checked", "settle_group"}),
 }
@@ -176,6 +187,14 @@ class ReviewItemActionIn(BaseModel):
         description=(
             "With an architect `answer`: the body of `POST .../architect-pairing` (`pairs`, "
             "optional `expected_record_id` and `note`); `pairs: []` says nothing is comparable."
+        ),
+    )
+    cabinet_kinds: list[str] | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "With `mark_cabinets`: one kind per cabinet shown, left to right (a "
+            "`cabinet_choices` category). Required; 409 when the run's cabinets changed."
         ),
     )
     expected_keys: list[str] | None = Field(
@@ -468,3 +487,43 @@ def check_group(listed: ReviewItemsOut, group: Group, expected: list[str] | None
             "This group changed since you opened it. Nothing was saved. Reload the list.",
         )
     return keys
+
+
+def record_cabinet_marks(
+    session: Session,
+    *,
+    revision_id: UUID,
+    entry: ReviewItemOut,
+    kinds: list[str] | None,
+    actor: str,
+) -> tuple[str, ...]:
+    """Record one kind per cabinet shown through the existing classification path (flushed, the
+    caller commits): exactly the cabinets on the screen, each one of the kinds offered."""
+    if not kinds:
+        raise ItemRefused(
+            422, "Mark every cabinet (`cabinet_kinds`, left to right). Nothing was saved."
+        )
+    if len(kinds) != len(entry.cabinets):
+        raise ItemRefused(
+            409,
+            f"This run now has {len(entry.cabinets)} cabinets, not {len(kinds)}. Nothing was saved. "
+            "Reload the list.",
+        )
+    offered = {choice.category for choice in entry.cabinet_choices}
+    for position, kind in enumerate(kinds, start=1):
+        if kind not in offered:
+            raise ItemRefused(
+                422,
+                f"Cabinet {position}: {kind!r} is not one of {', '.join(sorted(offered))}. "
+                "Nothing was saved.",
+            )
+    record_classifications(
+        session,
+        package_revision_id=revision_id,
+        rule_id=CABINET_RULE,
+        input_name=CABINET_TYPE_INPUT,
+        categories=kinds,
+        confirmed_by=actor,
+    )
+    session.flush()
+    return tuple(kinds)

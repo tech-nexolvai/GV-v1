@@ -13,7 +13,9 @@ The POST writes ONLY through paths that already exist, and holds no truth path o
 * a wall choice: `POST .../slot-rows/{row}/review`, with the wall choice only;
 * a page listed with no countertop: the existing answer, or "Confirm these N pages";
 * an architect question: the existing view-match or pairing POST;
-* a number: W2's confirm and correct (#1339; 501 until it lands).
+* a number: W2's confirm and correct (#1339; 501 until it lands);
+* a cabinet run's marks (#648): the reviewer's classification of each cabinet
+  (`workflow/classifications.py:record_classifications`, what `CAB-FILLER-001` reads).
 
 An answer that changes what a check reads (a wall, an architect pick, "There is a countertop", a
 number) queues one coalesced re-check (`app/api/measurements.py:queue_recheck`) in the same
@@ -200,7 +202,11 @@ def answer_review_item(
         )
 
     sitting_id: UUID | None = None
-    if kind == "number":
+    if kind == "cabinet_kinds":
+        if not isinstance(entry, ReviewItemOut):  # pragma: no cover - the kind is an item's
+            raise _unprocessable("This item has no cabinets to mark.")
+        recorded = _answer_cabinets(session, principal, revision, entry, body)
+    elif kind == "number":
         if not isinstance(entry, ReviewItemOut) or name not in ("confirm", "fix"):
             raise _unprocessable("A number takes Confirm or Fix.")
         sitting_id, recorded = _answer_number(session, principal, revision, entry, name, body)
@@ -340,6 +346,44 @@ def _answer_number(
     return (
         sitting_id,
         "Fixed: recorded as a correction of the AI's reading; the checks will use your value.",
+    )
+
+
+def _answer_cabinets(
+    session: Session,
+    principal: Principal,
+    revision: PackageRevision,
+    entry: ReviewItemOut,
+    body: actions.ReviewItemActionIn,
+) -> str:
+    """The marks and one coalesced re-check, committed together or not at all (#648)."""
+    try:
+        marks = actions.record_cabinet_marks(
+            session,
+            revision_id=revision.id,
+            entry=entry,
+            kinds=body.cabinet_kinds,
+            actor=principal.id,
+        )
+        queue_recheck(session, revision)
+        session.commit()
+    except actions.ItemRefused as refused:
+        session.rollback()
+        raise _http(refused) from refused
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as error:
+        session.rollback()
+        raise _refuse(error) from error
+    keeps = sum(
+        1
+        for mark in marks
+        if any(c.category == mark and c.keeps_width for c in entry.cabinet_choices)
+    )
+    return (
+        f"Marked {len(marks)} cabinets: {keeps} keep their width, {len(marks) - keeps} can be "
+        "resized. The cabinet check runs again with them."
     )
 
 

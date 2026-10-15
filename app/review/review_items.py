@@ -18,6 +18,15 @@ write, no guess.
   link to them; none when it lacked only drawn values. Each says whether it is set now (`set_now`,
   #1382): saved since the run, so the checks need running again.
 
+**A cabinet run waiting on a person is one `cabinet_kinds` item** (#648, Step 2). Each cabinet of
+the run entered on Measurements is a row: its place, the architect's and the vendor's width, and the
+kind the reviewer marked last (none until they do). The reviewer marks each one: it keeps its width
+(an equipment cabinet: sink, microwave, fridge, other) or it can be resized (single door, double
+door, drawer). Nothing is pre-marked by code or AI: no suggestion exists for a cabinet's kind. The
+per-type width limits the run lacked are listed in `settings`, each a Company settings field, never a
+guessed width. Marks saved after the result are read by the next run: the item is `rechecking` until
+then. A run with no cabinet list stays a result to check (`other_result`).
+
 `unaccounted` lists any blocking result, or any page that blocks sign-off, that is in none of the
 groups or in more than one. It must be empty; it is computed here, on every read, so the screen can
 never hide a result by accident (never silent).
@@ -63,7 +72,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CheckRun, Finding, PackageRevision, RuleDefinition, RuleSnapshot
 from app.models.drawing import VendorPagePicture
-from app.models.evidence import ObservationCandidate
+from app.models.evidence import ItemClassification, ObservationCandidate
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
@@ -72,17 +81,22 @@ from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
+from rules.required_inputs import categories_for
 from rules.schema import Applicability
 from rules.semantic_types import SemanticType
 from units.imperial import format_inches, parse_imperial
 from verdict.outcomes import Outcome
+from vocabulary.cabinet_categories import CABINET_CATEGORY_LABELS, CabinetCategory
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
 from vocabulary.setting_names import setting_name
 from vocabulary.wall_layouts import wall_case_words
+from workflow.measurements import operands_for
 from workflow.slot_row_scope import SlotRow, candidate_is_sealed, slot_rows
 from workflow.wall_cases import is_every_wall_case
 
 __all__ = [
+    "CABINET_RULE",
+    "CABINET_TYPE_INPUT",
     "DEPTH_AND_SINK_RULES",
     "NOT_CHECKED_NOTE",
     "BestGuessOut",
@@ -102,6 +116,7 @@ ItemKind = Literal[
     "no_countertop_page",
     "architect",
     "depth_reading",
+    "cabinet_kinds",
     "other_result",
 ]
 Status = Literal["open", "done", "rechecking"]
@@ -120,6 +135,12 @@ DEPTH_AND_SINK_RULES: Final[Mapping[str, str]] = {
 WIDTH_RULE: Final = "CT-WIDTH-001"
 ARCHITECT_RULE: Final = "CT-ARCH-WIDTH-001"
 TEXT_LAYER_SOURCE: Final = "pdf-text-layer"
+
+#: The cabinet run check that reads the reviewer's marks, and the input they answer (#648).
+CABINET_RULE: Final = "CAB-FILLER-001"
+CABINET_TYPE_INPUT: Final = "cabinet_type"
+#: The run's cabinet lists on Measurements, the architect's and the vendor's, in wall order.
+_CABINET_LISTS: Final = ("architectural_cabinets", "shop_cabinets")
 
 NOT_CHECKED_NOTE: Final = (
     "These depth and sink checks did not run: nothing was read for them (the depth and sink "
@@ -149,6 +170,7 @@ _ACTIONS: Final[Mapping[str, tuple[str, ...]]] = {
     "no_countertop_page": ("confirm_no_countertop", "there_is_a_countertop"),
     "architect": ("answer",),
     "depth_reading": ("confirm", "not_this"),
+    "cabinet_kinds": ("mark_cabinets",),
     "other_result": ("checked_right", "checked_wrong"),
     "failure": ("agree",),
     "not_checked": ("settle_group",),
@@ -206,6 +228,51 @@ class ArchitectRefOut(BaseModel):
     reason: str | None = None
 
 
+class NotCheckedSettingOut(BaseModel):
+    """A setting a not-checked check is waiting for, as listed on Company settings (#1373)."""
+
+    key: str = Field(
+        description=(
+            "The setting's name (`countertop_overhang`): the field "
+            "`#/settings/company?focus=<key>&project=<project_id>` opens."
+        )
+    )
+    name: str = Field(description="The setting's plain name.")
+    project_id: UUID = Field(description="The project whose setting it is.")
+    set_now: bool = Field(
+        default=False,
+        description=(
+            "Whether the company or project settings hold it now (#1382). The run lacked it, so "
+            "true means it was saved after this check ran: saving never re-runs a check, so the "
+            "screen says to run the checks again instead of linking to a field that has a value."
+        ),
+    )
+
+
+class CabinetChoiceOut(BaseModel):
+    """One kind a cabinet may be marked as (`vocabulary/cabinet_categories.py`)."""
+
+    category: str = Field(description="Sent back in `cabinet_kinds`, e.g. `sink_cabinet`.")
+    label: str = Field(description="The kind in plain words.")
+    keeps_width: bool = Field(
+        description="True for an equipment cabinet, whose width never changes; false: resizable."
+    )
+
+
+class CabinetRowOut(BaseModel):
+    """One cabinet of the run, left to right, as entered on Measurements."""
+
+    position: int = Field(description="1-based place in the run, left to right.")
+    architect_width: str | None = Field(default=None, description='e.g. `24"`.')
+    vendor_width: str | None = Field(default=None, description='e.g. `23 1/2"`.')
+    marked: str | None = Field(
+        default=None, description="The kind the reviewer marked last; null until they mark it."
+    )
+    keeps_width: bool | None = Field(
+        default=None, description="Whether the marked kind keeps its width; null when unmarked."
+    )
+
+
 class ReviewItemOut(BaseModel):
     """One question a person answers."""
 
@@ -252,6 +319,21 @@ class ReviewItemOut(BaseModel):
         default=None,
         description="`wall_choice` only: the vendor's printed overall the choices were checked against.",
     )
+    cabinets: list[CabinetRowOut] = Field(
+        default_factory=list,
+        description="`cabinet_kinds` only: each cabinet of the run, left to right, to mark.",
+    )
+    cabinet_choices: list[CabinetChoiceOut] = Field(
+        default_factory=list,
+        description="`cabinet_kinds` only: the kinds a cabinet may be marked as.",
+    )
+    settings: list[NotCheckedSettingOut] = Field(
+        default_factory=list,
+        description=(
+            "`cabinet_kinds` only: the per-type cabinet width limits the run lacked, each a "
+            "Company settings field (no company value; set per project). Never guessed."
+        ),
+    )
 
 
 class FailureOut(BaseModel):
@@ -269,27 +351,6 @@ class FailureOut(BaseModel):
     status: Status
     decided_by: str | None = None
     decided_at: datetime | None = None
-
-
-class NotCheckedSettingOut(BaseModel):
-    """A setting a not-checked check is waiting for, as listed on Company settings (#1373)."""
-
-    key: str = Field(
-        description=(
-            "The setting's name (`countertop_overhang`): the field "
-            "`#/settings/company?focus=<key>&project=<project_id>` opens."
-        )
-    )
-    name: str = Field(description="The setting's plain name.")
-    project_id: UUID = Field(description="The project whose setting it is.")
-    set_now: bool = Field(
-        default=False,
-        description=(
-            "Whether the company or project settings hold it now (#1382). The run lacked it, so "
-            "true means it was saved after this check ran: saving never re-runs a check, so the "
-            "screen says to run the checks again instead of linking to a field that has a value."
-        ),
-    )
 
 
 class NotCheckedOut(BaseModel):
@@ -724,7 +785,7 @@ def review_items_for_revision(
         [
             _Cited(entry.finding.id, entry.rule_snapshot_id, entry.finding.parameter_set_versions)
             for entry in blocking
-            if entry.rule_id in DEPTH_AND_SINK_RULES
+            if entry.rule_id in DEPTH_AND_SINK_RULES or entry.rule_id == CABINET_RULE
         ],
     )
 
@@ -743,6 +804,14 @@ def review_items_for_revision(
             )
             for name in missing.get(finding_id, [])
         ]
+
+    cabinet_runs: list[tuple[tuple[CabinetRowOut, ...], datetime | None] | None] = []
+
+    def cabinet_run() -> tuple[tuple[CabinetRowOut, ...], datetime | None] | None:
+        """The run's cabinets and when they were last marked, read once and only when needed."""
+        if not cabinet_runs:
+            cabinet_runs.append(_cabinet_run(session, revision.id))
+        return cabinet_runs[0]
 
     items: list[ReviewItemOut] = []
     failures: list[FailureOut] = []
@@ -832,6 +901,34 @@ def review_items_for_revision(
                 )
             )
             continue
+        if rule_id == CABINET_RULE and finding.outcome != Outcome.FAIL.value:
+            run = cabinet_run()
+            if run is not None:
+                cabinet_rows, marked_at = run
+                marked_since = marked_at is not None and marked_at > finding.created_at
+                cabinet_state: Status = (
+                    "rechecking"
+                    if state == "open" and marked_since and all(row.marked for row in cabinet_rows)
+                    else state
+                )
+                items.append(
+                    ReviewItemOut(
+                        key=f"cabinets:{finding.id}",
+                        kind="cabinet_kinds",
+                        page=None,
+                        what="Which cabinets keep their width?",
+                        why=why,
+                        actions=actions("cabinet_kinds", cabinet_state),
+                        status=cabinet_state,
+                        decided_by=decided_by,
+                        decided_at=decided_at,
+                        finding_id=finding.id,
+                        cabinets=list(cabinet_rows),
+                        cabinet_choices=cabinet_choices(),
+                        settings=settings_for(finding.id),
+                    )
+                )
+                continue
         kind: ItemKind = "architect" if rule_id == ARCHITECT_RULE else "other_result"
         items.append(
             ReviewItemOut(
@@ -1198,3 +1295,71 @@ def _wall_item(
         vendor_wrote=cases.vendor_wrote,
         **fields,  # type: ignore[arg-type]
     )
+
+
+def cabinet_choices() -> list[CabinetChoiceOut]:
+    """Every kind the rulebook allows a cabinet to be marked as, in the form's order."""
+    allowed = set(categories_for(SemanticType.CABINET_CATEGORY.value))
+    return [
+        CabinetChoiceOut(
+            category=category.value,
+            label=label.removesuffix(" (width cannot change)"),
+            keeps_width=category.is_equipment,
+        )
+        for category, label in CABINET_CATEGORY_LABELS
+        if category.value in allowed
+    ]
+
+
+def _inches_text(value: object) -> str | None:
+    exact = getattr(value, "exact", None)
+    return None if exact is None else f'{format_inches(exact)}"'
+
+
+def _cabinet_run(
+    session: Session, revision_id: UUID
+) -> tuple[tuple[CabinetRowOut, ...], datetime | None] | None:
+    """The cabinet run entered on Measurements, each with its latest mark; None with no list.
+
+    The lists are the ones the check reads (`workflow/measurements.py:operands_for`), and the marks
+    are its classification (`workflow/classifications.py`), latest per position.
+    """
+    operands = operands_for(session, revision_id).get(CABINET_RULE, {})
+    lists: list[tuple[object, ...]] = []
+    for name in _CABINET_LISTS:
+        operand = operands.get(name)
+        value = None if operand is None else operand.value
+        lists.append(tuple(value) if isinstance(value, tuple) else ())
+    architect, vendor = lists
+    count = len(architect) or len(vendor)
+    if count == 0:
+        return None
+    marks = operands.get(CABINET_TYPE_INPUT)
+    marked = marks.value if marks is not None and isinstance(marks.value, tuple) else ()
+    rows = []
+    for index in range(count):
+        mark = str(marked[index]) if index < len(marked) else None
+        try:
+            keeps = None if mark is None else CabinetCategory(mark).is_equipment
+        except ValueError:
+            keeps = None
+        rows.append(
+            CabinetRowOut(
+                position=index + 1,
+                architect_width=_inches_text(architect[index]) if index < len(architect) else None,
+                vendor_width=_inches_text(vendor[index]) if index < len(vendor) else None,
+                marked=mark,
+                keeps_width=keeps,
+            )
+        )
+    marked_at = session.scalars(
+        select(ItemClassification.created_at)
+        .where(
+            ItemClassification.package_revision_id == revision_id,
+            ItemClassification.rule_id == CABINET_RULE,
+            ItemClassification.input_name == CABINET_TYPE_INPUT,
+        )
+        .order_by(ItemClassification.created_at.desc())
+        .limit(1)
+    ).first()
+    return tuple(rows), marked_at
