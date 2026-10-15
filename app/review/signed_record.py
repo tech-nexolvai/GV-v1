@@ -17,6 +17,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 __all__ = [
     "CHECKED_WRONG_NOTE",
+    "DEPTH_NOT_THIS_PREFIX",
     "ReviewDisposition",
     "SignedReview",
     "SignedReviewFinding",
@@ -26,6 +27,12 @@ __all__ = [
 #: by `app/review/review_item_actions.py`, read here and by the cloud PDF through
 #: `ReviewDisposition.checked_wrong_by_hand`.
 CHECKED_WRONG_NOTE: Final = "Checked by hand: wrong (simple review)."
+
+#: How every "Not this" on a depth or sink reading (a DISMISS on the simple review, #1360) begins;
+#: the rest names the countertop and the reading. Written by `app/review/review_item_actions.py`,
+#: read through `ReviewDisposition.not_this_reading`: such a result is printed NOT CHECKED
+#: (Anant, 2026-10-16: "Not this" = Not checked).
+DEPTH_NOT_THIS_PREFIX: Final = "Not checked: a person said the AI's reading "
 
 
 class ReviewDisposition(BaseModel):
@@ -45,6 +52,12 @@ class ReviewDisposition(BaseModel):
         """A person checked this result by hand and found it wrong: a problem for the vendor. The
         result stays as recorded; this is the mark the cloud PDF reads (#1358)."""
         return self.action == "dismiss" and self.note == CHECKED_WRONG_NOTE
+
+    @property
+    def not_this_reading(self) -> bool:
+        """A person said a depth or sink reading is not this value (#1360): the check is not
+        checked, and printed NOT CHECKED."""
+        return self.action == "dismiss" and (self.note or "").startswith(DEPTH_NOT_THIS_PREFIX)
 
     def wording(self, outcome: str) -> str:
         who = f"by reviewer {self.reviewer} on {self.at.isoformat()}"

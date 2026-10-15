@@ -345,8 +345,9 @@ export function SimpleReviewPage({
   function actOnItem(item: ReviewItem, action: ItemAction, extra?: ActionExtra) {
     if (saving.current) return;
     let body = extra;
-    if (action === 'confirm' && item.kind === 'number' && item.best_guess) {
+    if (action === 'confirm' && (item.kind === 'number' || item.kind === 'depth_reading') && item.best_guess) {
       // The value the reviewer saw: W2 records exactly the stored value, and refuses another (#1358).
+      // A depth or sink reading's Confirm is the same W2 confirm (#1360).
       body = { ...extra, shown_value: item.best_guess.text };
     }
     if (action === 'answer' && item.kind === 'architect' && !body?.architect_view && !body?.architect_pairing) {

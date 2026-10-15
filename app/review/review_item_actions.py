@@ -10,12 +10,12 @@ route calls the other existing POSTs (wall review, no-countertop answers, archit
 Every other one-click answer the list offers is sent as `answer`, with its own name in the body
 (`{"answer": "checked_right"}`); the W1 names are also accepted directly in the URL.
 
-**Stale is 409, unknown is 404, not yet is 501.** Each call names the result the screen showed
+**Stale is 409, unknown is 404.** Each call names the result the screen showed
 (`expected_finding_id`). A key that is no longer listed, or now names another result, is stale when
 it, or the expected result, belongs to this package; otherwise it is unknown.
 
 **A result held on several numbers is settled number by number.** Its numbers with a guess are
-answered one by one, each with its own confirmation (W2, #1339; until then 501), and the next check
+answered one by one, each with its own confirmation (W2, #1339), and the next check
 run decides the result. Its numbers checked by hand are answered with one finding action, which
 would mark every number of the result done: so that answer waits until each numbered item of the
 same result has its own confirmation (`numbers_answered`), and is refused with 409 before.
@@ -25,7 +25,14 @@ required; 409 when the group changed), and a Confirm on a number names the value
 (`shown_value`, required; 409 when the stored value differs now). "Checked by hand: wrong" is a
 DISMISS with the shared note `app.review.signed_record.CHECKED_WRONG_NOTE`, printed as WRONG.
 
-Source: issues #1351, #1358. Verification: `tests/api/test_review_item_actions.py`.
+**A depth or sink reading (#1360)** is one item per reading. Confirm goes through the held-reading
+evidence decision (`app/review/evidence_actions.confirm_candidate_reading`, the same as a number):
+once only, for its own countertop only, naming the value shown. "Not this" records the result as
+not checked (`depth_not_this_note`) and writes nothing on the reading. It is offered only on one
+countertop's own result with that one reading open: it settles the whole result.
+
+Source: issues #1351, #1358, #1360. Verification: `tests/api/test_review_item_actions.py`,
+`tests/api/test_review_item_depth.py`.
 """
 
 from __future__ import annotations
@@ -54,7 +61,7 @@ from app.review.review_items import (
     review_items_for_revision,
 )
 from app.review.session import open_session, record_action
-from app.review.signed_record import CHECKED_WRONG_NOTE
+from app.review.signed_record import CHECKED_WRONG_NOTE, DEPTH_NOT_THIS_PREFIX
 from verdict.operands import EvidenceStatus
 
 __all__ = [
@@ -71,6 +78,7 @@ __all__ = [
     "answer_name",
     "check_shown_value",
     "current_items",
+    "depth_not_this_note",
     "find_entry",
     "numbers_answered",
     "record_finding_actions",
@@ -84,11 +92,21 @@ CHECKED_RIGHT_NOTE: Final = "Checked by hand: right (simple review)."
 AGREE_NOTE: Final = "Agreed: this is wrong on the drawing and will be clouded (simple review)."
 NOT_CHECKED_FIXED_NOTE: Final = "Not checked: the values were not read"
 
+
+def depth_not_this_note(entry: ReviewItemOut) -> str:
+    """The note of "Not this" on a depth or sink reading (#1360; Anant: "Not this" = Not checked):
+    the check cannot use the reading, so the result is recorded as not checked (a `dismiss`, printed
+    NOT CHECKED), naming the countertop and the reading. Nothing is written on the reading: one only
+    its drawn length checks is never used without a person's Confirm."""
+    shown = "" if entry.best_guess is None else f"{entry.best_guess.text} "
+    where = f" on {entry.row_label}" if entry.row_label else ""
+    return (
+        f"{DEPTH_NOT_THIS_PREFIX}{shown}is not the {entry.what.lower()}{where} "
+        f"(reading {entry.candidate_id}; simple review)."
+    )
+
+
 NUMBERS_NOT_YET: Final = "Confirming a number arrives with W2"
-DEPTH_NOT_YET: Final = (
-    "Confirming a depth or sink reading is not wired into the simple review yet. Use the depth "
-    "card in the advanced view."
-)
 
 #: Group keys: the whole "Not checked" group, and every page listed with no countertop.
 NOT_CHECKED_GROUP: Final = "not-checked"
@@ -304,6 +322,15 @@ def find_entry(
             "Reload the list.",
         )
     if action not in _open_actions(entry):
+        if entry.status == "open":
+            # Open, but this answer is not offered on it now (e.g. a depth reading the advanced
+            # card would not offer for confirming either, #1360): 409, so the screen reloads it.
+            offered = ", ".join(sorted(_open_actions(entry))) or "nothing here"
+            raise ItemRefused(
+                409,
+                f"This answer is not offered on this item now (it takes: {offered}). Nothing was "
+                "saved. Reload the list.",
+            )
         why = (
             "It is waiting for the checks to run again."
             if entry.status == "rechecking"

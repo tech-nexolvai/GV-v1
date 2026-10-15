@@ -19006,9 +19006,6 @@
           },
           "422": {
             "description": "The item does not take this answer, or the answer is incomplete."
-          },
-          "501": {
-            "description": "This kind of answer cannot be saved yet (numbers: W2)."
           }
         },
         "summary": "Answer one item of the review list, through the existing decision paths",

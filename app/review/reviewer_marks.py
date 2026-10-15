@@ -134,11 +134,19 @@ def initials(name: str) -> str:
     return "".join(part[0] for part in parts[:3]).upper()
 
 
-def is_not_checked(outcome: str, reason: str | None) -> bool:
-    """A check that could not run (decision 1): no rule covers it, or it waits for unread values."""
+def is_not_checked(
+    outcome: str, reason: str | None, decision: ReviewDisposition | None = None
+) -> bool:
+    """A check that could not run (decision 1): no rule covers it, it waits for unread values, or
+    a person said the depth or sink reading it waited on is not this value (`decision`, the
+    standing decision on it; #1360, Anant: "Not this" = Not checked)."""
     if outcome == Outcome.NO_APPLICABLE_RULE.value:
         return True
-    return is_abstention(Outcome(outcome)) and (reason or "").startswith(WAITING)
+    if not is_abstention(Outcome(outcome)):
+        return False
+    return (reason or "").startswith(WAITING) or (
+        decision is not None and decision.not_this_reading
+    )
 
 
 def finding_reason(finding: Finding) -> str | None:
@@ -507,7 +515,7 @@ def _by_hand(
         elif last.action == ReviewActionKind.CONFIRM.value:
             kind, words = "confirmed", f"Checked by reviewer {who}: OK"
         elif last.action == ReviewActionKind.DISMISS.value and (
-            finding is not None and is_not_checked(outcome, finding_reason(finding))
+            finding is not None and is_not_checked(outcome, finding_reason(finding), last)
         ):
             words = f"Settled by {who} as not checked"
         elif last.action == ReviewActionKind.DISMISS.value:
@@ -587,6 +595,7 @@ def reviewer_marks_for(
     Reads only; the order is fixed (readings, walls, pages, results)."""
     places = _Places(db)
     readings, drawn = _readings(db, revision_id, until, places)
+    standing = {decided.finding_id: decided.actions[-1] for decided in decisions if decided.actions}
     return FrozenReviewerMarks(
         marks=(
             *readings,
@@ -597,6 +606,6 @@ def reviewer_marks_for(
         not_checked_finding_ids=tuple(
             finding.id
             for finding, _ in findings
-            if is_not_checked(finding.outcome, finding_reason(finding))
+            if is_not_checked(finding.outcome, finding_reason(finding), standing.get(finding.id))
         ),
     )
