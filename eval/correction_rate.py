@@ -16,7 +16,8 @@ keeps the count pair visible and uses an exact ``Fraction``; no reviewed evidenc
 ``NOT MEASURED``, never as a perfect zero-correction rate.
 
 The simple review header (#1386) shows the same count for one package revision
-(`reviewed_readings`): the same actions (`_reviewed`), scoped to the revision instead of a window.
+(`app/review/reviewed_readings.py`): the same actions (`reviewed_actions`, defined there
+because production never imports `eval/`), scoped to the revision instead of a window.
 
 Source: ``AGENTS.md`` section 9 and backend proposal section 12.
 Design: ``docs/DESIGN_PRODUCT.md`` section 4.
@@ -28,30 +29,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
-from uuid import UUID
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.db.base import utc_now
-from app.models.evidence import (
-    EvidenceCandidateRole,
-    EvidenceSupportingCandidate,
-    ObservationCandidate,
-)
-from app.models.review import CorrectionLedgerEntry, ReviewAction, ReviewActionKind
+from app.models.review import CorrectionLedgerEntry, ReviewAction
 from app.models.rules import RuleSnapshot
 from app.models.runs import ExtractionRun
-from app.models.verdicts import CheckRun, Finding
+from app.review.reviewed_readings import reviewed_actions
 from eval.metrics import MetricResult
 
-__all__ = [
-    "CorrectionRateKey",
-    "ReviewedReading",
-    "correction_rate",
-    "report",
-    "reviewed_readings",
-]
+__all__ = ["CorrectionRateKey", "correction_rate", "report"]
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -74,66 +63,17 @@ def _start(window: timedelta, *, now: datetime | None) -> datetime:
     return instant - window
 
 
-def _reviewed[*Row](
-    statement: Select[*Row], *, since: datetime | None = None, revision_id: UUID | None = None
-) -> Select[*Row]:
-    """Add the joins and filters that say which review actions this metric counts, to `statement`.
-
-    The one definition of a reviewed reading, shared by the grouped metric (`_query`) and by one
-    package revision's own count (`reviewed_readings`): a ``confirm`` or ``correct`` evidence action
-    on an extracted reading (it names the observation it judged), attributed to the reader that
-    produced it through the primary-candidate link (corroborating readers did not supply the value
-    being reviewed). A held-reading answer (#1339) is such a ``confirm``, whatever its tags (#1367).
-    The correction ledger is outer-joined: an action with a ledger row is a correction.
-    """
-
-    statement = (
-        statement.select_from(ReviewAction)
-        .join(Finding, Finding.id == ReviewAction.finding_id)
-        .join(CheckRun, CheckRun.id == Finding.check_run_id)
-        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
-        .join(
-            EvidenceSupportingCandidate,
-            and_(
-                EvidenceSupportingCandidate.canonical_observation_id
-                == ReviewAction.original_observation_id,
-                EvidenceSupportingCandidate.role == EvidenceCandidateRole.PRIMARY.value,
-            ),
-        )
-        .join(
-            ObservationCandidate,
-            ObservationCandidate.id == EvidenceSupportingCandidate.candidate_id,
-        )
-        .join(ExtractionRun, ExtractionRun.id == ObservationCandidate.extraction_run_id)
-        .outerjoin(
-            CorrectionLedgerEntry,
-            CorrectionLedgerEntry.review_action_id == ReviewAction.id,
-        )
-        .where(
-            ReviewAction.original_observation_id.is_not(None),
-            ReviewAction.action.in_(
-                (ReviewActionKind.CONFIRM.value, ReviewActionKind.CORRECT.value)
-            ),
-        )
-    )
-    if since is not None:
-        statement = statement.where(ReviewAction.created_at >= since)
-    if revision_id is not None:
-        statement = statement.where(ReviewAction.package_revision_id == revision_id)
-    return statement
-
-
 def _query(since: datetime) -> Select[str, str, str, int, int]:
     """Build the one authoritative query used by the metric.
 
     ``COUNT(DISTINCT action.id)`` prevents an observation supported by duplicate relational paths
-    from inflating the denominator.  Which actions count is `_reviewed`'s, shared with
-    `reviewed_readings`.
+    from inflating the denominator.  Which actions count is `reviewed_actions`'s
+    (`app/review/reviewed_readings.py`), shared with the simple review header.
     """
 
     reviewed = func.count(func.distinct(ReviewAction.id))
     corrected = func.count(func.distinct(CorrectionLedgerEntry.review_action_id))
-    statement = _reviewed(
+    statement = reviewed_actions(
         select(
             RuleSnapshot.check_type,
             ExtractionRun.extractor,
@@ -152,51 +92,6 @@ def _query(since: datetime) -> Select[str, str, str, int, int]:
         ExtractionRun.extractor,
         ExtractionRun.extractor_version,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewedReading:
-    """One review action this metric counts: whether it was a correction, and the reading judged.
-
-    `readers` is every primary reader candidate of the observation the action judged (one in
-    practice; more only where duplicate relational paths exist, which the metric never double
-    counts: one `ReviewedReading` per action).
-    """
-
-    action_id: UUID
-    corrected: bool
-    readers: tuple[ObservationCandidate, ...]
-
-
-def reviewed_readings(session: Session, *, revision_id: UUID) -> list[ReviewedReading]:
-    """Every review action this metric counts on one package revision, one entry per action.
-
-    The same actions `correction_rate` counts (`_reviewed`), scoped to the revision the action was
-    recorded on instead of a time window, so its count and its corrections are exactly the metric's
-    denominator and numerator for this revision. A review action never crosses revisions
-    (`app/lifecycle/carry_forward.py`); a person's answers on this revision's earlier readings (#1206)
-    are on this revision and counted.
-    """
-
-    rows = session.execute(
-        _reviewed(
-            select(
-                ReviewAction.id,
-                CorrectionLedgerEntry.review_action_id.is_not(None),
-                ObservationCandidate,
-            ),
-            revision_id=revision_id,
-        ).order_by(ReviewAction.created_at, ReviewAction.id)
-    ).all()
-    corrected: dict[UUID, bool] = {}
-    readers: dict[UUID, dict[UUID, ObservationCandidate]] = {}
-    for action_id, is_correction, candidate in rows:
-        corrected[action_id] = corrected.get(action_id, False) or bool(is_correction)
-        readers.setdefault(action_id, {})[candidate.id] = candidate
-    return [
-        ReviewedReading(action_id, corrected[action_id], tuple(readers[action_id].values()))
-        for action_id in corrected
-    ]
 
 
 def correction_rate(

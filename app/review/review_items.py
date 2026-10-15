@@ -83,13 +83,13 @@ from app.models.evidence import (
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
+from app.review.reviewed_readings import ReviewedReading, reviewed_readings
 from app.review.row_location import RowLocation
 from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
 from app.schemas.findings import DepthReadingOut
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
-from eval.correction_rate import ReviewedReading, reviewed_readings
 from rules.required_inputs import categories_for
 from rules.schema import Applicability
 from rules.semantic_types import SemanticType
@@ -401,23 +401,24 @@ class UnaccountedOut(BaseModel):
 class ReviewHeaderOut(BaseModel):
     """The top of the simple review page (#1338), with the AI's share and accuracy (#1386).
 
-        Every count is exact and worked out here; the screen only prints them. Each percentage is a
-        whole number of its own count over its own total, shown beside the counts (`whole_percent`).
+    Every count is exact and worked out here; the screen only prints them. Each percentage is a
+    whole number of its own count over its own total, shown beside the counts (`whole_percent`).
 
-        **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
-        reading. Each is in exactly one of two groups, by the one test the rest of the page uses
-        (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and code
-        accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with no
-        value). So `confirmed_by_ai + need_you == numbers` always.
+    **Numbers** (line 1): `numbers` is every width number on the countertop rows of the newest
+    reading. Each is in exactly one of two groups, by the one test the rest of the page uses
+    (`candidate_is_sealed`): `confirmed_by_ai`, settled by both AIs (the two readers agreed and
+    code accepted it), or `need_you`, the rest (held, read by one reader, read differently, or with
+    no value). So `confirmed_by_ai + need_you == numbers` always.
 
-        **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
-        `eval/correction_rate.py` counts (`reviewed_readings`): every `confirm` or `correct` evidence
-        action, a held-reading answer included. `readings_checked` is how many answers (one number answered
+    **Accuracy** (line 2): from this revision's own answers on AI readings, exactly what
+    `eval/correction_rate.py` counts (`app/review/reviewed_readings.py`): every `confirm` or
+    `correct` evidence action, a held-reading answer included; an Agree on a FAIL or any other
+    decision on a result is not one. `readings_checked` is how many answers (one number answered
     twice counts twice, as in the metric; the screen says "Your answers"); `ai_right` is the
-        confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
-        `settled_checked` judged a reading both AIs settled, and `settled_right` of them were confirmed:
-        a settled number a person corrected shows as `settled_checked - settled_right`. Nothing checked
-        means no percentage (`None`), never 0% or 100%. No other set's answers are counted.
+    confirms (no correction-ledger row), so `readings_checked - ai_right` were corrected. Of those,
+    `settled_checked` judged a reading both AIs settled, and `settled_right` of them were
+    confirmed: a settled number a person corrected shows as `settled_checked - settled_right`.
+    Nothing checked means no percentage (`None`), never 0% or 100%. No other set's answers count.
     """
 
     pages_read: int = Field(description="Vendor pages the reader looked at for a countertop.")

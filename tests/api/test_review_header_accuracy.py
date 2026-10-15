@@ -32,7 +32,8 @@ from app.review.evidence_actions import (
     correct_evidence,
 )
 from app.review.review_items import whole_percent
-from eval.correction_rate import correction_rate, reviewed_readings
+from app.review.reviewed_readings import reviewed_readings
+from eval.correction_rate import correction_rate
 from tests.api.test_review_item_actions import _act, _items, _save_all_row_widths
 from tests.api.test_review_items import _client
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
