@@ -19,8 +19,9 @@ are taken off each. A clause is a request when it:
   dismiss, sign off, override, waive; Spanish, French and German "approve") not followed by a noun
   such as "status", "rate", "summary", "log", "readiness";
 - starts with a weaker verb (mark, pass, fail, set, change, confirm, clear, resolve, decide,
-  record, flag, close, release, tick) followed by what it would act on (page 4, it, this, the
-  result, everything);
+  record, flag, close, release, tick; and the simple review screen's fix, correct, agree, settle,
+  #1352) followed by what it would act on (page 4, it, this, the result, the guess, the number,
+  the failure, everything);
 - or the message says "mark/set/change/make/turn … as/to pass/green/approved", "make page 4
   pass", "page 4 should be marked as passed", or "I'd like page 4 accepted".
 
@@ -71,6 +72,7 @@ _NOUN_AFTER: Final = re.compile(
 )
 _WEAK: Final = re.compile(
     r"^(?:pass|fail|set|change|confirm|clear|resolve|decide|record|flag|except|release|"
+    r"fix|correct|agree(?: with| to| on)?|settle|"
     r"close out|close|tick|check off|ok|okay|finali[sz]e|complete|update|treat|consider|put|"
     r"push|let|bump|ignore|skip|note|log|save|give|call|move|count|flip)\b"
 )
@@ -78,11 +80,15 @@ _WEAK: Final = re.compile(
 _TARGET: Final = re.compile(
     r"^\s*(?:page|sheet|pg|p\d+|it|this|that|these|those|them|everything|all|both|"
     r"the (?:package|item|items|row|rows|result|results|finding|findings|check|checks|"
-    r"countertop|countertops|sink|hold|wall|walls|outcome|review|whole|rest|reading)|"
+    r"countertop|countertops|sink|hold|wall|walls|outcome|review|whole|rest|reading|"
+    r"guess|guesses|best guess|number|numbers|value|values|width|widths|failure|failures|"
+    r"group|not checked)|"
     r"as (?:pass|fail|ok|okay|approved|accepted|done|resolved|correct|right))\b|^\s*\d+\s*$"
 )
 #: A weak verb alone ("pass", "fail", "close") is a command too.
-_BARE_WEAK: Final = frozenset({"pass", "fail", "close", "ok", "okay", "confirm"})
+_BARE_WEAK: Final = frozenset(
+    {"pass", "fail", "close", "ok", "okay", "confirm", "fix", "agree", "settle"}
+)
 #: "mark it done", "mark page 7 passed": marking as an outcome (plain "mark the walls" annotates).
 _MARK_DONE: Final = re.compile(
     r"\bmark\s+(?:it|this|that|them|everything|all|page \d+|sheet \d+|p\d+|\d+)?\s*(?:as\s+)?"

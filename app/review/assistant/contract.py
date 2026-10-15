@@ -32,6 +32,7 @@ __all__ = [
     "HistoryTurn",
     "OpenPageAction",
     "OpenQueueItemAction",
+    "OpenReviewItemAction",
     "StageEvent",
     "StageId",
 ]
@@ -94,7 +95,7 @@ class StageEvent(BaseModel):
 class Citation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal["page", "countertop", "finding"]
+    kind: Literal["page", "countertop", "finding", "review_item"]
     page_number: int | None
     record_id: str | None
     label: str
@@ -132,7 +133,21 @@ class OpenQueueItemAction(BaseModel):
     label: str
 
 
-Action = Annotated[OpenPageAction | OpenQueueItemAction, Field(discriminator="kind")]
+class OpenReviewItemAction(BaseModel):
+    """Opens one entry of the simple review list (#1352): navigation only, never a decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["open_review_item"]
+    item_key: str
+    """The list's own key for the entry (`ReviewItemOut.key`, `FailureOut.key` …)."""
+    page_number: int | None
+    label: str
+
+
+Action = Annotated[
+    OpenPageAction | OpenQueueItemAction | OpenReviewItemAction, Field(discriminator="kind")
+]
 
 
 class AnswerEvent(BaseModel):
@@ -167,7 +182,7 @@ class Draft:
     `text` states facts only through placeholders (`{C1.outcome}`, `{count.needs_you}`; see
     `app.review.assistant.placeholders`), which code fills and cites. `evidence` are `C1` or a
     group name (`blockers`, `no_countertop_pages`, `rows_not_checked`); `actions` are
-    `("open_page", "P4")` or `("open_queue_item", "C1")`.
+    `("open_page", "P4")`, `("open_queue_item", "C1")` or `("open_review_item", "R1")`.
     """
 
     text: str

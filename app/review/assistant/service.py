@@ -180,15 +180,24 @@ def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
     if page is not None:
         # A page the records do not have gets no button: never one to an unrelated item.
         waiting = next((item for item in snapshot.on_page(page) if item.needs_you), None)
+        listed = next(
+            (item for item in snapshot.review_items if item.needs_you and item.page_number == page),
+            None,
+        )
         if waiting is not None:
             actions.append(("open_queue_item", waiting.id))
-        elif page in snapshot.pages():
+        if listed is not None:
+            actions.append(("open_review_item", listed.id))
+        if not actions and page in snapshot.pages():
             actions.append(("open_page", f"P{page}"))
         return Draft(text=REFUSAL_TEXT, actions=tuple(actions))
     if focus is not None and focus.record_id is not None:
         record = snapshot.by_record_id(focus.record_id)
+        entry = snapshot.review_item_by_key(focus.record_id)
         if record is not None:
             actions.append(("open_queue_item", record.id))
+        elif entry is not None and entry.needs_you:
+            actions.append(("open_review_item", entry.id))
     if not actions and snapshot.readiness.needing_you:
         actions.append(("open_queue_item", snapshot.readiness.needing_you[0]))
     return Draft(text=REFUSAL_TEXT, actions=tuple(actions))
@@ -227,7 +236,10 @@ def _focus_ids(snapshot: ReviewSnapshot, request: AssistantRequest) -> tuple[str
     if request.focus is None or request.focus.record_id is None:
         return ()
     record = snapshot.by_record_id(request.focus.record_id)
-    return () if record is None else (record.id,)
+    if record is not None:
+        return (record.id,)
+    entry = snapshot.review_item_by_key(request.focus.record_id)
+    return () if entry is None else (entry.id,)
 
 
 def stream_answer(
