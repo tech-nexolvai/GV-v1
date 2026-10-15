@@ -14,18 +14,22 @@ export type ReviewDocument = Schemas['ReviewDocumentOut'];
 export type ReviewPage = Schemas['ReviewPageOut'];
 export type ArchitectRegion = Schemas['ArchitectRegionOut'];
 
-/** The calls the viewer makes. The app uses `liveReviewPagesApi`; tests and screenshots pass their own. */
+/**
+ * The calls the viewer makes. The app uses `liveReviewPagesApi`; tests and screenshots pass their own.
+ * `signal` cancels a request the viewer no longer needs (#1362).
+ */
 export interface ReviewPagesApi {
-  loadPages: (projectId: string, packageId: string) => Promise<ReviewPagesOut>;
-  loadPicture: (projectId: string, packageId: string, pageNumber: number, documentVersionId: string) => Promise<Blob>;
+  loadPages: (projectId: string, packageId: string, signal?: AbortSignal) => Promise<ReviewPagesOut>;
+  loadPicture: (projectId: string, packageId: string, pageNumber: number, documentVersionId: string, signal?: AbortSignal) => Promise<Blob>;
 }
 
 const BASE = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '');
 
 export const liveReviewPagesApi: ReviewPagesApi = {
-  async loadPages(projectId, packageId) {
+  async loadPages(projectId, packageId, signal) {
     const response = await fetch(`${BASE}/projects/${encodeURIComponent(projectId)}/packages/${encodeURIComponent(packageId)}/pages`, {
       headers: { Accept: 'application/json' },
+      signal,
     });
     if (!response.ok) {
       let envelope: ErrorEnvelope;
@@ -42,19 +46,22 @@ export const liveReviewPagesApi: ReviewPagesApi = {
     }
     return (await response.json()) as ReviewPagesOut;
   },
-  loadPicture: (projectId, packageId, pageNumber, documentVersionId) => downloadPagePicture(projectId, packageId, pageNumber, documentVersionId),
+  loadPicture: (projectId, packageId, pageNumber, documentVersionId, signal) => downloadPagePicture(projectId, packageId, pageNumber, documentVersionId, signal),
 };
+
+type FetchPicture = (pageNumber: number, documentVersionId: string, signal: AbortSignal) => Promise<Blob>;
 
 /**
  * Page pictures shared by both panes (a combined sheet shows the same page on both sides), fetched
- * once and dropped as soon as no pane shows that page: a page that leaves the screen is released.
+ * once and dropped as soon as no pane shows that page: a page that leaves the screen is released, and
+ * its download is cancelled if it is still running (#1362), so paging fast does not queue up pages.
  */
 export class PictureStore {
-  private entries = new Map<string, { blob: Promise<Blob>; users: number }>();
+  private entries = new Map<string, { blob: Promise<Blob>; users: number; cancel: AbortController }>();
 
-  private fetchPicture: (pageNumber: number, documentVersionId: string) => Promise<Blob>;
+  private fetchPicture: FetchPicture;
 
-  constructor(fetchPicture: (pageNumber: number, documentVersionId: string) => Promise<Blob>) {
+  constructor(fetchPicture: FetchPicture) {
     this.fetchPicture = fetchPicture;
   }
 
@@ -66,8 +73,9 @@ export class PictureStore {
     const key = PictureStore.key(documentVersionId, pageNumber);
     let entry = this.entries.get(key);
     if (!entry) {
-      const blob = this.fetchPicture(pageNumber, documentVersionId);
-      const made = { blob, users: 0 };
+      const cancel = new AbortController();
+      const blob = this.fetchPicture(pageNumber, documentVersionId, cancel.signal);
+      const made = { blob, users: 0, cancel };
       // A failure is not remembered: Retry fetches afresh.
       blob.catch(() => {
         if (this.entries.get(key) === made) this.entries.delete(key);
@@ -84,7 +92,10 @@ export class PictureStore {
     const entry = this.entries.get(key);
     if (!entry) return;
     entry.users -= 1;
-    if (entry.users <= 0) this.entries.delete(key);
+    if (entry.users > 0) return;
+    this.entries.delete(key);
+    // No pane shows it now: stop the download (a finished one is not affected).
+    entry.cancel.abort();
   }
 
   /** How many pictures are held now (for tests). */
