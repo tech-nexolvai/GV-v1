@@ -103,7 +103,7 @@ describe('Company settings', () => {
     await screen.findByRole('table');
     await user.type(screen.getByRole('textbox', { name: 'Filler min' }), '1"');
     await user.click(screen.getByRole('button', { name: 'Save 1 change' }));
-    expect((await screen.findByRole('alert')).textContent).toBe('Only an admin can change company settings.');
+    expect((await screen.findByText('Only an admin can change company settings.')).getAttribute('role')).toBe('status');
   });
 });
 

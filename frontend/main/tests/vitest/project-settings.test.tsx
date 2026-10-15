@@ -120,7 +120,8 @@ describe('Company settings → Projects', () => {
     routes['POST /company-settings/projects/p-1'] = () => json({ error: 'http_error', message: 'Not found', request_id: 'r' }, 404);
     await user.type(within(project).getByRole('textbox', { name: 'New value for Countertop overhang' }), '1"');
     await user.click(within(project).getByRole('button', { name: 'Save 1 change' }));
-    expect((await within(project).findByRole('alert')).textContent).toBe('Only a reviewer or an admin in this project can change its values.');
+    // Said as a status (#1369), so a screen reader hears it without it shouting over the page.
+    expect((await within(project).findByText('Only a reviewer or an admin in this project can change its values.')).getAttribute('role')).toBe('status');
   });
 
   it('enters the sink for the project shown, not the configured one', async () => {

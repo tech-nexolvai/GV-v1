@@ -7,6 +7,7 @@ import {
   settingCounts,
   settingDate,
   settingLabel,
+  unitHint,
   type CompanySetting,
 } from './companySettings.js';
 
@@ -90,7 +91,7 @@ export function CompanySettingsList({
 }) {
   const counts = settingCounts(settings);
   return (
-    <section data-tw className="flex flex-col gap-3 font-sans" aria-labelledby="company-settings-title">
+    <section data-tw data-part="company-standards" className="flex flex-col gap-3 font-sans" aria-labelledby="company-settings-title">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h2 id="company-settings-title" className="text-base font-semibold">GV&apos;s standard numbers</h2>
         {/* The bar counts what GV has set: the rulebook gives most of these a default, so "has a
@@ -119,8 +120,14 @@ export function CompanySettingsList({
             </tr>
           </thead>
           <tbody>
-            {settings.map((setting) => (
-              <tr key={setting.name} className="border-b align-middle last:border-b-0" data-source={setting.in_use_from ?? 'none'}>
+            {settings.map((setting) => {
+              const hint = unitHint(drafts[setting.name] ?? '');
+              return (
+              <tr
+                key={setting.name}
+                className="border-b align-middle transition-colors duration-500 last:border-b-0 data-[highlight=true]:bg-accent"
+                data-source={setting.in_use_from ?? 'none'}
+              >
                 <th scope="row" className="min-w-40 px-3 py-2 text-left font-normal">
                   <label className="font-medium" htmlFor={`company-${setting.name}`}>
                     {settingLabel(setting.name)}
@@ -152,12 +159,15 @@ export function CompanySettingsList({
                       type="text"
                       className="num h-8 w-32"
                       placeholder={'e.g. 2 1/2"'}
-                      aria-describedby={`company-${setting.name}-now`}
+                      aria-describedby={hint ? `company-${setting.name}-now company-${setting.name}-hint` : `company-${setting.name}-now`}
+                      aria-invalid={hint ? true : undefined}
+                      data-setting-field={setting.name}
                       value={drafts[setting.name] ?? ''}
                       disabled={saving}
                       onChange={(event) => onDraft(setting.name, event.target.value)}
                     />
                   </div>
+                  {hint && <p id={`company-${setting.name}-hint`} className="mt-1 text-xs text-destructive">{hint}</p>}
                 </td>
                 <td className="hidden px-3 py-2 lg:table-cell" data-part="used-by">
                   <span className="sr-only">Used by </span>
@@ -168,7 +178,8 @@ export function CompanySettingsList({
                   </span>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

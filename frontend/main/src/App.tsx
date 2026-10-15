@@ -160,7 +160,7 @@ export default function App() {
 
       {route.page === 'rulebook' && <RulebookPage />}
 
-      {route.page === 'settings' && <CompanySettingsPage />}
+      {route.page === 'settings' && <CompanySettingsPage focus={route.focus} project={route.project} />}
 
       {route.page === 'usage' && <UsagePage />}
     </AppShell>
