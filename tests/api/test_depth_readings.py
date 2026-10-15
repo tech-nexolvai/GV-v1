@@ -756,15 +756,33 @@ def test_confirming_from_the_measurements_list_never_passes_the_whole_package(
 
 
 def test_the_whole_package_card_never_offers_confirm(session: Session, store: LocalStore) -> None:
-    sheet, client, _rows = _two_countertops(session, store)
+    """Since #1201 each countertop has its own held depth result, which lists its own reading
+    only. Once a person confirms one, the whole-package result shows again (held), and it never
+    offers to confirm anything."""
+    sheet, client, (first, _second) = _two_countertops(session, store)
+    _whole_package_run(sheet, store)
+
+    found = _findings(client, sheet)
+    assert ("CT-DEPTH-001", None) not in found, "nothing was given for the whole package"
+    own = sorted(
+        [(line["countertop"], line["value"], line["state"]) for line in item["depth_readings"]]
+        for (rule_id, scope), item in found.items()
+        if rule_id == "CT-DEPTH-001" and scope is not None
+    )
+    assert own == [
+        [("Countertop 1 on page 1", '25"', "to_confirm")],
+        [("Countertop 1 on page 2", '30"', "to_confirm")],
+    ]
+
+    confirmed = client.post(
+        f"{_base(sheet)}/candidates/{first.id}/confirm", json={"semantic_type": CT010}
+    )
+    assert confirmed.status_code == 201, confirmed.text
     _whole_package_run(sheet, store)
 
     whole = _findings(client, sheet)[("CT-DEPTH-001", None)]
-
-    assert [(line["value"], line["state"]) for line in whole["depth_readings"]] == [
-        ('25"', "to_confirm"),
-        ('30"', "to_confirm"),
-    ]
+    assert whole["outcome"] == Outcome.REVIEW_REQUIRED.value
+    assert whole["depth_readings"]
     assert all(line["can_confirm"] is False for line in whole["depth_readings"])
 
 
@@ -858,3 +876,59 @@ def test_the_job_s_settings_are_asked_once_not_on_every_countertop_s_card(
         for item in (sheet.item, other)
     ]
     assert sorted(asked) == [[], ["cabinet_depth", "countertop_overhang"]]
+
+
+# -- a countertop row's own held result (#1201) ---------------------------------------------------
+
+
+def test_a_countertop_row_s_own_result_lists_what_was_read_for_that_row_only(
+    session: Session, store: LocalStore
+) -> None:
+    """Since #1201 a countertop row gets its own held depth result. It lists what the reader read
+    for the countertop suggested from that row, as the whole-package result did, and never offers
+    to confirm it there. Another row's result lists nothing of it."""
+    from app.models import PartProposalRow
+    from tests.workflow.test_several_countertops import _blank_page, _slot_rows
+
+    sheet = _Set(session, store)
+    other_page = _blank_page(sheet, 1)
+    _slot_rows(sheet, [sheet.page, other_page])
+    anchors = {
+        row.page_id: row
+        for row in session.scalars(
+            select(ObservationCandidate).where(
+                ObservationCandidate.ambiguity_flags.contains(["slot:0"])
+            )
+        )
+    }
+    mine, theirs = anchors[sheet.page.id], anchors[other_page.id]
+    session.add(
+        PartProposalRow(
+            part_proposal_id=sheet.proposal,
+            row_candidate_id=mine.id,
+            slot_index=None,
+            extraction_run_id=mine.extraction_run_id,
+            kind_named=True,
+        )
+    )
+    session.flush()
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    _publish_rulebook(session)
+    snapshots = _snapshots(session)
+    items = [
+        _Item(uuid4(), sheet.revision.id, rule_id, snapshots[rule_id], outcome, None, row.id)
+        for rule_id in ("CT-DEPTH-001", "CT-SINK-CUTOUT-WIDTH-001")
+        for row, outcome in ((mine, Outcome.REVIEW_REQUIRED), (theirs, Outcome.REVIEW_REQUIRED))
+    ]
+
+    answers = depth_readings_for(session, items)
+
+    depth_mine, depth_theirs, sink_mine, sink_theirs = items
+    lines = [line.model_dump() for line in answers[depth_mine.id]]
+    assert [(line["countertop"], line["state"], line["value"]) for line in lines] == [
+        ("Countertop 1 on page 1", "read", '24"')
+    ]
+    assert not any(line.get("can_confirm") for line in lines)
+    # Only what was read: nothing for the sink; and nothing of it on the other row's result.
+    assert depth_theirs.id not in answers and sink_mine.id not in answers
+    assert sink_theirs.id not in answers

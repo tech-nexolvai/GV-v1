@@ -53,6 +53,7 @@ from app.models import (
     PartConfirmation,
     PartDecision,
     PartProposal,
+    PartProposalRow,
     RuleSnapshot,
 )
 from app.models.document import Page
@@ -401,6 +402,22 @@ def _load(session: Session, run_ids: Sequence[UUID]) -> _Reading:
     return _Reading(rows, earlier, supports, links, people, any_evidence, crops)
 
 
+def _row_proposals(session: Session, row_ids: set[UUID]) -> dict[UUID, UUID]:
+    """Each countertop row's own countertop suggestion (the countertop's link, `slot_index` NULL),
+    only where the row has exactly one. One query, or none."""
+    if not row_ids:
+        return {}
+    found: dict[UUID, set[UUID]] = {}
+    for row_id, proposal_id in session.execute(
+        select(PartProposalRow.row_candidate_id, PartProposalRow.part_proposal_id).where(
+            PartProposalRow.row_candidate_id.in_(row_ids),
+            PartProposalRow.slot_index.is_(None),
+        )
+    ).all():
+        found.setdefault(row_id, set()).add(proposal_id)
+    return {row: next(iter(ids)) for row, ids in found.items() if len(ids) == 1}
+
+
 def _labels(
     session: Session, revision_id: UUID, proposals: set[UUID]
 ) -> tuple[dict[UUID, str], dict[UUID, int], dict[UUID, UUID], set[UUID]]:
@@ -602,18 +619,20 @@ def depth_readings_for(
     A countertop's own result (`scope_item_id`) gets a line for every value its check reads, read or
     not. A result for the whole package (the five checks run once per revision where no countertop
     is a check scope) gets a line for each value the reader did read, countertop by countertop. A
-    result that decided, or any other check, gets nothing; so does every result of a revision the
-    reader never read. A fixed number of queries per revision, whatever the number of countertops.
+    countertop row's own held result (#1201: one per countertop, scoped to the row) gets a line for
+    each value the reader read for the countertop suggested from that row, and none can be
+    confirmed there (only a confirmed countertop's reading is its own). A result that decided, or
+    any other check, gets nothing; so does every result of a revision the reader never read. A fixed
+    number of queries per revision, whatever the number of countertops.
     """
     waiting = [
-        item
-        for item in items
-        if item.rule_id in DEPTH_RULE_IDS
-        and item.outcome in _WAITING
-        and item.scope_row_candidate_id is None
+        item for item in items if item.rule_id in DEPTH_RULE_IDS and item.outcome in _WAITING
     ]
     if not waiting:
         return {}
+    row_proposal = _row_proposals(
+        session, {i.scope_row_candidate_id for i in waiting if i.scope_row_candidate_id is not None}
+    )
     answers: dict[UUID, list[DepthReadingOut]] = {}
     fields = _rule_fields(session, {item.rule_snapshot_id for item in waiting})
     for revision_id in sorted({item.package_revision_id for item in waiting}, key=str):
@@ -642,6 +661,18 @@ def depth_readings_for(
                         every_field=True,
                         # Re-checked here: the countertop's drawing must hold it alone.
                         may_confirm=item.scope_item_id in alone,
+                    )
+            elif item.scope_row_candidate_id is not None:
+                proposal = row_proposal.get(item.scope_row_candidate_id)
+                if proposal is not None:
+                    lines = _countertop_lines(
+                        reading,
+                        proposal,
+                        wanted,
+                        labels.get(proposal, "This countertop"),
+                        every_field=False,
+                        # Nobody confirmed this row's countertop yet: its reading is not its own.
+                        may_confirm=False,
                     )
             else:
                 for proposal in ordered:

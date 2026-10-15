@@ -44,6 +44,7 @@ from workflow.parts import (
     record_part_proposal,
     withdraw_part,
 )
+from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -167,10 +168,12 @@ def test_the_plan_lists_the_rules_its_row_s_results_and_what_they_wait_on(
     assert all(finding.scope == "row" for finding in entry.findings)
     assert countertops_by_row(session, built.revision.id) == {anchor: entry.countertop}
     assert other not in countertops_by_row(session, built.revision.id)
-    # The package has two countertop rows, so the whole-package depth result is held (#1297): no
-    # value can clear it, and it lists none (one countertop's: the next test).
+    # The package has two countertop rows, so each has its own held depth result (#1201), keyed
+    # by its row: this countertop lists its own, not the other row's. It lists no value to give:
+    # none can clear it (one countertop's whole-package result: the next test).
     depth = next(rule for rule in entry.rules if rule.rule_id == "CT-DEPTH-001")
-    assert depth.resolved and depth.findings == ()
+    assert depth.resolved
+    assert [(f.scope, f.outcome.value) for f in depth.findings] == [("row", "REVIEW_REQUIRED")]
     assert depth.missing == ()
     assert width.missing == ()
     # The width rule's variant is chosen per row from that row's walls: the plan takes the version
@@ -211,7 +214,10 @@ def test_a_countertop_with_no_row_says_so_and_lists_no_row_s_results(
     assert entry.countertop.item_id == item
     assert entry.countertop.row_candidate_id is None
     assert entry.note == NO_ROW_LINKED
-    assert entry.findings == ()
+    # No row's result; its own held depth and sink results (#1201: the package has two
+    # countertops, the row on page 1 and this one), keyed by the countertop itself.
+    assert sorted(f.rule_id for f in entry.findings) == sorted(WHOLE_PACKAGE_RULE_IDS)
+    assert {(f.scope, f.outcome.value) for f in entry.findings} == {("item", "REVIEW_REQUIRED")}
     assert {rule.rule_id for rule in entry.rules} == _countertop_rules(session)
 
 

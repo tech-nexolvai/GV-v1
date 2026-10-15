@@ -30,7 +30,12 @@ from app.review.approval import approval_readiness
 from app.review.session import open_session, record_action
 from app.schemas.visual_ui import CountertopResultsOut
 from storage.local import LocalStore
-from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
+from tests.api.test_slot_rows import (
+    _package_rows,
+    _row_holds,
+    _run_current_checks,
+    _save_all_row_widths,
+)
 from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_part_operands import Assembly, _slot_reader_extraction_run
 from workflow.slot_row_scope import latest_slot_reader_run
@@ -116,7 +121,7 @@ def _unchosen_record(
     return record.id
 
 
-def _live(session: Session, revision_id: UUID) -> list[Finding]:
+def _all_live(session: Session, revision_id: UUID) -> list[Finding]:
     return list(
         session.scalars(
             select(Finding)
@@ -127,11 +132,23 @@ def _live(session: Session, revision_id: UUID) -> list[Finding]:
     )
 
 
+def _live(session: Session, revision_id: UUID) -> list[Finding]:
+    """The live results, less each countertop row's own depth and sink holds (#1201)."""
+    holds = _row_holds(session, revision_id)
+    return [f for f in _all_live(session, revision_id) if f.id not in holds]
+
+
 def _decide(session: Session, revision_id: UUID, *, skip: UUID | None = None) -> None:
-    """Confirm every FAIL and dismiss every abstention except `skip`, each with a TEST ONLY note."""
+    """Confirm every FAIL and dismiss every abstention except `skip`'s own result (not its depth
+    and sink holds, #1201), each with a TEST ONLY note."""
     review = open_session(session, package_revision_id=revision_id, reviewer="anant")
-    for finding in _live(session, revision_id):
-        if finding.scope_row_candidate_id is not None and finding.scope_row_candidate_id == skip:
+    holds = _row_holds(session, revision_id)
+    for finding in _all_live(session, revision_id):
+        if (
+            finding.scope_row_candidate_id is not None
+            and finding.scope_row_candidate_id == skip
+            and finding.id not in holds
+        ):
             continue
         if finding.outcome == "FAIL":
             action = ReviewActionKind.CONFIRM

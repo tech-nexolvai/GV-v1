@@ -67,11 +67,12 @@ from app.review.signed_exports import frozen_countertop_results, load_snapshot
 from reports.findings_pdf import FindingsPdfInput, write_findings_pdf
 from reports.spreadsheet import StoredFinding, write_stored_workbook
 from storage.local import LocalStore
-from tests.api.test_slot_rows import _run_current_checks
+from tests.api.test_slot_rows import _row_holds, _run_current_checks
 from tests.api.test_unchosen_row_pages import (
     NO_COUNTERTOP_KINDS,
     NONE_PICKS,
     NONE_WHY,
+    _all_live,
     _decide,
     _decided_rows,
     _live,
@@ -238,17 +239,16 @@ def test_there_is_a_countertop_makes_the_page_a_blocking_split_item(
     assert finding.outcome == "REVIEW_REQUIRED"
     assert finding.reason == said
     readiness = approval_readiness(session, revision.id)
-    # The whole-package depth and sink results ask again as well (#1297): the package now has a
-    # third countertop, so a decision made when it had two no longer covers them.
-    held_again = {
+    # The new countertop gets its own six depth and sink holds (#1201), which ask; the first two
+    # countertops' own holds were decided and stay decided (they are about those two alone).
+    holds = _row_holds(session, revision.id)
+    its_own = {
         f.id
-        for f in _live(session, revision.id)
-        if f.scope_row_candidate_id is None
-        and f.scope_item_id is None
-        and (f.reason or "").startswith("This package has 3 countertops")
+        for f in _all_live(session, revision.id)
+        if f.id in holds and f.scope_row_candidate_id == record_id
     }
-    assert len(held_again) == 6
-    assert set(readiness.blocking_finding_ids) == {finding.id} | held_again
+    assert len(its_own) == 6 and len(holds) == 18
+    assert set(readiness.blocking_finding_ids) == {finding.id} | its_own
     assert readiness.unchecked_countertop_pages == ()
     _decide(session, revision.id)
     session.commit()

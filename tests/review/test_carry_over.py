@@ -66,7 +66,12 @@ from rules.parameters import ParameterValue as ParameterLayerValue
 from rules.schema import Quantity
 from rules.semantic_types import DocumentRole, SemanticType
 from storage.local import LocalStore
-from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
+from tests.api.test_slot_rows import (
+    _package_rows,
+    _row_holds,
+    _run_current_checks,
+    _save_all_row_widths,
+)
 from tests.app.postgres_fixture import alembic_config
 from tests.review.test_session import _revision
 from tests.workflow.test_part_operands import Assembly
@@ -356,11 +361,15 @@ def test_a_change_on_one_row_asks_only_that_row_again(
         if finding.id in readiness.blocking_finding_ids
     }
     assert blocked == {anchors[0]}
+    # The rows' width results; each row's own depth and sink holds (#1201) are about other values:
+    # a held depth stays decided when the row's widths change.
+    holds = _row_holds(session, revision.id)
     carried_rows = {
         finding.scope_row_candidate_id
         for finding in session.scalars(
             select(Finding).join(_links(), _links().new_finding_id == Finding.id)
         )
+        if finding.id not in holds
     }
     assert anchors[0] not in carried_rows
     assert anchors[1] in carried_rows
