@@ -260,3 +260,104 @@ def test_a_tick_elsewhere_on_the_page_changes_nothing_about_the_label() -> None:
     )
     ink = read_page_ink(_sheet(BLACK_36 + far), 0, dpi=DPI)
     assert ink.at(_crop(ink)) == InkAt(InkClass.VENDOR, "")
+
+
+# --- #1335: the two guards that keep other GV ink from being worded as a tick -----------------
+
+#: The vendor's black `88` to the right of the tick, under a small yellow fill that covers its
+#: middle only: a covered word whose fill lies outside the crop the test asks about.
+BLACK_88_UNDER_A_SMALL_FILL = b"1 1 0 rg 155 522 4 4 re f\n0 g BT /F1 12 Tf 150 520 Td (88) Tj ET\n"
+
+
+def test_a_tick_with_a_pasted_stamp_at_the_crop_keeps_the_general_words() -> None:
+    """A stamp pasted onto the label is GV's ink that is not a tick, even when it draws in black
+    and adds no coloured path: the tick must not speak for it."""
+    ink = read_page_ink(
+        _sheet(
+            BLACK_36 + GREEN_TICK_BESIDE_36,
+            pasted=STAMP_ON_THE_LABEL,
+            picture=BLACK_OUTLINE_STAMP,
+        ),
+        0,
+        dpi=DPI,
+    )
+    crop = _crop(ink)
+    # The tick is the only coloured path there; the stamp alone is what is not a tick.
+    assert [path.tick for path in ink.paths if path.meets(crop)] == [True]
+    assert any(path.tick for path in ink.paths)
+    assert [stamp for stamp in ink.stamps if _meets(stamp, crop)] == list(ink.stamps)
+    found = ink.at(crop, label=_label(ink, "36").box)
+    assert found.ink is InkClass.GV
+    assert found.tick_only is False and found.tick_beside is False
+
+
+def test_a_tick_with_a_word_under_a_coloured_fill_keeps_the_general_words() -> None:
+    """The crop reaches a vendor word GV covered with a fill, though the fill itself lies outside
+    the crop: the covered word is GV's ink that is not a tick."""
+    ink = read_page_ink(
+        _sheet(BLACK_36 + GREEN_TICK_BESIDE_36 + BLACK_88_UNDER_A_SMALL_FILL), 0, dpi=DPI
+    )
+    covered = _label(ink, "88")
+    assert covered.ink is InkClass.COVERED
+    left, top, _, bottom = _crop(ink)
+    crop = (left, top, covered.box[0], bottom)  # reaches the covered word's left edge only
+    assert [path.tick for path in ink.paths if path.meets(crop)] == [True]
+    assert ink.stamps == ()
+    found = ink.at(crop, label=_label(ink, "36").box)
+    assert found.ink is InkClass.COVERED
+    assert found.tick_only is False and found.tick_beside is False
+
+
+def _meets(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> bool:
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )
+
+
+# --- #1335: a tick in the crop's margin only is "beside" the number --------------------------
+
+#: The same tick, moved left until it overlaps the right of the `6`: on the number's own box.
+GREEN_TICK_ON_36 = (
+    b"0 0.5 0.25 rg 121 524 m 122.2 525.3 l 124.9 522.5 l 130.6 528.2 l 131.8 527 l"
+    b" 124.9 520.1 l h f\n"
+)
+
+
+def test_a_tick_that_touches_only_the_crops_margin_is_beside_the_number() -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    label = _label(ink, "36").box
+    assert not any(path.meets(label) for path in ink.paths)
+    assert ink.at(_crop(ink), label=label) == InkAt(
+        InkClass.GV, "", tick_only=True, tick_beside=True
+    )
+
+
+def test_a_tick_on_the_numbers_own_box_is_not_beside_it() -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + GREEN_TICK_ON_36), 0, dpi=DPI)
+    label = _label(ink, "36").box
+    assert [path.tick for path in ink.paths if path.meets(label)] == [True]
+    found = ink.at(_crop(ink), label=label)
+    assert found.tick_only is True and found.tick_beside is False
+
+
+def test_without_the_labels_own_box_the_place_asked_is_the_label() -> None:
+    """A caller that asks about the label's own place (the depth reader) passes no label box: a
+    tick there touches it, so it is never called beside."""
+    ink = read_page_ink(_sheet(BLACK_36 + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    assert ink.at(_crop(ink)) == InkAt(InkClass.GV, "", tick_only=True, tick_beside=False)
+
+
+def test_beside_is_only_ever_said_of_a_tick_and_nothing_else() -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + RED_LINE_THROUGH_36 + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    found = ink.at(_crop(ink), label=(0, 0, 1, 1))
+    assert found.ink is InkClass.GV
+    assert found.tick_only is False and found.tick_beside is False
+
+
+def test_a_label_box_turned_inside_out_is_refused() -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    with pytest.raises(ValueError):
+        ink.at(_crop(ink), label=(10, 10, 5, 20))

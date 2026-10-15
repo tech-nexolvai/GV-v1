@@ -807,3 +807,55 @@ def test_a_curved_tick_is_not_named() -> None:
     commands = list(path["path"])  # type: ignore[call-overload]
     commands[2] = ("c", (101, 203), (102, 204), (103.9, 205.7))
     assert not gv_tick({**path, "path": commands})
+
+
+# --- #1335: each of the check-mark shape tests, on its own ----------------------------------
+#
+# Real drawings never reach these three tests: every green six-corner fill on the client's sets is
+# either a tick or fails earlier. Each shape below is green, filled, six straight corners and tick
+# sized, and fails exactly one shape test; removing that one test makes `gv_tick` call it a tick
+# (checked 2026-10-15), so each pins its own test. Made up; drawn from scratch.
+
+#: A narrow "V", about 40 degrees between its strokes (right stroke longer, sides parallel).
+_NARROW_V = ((2, 4), (2.5, 3), (4, 9), (7.5, 2), (9, 2), (4, 12))
+#: A flat "V", about 150 degrees between its strokes.
+_FLAT_V = ((1.2, 4.8), (2.4, 4.2), (6, 5.1), (13.2, 1.5), (14.8, 1.6), (6, 6))
+#: The tick with its left stroke widening towards its end, like a wedge: its sides not parallel.
+_WEDGE_LEFT = ((-1.5, 4.8), (1.2, 3.6), (3.9, 6.3), (9.6, 0.6), (10.8, 1.2), (3.9, 8.1))
+#: The same with the right stroke widening instead.
+_WEDGE_RIGHT = ((0, 4.2), (1.2, 3.6), (3.9, 6.3), (9.6, 0.6), (11.8, 2.7), (3.9, 8.1))
+#: A zigzag of six corners with two inward corners, the first of which looks like a tick's crotch.
+_ZIGZAG = ((4, 12), (4, 10), (10, 16), (18, 8), (9, 15), (8, 16))
+
+
+@pytest.mark.parametrize(
+    "corners",
+    [_NARROW_V, _FLAT_V],
+    ids=["narrow V (40 degrees)", "flat V (150 degrees)"],
+)
+def test_a_green_v_whose_strokes_are_not_near_a_right_angle_is_not_a_tick(
+    corners: tuple[tuple[float, float], ...],
+) -> None:
+    """The angle test: GV's tick meets at about a right angle; 60 to 120 degrees is accepted."""
+    from extraction.stamp_text import gv_tick
+
+    assert not gv_tick(_tick_path(corners))
+
+
+@pytest.mark.parametrize(
+    "corners", [_WEDGE_LEFT, _WEDGE_RIGHT], ids=["left stroke a wedge", "right stroke a wedge"]
+)
+def test_a_green_check_whose_strokes_widen_like_wedges_is_not_a_tick(
+    corners: tuple[tuple[float, float], ...],
+) -> None:
+    """The parallel-sides test: each of a tick's strokes is a band of even width."""
+    from extraction.stamp_text import gv_tick
+
+    assert not gv_tick(_tick_path(corners))
+
+
+def test_a_green_six_corner_zigzag_is_not_a_tick() -> None:
+    """The one-inward-corner test: a tick has exactly one, the crotch between its strokes."""
+    from extraction.stamp_text import gv_tick
+
+    assert not gv_tick(_tick_path(_ZIGZAG))

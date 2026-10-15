@@ -93,6 +93,12 @@ class InkAt:
     """GV's ink here is GV's green tick and nothing else (#1198): no coloured word, no pasted
     stamp, no covered word and no other coloured path. It changes only the words of the hold; the
     place is still `GV` or `COVERED` and a reading there is still held. Always `False` on `VENDOR`."""
+    tick_beside: bool = False
+    """`tick_only`, and no tick there touches the label's own box (#1335): the tick lies only in the
+    crop's margin, beside the number, and may be GV's tick for something else. The words then say
+    the tick is beside the number, never that GV ticked it. The label's box holds all its digits,
+    so a tick that touches none of them and not the box is beside it. Always `False` where
+    `tick_only` is."""
 
 
 def _meet(first: PixelBox, second: PixelBox) -> bool:
@@ -121,7 +127,7 @@ class PageInk:
     stamps: tuple[PixelBox, ...]
     """Every stamp pasted onto one of the drawings, whatever its colour (`pasted_stamps`)."""
 
-    def at(self, box: PixelBox) -> InkAt:
+    def at(self, box: PixelBox, *, label: PixelBox | None = None) -> InkAt:
         """Whose ink a located box holds, edges included.
 
         `COVERED` where a coloured fill covers the box's centre, or the box touches a word already
@@ -130,20 +136,23 @@ class PageInk:
         with a red number over it is "covered", and the red number is the reviewer's text. Where
         every coloured thing at the box is GV's green tick, `tick_only` says so (#1198); the class
         is the same either way.
+
+        `label` is the number's own box inside `box` (the crop a reader is shown): where no tick
+        touches it, `tick_beside` says the tick is only beside the number (#1335). Without it the
+        box asked about is taken as the label's own place, so a tick there is never beside it.
         """
-        if box[0] > box[2] or box[1] > box[3]:
-            raise ValueError(
-                f"box {box!r} has its right before its left or its bottom above its top"
-            )
+        for place in (box,) if label is None else (box, label):
+            if place[0] > place[2] or place[1] > place[3]:
+                raise ValueError(
+                    f"box {place!r} has its right before its left or its bottom above its top"
+                )
         reviewer = " ".join(
-            label.text
-            for label in self.labels
-            if label.ink is InkClass.GV and _meet(label.box, box)
+            word.text for word in self.labels if word.ink is InkClass.GV and _meet(word.box, box)
         )
         centre = _centre(box)
         touching = [path for path in self.paths if path.meets(box) or path.covers(centre)]
         covered_word = any(
-            label.ink is InkClass.COVERED and _meet(label.box, box) for label in self.labels
+            word.ink is InkClass.COVERED and _meet(word.box, box) for word in self.labels
         )
         stamped = any(_meet(stamp, box) for stamp in self.stamps)
         # GV's tick and nothing else (#1198): only the words of the hold change.
@@ -154,10 +163,13 @@ class PageInk:
             and not covered_word
             and not stamped
         )
+        # Only beside the number (#1335): no tick touches the label's own box, so none touches a
+        # digit either. Only the words change; the class below is the same.
+        beside = tick_only and label is not None and not any(path.meets(label) for path in touching)
         if any(path.covers(centre) for path in self.paths) or covered_word:
-            return InkAt(InkClass.COVERED, reviewer, tick_only)
+            return InkAt(InkClass.COVERED, reviewer, tick_only, beside)
         if reviewer or stamped or touching:
-            return InkAt(InkClass.GV, reviewer, tick_only)
+            return InkAt(InkClass.GV, reviewer, tick_only, beside)
         return InkAt(InkClass.VENDOR, "")
 
 
