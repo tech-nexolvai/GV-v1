@@ -98,9 +98,7 @@ def _client(session: Session, store: LocalStore, sheet: _Set) -> Any:
 
     project = session.get_one(Package, sheet.revision.package_id).project_id
     app = create_app(
-        Settings(
-            database_url="postgresql+psycopg://unused@localhost/unused", environment="test"
-        )
+        Settings(database_url="postgresql+psycopg://unused@localhost/unused", environment="test")
     )
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_artifact_store] = lambda: store
