@@ -23,7 +23,7 @@ beforeEach(() => {
   }));
 });
 
-const COMPANY = { version: 1, settings: [] };
+const COMPANY = { version: 1, settings: [], can_save: true };
 const CHECK = (id: string) => ({ id, name: `Synthetic check ${id}` });
 const COMPANY_SOURCE = { value: 'Company standard', guidance: "GV's own standard for this job." };
 const CLIENT_SOURCE = { value: 'G.C / Client', guidance: 'From the architect.' };
@@ -42,6 +42,7 @@ const PROJECT = {
   product_types: ['countertop'],
   version: 2,
   sink: null,
+  can_save: true,
   settings: [
     setting('countertop_overhang', 'Countertop overhang', {
       in_use: '1 in', in_use_from: 'project',

@@ -3598,6 +3598,11 @@ export interface components {
         };
         /** CompanySettingsOut */
         CompanySettingsOut: {
+            /**
+             * Can Save
+             * @description True when the caller may save GV's standards (admins only). Read-only: the save route still checks it.
+             */
+            can_save: boolean;
             /** Settings */
             settings: components["schemas"]["CompanySettingOut"][];
             /**
@@ -6204,6 +6209,11 @@ export interface components {
         };
         /** ProjectSettingsOut */
         ProjectSettingsOut: {
+            /**
+             * Can Save
+             * @description True when the caller may save this project's values (its reviewers and admins). Read-only: the save route still checks it.
+             */
+            can_save: boolean;
             /**
              * Id
              * Format: uuid

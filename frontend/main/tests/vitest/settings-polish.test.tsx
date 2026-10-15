@@ -26,6 +26,7 @@ beforeEach(() => {
 
 const COMPANY = {
   version: 1,
+  can_save: true,
   settings: [
     { name: 'filler_min', scope: 'global', rule_ids: ['CHECK-FILLER'], rulebook_default: '1 in', rulebook_note: null, company_value: null, company_set_by: null, company_set_at: null, in_use: '1 in', in_use_from: 'rulebook', kind: 'standard' },
   ],
@@ -46,6 +47,7 @@ const PROJECT = {
   product_types: ['countertop'],
   version: 2,
   sink: null,
+  can_save: true,
   settings: [
     setting('countertop_overhang', 'Countertop overhang', {
       in_use: '1 1/2 in', in_use_from: 'project', company_value: '1 in', rulebook_default: '3/4 in',
