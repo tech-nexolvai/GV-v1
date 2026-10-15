@@ -12,12 +12,16 @@ import math
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
+
 from evidence.crop import RenderedPage, decode_rgb_png
 from extraction.architect.text import Orientation, TextChar
 from extraction.depth.pictures import view_picture
 from extraction.depth.read import (
     MEASURED_DEPTH_READER_SETTINGS,
     PreparedView,
+    _touch,
+    paint_panel_headings,
     prepare_panel,
 )
 from extraction.depth.view_kind import MEASURED_VIEW_SETTINGS, VendorView, find_vendor_views
@@ -246,3 +250,85 @@ def test_a_label_box_over_only_a_dimensions_end_paints_only_its_lettering() -> N
     assert prepared.view.cut_apart
     (note,) = [note for note in notes if "lettering" in note]
     assert "an end of dimension 1 of view 1" in note
+
+
+# --- #1349: the edges pinned, and ink inside a view's picture but outside its extent ---------
+
+
+@pytest.mark.parametrize(
+    ("other", "touches"),
+    [
+        ((20, 12, 30, 18), True),  # right: edge to edge, 0 px apart
+        ((21, 12, 31, 18), False),  # right: 1 px beyond
+        ((0, 12, 10, 18), True),  # left
+        ((0, 12, 9, 18), False),
+        ((12, 20, 18, 30), True),  # below
+        ((12, 21, 18, 31), False),
+        ((12, 0, 18, 10), True),  # above
+        ((12, 0, 18, 9), False),
+    ],
+)
+def test_boxes_meeting_edge_to_edge_touch_and_one_pixel_apart_do_not(
+    other: tuple[int, int, int, int], touches: bool
+) -> None:
+    assert _touch((10, 10, 20, 20), other) is touches
+    assert _touch(other, (10, 10, 20, 20)) is touches
+
+
+def _paint(
+    views: tuple[PreparedView, ...], chars: list[TextChar], pad: int
+) -> tuple[tuple[Box, ...], dict[int, str], tuple[str, ...]]:
+    paint = paint_panel_headings(
+        views, chars, pixels, pad, S.spans.witness_tolerance_pt, view_pad=S.view_pad_pt
+    )
+    return paint.boxes, dict(paint.held), paint.notes
+
+
+@pytest.mark.parametrize(("left", "covered"), [(271.4, True), (270.4, False)])
+def test_a_character_one_pixel_from_a_label_box_counts_as_under_it(
+    left: float, covered: bool
+) -> None:
+    # A character is grown by a pixel (its ink runs into the next one). Its right edge 1 px short of
+    # the label box's left edge (276) touches it; 2 px short does not. No picture pad here.
+    chars, ink = section(dimension_at=330, number_top=322)
+    views, _notes = prepare(chars, ink)
+    (view,) = views
+    near = word("7", left, 390, 6)
+
+    boxes, held, _ = _paint(views, [*chars, *near], 0)
+
+    assert boxes == (view.view.lettering if covered else (view.view.heading_box,))
+    assert held == {}
+
+
+def test_a_number_outside_the_views_extent_but_inside_its_picture_holds_the_view() -> None:
+    # A digit just under the scale note: its middle lies below the view's extent (412) but inside
+    # the picture cut round it (6 pt more). Painting the label (even its lettering) hides it, so
+    # the view whose picture shows it is held, never read with a half-hidden number.
+    chars, ink = section(dimension_at=330, number_top=322)
+    views, _notes = prepare(chars, ink)
+    (view,) = views
+    digit = word("5", 320, 414.5, 6)
+    assert digit[0].box.top > view.view.extent.bottom + 2  # clear of the extent itself
+    assert digit[0].box.centre_y > view.view.extent.bottom
+    assert digit[0].box.centre_y < view.view.extent.bottom + S.view_pad_pt
+
+    boxes, held, notes = _paint(views, [*chars, *digit], 3)
+
+    assert boxes == (view.view.heading_box,)
+    assert held == {1: held[1]} and "without hiding the printed characters '5'" in held[1]
+    assert any("view(s) 1 held, nothing on them is read" in note for note in notes)
+
+
+def test_a_number_outside_every_views_picture_holds_none_and_says_so() -> None:
+    # The digit moved down past the picture's edge (412 + 6 pt), and a paint pad made wide enough
+    # to reach it: it is in no view's picture, so painting hides it from none. Nothing is held,
+    # and a note says so. (A digit touching the picture's edge counts as in it.)
+    chars, ink = section(dimension_at=330, number_top=322)
+    views, _notes = prepare(chars, ink)
+    digit = word("5", 320, 420, 6)
+
+    _boxes, held, notes = _paint(views, [*chars, *digit], 7)
+
+    assert held == {}
+    assert any("that ink lies in no view, so no view is held" in note for note in notes)

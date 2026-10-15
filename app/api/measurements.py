@@ -1589,10 +1589,13 @@ def queue_recheck(session: Session, revision: PackageRevision) -> bool:
     Two answers at once are serialised by a per-revision advisory lock, so they cannot both add one.
     A revision still being read is left alone: its reading queues its own check run when it ends.
     Unlike `POST .../checks`, which refuses a second run for the same values (#1179), this never
-    refuses: the person's answer is saved whatever the worker is doing.
+    refuses: the person's answer is saved whatever the worker is doing. It does run the same
+    settings check (#1358): a confirmed discriminator the rulebook does not offer is refused with
+    422, as `POST .../checks` refuses it, rather than queued to abstain.
     """
     if PackageState(revision.state) in READING_STATES:
         return False
+    _check_discriminators(session, confirmed_discriminators(session, revision.id))
     session.execute(select(func.pg_advisory_xact_lock(_recheck_lock_key(revision.id))))
     waiting = session.execute(
         select(OutboxEntry.id)

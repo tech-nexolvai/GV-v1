@@ -132,24 +132,37 @@ def answer_review_item(
     action: str,
     body: actions.ReviewItemActionIn,
     request: Request,
+    response: Response,
 ) -> actions.ReviewItemActionOut | JSONResponse:
     """One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.
 
     `answer` carries the answer's own name in the body: `{"answer": "checked_right"}`,
     `{"answer": "checked_wrong"}`, `{"answer": "choose_wall", "wall_config": "..."}`,
     `{"answer": "confirm_no_countertop"}`, `{"answer": "there_is_a_countertop"}`, or for an
-    architect item `{"architect_view": {...}}` / `{"architect_pairing": {...}}`.
+    architect item `{"architect_view": {...}}` / `{"architect_pairing": {...}}`. `confirm` on a
+    number names the value shown (`shown_value`).
 
     Group keys: `not-checked` with `clear-not-checked` dismisses every open "Not checked" result in
     one transaction; `no-countertop-pages` with `answer` `confirm_no_countertop` confirms every
-    listed page at once. Both take `expected_keys` (409 when the group changed).
+    listed page at once. Both require `expected_keys` (409 when the group changed).
+
+    201 when something was recorded; 200 when the answer was already recorded (nothing new).
     """
     try:
         revision, listed = actions.current_items(session, project_id, package_id)
         if key in (actions.NOT_CHECKED_GROUP, actions.PAGES_GROUP):
             name = actions.answer_name(action, body, "group")
             return _answer_group(
-                session, principal, project_id, package_id, revision, listed, key, name, body
+                session,
+                principal,
+                project_id,
+                package_id,
+                revision,
+                listed,
+                key,
+                name,
+                body,
+                response,
             )
         kind = (
             "architect"
@@ -169,6 +182,13 @@ def answer_review_item(
         raise _http(refused) from refused
 
     if kind in ("number", "depth_reading"):
+        if kind == "number" and name == "confirm" and isinstance(entry, ReviewItemOut):
+            # The value the person saw, carried for W2's Confirm, which records the stored value.
+            try:
+                actions.check_shown_value(entry, body.shown_value)
+            except actions.ItemRefused as refused:
+                session.rollback()
+                raise _http(refused) from refused
         # Not yet, said plainly: a raised 5xx would hide the reason behind the generic sentence.
         session.rollback()
         return _envelope(
@@ -180,7 +200,8 @@ def answer_review_item(
 
     sitting_id: UUID | None = None
     if name in actions.FINDING_ANSWERS:
-        assert entry.finding_id is not None
+        if entry.finding_id is None:
+            raise _unprocessable("This item has no result to record the answer on.")
         if isinstance(entry, ReviewItemOut):
             try:
                 actions.refuse_until_numbers_answered(session, listed, entry)
@@ -201,14 +222,23 @@ def answer_review_item(
             raise _refuse(error) from error
         recorded = f"Recorded on the result: {note}"
     else:
-        assert isinstance(entry, ReviewItemOut) and entry.row_id is not None
+        if not isinstance(entry, ReviewItemOut) or entry.row_id is None:
+            raise _unprocessable("This item has no countertop row or page to answer on.")
+        if name == "choose_wall":
+            _check_wall_choice(session, entry, body)
         # Queued first, in the same transaction: the existing route's commit lands both, and its
         # rollback (refused, or nothing new to record) drops both.
         if name in _RECHECKS:
-            queue_recheck(session, revision)
-        recorded = _answer_through_existing_post(
-            session, principal, project_id, package_id, entry, name, body
+            try:
+                queue_recheck(session, revision)
+            except HTTPException:
+                session.rollback()
+                raise
+        recorded, nothing_new = _answer_through_existing_post(
+            session, principal, project_id, package_id, entry, entry.row_id, name, body
         )
+        if nothing_new:
+            response.status_code = status.HTTP_200_OK
 
     session.refresh(revision)
     return actions.ReviewItemActionOut(
@@ -223,25 +253,36 @@ def answer_review_item(
     )
 
 
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def _check_wall_choice(
+    session: Session, entry: ReviewItemOut, body: actions.ReviewItemActionIn
+) -> None:
+    """A wall choice names one of the layouts the item offered (422 otherwise; nothing saved)."""
+    offered = [choice.layout for choice in entry.wall_choices]
+    if not body.wall_config or (offered and body.wall_config not in offered):
+        session.rollback()
+        raise _unprocessable(
+            "Choose one of the published wall layouts (`wall_config`)"
+            + (f": {', '.join(offered)}." if offered else ".")
+        )
+
+
 def _answer_through_existing_post(
     session: Session,
     principal: Principal,
     project_id: UUID,
     package_id: UUID,
     entry: ReviewItemOut,
+    row_id: UUID,
     name: str,
     body: actions.ReviewItemActionIn,
-) -> str:
-    """Call the existing POST for this answer, exactly as its own route would be called."""
-    row_id = entry.row_id
-    assert row_id is not None
+) -> tuple[str, bool]:
+    """Call the existing POST for this answer, exactly as its own route would be called. Returns
+    what was recorded, in words, and whether it was nothing new (the answer already stood)."""
     if name == "choose_wall":
-        if not body.wall_config:
-            session.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Choose one of the published wall layouts (`wall_config`).",
-            )
         review_slot_row(
             principal,
             principal,
@@ -251,11 +292,12 @@ def _answer_through_existing_post(
             row_id,
             SlotRowReviewIn(wall_config=body.wall_config),
         )
-        return f"Wall layout chosen for this countertop: {body.wall_config}."
+        return f"Wall layout chosen for this countertop: {body.wall_config}.", False
     if name in ("confirm_no_countertop", "there_is_a_countertop"):
         answer: Literal["no_countertop", "countertop"] = (
             "no_countertop" if name == "confirm_no_countertop" else "countertop"
         )
+        answered = Response(status_code=status.HTTP_201_CREATED)
         answer_no_countertop_page(
             principal,
             principal,
@@ -264,12 +306,19 @@ def _answer_through_existing_post(
             package_id,
             row_id,
             NoCountertopAnswerIn(answer=answer),
-            Response(),
+            answered,
         )
+        if answered.status_code == status.HTTP_200_OK:
+            # The existing route's "nothing new": the first person and time stand.
+            return "Nothing new: this page's answer was already recorded.", True
         return (
-            "Confirmed: no countertop on this page."
-            if answer == "no_countertop"
-            else "Recorded: there is a countertop on this page. Its result comes with the re-check."
+            (
+                "Confirmed: no countertop on this page."
+                if answer == "no_countertop"
+                else "Recorded: there is a countertop on this page. Its result comes with the "
+                "re-check."
+            ),
+            False,
         )
     # The architect question: exactly one of a view pick and a pairing.
     if (body.architect_view is None) == (body.architect_pairing is None):
@@ -282,7 +331,7 @@ def _answer_through_existing_post(
         if body.architect_view is not None:
             pick = ArchitectViewPickIn.model_validate(body.architect_view)
             pick_architect_view(principal, principal, session, project_id, package_id, row_id, pick)
-            return "Architect's view chosen for this countertop."
+            return "Architect's view chosen for this countertop.", False
         pairing = ArchitectPairingIn.model_validate(body.architect_pairing)
     except ValidationError as error:
         session.rollback()
@@ -290,7 +339,7 @@ def _answer_through_existing_post(
     pair_architect_dimensions(
         principal, principal, session, project_id, package_id, row_id, pairing
     )
-    return "Architect's dimensions paired with this countertop."
+    return "Architect's dimensions paired with this countertop.", False
 
 
 def _answer_group(
@@ -303,8 +352,10 @@ def _answer_group(
     key: str,
     name: str,
     body: actions.ReviewItemActionIn,
+    response: Response,
 ) -> actions.ReviewItemActionOut:
-    """A whole group in one action and one transaction."""
+    """A whole group in one action and one transaction, only for exactly the keys the person saw
+    (`expected_keys`, required)."""
     sitting_id: UUID | None = None
     if key == actions.NOT_CHECKED_GROUP:
         if name not in ("clear_not_checked", "settle_group"):
@@ -341,6 +392,7 @@ def _answer_group(
             for item in listed.items
             if item.key in chosen
         ]
+        answered = Response(status_code=status.HTTP_201_CREATED)
         confirm_no_countertop_pages(
             principal,
             principal,
@@ -348,9 +400,13 @@ def _answer_group(
             project_id,
             package_id,
             NoCountertopPagesIn.model_validate({"pages": pages}),
-            Response(),
+            answered,
         )
-        words = f"{len(pages)} pages confirmed with no countertop."
+        if answered.status_code == status.HTTP_200_OK:
+            response.status_code = status.HTTP_200_OK
+            words = "Nothing new: every page's answer was already recorded."
+        else:
+            words = f"{len(pages)} pages confirmed with no countertop."
     session.refresh(revision)
     return actions.ReviewItemActionOut(
         key=key,

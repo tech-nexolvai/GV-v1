@@ -119,7 +119,14 @@
       "decided_at": null,
       "finding_id": "find-7",
       "row_id": "row-7",
-      "candidate_id": null
+      "candidate_id": null,
+      "vendor_wrote": { "numerator": "62", "denominator": "1", "display": "62\"" },
+      "wall_results_note": null,
+      "wall_choices": [
+        { "layout": "back_left_right", "words": "walls at both ends", "proposed": true, "result": "FAIL", "needed": { "numerator": "63", "denominator": "1", "display": "63\"" }, "difference": null },
+        { "layout": "back_and_left", "words": "wall at the left end", "proposed": false, "result": "PASS", "needed": { "numerator": "62", "denominator": "1", "display": "62\"" }, "difference": null },
+        { "layout": "island", "words": "island", "proposed": false, "result": "FAIL", "needed": { "numerator": "61", "denominator": "1", "display": "61\"" }, "difference": null }
+      ]
     },
     {
       "key": "page:rec-9",

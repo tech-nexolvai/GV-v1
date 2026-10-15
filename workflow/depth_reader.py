@@ -24,7 +24,8 @@ unread; and `stop.question_kind` names it `depth`, never `dimension`.
   and the reader's plain reason (`review_reason`). **Lane `SECOND_READER` only when both judgments
   agree AND code confirmed the number by the exact printed text or a chain sum** (`state:qualified`).
   A value confirmed by its drawn length alone is written for a person to confirm
-  (`state:confirm-only`, no lane), and a value code held is written with no number
+  (`state:confirm-only`, no lane; the reader holds it instead where GV's ink is anywhere in its
+  close-up, #1348), and a value code held is written with no number
   (`state:held`). A view on a drawing with two countertops, or not inside one drawing, ties to none:
   its rows say `unplaced-among:` each countertop there, so the hold shows on each;
 * one `state:view-note` row for a view that read no value, with why, so the countertop's check can

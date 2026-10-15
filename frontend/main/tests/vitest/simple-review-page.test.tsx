@@ -84,7 +84,8 @@ describe('SimpleReviewPage (#1343)', () => {
     await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
     const before = loads;
     await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
-    await waitFor(() => expect(posted).toEqual([{ key: 'number:cand-101', action: 'confirm', body: { expected_finding_id: 'find-3' } }]));
+    // The value it showed goes with it (#1358): W2 records exactly the stored value, never another.
+    await waitFor(() => expect(posted).toEqual([{ key: 'number:cand-101', action: 'confirm', body: { expected_finding_id: 'find-3', shown_value: '96 1/4"' } }]));
     await waitFor(() => expect(loads).toBe(before + 1));
   });
 
@@ -94,14 +95,18 @@ describe('SimpleReviewPage (#1343)', () => {
     await screen.findByTestId('ai-read-line');
     await userEvent.click(rowButton(/Overall countertop width.*Countertop 1/));
     // The re-check replaced the finding under the reviewer.
-    current = reviewItems((draft) => { draft.items[0].finding_id = 'find-3-new'; });
+    current = reviewItems((draft) => {
+      draft.items[0].finding_id = 'find-3-new';
+      draft.items[0].best_guess = { text: '96 1/2"', value: null, source: 'suggestion' };
+    });
     const before = loads;
     await userEvent.click(screen.getByRole('button', { name: /^Confirm/ }));
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('changed since you opened it');
     await waitFor(() => expect(loads).toBe(before + 1));
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(posted).toEqual([{ key: 'number:cand-101', action: 'confirm', body: { expected_finding_id: 'find-3-new' } }]));
+    // The finding and the value now on screen, never the stale ones that were refused.
+    await waitFor(() => expect(posted.at(-1)).toEqual({ key: 'number:cand-101', action: 'confirm', body: { expected_finding_id: 'find-3-new', shown_value: '96 1/2"' } }));
   });
 
   it('an answer W3 cannot save yet (501) says so; a real 404 says not found', async () => {
@@ -153,10 +158,33 @@ describe('SimpleReviewPage (#1343)', () => {
     await userEvent.click(within(screen.getByRole('region', { name: 'Will be clouded as wrong' })).getAllByRole('button', { name: /Agree/ })[0]);
     await waitFor(() => expect(posted[0]).toEqual({ key: 'failure:find-10', action: 'agree', body: { expected_finding_id: 'find-10' } }));
     await userEvent.click(screen.getByRole('button', { name: 'Clear all as not checked' }));
-    // One call per unchecked result, each with its own key and finding.
-    await waitFor(() => expect(posted.slice(1)).toEqual(
-      ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((id) => ({ key: `not-checked:find-${id}`, action: 'clear-not-checked', body: { expected_finding_id: `find-${id}` } })),
-    ));
+    // One group call naming exactly the results the reviewer saw (#1358): W3 refuses it if the group changed.
+    await waitFor(() => expect(posted.slice(1)).toEqual([
+      {
+        key: 'not-checked',
+        action: 'clear-not-checked',
+        body: { expected_finding_id: null, expected_keys: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((id) => `not-checked:find-${id}`) },
+      },
+    ]));
+  });
+
+  it('a wall choice is one click on a layout, each showing its result; C picks the proposal', async () => {
+    renderPage();
+    await screen.findByTestId('ai-read-line');
+    await userEvent.click(rowButton(/Where are the walls/));
+    const choices = screen.getByRole('group', { name: 'Where are the walls?' });
+    // Each layout with the overall it needs and its result in a glyph and a word; no right or wrong.
+    const left = within(choices).getByRole('button', { name: /wall at the left end/ });
+    expect(left.textContent).toContain('62"');
+    expect(left.textContent).toContain('Right');
+    const proposal = within(choices).getByRole('button', { name: /walls at both ends/ });
+    expect(proposal.getAttribute('aria-pressed')).toBe('true');
+    expect(proposal.textContent).toContain('Wrong');
+    expect(screen.queryByRole('button', { name: /It is right|It is wrong|Choose walls/ })).toBeNull();
+    await userEvent.click(left);
+    await waitFor(() => expect(posted).toEqual([{ key: 'wall:row-7', action: 'answer', body: { expected_finding_id: 'find-7', wall_config: 'back_and_left', answer: 'choose_wall' } }]));
+    await userEvent.keyboard('c');
+    await waitFor(() => expect(posted.at(-1)).toEqual({ key: 'wall:row-7', action: 'answer', body: { expected_finding_id: 'find-7', wall_config: 'back_left_right', answer: 'choose_wall' } }));
   });
 
   it('when everything is checked: "Nothing needs you" and the final cloud PDF unlocks', async () => {
@@ -203,5 +231,32 @@ describe('SimpleReviewPage (#1343)', () => {
     await act(async () => { await userEvent.keyboard('j'); });
     expect(document.activeElement).toBe(box);
     box.remove();
+  });
+  it('without an Open PDFs hook, O opens both drawings side by side at the item (#1355)', async () => {
+    server.use(
+      http.get(`${API}/pages`, () =>
+        HttpResponse.json({
+          package_revision_id: 'rev-1',
+          revision_number: 2,
+          combined_set: false,
+          pages_without_pictures: 2,
+          documents: [
+            { document_id: 'doc-v', document_version_id: 'docv-vendor', kind: 'shop', side: 'vendor', file_name: 'sample-shop.pdf', page_count: 5, pages: [] },
+            { document_id: 'doc-a', document_version_id: 'docv-arch', kind: 'architectural', side: 'architect', file_name: 'sample-arch.pdf', page_count: 14, pages: [] },
+          ],
+        }),
+      ),
+    );
+    render(<SimpleReviewPage packageId="pkg-demo" pictures={pictures} assistantAvailable={false} onOpenAdvanced={vi.fn()} />);
+    await screen.findByTestId('ai-read-line');
+    const user = userEvent.setup();
+    await user.keyboard('j');
+    await user.keyboard('o');
+    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' });
+    expect(dialog.textContent).toContain('Opened at Overall countertop width');
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('3 / 5'));
+    expect(within(screen.getByRole('region', { name: /Architect/ })).getByTestId('page-counter').textContent).toBe('12 / 14');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });

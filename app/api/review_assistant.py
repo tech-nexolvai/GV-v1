@@ -33,6 +33,7 @@ from app.review.assistant.model import OpenRouterAssistantModel
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
 from app.review.assistant.service import AssistantRuntime, SessionLedger, stream_answer
 from app.review.assistant.starters import starters
+from app.review.review_items import review_items_for_revision
 
 router = APIRouter(tags=["review assistant"])
 NOT_FOUND_DETAIL: Final = "Not found"
@@ -54,7 +55,8 @@ def _latest_revision(
 def load_snapshot(
     session: Session, project_id: UUID, package_id: UUID, revision: PackageRevision
 ) -> ReviewSnapshot:
-    """This review's records, from the functions the countertop screen and sign-off use."""
+    """This review's records, from the functions the countertop screen, sign-off and the simple
+    review list (#1352) use."""
     countertops = _countertop_results_for_revision(session, package_id, revision)
     readiness, records = readiness_and_decisions(session, revision.id)
     live = _live_run_facts(session, project_id, package_id)
@@ -64,6 +66,9 @@ def load_snapshot(
         () if live is None else live.findings,
         records.decisions,
         checks_have_run=live is not None and live.checks_have_run,
+        review_items=review_items_for_revision(
+            session, project_id=project_id, package_id=package_id, revision=revision
+        ),
     )
 
 

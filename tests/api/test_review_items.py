@@ -22,6 +22,7 @@ from app.models import CheckRun, Finding, ObservationCandidate, PackageRevision
 from app.models.rules import RuleDefinition, RuleSnapshot
 from app.review.approval import approval_readiness
 from tests.api.test_slot_rows import _package_rows, _run_current_checks
+from tests.api.test_wall_cases_api import _sealed
 from tests.app.postgres_fixture import alembic_config
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -184,23 +185,45 @@ def _candidate(flags: list[str], value: tuple[int, int] | None = None) -> Simple
     )
 
 
-def test_best_guess_takes_the_file_text_then_agreed_text_then_the_suggestion() -> None:
-    from app.review.review_items import best_guess
+def test_best_guess_is_exactly_the_stored_value_with_every_reading_beside_it() -> None:
+    """#1358: the guess is the value a Confirm records (the stored one), never the PDF text or one
+    reader's text when they differ; every reading is listed so the disagreement is in sight."""
+    from app.review.review_items import _readers, best_guess
 
-    both = ["ink:vendor", "reader:model-a:12 1/2", "reader:model-b:12 1/2"]
-    pdf = best_guess(_candidate(["reader:pdf-text-layer:12 3/4", *both], (49, 4)))
-    assert pdf is not None and pdf.source == "pdf_text" and pdf.text == "12 3/4"
-    assert pdf.value is not None and pdf.value.display == '12 3/4"'
+    held = _candidate(
+        [
+            "ink:vendor",
+            "reader:pdf-text-layer:21",
+            "reader:model-a:21",
+            "reader:model-b:20",
+            "readers-differ",
+        ],
+        (20, 1),
+    )
+    guess = best_guess(held)
+    assert guess is not None and guess.text == '20"' and guess.source == "suggestion"
+    assert guess.value is not None and guess.value.display == '20"'
+    assert [(reader.reader, reader.text) for reader in _readers(held)] == [
+        ("pdf-text-layer", "21"),
+        ("model-a", "21"),
+        ("model-b", "20"),
+    ]
 
+    # Who wrote the stored value: the PDF's own text, else both readers identically, else neither.
+    both = ["ink:vendor", "reader:model-a:12 1/4", "reader:model-b:12 1/4"]
+    pdf = best_guess(_candidate(["reader:pdf-text-layer:12 1/4", *both], (49, 4)))
+    assert pdf is not None and pdf.source == "pdf_text" and pdf.text == '12 1/4"'
     agreed = best_guess(_candidate([*both, "odd-fraction"], (49, 4)))
-    assert agreed is not None and agreed.source == "agreed_text" and agreed.text == "12 1/2"
+    assert agreed is not None and agreed.source == "agreed_text" and agreed.text == '12 1/4"'
+    other_pdf = best_guess(_candidate(["reader:pdf-text-layer:12 3/4", *both], (49, 4)))
+    assert other_pdf is not None and other_pdf.text == '12 1/4"'
+    assert other_pdf.source == "agreed_text"
 
-    differ = ["ink:vendor", "reader:model-a:12", "reader:model-b:13"]
-    suggested = best_guess(_candidate(differ, (49, 4)))
-    assert suggested is not None and suggested.source == "suggestion"
-    assert suggested.text == '12 1/4"'
-
-    assert best_guess(_candidate(differ)) is None
+    # Nothing stored, or not in inches: no guess (checked by hand), whatever the texts say.
+    assert best_guess(_candidate([*both, "odd-fraction"])) is None
+    in_mm = _candidate(both, (311, 1))
+    in_mm.unit = "mm"
+    assert best_guess(in_mm) is None
 
 
 def test_gv_markup_is_never_a_guess_or_a_reading() -> None:
@@ -335,3 +358,125 @@ def test_the_accounting_names_a_result_or_page_left_out_or_listed_twice() -> Non
     assert [(entry.page, entry.why) for entry in found if entry.kind == "page"] == [
         (5, "in no item")
     ]
+
+
+# --- walls: a countertop whose only open question is its walls (#1358) ----------------------------
+
+
+def test_a_wall_only_row_is_one_wall_choice_with_each_layouts_result_even_with_a_proposal(
+    session: Session, tmp_path: Path
+) -> None:
+    """Every number sealed, nothing held, the readers proposed walls at both ends, and the walls
+    change the result: one `wall_choice`, never checked by hand (whose "It is right" would confirm
+    a width resting on walls nobody chose). Pieces 20" + 21", overall 42", 1" field cut."""
+    project_id, package_id, anchors = _sealed(session, wall_source="readers", field_cuts=1)
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+
+    body = (
+        _client(session, project_id)
+        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
+        .json()
+    )
+
+    assert body["unaccounted"] == []
+    assert [item for item in body["items"] if item["kind"] == "countertop_by_hand"] == []
+    walls = next(item for item in body["items"] if item["row_id"] == str(anchors[0]))
+    assert walls["kind"] == "wall_choice"
+    assert walls["key"] == f"walls:{walls['finding_id']}"
+    assert walls["actions"] == ["choose_wall"], "no right or wrong on a wall choice"
+    assert walls["status"] == "open"
+    assert walls["best_guess"] is None
+    assert walls["wall_results_note"] is None
+    assert walls["vendor_wrote"]["display"] == '42"'
+    choices = {
+        choice["layout"]: (choice["proposed"], choice["result"], choice["needed"]["display"])
+        for choice in walls["wall_choices"]
+    }
+    assert choices == {
+        "back_left_right": (True, "FAIL", '43"'),
+        "back_and_left": (False, "PASS", '42"'),
+        "back_and_right": (False, "PASS", '42"'),
+        "back_only": (False, "FAIL", '41"'),
+        "island": (False, "FAIL", '41"'),
+    }
+    assert walls["wall_choices"][0]["words"] == "walls at both ends"
+
+
+def test_a_wall_only_row_with_no_recorded_cases_offers_every_layout_and_says_why(
+    session: Session, tmp_path: Path
+) -> None:
+    """The check could not work out every wall case (the numbers did not seal for it): the walls
+    are still the open question. Every published layout is offered, the proposal pre-selected, and
+    the item says why no choice shows a result."""
+    from app.review.wall_cases import NOT_ALL_SEALED
+
+    project_id, package_id, anchors = _package_rows(session, wall_source="readers")
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+
+    body = (
+        _client(session, project_id)
+        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
+        .json()
+    )
+
+    assert body["unaccounted"] == []
+    walls = next(item for item in body["items"] if item["row_id"] == str(anchors[0]))
+    assert walls["kind"] == "wall_choice" and walls["actions"] == ["choose_wall"]
+    assert [
+        (choice["layout"], choice["proposed"], choice["result"]) for choice in walls["wall_choices"]
+    ] == [
+        ("back_left_right", True, None),
+        ("back_and_left", False, None),
+        ("back_and_right", False, None),
+        ("back_only", False, None),
+        ("island", False, None),
+    ]
+    assert walls["wall_results_note"] == NOT_ALL_SEALED
+
+
+def test_walls_a_person_chose_before_the_run_are_no_wall_question(
+    session: Session, tmp_path: Path
+) -> None:
+    """Page 1's walls were chosen by the reviewer before the run, so its result used them: no wall
+    choice there. Page 2's walls are still open: its one wall choice."""
+    project_id, package_id, anchors = _sealed(
+        session, wall_source="readers", field_cuts=1, walls_confirmed=(0,)
+    )
+    _run_current_checks(session, package_id, tmp_path)
+    session.commit()
+
+    body = (
+        _client(session, project_id)
+        .get(f"{API_PREFIX}/projects/{project_id}/packages/{package_id}/review-items")
+        .json()
+    )
+
+    assert body["unaccounted"] == []
+    walls = [item for item in body["items"] if item["kind"] == "wall_choice"]
+    assert [item["row_id"] for item in walls] == [str(anchors[1])]
+
+
+def test_walls_the_readers_did_not_agree_on_propose_nothing() -> None:
+    """`walls-held:` (the readers differ), or a person's earlier answer asked again: every layout
+    is offered with nothing pre-selected, as the wall review shows it."""
+    from app.review.review_items import _readers_proposal
+
+    def result(config: str | None, chosen: bool = False) -> SimpleNamespace:
+        return SimpleNamespace(
+            wall_layout=SimpleNamespace(config=config, chosen_by_reviewer=chosen)
+        )
+
+    def row(flags: list[str], wall_hold: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(
+            wall_candidate=SimpleNamespace(ambiguity_flags=flags), wall_hold=wall_hold
+        )
+
+    sealed = ["walls-sealed:back_left_right", "wall-source:readers"]
+    assert _readers_proposal(result("back_left_right"), row(sealed)) == "back_left_right"
+    held = row([*sealed, "walls-held:readers differ"])
+    assert _readers_proposal(result("back_left_right"), held) is None
+    asked_again = row(sealed, wall_hold="an earlier answer could not be carried")
+    assert _readers_proposal(result("back_left_right"), asked_again) is None
+    assert _readers_proposal(result("back_and_left", chosen=True), row(sealed)) is None
