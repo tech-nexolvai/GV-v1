@@ -75,6 +75,7 @@ from extraction.architect.page_views import (
     INK_OUTSIDE_VIEWS,
     TITLE_NOT_VIEW,
     PageNote,
+    PageView,
     PageViewSettings,
     PageViewSurvey,
     _joined,
@@ -398,6 +399,12 @@ class VendorView:
     (`separate_views`): the cut could not keep them apart, and nothing on either is read. Unlike
     `separated` (a stroke crossing between views, common where a leader line runs across), this
     always holds."""
+    lettering: tuple[Box, ...] = ()
+    """For a view found by its title over a scale note: where the label's own lettering is printed
+    (the title, the scale note, the bubble's letters), each box tight round its words. The
+    reader paints only these, not the whole `heading_box`, when that box would hide a dimension
+    the readers need (#1327); the bubble's ring and the line under the title name no view kind.
+    Empty for a view cut by its caption."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,7 +529,7 @@ def _find_vendor_views(
     )
     trouble = _trouble(survey)
     if survey.views and not trouble:
-        return _title_over_scale(survey, ())
+        return _title_over_scale(survey, (), inside_chars)
     captions = _captions(inside_chars, settings)
     unframed, peeled = sheet_frame(
         inside_ink, [caption.box for caption in captions], panel, settings
@@ -537,7 +544,7 @@ def _find_vendor_views(
             inside_chars, unframed, text=settings.text, settings=settings.views
         )
         if again.views and not _trouble(again):
-            return _title_over_scale(again, tuple(notes), frame_peeled=True)
+            return _title_over_scale(again, tuple(notes), inside_chars, frame_peeled=True)
         if again.views or _trouble(again):
             trouble = _trouble(again)
     fallback = _views_by_heading_words(inside_chars, unframed, panel, settings, captions)
@@ -567,8 +574,36 @@ def _trouble(survey: PageViewSurvey) -> list[PageNote]:
     ]
 
 
+def _lettering(view: PageView, chars: Sequence[TextChar]) -> tuple[Box, ...]:
+    """Where a title-over-scale label's own words are printed: its title, its scale note and the
+    letters inside its bubble (each character whose middle lies inside the bubble's ring, not
+    merely inside the square round it: a neighbour's digit can stand in that square's corner), or
+    nothing when `page_views` gave no title box."""
+    if view.title_box is None:
+        return ()
+    boxes = [view.title_box, view.scale.box]
+    bubble = view.bubble_box
+    if bubble is not None:
+        radius = min(bubble.width, bubble.height) / 2
+        letters = [
+            char.box
+            for char in chars
+            if char.text.strip()
+            and (char.box.centre_x - bubble.centre_x) ** 2
+            + (char.box.centre_y - bubble.centre_y) ** 2
+            <= radius**2
+        ]
+        if letters:
+            boxes.append(_union_all(letters))
+    return tuple(boxes)
+
+
 def _title_over_scale(
-    survey: PageViewSurvey, notes: tuple[str, ...], *, frame_peeled: bool = False
+    survey: PageViewSurvey,
+    notes: tuple[str, ...],
+    chars: Sequence[TextChar],
+    *,
+    frame_peeled: bool = False,
 ) -> ViewSurvey:
     """`page_views`' views as vendor views. Where the views were found only once the sheet frame
     was peeled off (#1313), a view `page_views` reports not clearly separated (part of its drawing
@@ -590,6 +625,7 @@ def _title_over_scale(
             ),
             found_by="title over scale",
             cut_apart=view.separated or not frame_peeled,
+            lettering=_lettering(view, chars),
         )
         for view in survey.views
     )

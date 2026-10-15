@@ -132,6 +132,11 @@ class PageView:
     extent: Box
     separated: bool
     reason: str
+    title_box: Box | None = None
+    """Where the title alone is printed (part of `label_box`); data only, for a caller that must
+    paint the label's lettering without the empty corners of its box (#1327)."""
+    bubble_box: Box | None = None
+    """Where the bubble alone is drawn (part of `label_box`), or `None` without one (#1327)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -732,6 +737,8 @@ def survey_page_views(
                 extent=extents[index],
                 separated=separated,
                 reason=reason,
+                title_box=anchor.title_box,
+                bubble_box=anchor.bubble_box,
             )
         )
     return PageViewSurvey(tuple(views), tuple(notes))

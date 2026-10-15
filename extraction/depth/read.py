@@ -132,6 +132,7 @@ from extraction.depth.view_kind import (
     ViewFinderSettings,
     ViewKind,
     code_view_kind,
+    find_vendor_views,
     kind_from_heading,
     plan_by_projection,
 )
@@ -172,6 +173,7 @@ __all__ = [
     "DepthReaderSettings",
     "DepthReading",
     "NoAnswer",
+    "PanelPaint",
     "PreparedPage",
     "PreparedView",
     "ReaderSays",
@@ -183,6 +185,8 @@ __all__ = [
     "depth_reader_enabled",
     "label_areas",
     "label_boxes",
+    "paint_panel_headings",
+    "prepare_panel",
     "prepare_pdf_page",
     "prepare_view",
     "question_packet",
@@ -390,7 +394,6 @@ def prepare_pdf_page(
     """
     from extraction.annotations import read_markup_layer
     from extraction.architect.reader import MEASURED_ARCHITECT_SETTINGS, open_page, page_stamps
-    from extraction.depth.view_kind import find_vendor_views
     from extraction.ink import read_page_ink
     from extraction.panels import propose_panel_roles
     from extraction.rasterise import render_page
@@ -457,25 +460,17 @@ def prepare_pdf_page(
         notes.append(f"whose ink each label is could not be read, so every number holds: {error}")
     views: list[PreparedView] = []
     for number, panel in enumerate(panels, start=1):
-        survey = find_vendor_views(page.chars, page.ink, panel, settings.views)
-        notes.extend(f"panel {number}: {note}" for note in survey.notes)
-        panel_chars = [
-            char for char in page.chars if _inside(char.box.centre_x, char.box.centre_y, panel)
-        ]
-        headings = [view.heading_box for view in survey.views if view.heading_box is not None]
-        views.extend(
-            prepare_view(
-                ink=page.ink,
-                chars=page.chars,
-                panel_phrase_chars=panel_chars,
-                view=view,
-                page_index=page_index,
-                panel=number,
-                panel_headings=headings,
-                settings=settings,
-            )
-            for view in survey.views
+        prepared, panel_notes = prepare_panel(
+            chars=page.chars,
+            ink=page.ink,
+            panel_box=panel,
+            panel=number,
+            page_index=page_index,
+            pixels=page.pixels,
+            settings=settings,
         )
+        views.extend(prepared)
+        notes.extend(panel_notes)
     return PreparedPage(
         page_index=page_index,
         page_sha256=page_sha256,
@@ -485,6 +480,259 @@ def prepare_pdf_page(
         views=with_projected_plans(views, settings),
         ink_at=ink_at,
         notes=tuple(notes),
+    )
+
+
+def prepare_panel(
+    *,
+    chars: Sequence[TextChar],
+    ink: PageInk,
+    panel_box: Box,
+    panel: int,
+    page_index: int,
+    pixels: PixelsOf,
+    settings: DepthReaderSettings,
+) -> tuple[tuple[PreparedView, ...], tuple[str, ...]]:
+    """One vendor panel's views, each with code's half (`prepare_view`), what every picture of the
+    panel paints out (`paint_panel_headings`), and a note for everything left out or held."""
+    survey = find_vendor_views(chars, ink, panel_box, settings.views)
+    notes = [f"panel {panel}: {note}" for note in survey.notes]
+    panel_chars = [
+        char for char in chars if _inside(char.box.centre_x, char.box.centre_y, panel_box)
+    ]
+    headings = [view.heading_box for view in survey.views if view.heading_box is not None]
+    prepared = [
+        prepare_view(
+            ink=ink,
+            chars=chars,
+            panel_phrase_chars=panel_chars,
+            view=view,
+            page_index=page_index,
+            panel=panel,
+            panel_headings=headings,
+            settings=settings,
+        )
+        for view in survey.views
+    ]
+    # The most any picture of the panel grows a painted box: the whole-view picture's pad.
+    pad = max(
+        (
+            settings.thickness_px
+            * _factor(pixels(_pad(view.extent, settings.view_pad_pt)), settings.view_max_side)
+            for view in survey.views
+        ),
+        default=0,
+    )
+    paint = paint_panel_headings(
+        prepared, panel_chars, pixels, pad, settings.spans.witness_tolerance_pt
+    )
+    notes.extend(f"panel {panel}: {note}" for note in paint.notes)
+    views: list[PreparedView] = []
+    for view in prepared:
+        held = paint.held.get(view.view.number)
+        if held is not None:
+            # A view already held keeps its first reason; this one is added after it.
+            why = (
+                f"{held}, so code cannot say what it is"
+                if view.view.cut_apart
+                else f"{view.code_kind.reason}; {held}"
+            )
+            view = replace(
+                view,
+                view=replace(view.view, cut_apart=False, reason=f"{view.view.reason}; {held}"),
+                code_kind=CodeViewKind(None, view.code_kind.heading, view.code_kind.plan_band, why),
+            )
+        views.append(replace(view, panel_headings=paint.boxes))
+    return tuple(views), tuple(notes)
+
+
+@dataclass(frozen=True, slots=True)
+class PanelPaint:
+    """What every picture of one panel paints out, and the views held because of it (#1327)."""
+
+    boxes: tuple[Box, ...]
+    held: Mapping[int, str]
+    """View number to the plain reason it is held: nothing on it is read."""
+    notes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NeededInk:
+    """Ink the readers may need: a character that is no view's label, or a dimension code found."""
+
+    pixels: PixelBox
+    what: str
+    views: tuple[int, ...]
+    """The views it belongs to (a character: every view whose extent holds its middle)."""
+    text: str = ""
+    """A character's text; empty for a dimension."""
+
+
+def _grown(box: PixelBox, by: int) -> PixelBox:
+    return box[0] - by, box[1] - by, box[2] + by, box[3] + by
+
+
+def _touch(first: PixelBox, second: PixelBox) -> bool:
+    return (
+        first[0] <= second[2]
+        and second[0] <= first[2]
+        and first[1] <= second[3]
+        and second[1] <= first[3]
+    )
+
+
+def _box_within(inner: Box, outer: Box) -> bool:
+    return (
+        outer.x0 <= inner.x0
+        and inner.x1 <= outer.x1
+        and outer.top <= inner.top
+        and inner.bottom <= outer.bottom
+    )
+
+
+def _needed_ink(
+    views: Sequence[PreparedView],
+    chars: Sequence[TextChar],
+    pixels: PixelsOf,
+    end_reach: Decimal,
+) -> list[_NeededInk]:
+    """Ink the readers may need, each grown by a pixel (its edge is drawn into the next one):
+
+    * every character on the panel that is no label's own lettering (a title-over-scale label's
+      `lettering`, or anything inside a caption's label box);
+    * each end of every dimension code found in a view, `end_reach` along and across it (its
+      witness line and tick), and where its number is printed (unless that "number" is a label's
+      own lettering: a label printed on a dimension line has code pair its scale note with it).
+
+    A dimension's line between its ends is not needed: the pictures that ask about a dimension
+    draw it over the drawing in colour, and a stretch of line hidden under a label changes no
+    end and no number. A dimension lying wholly inside a label box is the label's underline."""
+    labels = [view.view for view in views if view.view.heading_box is not None]
+
+    def own(x: Decimal, y: Decimal) -> bool:
+        return any(
+            (
+                any(_inside(x, y, box) for box in label.lettering)
+                if label.lettering
+                else label.heading_box is not None and _inside(x, y, label.heading_box)
+            )
+            for label in labels
+        )
+
+    needed = [
+        _NeededInk(
+            _grown(pixels(char.box), 1),
+            f"the character {char.text!r}",
+            tuple(
+                view.view.number
+                for view in views
+                if _inside(char.box.centre_x, char.box.centre_y, view.view.extent)
+            ),
+            char.text,
+        )
+        for char in chars
+        if char.text.strip() and not own(char.box.centre_x, char.box.centre_y)
+    ]
+    for view in views:
+        for span in view.found.spans:
+            ends = [span.point(span.start_pt), span.point(span.end_pt)]
+            line = Box(ends[0][0], ends[0][1], ends[1][0], ends[1][1])
+            if any(
+                label.heading_box is not None and _box_within(line, label.heading_box)
+                for label in labels
+            ):
+                continue
+            what = f"dimension {span.number} of view {view.view.number}"
+            needed.extend(
+                _NeededInk(
+                    _grown(pixels(_pad(Box(x, y, x, y), end_reach)), 1),
+                    f"an end of {what}",
+                    (view.view.number,),
+                )
+                for x, y in ends
+            )
+            area = view.label_areas.get(span.number)
+            if area is not None and not own(area.centre_x, area.centre_y):
+                needed.append(
+                    _NeededInk(
+                        _grown(pixels(area), 1), f"the number of {what}", (view.view.number,)
+                    )
+                )
+    return needed
+
+
+def _covered(
+    painted: Sequence[Box], needed: Sequence[_NeededInk], pixels: PixelsOf, pad: int
+) -> list[_NeededInk]:
+    boxes = [_grown(pixels(box), pad) for box in painted]
+    return [ink for ink in needed if any(_touch(box, ink.pixels) for box in boxes)]
+
+
+def _listed(covered: Sequence[_NeededInk]) -> str:
+    """The covered ink in words: its characters as one string, then each dimension."""
+    text = "".join(ink.text for ink in covered if ink.text)
+    whats = list(dict.fromkeys(ink.what for ink in covered if not ink.text))
+    shown = ", ".join(whats[:6]) + ("" if len(whats) <= 6 else f" and {len(whats) - 6} more")
+    printed = f"the printed characters {text!r}" if text else ""
+    return " and ".join(part for part in (printed, shown) if part)
+
+
+def paint_panel_headings(
+    views: Sequence[PreparedView],
+    chars: Sequence[TextChar],
+    pixels: PixelsOf,
+    pad: int,
+    end_reach: Decimal,
+) -> PanelPaint:
+    """What every picture of a panel paints out so no reader sees a view's name (#1327).
+
+    Each label's whole box (`heading_box`) is painted, grown by `pad` pixels (the most any picture
+    grows it), unless that would hide ink the readers may need (`_needed_ink`): a character that is
+    no label's, or an end or the number of a dimension code found. Then, for a view found by its title over a scale note,
+    only the label's own lettering is painted (title, scale note, bubble letters), where that
+    hides none of it; the bubble's ring and the line under the title stay, and name nothing.
+    Where even that would hide needed ink (or the label is a caption's, with no lettering), the
+    whole box is painted and every view that ink belongs to is held: a partly hidden number could
+    be read wrong. Never silent: each case leaves a note.
+    """
+    needed = _needed_ink(views, chars, pixels, end_reach)
+    boxes: list[Box] = []
+    held: dict[int, list[str]] = {}
+    notes: list[str] = []
+    for prepared in views:
+        label = prepared.view
+        if label.heading_box is None:
+            continue
+        name = f"view {label.number}'s label ({label.heading or 'no words'})"
+        covered = _covered([label.heading_box], needed, pixels, pad)
+        if not covered:
+            boxes.append(label.heading_box)
+            continue
+        if label.lettering and not _covered(label.lettering, needed, pixels, pad):
+            boxes.extend(label.lettering)
+            notes.append(
+                f"{name} has {_listed(covered)} inside its box: only its lettering (title, scale "
+                "note, bubble letters) is painted out of the pictures, so that ink stays in view"
+            )
+            continue
+        boxes.append(label.heading_box)
+        owners = sorted({number for ink in covered for number in ink.views})
+        why = f"{name} cannot be painted out of the pictures without hiding {_listed(covered)}"
+        for number in owners:
+            held.setdefault(number, []).append(why)
+        notes.append(
+            f"{why}: "
+            + (
+                "view(s) " + ", ".join(str(number) for number in owners) + " held, nothing on "
+                "them is read"
+                if owners
+                else "that ink lies in no view, so no view is held"
+            )
+        )
+    return PanelPaint(
+        tuple(boxes),
+        {number: "; ".join(reasons) for number, reasons in held.items()},
+        tuple(notes),
     )
 
 
