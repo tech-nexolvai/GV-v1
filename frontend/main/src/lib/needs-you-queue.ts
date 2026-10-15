@@ -8,7 +8,7 @@
  */
 import type { CountertopResult, PageWithoutCountertop, SlotReaderRow } from '@/api/client';
 import type { Finding } from '@/data/types';
-import { DEPTH_AND_SINK_CHECKS, sortRows, widthNeedsYou } from '@/lib/countertop-results';
+import { ROW_WIDTH_CHECK, sortRows, widthNeedsYou } from '@/lib/countertop-results';
 import { architectFindingIds } from '@/lib/architect';
 import type { WallCases } from '@/lib/wall-rule';
 
@@ -65,8 +65,8 @@ export function buildQueue(
   const rowIds = new Set(rows.map((row) => row.row_id));
   // A countertop result names its row (`scope_row_candidate_id`). One whose row is on screen belongs
   // to that row's item, even before the rows reload after a run; anything else is listed as a check,
-  // so nothing that blocks sign-off can drop out of the list. A row's own depth or sink result
-  // (#1201) is a check of its own, never the row's width: listed too.
+  // so nothing that blocks sign-off can drop out of the list. Only a width result is the row's own
+  // (#1201 review): any other result scoped to a row (its depth and sink holds) is listed too.
   const checks: QueueItem[] = findings
     .filter(
       (finding) =>
@@ -74,7 +74,7 @@ export function buildQueue(
         !(
           finding.scope_row_candidate_id &&
           rowIds.has(finding.scope_row_candidate_id) &&
-          !DEPTH_AND_SINK_CHECKS.has(finding.check_id)
+          finding.check_id === ROW_WIDTH_CHECK
         ) &&
         (blocking?.has(finding.id) ?? false),
     )

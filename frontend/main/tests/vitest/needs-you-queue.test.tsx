@@ -97,7 +97,7 @@ describe('needs-you queue: rules', () => {
   });
 
   it('a new countertop result belongs to its row even before the rows reload; an unknown row is still listed', () => {
-    const fresh = finding('f-walls-2', { scope_row_candidate_id: 'walls' });
+    const fresh = finding('f-walls-2', { check_id: 'CT-WIDTH-001', scope_row_candidate_id: 'walls' });
     const stray = finding('f-stray', { scope_row_candidate_id: 'not-on-screen' });
     const items = buildQueue(ROWS, [...FINDINGS, fresh, stray], new Set([...BLOCKING, 'f-walls-2', 'f-stray']));
     expect(items.map((i) => i.key)).toEqual(['row:walls', 'row:panels', 'row:fail', 'finding:f-sink', 'finding:f-stray']);

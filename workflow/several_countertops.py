@@ -21,13 +21,19 @@ each of the six checks gives every countertop a result of its own. A countertop 
 and what clears it (`waiting_reason`). Such a result carries no value at all: a value only counts
 for the countertop it belongs to, and these are written only where nothing reads one.
 
-A held result is scoped to the countertop's row (its anchor reading, or a split page's record) when
-it has one in the newest reading, so a decision on it carries over an unchanged re-run and over
-confirming the row's countertop; otherwise to the item a person confirmed. The whole-package result
-is then written only when it still says something: a value was given for the whole package (typed,
-or a reading confirmed), which it shows held (`hold_for_several`); or a countertop has no record a
-result can be scoped to (a second box a reader named on a page, or code's countertop with no row),
-which it names in its notes. **Never silent** (`hold_for_unchecked`): with the reader on, such a
+A held result is scoped to the countertop's row (its anchor reading, or a split page's record) in
+the newest reading, so a decision on it carries over an unchanged re-run and over confirming the
+row's countertop. A countertop with no row (a second box a reader named on a page, or an item, a
+person's or code's, confirmed from no row) has no such result: a result scoped to an item never
+carries a decision over, and would ask again on every run. It is named on the held whole-package
+result instead, whose reason says how many such countertops there are, so a changed number asks
+again. The whole-package result is written only when it still says something: that, or a value
+given for the whole package (typed, or a reading confirmed), which it shows held
+(`hold_for_several`).
+
+What the whole-package check itself still lacks, beyond the drawn values (a project setting not
+given, a wall layout not stated), is said on every countertop's own result too, after "Also:"
+(`also_reason`): the same words on each, so a decision still carries over. **Never silent** (`hold_for_unchecked`): with the reader on, such a
 countertop the check did not run for is named on one held whole-package result.
 
 A package with one countertop, or none known, is exactly as before.
@@ -63,6 +69,7 @@ Read-only and model-free: no extraction import, no write.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
@@ -71,18 +78,19 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import DrawingItem, DrawingView, PackageRevision, ViewRole
+from app.models import DrawingView, PackageRevision, ViewRole
 from app.models.document import Document, DocumentVersion
 from app.review.no_countertop import answered_pages
 from verdict.finding import Finding
 from verdict.outcomes import Outcome, Severity
 from workflow.depth_evidence import DEPTH_RULE_IDS
 from workflow.item_plan import LiveCountertop, live_countertops
-from workflow.parts import persons_part_item_ids
 from workflow.slot_row_scope import slot_rows_and_unchosen_pages
 
 __all__ = [
+    "ALSO",
     "COUNTERTOPS_NOTE",
+    "LEFT_OVER",
     "NEVER_PER_COUNTERTOP",
     "OWN_NEVER_PER_COUNTERTOP",
     "OWN_READER_OFF",
@@ -99,6 +107,7 @@ __all__ = [
     "CountedCountertop",
     "CountertopHolds",
     "PackageCountertops",
+    "also_reason",
     "clears_when",
     "countertop_holds",
     "hold_for_several",
@@ -175,9 +184,17 @@ WAITING: Final = "Waiting for {what} of this countertop{sink}. {why}"
 
 #: Why nothing gives it, said truthfully for each case (compare `clears_when`).
 OWN_RUN_NOT_DECIDED: Final = (
-    "It clears when this countertop is confirmed and its run decided on Measurements: this check "
-    "then runs for it from the depth and sink reader's readings."
+    "This check runs for it from the depth and sink reader's readings only once this countertop is "
+    "confirmed and its run decided on Measurements."
 )
+
+#: What the whole-package check still lacks beyond the drawn values, said on each countertop's own
+#: result (`also_reason`).
+ALSO: Final = "Also: {reason}"
+
+#: How many countertops a whole-package hold stands for that have no result of their own (#1201
+#: review): a count, never names, so a changed number asks again and the same one carries over.
+LEFT_OVER: Final = "{left} of them {have} no result of {its} own for this check."
 OWN_READER_OFF: Final = (
     "The depth and sink reader is switched off, so nothing reads this countertop's own values: "
     "check them on its drawing and decide this result."
@@ -188,8 +205,9 @@ OWN_NEVER_PER_COUNTERTOP: Final = (
 )
 
 
-def waiting_reason(rule_id: str, *, depth_reader: bool) -> str:
-    """The reason on one countertop's own held result of one of the six checks (#1201).
+def waiting_reason(rule_id: str, *, depth_reader: bool, also: str | None = None) -> str:
+    """The reason on one countertop's own held result of one of the six checks (#1201), with
+    `also` (`also_reason`) after it when the check lacks more than the drawn values.
 
     It names no countertop (the result's scope does): a decision on it carries over an unchanged
     re-run only while its reason is the same (`app/review/carry_over.py`).
@@ -199,7 +217,38 @@ def waiting_reason(rule_id: str, *, depth_reader: bool) -> str:
         why = OWN_NEVER_PER_COUNTERTOP
     else:
         why = OWN_RUN_NOT_DECIDED if depth_reader else OWN_READER_OFF
-    return WAITING.format(what=what, sink=", if it has a sink" if sink else "", why=why)
+    reason = WAITING.format(what=what, sink=", if it has a sink" if sink else "", why=why)
+    return reason if also is None else f"{reason} {ALSO.format(reason=also)}"
+
+
+#: The engine's sentences for a value it could not find (`verdict/engine.py`), by name.
+_COULD_NOT_RESOLVE: Final = re.compile(
+    r"^(?:derivation '[^']+'|the final operation) could not resolve required value '([^']+)'\. "
+    r"A missing (?:intermediate or parameter is not zero|parameter or intermediate is not a "
+    r"default)\.$"
+)
+_ABSENT: Final = re.compile(
+    r"^required input\(s\) absent: ([^.]+)\. A missing value is not a passing value\.$"
+)
+
+
+def also_reason(finding: Finding, inputs: Collection[str]) -> str | None:
+    """What the whole-package result of a check says it lacks beyond the drawn values, for each
+    countertop's own held result (#1201 review); `None` when it decided, or when all it lacks is
+    one or more of the rule's drawn `inputs`, which the countertop's own sentence already names.
+
+    The same for every countertop of the package: it comes from the one whole-package evaluation.
+    """
+    if finding.is_decision or not finding.reason.strip():
+        return None
+    reason = " ".join(finding.reason.split())
+    resolved = _COULD_NOT_RESOLVE.match(reason)
+    if resolved is not None and resolved.group(1) in inputs:
+        return None
+    absent = _ABSENT.match(reason)
+    if absent is not None and {n.strip() for n in absent.group(1).split(",")} <= set(inputs):
+        return None
+    return reason
 
 
 def clears_when(rule_id: str, *, depth_reader: bool) -> str:
@@ -224,21 +273,18 @@ class CountedCountertop:
     """Its row's record in the newest slot reading: the row's anchor reading, or the "row not
     chosen" record of a page whose readers did not agree on a row; `None` for a second box a reader
     named on a page (nothing on record stands for it), and for an item with no row of its own."""
-    by_person: bool = False
-    """Whether a person confirmed its item (code's own countertop is not a person's word)."""
 
     @property
     def scope(self) -> tuple[UUID | None, UUID | None] | None:
         """`(item, row)` its own result is scoped to, or `None` when it cannot have one.
 
-        Its row first: a decision on a row's result carries over an unchanged re-run, and over a
-        person confirming the row's countertop (`app/review/carry_over.py`). Otherwise the item a
-        person confirmed. Code's own countertop with no row is not a scope (`countertop_scopes`).
+        Only its row: a decision on a row's result carries over an unchanged re-run, and over a
+        person confirming the row's countertop (`app/review/carry_over.py`). A result scoped to an
+        item never carries one over (the legacy manual path's rule), so a countertop with no row,
+        a person's or code's, is named on the whole-package hold instead, as on main before #1201.
         """
         if self.row_id is not None:
             return (None, self.row_id)
-        if self.item_id is not None and self.by_person:
-            return (self.item_id, None)
         return None
 
 
@@ -287,19 +333,25 @@ def package_countertops(session: Session, revision_id: UUID) -> PackageCounterto
     # By the page: exactly one unlinked item and exactly one row no item is linked to.
     row_ids = {row.anchor_id for row in rows if row.anchor_id is not None}
     unlinked = [item for item in items if item.row_candidate_id not in row_ids]
+    # The row such an item is merged with: its own results are keyed by that row (#1201 review).
+    merged: dict[UUID, UUID | None] = {}
     for page in {item.page_number for item in unlinked}:
         on_page = [row for row in left if row.page_number == page]
         if sum(item.page_number == page for item in unlinked) == 1 and len(on_page) == 1:
+            (item,) = [item for item in unlinked if item.page_number == page]
+            merged[item.item_id] = on_page[0].record_id
             left.remove(on_page[0])
-    persons = _persons(session, [item.item_id for item in items])
     counted = [
         (
             item.page_number,
             CountedCountertop(
                 item.label,
                 item.item_id,
-                row_id=item.row_candidate_id if item.row_candidate_id in row_ids else None,
-                by_person=item.item_id in persons,
+                row_id=(
+                    item.row_candidate_id
+                    if item.row_candidate_id in row_ids
+                    else merged.get(item.item_id)
+                ),
             ),
         )
         for item in items
@@ -324,25 +376,6 @@ def _items(session: Session, revision_id: UUID) -> list[LiveCountertop]:
         ).all()
     )
     return [countertop for countertop in countertops if countertop.view_id not in architect]
-
-
-def _persons(session: Session, item_ids: Sequence[UUID]) -> set[UUID]:
-    """Which of these items a person confirmed (`workflow/parts.persons_part_item_ids`) on a view
-    confirmed as the vendor's: only such an item can carry a result of its own
-    (`app/verdicts/record.record_finding`)."""
-    if not item_ids:
-        return set()
-    return set(
-        session.scalars(
-            select(DrawingItem.id)
-            .join(DrawingView, DrawingView.id == DrawingItem.drawing_view_id)
-            .where(
-                DrawingItem.id.in_(set(item_ids)),
-                DrawingItem.id.in_(persons_part_item_ids()),
-                DrawingView.role == ViewRole.SHOP.value,
-            )
-        ).all()
-    )
 
 
 def _rows(session: Session, revision_id: UUID) -> list[_Row]:
@@ -400,7 +433,11 @@ def _vendor_versions(session: Session, versions: Sequence[UUID]) -> set[UUID]:
 
 
 def hold_for_several(
-    finding: Finding, countertops: PackageCountertops, *, depth_reader: bool
+    finding: Finding,
+    countertops: PackageCountertops,
+    *,
+    depth_reader: bool,
+    left: Sequence[CountedCountertop] = (),
 ) -> Finding:
     """A whole-package result of one of the six checks, held when the package has several
     countertops; any other finding unchanged. Never returns `PASS` or `FAIL` it was not given.
@@ -409,23 +446,34 @@ def hold_for_several(
     this only for those. A decided result loses its arithmetic (`trace`, `delta`): it was worked on
     one value standing for several countertops, and must not read as checked. An abstention keeps
     its own reason after the hold, without repeating what clears it. The names go in the notes.
+
+    `left` are the countertops with no result of their own (#1201): their number is in the reason
+    (so a changed set asks again), their names in a note.
     """
     if finding.rule_id not in WHOLE_PACKAGE_RULE_IDS or not countertops.several:
         return finding
     clears = clears_when(finding.rule_id, depth_reader=depth_reader)
     reason = SEVERAL_COUNTERTOPS.format(count=countertops.count, clears=clears)
+    if left:
+        one = len(left) == 1
+        counted = LEFT_OVER.format(
+            left=len(left), have="has" if one else "have", its="its" if one else "their"
+        )
+        reason = f"{reason} {counted}"
     if not finding.is_decision:
         before = " ".join(finding.reason.replace(clears, " ").split())
         if before:
             reason = f"{reason} Also: {before}"
-    note = COUNTERTOPS_NOTE.format(names=_listed(countertops.names))
+    notes = [COUNTERTOPS_NOTE.format(names=_listed(countertops.names))]
+    if left:
+        notes.append(unchecked_note(left))
     return replace(
         finding,
         outcome=Outcome.REVIEW_REQUIRED,
         reason=reason,
         trace=None,
         delta=None,
-        notes=(*finding.notes, note),
+        notes=(*finding.notes, *notes),
     )
 
 
@@ -480,6 +528,7 @@ def countertop_holds(
     engine_version: str,
     countertops: Sequence[CountedCountertop],
     depth_reader: bool,
+    also: str | None = None,
 ) -> CountertopHolds:
     """A held result of one of the six checks for each of these countertops, each to be scoped to
     the countertop (`CountedCountertop.scope`), saying what it waits for (`waiting_reason`).
@@ -489,7 +538,7 @@ def countertop_holds(
     """
     if rule_id not in WHOLE_PACKAGE_RULE_IDS:
         return CountertopHolds()
-    reason = waiting_reason(rule_id, depth_reader=depth_reader)
+    reason = waiting_reason(rule_id, depth_reader=depth_reader, also=also)
     own: list[tuple[CountedCountertop, Finding]] = []
     left: list[CountedCountertop] = []
     used: set[tuple[UUID | None, UUID | None]] = set()

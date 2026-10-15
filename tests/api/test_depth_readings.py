@@ -756,33 +756,15 @@ def test_confirming_from_the_measurements_list_never_passes_the_whole_package(
 
 
 def test_the_whole_package_card_never_offers_confirm(session: Session, store: LocalStore) -> None:
-    """Since #1201 each countertop has its own held depth result, which lists its own reading
-    only. Once a person confirms one, the whole-package result shows again (held), and it never
-    offers to confirm anything."""
-    sheet, client, (first, _second) = _two_countertops(session, store)
-    _whole_package_run(sheet, store)
-
-    found = _findings(client, sheet)
-    assert ("CT-DEPTH-001", None) not in found, "nothing was given for the whole package"
-    own = sorted(
-        [(line["countertop"], line["value"], line["state"]) for line in item["depth_readings"]]
-        for (rule_id, scope), item in found.items()
-        if rule_id == "CT-DEPTH-001" and scope is not None
-    )
-    assert own == [
-        [("Countertop 1 on page 1", '25"', "to_confirm")],
-        [("Countertop 1 on page 2", '30"', "to_confirm")],
-    ]
-
-    confirmed = client.post(
-        f"{_base(sheet)}/candidates/{first.id}/confirm", json={"semantic_type": CT010}
-    )
-    assert confirmed.status_code == 201, confirmed.text
+    sheet, client, _rows = _two_countertops(session, store)
     _whole_package_run(sheet, store)
 
     whole = _findings(client, sheet)[("CT-DEPTH-001", None)]
-    assert whole["outcome"] == Outcome.REVIEW_REQUIRED.value
-    assert whole["depth_readings"]
+
+    assert [(line["value"], line["state"]) for line in whole["depth_readings"]] == [
+        ('25"', "to_confirm"),
+        ('30"', "to_confirm"),
+    ]
     assert all(line["can_confirm"] is False for line in whole["depth_readings"])
 
 

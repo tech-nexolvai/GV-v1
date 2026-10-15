@@ -713,3 +713,28 @@ def test_a_page_rekhas_gate_stopped_is_a_page_to_pick_the_row_on_where_both_agre
     assert "on the Measurements screen" in item.hold.reason
     assert item.agreement.both_readers_agreed_on_row is True
     assert item.pieces == () and item.needs_decision
+
+
+def test_a_split_page_with_only_its_depth_and_sink_holds_is_not_checked(
+    session: Session, tmp_path: Path
+) -> None:
+    """Review of #1201: a split page's own depth and sink holds say nothing about its width, so
+    without its width result the page still has "no check result yet", as before them."""
+    _project_id, package_id = _decided_rows(session)
+    revision = _revision_of(session, package_id)
+    record_id = _unchosen_record(
+        session, revision.id, page_index=2, flags=SPLIT_PICKS, reason=CODE_SPLIT_WHY
+    )
+    _run_current_checks(session, package_id, tmp_path)
+    holds = _row_holds(session, revision.id)
+    on_page = [f for f in _all_live(session, revision.id) if f.scope_row_candidate_id == record_id]
+    assert len([f for f in on_page if f.id in holds]) == 6
+    assert approval_readiness(session, revision.id).unchecked_countertop_pages == ()
+
+    # Its width result goes (as a faulty run leaves it): only its holds are left on the page.
+    (width,) = [f for f in on_page if f.id not in holds]
+    run = session.get_one(CheckRun, width.check_run_id)
+    run.superseded_at = run.created_at
+    session.flush()
+
+    assert approval_readiness(session, revision.id).unchecked_countertop_pages == (3,)

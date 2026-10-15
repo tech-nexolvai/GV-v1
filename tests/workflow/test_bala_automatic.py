@@ -790,16 +790,9 @@ def test_codes_item_changes_no_finding_beside_a_persons_run(
     assert len(held) == 6 and {row[2] for row in held} == {"REVIEW_REQUIRED"}
     assert {row[1] for row in held} == {"None"}, "only whole-package results are held"
     snapshots = {row[0] for row in held}
-    # The person's countertop gets its own held result of each (#1201); code's item has no row and
-    # is not a person's, so it cannot have one: the whole-package results name it in their notes.
-    own = [row for row in with_codes if row[4].startswith("Waiting for ")]
-    assert len(own) == 6 and {row[1] for row in own} == {"Countertop 1 on page 1"}
-    assert {row[2] for row in own} == {"REVIEW_REQUIRED"} and {row[0] for row in own} == snapshots
 
     def rest(rows: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
-        return [
-            row for row in rows if not (row[0] in snapshots and (row[1] == "None" or row in own))
-        ]
+        return [row for row in rows if not (row[1] == "None" and row[0] in snapshots)]
 
     assert rest(with_codes) == rest(without_codes)
     assert len(rest(without_codes)) == len(without_codes) - 6

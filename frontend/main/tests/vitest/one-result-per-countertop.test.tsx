@@ -63,9 +63,11 @@ describe('one result per countertop (#1201)', () => {
     const depth = { ...result('f-depth', 'Countertop row on page 1'), scope_row_candidate_id: 'row-1' } as Finding;
     const width = { ...result('f-width-new', 'Countertop row on page 1'), check_id: 'CT-WIDTH-001', scope_row_candidate_id: 'row-1' } as Finding;
 
-    const items = buildQueue([row], [depth, width], new Set(['f-depth', 'f-width-new']));
+    const other = { ...result('f-other', 'Countertop row on page 1'), check_id: 'CT-SYNTHETIC-NEW-001', scope_row_candidate_id: 'row-1' } as Finding;
 
-    // The new width result still belongs to its row's item; the depth result is its own check.
-    expect(items.map((item) => item.key)).toEqual(['finding:f-depth']);
+    const items = buildQueue([row], [depth, width, other], new Set(['f-depth', 'f-width-new', 'f-other']));
+
+    // Only the new width result belongs to its row's item; any other row result is its own check.
+    expect(items.map((item) => item.key).sort()).toEqual(['finding:f-depth', 'finding:f-other']);
   });
 });

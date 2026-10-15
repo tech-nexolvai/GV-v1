@@ -79,8 +79,12 @@ READER_OFF = (
     "check them on its drawing and decide this result."
 )
 RUN_NOT_DECIDED = (
-    "It clears when this countertop is confirmed and its run decided on Measurements: this check "
-    "then runs for it from the depth and sink reader's readings."
+    "This check runs for it from the depth and sink reader's readings only once this countertop is "
+    "confirmed and its run decided on Measurements."
+)
+NO_CABINET_DEPTH = (
+    "Also: derivation 'expected_depth' could not resolve required value 'cabinet_depth'. A missing "
+    "intermediate or parameter is not zero."
 )
 NEVER = (
     "This check never runs per countertop, so nothing reads this countertop's own values: check "
@@ -126,7 +130,8 @@ def _why(rule_id: str, *, on: bool) -> str:
 
 
 def _two(session: Session, store: LocalStore) -> tuple[_Set, UUID, UUID, Any]:
-    """Two countertops a person confirmed, each alone on its own page, with the job's settings."""
+    """Two countertops a person confirmed, each alone on its own page and from no countertop row,
+    with the job's settings."""
     sheet = _Set(session, store)
     proposal, item, page = _countertop(sheet, 1)
     _project_depth_parameters(session, sheet.revision)
@@ -134,27 +139,92 @@ def _two(session: Session, store: LocalStore) -> tuple[_Set, UUID, UUID, Any]:
     return sheet, proposal, item, page
 
 
+def _rows(session: Session, pages: int = 2, *, settings: bool = True) -> tuple[Any, list[UUID]]:
+    """One countertop row per page, as the slot reader reads it, nothing confirmed yet."""
+    from tests.workflow.test_bala_items import _Revision
+
+    made = _Revision(session, pages=pages)
+    run = made.run()
+    anchors = [made.row(run, page=page) for page in range(pages)]
+    if settings:
+        _project_depth_parameters(session, made.revision)
+    _publish_rulebook(session)
+    return made, anchors
+
+
+def _check(
+    session: Session,
+    store: LocalStore,
+    made: Any,
+    *,
+    on: bool = False,
+    walls: bool = True,
+    typed: dict[str, Any] | None = None,
+) -> dict[str, list[Any]]:
+    DatabaseStages(
+        store,
+        operands=typed or {},
+        discriminators={"wall_config": "back_left_right"} if walls else None,
+        depth_reader=on,
+    ).run_checks(session, made.revision.id)
+    session.flush()
+    return _findings(session, made.revision)
+
+
+LEFT_TWO = "2 of them have no result of their own for this check."
+
+
 # -- 1. one result per countertop, each saying what it waits for ---------------------------------
 
 
 @pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on-no-run-decided"])
-def test_each_countertop_gets_its_own_result_for_every_check(
+def test_each_countertop_row_gets_its_own_result_for_every_check(
     session: Session, store: LocalStore, on: bool
 ) -> None:
-    sheet, _proposal, item, _page = _two(session, store)
+    made, anchors = _rows(session)
 
-    found = _run(sheet, store, on=on)
+    found = _check(session, store, made, on=on)
 
     for rule_id in SIX:
         own = _scoped(found, rule_id)
-        assert sorted((f.scope_item_id, f.scope_label) for f in own) == sorted(
-            [(sheet.item, "Countertop 1 on page 1"), (item, "Countertop 1 on page 2")]
+        assert sorted((f.scope_row_candidate_id, f.scope_label) for f in own) == sorted(
+            [(anchors[0], "Countertop row on page 1"), (anchors[1], "Countertop row on page 2")]
         ), rule_id
         for finding in own:
             assert finding.outcome == Outcome.REVIEW_REQUIRED.value, finding.reason
-            assert finding.reason == f"{WAITS_FOR[rule_id]} {_why(rule_id, on=on)}", rule_id
+            assert finding.reason.startswith(f"{WAITS_FOR[rule_id]} {_why(rule_id, on=on)}")
+        # The same words on each countertop, so a decision on each carries over alike.
+        assert len({f.reason for f in own}) == 1, rule_id
         # Nothing was given for the whole package: no whole-package result to decide as well.
         assert _unscoped(found, rule_id) == [], rule_id
+    # All the depth check lacks is the drawn depth, which its own sentence names: nothing after it.
+    assert {f.reason for f in found["CT-DEPTH-001"]} == {
+        f"{WAITS_FOR['CT-DEPTH-001']} {_why('CT-DEPTH-001', on=on)}"
+    }
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on-no-run-decided"])
+def test_what_the_check_lacks_beyond_the_drawn_values_is_said_on_each_countertop(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    """No job settings and no wall layout (review of #1201): each countertop's own result still
+    says what the whole check lacks, after "Also:", as the whole-package result did on main. The
+    reader-on sentence never says the result clears once the run is decided: the setting would
+    still be missing."""
+    made, _anchors = _rows(session, settings=False)
+
+    found = _check(session, store, made, on=on, walls=False)
+
+    depth = {f.reason for f in found["CT-DEPTH-001"]}
+    assert depth == {
+        f"{WAITS_FOR['CT-DEPTH-001']} {_why('CT-DEPTH-001', on=on)} {NO_CABINET_DEPTH}"
+    }
+    (cabinet,) = {f.reason for f in found[SINK_CABINET]}
+    assert cabinet.startswith(f"{WAITS_FOR[SINK_CABINET]} {NEVER} Also: ")
+    assert "the layout is a question for the reviewer, never a guess" in cabinet
+    for rule_id in SIX:
+        assert len(found[rule_id]) == 2 and len({f.reason for f in found[rule_id]}) == 1
+        assert all("It clears" not in f.reason for f in found[rule_id]), rule_id
 
 
 def test_countertop_rows_and_a_split_page_get_their_own_results(
@@ -211,10 +281,119 @@ def test_a_second_box_with_no_record_keeps_one_whole_package_hold_naming_it(
         assert own.scope_row_candidate_id == anchor
         (held,) = _unscoped(found, rule_id)
         assert held.outcome == Outcome.REVIEW_REQUIRED.value, held.reason
+        assert "1 of them has no result of its own for this check." in held.reason
         assert (
             "Countertops with no result of their own for this check: another countertop row on "
             "page 1 (box 2)." in held.notes
         ), held.notes
+
+
+def test_a_person_s_countertop_with_no_row_is_named_on_the_whole_package_hold(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1201: a countertop a person confirmed from no countertop row has no result of its
+    own (one scoped to an item would ask again on every run). The whole-package hold names it, as
+    on main, and a decision on that hold carries over an unchanged re-run."""
+    from tests.review.test_carry_over import _decide_everything
+
+    sheet, _proposal, _item, _page = _two(session, store)
+
+    found = _run(sheet, store)
+
+    for rule_id in SIX:
+        assert _scoped(found, rule_id) == [], rule_id
+        (held,) = _unscoped(found, rule_id)
+        assert held.outcome == Outcome.REVIEW_REQUIRED.value
+        assert held.reason.startswith("This package has 2 countertops") and LEFT_TWO in held.reason
+        assert (
+            "Countertops with no result of their own for this check: Countertop 1 on page 1 and "
+            "Countertop 1 on page 2." in held.notes
+        )
+    _decide_everything(session, sheet.revision.id)
+    session.flush()
+    _run(sheet, store)
+    assert _blocking(session, sheet.revision.id, SIX) == set()
+
+
+def _blocking(session: Session, revision_id: UUID, rules: Any) -> set[str]:
+    """The rules with a live result that still blocks sign-off."""
+    from app.review.approval import approval_readiness
+
+    blocking = set(approval_readiness(session, revision_id).blocking_finding_ids)
+    found = _findings(session, _revision(session, revision_id))
+    return {rule for rule in rules for f in found.get(rule, []) if f.id in blocking}
+
+
+def _revision(session: Session, revision_id: UUID) -> Any:
+    from app.models import PackageRevision
+
+    return session.get_one(PackageRevision, revision_id)
+
+
+def test_a_changed_number_of_countertops_with_no_row_asks_again(
+    session: Session, store: LocalStore
+) -> None:
+    """Review of #1201: the whole-package hold stands for the countertops with no row; its reason
+    counts them (never names them), so a decision on it does not carry onto a changed set."""
+    from tests.review.test_carry_over import _decide_everything
+    from tests.workflow.test_bala_items import _Revision
+    from tests.workflow.test_item_plan import _unlinked_countertop
+
+    made = _Revision(session, pages=4)
+    run = made.run()
+    anchors = [made.row(run, page=0), made.row(run, page=1)]
+    _project_depth_parameters(session, made.revision)
+    _publish_rulebook(session)
+    # Rows on pages 1 and 2; one more countertop, confirmed from no row, alone on page 3.
+    _unlinked_countertop(session, made, 2)
+    found = _check(session, store, made)
+    for rule_id in SIX:
+        (held,) = _unscoped(found, rule_id)
+        assert "1 of them has no result of its own for this check." in held.reason
+    _decide_everything(session, made.revision.id)
+    session.flush()
+    _check(session, store, made)
+    assert _blocking(session, made.revision.id, SIX) == set(), "an unchanged re-run asked again"
+
+    # A second countertop with no row, on page 4: the six whole-package holds ask again.
+    _unlinked_countertop(session, made, 3)
+    found = _check(session, store, made)
+    from app.review.approval import approval_readiness
+
+    blocking = set(approval_readiness(session, made.revision.id).blocking_finding_ids)
+    for rule_id in SIX:
+        (held,) = _unscoped(found, rule_id)
+        assert LEFT_TWO in held.reason and held.id in blocking, rule_id
+        # Each row's own result is about that row alone: still decided.
+        assert not {f.id for f in _scoped(found, rule_id)} & blocking, rule_id
+    assert len(anchors) == 2
+
+
+def test_two_countertops_on_one_record_never_share_a_result() -> None:
+    """A second countertop that would be scoped to a record another already uses gets no result of
+    its own: it is left over for the whole-package hold (fail closed), never a second result on
+    that record."""
+    from uuid import uuid4
+
+    from verdict.outcomes import Severity
+    from workflow.several_countertops import CountedCountertop, countertop_holds
+
+    row = uuid4()
+    first = CountedCountertop("Countertop 1 on page 1", uuid4(), row_id=row)
+    second = CountedCountertop("Countertop 2 on page 1", uuid4(), row_id=row)
+    third = CountedCountertop("Countertop row on page 2", row_id=uuid4())
+
+    holds = countertop_holds(
+        rule_id="CT-DEPTH-001",
+        severity=Severity.FLAG,
+        snapshot_id="sha256:synthetic",
+        engine_version="synthetic",
+        countertops=(first, second, third),
+        depth_reader=False,
+    )
+
+    assert [countertop for countertop, _finding in holds.own] == [first, third]
+    assert holds.left == (second,)
 
 
 def test_reader_on_a_countertop_with_no_run_decided_gets_its_own_held_result(
@@ -238,10 +417,16 @@ def test_reader_on_a_countertop_with_no_run_decided_gets_its_own_held_result(
         assert len(mine) == 1 and len(theirs) == 1, rule_id
         assert theirs[0].scope_label == "Countertop row on page 2"
         assert theirs[0].outcome == Outcome.REVIEW_REQUIRED.value
-        assert theirs[0].reason == f"{WAITS_FOR[rule_id]} {RUN_NOT_DECIDED}"
+        assert theirs[0].reason.startswith(f"{WAITS_FOR[rule_id]} {RUN_NOT_DECIDED}")
         assert _unscoped(found, rule_id) == [], rule_id
+    # Countertop A is the one item on page 1 beside its one row: its own results are keyed by
+    # that row, so it has one too.
     cabinet = _scoped(found, SINK_CABINET)
-    assert len(cabinet) == 2 and all(f.reason.endswith(NEVER) for f in cabinet)
+    assert len(cabinet) == 2 and all(NEVER in f.reason for f in cabinet)
+    assert {f.scope_label for f in cabinet} == {
+        "Countertop 1 on page 1",
+        "Countertop row on page 2",
+    }
     assert _unscoped(found, SINK_CABINET) == []
 
 
@@ -264,11 +449,36 @@ def test_a_value_from_countertop_a_never_decides_countertop_b(
     (theirs,) = [f for f in found["CT-DEPTH-001"] if f.scope_item_id == item]
     assert mine.outcome == Outcome.PASS.value, mine.reason
     assert theirs.outcome not in DECIDED, theirs.reason
-    for rule_id in SIX:
+    for rule_id in DEPTH_RULE_IDS:
         assert {f.scope_item_id for f in _scoped(found, rule_id)} == {sheet.item, item}, rule_id
+    for rule_id in SIX:
         assert all(
             f.outcome not in DECIDED for f in found[rule_id] if f.scope_item_id != sheet.item
         ), rule_id
+    # The sink cabinet check never runs per countertop, and neither has a row: one hold names both.
+    (cabinet,) = found[SINK_CABINET]
+    assert cabinet.outcome == Outcome.REVIEW_REQUIRED.value and LEFT_TWO in cabinet.reason
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on-no-run-decided"])
+def test_a_typed_value_decides_no_countertop_row(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    """A depth typed on the form is one value for the whole package: it decides no countertop.
+    Each row holds on its own, and the whole-package result that shows the value is held (#1297)."""
+    made, anchors = _rows(session)
+
+    found = _check(
+        session, store, made, on=on, typed=_typed("CT-DEPTH-001", countertop_depth=Fraction(51, 2))
+    )
+
+    assert all(f.outcome not in DECIDED for rule_id in SIX for f in found.get(rule_id, []))
+    own = _scoped(found, "CT-DEPTH-001")
+    assert {f.scope_row_candidate_id for f in own} == set(anchors)
+    assert all(f.reason.startswith(WAITS_FOR["CT-DEPTH-001"]) for f in own)
+    (whole,) = _unscoped(found, "CT-DEPTH-001")
+    assert whole.outcome == Outcome.REVIEW_REQUIRED.value
+    assert whole.reason.startswith("This package has 2 countertops"), whole.reason
 
 
 @pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on-no-run-decided"])
@@ -276,10 +486,9 @@ def test_a_value_from_countertop_a_never_decides_countertop_b(
 def test_a_whole_package_value_decides_no_countertop(
     session: Session, store: LocalStore, on: bool, source: str
 ) -> None:
-    """A depth typed on the form, or an ordinary label a person confirmed on countertop A's page,
-    is one value for the whole package: it decides no countertop. Each countertop holds on its
-    own, and the whole-package result that shows the value is held too (#1297)."""
-    sheet, _proposal, item, _page = _two(session, store)
+    """Two countertops a person confirmed from no row: a typed depth, or an ordinary label a person
+    confirmed on countertop A's page, decides neither. The one whole-package hold names both."""
+    sheet, _proposal, _item, _page = _two(session, store)
     typed = None
     if source == "typed":
         typed = _typed("CT-DEPTH-001", countertop_depth=Fraction(51, 2))
@@ -289,12 +498,9 @@ def test_a_whole_package_value_decides_no_countertop(
     found = _run(sheet, store, on=on, typed=typed)
 
     assert all(f.outcome not in DECIDED for rule_id in SIX for f in found.get(rule_id, []))
-    own = _scoped(found, "CT-DEPTH-001")
-    assert {f.scope_item_id for f in own} == {sheet.item, item}
-    assert all(f.reason.startswith(WAITS_FOR["CT-DEPTH-001"]) for f in own)
-    (whole,) = _unscoped(found, "CT-DEPTH-001")
-    assert whole.outcome == Outcome.REVIEW_REQUIRED.value
-    assert whole.reason.startswith("This package has 2 countertops"), whole.reason
+    (whole,) = found["CT-DEPTH-001"]
+    assert whole.outcome == Outcome.REVIEW_REQUIRED.value and whole.scope_item_id is None
+    assert whole.reason.startswith("This package has 2 countertops") and LEFT_TWO in whole.reason
 
 
 # -- 3. one countertop: exactly as before ---------------------------------------------------------
@@ -402,15 +608,43 @@ def test_the_waiting_sentences_name_no_countertop_and_never_decide() -> None:
             reason = waiting_reason(rule_id, depth_reader=on)
             assert reason == f"{WAITS_FOR[rule_id]} {_why(rule_id, on=on)}"
             assert "page" not in reason and "Countertop " not in reason
+            assert waiting_reason(rule_id, depth_reader=on, also="a setting.") == (
+                f"{reason} Also: a setting."
+            )
 
 
-def test_the_screens_list_the_same_six_checks() -> None:
-    """The Needs-you queue lists a row's own depth or sink result as a check of its own; its list
-    of those checks is the server's."""
-    import re
+def test_only_more_than_a_missing_drawn_value_is_said_again() -> None:
+    from verdict.finding import Finding
+    from verdict.outcomes import Severity
+    from workflow.several_countertops import also_reason
 
-    from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
+    def held(reason: str, outcome: Outcome = Outcome.NOT_FOUND) -> Finding:
+        return Finding(
+            rule_id="CT-DEPTH-001",
+            outcome=outcome,
+            severity=Severity.FLAG,
+            reason=reason,
+            snapshot_id="sha256:synthetic",
+            engine_version="synthetic",
+        )
+
+    inputs = {"countertop_depth"}
+    drawn = (
+        "the final operation could not resolve required value 'countertop_depth'. A missing "
+        "parameter or intermediate is not a default."
+    )
+    setting = NO_CABINET_DEPTH.removeprefix("Also: ")
+    assert also_reason(held(drawn), inputs) is None
+    absent = "required input(s) absent: countertop_depth. A missing value is not a passing value."
+    assert also_reason(held(absent), inputs) is None
+    assert also_reason(held(setting), inputs) == setting
+    assert also_reason(held("No live confirmed countertop run remains."), inputs) is not None
+
+
+def test_the_queue_takes_only_the_width_result_for_a_row_s_own() -> None:
+    """The Needs-you queue lists every row-scoped result as a check of its own except the width
+    result the row shows (#1201 review); that check is the server's width rule."""
+    from workflow.pariksha_run_check import WIDTH_RULE_ID
 
     shown = (Path(__file__).parents[2] / "frontend/main/src/lib/countertop-results.ts").read_text()
-    block = shown.split("export const DEPTH_AND_SINK_CHECKS", 1)[1].split("]);", 1)[0]
-    assert set(re.findall(r"'([A-Z0-9-]+)'", block)) == set(WHOLE_PACKAGE_RULE_IDS)
+    assert f"export const ROW_WIDTH_CHECK = '{WIDTH_RULE_ID}';" in shown

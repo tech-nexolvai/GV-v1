@@ -621,7 +621,7 @@ def depth_readings_for(
     is a check scope) gets a line for each value the reader did read, countertop by countertop. A
     countertop row's own held result (#1201: one per countertop, scoped to the row) gets a line for
     each value the reader read for the countertop suggested from that row, and none can be
-    confirmed there (only a confirmed countertop's reading is its own). A result that decided, or
+    confirmed there (that result is not the countertop's own check). A result that decided, or
     any other check, gets nothing; so does every result of a revision the reader never read. A fixed
     number of queries per revision, whatever the number of countertops.
     """
@@ -671,7 +671,9 @@ def depth_readings_for(
                         wanted,
                         labels.get(proposal, "This countertop"),
                         every_field=False,
-                        # Nobody confirmed this row's countertop yet: its reading is not its own.
+                        # A row's held result is not this countertop's own check (that runs only
+                        # once its run is decided), so nothing is confirmed here, as on the
+                        # whole-package card (#1296); Measurements still offers it.
                         may_confirm=False,
                     )
             else:

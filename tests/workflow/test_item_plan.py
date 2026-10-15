@@ -44,7 +44,6 @@ from workflow.parts import (
     record_part_proposal,
     withdraw_part,
 )
-from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
 from workflow.stages import DatabaseStages
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -214,10 +213,9 @@ def test_a_countertop_with_no_row_says_so_and_lists_no_row_s_results(
     assert entry.countertop.item_id == item
     assert entry.countertop.row_candidate_id is None
     assert entry.note == NO_ROW_LINKED
-    # No row's result; its own held depth and sink results (#1201: the package has two
-    # countertops, the row on page 1 and this one), keyed by the countertop itself.
-    assert sorted(f.rule_id for f in entry.findings) == sorted(WHOLE_PACKAGE_RULE_IDS)
-    assert {(f.scope, f.outcome.value) for f in entry.findings} == {("item", "REVIEW_REQUIRED")}
+    # No row's result, and no result of its own either (#1201 review): a countertop with no row
+    # is named on the whole-package holds instead.
+    assert entry.findings == ()
     assert {rule.rule_id for rule in entry.rules} == _countertop_rules(session)
 
 

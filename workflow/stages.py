@@ -442,11 +442,11 @@ from workflow.review import ENGINE_VERSION, PageResult
 from workflow.several_countertops import (
     WHOLE_PACKAGE_RULE_IDS,
     CountertopHolds,
+    also_reason,
     countertop_holds,
     hold_for_several,
     hold_for_unchecked,
     package_countertops,
-    unchecked_note,
 )
 from workflow.slot_reader import (
     SLOT_READER_VERSION,
@@ -7867,13 +7867,16 @@ class DatabaseStages:
                 engine_version=ENGINE_VERSION,
                 countertops=countertops.countertops,
                 depth_reader=self._depth_reader,
+                # What the check lacks beyond the drawn values (a setting, a wall layout): the same
+                # on every countertop's own result (#1201 review).
+                also=also_reason(finding, (rule.inputs or {}).keys()),
             )
             count = record_own(holds, rule)
             if not given and not holds.left:
                 return count
-            held = hold_for_several(finding, countertops, depth_reader=self._depth_reader)
-            if holds.left:
-                held = replace(held, notes=(*held.notes, unchecked_note(holds.left)))
+            held = hold_for_several(
+                finding, countertops, depth_reader=self._depth_reader, left=holds.left
+            )
             record_finding(
                 session,
                 package_revision_id=package_revision_id,
