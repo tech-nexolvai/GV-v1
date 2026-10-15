@@ -179,7 +179,7 @@ def test_a_draft_is_queued_once_drawn_by_the_worker_and_bannered_on_every_page(
     assert "Will be clouded as wrong (1)" in front
     assert "Vendor wrote 72 in; it should be 66 in." in front
     assert "Needs a person (1)" in front and "The two AIs did not agree on this line." in front
-    assert "NOT CHECKED (1)" in front and "NOT CHECKED: CT-TEST-" in front
+    assert "NOT CHECKED (1)" in front and "NOT CHECKED: 1 check(s): Waiting for" in front
     # The waiting check is printed NOT CHECKED on the drawing's own summary too, never as judged.
     rest = " ".join(text.replace(BANNER, "") for text in pages[1:]).split()
     assert "NOT CHECKED: Waiting for the countertop depth" in " ".join(rest)
@@ -358,3 +358,46 @@ def test_a_waiting_check_a_person_settled_is_still_printed_not_checked(
     assert items.not_checked_ids == {waiting.id}
     assert items.not_checked[0].reason.endswith("(A person settled it as not checked.)")
     assert len(items.failures) == 1 and len(items.needs_a_person) == 1
+
+
+def test_the_not_checked_prefix_is_the_one_several_countertops_writes() -> None:
+    """NOT CHECKED rests on the reason's first words; it cannot quietly move away from them."""
+    from workflow import draft_cloud_render
+    from workflow.several_countertops import WAITING, WAITS_FOR, waiting_reason
+
+    assert WAITING.startswith(draft_cloud_render._WAITING)
+    for rule_id in WAITS_FOR:
+        for reader in (True, False):
+            assert waiting_reason(rule_id, depth_reader=reader).startswith(
+                draft_cloud_render._WAITING
+            )
+
+
+def test_identical_not_checked_reasons_are_said_once_with_every_result() -> None:
+    from workflow.draft_cloud_render import OpenItem, grouped_by_reason
+
+    items = [
+        OpenItem("Countertop row on page 2", WAITING),
+        OpenItem("Countertop row on page 3", "No rule covers this."),
+        OpenItem("Countertop row on page 4", WAITING),
+    ]
+    assert grouped_by_reason(items) == [
+        (WAITING, ("Countertop row on page 2", "Countertop row on page 4")),
+        ("No rule covers this.", ("Countertop row on page 3",)),
+    ]
+
+
+def test_a_draft_is_refused_once_the_review_is_signed_off(
+    session: Session, store: LocalStore, client: Any
+) -> None:
+    """A draft is for before sign-off; the signed cloud PDF stands for a signed review."""
+    package_id, _, _ = _legacy(session, store)
+    answer = client.post(f"/api/v1/projects/{PROJECT}/packages/{package_id}/draft-cloud")
+    assert answer.status_code == 409, answer.text
+    assert "signed off" in answer.json()["message"]
+    assert (
+        session.scalar(
+            select(func.count(OutboxEntry.id)).where(OutboxEntry.workflow == DRAFT_CLOUD_WORKFLOW)
+        )
+        == 0
+    )

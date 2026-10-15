@@ -814,7 +814,9 @@ export interface paths {
          * Ask the worker for a draft cloud PDF (before sign-off)
          * @description Queue a draft of the current revision, or answer with the request already waiting.
          *
-         *     `409` while the revision has no results in force: there is nothing to cloud yet.
+         *     `409` while the revision has no results in force: there is nothing to cloud yet. `409` once
+         *     the review is signed off, too: a draft is for before sign-off, and the signed cloud PDF is the
+         *     file that stands for a signed review (`GET .../redline.pdf`).
          */
         post: operations["request_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_post"];
         delete?: never;

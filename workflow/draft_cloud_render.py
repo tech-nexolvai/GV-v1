@@ -51,7 +51,7 @@ from workflow.draft_cloud import (
 )
 from workflow.redline_outputs import NOT_CHECKED, render_draft_redline
 
-__all__ = ["BANNER", "OpenItems", "open_items", "render_draft_cloud"]
+__all__ = ["BANNER", "OpenItems", "grouped_by_reason", "open_items", "render_draft_cloud"]
 
 #: Printed on every page of a draft.
 BANNER: Final = "DRAFT – not signed off"
@@ -299,33 +299,26 @@ def _front_page(
         f"wrong, {len(items.needs_a_person)} need a person, {len(items.not_checked)} not checked."
     )
     line("")
-    for title, entries, empty, prefix in (
-        (
-            "Will be clouded as wrong",
-            items.failures,
-            "None. No result is wrong.",
-            "",
-        ),
-        (
-            "Needs a person",
-            items.needs_a_person,
-            "None. Nothing is waiting for a person.",
-            "",
-        ),
-        (
-            NOT_CHECKED,
-            items.not_checked,
-            "None. Every check ran.",
-            f"{NOT_CHECKED}: ",
-        ),
+    for title, entries, empty in (
+        ("Will be clouded as wrong", items.failures, "None. No result is wrong."),
+        ("Needs a person", items.needs_a_person, "None. Nothing is waiting for a person."),
     ):
         line(f"{title} ({len(entries)})", font="Helvetica-Bold", at=12.0)
         if not entries:
             paragraph(empty)
         for entry in entries:
-            paragraph(f"{prefix}{entry.label}")
+            paragraph(entry.label)
             paragraph(entry.reason, "    ")
         line("")
+    line(f"{NOT_CHECKED} ({len(items.not_checked)})", font="Helvetica-Bold", at=12.0)
+    if not items.not_checked:
+        paragraph("None. Every check ran.")
+    # One reason said once, with every result it covers (a set waiting for the depth reader has
+    # dozens with the same words).
+    for reason, labels in grouped_by_reason(items.not_checked):
+        paragraph(f"{NOT_CHECKED}: {len(labels)} check(s): {reason}")
+        paragraph("; ".join(labels), "    ")
+    line("")
     paragraph(
         "Every result, including those that passed, is listed again on the summary pages after "
         "the drawing. A page with no cloud is not thereby approved."
@@ -333,6 +326,14 @@ def _front_page(
     canvas.showPage()
     canvas.save()
     return buffer.getvalue()
+
+
+def grouped_by_reason(entries: Sequence[OpenItem]) -> list[tuple[str, tuple[str, ...]]]:
+    """Each distinct reason once, in first-seen order, with the labels of every item it covers."""
+    groups: dict[str, list[str]] = {}
+    for entry in entries:
+        groups.setdefault(entry.reason, []).append(entry.label)
+    return [(reason, tuple(labels)) for reason, labels in groups.items()]
 
 
 def _box(page: PageObject) -> tuple[Decimal, Decimal, Decimal, Decimal]:

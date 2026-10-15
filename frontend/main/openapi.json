@@ -15506,7 +15506,7 @@
         ]
       },
       "post": {
-        "description": "Queue a draft of the current revision, or answer with the request already waiting.\n\n`409` while the revision has no results in force: there is nothing to cloud yet.",
+        "description": "Queue a draft of the current revision, or answer with the request already waiting.\n\n`409` while the revision has no results in force: there is nothing to cloud yet. `409` once\nthe review is signed off, too: a draft is for before sign-off, and the signed cloud PDF is the\nfile that stands for a signed review (`GET .../redline.pdf`).",
         "operationId": "request_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_post",
         "parameters": [
           {

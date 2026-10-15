@@ -24,7 +24,9 @@ from sqlalchemy.orm import Session
 
 from app.api.approvals import _revision
 from app.api.dependencies import get_artifact_store, get_session
+from app.api.signed_off import open_revision
 from app.auth import Principal, require_project_access
+from app.models.package import PackageRevision
 from app.models.verdicts import CheckRun, Finding
 from storage.store import ArtifactStore
 from workflow.draft_cloud import DraftCloud, draft_cloud_status, request_draft_cloud
@@ -70,14 +72,14 @@ def _out(draft: DraftCloud) -> DraftCloudOut:
 def request_draft(
     principal: Annotated[Principal, Depends(require_project_access)],
     session: Annotated[Session, Depends(get_session)],
-    project_id: UUID,
-    package_id: UUID,
+    revision: Annotated[PackageRevision, Depends(open_revision)],
 ) -> DraftCloudOut:
     """Queue a draft of the current revision, or answer with the request already waiting.
 
-    `409` while the revision has no results in force: there is nothing to cloud yet.
+    `409` while the revision has no results in force: there is nothing to cloud yet. `409` once
+    the review is signed off, too: a draft is for before sign-off, and the signed cloud PDF is the
+    file that stands for a signed review (`GET .../redline.pdf`).
     """
-    revision = _revision(session, project_id, package_id)
     has_results = session.scalar(
         select(Finding.id)
         .join(CheckRun, CheckRun.id == Finding.check_run_id)
