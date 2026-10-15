@@ -63,3 +63,32 @@ def test_a_reader_unsure_about_a_label_is_told_in_plain_words() -> None:
         "A reader was not sure this label belongs to the marked span; check it on the drawing."
     )
     assert "no dimension label" not in words.lower()
+
+
+def test_a_gv_tick_is_named_plainly() -> None:
+    """#1198: a number GV ticked is held; the words say GV ticked it and it is shown to you."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(["reviewer-markup", "gv-tick", "ink:gv"], "covered by reviewer markup")
+    assert words is not None
+    assert words.startswith("GV ticked this number (round 2), so it is shown to you.")
+    assert "vendor's own number" in words
+
+
+def test_a_row_with_a_tick_and_any_other_gv_mark_keeps_the_general_words() -> None:
+    """A row's reason gathers every number's flags: one ticked number must not speak for another
+    number GV boxed or corrected."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    words = reviewer_reason(["reviewer-markup", "gv-tick", "gv-other-mark"], None)
+    assert words == "Covered by reviewer markup. Check the vendor's own number."
+
+
+def test_a_tick_flag_alone_never_makes_a_hold() -> None:
+    """The tick only words a hold that exists; it never creates or replaces one."""
+    from vocabulary.reviewer_reasons import reviewer_reason
+
+    assert reviewer_reason(["gv-tick"], None) is None
+    assert reviewer_reason(["gv-tick", "row-hold:counter-break"], None) == reviewer_reason(
+        ["row-hold:counter-break"], None
+    )

@@ -525,3 +525,20 @@ def test_with_the_pair_the_files_text_never_stands_in_for_a_missing_reader(prese
     assert outcome.state is LabelState.REVIEW
     assert outcome.reason_code == "one-reader-missing"
     assert outcome.value is None
+
+
+def test_a_number_gv_ticked_stays_held_and_says_so_plainly() -> None:
+    """#1198: GV's green tick is still GV's ink, so the number is held with no value; the reason
+    names the tick so the reviewer knows why an accepted number is shown to them."""
+    for ink in (InkAt(InkClass.GV, "", tick_only=True), InkAt(InkClass.COVERED, "", tick_only=True)):
+        outcome = seal(ink=ink)
+        assert outcome.state is LabelState.REVIEW
+        assert outcome.reason_code == "reviewer-markup"
+        assert outcome.reason is not None and "GV ticked this number (round 2)" in outcome.reason
+        assert "gv-tick" in outcome.flags and "gv-other-mark" not in outcome.flags
+        assert outcome.value is None and outcome.suggestion is None
+
+
+def test_any_other_gv_ink_is_named_as_such() -> None:
+    outcome = seal(ink=InkAt(InkClass.GV, '15"'))
+    assert "gv-other-mark" in outcome.flags and "gv-tick" not in outcome.flags

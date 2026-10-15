@@ -189,3 +189,74 @@ def test_covers_is_the_fills_own_rule_and_a_stroke_covers_nothing() -> None:
     even_odd = ColouredPath(lines=(), areas=(), rings=(square, hole), even_odd=True)
     assert not even_odd.covers((5, 5))
     assert even_odd.covers((1, 1))
+
+
+# --- #1198: GV's green tick beside a vendor number --------------------------------------------
+#
+# On second-round sheets GV puts a small green check glyph next to each vendor number it accepts.
+# It is still GV's ink, so the number stays held (the markup is the answer key, never a reading
+# source); code only names it, so the reason can say "GV ticked this" plainly. Any other GV ink
+# at the same place keeps the general wording.
+
+#: A green check glyph drawn as one filled outline of six corners (two strokes meeting at the
+#: bottom, the right one longer), just to the right of the vendor's `36`; drawn from scratch.
+GREEN_TICK_BESIDE_36 = (
+    b"0 0.5 0.25 rg 125 524 m 126.2 525.3 l 128.9 522.5 l 134.6 528.2 l 135.8 527 l"
+    b" 128.9 520.1 l h f\n"
+)
+#: The same outline in red: a red mark is not a tick, whatever its shape.
+RED_TICK_BESIDE_36 = GREEN_TICK_BESIDE_36.replace(b"0 0.5 0.25 rg", b"1 0 0 rg")
+#: The same outline, stroked in green rather than filled: a line drawing, not GV's glyph.
+GREEN_STROKED_TICK = GREEN_TICK_BESIDE_36.replace(b"h f\n", b"h S\n").replace(b" rg", b" RG")
+#: A green filled box of the same size: green, but not a tick.
+GREEN_BOX_BESIDE_36 = b"0 0.5 0.25 rg 125 520 10 8 re f\n"
+#: The tick mirrored (long stroke on the left): not the check glyph.
+MIRRORED_TICK = (
+    b"0 0.5 0.25 rg 135.8 524 m 134.6 525.3 l 131.9 522.5 l 126.2 528.2 l 125 527 l"
+    b" 131.9 520.1 l h f\n"
+)
+
+
+def _crop(ink: PageInk) -> tuple[int, int, int, int]:
+    box = _label(ink, "36").box
+    return (box[0] - 20, box[1] - 10, box[2] + 40, box[3] + 10)
+
+
+def test_a_green_tick_beside_the_number_is_still_gv_ink_and_is_named_a_tick() -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    assert ink.at(_crop(ink)) == InkAt(InkClass.GV, "", tick_only=True)
+    # The label's own box does not reach the tick: nothing there is GV's.
+    assert ink.at(_label(ink, "36").box) == InkAt(InkClass.VENDOR, "")
+
+
+@pytest.mark.parametrize(
+    "mark",
+    [RED_TICK_BESIDE_36, GREEN_STROKED_TICK, GREEN_BOX_BESIDE_36, MIRRORED_TICK],
+    ids=["red", "stroked", "box", "mirrored"],
+)
+def test_other_marks_beside_the_number_are_never_called_a_tick(mark: bytes) -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + mark), 0, dpi=DPI)
+    found = ink.at(_crop(ink))
+    assert found.ink is InkClass.GV
+    assert found.tick_only is False
+
+
+@pytest.mark.parametrize(
+    "other",
+    [RED_LINE_THROUGH_36, RED_38.replace(b"200 520", b"140 520"), YELLOW_OVER_36],
+    ids=["red line", "red number", "yellow box"],
+)
+def test_a_tick_with_any_other_gv_ink_at_the_same_place_is_not_tick_only(other: bytes) -> None:
+    ink = read_page_ink(_sheet(BLACK_36 + other + GREEN_TICK_BESIDE_36), 0, dpi=DPI)
+    found = ink.at(_crop(ink))
+    assert found.ink is not InkClass.VENDOR
+    assert found.tick_only is False
+
+
+def test_a_tick_elsewhere_on_the_page_changes_nothing_about_the_label() -> None:
+    far = (
+        b"0 0.5 0.25 rg 325 624 m 326.2 625.3 l 328.9 622.5 l 334.6 628.2 l 335.8 627 l"
+        b" 328.9 620.1 l h f\n"
+    )
+    ink = read_page_ink(_sheet(BLACK_36 + far), 0, dpi=DPI)
+    assert ink.at(_crop(ink)) == InkAt(InkClass.VENDOR, "")
