@@ -57,6 +57,7 @@ tests/api/test_project_settings.py.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Final, Literal
 from uuid import UUID
@@ -78,12 +79,14 @@ from app.models.parameters import ParameterSet as StoredParameterSet
 from app.models.parameters import ParameterValue as StoredParameterValue
 from app.models.parameters import declared_defaults, from_rows
 from app.review.setting_sizes import refused_size
+from app.review.sizes import typed_negative
 from app.schemas.review import optional_in_schema
 from rules.parameter_sources import SOURCE_GUIDANCE, allowed_sources
 from rules.parameters import ParameterLayer, ParameterValue, Provenance, is_rulebook_default
 from rules.required_inputs import BLOCKED_PARAMETERS
 from rules.schema import ParameterScope, Rule
 from units.imperial import format_inches
+from units.measurement import Measurement
 from vocabulary.setting_names import setting_name
 
 router = APIRouter(tags=["company settings"])
@@ -151,6 +154,34 @@ class CompanyValueIn(BaseModel):
 
 class CompanySettingsIn(BaseModel):
     values: list[CompanyValueIn] = Field(min_length=1)
+
+
+#: A bare number, such as `24` or `2 1/2`: typed without its unit (#1394).
+_BARE_NUMBER: Final = re.compile(r"^\s*\d+(?:\.\d+)?(?:\s+\d+/\d+)?\s*$|^\s*\d+/\d+\s*$")
+
+
+def _parse_setting(value: str, *, label: str) -> Measurement:
+    """`_parse`, refused in plain words a person can act on (#1394): a negative value "must be more
+    than 0", a bare number "Add the unit", and never the parser's own code-level message."""
+    if typed_negative(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{label} must be more than 0.",
+        )
+    if _BARE_NUMBER.match(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f'{label}: Add the unit, e.g. 24".',
+        )
+    try:
+        return _parse(value, field=label)
+    except HTTPException as refused:
+        if "unmarked_unit" in str(refused.detail) or "Unit." in str(refused.detail):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f'{label}: this value could not be read. Type inches, e.g. 24".',
+            ) from refused
+        raise
 
 
 def _text(value: ParameterValue) -> str:
@@ -284,7 +315,7 @@ def save_company_settings(
                     "entered for each job, or not a setting any published check uses."
                 ),
             )
-        values[entry.name] = _parse(entry.value, field=entry.name)
+        values[entry.name] = _parse_setting(entry.value, label=setting_name(entry.name))
         # A default cabinet depth or side panel of zero is a mistake, never a value (#1181).
         too_small = refused_size(entry.name, values[entry.name], label=setting_name(entry.name))
         if too_small is not None:
@@ -603,7 +634,7 @@ def save_project_settings(
                 detail=f"{entry.name!r} is not a setting any published check reads for a project.",
             )
         label = setting_name(entry.name)
-        values[entry.name] = _parse(entry.value, field=label)
+        values[entry.name] = _parse_setting(entry.value, label=label)
         too_small = refused_size(entry.name, values[entry.name], label=label)
         if too_small is not None:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=too_small)

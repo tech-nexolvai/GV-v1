@@ -161,7 +161,9 @@ def test_a_company_value_replaces_the_rulebook_default_and_says_so(session: Sess
 @pytest.mark.parametrize(
     ("entry", "says"),
     [
-        ({"name": "back_offset_minimum", "value": "2"}, "with its unit"),
+        ({"name": "back_offset_minimum", "value": "2"}, 'Add the unit, e.g. 24"'),
+        # A negative value is refused in plain words, never with a unit message (#1394).
+        ({"name": "back_offset_minimum", "value": '-2"'}, "must be more than 0"),
         ({"name": "back_offset_minumum", "value": '2"'}, "not a company standard"),
         ({"name": "sink_interior_width", "value": '28"'}, "not a company standard"),
         # Mandatory per project by the client lead's checklist (#817): never a company value.
@@ -177,6 +179,8 @@ def test_a_value_with_no_unit_or_a_name_no_check_uses_is_refused(
 
     assert response.status_code == 422, response.text
     assert says in response.json()["message"]
+    # Never the parser's code-level words (#1394).
+    assert "unmarked_unit" not in response.json()["message"]
 
 
 def test_a_reviewer_may_read_the_standards_but_not_change_them(session: Session) -> None:

@@ -169,3 +169,43 @@ def test_the_architect_note_is_plain_words(reason: str) -> None:
 def test_a_plain_architect_note_is_kept() -> None:
     reason = "Not compared with the architect's drawing here."
     assert plain_architect_note(reason) == reason
+
+
+# --- QA fixes on the same screen (#1394) ----------------------------------------------------------
+
+
+def test_a_whole_page_box_a_hair_past_the_edge_is_put_back_on_the_page() -> None:
+    """A "no countertop" page's whole-page box can end a hair outside 0..1 after conversion; it is
+    put on the edge so its mark is drawn. A box really outside the page is kept, and refused."""
+    import json
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.review.reviewer_marks import _reference
+    from evidence.coordinates import StoredPoint
+    from evidence.polygon import Polygon
+
+    near = [[Decimal("-0.0000004"), Decimal(0)], [Decimal("1.0002"), Decimal(0)]]
+    near += [[Decimal("1.0002"), Decimal("1.000001")], [Decimal(0), Decimal("1.000001")]]
+    polygon = json.loads(_reference(uuid4(), 0, near))["polygon"]
+    assert polygon == [["0", "0"], ["1", "0"], ["1", "1"], ["0", "1"]]
+    document = uuid4()
+    Polygon(tuple(StoredPoint(Decimal(x), Decimal(y)) for x, y in polygon), "stored", document, 0)
+
+    far = [[Decimal(0), Decimal(0)], [Decimal("1.5"), Decimal(0)], [Decimal("1.5"), Decimal(1)]]
+    assert json.loads(_reference(uuid4(), 0, far))["polygon"][1] == ["1.5", "0"]
+
+
+def test_an_answer_naming_no_result_is_422_not_newer_result(
+    session: Session, tmp_path: Path
+) -> None:
+    project_id, package_id = _held_page(session, tmp_path)
+    client = _client(session, project_id)
+    item = next(
+        entry
+        for entry in _of_kind(_items(client, project_id, package_id), "countertop_by_hand")
+        if entry["finding_id"]
+    )
+    response = _act(client, project_id, package_id, str(item["key"]), "checked_right", {})
+    assert response.status_code == 422, response.text
+    assert "expected_finding_id is required" in response.text

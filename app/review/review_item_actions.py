@@ -333,6 +333,12 @@ def find_entry(
         offered = ", ".join(sorted(_TAKES[kind]))
         raise ItemRefused(422, f"This item does not take '{action}'. It takes: {offered}.")
     finding_id = entry.finding_id
+    if finding_id is not None and expected_finding_id is None:
+        # Nothing was named, so nothing is stale: the request is incomplete (#1394).
+        raise ItemRefused(
+            422,
+            "expected_finding_id is required: say which result you saw. Nothing was saved.",
+        )
     if finding_id is not None and expected_finding_id != finding_id:
         raise ItemRefused(
             409,

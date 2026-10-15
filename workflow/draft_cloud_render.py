@@ -15,6 +15,9 @@ banner on every page. It decides nothing: every result and every reason is the s
   the depth reader is off: `several_countertops.WAITING`), and a result no rule covers. Printed as
   NOT CHECKED, never as judged (Anant, 2026-10-15), even after a person settled it: settling a
   check that never ran does not make it checked.
+* *Settled by a person* (#1394): a check that never ran which a person already settled is not an
+  open item, so it is listed apart, never under the open items or their count. The drawing still
+  prints it NOT CHECKED (`not_checked_ids`).
 
 **Never silent.** Each failure is raised as `DraftCloudRefused` with a sentence, which the outbox
 parks at once and the status read shows.
@@ -80,6 +83,9 @@ class OpenItems:
     needs_a_person: tuple[OpenItem, ...]
     not_checked: tuple[OpenItem, ...]
     not_checked_ids: frozenset[UUID]
+    settled: tuple[OpenItem, ...] = ()
+    """Checks that never ran which a person already settled (#1394): not open, still printed NOT
+    CHECKED on the drawing."""
 
 
 def _label(finding: Finding, rule_id: str) -> str:
@@ -115,6 +121,7 @@ def open_items(
     failures: list[OpenItem] = []
     person: list[OpenItem] = []
     not_checked: list[OpenItem] = []
+    settled: list[OpenItem] = []
     not_checked_ids: set[UUID] = set()
     for finding, _run, _snapshot, definition in rows:
         item = OpenItem(_label(finding, definition.rule_id), _reason(finding))
@@ -123,11 +130,13 @@ def open_items(
         elif is_not_checked(finding.outcome, item.reason, standing.get(finding.id)):
             # Settling a check that never ran does not make it checked (decision 1): still
             # printed NOT CHECKED, with who settled it said.
+            not_checked_ids.add(finding.id)
             if finding.outcome != Outcome.NO_APPLICABLE_RULE.value and finding.id not in blocking:
                 ended = item.reason if item.reason.endswith(".") else f"{item.reason}."
-                item = OpenItem(item.label, f"{ended} {_SETTLED}")
+                # Settled: no longer an open item (#1394), listed apart.
+                settled.append(OpenItem(item.label, f"{ended} {_SETTLED}"))
+                continue
             not_checked.append(item)
-            not_checked_ids.add(finding.id)
         elif finding.id in blocking:
             person.append(item)
     for page in readiness.unconfirmed_no_countertop_pages:
@@ -141,7 +150,13 @@ def open_items(
         person.append(
             OpenItem(f"Page {page}", "Needs the checks run again before it has a result.")
         )
-    return OpenItems(tuple(failures), tuple(person), tuple(not_checked), frozenset(not_checked_ids))
+    return OpenItems(
+        tuple(failures),
+        tuple(person),
+        tuple(not_checked),
+        frozenset(not_checked_ids),
+        tuple(settled),
+    )
 
 
 def _live_rows(
@@ -337,6 +352,15 @@ def _front_page(
         paragraph(f"{NOT_CHECKED}: {len(labels)} check(s): {reason}")
         paragraph("; ".join(labels), "    ")
     line("")
+    if items.settled:
+        line(f"Settled by a person ({len(items.settled)})", font="Helvetica-Bold", at=12.0)
+        paragraph(
+            f"Not open. These checks never ran, so the drawing still prints them {NOT_CHECKED}."
+        )
+        for reason, labels in grouped_by_reason(items.settled):
+            paragraph(f"{len(labels)} check(s): {reason}")
+            paragraph("; ".join(labels), "    ")
+        line("")
     paragraph(
         "Every result, including those that passed, is listed again on the summary pages after "
         "the drawing. A page with no cloud is not thereby approved."
