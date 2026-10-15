@@ -45,7 +45,7 @@ describe('ReviewHeader', () => {
 describe('FailuresStrip', () => {
   it('lists each result to be clouded as wrong with a glyph, the word and one Agree', async () => {
     const onAgree = vi.fn();
-    render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={onAgree} />);
+    render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={onAgree} onLook={() => {}} onSelect={() => {}} />);
     const strip = screen.getByRole('region', { name: 'Will be clouded as wrong' });
     expect(within(strip).getAllByText('Wrong')).toHaveLength(2);
     expect(strip.querySelectorAll('[data-slot="failure-row"] [data-outcome-icon="FAIL"]')).toHaveLength(2);
@@ -53,16 +53,32 @@ describe('FailuresStrip', () => {
     expect(onAgree).toHaveBeenCalledWith(data.failures[0]);
   });
 
-  it('an agreed result says so and offers no button', () => {
+  it('an agreed result says so and offers no Agree, only Look', () => {
     const agreed = reviewItems((draft) => { draft.failures[0].status = 'done'; draft.failures[0].actions = []; });
-    render(<FailuresStrip failures={agreed.failures} busyKey={null} errors={{}} onAgree={() => {}} />);
+    render(<FailuresStrip failures={agreed.failures} busyKey={null} errors={{}} onAgree={() => {}} onLook={() => {}} onSelect={() => {}} />);
     expect(screen.getAllByRole('button', { name: /Agree/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Look at/ })).toHaveLength(2);
     expect(screen.getByText('Agreed')).toBeTruthy();
   });
 
   it('shows nothing when no result fails', () => {
-    const { container } = render(<FailuresStrip failures={[]} busyKey={null} errors={{}} onAgree={() => {}} />);
+    const { container } = render(<FailuresStrip failures={[]} busyKey={null} errors={{}} onAgree={() => {}} onLook={() => {}} onSelect={() => {}} />);
     expect(container.textContent).toBe('');
+  });
+
+  it('Look opens a row at its page without selecting it; a click on the row text selects it (#1388)', async () => {
+    const onLook = vi.fn();
+    const onSelect = vi.fn();
+    const { rerender } = render(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} onAgree={() => {}} onLook={onLook} onSelect={onSelect} />);
+    const rows = screen.getAllByRole('listitem');
+    await userEvent.click(within(rows[1]).getByRole('button', { name: /^Look at/ }));
+    expect(onLook).toHaveBeenCalledWith(data.failures[1]);
+    expect(onSelect).not.toHaveBeenCalled();
+    await userEvent.click(within(rows[1]).getByText('Countertop 7'));
+    expect(onSelect).toHaveBeenCalledWith(data.failures[1]);
+    rerender(<FailuresStrip failures={data.failures} busyKey={null} errors={{}} selectedKey={data.failures[1].key} onAgree={() => {}} onLook={onLook} onSelect={onSelect} />);
+    expect(rows[1].getAttribute('aria-current')).toBe('true');
+    expect(rows[0].getAttribute('aria-current')).toBeNull();
   });
 });
 
