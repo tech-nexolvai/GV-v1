@@ -371,8 +371,10 @@ from workflow.bala_items import (
     propose_items,
 )
 from workflow.config import READER_RASTER_DPI
-from workflow.depth_evidence import DEPTH_RULE_IDS
+from workflow.depth_evidence import DEPTH_RULE_IDS, depth_runs, suggestion_depth_operands
+from workflow.depth_rows import NOT_PER_ROW, ONE_COUNTERTOPS_OPENING, ROW_CHECK_NOTE, depth_rows
 from workflow.evidence_operands import (
+    EvidenceOperands,
     evidence_operands,
     order_sentences,
     position_sensitive_inputs,
@@ -1842,6 +1844,7 @@ class DatabaseStages:
         bala_auto_items: bool = False,
         bala_cabinet_prefill: bool = False,
         depth_reader: bool = False,
+        depth_per_row: bool = False,
         depth_stored_answers: Callable[[Session], StoredAnswerSource] | None = None,
         timings: TimingRecorder | None = None,
         architect_reader: ArchitectSettings | None = None,
@@ -2040,6 +2043,13 @@ class DatabaseStages:
         if not isinstance(depth_reader, bool):
             raise TypeError("depth_reader must be a bool")
         self._depth_reader = depth_reader
+        # **Depth checks per countertop row on two judgments (#1390).** Off unless `GV_DEPTH_PER_ROW`
+        # is on, and acted on only with the reader on: a countertop row whose suggestion and drawing
+        # pass both judgments gets the five depth and sink checks of its own, with no cabinet run
+        # (`workflow/depth_rows.py`). Off, nothing changes.
+        if not isinstance(depth_per_row, bool):
+            raise TypeError("depth_per_row must be a bool")
+        self._depth_per_row = depth_per_row
         # Where the depth reader finds stored answers to reuse; the database's by default.
         self._depth_stored_answers = depth_stored_answers
         self._bounded_agent_planner = (
@@ -7945,11 +7955,19 @@ class DatabaseStages:
         # whole-package result is touched, and only ever toward REVIEW_REQUIRED.
         countertops = package_countertops(session, package_revision_id)
 
-        def record_own(holds: CountertopHolds, rule: Rule) -> int:
-            """Each countertop's own held result (#1201), scoped to it, with no value at all."""
+        def record_own(
+            holds: CountertopHolds, rule: Rule, row_why: Mapping[UUID, str] | None = None
+        ) -> int:
+            """Each countertop's own held result (#1201), scoped to it, with no value at all.
+
+            `row_why` (#1390, `GV_DEPTH_PER_ROW` on): why a countertop row is not checked on its
+            own, said after its reason."""
             for countertop, held in holds.own:
                 scope = countertop.scope
                 assert scope is not None  # `countertop_holds` leaves an unscoped one over
+                why = row_why.get(scope[1]) if row_why and scope[1] is not None else None
+                if why is not None:
+                    held = replace(held, reason=f"{held.reason} {NOT_PER_ROW.format(why=why)}")
                 record_finding(
                     session,
                     package_revision_id=package_revision_id,
@@ -7972,8 +7990,13 @@ class DatabaseStages:
             operands: Mapping[str, VerdictOperand],
             given: bool,
             missing: Mapping[str, str] | None = None,
+            covered: Collection[UUID] = (),
+            row_why: Mapping[UUID, str] | None = None,
         ) -> int:
             """Write a whole-package result; return how many results were written.
+
+            `covered` (#1390, `GV_DEPTH_PER_ROW` on): the countertop rows with a result of their own
+            for this check, which get no held result here; `row_why` as `record_own`.
 
             **One result per countertop (#1201).** For one of the six depth and sink checks on a
             package with several countertops, each countertop gets its own held result instead,
@@ -7999,13 +8022,21 @@ class DatabaseStages:
                 severity=finding.severity,
                 snapshot_id=finding.snapshot_id,
                 engine_version=ENGINE_VERSION,
-                countertops=countertops.countertops,
+                countertops=(
+                    countertops.countertops
+                    if not covered
+                    else tuple(
+                        countertop
+                        for countertop in countertops.countertops
+                        if countertop.row_id is None or countertop.row_id not in covered
+                    )
+                ),
                 depth_reader=self._depth_reader,
                 # What the check lacks beyond the drawn values (a setting, a wall layout): the same
                 # on every countertop's own result (#1201 review).
                 also=also_reason(finding, (rule.inputs or {}).keys()),
             )
-            count = record_own(holds, rule)
+            count = record_own(holds, rule, row_why)
             if not given and not holds.left:
                 return count
             held = hold_for_several(
@@ -8072,6 +8103,138 @@ class DatabaseStages:
             # tied to it (#1290). Off, they stay one revision-wide check each, held when the package
             # has several countertops (#1297).
             scoped_rules |= DEPTH_RULE_IDS
+
+        # **Per countertop row, on two judgments (#1390, `GV_DEPTH_PER_ROW`, off by default).** Only
+        # where no person decided a run anywhere on the revision (that is the advanced path above,
+        # and a person always wins) and the reader is on: each row whose suggestion and drawing
+        # pass both judgments gets the five checks of its own (`workflow/depth_rows.py`). Off, this
+        # is `None` and nothing below changes.
+        # A set the reader never read has nothing to check per row: as today.
+        per_row = (
+            depth_rows(session, package_revision_id)
+            if self._depth_per_row
+            and self._depth_reader
+            and countertop_subjects is None
+            and depth_runs(session, package_revision_id)
+            else None
+        )
+
+        def record_depth_rows(
+            snapshot: RuleSnapshot,
+            finding: Finding,
+            selected: EvidenceOperands,
+            *,
+            operands: Mapping[str, VerdictOperand],
+        ) -> int:
+            """One depth or sink check per countertop row on two judgments (#1390), and the
+            whole-package result only where it still says something; how many were written.
+
+            **A value given for the whole package by a person** (a labelled reading, anything but a
+            depth reader's reading a person confirmed) keeps today's whole-package result on a
+            package with one countertop: a person's word is never replaced by a reader's. On a
+            package with several countertops that result is held anyway (#1297), so each row
+            checked on its own gets its result beside it. Never silent: a row not checked on its
+            own keeps its held result with why (`NOT_PER_ROW`), and the whole-package result says
+            why in a note when no row of it was checked on its own.
+            """
+            assert per_row is not None
+            rule = snapshot.rule
+            rule_id = rule.id
+            ambiguous = selected.ambiguous.get(rule_id, {})
+            covered = {row.row_id for row in per_row.rows}
+            # A depth reader's reading a person confirmed for a row checked on its own is that
+            # row's value, which its own check uses; anything else is a value for the package.
+            persons = (
+                bool(operands)
+                or any(not why.startswith(ONE_COUNTERTOPS_OPENING) for why in ambiguous.values())
+                or not selected.depth_confirmed_for.get(rule_id, frozenset())
+                <= {row.proposal_id for row in per_row.rows}
+            )
+            # What the whole-package result shows held (#1297): as today, less a row's own value.
+            given = persons if per_row.rows else bool(operands) or bool(ambiguous)
+            uncovered = [
+                countertop
+                for countertop in countertops.countertops
+                if countertop.row_id is None or countertop.row_id not in covered
+            ]
+            if not countertops.several and (not per_row.rows or uncovered or persons):
+                if not per_row.rows:
+                    why = (
+                        "; ".join(dict.fromkeys(per_row.held.values()))
+                        or "no countertop row of it has two judgments that agree"
+                    )
+                elif uncovered:
+                    why = "its countertop is not a countertop row whose two judgments agree"
+                else:
+                    why = "a value was given for the whole package, which stands"
+                return record_whole_package(
+                    replace(finding, notes=(*finding.notes, NOT_PER_ROW.format(why=why))),
+                    rule,
+                    operands=operands,
+                    given=bool(operands) or bool(ambiguous),
+                    missing=_declared_inputs(rule),
+                )
+            names = {
+                countertop.row_id: countertop.name
+                for countertop in countertops.countertops
+                if countertop.row_id is not None
+            }
+            for row in per_row.rows:
+                found = suggestion_depth_operands(
+                    session, package_revision_id, rule, row.proposal_id, row.view_id
+                )
+                own = (
+                    Finding(
+                        rule_id=rule_id,
+                        outcome=Outcome.NOT_FOUND,
+                        severity=rule.severity,
+                        reason=found.missing,
+                        snapshot_id=snapshot.snapshot_id,
+                        engine_version=ENGINE_VERSION,
+                    )
+                    if found.missing is not None
+                    else execute(
+                        snapshot,
+                        found.operands,
+                        resolved,
+                        discriminators=self._discriminators,
+                        ambiguous=found.ambiguous,
+                    )
+                )
+                own = replace(
+                    own,
+                    notes=(
+                        *own.notes,
+                        *found.notes,
+                        ROW_CHECK_NOTE.format(proposal=row.proposal_id, view=row.view_id),
+                        *self._discriminator_notes(rule),
+                    ),
+                )
+                record_finding(
+                    session,
+                    package_revision_id=package_revision_id,
+                    finding=own,
+                    operands=found.operands,
+                    parameter_set_ids=cited,
+                    defaults_set_id=defaults_set_id,
+                    defaults_canonical_json=defaults_canonical_json,
+                    missing=_declared_inputs(rule),
+                    scope_row_candidate_id=row.row_id,
+                    scope_label=names.get(row.row_id, row.label),
+                    row_depth_suggestion=row.proposal_id,
+                )
+            count = len(per_row.rows)
+            if not countertops.several:
+                return count
+            return count + record_whole_package(
+                finding,
+                rule,
+                operands=operands,
+                given=given,
+                missing=_declared_inputs(rule),
+                covered=covered,
+                row_why=per_row.held,
+            )
 
         # **The products the reviewer said this set is for, or every product (#994).** The resolver
         # keys candidates on an exact product-type match. A package created before #994 says nothing
@@ -8357,6 +8520,11 @@ class DatabaseStages:
                             *self._discriminator_notes(applicable.snapshot.rule),
                         ),
                     )
+                    if not scoped and per_row is not None and rule_id in DEPTH_RULE_IDS:
+                        written += record_depth_rows(
+                            applicable.snapshot, finding, selected, operands=supplied
+                        )
+                        continue
                     if not scoped:
                         written += record_whole_package(
                             finding,

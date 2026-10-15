@@ -178,6 +178,9 @@ def _expected_synthetic_arguments() -> dict[str, object]:
         # "Cabinet" pre-filled from one printed tag (#1266): off unless GV_BALA_CABINET_PREFILL.
         "bala_cabinet_prefill": False,
         "depth_reader": False,
+        # The five depth checks per countertop row on two judgments (#1390): off unless
+        # GV_DEPTH_PER_ROW.
+        "depth_per_row": False,
         "architect_reader": MEASURED_ARCHITECT_SETTINGS,
         "ai_budget": AiBudget(
             per_page_usd=Decimal("0.20"),
@@ -214,6 +217,9 @@ def _expected_minimal_arguments() -> dict[str, object]:
         "bala_auto_items": False,
         "bala_cabinet_prefill": False,
         "depth_reader": False,
+        # The five depth checks per countertop row on two judgments (#1390): off unless
+        # GV_DEPTH_PER_ROW.
+        "depth_per_row": False,
         "architect_reader": None,
         "ai_budget": AiBudget(),
     }
@@ -568,6 +574,23 @@ def test_the_depth_reader_is_switched_on_only_by_its_setting(
 
     ((_args, kwargs),) = recorder.calls
     assert kwargs["depth_reader"] is expected
+
+
+@pytest.mark.parametrize(("stated", "expected"), [("1", True), ("true", True), ("0", False)])
+def test_depth_checks_per_row_are_switched_on_only_by_their_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stated: str, expected: bool
+) -> None:
+    """#1390: the five depth and sink checks per countertop row on two judgments are off by default
+    (the golden arguments above) and on only with `GV_DEPTH_PER_ROW`."""
+    import scripts.drain_outbox as worker
+
+    _environment(monkeypatch, tmp_path, {**MINIMAL_ENVIRONMENT, "GV_DEPTH_PER_ROW": stated})
+    recorder = _record_stages(monkeypatch)
+
+    worker._stages()
+
+    ((_args, kwargs),) = recorder.calls
+    assert kwargs["depth_per_row"] is expected
 
 
 def test_the_depth_reader_refuses_a_word_it_does_not_know(

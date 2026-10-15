@@ -92,6 +92,8 @@ PART_FINDER_VARIABLE = "GV_PART_FINDER_ENABLED"
 BALA_AUTO_ITEMS_VARIABLE = "GV_BALA_AUTO_ITEMS"
 #: Code pre-fills "cabinet" on a piece with one printed cabinet tag (#1266). Off by default.
 BALA_CABINET_PREFILL_VARIABLE = "GV_BALA_CABINET_PREFILL"
+#: The five depth and sink checks per countertop row on two judgments (#1390). Off by default.
+DEPTH_PER_ROW_VARIABLE = "GV_DEPTH_PER_ROW"
 
 #: The settings the line-work reader and the dimension-line detector take (`AssociationSettings`).
 #: Required for the same reason as the rest: each decides which strokes a reading may attach to,
@@ -228,6 +230,17 @@ def depth_reader_configuration() -> bool:
     from extraction.depth.read import depth_reader_enabled
 
     return depth_reader_enabled(os.environ)
+
+
+def depth_per_row_configuration() -> bool:
+    """Whether the five depth and sink checks run per countertop row on two judgments
+    (`GV_DEPTH_PER_ROW`, #1390).
+
+    Off unless switched on. It needs no settings of its own and asks no model: both judgments read
+    what the slot reader, Bala and the depth reader already recorded. It acts only with the depth
+    and sink reader on (`GV_DEPTH_READER`).
+    """
+    return _switched_on(DEPTH_PER_ROW_VARIABLE)
 
 
 def bala_cabinet_prefill_configuration() -> bool:
@@ -478,6 +491,8 @@ def build_stages(
         bala_cabinet_prefill=bala_cabinet_prefill_configuration(),
         # Off unless GV_DEPTH_READER: each countertop's plan and section views read (#1290).
         depth_reader=depth_reader_configuration(),
+        # Off unless GV_DEPTH_PER_ROW: the five depth checks per countertop row (#1390).
+        depth_per_row=depth_per_row_configuration(),
         # Off unless GV_ARCHITECT_READER_ENABLED: the architect's numbers read by code (#1052).
         architect_reader=configured_architect_reader(settings),
         # What the AI readers may spend on a drawing set, grown by its pages (#1206).

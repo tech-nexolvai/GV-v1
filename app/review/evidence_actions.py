@@ -61,6 +61,7 @@ from workflow.depth_evidence import (
     person_types,
     reading_linked,
 )
+from workflow.depth_rows import depth_rows, row_check_proposal
 from workflow.item_plan import live_countertops
 from workflow.row_answers import own_slot_labels, width_semantic
 from workflow.slot_row_scope import candidate_is_sealed, slot_rows
@@ -559,6 +560,51 @@ def _countertop_label(db: Session, finding: Finding, candidate: ObservationCandi
     return field
 
 
+def _row_depth_label(
+    db: Session, finding: Finding, candidate: ObservationCandidate, proposal_id: UUID
+) -> str:
+    """The value type of `candidate` when it is a depth or sink reading of a countertop row's own
+    check on two judgments (#1390, `workflow/depth_rows.py`): the row still passes both judgments
+    now for the same suggestion (its drawing holds it alone), and the reading was written by a depth
+    reading of this revision and is tied to that suggestion by its view's link as it stands now."""
+    found = depth_rows(db, finding.package_revision_id).row(finding.scope_row_candidate_id)
+    if found is None or found.proposal_id != proposal_id:
+        raise HeldReadingRefused(
+            HeldReadingRefusal.NOT_THIS_ITEM,
+            "this countertop row is no longer checked on its own (the AI readers and code no "
+            "longer both say which countertop it is, or its drawing no longer holds it alone), so "
+            "the reading is not tied to this result's own countertop alone; use the advanced depth "
+            "card",
+        )
+    flags = frozenset(candidate.ambiguity_flags or ())
+    runs = {run.id for run in depth_runs(db, finding.package_revision_id)}
+    if (
+        DEPTH_READER_FLAG not in flags
+        or candidate.extraction_run_id not in runs
+        or not reading_linked(db, DepthReading(candidate, flags), proposal_id)
+    ):
+        raise HeldReadingRefused(
+            HeldReadingRefusal.NOT_THIS_ITEM,
+            "this reading is not tied to this result's own countertop",
+        )
+    field = next(
+        (flag.removeprefix(FIELD_PREFIX) for flag in flags if flag.startswith(FIELD_PREFIX)), None
+    )
+    if field not in DEPTH_FIELDS:
+        raise HeldReadingRefused(
+            HeldReadingRefusal.NOT_THIS_ITEM, "this reading is not a depth or sink value"
+        )
+    if QUALIFIED in flags:
+        raise HeldReadingRefused(
+            HeldReadingRefusal.ALREADY_COUNTS,
+            "both AI readers and code already qualified this reading, so it already counts",
+        )
+    if person_types(db, candidate):
+        raise HeldReadingRefused(HeldReadingRefusal.DEPTH_CONFIRM_ONCE, DEPTH_CONFIRM_ONCE_DETAIL)
+    assert field is not None
+    return field
+
+
 def _vendors_own_number(flags: frozenset[str], *, depth: bool) -> bool:
     """Whether the label's value is positively the vendor's own number, by W1's rule.
 
@@ -584,7 +630,13 @@ def _held_label(db: Session, finding: Finding, candidate_id: UUID) -> _HeldLabel
     ).one_or_none()
     if candidate is None:
         raise HeldReadingRefused(HeldReadingRefusal.NOT_THIS_ITEM, "no such reading")
-    if finding.scope_row_candidate_id is not None:
+    row_check = (
+        None if finding.scope_row_candidate_id is None else row_check_proposal(finding.notes)
+    )
+    if row_check is not None:
+        # A countertop row's own depth or sink check on two judgments (#1390): never a width.
+        semantic_type, depth = _row_depth_label(db, finding, candidate, row_check), True
+    elif finding.scope_row_candidate_id is not None:
         semantic_type, depth = _row_label(db, finding, candidate), False
     elif finding.scope_item_id is not None:
         semantic_type, depth = _countertop_label(db, finding, candidate), True
