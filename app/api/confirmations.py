@@ -47,6 +47,7 @@ from rules.semantic_types import SemanticType
 from storage.hashing import ArtifactCorrupt, IntegrityRecordMissing
 from storage.store import ArtifactStore
 from units.imperial import format_inches
+from workflow.depth_evidence import DEPTH_READER_FLAG
 from workflow.depth_evidence import SUPPORT_FLAG as DEPTH_SUPPORT_FLAG
 
 router = APIRouter(tags=["confirmations"])
@@ -501,6 +502,14 @@ def confirm_candidate(
             ),
             detail=result.detail,
         )
+
+    # A depth or sink reading a person confirmed is used only when the checks run again: ask for
+    # one coalesced re-check in the same transaction, as the simple review's Confirm does (#1360),
+    # so its results wait for it instead of reading as "not checked".
+    if DEPTH_READER_FLAG in (candidate.ambiguity_flags or ()):
+        from app.api.measurements import queue_recheck  # imports this module
+
+        queue_recheck(session, revision)
 
     # The confirmation joins a raw candidate to the evidence plane and emits its audit event in this
     # request's transaction.  Without this commit FastAPI closes the session after returning 201 and

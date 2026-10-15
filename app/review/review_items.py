@@ -65,8 +65,11 @@ from sqlalchemy.orm import Session
 
 from app.models import CheckRun, Finding, PackageRevision, RuleDefinition, RuleSnapshot
 from app.models.drawing import VendorPagePicture
-from app.models.evidence import EvidenceSupportingCandidate, ObservationCandidate
-from app.models.review import ReviewAction, ReviewActionKind
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceSupportingCandidate,
+    ObservationCandidate,
+)
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
@@ -79,6 +82,7 @@ from app.verdicts.rulebook import snapshot_store
 from rules.schema import Applicability
 from rules.semantic_types import SemanticType
 from units.imperial import format_inches, parse_imperial
+from verdict.operands import EvidenceStatus
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
 from vocabulary.setting_names import setting_name
@@ -607,19 +611,36 @@ def _depth_item(
     state: Status,
     decided_by: str | None,
     decided_at: datetime | None,
+    sole: bool,
 ) -> ReviewItemOut:
     """One depth or sink reading to confirm (#1360): its value is exactly what a Confirm records.
+
     Confirm is offered only where the advanced depth card offers it (`can_confirm`: the countertop's
-    own result, alone on its drawing, with the reading's picture, not answered yet, #1296)."""
+    own result, alone on its drawing, with the reading's picture, not answered yet, #1296). "Not
+    this" records the whole result as not checked (Anant, 2026-10-16), so it is offered only when
+    the result is one countertop's own and this is its one reading open (`sole`): never on a result
+    covering several countertops, and never to settle another reading unseen."""
     stored = None if line.value is None else _parsed(line.value)
     on = _ON_VIEW.get(line.view or "", "the drawing")
-    offered = ["confirm", "not_this"] if line.can_confirm else ["not_this"]
+    offered = [
+        *(["confirm"] if line.can_confirm else []),
+        *(["not_this"] if sole else []),
+    ]
+    if sole:
+        ask = "Confirm it once, or say it is not this value (the check is then not checked)."
+    elif line.can_confirm:
+        ask = (
+            "Confirm each reading of this check on its own; to say one is not this value, use the "
+            "advanced depth card."
+        )
+    else:
+        ask = "Answer it on the advanced depth card."
     return ReviewItemOut(
         key=f"depth:{finding.id}:{line.candidate_id}",
         kind="depth_reading",
         page=page if page is not None else line.page_number,
         countertop=countertop,
-        row_label=row_label,
+        row_label=row_label or line.countertop,
         what=what,
         best_guess=(
             None
@@ -630,7 +651,7 @@ def _depth_item(
         ),
         why=(
             f"Both AI readers read {line.value} for the {line.label.lower()} on {on}, but only "
-            "its drawn length checks it. Confirm it once, or say it is not this value."
+            f"its drawn length checks it. {ask}"
         ),
         actions=offered if state == "open" else [],
         status=state,
@@ -642,28 +663,28 @@ def _depth_item(
     )
 
 
-def _depth_answered(session: Session, finding_ids: Sequence[UUID]) -> set[UUID]:
-    """The readings a person confirmed through one of these (current) depth and sink results: a
-    `confirm` from the reading to the person's value (#1339). Every result that reads one waits for
-    the re-check that uses it; after the re-check its results are new, and this is empty for them.
-    """
-    if not finding_ids:
-        return set()
-    return set(
-        session.scalars(
-            select(EvidenceSupportingCandidate.candidate_id)
-            .join(
-                ReviewAction,
-                ReviewAction.resulting_observation_id
-                == EvidenceSupportingCandidate.canonical_observation_id,
-            )
-            .where(
-                ReviewAction.finding_id.in_(list(finding_ids)),
-                ReviewAction.action == ReviewActionKind.CONFIRM.value,
-                ReviewAction.original_observation_id.is_not(None),
-            )
+def _confirmed_at(session: Session, candidate_ids: Iterable[UUID]) -> dict[UUID, datetime]:
+    """When a person last confirmed each reading (its newest HUMAN_CONFIRMED observation), from
+    this screen or the advanced depth card. A result made before that waits for the re-check that
+    uses it (#1360); one made after it has used it."""
+    ids = list(set(candidate_ids))
+    if not ids:
+        return {}
+    newest: dict[UUID, datetime] = {}
+    for candidate_id, created_at in session.execute(
+        select(EvidenceSupportingCandidate.candidate_id, CanonicalObservation.created_at)
+        .join(
+            CanonicalObservation,
+            CanonicalObservation.id == EvidenceSupportingCandidate.canonical_observation_id,
         )
-    )
+        .where(
+            EvidenceSupportingCandidate.candidate_id.in_(ids),
+            CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value,
+        )
+    ).all():
+        if candidate_id not in newest or created_at > newest[candidate_id]:
+            newest[candidate_id] = created_at
+    return newest
 
 
 def _slot(candidate: object) -> int | None | Literal[-1]:
@@ -800,9 +821,14 @@ def review_items_for_revision(
         ],
     )
 
-    depth_answered = _depth_answered(
+    confirmed_at = _confirmed_at(
         session,
-        [entry.finding.id for entry in blocking if entry.rule_id in DEPTH_AND_SINK_RULES],
+        (
+            line.candidate_id
+            for lines in depth_lines.values()
+            for line in lines
+            if line.state == "confirmed" and line.candidate_id is not None
+        ),
     )
 
     # The settings each depth and sink check was missing when it ran (#1373): from the rule as run
@@ -881,11 +907,15 @@ def review_items_for_revision(
                         state=state,
                         decided_by=decided_by,
                         decided_at=decided_at,
+                        sole=finding.scope_item_id is not None and len(to_confirm) == 1,
                     )
                     for line in to_confirm
                 )
             elif state == "open" and any(
-                line.state == "confirmed" and line.candidate_id in depth_answered for line in lines
+                line.state == "confirmed"
+                and line.candidate_id in confirmed_at
+                and confirmed_at[line.candidate_id] > finding.created_at
+                for line in lines
             ):
                 # A person confirmed its reading here; the result waits for the re-check that uses
                 # it. Never "Not checked": something was read, and a person answered it (#1360).

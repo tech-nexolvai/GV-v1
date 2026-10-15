@@ -59,6 +59,7 @@ from workflow.depth_evidence import (
     person_types,
     reading_linked,
 )
+from workflow.item_plan import live_countertops
 from workflow.row_answers import own_slot_labels, width_semantic
 from workflow.slot_row_scope import candidate_is_sealed, slot_rows
 
@@ -531,6 +532,16 @@ def _countertop_label(db: Session, finding: Finding, candidate: ObservationCandi
         raise HeldReadingRefused(
             HeldReadingRefusal.NOT_THIS_ITEM, "this reading is not a depth or sink value"
         )
+    # Only a countertop alone on its drawing (as the screens offer it, #1296): with two on one
+    # drawing, a confirmation would be evidence for either.
+    live = live_countertops(db, finding.package_revision_id, follow_rows=False)
+    own = [countertop for countertop in live if countertop.item_id == finding.scope_item_id]
+    if len(own) != 1 or sum(1 for c in live if c.view_id == own[0].view_id) != 1:
+        raise HeldReadingRefused(
+            HeldReadingRefusal.NOT_THIS_ITEM,
+            "this result's countertop shares its drawing with another countertop, so the reading "
+            "is not tied to this result's own countertop alone; use the advanced depth card",
+        )
     if QUALIFIED in flags:
         raise HeldReadingRefused(
             HeldReadingRefusal.ALREADY_COUNTS,
@@ -559,7 +570,14 @@ def _vendors_own_number(flags: frozenset[str], *, depth: bool) -> bool:
 
 def _held_label(db: Session, finding: Finding, candidate_id: UUID) -> _HeldLabel:
     """The finding's own held label, its type and the AI's value, or why it cannot be answered."""
-    candidate = db.get(ObservationCandidate, candidate_id)
+    # Locked before any person's answer is read (as `POST .../candidates/{id}/confirm` does): a
+    # second answer at the same time waits, then sees the first and is refused (confirm once).
+    candidate = db.scalars(
+        select(ObservationCandidate)
+        .where(ObservationCandidate.id == candidate_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
     if candidate is None:
         raise HeldReadingRefused(HeldReadingRefusal.NOT_THIS_ITEM, "no such reading")
     if finding.scope_row_candidate_id is not None:

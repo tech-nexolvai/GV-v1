@@ -25,17 +25,19 @@ items and numbers are decided.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.architect_matches import pick_architect_view
-from app.api.dependencies import get_session
+from app.api.confirmations import _candidate_crop_artifact, _verified_crop_content
+from app.api.dependencies import get_artifact_store, get_session
 from app.api.measurements import checks_pending, queue_recheck
 from app.api.review import _refuse
 from app.api.signed_off import open_revision
@@ -53,6 +55,7 @@ from app.api.visual_countertops import (
 )
 from app.auth import Action, Principal, require_action, require_project_access
 from app.models import Package, PackageRevision
+from app.models.review import ReviewActionKind
 from app.review import review_item_actions as actions
 from app.review.evidence_actions import (
     HeldReadingRefusal,
@@ -67,6 +70,7 @@ from app.review.review_items import (
     review_items_for_revision,
 )
 from app.schemas.architect_matches import ArchitectViewPickIn
+from storage.store import ArtifactStore
 
 router = APIRouter(tags=["simple review"])
 
@@ -121,6 +125,16 @@ def _invalid(error: ValidationError) -> HTTPException:
     )
 
 
+def _artifact_store_when_needed(request: Request) -> Callable[[], ArtifactStore]:
+    """The artifact store, fetched only by an answer that needs it (a depth or sink reading's
+    picture, #1360), so every other answer works where no store is configured. An override of
+    `get_artifact_store` is honoured."""
+    provider = request.app.dependency_overrides.get(get_artifact_store)
+    if provider is None:
+        return lambda: get_artifact_store(request)
+    return lambda: provider()
+
+
 @router.post(
     "/projects/{project_id}/packages/{package_id}/review-items/{key}/{action}",
     response_model=actions.ReviewItemActionOut,
@@ -143,6 +157,7 @@ def answer_review_item(
     action: str,
     body: actions.ReviewItemActionIn,
     response: Response,
+    store: Annotated[Callable[[], ArtifactStore], Depends(_artifact_store_when_needed)],
 ) -> actions.ReviewItemActionOut | JSONResponse:
     """One answer. URL actions: `confirm | fix | answer | agree | clear-not-checked`.
 
@@ -197,7 +212,31 @@ def answer_review_item(
         # number's (#1360): once only, its own countertop only, the value shown.
         if not isinstance(entry, ReviewItemOut) or name not in ("confirm", "fix"):
             raise _unprocessable("A number takes Confirm or Fix.")
+        if kind == "depth_reading":
+            _check_depth_picture(session, store(), revision, entry)
         sitting_id, recorded = _answer_number(session, principal, revision, entry, name, body)
+    elif kind == "depth_reading" and name == "not_this":
+        # "Not this" = Not checked (Anant, 2026-10-16): the whole result is recorded as not
+        # checked, so it is offered only on one countertop's own result with this one reading
+        # open (the list's actions, held by `find_entry`). Nothing is written on the reading.
+        if not isinstance(entry, ReviewItemOut) or entry.finding_id is None:
+            raise _unprocessable("This item has no result to record the answer on.")
+        note = actions.depth_not_this_note(entry)
+        try:
+            sitting, _recorded = actions.record_finding_actions(
+                session,
+                revision_id=revision.id,
+                actor=principal.id,
+                decisions=[
+                    actions.FindingDecision(entry.finding_id, ReviewActionKind.DISMISS, note)
+                ],
+            )
+            sitting_id = sitting.id
+            session.commit()
+        except Exception as error:
+            session.rollback()
+            raise _refuse(error) from error
+        recorded = f"Recorded on the result: {note}"
     elif name in actions.FINDING_ANSWERS:
         if entry.finding_id is None:
             raise _unprocessable("This item has no result to record the answer on.")
@@ -335,6 +374,31 @@ def _answer_number(
         sitting_id,
         "Fixed: recorded as a correction of the AI's reading; the checks will use your value.",
     )
+
+
+def _check_depth_picture(
+    session: Session, store: ArtifactStore, revision: PackageRevision, entry: ReviewItemOut
+) -> None:
+    """A depth or sink reading is confirmed only with its own picture, whose stored bytes still
+    match their digest: the same guard `POST .../candidates/{id}/confirm` applies (#1360, defence in
+    depth behind the list's `can_confirm`). 409 otherwise; nothing is saved."""
+    artifact = (
+        None
+        if entry.candidate_id is None
+        else _candidate_crop_artifact(session, revision, entry.candidate_id)
+    )
+    if artifact is None:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This reading has no picture yet, so it cannot be confirmed here. Nothing was "
+            "saved.",
+        )
+    try:
+        _verified_crop_content(store, artifact)
+    except HTTPException:
+        session.rollback()
+        raise
 
 
 def _unprocessable(detail: str) -> HTTPException:

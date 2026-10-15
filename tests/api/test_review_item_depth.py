@@ -14,6 +14,8 @@ per such reading, with the value a Confirm records, and the action endpoint answ
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -21,7 +23,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from app.api.measurements import RUN_CHECKS_WORKFLOW
@@ -34,21 +36,30 @@ from app.models import (
     PackageState,
     ViewRole,
 )
-from app.models.evidence import EvidenceSupportingCandidate
+from app.models.evidence import EvidenceArtifact, EvidenceSupportingCandidate
 from app.models.outbox import OutboxEntry
 from app.models.review import ReviewAction, ReviewSession
+from app.models.verdicts import Finding
 from app.review import review_item_actions
-from app.review.evidence_actions import confirm_candidate_reading
+from app.review.evidence_actions import (
+    HeldReadingRefusal,
+    HeldReadingRefused,
+    confirm_candidate_reading,
+)
 from app.review.review_items import ReviewItemOut, ReviewItemsOut, review_items_for_revision
+from app.review.reviewer_marks import live_decisions, reviewer_marks_for
 from app.review.session import open_session
-from app.review.signed_record import ReviewDisposition
+from app.review.signed_record import DEPTH_NOT_THIS_PREFIX, ReviewDisposition
 from storage.local import LocalStore
 from tests.api.test_depth_readings import _base, _client, _crop
 from tests.evidence.test_bridge import _upgrade
 from tests.workflow.test_depth_evidence import ACTOR, CT008, CT010, _Set
 from tests.workflow.test_reading_parts import _confirmed
+from tests.workflow.test_stages import _publish_rulebook
 from vocabulary.part_kinds import PartKind
 from workflow.depth_evidence import CONFIRM_ONLY
+from workflow.draft_cloud_render import _live_rows, open_items
+from workflow.stages import DatabaseStages
 from workflow.view_roles import confirm_view_role
 
 pytest_plugins = ("tests.app.postgres_fixture",)
@@ -419,7 +430,8 @@ def test_a_reading_not_offered_for_confirming_is_refused_here(
     session: Session, store: LocalStore
 ) -> None:
     """Without its picture the advanced card does not offer a reading either (`can_confirm`): the
-    list offers only Not this, and a Confirm is refused before anything is written."""
+    list offers only Not this, and a Confirm is refused before anything is written (409: the screen
+    reloads the item, as for any answer it no longer offers)."""
     sheet = _Set(session, store)
     row = sheet.reading(
         CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
@@ -432,7 +444,8 @@ def test_a_reading_not_offered_for_confirming_is_refused_here(
 
     refused = _confirm(client, sheet, item)
 
-    assert refused.status_code == 422, refused.text
+    assert refused.status_code == 409, refused.text
+    assert "Reload the list" in refused.json()["message"]
     assert _records(session, row.id) == {"observations": [], "actions": []}
 
 
@@ -459,11 +472,13 @@ def test_not_this_records_the_check_as_not_checked_and_nothing_on_the_reading(
     (action,) = session.scalars(
         select(ReviewAction).where(ReviewAction.finding_id == UUID(item["finding_id"]))
     ).all()
-    assert (action.action, action.actor, action.note) == (
-        "dismiss",
-        ACTOR,
-        review_item_actions.DEPTH_NOT_THIS_NOTE,
+    assert (action.action, action.actor) == ("dismiss", ACTOR)
+    # The note names the reading's value, the check, the countertop and the reading itself.
+    assert action.note == (
+        f'{DEPTH_NOT_THIS_PREFIX}25" is not the countertop depth on {item["row_label"]} '
+        f"(reading {row.id}; simple review)."
     )
+    assert item["row_label"].startswith("Countertop")
     assert action.original_observation_id is None and action.resulting_observation_id is None
     sitting = session.get_one(ReviewSession, action.review_session_id)
     assert (sitting.reviewer, sitting.package_revision_id) == (ACTOR, sheet.revision.id)
@@ -507,6 +522,301 @@ def test_no_answer_on_a_depth_or_sink_item_is_501_any_more(
             {"expected_finding_id": item["finding_id"], **body},
         )
         assert response.status_code != 501, response.text
+
+
+# --- review of #1378: "Not this" prints NOT CHECKED and settles only its own reading ---------------
+
+
+def _not_this(client: Any, sheet: _Set, item: dict[str, Any]) -> Any:
+    return _act(
+        client,
+        sheet,
+        str(item["key"]),
+        "answer",
+        {"expected_finding_id": item["finding_id"], "answer": "not_this"},
+    )
+
+
+def test_after_not_this_the_cloud_pdf_prints_the_check_not_checked(
+    session: Session, store: LocalStore
+) -> None:
+    """The draft's front page and the sign-off marks both list the result as NOT CHECKED, never
+    as a result that simply dropped off (its reason is "Confirm this reading", not "Waiting for")."""
+    sheet, _row = _waiting(session, store)
+    client = _client(session, store, sheet)
+    (item,) = _depth_items(client, sheet)
+    finding_id = UUID(item["finding_id"])
+    rows = _live_rows(session, sheet.revision.id)
+    assert finding_id not in open_items(session, sheet.revision.id, rows).not_checked_ids
+
+    assert _not_this(client, sheet, item).status_code == 201
+
+    rows = _live_rows(session, sheet.revision.id)
+    assert finding_id in open_items(session, sheet.revision.id, rows).not_checked_ids
+    findings = [(finding, definition.rule_id) for finding, _r, _s, definition in rows]
+    decisions = live_decisions(session, findings)
+    marks = reviewer_marks_for(
+        session, sheet.revision.id, findings=findings, decisions=decisions, until=None
+    )
+    assert finding_id in marks.not_checked_finding_ids
+    assert any("as not checked" in mark.words for mark in marks.marks)
+    # The countertop depth's other check of the same reading is untouched: still to answer.
+    assert any(entry["status"] == "open" for entry in _all_depth_items(client, sheet))
+
+
+def test_not_this_is_never_offered_while_the_result_has_another_reading_open(
+    session: Session, store: LocalStore
+) -> None:
+    """Two readings of one countertop's depth (plan and section): "Not this" on one would settle
+    the other unseen, so neither offers it; each is confirmed on its own."""
+    sheet = _Set(session, store)
+    plan = sheet.reading(
+        CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    section = sheet.reading(
+        CT010,
+        25,
+        CONFIRM_ONLY,
+        link=sheet.link(kind="section"),
+        kind="section",
+        confirmed_by="drawn-length-only",
+    )
+    for row in (plan, section):
+        _crop(session, store, row)
+    sheet.check(store, on=True)
+    _awaiting_review(sheet)
+    client = _client(session, store, sheet)
+
+    items = _depth_items(client, sheet)
+    assert sorted(entry["candidate_id"] for entry in items) == sorted(
+        [str(plan.id), str(section.id)]
+    )
+    assert all(entry["actions"] == ["confirm"] for entry in items)
+    assert all("advanced depth card" in entry["why"] for entry in items)
+
+    refused = _not_this(client, sheet, items[0])
+    assert refused.status_code == 409, refused.text
+    assert session.scalars(select(ReviewAction)).first() is None
+
+
+def test_not_this_is_never_offered_on_a_result_covering_several_countertops(
+    session: Session, store: LocalStore
+) -> None:
+    """A whole-package depth result (no countertop in scope) reads every countertop's reading:
+    "Not this" there would close the other countertops' depth too. Nothing is offered on it."""
+    sheet = _Set(session, store)
+    first = sheet.reading(
+        CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    other_view = DrawingView(
+        page_id=sheet.page.id,
+        tag="OTHER",
+        region={
+            "space": "stored",
+            "points": [["0", "0"], ["0.05", "0"], ["0.05", "0.05"], ["0", "0.05"]],
+        },
+    )
+    session.add(other_view)
+    session.flush()
+    confirm_view_role(session, view=other_view, role=ViewRole.SHOP, actor=ACTOR)
+    other_proposal, _other_item = _confirmed(
+        session, other_view, PartKind.COUNTERTOP, "0.01", "0.04"
+    )
+    second = sheet.reading(
+        CT010, 30, CONFIRM_ONLY, link=sheet.link(other_proposal), confirmed_by="drawn-length-only"
+    )
+    for row in (first, second):
+        _crop(session, store, row)
+    _publish_rulebook(session)
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, depth_reader=True
+    ).run_checks(session, sheet.revision.id)
+    _awaiting_review(sheet)
+    client = _client(session, store, sheet)
+
+    items = _depth_items(client, sheet)
+    whole = [
+        entry
+        for entry in items
+        if session.get_one(Finding, UUID(entry["finding_id"])).scope_item_id is None
+    ]
+    assert whole, "the whole-package depth result lists its readings"
+    assert all(entry["actions"] == [] for entry in whole)
+    for entry in whole:
+        assert _not_this(client, sheet, entry).status_code == 409
+    assert session.scalars(select(ReviewAction)).first() is None
+
+
+# --- review of #1378: confirm once under concurrency, and the confirm path's own guards ------------
+
+
+def test_two_confirms_at_once_write_one_answer(session: Session, store: LocalStore) -> None:
+    """Two people confirm the same reading at the same moment: the second waits for the first
+    (the reading row is locked), then sees its answer and is refused. One answer is written."""
+    sheet, row = _waiting(session, store)
+    client = _client(session, store, sheet)
+    (item,) = _depth_items(client, sheet)
+    session.commit()
+    bind = session.get_bind()
+    path = session.execute(text("show search_path")).scalar()
+    principal = Principal(id=ACTOR, roles=frozenset({Role.REVIEWER}))
+    first, second = (session_factory(bind)() for _ in range(2))  # type: ignore[arg-type]
+    for opened in (first, second):
+        opened.execute(text(f"set search_path to {path}"))
+        opened.execute(text("set lock_timeout = '20s'"))
+    outcome: dict[str, str] = {}
+
+    def confirm(opened: Session, name: str) -> None:
+        try:
+            sitting = open_session(
+                opened, package_revision_id=sheet.revision.id, reviewer=f"{ACTOR}-{name}"
+            )
+            confirm_candidate_reading(
+                opened,
+                principal=principal,
+                review_session_id=sitting.id,
+                finding_id=UUID(item["finding_id"]),
+                candidate_id=row.id,
+                expected_value=Fraction(25),
+            )
+            opened.commit()
+            outcome[name] = "written"
+        except HeldReadingRefused as refused:
+            opened.rollback()
+            outcome[name] = refused.reason.value
+
+    try:
+        confirm_candidate_reading(
+            first,
+            principal=principal,
+            review_session_id=open_session(
+                first, package_revision_id=sheet.revision.id, reviewer=f"{ACTOR}-first"
+            ).id,
+            finding_id=UUID(item["finding_id"]),
+            candidate_id=row.id,
+            expected_value=Fraction(25),
+        )
+        waiting = threading.Thread(target=confirm, args=(second, "second"))
+        waiting.start()
+        # The second waits on the reading's lock while the first is still open.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not _waits_on_a_lock(session):
+            time.sleep(0.05)
+        assert waiting.is_alive(), outcome
+        first.commit()
+        waiting.join(timeout=20)
+    finally:
+        first.close()
+        second.close()
+
+    assert outcome == {"second": HeldReadingRefusal.DEPTH_CONFIRM_ONCE.value}
+    session.expire_all()
+    assert _person_values(session, row.id) == [
+        ("HUMAN_CONFIRMED", CT010, Fraction(25), "in", "SHOP")
+    ]
+
+
+def _waits_on_a_lock(session: Session) -> bool:
+    return bool(
+        session.execute(
+            text(
+                "select count(*) from pg_stat_activity "
+                "where wait_event_type = 'Lock' and datname = current_database()"
+            )
+        ).scalar()
+    )
+
+
+def test_the_confirm_path_refuses_a_countertop_sharing_its_drawing(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two countertops on one drawing: the list never offers Confirm (`can_confirm`), and even a
+    list that did is refused by the evidence decision itself (defence in depth)."""
+    sheet = _Set(session, store)
+    _confirmed(session, sheet.view, PartKind.COUNTERTOP, "0.10", "0.15")
+    row = sheet.reading(
+        CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    _crop(session, store, row)
+    sheet.check(store, on=True)
+    _awaiting_review(sheet)
+    client = _client(session, store, sheet)
+    items = [entry for entry in _depth_items(client, sheet) if entry["candidate_id"] == str(row.id)]
+    assert items and all("confirm" not in entry["actions"] for entry in items)
+
+    _list_with(monkeypatch, {**items[0], "actions": ["confirm", "not_this"]})
+    refused = _confirm(client, sheet, items[0])
+
+    assert refused.status_code == 422, refused.text
+    assert "shares its drawing" in refused.json()["message"]
+    assert _records(session, row.id) == {"observations": [], "actions": []}
+
+
+@pytest.mark.parametrize("picture", ["missing", "altered"])
+def test_the_confirm_path_needs_the_readings_own_unaltered_picture(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch, picture: str
+) -> None:
+    """Even a list that offered Confirm: no picture, or a picture whose bytes no longer match their
+    digest, is refused before anything is written (the advanced confirm's own guard)."""
+    sheet = _Set(session, store)
+    row = sheet.reading(
+        CT010, 25, CONFIRM_ONLY, link=sheet.link(), confirmed_by="drawn-length-only"
+    )
+    if picture == "altered":
+        _crop(session, store, row)
+    sheet.check(store, on=True)
+    _awaiting_review(sheet)
+    client = _client(session, store, sheet)
+    (item,) = _depth_items(client, sheet)
+    if picture == "altered":
+        key = session.scalars(
+            select(EvidenceArtifact.storage_key).where(EvidenceArtifact.candidate_id == row.id)
+        ).one()
+        store._path(key).write_bytes(b"another picture")
+    _list_with(monkeypatch, {**item, "actions": ["confirm", "not_this"]})
+
+    refused = _confirm(client, sheet, item)
+
+    assert refused.status_code == 409, refused.text
+    assert _records(session, row.id) == {"observations": [], "actions": []}
+
+
+# --- review of #1378: a confirm on the advanced card waits for the re-check too --------------------
+
+
+def test_an_advanced_card_confirm_waits_for_the_recheck_and_is_never_not_checked(
+    session: Session, store: LocalStore
+) -> None:
+    """Confirmed on the advanced depth card: a re-check is asked for, and every result that reads
+    the reading waits for it. None lands in "Not checked", where "Clear all" would record that
+    the values were not read."""
+    sheet, row = _waiting(session, store)
+    client = _client(session, store, sheet)
+    card = client.post(f"{_base(sheet)}/candidates/{row.id}/confirm", json={"semantic_type": CT010})
+    assert card.status_code == 201, card.text
+
+    assert len(_queued(session, sheet)) == 1
+    listed = _items(client, sheet)
+    after = [entry for entry in listed["items"] if entry["kind"] == "depth_reading"]
+    assert sorted((entry["what"], entry["status"]) for entry in after) == [
+        ("Back offset minimum", "rechecking"),
+        ("Countertop depth", "rechecking"),
+    ]
+    assert {entry["finding_id"] for entry in after}.isdisjoint(
+        {entry["finding_id"] for entry in listed["not_checked"]}
+    )
+
+    # After the re-check that used it, nothing waits on it any more.
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, depth_reader=True
+    ).run_checks(session, sheet.revision.id)
+    session.commit()
+    again = _items(client, sheet)
+    assert not [
+        entry
+        for entry in again["items"]
+        if entry["kind"] == "depth_reading" and entry["status"] == "rechecking"
+    ]
 
 
 # --- helpers --------------------------------------------------------------------------------------

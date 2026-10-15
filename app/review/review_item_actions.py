@@ -28,7 +28,8 @@ DISMISS with the shared note `app.review.signed_record.CHECKED_WRONG_NOTE`, prin
 **A depth or sink reading (#1360)** is one item per reading. Confirm goes through the held-reading
 evidence decision (`app/review/evidence_actions.confirm_candidate_reading`, the same as a number):
 once only, for its own countertop only, naming the value shown. "Not this" records the result as
-not checked (`DEPTH_NOT_THIS_NOTE`) and writes nothing on the reading.
+not checked (`depth_not_this_note`) and writes nothing on the reading. It is offered only on one
+countertop's own result with that one reading open: it settles the whole result.
 
 Source: issues #1351, #1358, #1360. Verification: `tests/api/test_review_item_actions.py`,
 `tests/api/test_review_item_depth.py`.
@@ -60,14 +61,13 @@ from app.review.review_items import (
     review_items_for_revision,
 )
 from app.review.session import open_session, record_action
-from app.review.signed_record import CHECKED_WRONG_NOTE
+from app.review.signed_record import CHECKED_WRONG_NOTE, DEPTH_NOT_THIS_PREFIX
 from verdict.operands import EvidenceStatus
 
 __all__ = [
     "AGREE_NOTE",
     "CHECKED_RIGHT_NOTE",
     "CHECKED_WRONG_NOTE",
-    "DEPTH_NOT_THIS_NOTE",
     "NOT_CHECKED_FIXED_NOTE",
     "NOT_CHECKED_GROUP",
     "NUMBERS_NOT_YET",
@@ -78,6 +78,7 @@ __all__ = [
     "answer_name",
     "check_shown_value",
     "current_items",
+    "depth_not_this_note",
     "find_entry",
     "numbers_answered",
     "record_finding_actions",
@@ -91,12 +92,19 @@ CHECKED_RIGHT_NOTE: Final = "Checked by hand: right (simple review)."
 AGREE_NOTE: Final = "Agreed: this is wrong on the drawing and will be clouded (simple review)."
 NOT_CHECKED_FIXED_NOTE: Final = "Not checked: the values were not read"
 
-#: "Not this" on a depth or sink reading (#1360): the check cannot use the reading, so the result
-#: is recorded as not checked (a `dismiss`, printed NOT CHECKED), and nothing is written on the
-#: reading. A reading only its drawn length checks is never used without a person's Confirm.
-DEPTH_NOT_THIS_NOTE: Final = (
-    "Not checked: a person said the AI's depth or sink reading is not this value (simple review)."
-)
+
+def depth_not_this_note(entry: ReviewItemOut) -> str:
+    """The note of "Not this" on a depth or sink reading (#1360; Anant: "Not this" = Not checked):
+    the check cannot use the reading, so the result is recorded as not checked (a `dismiss`, printed
+    NOT CHECKED), naming the countertop and the reading. Nothing is written on the reading: one only
+    its drawn length checks is never used without a person's Confirm."""
+    shown = "" if entry.best_guess is None else f"{entry.best_guess.text} "
+    where = f" on {entry.row_label}" if entry.row_label else ""
+    return (
+        f"{DEPTH_NOT_THIS_PREFIX}{shown}is not the {entry.what.lower()}{where} "
+        f"(reading {entry.candidate_id}; simple review)."
+    )
+
 
 NUMBERS_NOT_YET: Final = "Confirming a number arrives with W2"
 
@@ -315,12 +323,13 @@ def find_entry(
         )
     if action not in _open_actions(entry):
         if entry.status == "open":
-            # Open, but this answer is not offered on it (e.g. a depth reading the advanced card
-            # would not offer for confirming either, #1360).
-            offered = ", ".join(sorted(_open_actions(entry))) or "nothing"
+            # Open, but this answer is not offered on it now (e.g. a depth reading the advanced
+            # card would not offer for confirming either, #1360): 409, so the screen reloads it.
+            offered = ", ".join(sorted(_open_actions(entry))) or "nothing here"
             raise ItemRefused(
-                422,
-                f"This item does not take '{action}' now. It takes: {offered}. Nothing was saved.",
+                409,
+                f"This answer is not offered on this item now (it takes: {offered}). Nothing was "
+                "saved. Reload the list.",
             )
         why = (
             "It is waiting for the checks to run again."
@@ -429,7 +438,6 @@ FINDING_ANSWERS: Final[dict[str, tuple[ReviewActionKind, str]]] = {
     "agree": (ReviewActionKind.CONFIRM, AGREE_NOTE),
     "clear_not_checked": (ReviewActionKind.DISMISS, NOT_CHECKED_FIXED_NOTE),
     "settle_group": (ReviewActionKind.DISMISS, NOT_CHECKED_FIXED_NOTE),
-    "not_this": (ReviewActionKind.DISMISS, DEPTH_NOT_THIS_NOTE),
 }
 
 
