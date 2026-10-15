@@ -35,6 +35,7 @@ __all__ = [
     "DEFAULT_PER_PAGE_USD",
     "AiBudget",
     "ai_budget_from_settings",
+    "claude_ceiling",
 ]
 
 #: For every page sent to the AI readers (#1206): about 1.7 times the measured $0.088 a page.
@@ -89,3 +90,17 @@ def ai_budget_from_settings(settings: object) -> AiBudget:
         minimum_usd=Decimal(getattr(settings, "ai_budget_minimum_usd", DEFAULT_MINIMUM_USD)),
         maximum_usd=Decimal(getattr(settings, "ai_budget_maximum_usd", DEFAULT_MAXIMUM_USD)),
     )
+
+
+def claude_ceiling(settings: object, budget: AiBudget) -> Decimal:
+    """The most one Claude reading may spend (#1206): the lower ceiling the admin stated
+    (`GV_CLAUDE_READER_BUDGET_USD`), or else the maximum for a drawing set.
+
+    The worker's Claude readers take this as their cap (`workflow.slot_reader.configured_slot_reader`)
+    and the "Read depths again" screen shows what is left under it (`app/api/depth_again.py`), so the
+    two always say the same amount (#1317). A ceiling stated above the maximum is refused when the
+    settings load; here it is still capped, for a test's stand-in settings."""
+    stated = getattr(settings, "claude_reader_budget_usd", None)
+    if stated is None:
+        return budget.maximum_usd
+    return min(Decimal(stated), budget.maximum_usd)

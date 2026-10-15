@@ -293,8 +293,8 @@ def test_row_reader_keeps_each_kind_of_answer(payload: dict[str, object], kind: 
     assert answer.row == payload["row"]
     assert answer.also == ()
     assert [attempt.malformed for attempt in attempts] == [False]
-    # #1213: the live row question is v4; its answer shape is v3's, unchanged.
-    assert attempts[0].prompt_id == "slot-row-choice-v4"
+    # #1314: the live row question is v5; its answer shape is v3's, unchanged.
+    assert attempts[0].prompt_id == "slot-row-choice-v5"
 
 
 def test_row_reader_keeps_a_second_countertop_row_but_never_the_row_itself() -> None:
@@ -339,6 +339,7 @@ def test_row_prompt_names_its_box_colours_and_none_is_the_reviewers() -> None:
         "slot-row-choice-v2",
         "slot-row-choice-v3",
         "slot-row-choice-v4",
+        "slot-row-choice-v5",
     } == ROW_PROMPT_IDS
     for name, _rgb in ROW_BOX_COLOURS:
         assert name in ROW_PROMPT
@@ -1019,7 +1020,8 @@ def test_a_v3_boolean_reply_to_the_v4_question_is_malformed_and_abstains() -> No
 #: after review (the inch-mark example); nothing else differs. Any other change to either text,
 #: even one character, needs a new prompt id and a new measurement, so the digest is pinned here.
 SPAN_V5_SHA256 = "93d58252d2efcbaade50c6878559e90b7a204dbfeecc5bc067aefdc70b1268f0"
-ROW_V4_SHA256 = "07eaec6ecb52fb36848800869943c1cd24188a3d04a5c6d7924a5c4900513eec"
+#: #1314: the row wording measured on 2026-10-15 (wording "d", two full runs over AI Sets 1-3).
+ROW_V5_SHA256 = "72df05f3f750a5b5d702d1962f670b38c88ab196a795a264ace373396b5541de"
 
 
 def test_the_shipped_wordings_are_byte_for_byte_the_pinned_ones() -> None:
@@ -1028,9 +1030,9 @@ def test_the_shipped_wordings_are_byte_for_byte_the_pinned_ones() -> None:
     from extraction.slot_reader.bedrock import ROW_PROMPT_ID
 
     assert CLAUDE_SPAN_PROMPT_ID == "claude-slot-span-v5"
-    assert ROW_PROMPT_ID == "slot-row-choice-v4"
+    assert ROW_PROMPT_ID == "slot-row-choice-v5"
     assert hashlib.sha256(CLAUDE_SPAN_PROMPT.encode()).hexdigest() == SPAN_V5_SHA256
-    assert hashlib.sha256(ROW_PROMPT.encode()).hexdigest() == ROW_V4_SHA256
+    assert hashlib.sha256(ROW_PROMPT.encode()).hexdigest() == ROW_V5_SHA256
 
 
 def test_the_label_question_says_where_the_span_is_which_label_to_copy_and_how_to_write_it() -> (
@@ -1054,18 +1056,35 @@ def test_the_label_question_says_where_the_span_is_which_label_to_copy_and_how_t
 
 
 def test_the_row_question_says_where_the_row_may_be_and_what_is_never_the_row() -> None:
-    """v4: the row may be drawn anywhere on the front view; a numberless outline or a row of
-    material tags is never the row; the stone's own chain gives way to the cabinets' chain."""
+    """v5 (#1314): the row is drawn by the stone or below the base cabinets, and a chain at the top
+    of the view counts only when no boxed chain of printed widths runs along the stone; the stone's
+    own chain gives way to the cabinets' chain, is the row when no box measures the cabinets, and
+    is the row where the stone runs into a wall; a numberless outline or material tags never are."""
     for words in (
-        "It may be drawn anywhere on the front view",
+        "It may be drawn just above or below the stone or below the base cabinets",
         "as long as its ticks line up with the pieces under the stone",
+        "is the piece row only when no box around a chain of printed widths runs along the stone",
         "that is not the piece row when another box measures the cabinets and fillers under it",
+        "but it is the piece row when no box does",
+        "where the stone runs into a wall, the cabinets' chain stops at the wall face",
+        "with the part of the stone inside the wall, is the piece row",
+        "its two outer ticks are the stone top's two ends",
         "A box around a line that carries no printed numbers",
         "or around a row of material tags is never the piece row",
         "Answer fields:",
     ):
         assert words in ROW_PROMPT, words
+    assert "It may be drawn anywhere on the front view" not in ROW_PROMPT
     assert "NOT an upper-cabinet row" not in ROW_PROMPT
+
+
+def test_the_row_question_carries_no_number_outside_its_invented_examples() -> None:
+    """No drawing's values in the wording (#1314): the rule text before the answer fields has no
+    digit, and every number after it is in the answer fields or the invented examples."""
+    rules, fields = ROW_PROMPT.split("Answer fields:", 1)
+    assert not re.search(r"\d", rules)
+    assert "Invented examples, not from this sheet" in fields
+    assert set(re.findall(r"\d+", fields)) <= {"0", "1", "2", "4"}
 
 
 def test_the_earlier_ids_stay_recognised_and_their_stored_answers_still_parse() -> None:
@@ -1078,7 +1097,7 @@ def test_the_earlier_ids_stay_recognised_and_their_stored_answers_still_parse() 
     )
 
     assert {"claude-slot-span-v4", "claude-slot-span-v3"} < CLAUDE_SPAN_PROMPT_IDS
-    assert {"slot-row-choice-v3", "slot-row-choice-v2"} < ROW_PROMPT_IDS
+    assert {"slot-row-choice-v4", "slot-row-choice-v3", "slot-row-choice-v2"} < ROW_PROMPT_IDS
 
     stored_span = json.dumps(span('17 3/4"'))
     replayed = replay_stored_answer(
@@ -1102,7 +1121,7 @@ def test_the_earlier_ids_stay_recognised_and_their_stored_answers_still_parse() 
     assert replayed_row is not None
     row_answer, row_attempt = replayed_row
     assert isinstance(row_answer, RowChoiceAnswer) and row_answer.row == 2
-    assert row_attempt.prompt_id == "slot-row-choice-v4"
+    assert row_attempt.prompt_id == "slot-row-choice-v5"
 
 
 def test_the_request_builders_send_the_new_wordings() -> None:

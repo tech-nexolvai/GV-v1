@@ -160,7 +160,7 @@ from extraction.slot_reader.walls import (
 from vocabulary.check_holds import NO_STONE_FLAG, STONE_INTO_WALLS, STONE_SHORT_OF_ENDS
 from vocabulary.drawn_length import NO_DRAWN_LENGTH_WITNESS
 from vocabulary.semantic_types import ProductType
-from workflow.ai_budget import AiBudget, ai_budget_from_settings
+from workflow.ai_budget import AiBudget, ai_budget_from_settings, claude_ceiling
 from workflow.form_reader import RUN_LABEL_CHARACTERS, FormReaderRuntime
 from workflow.layout_proposals import (
     WALL_CANDIDATE_TEXT,
@@ -357,13 +357,10 @@ class SlotReaderRuntime:
 
 
 def _claude_ceiling(settings: object, budget: AiBudget) -> Decimal:
-    """The most one Claude reading may spend (#1206): the lower ceiling the admin stated
-    (`GV_CLAUDE_READER_BUDGET_USD`), or else the maximum for a drawing set. Each reading's cap is
-    then the page-scaled budget under it (`workflow/stages.py`, `_read_slots`)."""
-    stated = getattr(settings, "claude_reader_budget_usd", None)
-    if stated is None:
-        return budget.maximum_usd
-    ceiling = min(Decimal(stated), budget.maximum_usd)
+    """The most one Claude reading may spend (#1206): `workflow.ai_budget.claude_ceiling`, the
+    same amount the "Read depths again" screen shows what is left under (#1317). Each reading's cap
+    is then the page-scaled budget under it (`workflow/stages.py`, `_read_slots`)."""
+    ceiling = claude_ceiling(settings, budget)
     if ceiling < budget.minimum_usd:
         # Said at start-up (#1206): every Claude reading would stop at this ceiling, below the
         # smallest page-scaled budget.
