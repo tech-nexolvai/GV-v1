@@ -3532,6 +3532,17 @@
             "title": "Pieces",
             "type": "array"
           },
+          "pieces_add_up_to": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactValueOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the row's pieces add up to, as the check recorded it (its row-total step, #1399). Null when the check recorded none; never added up by the server or screen."
+          },
           "printed_overall": {
             "anyOf": [
               {

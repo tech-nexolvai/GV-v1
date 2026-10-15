@@ -92,6 +92,8 @@ def test_checked_countertop_values_are_the_recorded_exact_inputs(
     assert item["printed_overall"]["display"] == '40"'
     assert item["pieces"][0]["value"]["display"] == '20"'
     assert item["expected_total"]["display"] == '22"'
+    # #1399: what the pieces add up to is the check's own recorded row-total step.
+    assert item["pieces_add_up_to"]["display"] == '20"'
     assert item["field_cut_per_end"]["display"] == '1"'
     assert item["field_cut_count"] == 2
     # #1202: code's wall ink at both ends with both AIs, said in the results line.
@@ -463,3 +465,5 @@ def test_held_countertop_has_no_recomputed_total_or_delta(session: Session, tmp_
     assert item["printed_overall"] is not None
     assert item["expected_total"] is None
     assert item["delta"] is None
+    # #1399: a held row recorded no sum, and none is added up for it.
+    assert item["pieces_add_up_to"] is None

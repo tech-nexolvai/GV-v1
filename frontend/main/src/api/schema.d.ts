@@ -3906,6 +3906,8 @@ export interface components {
             page_number: number;
             /** Pieces */
             pieces: components["schemas"]["CountertopPieceOut"][];
+            /** @description What the row's pieces add up to, as the check recorded it (its row-total step, #1399). Null when the check recorded none; never added up by the server or screen. */
+            pieces_add_up_to?: components["schemas"]["ExactValueOut"] | null;
             printed_overall: components["schemas"]["ExactValueOut"] | null;
             /**
              * Printed Overall Canonical Observation Id
