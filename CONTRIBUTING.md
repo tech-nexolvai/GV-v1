@@ -331,9 +331,11 @@ the same locally; without `-n`, nothing about a run changes.
   `DATABASE_URL` names (`gvtest_7` becomes `gvtest_7_gw0`, `gvtest_7_gw1`, ...), points `DATABASE_URL`
   at it for its whole run, including any subprocess a test starts, and drops it when it finishes
   (`tests/conftest.py`).
-- **Only a test database.** The name must start with `gv_test` or `gvtest`, and the port must not be
-  5433, the local stack's database. Anything else stops the run before a test starts. So point it at a
-  scratch database, for example:
+- **Only a test database.** The name must start with `gv_test` or `gvtest`, hold only `a-z`, `0-9` and
+  `_`, and stay within 63 characters with the `_gw<N>` suffix. The port must not be 5433, the local
+  stack's database, wherever it is given (in the URL, its query string or `PGPORT`); a connection
+  service (`service=` or `PGSERVICE`) is refused. Anything else stops the run before a test starts. So
+  point it at a scratch database, for example:
 
   ```bash
   createdb -h localhost -p <port> -U <user> gvtest_mine
@@ -344,6 +346,13 @@ the same locally; without `-n`, nothing about a run changes.
 - **A test that cannot share the machine with its twin** (a fixed file path, a fixed port, anything
   outside its own `tmp_path` and database) is marked `@pytest.mark.xdist_group("<name>")`, which keeps
   every test of that group on one worker. Prefer fixing the test (`tmp_path`, port 0) when that is easy.
+- **The first `xdist_group` mark needs the shard-coverage check changed with it (#1293).** Under
+  `--dist loadgroup`, xdist renames a marked test `<id>@<group>` on each worker *before* pytest-split
+  picks the shard. The new name matches no time in `.test_durations`, so the test is counted at the
+  average, and the shards CI runs are no longer the ones `scripts/check_pytest_shard_coverage.py` proves
+  (it collects without xdist, under the plain names). There are no marks today. Whoever adds the first
+  one makes the coverage check collect the same `<id>@<group>` names, and says `xdist_group` in it;
+  `tests/app/test_worker_databases.py` fails until then.
 
 ---
 

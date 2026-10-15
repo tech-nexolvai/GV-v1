@@ -12,6 +12,7 @@ import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import OperationalError
 
 from alembic import command
 
@@ -49,52 +50,125 @@ PRESERVED_TABLES: frozenset[str] = frozenset({"alembic_version"})
 #: template) is refused by name before any SQL runs.
 TEST_DATABASE_PREFIXES: tuple[str, ...] = ("gv_test", "gvtest")
 
+#: A worker's database name, suffix included: lower-case letters, digits and `_` only (#1293). The name
+#: is put inside double quotes in `CREATE` and `DROP DATABASE`, so a quote must never reach it, and a
+#: quoted name keeps its case where an unquoted one is folded, so upper case would make two spellings.
+_DATABASE_NAME = re.compile(r"[a-z0-9_]+")
+
+#: PostgreSQL keeps 63 bytes of a name and silently drops the rest (`NAMEDATALEN - 1`), so two long names
+#: that differ only in their worker suffix would become the same database (#1293).
+MAX_DATABASE_NAME_LENGTH = 63
+
 #: The local stack's PostgreSQL (docker-compose.yml), which the running app uses. Refused outright, even
 #: for a test-looking name, so a mistyped `DATABASE_URL` can never create or drop anything there.
 LOCAL_STACK_PORT = 5433
+
+#: libpq's port when neither the connection nor `PGPORT` gives one.
+DEFAULT_PORT = "5432"
 
 #: The worker ids pytest-xdist hands out: `gw0`, `gw1`, ... Anything else is refused, which also keeps
 #: the id safe to put inside a quoted database name.
 _WORKER_ID = re.compile(r"gw[0-9]+")
 
 
-def worker_database_url(url: URL, worker: str) -> URL:
+def _effective_ports(url: URL, environ: Mapping[str, str]) -> list[str]:
+    """Every port a connection to `url` could reach, worked out the way the driver and libpq do (#1293).
+
+    The port before the database name is only one of the places a port can come from. SQLAlchemy hands
+    the driver the URL's query string as well, so `?port=` and `?host=name:port` replace it (several
+    hosts give several ports); and a connection with no port at all takes `PGPORT`, then 5432. So the
+    check reads the very arguments SQLAlchemy would pass, rather than `url.port`.
+
+    Two things it refuses rather than follow: a connection service (`?service=` or `PGSERVICE`), whose
+    file can set the port and the database where nothing here can see them, and a database named again
+    in the query string (`?dbname=`), which would replace the name the prefix rule checked. Neither is
+    used by CI or by the local scratch databases.
+    """
+    _args, params = url.get_dialect()().create_connect_args(url)
+    if params.get("service") or environ.get("PGSERVICE"):
+        raise ValueError(
+            "DATABASE_URL uses a connection service (service= or PGSERVICE), which can set the port and "
+            "the database out of sight of this check; give the host, port and database in the URL instead"
+        )
+    if str(params.get("dbname", url.database)) != url.database:
+        raise ValueError(
+            f"DATABASE_URL's query string names the database {params['dbname']!r}, not "
+            f"{url.database!r}; refusing to create per-worker databases beside it"
+        )
+    default = [
+        port.strip() or DEFAULT_PORT for port in (environ.get("PGPORT") or DEFAULT_PORT).split(",")
+    ]
+    ports: list[str] = []
+    for port in str(params.get("port") or "").split(","):
+        ports.extend([port.strip()] if port.strip() else default)
+    return ports
+
+
+def worker_database_url(url: URL, worker: str, environ: Mapping[str, str] = os.environ) -> URL:
     """The URL of one xdist worker's own database: same server and login, `<name>_<worker>` (#1289).
 
-    Raises `ValueError` unless `url` names a test database off the local stack's port and `worker` is an
-    id xdist would give, because the caller goes on to drop and create the database it returns.
+    Raises `ValueError` unless `url` names a test database that is not reached on the local stack's port
+    (however that port is given, see `_effective_ports`), the worker's name fits PostgreSQL's limit and
+    holds only `a-z`, `0-9` and `_`, and `worker` is an id xdist would give, because the caller goes on
+    to drop and create the database it returns. `environ` is where libpq would read `PGPORT` and
+    `PGSERVICE`: the process's own environment unless a test passes another.
     """
     if not _WORKER_ID.fullmatch(worker):
         raise ValueError(f"{worker!r} is not a pytest-xdist worker id (gw0, gw1, ...)")
-    if url.port == LOCAL_STACK_PORT:
-        raise ValueError(
-            f"DATABASE_URL points at port {LOCAL_STACK_PORT}, the local stack's database; "
-            "per-worker test databases are never created there"
-        )
     name = url.database or ""
     if not name.startswith(TEST_DATABASE_PREFIXES):
         raise ValueError(
             f"{name!r} is not a test database (names start with {' or '.join(TEST_DATABASE_PREFIXES)}); "
             "refusing to create per-worker databases beside it"
         )
-    return url.set(database=f"{name}_{worker}")
+    own = f"{name}_{worker}"
+    if not _DATABASE_NAME.fullmatch(own):
+        raise ValueError(
+            f"{own!r} is not a usable worker database name: only a-z0-9_ (lower case, digits, "
+            "underscore) are allowed"
+        )
+    if len(own.encode()) > MAX_DATABASE_NAME_LENGTH:
+        raise ValueError(
+            f"{own!r} is longer than PostgreSQL's {MAX_DATABASE_NAME_LENGTH}-byte limit, which would cut "
+            "it short; use a shorter test database name"
+        )
+    if any(port.lstrip("0") == str(LOCAL_STACK_PORT) for port in _effective_ports(url, environ)):
+        raise ValueError(
+            f"DATABASE_URL reaches port {LOCAL_STACK_PORT}, the local stack's database; "
+            "per-worker test databases are never created there"
+        )
+    return url.set(database=own)
 
 
-def worker_database_for(environ: Mapping[str, str]) -> tuple[URL, URL] | None:
+def xdist_worker_id(config: object) -> str | None:
+    """This process's pytest-xdist worker id (`gw0`, ...), or `None` when it is not an xdist worker.
+
+    Read from `config.workerinput`, which xdist gives only to the worker processes it starts, and not from
+    `PYTEST_XDIST_WORKER` (#1293). The variable is inherited: a pytest that a test starts as a subprocess
+    has it too, and would take itself for that worker and nest a database inside the worker's
+    (`gv_test_gw0_gw0`). That child pytest is an ordinary single-process run and uses the worker's
+    `DATABASE_URL` as it is.
+    """
+    workerinput = getattr(config, "workerinput", None)
+    if workerinput is None:
+        return None
+    return str(workerinput["workerid"])
+
+
+def worker_database_for(environ: Mapping[str, str], worker: str | None) -> tuple[URL, URL] | None:
     """`(DATABASE_URL, this worker's own database URL)` under xdist, or `None` to leave things as they are.
 
     `None` without a worker id (a plain single-process run: nothing changes), without `DATABASE_URL` (the
     database tests skip, as they always have), and for a URL that is not PostgreSQL, which
     `_database_url` already fails with its own message.
     """
-    worker = environ.get("PYTEST_XDIST_WORKER")
     raw_url = environ.get("DATABASE_URL")
     if worker is None or raw_url is None:
         return None
     url = make_url(raw_url)
     if not url.drivername.startswith("postgresql"):
         return None
-    return url, worker_database_url(url, worker)
+    return url, worker_database_url(url, worker, environ)
 
 
 def _drop_and_create(base: URL, own: URL, *, create: bool) -> None:
@@ -120,29 +194,61 @@ def _drop_and_create(base: URL, own: URL, *, create: bool) -> None:
 #: number works; it is taken on the base database, which every worker of a run shares.
 CLUSTER_SETUP_LOCK = 1289
 
+#: How long a worker waits for that lock before it gives up (#1293). The setup it guards takes about a
+#: second per worker, so five minutes is only ever reached when a holder is stuck (a worker paused in a
+#: debugger, or a crashed run's connection the server has not noticed yet). Better a clear error then
+#: than every worker hanging until the CI job's own timeout.
+CLUSTER_SETUP_LOCK_TIMEOUT_SECONDS = 300
 
-def _create_cluster_wide_objects(base: URL, own: URL) -> None:
+#: PostgreSQL's code for "canceling statement due to lock timeout".
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+def _create_cluster_wide_objects(base: URL, own: URL, *, lock_timeout_seconds: float) -> None:
     """Run every migration once, in a throwaway schema of the worker's database, one worker at a time.
 
     **Why (found on the first CI run of #1289).** Almost everything a migration makes lives in one
     database, so four workers with four databases never meet. Roles do not: they belong to the whole
     server. Migration 0025 creates its four roles if they are missing, and two workers migrating at the
     same moment both found them missing; the loser failed on `pg_authid_rolname_index`, a unique
-    violation that 0025's `duplicate_object` handler does not catch. Every database test in that worker
-    then errored at setup.
+    violation that 0025's `duplicate_object` handler did not catch then. Every database test in that
+    worker errored at setup.
 
     So before any test runs, each worker migrates a throwaway schema while holding an advisory lock on
     the shared base database: the first creates the roles, the others find them. Running the real
     migrations rather than creating the roles here means a later migration's cluster-wide object is
     covered too, with nothing to keep in step. The schema is dropped again; what stays is exactly what a
     single-process run leaves after its first migration (the roles, and the extensions in `public`).
+
+    **Kept after #1293 fixed 0025 itself.** 0025 now takes the unique violation as "the role is there",
+    so two upgrades at once succeed without this lock (`test_worker_databases.py` proves both). The lock
+    stays because it costs about a second per worker and guards what no test of today's migrations can:
+    the next migration that makes a server-wide object (another role, a role setting) without a
+    race-safe handler would otherwise first show up as thousands of setup errors on one CI run in ten.
+    With the lock, the workers of a run never migrate side by side, whatever a migration does. The
+    0025 fix covers what the lock cannot: two separate runs, or two deploys, on one server.
+
+    **The wait is bounded** (`lock_timeout_seconds`, #1293). Past it, `TimeoutError` names the lock and
+    how to find who holds it.
     """
     schema = f"gv_worker_setup_{uuid4().hex}"
     lock_engine = create_engine(base, isolation_level="AUTOCOMMIT")
     admin = create_engine(own, isolation_level="AUTOCOMMIT")
     try:
         with lock_engine.connect() as lock:
-            lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+            lock.execute(text(f"SET lock_timeout = '{int(lock_timeout_seconds * 1000)}ms'"))
+            try:
+                lock.execute(text("SELECT pg_advisory_lock(:key)"), {"key": CLUSTER_SETUP_LOCK})
+            except OperationalError as error:
+                if getattr(error.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+                    raise
+                raise TimeoutError(
+                    f"waited {lock_timeout_seconds:g} s for advisory lock {CLUSTER_SETUP_LOCK} on "
+                    f"{base.database!r}, which one pytest-xdist worker at a time holds while it sets up "
+                    "the server-wide roles; another run's worker seems stuck holding it. Find it with "
+                    f"SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = {CLUSTER_SETUP_LOCK} "
+                    "AND granted, then end that run (or pg_terminate_backend(pid))"
+                ) from error
             try:
                 with admin.connect() as connection:
                     connection.execute(text(f'CREATE SCHEMA "{schema}"'))
@@ -159,16 +265,26 @@ def _create_cluster_wide_objects(base: URL, own: URL) -> None:
         lock_engine.dispose()
 
 
-def create_worker_database(base: URL, own: URL) -> None:
+def create_worker_database(
+    base: URL,
+    own: URL,
+    *,
+    lock_timeout_seconds: float = CLUSTER_SETUP_LOCK_TIMEOUT_SECONDS,
+) -> None:
     """Create the worker's database, replacing any leftover of the same name from an earlier run.
 
     It starts with no tables: the tests migrate it themselves, exactly as they migrate `DATABASE_URL`
     today (the session schema below, and the modules that run their own `command.upgrade`). Only the
     server-wide objects the migrations need are made first, one worker at a time (see
-    `_create_cluster_wide_objects`).
+    `_create_cluster_wide_objects`). If that setup fails, the database is dropped again before the error
+    goes on, so a failed start leaves nothing behind.
     """
     _drop_and_create(base, own, create=True)
-    _create_cluster_wide_objects(base, own)
+    try:
+        _create_cluster_wide_objects(base, own, lock_timeout_seconds=lock_timeout_seconds)
+    except BaseException:
+        _drop_and_create(base, own, create=False)
+        raise
 
 
 def drop_worker_database(base: URL, own: URL) -> None:

@@ -258,6 +258,11 @@ jobs:
       # server (`gv_test_gw0` ... `gv_test_gw3`), created and dropped by `tests/conftest.py`, so workers
       # never share a row, a schema or an extension. `--dist loadgroup` keeps any test marked
       # `@pytest.mark.xdist_group(...)` on one worker; tests that must not run beside a twin carry it.
+      # **Such a mark changes the test's name (#1293).** xdist renames it `<id>@<group>` before
+      # pytest-split picks the shard, so the shard-coverage check (no xdist, plain names) would prove a
+      # different split from this one. No test is marked today; the first mark must come with a coverage
+      # check that collects the same names (CONTRIBUTING.md, "Running the tests on several workers";
+      # `tests/app/test_worker_databases.py` fails until then).
       #
       # **The recording run stays single-process**, exactly as before: the times it records are the ones
       # the split balances, and a worker's per-test time also counts the other three competing for the
