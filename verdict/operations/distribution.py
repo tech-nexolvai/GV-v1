@@ -34,8 +34,8 @@ class DistributionCondition(StrEnum):
     #: Slide 12, scenario 4. Named for what the reviewer must do next, not for what the code could
     #: not do — the difference is unresolvable in the drawing, and the next action is an RFI.
     CANNOT_BE_RESOLVED = "cannot_be_resolved"
-    #: Ours, not the deck's: an equal split landed on a width no imperial drawing can carry.
-    #: See `_is_a_writable_width`.
+    #: An equal split landed on a width that is not a whole 1/16". Kept exact and flagged, never
+    #: rounded (the owner's decision, 2026-10-16). See `_is_a_whole_sixteenth`.
     SHARE_DOES_NOT_DIVIDE = "share_does_not_divide"
     #: Ours, not the deck's: unequal fillers must move and no rule says how. See
     #: `_apportionment_not_determined`.
@@ -477,7 +477,7 @@ def cabinet_run_distribution(
                 ceiling=measure(filler_ceiling),
                 unit=unit,
             )
-        if not _is_a_writable_width(filler_share):
+        if not _is_a_whole_sixteenth(filler_share):
             return _share_does_not_divide(
                 facts,
                 share=filler_share,
@@ -504,13 +504,13 @@ def cabinet_run_distribution(
         for index in regulars:
             expected_cabinets[index] = measure(design_cabinet_run[index].exact + share)
         # Both of the deck's examples divide exactly — 6 over two cabinets. It never says what to do
-        # when they do not, so this abstains rather than choosing. See `_is_a_writable_width`.
+        # when they do not, so this flags rather than rounding. See `_is_a_whole_sixteenth`.
         #
         # **Before the bounds check, deliberately.** A width of 22 2/3" is not the answer this run
         # has; it is the sign that the rule does not determine one. Testing a bound against it would
         # report "cannot be resolved" on a run where 22 5/8 and 22 3/4 both fit.
         unwritable = tuple(
-            index for index in regulars if not _is_a_writable_width(expected_cabinets[index].exact)
+            index for index in regulars if not _is_a_whole_sixteenth(expected_cabinets[index].exact)
         )
         if unwritable:
             return _share_does_not_divide(
@@ -605,19 +605,18 @@ def _written(value: Fraction, unit: Unit) -> str:
     return f"{format_inches(value)} {unit.value}"
 
 
-def _is_a_writable_width(value: Fraction) -> bool:
-    """Whether an exact width could be dimensioned on an imperial drawing at all.
+def _is_a_whole_sixteenth(value: Fraction) -> bool:
+    """Whether an exact width lands on a whole 1/16".
 
-    An imperial drawing carries binary fractions — halves, quarters, eighths, sixteenths. A width of
-    22 2/3" is not a width anybody draws or cuts, so an equal split that produces one has not found
-    the answer; it has found that the deck's rule does not determine the answer for this run.
+    The owner's decision, 2026-10-16 (#648): the client lead stated no rounding rule, so the split is
+    kept exact, and a width that is not a whole 1/16" is flagged for the reviewer. A width of
+    22 2/3" or 24 1/32" is not one a shop drawing carries, so an equal split that produces one has
+    not found the answer; it has found that the deck's rule does not determine it for this run.
 
-    **This is a representability test, not a rounding rule.** It does not pick 22 5/8 over 22 3/4 —
-    that choice is question 4 to the client lead, still open, and under exact match (Q2) guessing it would be a
-    wrong PASS or FAIL rather than a rounding preference. A denominator that is a power of two is a
-    property of the imperial system; a tolerance or a nearest-increment would be our invention.
+    **This is a test, not a rounding rule.** It never picks 22 5/8 over 22 3/4: under exact match
+    (Q2) that pick would be the verdict. Flag, never auto-fix.
     """
-    return value.denominator & (value.denominator - 1) == 0
+    return (value * 16).denominator == 1
 
 
 def _apportionment_not_determined(
@@ -669,7 +668,7 @@ def _share_does_not_divide(
     widths: tuple[Fraction, ...],
     unit: Unit,
 ) -> OperationResult:
-    """Abstain when an equal split lands on a width no drawing can carry.
+    """Abstain when an equal split lands on a width that is not a whole 1/16".
 
     The exact share travels with the finding so the reviewer sees what the rule produced, and can
     say how the difference was really apportioned — which is the answer the open question needs.
@@ -687,8 +686,8 @@ def _share_does_not_divide(
             (
                 "reviewer_action",
                 (
-                    "an equal split does not land on a drawable width; confirm how the "
-                    "difference is apportioned"
+                    'an equal split does not land on a whole 1/16"; nothing was rounded, so '
+                    "confirm the widths on the shop drawing"
                 ),
             ),
         ),
@@ -696,7 +695,7 @@ def _share_does_not_divide(
             f"an equal split gives {share} {unit.value} to each of {len(members)} "
             f"{subject.replace('_', ' ')}(s), making "
             + ", ".join(f"{width} {unit.value}" for width in widths)
-            + " — not a width an imperial drawing can carry"
+            + ' — not a whole 1/16", and the rule gives no rounding, so nothing is rounded'
         ),
         tolerance=None,
     )
@@ -765,7 +764,7 @@ DISTRIBUTION_SPECS: tuple[OperationSpec, ...] = (
     ),
     OperationSpec(
         "cabinet_run_distribution",
-        "1.2.0",
+        "1.3.0",
         {
             "field_width": Arity.SCALAR,
             "design_width": Arity.SCALAR,

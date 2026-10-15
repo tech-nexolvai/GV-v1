@@ -207,7 +207,8 @@ def test_a_split_that_lands_on_an_undrawable_width_is_not_a_pass() -> None:
 
     assert body["outcome"] == "REVIEW_REQUIRED"
     assert body["condition"] == "share_does_not_divide"
-    assert "apportioned" in body["reviewer_action"]
+    assert '1/16"' in body["reviewer_action"]
+    assert "rounded" in body["reviewer_action"]
 
 
 def test_a_run_that_is_not_two_fillers_is_accepted() -> None:
