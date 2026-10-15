@@ -569,6 +569,16 @@ class PageWithoutCountertopOut(BaseModel):
             "page, #1195): what it checked and found. Null otherwise."
         ),
     )
+    readers_said_none: bool = Field(
+        default=False,
+        json_schema_extra=optional_in_schema,
+        description=(
+            'True only when every AI reader positively answered "no countertop on the sheet" '
+            "(#1394), with nothing to doubt: the only pages the simple review proposes as having "
+            "no countertop in one click. An older reading, a page code found no row on, or a "
+            "doubtful page is false, and is decided on its own."
+        ),
+    )
     doubtful: bool = Field(
         default=False,
         json_schema_extra=optional_in_schema,

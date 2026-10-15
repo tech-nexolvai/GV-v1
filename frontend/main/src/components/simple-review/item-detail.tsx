@@ -80,10 +80,15 @@ function Evidence({ item }: { item: ReviewItem }) {
 /** The AI's best guess, set large in the number face, with where it came from and what each AI read. */
 function Guess({ item }: { item: ReviewItem }) {
   if (!item.best_guess) {
+    if (item.kind === 'no_countertop_page' || item.kind === 'wall_choice') {
+      return <p className="text-[15px] leading-6 text-foreground">{item.what}</p>;
+    }
+    // The full name, never cut off once opened (#1394), then what to do.
     return (
-      <p className="text-[15px] leading-6 text-foreground">
-        {item.kind === 'no_countertop_page' || item.kind === 'wall_choice' ? item.what : 'The AI has no number to offer here. Look at the drawing and say whether it is right.'}
-      </p>
+      <div className="flex flex-col gap-1">
+        <p data-slot="item-name" className="text-[15px] leading-6 font-medium break-words text-foreground">{item.what}</p>
+        <p className="text-[15px] leading-6 text-foreground">The AI has no number to offer here. Look at the drawing and say whether it is right.</p>
+      </div>
     );
   }
   return (

@@ -14,7 +14,7 @@ import { PagesChoice } from '@/components/simple-review/pages-choice';
 import type { FinalCloudApi } from '@/api/final-cloud';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider } from '@/components/simple-review/item-pictures';
-import { leftWords, summarize } from '@/lib/review-items';
+import { leftWords, openNoCountertopPages, openPagesToDecide, summarize } from '@/lib/review-items';
 import { ApiError } from '@/api/client';
 import { allSettled, reviewItems } from './fixtures/review-items';
 
@@ -495,7 +495,8 @@ describe('ChoiceCard and PagesChoice (#1368)', () => {
     const onLook = vi.fn();
     render(<PagesChoice pages={pages} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={onConfirmAll} onThereIsOne={onThereIsOne} onLook={onLook} />);
     const all = screen.getByRole('button', { name: /These 2 pages have no countertop/ });
-    expect(all.textContent).toContain('p.9 and p.11');
+    expect(all.textContent).toContain('Will be marked as no countertop: p.9 and p.11');
+    expect(all.textContent).not.toContain('Confirmed for');
     expect(all.textContent).toContain('Nothing on them is checked');
     await userEvent.click(all);
     expect(onConfirmAll).toHaveBeenCalledTimes(1);
@@ -503,6 +504,43 @@ describe('ChoiceCard and PagesChoice (#1368)', () => {
     expect(onThereIsOne).toHaveBeenCalledWith(pages[1]);
     await userEvent.click(screen.getByRole('button', { name: 'Look at page 9' }));
     expect(onLook).toHaveBeenCalledWith(pages[0]);
+  });
+});
+
+describe('pages to decide are never in the one-click proposal (#1394)', () => {
+  it('an older reading is listed apart as "Decide this page", with both answers and nothing proposed', async () => {
+    const pages = reviewItems((draft) => {
+      const older = structuredClone(draft.items.find((entry) => entry.key === 'page:rec-9')!);
+      older.key = 'page:rec-4';
+      older.page = 4;
+      older.what = 'Decide this page';
+      older.proposed_no_countertop = false;
+      draft.items.push(older);
+    }).items;
+    const proposed = openNoCountertopPages(pages);
+    const toDecide = openPagesToDecide(pages);
+    expect(proposed.map((page) => page.key)).toEqual(['page:rec-9']);
+    expect(toDecide.map((page) => page.key)).toEqual(['page:rec-4']);
+    const onNoCountertop = vi.fn();
+    const onThereIsOne = vi.fn();
+    render(<PagesChoice pages={proposed} toDecide={toDecide} busyKey={null} groupKey="group:pages" errors={{}} onConfirmAll={vi.fn()} onThereIsOne={onThereIsOne} onNoCountertop={onNoCountertop} onLook={vi.fn()} />);
+    const all = screen.getByRole('button', { name: /Page 9 has no countertop/ });
+    expect(all.textContent).not.toContain('p.4');
+    const decide = document.querySelector('[data-slot="pages-to-decide"]')!;
+    expect(decide.textContent).toContain('Decide this page');
+    expect(decide.textContent).not.toContain('AI proposal');
+    await userEvent.click(screen.getByRole('button', { name: 'No countertop on page 4' }));
+    expect(onNoCountertop).toHaveBeenCalledWith(toDecide[0]);
+    await userEvent.click(screen.getByRole('button', { name: 'There is a countertop on page 4' }));
+    expect(onThereIsOne).toHaveBeenCalledWith(toDecide[0]);
+  });
+
+  it('a page with no proposal flag is never proposed', () => {
+    const pages = reviewItems((draft) => {
+      delete (draft.items.find((entry) => entry.key === 'page:rec-9') as { proposed_no_countertop?: boolean }).proposed_no_countertop;
+    }).items;
+    expect(openNoCountertopPages(pages)).toEqual([]);
+    expect(openPagesToDecide(pages).map((page) => page.key)).toEqual(['page:rec-9']);
   });
 });
 

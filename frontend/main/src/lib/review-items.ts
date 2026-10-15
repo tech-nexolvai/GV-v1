@@ -180,9 +180,20 @@ export function fixValue(typed: string): string {
   return text;
 }
 
-/** The open "no countertop?" pages: one choice card for the lot (#1368). */
+/**
+ * The open pages every AI reader positively said have no countertop: one choice card for the lot
+ * (#1368). Only these are proposed in one click (#1394).
+ */
 export function openNoCountertopPages(items: readonly ReviewItem[]): ReviewItem[] {
-  return orderItems(items.filter((item) => item.kind === 'no_countertop_page' && item.status === 'open'));
+  return orderItems(items.filter((item) => item.kind === 'no_countertop_page' && item.status === 'open' && item.proposed_no_countertop === true));
+}
+
+/**
+ * The open pages whose reading is older or in doubt (#1394): each is decided on its own, with both
+ * answers offered and nothing proposed.
+ */
+export function openPagesToDecide(items: readonly ReviewItem[]): ReviewItem[] {
+  return orderItems(items.filter((item) => item.kind === 'no_countertop_page' && item.status === 'open' && item.proposed_no_countertop !== true));
 }
 
 /** "p.2, p.4 and p.5". */

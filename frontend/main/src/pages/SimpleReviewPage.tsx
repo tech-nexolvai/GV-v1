@@ -5,7 +5,7 @@ import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
 import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
-import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
+import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, openPagesToDecide, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
 import { HeaderActions } from '@/components/shell/ShellHeader';
@@ -248,6 +248,8 @@ export function SimpleReviewPage({
   const summary = useMemo(() => (data ? summarize(data) : null), [data]);
   // The open "no countertop?" pages are one choice card of their own; the list holds the rest.
   const pagesAsked = useMemo(() => (data ? openNoCountertopPages(data.items) : []), [data]);
+  // Older or doubtful readings: asked one page at a time, nothing proposed (#1394).
+  const pagesToDecide = useMemo(() => (data ? openPagesToDecide(data.items) : []), [data]);
   const ordered = useMemo(
     () => (data ? orderItems(data.items).filter((item) => !(item.kind === 'no_countertop_page' && item.status === 'open')) : []),
     [data],
@@ -538,7 +540,7 @@ export function SimpleReviewPage({
       return;
     }
     if (listed.not_checked.some((entry) => entry.key === key)) setNotCheckedOpen(true);
-    const known = listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key);
+    const known = listed.failures.some((entry) => entry.key === key) || listed.not_checked.some((entry) => entry.key === key) || pagesAsked.some((item) => item.key === key) || pagesToDecide.some((item) => item.key === key);
     if (known) {
       focusWhenShown(key);
       return;
@@ -678,10 +680,12 @@ export function SimpleReviewPage({
                     onSelect={(failure) => setActiveKey(failure.key)}
                   />
 
-                  {summary.nothingNeedsYou && pagesAsked.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} />}
+                  {summary.nothingNeedsYou && pagesAsked.length === 0 && pagesToDecide.length === 0 && <NothingNeedsYou checked={checked.length} signedOff={title?.approved ?? false} />}
 
                   <PagesChoice
                     pages={pagesAsked}
+                    toDecide={pagesToDecide}
+                    onNoCountertop={(page) => actOnItem(page, 'confirm_no_countertop')}
                     busyKey={busy?.key ?? null}
                     groupKey={PAGES}
                     errors={errors}

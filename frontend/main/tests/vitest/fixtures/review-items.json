@@ -149,6 +149,7 @@
       "architect_ref": { "location": null, "reason": "Not compared: no countertop was found on this page." },
       "zoom_ref": null,
       "actions": ["confirm_no_countertop", "there_is_a_countertop"],
+      "proposed_no_countertop": true,
       "status": "open",
       "decided_by": null,
       "decided_at": null,

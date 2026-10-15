@@ -5904,6 +5904,11 @@ export interface components {
             older_reading?: boolean;
             /** Page Number */
             page_number: number;
+            /**
+             * Readers Said None
+             * @description True only when every AI reader positively answered "no countertop on the sheet" (#1394), with nothing to doubt: the only pages the simple review proposes as having no countertop in one click. An older reading, a page code found no row on, or a doubtful page is false, and is decided on its own.
+             */
+            readers_said_none?: boolean;
             /** Reason */
             reason: string;
             /**
@@ -7343,6 +7348,12 @@ export interface components {
              * @description 1-based vendor page number.
              */
             page: number | null;
+            /**
+             * Proposed No Countertop
+             * @description `no_countertop_page` only: true when every AI reader positively answered "no countertop on the sheet" (#1394), so the page is in the one-click proposal (the `no-countertop-pages` group). False for an older or doubtful reading: the person decides that page on its own, with nothing proposed.
+             * @default false
+             */
+            proposed_no_countertop: boolean;
             /** Readers */
             readers?: components["schemas"]["ReaderTextOut"][];
             /** Row Id */

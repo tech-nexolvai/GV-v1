@@ -116,6 +116,7 @@ __all__ = [
     "account",
     "best_guess",
     "parsed_inches",
+    "plain_architect_note",
     "review_items_for_revision",
     "whole_percent",
 ]
@@ -329,6 +330,15 @@ class ReviewItemOut(BaseModel):
     vendor_wrote: ExactValueOut | None = Field(
         default=None,
         description="`wall_choice` only: the vendor's printed overall the choices were checked against.",
+    )
+    proposed_no_countertop: bool = Field(
+        default=False,
+        description=(
+            '`no_countertop_page` only: true when every AI reader positively answered "no '
+            'countertop on the sheet" (#1394), so the page is in the one-click proposal (the '
+            "`no-countertop-pages` group). False for an older or doubtful reading: the person "
+            "decides that page on its own, with nothing proposed."
+        ),
     )
     cabinets: list[CabinetRowOut] = Field(
         default_factory=list,
@@ -962,9 +972,11 @@ def review_items_for_revision(
         if located is not None:
             return ArchitectRefOut(location=located)
         return ArchitectRefOut(
-            reason=result.architect.not_compared_reason
-            or result.architect.reason
-            or "No architect number was placed for this row."
+            reason=plain_architect_note(
+                result.architect.not_compared_reason
+                or result.architect.reason
+                or "No architect number was placed for this row."
+            )
         )
 
     depth_lines = depth_readings_for(
@@ -1203,7 +1215,7 @@ def review_items_for_revision(
                     page=result.page_number,
                     countertop=result.countertop_item,
                     row_label=result.label,
-                    what="This countertop",
+                    what=countertop_name(result.page_number),
                     why=plain_why(
                         None if result.hold is None else result.hold.reason,
                         "Waiting for the next check run.",
@@ -1222,13 +1234,24 @@ def review_items_for_revision(
             continue
         confirmation = listed.confirmation
         page_state: Status = "open" if confirmation is None else "done"
+        # Only a page every AI reader positively said has no countertop is proposed (#1394); an
+        # older or doubtful reading is decided on its own, with nothing proposed.
+        proposed = listed.readers_said_none
         items.append(
             ReviewItemOut(
                 key=f"page:{listed.record_id}",
                 kind="no_countertop_page",
                 page=listed.page_number,
-                what="No countertop on this page?",
-                why=plain_why(listed.reason, "Every AI said this page has no countertop."),
+                what="No countertop on this page?" if proposed else "Decide this page",
+                why=plain_why(
+                    listed.reason,
+                    (
+                        "Every AI said this page has no countertop."
+                        if proposed
+                        else "The AIs did not clearly say whether this page has a countertop."
+                    ),
+                ),
+                proposed_no_countertop=proposed,
                 architect_ref=ArchitectRefOut(
                     reason="Not compared: no countertop was found on this page."
                 ),
@@ -1336,7 +1359,7 @@ def _width_items(
             ReviewItemOut(
                 key=f"countertop:{finding.id}",
                 kind="countertop_by_hand",
-                what="This countertop",
+                what=countertop_name(result.page_number),
                 why=plain_why(hold.reason, why),
                 vendor_ref=result.row_location,
                 actions=actions("countertop_by_hand", state),
@@ -1399,7 +1422,11 @@ def _width_items(
             ReviewItemOut(
                 key=f"countertop:{finding.id}",
                 kind="countertop_by_hand",
-                what="Check by hand: " + ", ".join(named) if named else "This countertop",
+                what=(
+                    "Check by hand: " + ", ".join(named)
+                    if named
+                    else countertop_name(result.page_number)
+                ),
                 why=plain_why(
                     next((reason for reason in reasons if reason), None)
                     or (None if hold is None else hold.reason),
@@ -1423,7 +1450,7 @@ def _width_items(
         ReviewItemOut(
             key=f"countertop:{finding.id}",
             kind="countertop_by_hand",
-            what="This countertop",
+            what=countertop_name(result.page_number),
             why=why,
             vendor_ref=result.row_location,
             actions=actions("countertop_by_hand", state),
@@ -1615,3 +1642,35 @@ def _cabinet_run(
         .limit(1)
     ).first()
     return tuple(rows), marked_at
+
+
+def countertop_name(page: int | None) -> str:
+    """A countertop checked by hand, named by its page (#1394), never just "This countertop"."""
+    where = "" if page is None else f" on page {page}"
+    return f"Countertop{where} — check the widths by hand"
+
+
+#: Words in an architect-side reason that only a drafter reads (#1394): what the architect's
+#: numbers measure instead of the countertop.
+_ARCHITECT_JARGON: Final = (
+    "centre line",
+    "center line",
+    "fixture centre",
+    "fixture center",
+    "blocking or backing",
+    "hatched",
+    "not the countertop",
+)
+PLAIN_NO_ARCHITECT_WIDTH: Final = (
+    "The architect gives no width for this countertop (their numbers measure to fixtures or walls)."
+)
+
+
+def plain_architect_note(reason: str) -> str:
+    """The architect-side note in plain words (#1394): a reason that says the architect's numbers
+    measure fixture centre lines, blocking or other things than the countertop becomes one plain
+    sentence with the same meaning; any other reason is kept as written."""
+    lowered = reason.lower()
+    if any(word in lowered for word in _ARCHITECT_JARGON):
+        return PLAIN_NO_ARCHITECT_WIDTH
+    return reason

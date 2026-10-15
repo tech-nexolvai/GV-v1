@@ -489,10 +489,13 @@ def group_keys(listed: ReviewItemsOut, group: Group) -> list[str]:
     """The open keys a group key answers, in the list's order."""
     if group == NOT_CHECKED_GROUP:
         return [entry.key for entry in listed.not_checked if entry.status == "open"]
+    # Only the proposed pages (#1394): an older or doubtful reading is never answered in one click.
     return [
         item.key
         for item in listed.items
-        if item.kind == "no_countertop_page" and item.status == "open"
+        if item.kind == "no_countertop_page"
+        and item.status == "open"
+        and item.proposed_no_countertop
     ]
 
 
