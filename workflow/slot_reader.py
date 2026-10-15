@@ -687,10 +687,12 @@ def _row_area_png(
     the whole page at about 100 dpi (`_span_view_png`), which cost about 2,500 picture tokens a
     question and whose box covered narrow labels. The box never supplies a value.
 
-    `clear` (#1315) is the span's stacked fraction, when it has one (`_stacked_glyphs`): the box is
-    then drawn around the band and the fraction together, so it never crosses the fraction's own
-    glyphs; a fraction inside the band leaves the picture exactly as before. The area shown is
-    always measured from the band.
+    `clear` (#1315) is the span's stacked fraction, when it has one (`_stacked_glyphs`): the box
+    then rises above, or drops below, a fraction that pokes out of the band, so its top and bottom
+    never cross the fraction; it never grows wider, because code's label run on a narrow piece can
+    hold the neighbour's fraction too, and a box around both pointed a reader at the neighbour (AI
+    Set 3, 15 Oct 2026). A fraction inside the band leaves the picture exactly as before. The area
+    shown is always measured from the band.
     """
     from PIL import Image, ImageDraw
 
@@ -715,12 +717,7 @@ def _row_area_png(
     boxed = (
         span
         if clear is None
-        else (
-            min(span[0], clear[0]),
-            min(span[1], clear[1]),
-            max(span[2], clear[2]),
-            max(span[3], clear[3]),
-        )
+        else (span[0], min(span[1], clear[1]), span[2], max(span[3], clear[3]))
     )
     box_left, box_top = boxed[0] - left - pad_x, boxed[1] - top - pad_y
     box_right, box_bottom = boxed[2] - left + pad_x, boxed[3] - top + pad_y

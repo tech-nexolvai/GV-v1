@@ -556,38 +556,51 @@ def test_the_marked_close_up_of_a_stacked_fraction_shows_its_whole_numerator() -
     assert close_up.height == scale * (crop_px[3] - crop_px[1] + 2 * strip)
 
 
-def test_picture_1_s_box_never_crosses_a_stacked_fraction_s_glyphs() -> None:
-    """Input: a narrow span whose stacked fraction is wider than the span and rises above its
-    band. Outcome: the magenta box encloses the fraction, 6 px clear of it (at 300 dpi), so no
-    magenta pixel lies on the fraction; the area shown is the same as before."""
+def _magenta(image: Image.Image, x: int, y: int) -> bool:
+    red, green, blue = image.getpixel((x, y))  # type: ignore[misc]
+    return red > 180 and green < 60 and blue > 150
+
+
+def test_picture_1_s_box_rises_above_a_stacked_fraction_that_pokes_out_of_the_band() -> None:
+    """Input: a fraction inside the span's width that rises 15 px above its band. Outcome: the
+    box's top stands 8 px above the fraction (at 300 dpi), so no magenta pixel lies on it; its
+    sides and bottom and the area shown are as before."""
     page = fake_page(3000, 2000)
-    span = (1490, 1000, 1510, 1100)
-    fraction = (1470, 985, 1530, 1040)  # 60 px wide over a 20 px span, 15 px above the band
+    span = (1440, 1000, 1560, 1100)
+    fraction = (1470, 985, 1530, 1040)  # within the span's width, 15 px above the band
 
     before = pixels(_row_area_png(page, (1000, 2000), span))
     after = pixels(_row_area_png(page, (1000, 2000), span, clear=fraction))
 
     assert after.size == before.size
-
-    def magenta(image: Image.Image, x: int, y: int) -> bool:
-        red, green, blue = image.getpixel((x, y))  # type: ignore[misc]
-        return red > 180 and green < 60 and blue > 150
-
     # Area origin (850, 550); sent at half size.
     left, top = (fraction[0] - 850) // 2, (fraction[1] - 550) // 2
     right, bottom = (fraction[2] - 850) // 2, (fraction[3] - 550) // 2
-    assert any(
-        magenta(before, x, y) for x in range(left, right + 1) for y in range(top, bottom + 1)
-    ), "today's box crosses the fraction"
-    assert not any(
-        magenta(after, x, y) for x in range(left, right + 1) for y in range(top, bottom + 1)
-    )
-    # The box still stands around it: magenta just outside each side of the fraction.
-    middle_y = (fraction[1] + fraction[3]) // 2 - 550
-    middle_x = (fraction[0] + fraction[2]) // 2 - 850
-    assert magenta(after, (fraction[0] - 850 - 6 - 3) // 2, middle_y // 2)
-    assert magenta(after, (fraction[2] - 850 + 6 + 3) // 2, middle_y // 2)
-    assert magenta(after, middle_x // 2, (fraction[1] - 550 - 8 - 3) // 2)
+    inside = [(x, y) for x in range(left, right + 1) for y in range(top, bottom + 1)]
+    assert any(_magenta(before, x, y) for x, y in inside), "today's box crosses the fraction"
+    assert not any(_magenta(after, x, y) for x, y in inside)
+    assert _magenta(after, (1500 - 850) // 2, (985 - 550 - 8 - 3) // 2), "the top, above it"
+    middle_y = (1050 - 550) // 2
+    for x in range(before.width):
+        assert _magenta(after, x, middle_y) == _magenta(before, x, middle_y), "sides unchanged"
+
+
+def test_picture_1_s_box_never_grows_wider_for_a_fraction() -> None:
+    """Input: a narrow 20 px span whose label run is 60 px wide (on a narrow piece code's run can
+    hold the neighbour's fraction too). Outcome: the box keeps the span's width, so it never points
+    at the neighbour; only its top rises above the run."""
+    page = fake_page(3000, 2000)
+    span = (1490, 1000, 1510, 1100)
+    fraction = (1470, 985, 1530, 1040)
+
+    before = pixels(_row_area_png(page, (1000, 2000), span))
+    after = pixels(_row_area_png(page, (1000, 2000), span, clear=fraction))
+
+    middle_y = (1070 - 550) // 2
+    for x in range(before.width):
+        assert _magenta(after, x, middle_y) == _magenta(before, x, middle_y)
+    assert _magenta(after, (1500 - 850) // 2, (985 - 550 - 8 - 3) // 2)
+    assert not _magenta(after, (1500 - 850) // 2, (1000 - 550 - 8 - 3) // 2)
 
 
 def test_labels_that_are_not_stacked_keep_today_s_crop_and_box() -> None:
