@@ -38,6 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only for the annotation
     from hatchet_sdk import Hatchet, Worker
 
     from app.config import Settings
+    from workflow.sutradhar import StagesFactory
 
 __all__ = ["WORKER_NAME", "build_worker", "hatchet_client", "workflow_name"]
 
@@ -71,6 +72,7 @@ def build_worker(
     *,
     factory: sessionmaker[Session],
     stages: Stages | None = None,
+    run_checks_stages: StagesFactory | None = None,
 ) -> Worker:
     """A worker with the package review workflow registered on it.
 
@@ -85,6 +87,10 @@ def build_worker(
     registered today are the six stages, and they run in a line, so this currently caps concurrent stage
     tasks rather than page tasks — and a single package can never occupy more than one slot. It becomes
     literally what it says when B6.4 (#163) adds the per-page fan-out. See `app/config.py`.
+
+    `run_checks` is registered too, with one run per revision at a time (#1359,
+    `workflow/run_checks_worker.py`). `run_checks_stages` builds its stages for each run, with that
+    run's discriminators; left out, it is `workflow/sutradhar.py:build_stages`.
     """
     hatchet = hatchet_client(settings)
     workflow = register(
@@ -96,10 +102,13 @@ def build_worker(
     from workflow.signed_export_worker import register_signed_exports
 
     signed_exports = register_signed_exports(hatchet, factory, stages)
+    from workflow.run_checks_worker import register_run_checks
+
+    check_runs = register_run_checks(hatchet, factory, run_checks_stages)
     return hatchet.worker(
         WORKER_NAME,
         slots=settings.max_concurrent_page_tasks,
-        workflows=[workflow, signed_exports],
+        workflows=[workflow, signed_exports, check_runs],
     )
 
 
