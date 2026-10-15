@@ -13,7 +13,9 @@ end of `run_checks` (`workflow/nina_gate.py`): a PASS or FAIL they find a fault 
 person there, so on a run written since #1228 they should find nothing. It is deterministic and
 makes no model call. Its sentences are code's own, with ids and page numbers only, so a report can
 be pasted without carrying a drawing's values. The report also counts every gate result the run
-kept, per agent (`gate_tally`, #1228).
+kept, per agent (`gate_tally`, #1228), and since #1309 how many items each gate's stop was tried
+again on and how many a try settled (`tried_again`, `helped`). A reading a try settled must rest on
+two try answers from two different readers; one that does not is a fault (`TRY_AGAIN_UNPAIRED`).
 
 **What it checks, on the revision's live results** (the check runs not superseded):
 
@@ -86,6 +88,7 @@ from app.review.no_countertop import answered_pages
 from app.verdicts.rulebook import from_row, snapshot_store
 from evidence.canonical import Authority, CorroborationLane
 from extraction.slot_reader.seal import TEXT_LAYER
+from extraction.slot_reader.try_again import TRY_ANSWER_FLAG, TryRecord, try_records_in
 from rules.semantic_types import ProductType
 from units.measurement import Unit
 from verdict.operands import QUALIFIED_STATUSES, EvidenceStatus
@@ -132,6 +135,7 @@ __all__ = [
     "READERS_AGREE_GATE",
     "RECORD_MISSING",
     "RECORD_ONLY_PAIRING",
+    "TRY_AGAIN_UNPAIRED",
     "UNWITNESSED_FLAG_ONLY",
     "VANI_GATE_NOT_STORED",
     "WORDING_NOT_STORED",
@@ -147,6 +151,9 @@ __all__ = [
     "gate_results",
     "gate_tally",
     "run_check",
+    "try_again_faults",
+    "try_seal_is_paired",
+    "try_tally",
 ]
 
 #: The countertop width check: one result per countertop row, confirmed countertop or split page.
@@ -1251,13 +1258,16 @@ def decision_faults(
 
 @dataclass(frozen=True, slots=True)
 class GateCount:
-    """How many items one agent's gate passed, stopped, and recorded without stopping."""
+    """How many items one agent's gate passed, stopped, and recorded without stopping; and (#1309)
+    on how many items its stop was tried again, and how many of those a try settled."""
 
     agent: Agent
     gate: str
     passed: int = 0
     stopped: int = 0
     recorded: int = 0
+    tried_again: int = 0
+    helped: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1266,6 +1276,8 @@ class GateCount:
             "pass": self.passed,
             "stop": self.stopped,
             "recorded": self.recorded,
+            "tried_again": self.tried_again,
+            "helped": self.helped,
         }
 
 
@@ -1474,13 +1486,72 @@ def gate_results(session: Session, package_revision_id: UUID) -> tuple[GateResul
     return tuple(results)
 
 
+#: The try-again agents' names as their flags write them (#1309).
+_TRY_AGENTS: Final = {"rekha": Agent.REKHA, "akshara": Agent.AKSHARA}
+
+#: A reading a try settled whose seal does not rest on two try answers from two readers (#1309).
+TRY_AGAIN_UNPAIRED: Final = "try-again-unpaired"
+
+
+def _tried_items(
+    session: Session, package_revision_id: UUID
+) -> list[tuple[ObservationCandidate, tuple[TryRecord, ...]]]:
+    """Every candidate of the newest reading that carries try-again flags (#1309), with its tries:
+    a row's anchor or a page's row-choice record (the line finder), a piece's reading (the number
+    reader). Reads only."""
+    if latest_slot_reader_run(session, package_revision_id) is None:
+        return []
+    rows, unchosen = slot_rows_and_unchosen_pages(session, package_revision_id)
+    candidates = [
+        *(candidate for row in rows for candidate in (row.anchor, *row.candidates)),
+        *(listed.record for listed in unchosen),
+    ]
+    found: list[tuple[ObservationCandidate, tuple[TryRecord, ...]]] = []
+    seen: set[UUID] = set()
+    for candidate in candidates:
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        records = try_records_in(candidate.ambiguity_flags)
+        if records:
+            found.append((candidate, records))
+    return found
+
+
+def try_tally(
+    session: Session, package_revision_id: UUID
+) -> dict[tuple[Agent, str], tuple[int, int]]:
+    """Per agent and gate (#1309): on how many items its stop was tried again, and how many of
+    them a try settled: the item passed every check after it (a number is sealed on the record; a
+    line was read). A pair that agreed but a later check rejected is not counted as helped. Reads
+    only."""
+    counts: dict[tuple[Agent, str], list[int]] = {}
+    for candidate, records in _tried_items(session, package_revision_id):
+        flags = candidate.ambiguity_flags or ()
+        # A row's anchor can carry the line finder's tries and its own number's tries.
+        settled = {
+            "akshara": candidate_is_sealed(candidate),
+            "rekha": "slot-reader-row-choice" not in flags,
+        }
+        for agent, gate in dict.fromkeys((record.agent, record.gate) for record in records):
+            mine = [record for record in records if (record.agent, record.gate) == (agent, gate)]
+            per = counts.setdefault((_TRY_AGENTS[agent], gate), [0, 0])
+            per[0] += 1
+            per[1] += settled[agent] and any(record.helped for record in mine)
+    return {key: (tried, helped) for key, (tried, helped) in counts.items()}
+
+
 def gate_tally(session: Session, package_revision_id: UUID) -> tuple[GateCount, ...]:
-    """`gate_results`, counted per agent and gate in the line's order. Reads only."""
+    """`gate_results`, counted per agent and gate in the line's order, with each gate's try-again
+    counts (`try_tally`, #1309). Reads only."""
     order = {agent: index for index, agent in enumerate(Agent)}
     counts: dict[tuple[Agent, str], dict[GateDecision, int]] = {}
     for result in gate_results(session, package_revision_id):
         per = counts.setdefault((result.agent, result.gate), defaultdict(int))
         per[result.decision] += 1
+    tries = try_tally(session, package_revision_id)
+    for key in tries:
+        counts.setdefault(key, defaultdict(int))
     return tuple(
         GateCount(
             agent=agent,
@@ -1488,11 +1559,67 @@ def gate_tally(session: Session, package_revision_id: UUID) -> tuple[GateCount, 
             passed=per[GateDecision.PASS],
             stopped=per[GateDecision.STOP],
             recorded=per[GateDecision.RECORDED],
+            tried_again=tries.get((agent, gate), (0, 0))[0],
+            helped=tries.get((agent, gate), (0, 0))[1],
         )
         for (agent, gate), per in sorted(
             counts.items(), key=lambda item: (order[item[0][0]], item[0][1])
         )
     )
+
+
+def try_seal_is_paired(flags: Iterable[str]) -> bool:
+    """Whether a sealed reading with the number reader's tries rests on exactly two try answers,
+    from two different readers, of one try that helped (#1309), and on no first-round reader. The
+    file's own text is a witness beside the readers, never one of the try's answers."""
+    flags = tuple(flags)
+    records = [record for record in try_records_in(flags) if record.agent == "akshara"]
+    answers = [
+        flag.removeprefix(TRY_ANSWER_FLAG).rsplit(":", 1)
+        for flag in flags
+        if flag.startswith(TRY_ANSWER_FLAG)
+    ]
+    readers = {
+        flag.removeprefix("reader-id:")
+        for flag in flags
+        if flag.startswith("reader-id:") and flag != f"reader-id:{TEXT_LAYER}"
+    }
+    models = {answer[0] for answer in answers if len(answer) == 2}
+    tries = {answer[1] for answer in answers if len(answer) == 2}
+    helped = {str(record.attempt) for record in records if record.helped}
+    return (
+        len(answers) == 2
+        and len(models) == 2
+        and len(tries) == 1
+        and tries <= helped
+        and (not readers or readers == models)
+    )
+
+
+def try_again_faults(session: Session, package_revision_id: UUID) -> list[RunCheckItem]:
+    """Every sealed reading with the number reader's try flags whose seal does not rest on two
+    answers to one try that helped, from two different readers (`try_seal_is_paired`, #1309): a
+    first-round answer and a try answer must never be mixed. Reads only."""
+    items: list[RunCheckItem] = []
+    for candidate, records in _tried_items(session, package_revision_id):
+        if not any(record.agent == "akshara" for record in records):
+            continue
+        if not candidate_is_sealed(candidate):
+            continue
+        if try_seal_is_paired(candidate.ambiguity_flags or ()):
+            continue
+        items.append(
+            RunCheckItem(
+                Check.TWO_JUDGMENTS,
+                TRY_AGAIN_UNPAIRED,
+                Agent.AKSHARA,
+                Action.HOLD,
+                "A reading was sealed after trying again, but not on two answers to that try from "
+                "two different readers.",
+                (("candidate", str(candidate.id)),),
+            )
+        )
+    return items
 
 
 # --- the report -----------------------------------------------------------------------------------
@@ -1642,6 +1769,7 @@ def run_check(session: Session, package_revision_id: UUID) -> RunCheckReport:
         items += _item_width_coverage(
             countertop_items, manual, width_rows=width_rows, width_items=width_items
         )
+        items += try_again_faults(session, package_revision_id)
         if latest_slot_reader_run(session, package_revision_id) is not None:
             items += _unread_pages(
                 session,

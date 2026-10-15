@@ -28,7 +28,7 @@ from fractions import Fraction
 from typing import Final
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models.document import DocumentVersion, Page
@@ -38,9 +38,11 @@ from eval.architect_reader import ReadSpan
 from eval.pariksha.keys import FAMILIES, QuestionIdentity
 from extraction.architect.labels import read_label
 from extraction.product_context import PRODUCT_SUFFIX
+from extraction.slot_reader.try_again import TRY_KEY_MARK
 from workflow.reading_watch import LEDGER_EXTRACTOR, ledger_key_prefix
 
 __all__ = [
+    "TRY_FAMILIES",
     "QuestionIdentity",
     "StoredArchitectRun",
     "StoredAttempt",
@@ -53,6 +55,12 @@ __all__ = [
 ]
 
 _VERSION: Final = re.compile(r"-v\d+$")
+#: Each agent's try-again question family (#1309): the number reader's tries are its own question
+#: with a new close-up; the line finder's are the tie-break question.
+TRY_FAMILIES: Final[Mapping[str, str]] = {
+    "akshara": "claude-slot-span",
+    "rekha": "slot-row-tiebreak",
+}
 _FORM_READER: Final = "extraction.form_reader"
 #: A ledger run's task key is its stage's key, then this, then a tag (`ledger_key_prefix`).
 _LEDGER_KEY: Final = ledger_key_prefix("")
@@ -164,11 +172,17 @@ def load_stored_run(
     agent: str,
     database: str,
     extraction_run_id: UUID | None = None,
+    with_try_again: bool = False,
 ) -> StoredRun:
-    """Every stored question of the agent's family in one run, with every answer to it."""
+    """Every stored question of the agent's family in one run, with every answer to it.
+
+    A try's question (#1309: its id ends `:again<n>`; the line finder's are asked
+    `slot-row-tiebreak-v1`) is read only `with_try_again`; without it the run reads exactly as its
+    first round, so a scorecard of the first round means what it always did."""
     if agent not in FAMILIES:
         raise StoredRunError(f"{agent!r} has no stored reader questions; use load_architect_run")
     family = FAMILIES[agent]
+    families = {family} | ({TRY_FAMILIES[agent]} if with_try_again else set())
     _read_only(session)
     rows = session.execute(
         select(
@@ -183,11 +197,16 @@ def load_stored_run(
         .where(
             ModelInvocation.extraction_run_id.is_not(None),
             ModelInvocation.reader_question_packet.is_not(None),
-            ModelInvocation.prompt_id.startswith(f"{family}-v"),
+            or_(*(ModelInvocation.prompt_id.startswith(f"{name}-v") for name in families)),
         )
         .order_by(ModelInvocation.created_at, ModelInvocation.id)
     ).all()
-    rows = [row for row in rows if prompt_family(row.prompt_id) == family]
+    rows = [
+        row
+        for row in rows
+        if prompt_family(row.prompt_id) in families
+        and (with_try_again or not _is_try(row.reader_question_packet))
+    ]
     counts: dict[UUID, int] = defaultdict(int)
     for row in rows:
         assert row.extraction_run_id is not None
@@ -208,7 +227,9 @@ def load_stored_run(
             unidentified += 1
             continue
         assert isinstance(packet, Mapping)
-        identity = QuestionIdentity(family=family, page_sha256=page, question_id=question_id)
+        identity = QuestionIdentity(
+            family=prompt_family(row.prompt_id), page_sha256=page, question_id=question_id
+        )
         attempts[identity].append(
             StoredAttempt(
                 model_id=row.model_id,
@@ -253,6 +274,12 @@ def load_stored_run(
         unidentified=unidentified,
         reader_settings=_reader_settings(session, run),
     )
+
+
+def _is_try(packet: object) -> bool:
+    """Whether a stored question is a try's (#1309): its id ends `:again<n>`."""
+    question_id = packet.get("question_id") if isinstance(packet, Mapping) else None
+    return isinstance(question_id, str) and TRY_KEY_MARK in question_id
 
 
 def _reader_settings(session: Session, run: ExtractionRun) -> str:
