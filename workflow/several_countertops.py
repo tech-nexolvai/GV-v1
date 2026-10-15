@@ -34,7 +34,9 @@ given for the whole package (typed, or a reading confirmed), which it shows held
 
 What the whole-package check itself still lacks, beyond the drawn values (a project setting not
 given, a wall layout not stated), is said on every countertop's own result too, after "Also:"
-(`also_reason`): the same words on each, so a decision still carries over. **Never silent** (`hold_for_unchecked`): with the reader on, such a
+(`also_reason`): the same words on each, so a decision still carries over. A withheld reading is
+not said there (#1306): its reason can name a countertop and its page, and the whole-package hold,
+written in that case, says it in full. **Never silent** (`hold_for_unchecked`): with the reader on, such a
 countertop the check did not run for is named on one held whole-package result.
 
 A package with one countertop, or none known, is exactly as before.
@@ -231,12 +233,21 @@ _COULD_NOT_RESOLVE: Final = re.compile(
 _ABSENT: Final = re.compile(
     r"^required input\(s\) absent: ([^.]+)\. A missing value is not a passing value\.$"
 )
+#: The engine's sentence for readings found but withheld (`verdict/engine.py`, #826): their reasons,
+#: then the inputs. Such a reason can name countertops and pages (`ONE_COUNTERTOPS_READING`).
+_WITHHELD: Final = re.compile(r"^.+ \(inputs: ([^()]+)\)$")
 
 
 def also_reason(finding: Finding, inputs: Collection[str]) -> str | None:
     """What the whole-package result of a check says it lacks beyond the drawn values, for each
     countertop's own held result (#1201 review); `None` when it decided, or when all it lacks is
     one or more of the rule's drawn `inputs`, which the countertop's own sentence already names.
+
+    `None` too when all it says is that readings of drawn `inputs` were withheld (#1306): that
+    reason can name another countertop and its page (a person confirmed one countertop's
+    depth-reader value), and a countertop's own reason never names a countertop. The whole-package
+    hold, written in that case, keeps the full text. Anything else is said without what clears the
+    whole-package hold (`clears_when`), as `hold_for_several` does: it is not this result's to say.
 
     The same for every countertop of the package: it comes from the one whole-package evaluation.
     """
@@ -249,7 +260,12 @@ def also_reason(finding: Finding, inputs: Collection[str]) -> str | None:
     absent = _ABSENT.match(reason)
     if absent is not None and {n.strip() for n in absent.group(1).split(",")} <= set(inputs):
         return None
-    return reason
+    withheld = _WITHHELD.match(reason)
+    if withheld is not None and {n.strip() for n in withheld.group(1).split(",")} <= set(inputs):
+        return None
+    for clears in (PER_COUNTERTOP_ONCE_DECIDED, READER_OFF, NEVER_PER_COUNTERTOP):
+        reason = reason.replace(clears, " ")
+    return " ".join(reason.split()) or None
 
 
 def clears_when(rule_id: str, *, depth_reader: bool) -> str:

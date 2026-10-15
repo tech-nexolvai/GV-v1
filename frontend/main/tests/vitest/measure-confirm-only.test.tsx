@@ -276,6 +276,35 @@ describe('a value typed before is never overruled by Save (#1303 review)', { tim
     expect(offset.textContent).toContain('No reading confirmed yet');
   });
 
+  it('Save never confirms the AI reading already in a field once a value typed before turns up (#1307)', async () => {
+    // The second safety net on its own (`confirmAcceptedProposals`). The form opens with nothing typed
+    // for the front offset, so its AI reading fills the field. Save's own re-read then finds a value
+    // typed for it before (#1303); the reviewer keeps what the screen shows, and saves again. The
+    // field is still marked AI-filled, and only Save's own check stops it being confirmed.
+    required = {
+      ...proposed('5 in'),
+      saved_measurements: REQUIRED.saved_measurements.filter((item) => item.key !== 'SHOP:CT007'),
+    };
+    const user = await openValues();
+    await waitFor(() =>
+      expect(field('SHOP:CT007')!.querySelector('[data-part="confirm-only-value"]')?.textContent).toContain('5 in'),
+    );
+
+    required = proposed('5 in');
+    await user.type(box('USER_INPUT:field_dimension') as HTMLInputElement, '120"');
+    await user.click(screen.getByRole('button', { name: 'Save values' }));
+    await screen.findByText(/since you opened this:/, undefined, { timeout: 5000 });
+    expect(postsTo('/measurements')).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: 'Keep mine' }));
+    await user.click(screen.getByRole('button', { name: 'Save values' }));
+    await waitFor(() => expect(postsTo('/measurements')).toHaveLength(1));
+
+    expect(postsTo('/confirm')).toHaveLength(0);
+    expect(JSON.parse(postsTo('/measurements')[0].body!).measurements).toEqual([
+      { rule_id: 'R-FILLER', name: 'field_width', value: '120"' },
+    ]);
+  });
+
   it('says when the AI reading differs from the value typed before, and that Save does not confirm it', async () => {
     required = proposed('5 in');
     await openValues();

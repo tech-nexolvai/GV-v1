@@ -90,6 +90,13 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
 def _typed_before(session: Session, revision: UUID, **values: Fraction) -> None:
     """Numbers typed on Measurements before #1253, stored the way the endpoint used to store them:
     one RUN set for the revision, keyed `rule:input`."""
+    _typed_before_in(session, revision, "in", values)
+
+
+def _typed_before_in(
+    session: Session, revision: UUID, unit: str, values: dict[str, Fraction]
+) -> None:
+    """`_typed_before`, each number in `unit`."""
     versions = session.scalars(
         select(StoredParameterSet.version).where(
             StoredParameterSet.package_revision_id == revision,
@@ -102,7 +109,7 @@ def _typed_before(session: Session, revision: UUID, **values: Fraction) -> None:
         version=max(versions, default=0) + 1,
         parameters={
             key.replace("__", ":"): ParameterValue(
-                value=Quantity(value=value, unit=Unit("in")),
+                value=Quantity(value=value, unit=Unit(unit)),
                 provenance=Provenance.MEASURED,
                 set_by="synthetic reviewer",
                 set_at=datetime(2026, 10, 1, tzinfo=UTC),
@@ -369,6 +376,57 @@ def test_a_reading_that_differs_from_a_drawn_value_typed_before_waits_for_a_pers
     assert "2026-10-01" in finding["reason"]
     assert "a person decides" in finding["reason"]
     assert NO_LONGER_COUNTS not in finding["reason"]
+
+
+@pytest.mark.parametrize(
+    "typed_mm",
+    [
+        # 647.7 mm is exactly 25 1/2": the same length, but not the same number and unit.
+        Fraction(6477, 10),
+        # The same number as the reading, in the other unit: only the unit check tells them apart.
+        Fraction(51, 2),
+    ],
+    ids=["same-length-in-mm", "same-number-in-mm"],
+)
+def test_a_value_typed_in_mm_never_agrees_with_an_inch_reading(
+    session: Session, typed_mm: Fraction
+) -> None:
+    """#1307: a reading agrees with an old typed value only when both the number and the unit are
+    the same (`workflow.measurements.agrees`). A depth typed in mm beside a confirmed reading of
+    25 1/2" (which alone would PASS) is never taken as agreeing, so the reading never decides alone:
+    the check waits for a person (REVIEW_REQUIRED). Inches are the authoritative unit; mm never
+    decides, and never lends its number to an inch reading."""
+    client = _client(session)
+    package, revision = _package(session)
+    _depth_settings(client, package)
+    _confirmed(session, package, revision, '25 1/2"')
+    _typed_before_in(session, revision, "mm", {"CT-DEPTH-001__countertop_depth": typed_mm})
+
+    _run(session, revision)
+    finding = _findings(client, package)["CT-DEPTH-001"]
+
+    assert finding["outcome"] == "REVIEW_REQUIRED", finding
+    assert "(25 1/2 in)" in finding["reason"], finding["reason"]
+    assert " mm)" in finding["reason"], finding["reason"]
+    assert "a person decides" in finding["reason"]
+
+
+def test_agrees_needs_the_same_number_and_the_same_unit() -> None:
+    """#1307: `agrees` directly. Same number and unit agrees; same number in another unit, or the
+    same length written in the other unit, does not."""
+    from units.measurement import Measurement
+    from workflow.measurements import TypedDrawn, agrees
+
+    when = datetime(2026, 10, 1, tzinfo=UTC)
+    reading = Measurement(Fraction(51, 2), Unit.INCH, '25 1/2"')
+
+    def typed(value: Fraction, unit: Unit) -> TypedDrawn:
+        return TypedDrawn(value=Measurement(value, unit, None), set_at=when)
+
+    assert agrees(typed(Fraction(51, 2), Unit.INCH), reading)
+    assert not agrees(typed(Fraction(51, 2), Unit.MM), reading)
+    assert not agrees(typed(Fraction(6477, 10), Unit.MM), reading)
+    assert not agrees(TypedDrawn(value=None, set_at=when), reading)
 
 
 def test_a_reading_used_is_never_called_a_value_that_no_longer_counts(session: Session) -> None:

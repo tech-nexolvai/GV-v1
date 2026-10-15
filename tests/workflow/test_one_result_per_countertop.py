@@ -37,6 +37,7 @@ from tests.evidence.test_bridge import _upgrade
 from tests.workflow.test_depth_evidence import ACTOR, _findings, _Set
 from tests.workflow.test_several_countertops import (
     _blank_page,
+    _confirmed_reading,
     _label,
     _project_depth_parameters,
     _run,
@@ -639,6 +640,95 @@ def test_only_more_than_a_missing_drawn_value_is_said_again() -> None:
     assert also_reason(held(absent), inputs) is None
     assert also_reason(held(setting), inputs) == setting
     assert also_reason(held("No live confirmed countertop run remains."), inputs) is not None
+
+
+def test_a_withheld_reading_is_never_said_again_on_a_countertop_s_own_result() -> None:
+    """#1306: a whole-package result held only because readings of its drawn inputs were withheld
+    (a person confirmed one countertop's depth-reader value, readings on two drawings) names
+    countertops and pages, and says what clears the whole-package hold. None of it is said again on
+    a countertop's own result: the whole-package hold, written in this case, keeps the full text."""
+    from verdict.finding import Finding
+    from verdict.outcomes import Severity
+    from workflow.evidence_operands import (
+        COUNTERTOPS_SHARE_A_DRAWING,
+        DRAWINGS_SPANNED,
+        ONE_COUNTERTOPS_READING,
+    )
+    from workflow.several_countertops import (
+        NEVER_PER_COUNTERTOP,
+        PER_COUNTERTOP_ONCE_DECIDED,
+        READER_OFF,
+        also_reason,
+    )
+
+    def held(reason: str) -> Finding:
+        return Finding(
+            rule_id="CT-BACK-OFFSET-MIN-001",
+            outcome=Outcome.REVIEW_REQUIRED,
+            severity=Severity.FLAG,
+            reason=reason,
+            snapshot_id="sha256:synthetic",
+            engine_version="synthetic",
+        )
+
+    inputs = {"countertop_depth", "front_offset", "sink_cutout_depth"}
+    clears = (PER_COUNTERTOP_ONCE_DECIDED, READER_OFF, NEVER_PER_COUNTERTOP)
+    named = "Countertop 1 on page 1 and another countertop row on page 2 (box 2)"
+    for clear in clears:
+        reading = ONE_COUNTERTOPS_READING.format(countertops=named, clears=clear)
+        assert also_reason(held(f"{reading} (inputs: countertop_depth)"), inputs) is None
+        assert (
+            also_reason(held(f"{reading} (inputs: countertop_depth, sink_cutout_depth)"), inputs)
+            is None
+        )
+        # Anything else said with a clearing sentence keeps its words, never the sentence.
+        other = also_reason(held(f"A setting is missing. {clear}"), inputs)
+        assert other == "A setting is missing.", other
+    spanned = DRAWINGS_SPANNED.format(count=2)
+    assert also_reason(held(f"{spanned} (inputs: front_offset)"), inputs) is None
+    shared = f"{COUNTERTOPS_SHARE_A_DRAWING} (inputs: countertop_depth)"
+    assert also_reason(held(shared), inputs) is None
+    # A withheld input the countertop's own sentence does not name is still said.
+    assert also_reason(held(f"{spanned} (inputs: wall_layout)"), inputs) is not None
+    # The real missing setting is still said, word for word.
+    setting = NO_CABINET_DEPTH.removeprefix("Also: ")
+    assert also_reason(held(setting), inputs) == setting
+
+
+@pytest.mark.parametrize("on", [False, True], ids=["reader-off", "reader-on"])
+def test_a_countertop_s_own_result_never_names_another_countertop(
+    session: Session, store: LocalStore, on: bool
+) -> None:
+    """#1306: a person confirmed the depth reader's value for countertop 1; the whole-package check
+    is held naming it. Countertop 2's own held result (and countertop 1's) names no countertop and
+    no page, never says the whole-package "It clears when...", and is the same on each countertop so
+    a decision still carries over. The whole-package hold keeps the full text."""
+    sheet = _Set(session, store)
+    _project_depth_parameters(session, sheet.revision)
+    _publish_rulebook(session)
+    _slot_rows(sheet, [sheet.page, _blank_page(sheet, 1)])
+    _confirmed_reading(sheet, CT010, 25, sheet.link())
+
+    found = _run(sheet, store, on=on)
+
+    whole = _unscoped(found, "CT-DEPTH-001")
+    assert any("Countertop 1 on page 1" in f.reason for f in whole), [f.reason for f in whole]
+    seen = 0
+    for rule_id in SIX:
+        own = [f for f in _scoped(found, rule_id) if f.reason.startswith("Waiting for")]
+        assert len({f.reason for f in own}) <= 1, rule_id
+        for finding in own:
+            seen += 1
+            assert finding.outcome == Outcome.REVIEW_REQUIRED.value, finding.reason
+            assert "Countertop " not in finding.reason, finding.reason
+            assert "page" not in finding.reason, finding.reason
+            assert "It clears" not in finding.reason, finding.reason
+    assert any(
+        f.scope_label == "Countertop row on page 2"
+        for f in _scoped(found, "CT-DEPTH-001")
+        if f.reason.startswith("Waiting for")
+    ), [(f.scope_label, f.reason) for f in found["CT-DEPTH-001"]]
+    assert seen
 
 
 def test_the_queue_takes_only_the_width_result_for_a_row_s_own() -> None:
