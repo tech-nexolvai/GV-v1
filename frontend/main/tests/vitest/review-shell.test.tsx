@@ -22,7 +22,10 @@ vi.mock('@/api/client', () => ({
     ],
     next_cursor: null,
   })),
-  getApprovalReadiness: vi.fn(async () => ({ revision_id: 'r1', can_approve: false, blocking_findings: 4, blocking_finding_ids: [], reason: 'synthetic' })),
+}));
+// The sidebar counts what the review page counts: its list's open items (`header.open`).
+vi.mock('@/api/review-items', () => ({
+  liveReviewItemsApi: { load: vi.fn(async () => ({ header: { open: 4 } })) },
 }));
 
 const { AppShell, COLLAPSED_KEY } = await import('@/components/shell/AppShell');

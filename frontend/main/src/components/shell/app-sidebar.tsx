@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { BarChart2, BookOpen, Files, Moon, SlidersHorizontal, SquarePen, Sun } from 'lucide-react';
 
-import { getApprovalReadiness, listPackages } from '@/api/client';
-import { itemsNeedingYou } from '@/lib/needs-you-queue';
+import { listPackages } from '@/api/client';
+import { liveReviewItemsApi } from '@/api/review-items';
 import type { PackagePage } from '@/api/client';
 import { projectId } from '@/api/config';
 import { useAsync } from '@/api/useAsync';
@@ -275,11 +275,12 @@ function useNeedYouCounts(items: readonly PackageItem[], refreshKey: number): Ma
     if (!wanted) return;
     let current = true;
     const ids = wanted.split(',');
-    void Promise.allSettled(ids.map((id) => getApprovalReadiness(projectId(), id))).then((answers) => {
+    // The same count the review page shows: its list's open items (`header.open`), never a second count.
+    void Promise.allSettled(ids.map((id) => liveReviewItemsApi.load(projectId(), id))).then((answers) => {
       if (!current) return;
       const next = new Map<string, number>();
       answers.forEach((answer, index) => {
-        if (answer.status === 'fulfilled') next.set(ids[index], itemsNeedingYou(answer.value));
+        if (answer.status === 'fulfilled') next.set(ids[index], answer.value.header.open);
       });
       setCounts(next);
     });

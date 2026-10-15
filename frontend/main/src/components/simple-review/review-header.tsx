@@ -47,7 +47,7 @@ export function ReviewHeader({
               {' '}(<span className="num">{header.settled_percent}%</span>)
             </>
           )}{' '}
-          · <Count value={header.need_you} /> need you
+          · <Count value={header.need_you} /> not settled by the AIs
         </p>
         <p data-testid="accuracy-line" className="text-[13px] leading-5 text-muted-foreground">
           {header.readings_checked > 0 ? (

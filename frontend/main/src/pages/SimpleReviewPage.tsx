@@ -54,6 +54,8 @@ export interface SimpleReviewPageProps {
   /** The old tabs and wizard, `#/review/<id>/advanced`. */
   onOpenAdvanced: () => void;
   onTitleChange?: (title: string, revision: number | null) => void;
+  /** The page's own "items need you" count (`header.open`), so the sidebar shows the same number. */
+  onNeedYouChange?: (count: number | null) => void;
   /** The review assistant, docked on the right. Off in tests that do not exercise it. */
   assistantAvailable?: boolean;
 }
@@ -154,6 +156,7 @@ export function SimpleReviewPage({
   onOpenPdfs,
   onOpenAdvanced,
   onTitleChange,
+  onNeedYouChange,
   assistantAvailable = true,
 }: SimpleReviewPageProps) {
   const project = useMemo(() => {
@@ -210,6 +213,13 @@ export function SimpleReviewPage({
       current = false;
     };
   }, [api, project, packageId, version]);
+
+  // The sidebar shows the same "items need you" count as this page (its list's `header.open`).
+  const openCount = lastGood?.header.open ?? null;
+  useEffect(() => {
+    if (openCount !== null) onNeedYouChange?.(openCount);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCount]);
 
   useEffect(() => {
     if (project === null) return;
