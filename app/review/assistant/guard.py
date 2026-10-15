@@ -629,6 +629,24 @@ _LABEL_COMMON: Final = frozenset(
 _BACK_REFERENCE: Final = re.compile(r"\b(?:it|its|this|that|they|their|them|these|those|here)\b")
 
 
+#: Fields that fill a number the reviewer may be asked to accept: the AI's best guess (#1352) and
+#: the printed overall. No instruction or approval may sit next to one, and no verdict on it.
+_VALUE_FIELDS: Final = frozenset({"guess", "printed"})
+#: An instruction or approval verb (and its forms); "go with", "lock in" … are two words.
+_TAKE_VERB: Final = re.compile(
+    r"\b(?:use[sd]?|using|take[sn]?|taking|took|keep[s]?|keeping|kept|pick[s]?|picking|"
+    r"accept(?:s|ed|ing)?|confirm(?:s|ed|ing)?|enter(?:s|ed|ing)?|typ(?:e|es|ed|ing)|"
+    r"appl(?:y|ies|ied|ying)|choos(?:e|es|ing)|chose|select(?:s|ed|ing)?|trust(?:s|ed|ing)?|"
+    r"approv(?:e|es|ed|ing)|adopt(?:s|ed|ing)?|go(?:es|ing)? with|went with|stick with|"
+    r"lock(?:s|ed|ing)? in|agree(?:s|d)? (?:with|to|on))\b"
+)
+#: A verdict on a value: "{R1.guess} is right", "… looks correct".
+_VALUE_VERDICT: Final = re.compile(
+    r"^\W*(?:\w+\W+){0,2}?(?:is|are|was|looks?|seems?|reads? as)\W+(?:\w+\W+)?"
+    r"(?:right|correct|safe|fine|good|ok|okay|valid|accurate|true|acceptable|reliable)\b"
+)
+
+
 class GuardRejected(Exception):
     """The answer is not backed by the records. The message is a code, never the answer's text."""
 
@@ -835,6 +853,24 @@ def _check_structure(template: str, snapshot: ReviewSnapshot) -> None:
             header_keys = keys if stripped.rstrip().endswith(":") and keys else None
 
 
+def _check_value_framing(template: str) -> None:
+    """No instruction or approval right before or after a value the reviewer may accept, and no
+    verdict on it: "Use {R1.guess}." would read as advice to accept the AI's number (#1354)."""
+    for line in template.split("\n"):
+        for sentence in split_sentences(line.strip()):
+            for slot in slots(sentence):
+                if slot.field not in _VALUE_FIELDS:
+                    continue
+                before = _plain(PLACEHOLDER.sub(" ", sentence[: slot.start]))
+                after = _plain(PLACEHOLDER.sub(" ", sentence[slot.end :]))
+                near_before = " ".join(_WORDS.findall(before)[-4:])
+                near_after = " ".join(_WORDS.findall(after)[:4])
+                if _TAKE_VERB.search(near_before) or _TAKE_VERB.search(near_after):
+                    raise GuardRejected("instruction-beside-a-value")
+                if _VALUE_VERDICT.match(after):
+                    raise GuardRejected("verdict-on-a-value")
+
+
 def _check_references(draft: Draft, snapshot: ReviewSnapshot) -> None:
     pages = snapshot.pages()
     for evidence in draft.evidence:
@@ -916,5 +952,6 @@ def check(draft: Draft, snapshot: ReviewSnapshot, *, by_model: bool = True) -> N
         raise GuardRejected("number-in-text")
     if by_model:
         _check_vocabulary(text, snapshot)
+    _check_value_framing(text)
     _check_structure(text, snapshot)
     _check_references(draft, snapshot)

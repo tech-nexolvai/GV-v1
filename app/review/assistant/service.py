@@ -18,6 +18,7 @@ words. Logs carry ids, lengths and codes only, never the question or the answer.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from time import monotonic_ns
@@ -170,8 +171,17 @@ def _stage(stage: str) -> Event:
     return "stage", StageEvent(id=stage, label=STAGE_LABELS[stage])  # type: ignore[arg-type]
 
 
+#: A review-list entry named by its short id in a question ("confirm R2").
+_REVIEW_ID_MENTIONED: Final = re.compile(r"\b([Rr][0-9]+)\b")
+
+
 def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
     """The fixed refusal, with a button to the item the request was about when one is known."""
+    named = _REVIEW_ID_MENTIONED.search(request.question)
+    entry = None if named is None else snapshot.review_item(named.group(1).upper())
+    if entry is not None and entry.needs_you:
+        # "Confirm R2": the button goes to that entry of the review list.
+        return Draft(text=REFUSAL_TEXT, actions=(("open_review_item", entry.id),))
     page = page_mentioned(request.question)
     focus = request.focus
     if page is None and focus is not None:
@@ -198,6 +208,10 @@ def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
             actions.append(("open_queue_item", record.id))
         elif entry is not None and entry.needs_you:
             actions.append(("open_review_item", entry.id))
+    first_open = next((item for item in snapshot.review_items if item.needs_you), None)
+    if not actions and first_open is not None:
+        # With the review list read, the button goes to the first entry that waits (#1354).
+        actions.append(("open_review_item", first_open.id))
     if not actions and snapshot.readiness.needing_you:
         actions.append(("open_queue_item", snapshot.readiness.needing_you[0]))
     return Draft(text=REFUSAL_TEXT, actions=tuple(actions))

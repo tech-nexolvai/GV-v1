@@ -24,6 +24,7 @@ from app.review.assistant.contract import (
     OpenReviewItemAction,
 )
 from app.review.assistant.guard import GuardRejected, check
+from app.review.assistant.intent import is_decision_request, is_judging_question
 from app.review.assistant.model import ANSWER_SCHEMA, SYSTEM_PROMPT, parse_answer
 from app.review.assistant.placeholders import Slot, UnknownPlaceholder, record_fields, value_of
 from app.review.assistant.records import ReviewItemRecord, prompt_records
@@ -177,6 +178,36 @@ def test_the_item_button_goes_only_to_an_item_that_waits(draft: Draft, reason: s
         "The guess on {R1.page} is 12 1/2.",  # a value in digits
         "{R1.what} on {R1.page} and the countertop on {C1.page} {C1.outcome}.",  # two records
         "{R1.what} passes.",  # deciding
+        # Advice to accept the number (review of #1354): an instruction or approval verb right
+        # before or after a value, or a verdict on it, whatever the record.
+        *(
+            f"{verb} {{{slot}}}."
+            for slot in ("R1.guess", "C1.printed")
+            for verb in (
+                "Use",
+                "Take",
+                "Keep",
+                "Pick",
+                "Go with",
+                "Accept",
+                "Confirm",
+                "Enter",
+                "Type",
+                "Apply",
+                "Choose",
+                "Select",
+                "Trust",
+                "Open the queue and use",
+            )
+        ),
+        *(
+            f"{{{slot}}} is {word}."
+            for slot in ("R1.guess", "C1.printed")
+            for word in ("right", "correct", "safe", "fine")
+        ),
+        "{R1.guess}, use it.",
+        "{C1.printed}, so use it.",
+        "On {R1.page}, use {R1.guess}.",
     ],
 )
 def test_model_words_never_decide_confirm_or_state_a_value(text: str) -> None:
@@ -314,6 +345,72 @@ def test_a_request_to_confirm_or_fix_an_item_is_refused_with_a_button_to_it(
     assert {action.kind for action in answer.actions} >= {"open_review_item"}
     item = next(action for action in answer.actions if action.kind == "open_review_item")
     assert isinstance(item, OpenReviewItemAction) and item.item_key == ITEM_BY_HAND_KEY
+
+
+@pytest.mark.parametrize(
+    ("question", "key"),
+    [
+        ("confirm the AI's guess", ITEM_GUESS_KEY),
+        ("Confirm 42 1/2 on page 7", ITEM_BY_HAND_KEY),
+        ("confirm piece 2 width", ITEM_GUESS_KEY),
+        ("Confirm the overall countertop width on page 7", ITEM_BY_HAND_KEY),
+        ("confirm R2", ITEM_BY_HAND_KEY),
+        ("Confirm the first item", ITEM_GUESS_KEY),
+        ("Mark the guess as confirmed", ITEM_GUESS_KEY),
+        ("Use the guess", ITEM_GUESS_KEY),
+        ("Go with the best guess", ITEM_GUESS_KEY),
+        ("Lock in the guess", ITEM_GUESS_KEY),
+        ("Type 42 1/2 for page 7", ITEM_BY_HAND_KEY),
+        ("please just take the number on page 7", ITEM_BY_HAND_KEY),
+    ],
+)
+def test_asking_it_to_accept_a_number_is_refused_with_a_button_to_the_item(
+    question: str, key: str
+) -> None:
+    answer = _ask(question)
+    assert answer.mode == "refused"
+    item = next(action for action in answer.actions if action.kind == "open_review_item")
+    assert isinstance(item, OpenReviewItemAction) and item.item_key == key
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Should I confirm the guess on page 7?",
+        "Should I agree with the failure on page 4?",
+        "should we fix the number on page 7",
+        "Do you think I should agree with page 4?",
+        "Should I use the best guess?",
+    ],
+)
+def test_asking_whether_to_confirm_or_agree_is_judging(question: str) -> None:
+    assert is_judging_question(question)
+    assert _ask(question).mode == "records_only"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How do I confirm the guess on page 7?",
+        "What is the best guess on page 7?",
+        "Why is the number on page 7 held?",
+        "Which items still need me?",
+        "What does confirm do?",
+        "Where does the guess on page 4 come from?",
+        "How do I fix a number?",
+        "What happens when I agree with a failure?",
+        "Why can't I type a number?",
+        "Which pages have not checked results?",
+        "Take me to page 7",
+        "Keep it short: why did page 4 fail?",
+        "Explain the guess on page 4",
+        "Show me the first item",
+        "What would using the guess mean?",
+    ],
+)
+def test_genuine_questions_are_still_answered(question: str) -> None:
+    assert not is_decision_request(question)
+    assert _ask(question).mode != "refused"
 
 
 def test_a_refusal_with_an_item_in_focus_points_to_that_item() -> None:

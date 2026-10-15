@@ -85,6 +85,21 @@ _TARGET: Final = re.compile(
     r"group|not checked)|"
     r"as (?:pass|fail|ok|okay|approved|accepted|done|resolved|correct|right))\b|^\s*\d+\s*$"
 )
+#: Verbs that accept a number on the reviewer's behalf (#1354): "use the guess", "go with the
+#: best guess", "type 42 1/2 for page 7". Only with a number-like target, so "take me to page 7"
+#: and "keep it short" stay questions.
+_TAKE: Final = re.compile(
+    r"^(?:use|take|keep|pick|choose|select|apply|enter|type|trust|adopt|go with|stick with|"
+    r"lock in|lock|accept)\b"
+)
+_NUMBER_TARGET: Final = re.compile(
+    r"^\s*(?:\d|r\d+\b|(?:the |this |that |these |those |its |their |ai's |the ai's )?"
+    r"(?:[\w']+ ){0,3}(?:guess|guesses|number|numbers|value|values|width|widths|reading|"
+    r"readings|dimension|dimensions|item|items|figure|figures)\b)"
+)
+#: The simple review screen's own actions (#1352): with a number-like target they are commands
+#: ("confirm 42 1/2 on page 7", "confirm piece 2 width", "confirm R1", "fix the first item").
+_ITEM_VERBS: Final = frozenset({"confirm", "fix", "correct", "agree", "settle"})
 #: A weak verb alone ("pass", "fail", "close") is a command too.
 _BARE_WEAK: Final = frozenset(
     {"pass", "fail", "close", "ok", "okay", "confirm", "fix", "agree", "settle"}
@@ -168,7 +183,8 @@ _WALL_WORDS: Final = re.compile(r"\b(?:walls?|layout|island|ends?|back)\b")
 _MARK_AS: Final = re.compile(
     r"\b(?:mark|set|change|make|flag|turn|switch|move|record)\b.{0,60}?\b(?:as|to|into)\s+"
     r"(?:a\s+)?(?:pass(?:ed)?|fail(?:ed)?|ok(?:ay)?|approved|accepted|rejected|dismissed|done|"
-    r"resolved|correct|right|looks right|green|good|red)\b"
+    r"resolved|correct|right|looks right|green|good|red|confirmed|fixed|agreed|settled|"
+    r"checked)\b"
 )
 _MAKE_IT: Final = re.compile(
     r"\b(?:make|turn|let)\s+(?:page \d+|sheet \d+|p\d+|it|this|that|them|everything|all)\s+"
@@ -189,6 +205,10 @@ _JUDGING: Final = re.compile(
     r"reject|dismiss|sign off)\b"
     r"|\bshould (?:i|we|it|this|that|page \d+|sheet \d+|p\d+) (?:approve|accept|pass|fail|"
     r"reject|dismiss|sign off|be (?:approved|accepted|passed|failed|rejected|dismissed))\b"
+    r"|\bshould (?:i|we) (?:just )?(?:confirm|agree|fix|correct|settle|use|take|trust|go with|"
+    r"keep|pick|choose|type|enter)\b"
+    r"|\b(?:do|would) you (?:think|say|recommend|suggest)\b.*\b(?:confirm|agree|fix|"
+    r"correct|settle|use|trust)\b"
     r"|\b(?:do|would) you (?:think|say|recommend|suggest)\b.*\b(?:pass|fail|approve|accept|"
     r"reject|dismiss|approved|accepted)\b"
     r"|\bwould you (?:approve|accept|pass|fail|reject|sign off)\b"
@@ -239,6 +259,9 @@ def _clause_is_request(clause: str, message: str = "") -> bool:
     clause = _strip_openers(clause)
     if not clause or _QUESTION_START.match(clause):
         return False
+    take = _TAKE.match(clause)
+    if take is not None and _NUMBER_TARGET.match(clause[take.end() :]):
+        return True
     strong = _STRONG.match(clause)
     if strong is not None:
         return _NOUN_AFTER.match(clause[strong.end() :]) is None
@@ -250,6 +273,13 @@ def _clause_is_request(clause: str, message: str = "") -> bool:
         return weak.group(0) in _BARE_WEAK
     if _PHRASAL_UP.match(rest):
         return False
+    verb = weak.group(0)
+    if (
+        verb.split()[0] in _ITEM_VERBS
+        and _NUMBER_TARGET.match(rest)
+        and (verb != "confirm" or not _STATEMENT.search(rest))
+    ):
+        return True
     if weak.group(0) == "confirm":
         if _WALL_WORDS.search(rest):
             return re.search(r"\b(?:is|are|as|to)\b", rest) is not None
