@@ -159,6 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         reading_parts,
         review,
         review_assistant,
+        review_items,
         review_pages,
         reviewer_chat,
         revisions,
@@ -208,6 +209,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(approvals.router, prefix=API_PREFIX)
     app.include_router(findings.router, prefix=API_PREFIX)
     app.include_router(visual_countertops.router, prefix=API_PREFIX)
+    # The simple review screen's one list (#1338): read-only, over the projections above.
+    app.include_router(review_items.router, prefix=API_PREFIX)
     # Each confirmed countertop's comparison with the architect, read by countertop (#1273): it
     # reads only, and no check reads it.
     app.include_router(item_architect.router, prefix=API_PREFIX)
