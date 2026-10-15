@@ -18,6 +18,7 @@ words. Logs carry ids, lengths and codes only, never the question or the answer.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from time import monotonic_ns
@@ -53,7 +54,7 @@ from app.review.assistant.model import (
     parse_answer,
 )
 from app.review.assistant.placeholders import placeholder_guide
-from app.review.assistant.records import ReviewSnapshot, prompt_records
+from app.review.assistant.records import ReviewItemRecord, ReviewSnapshot, prompt_records
 from app.review.assistant.records_only import (
     NO_ANSWER_IN_RECORDS,
     answer_for_question,
@@ -170,8 +171,42 @@ def _stage(stage: str) -> Event:
     return "stage", StageEvent(id=stage, label=STAGE_LABELS[stage])  # type: ignore[arg-type]
 
 
+#: A review-list entry named by its short id in a question ("confirm R2").
+_REVIEW_ID_MENTIONED: Final = re.compile(r"\b([Rr][0-9]+)\b")
+
+
+#: Words that say which group of the review list a request is about.
+_GROUP_WORDS: Final = (
+    ("failure", re.compile(r"\b(?:failure|failures|failed|fail|agree)\b", re.IGNORECASE)),
+    ("not_checked", re.compile(r"\b(?:not checked|settle|didn'?t run)\b", re.IGNORECASE)),
+)
+
+
+def _open_entry(
+    snapshot: ReviewSnapshot, question: str, page: int | None
+) -> ReviewItemRecord | None:
+    """The open review-list entry a refused request is about: on its page when it names one, and
+    in the group it names ("agree with the failure" opens the failure), else the first one."""
+    entries = [
+        item
+        for item in snapshot.review_items
+        if item.needs_you and (page is None or item.page_number == page)
+    ]
+    for group, words in _GROUP_WORDS:
+        if words.search(question):
+            named = next((item for item in entries if item.group == group), None)
+            if named is not None:
+                return named
+    return entries[0] if entries else None
+
+
 def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
     """The fixed refusal, with a button to the item the request was about when one is known."""
+    named = _REVIEW_ID_MENTIONED.search(request.question)
+    entry = None if named is None else snapshot.review_item(named.group(1).upper())
+    if entry is not None and entry.needs_you:
+        # "Confirm R2": the button goes to that entry of the review list.
+        return Draft(text=REFUSAL_TEXT, actions=(("open_review_item", entry.id),))
     page = page_mentioned(request.question)
     focus = request.focus
     if page is None and focus is not None:
@@ -180,15 +215,25 @@ def _refusal(snapshot: ReviewSnapshot, request: AssistantRequest) -> Draft:
     if page is not None:
         # A page the records do not have gets no button: never one to an unrelated item.
         waiting = next((item for item in snapshot.on_page(page) if item.needs_you), None)
+        listed = _open_entry(snapshot, request.question, page)
         if waiting is not None:
             actions.append(("open_queue_item", waiting.id))
-        elif page in snapshot.pages():
+        if listed is not None:
+            actions.append(("open_review_item", listed.id))
+        if not actions and page in snapshot.pages():
             actions.append(("open_page", f"P{page}"))
         return Draft(text=REFUSAL_TEXT, actions=tuple(actions))
     if focus is not None and focus.record_id is not None:
         record = snapshot.by_record_id(focus.record_id)
+        entry = snapshot.review_item_by_key(focus.record_id)
         if record is not None:
             actions.append(("open_queue_item", record.id))
+        elif entry is not None and entry.needs_you:
+            actions.append(("open_review_item", entry.id))
+    first_open = _open_entry(snapshot, request.question, None)
+    if not actions and first_open is not None:
+        # With the review list read, the button goes to the first entry that waits (#1354).
+        actions.append(("open_review_item", first_open.id))
     if not actions and snapshot.readiness.needing_you:
         actions.append(("open_queue_item", snapshot.readiness.needing_you[0]))
     return Draft(text=REFUSAL_TEXT, actions=tuple(actions))
@@ -227,7 +272,10 @@ def _focus_ids(snapshot: ReviewSnapshot, request: AssistantRequest) -> tuple[str
     if request.focus is None or request.focus.record_id is None:
         return ()
     record = snapshot.by_record_id(request.focus.record_id)
-    return () if record is None else (record.id,)
+    if record is not None:
+        return (record.id,)
+    entry = snapshot.review_item_by_key(request.focus.record_id)
+    return () if entry is None else (entry.id,)
 
 
 def stream_answer(

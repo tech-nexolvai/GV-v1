@@ -16,6 +16,12 @@ same snapshot. Free text is cut at a fixed length.
 
 Each record has a short id for the model (`C1` countertop, `F1` other check) and its real id for the
 screen (`record_id`: the countertop row id, or the finding id).
+
+**The simple review list (#1352).** When the route passes W1's list (`app.review.review_items`), its
+header counts, its items (kind, page, what, why, best guess), its failures and its not-checked
+checks are kept too, as `R1`, `R2` … with the item's own key as `record_id`. The best guess is a
+suggestion to confirm, never a value; GV's own written words ("reviewer wrote …") are removed
+again here, so they never reach a prompt even if a caller forgot.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.review.review_items import ReviewItemsOut, plain_why
 from app.schemas.visual_ui import CountertopResultOut, CountertopResultsOut, ExactValueOut
 from workflow.findings_composer import ComposerFinding, reviewer_outcome
 
@@ -41,6 +48,8 @@ __all__ = [
     "PageNoteRecord",
     "PieceRecord",
     "ReadinessRecord",
+    "ReviewHeaderRecord",
+    "ReviewItemRecord",
     "ReviewSnapshot",
     "RuleRecord",
     "ValueRecord",
@@ -55,6 +64,7 @@ MAX_FINDINGS: Final = 40
 MAX_PIECES: Final = 16
 MAX_PAGE_NOTES: Final = 40
 MAX_ARCHITECT_PAIRS: Final = 12
+MAX_REVIEW_ITEMS: Final = 60
 MAX_TEXT: Final = 320
 #: The prompt JSON is rebuilt without per-piece detail when it is longer than this many characters.
 MAX_PROMPT_CHARS: Final = 40_000
@@ -234,6 +244,50 @@ class ReadinessRecord(_Frozen):
     """Short ids of the records that still need the reviewer, in queue order."""
 
 
+class GuessRecord(_Frozen):
+    """A held number's best guess: a suggestion the reviewer confirms, never a decided value."""
+
+    display: str
+    exact: str | None
+    source: Literal["pdf_text", "agreed_text", "suggestion"]
+
+
+class ReviewItemRecord(_Frozen):
+    """One entry of the simple review list: an item, a failure or a not-checked check."""
+
+    id: str
+    """`R1`, `R2` …: items first, then failures, then not-checked; open ones first in each."""
+    record_id: str
+    """The list's own key for it (what the screen opens)."""
+    group: Literal["item", "failure", "not_checked"]
+    kind: str
+    """The item's kind (`number`, `wall_choice` …), or `failure` / `not_checked`."""
+    page_number: int | None
+    row_label: str | None
+    what: str
+    why: str
+    best_guess: GuessRecord | None
+    status: Literal["open", "done", "rechecking"]
+    needs_you: bool
+    """Still waiting for the reviewer (status `open`)."""
+
+
+class ReviewHeaderRecord(_Frozen):
+    """The list's header counts, exactly as the list computed them."""
+
+    pages_read: int
+    numbers: int
+    confirmed_by_ai: int
+    checked_by_you: int
+    open: int
+    failures: int
+    not_checked: int
+    rechecking: int
+    can_finalise: bool
+    blocked_reason: str | None
+    unaccounted: int
+
+
 class ReviewSnapshot(_Frozen):
     package_id: str
     revision_id: str
@@ -246,6 +300,16 @@ class ReviewSnapshot(_Frozen):
     omitted: Mapping[str, int]
     totals: Mapping[str, int]
     """Counts over every record, before any cap: what `{count.*}` says."""
+    review_header: ReviewHeaderRecord | None = None
+    """The simple review list's header; `None` when the list was not read."""
+    review_items: tuple[ReviewItemRecord, ...] = ()
+
+    def review_item(self, short_id: str) -> ReviewItemRecord | None:
+        return next((item for item in self.review_items if item.id == short_id), None)
+
+    def review_item_by_key(self, key: str) -> ReviewItemRecord | None:
+        """A review-list entry by the screen's key for it."""
+        return next((item for item in self.review_items if item.record_id == key), None)
 
     def records(self) -> tuple[CountertopRecord | FindingRecord, ...]:
         """Every countertop, then every other check."""
@@ -276,6 +340,7 @@ class ReviewSnapshot(_Frozen):
                 *(page for item in self.other_checks for page in item.pages),
                 *(item.page_number for item in self.pages_without_countertop),
                 *(item.page_number for item in self.rows_not_checked),
+                *(item.page_number for item in self.review_items if item.page_number is not None),
             }
         )
 
@@ -452,6 +517,7 @@ def build_snapshot(
     decisions: Mapping[UUID, _Decision],
     *,
     checks_have_run: bool,
+    review_items: ReviewItemsOut | None = None,
 ) -> ReviewSnapshot:
     """Select, label and cap one package's records. No outcome or number is computed here."""
     facts = {finding.key: finding for finding in findings}
@@ -529,6 +595,17 @@ def build_snapshot(
         )
         if count > 0
     }
+    listed, listed_omitted = _review_list(review_items)
+    if listed_omitted > 0:
+        omitted["review_items"] = listed_omitted
+    totals = _totals(countertops, others, readiness, decisions)
+    if review_items is not None:
+        header = review_items.header
+        totals |= {
+            "review_open": header.open,
+            "review_failures": header.failures,
+            "review_not_checked": header.not_checked,
+        }
     return ReviewSnapshot(
         package_id=str(countertops.package_id),
         revision_id=str(countertops.revision_id),
@@ -554,8 +631,111 @@ def build_snapshot(
             for page in countertops.rows_not_checked[:MAX_PAGE_NOTES]
         ),
         omitted=omitted,
-        totals=_totals(countertops, others, readiness, decisions),
+        totals=totals,
+        review_header=None if review_items is None else _review_header(review_items),
+        review_items=listed,
     )
+
+
+def _review_header(listed: ReviewItemsOut) -> ReviewHeaderRecord:
+    header = listed.header
+    return ReviewHeaderRecord(
+        pages_read=header.pages_read,
+        numbers=header.numbers,
+        confirmed_by_ai=header.confirmed_by_ai,
+        checked_by_you=header.checked_by_you,
+        open=header.open,
+        failures=header.failures,
+        not_checked=header.not_checked,
+        rechecking=header.rechecking,
+        can_finalise=header.can_finalise,
+        blocked_reason=_cut(header.blocked_reason),
+        unaccounted=len(listed.unaccounted),
+    )
+
+
+#: A failed result's check, in plain words.
+_FAILED_CHECKS: Final[Mapping[str, str]] = {
+    "CT-WIDTH-001": "Countertop overall width",
+    "CT-ARCH-WIDTH-001": "Width against the architect's drawing",
+}
+
+
+def _why(text: str) -> str:
+    """The list's reason, with GV's own written words removed again (never a guess)."""
+    return _reason(plain_why(text, "")) or "No reason was recorded."
+
+
+def _review_list(listed: ReviewItemsOut | None) -> tuple[tuple[ReviewItemRecord, ...], int]:
+    """The list's entries, open ones first in each group, capped; and how many the cap left out."""
+    if listed is None:
+        return (), 0
+    entries: list[dict[str, object]] = []
+    for item in listed.items:
+        guess = item.best_guess
+        entries.append(
+            {
+                "record_id": item.key,
+                "group": "item",
+                "kind": item.kind,
+                "page_number": item.page,
+                "row_label": _cut(item.row_label),
+                "what": _cut(item.what) or "A number to check",
+                "why": _why(item.why),
+                "best_guess": (
+                    None
+                    if guess is None
+                    else GuessRecord(
+                        display=_cut(guess.text) or guess.text,
+                        exact=(
+                            None
+                            if guess.value is None
+                            else f"{guess.value.numerator}/{guess.value.denominator}"
+                        ),
+                        source=guess.source,
+                    )
+                ),
+                "status": item.status,
+            }
+        )
+    for failure in listed.failures:
+        entries.append(
+            {
+                "record_id": failure.key,
+                "group": "failure",
+                "kind": "failure",
+                "page_number": failure.page,
+                "row_label": _cut(failure.row_label),
+                "what": _FAILED_CHECKS.get(failure.rule_id, failure.rule_id),
+                "why": _why(failure.why),
+                "best_guess": None,
+                "status": failure.status,
+            }
+        )
+    for skipped in listed.not_checked:
+        entries.append(
+            {
+                "record_id": skipped.key,
+                "group": "not_checked",
+                "kind": "not_checked",
+                "page_number": skipped.page,
+                "row_label": _cut(skipped.row_label),
+                "what": _cut(skipped.check) or skipped.rule_id,
+                "why": _why(skipped.why),
+                "best_guess": None,
+                "status": skipped.status,
+            }
+        )
+    groups = {"item": 0, "failure": 1, "not_checked": 2}
+    entries.sort(key=lambda entry: (groups[str(entry["group"])], entry["status"] != "open"))
+    kept = entries[:MAX_REVIEW_ITEMS]
+    records = tuple(
+        ReviewItemRecord.model_validate(
+            {**entry, "id": f"R{index}", "needs_you": entry["status"] == "open"}
+        )
+        for index, entry in enumerate(kept, start=1)
+    )
+    return records, len(entries) - len(kept)
 
 
 #: Decisions after which a result no longer needs correction from the reviewer's side.
@@ -699,6 +879,40 @@ def _prompt_finding(item: FindingRecord) -> dict[str, object]:
     }
 
 
+def _prompt_review_item(item: ReviewItemRecord) -> dict[str, object]:
+    return {
+        "id": item.id,
+        "kind": item.kind,
+        "page": item.page_number,
+        "row": item.row_label,
+        "what": item.what,
+        "why": item.why,
+        "best_guess_to_confirm": None if item.best_guess is None else item.best_guess.display,
+        "status": item.status,
+        "needs_reviewer": item.needs_you,
+    }
+
+
+def _prompt_review_list(snapshot: ReviewSnapshot) -> dict[str, object] | None:
+    header = snapshot.review_header
+    if header is None:
+        return None
+    return {
+        "header": header.model_dump(),
+        "items": [
+            _prompt_review_item(item) for item in snapshot.review_items if item.group == "item"
+        ],
+        "failures": [
+            _prompt_review_item(item) for item in snapshot.review_items if item.group == "failure"
+        ],
+        "not_checked": [
+            _prompt_review_item(item)
+            for item in snapshot.review_items
+            if item.group == "not_checked"
+        ],
+    }
+
+
 def prompt_records(snapshot: ReviewSnapshot) -> str:
     """The snapshot as compact JSON for the model: short ids and display text only.
 
@@ -731,6 +945,7 @@ def prompt_records(snapshot: ReviewSnapshot) -> str:
                 {"page": page.page_number, "reason": page.reason}
                 for page in snapshot.rows_not_checked
             ],
+            "review_list": _prompt_review_list(snapshot),
             "records_left_out_for_length": dict(snapshot.omitted),
         }
         text = json.dumps(_drop_none(document), ensure_ascii=False, separators=(",", ":"))

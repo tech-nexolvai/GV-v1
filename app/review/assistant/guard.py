@@ -27,7 +27,10 @@ recommendation to decide or act; a judgement about a result; a first-person acti
 (a label comes only through `{Cn.label}`), no link, markup, marker or brace, no hidden or
 non-Latin character, only plain punctuation, no "!", "...", "e.g.", "i.e.", "vs.", "approx.",
 "etc.". Every placeholder must be one the records hold; evidence and actions must name records
-that exist, and the queue button only a record that still needs the reviewer.
+that exist, the queue button only a record that still needs the reviewer, and the review-list
+button (`open_review_item`, #1352) only a list entry that is still open. A list entry (`R1`) is a
+record like any other: one per sentence, and its best guess is a suggestion to confirm that no
+model word may judge, confirm or restate.
 
 Code-written answers (records-only, fallback, judging) pass the same structural checks; their
 fixed wording is code's, so the vocabulary rules apply to model text only. Anything refused here
@@ -66,7 +69,9 @@ __all__ = [
 
 GROUPS: Final = ("blockers", "no_countertop_pages", "rows_not_checked")
 
-_RECORD_ID: Final = re.compile(r"^[CF][0-9]+$")
+_RECORD_ID: Final = re.compile(r"^[CFR][0-9]+$")
+_QUEUE_ID: Final = re.compile(r"^[CF][0-9]+$")
+_REVIEW_ID: Final = re.compile(r"^R[0-9]+$")
 _PAGE_ID: Final = re.compile(r"^P([0-9]+)$")
 _LINKS: Final = re.compile(
     r"https?:|ftp:|javascript:|www\.|\][(]|<[^>]*>|&[a-z]+;|\b[a-z]{2,}\.[a-z]{2,}\b",
@@ -325,7 +330,7 @@ _SUBJECT_ONLY_EXTRA: Final = frozenset(
         "there",
     ]
 )
-_SUBJECT_FIELDS: Final = frozenset({"page", "label", "check"})
+_SUBJECT_FIELDS: Final = frozenset({"page", "label", "check", "what"})
 #: Glue phrases removed before the word check: harmless navigation idiom.
 _GLUE_PHRASES: Final = re.compile(r"\ba good place to start\b|\bfor example\b")
 
@@ -624,6 +629,24 @@ _LABEL_COMMON: Final = frozenset(
 _BACK_REFERENCE: Final = re.compile(r"\b(?:it|its|this|that|they|their|them|these|those|here)\b")
 
 
+#: Fields that fill a number the reviewer may be asked to accept: the AI's best guess (#1352) and
+#: the printed overall. No instruction or approval may sit next to one, and no verdict on it.
+_VALUE_FIELDS: Final = frozenset({"guess", "printed"})
+#: An instruction or approval verb (and its forms); "go with", "lock in" … are two words.
+_TAKE_VERB: Final = re.compile(
+    r"\b(?:use[sd]?|using|take[sn]?|taking|took|keep[s]?|keeping|kept|pick[s]?|picking|"
+    r"accept(?:s|ed|ing)?|confirm(?:s|ed|ing)?|enter(?:s|ed|ing)?|typ(?:e|es|ed|ing)|"
+    r"appl(?:y|ies|ied|ying)|choos(?:e|es|ing)|chose|select(?:s|ed|ing)?|trust(?:s|ed|ing)?|"
+    r"approv(?:e|es|ed|ing)|adopt(?:s|ed|ing)?|go(?:es|ing)? with|went with|stick with|"
+    r"lock(?:s|ed|ing)? in|agree(?:s|d)? (?:with|to|on))\b"
+)
+#: A verdict on a value: "{R1.guess} is right", "… looks correct".
+_VALUE_VERDICT: Final = re.compile(
+    r"^\W*(?:\w+\W+){0,2}?(?:is|are|was|looks?|seems?|reads? as)\W+(?:\w+\W+)?"
+    r"(?:right|correct|safe|fine|good|ok|okay|valid|accurate|true|acceptable|reliable)\b"
+)
+
+
 class GuardRejected(Exception):
     """The answer is not backed by the records. The message is a code, never the answer's text."""
 
@@ -830,6 +853,24 @@ def _check_structure(template: str, snapshot: ReviewSnapshot) -> None:
             header_keys = keys if stripped.rstrip().endswith(":") and keys else None
 
 
+def _check_value_framing(template: str) -> None:
+    """No instruction or approval right before or after a value the reviewer may accept, and no
+    verdict on it: "Use {R1.guess}." would read as advice to accept the AI's number (#1354)."""
+    for line in template.split("\n"):
+        for sentence in split_sentences(line.strip()):
+            for slot in slots(sentence):
+                if slot.field not in _VALUE_FIELDS:
+                    continue
+                before = _plain(PLACEHOLDER.sub(" ", sentence[: slot.start]))
+                after = _plain(PLACEHOLDER.sub(" ", sentence[slot.end :]))
+                near_before = " ".join(_WORDS.findall(before)[-4:])
+                near_after = " ".join(_WORDS.findall(after)[:4])
+                if _TAKE_VERB.search(near_before) or _TAKE_VERB.search(near_after):
+                    raise GuardRejected("instruction-beside-a-value")
+                if _VALUE_VERDICT.match(after):
+                    raise GuardRejected("verdict-on-a-value")
+
+
 def _check_references(draft: Draft, snapshot: ReviewSnapshot) -> None:
     pages = snapshot.pages()
     for evidence in draft.evidence:
@@ -843,11 +884,17 @@ def _check_references(draft: Draft, snapshot: ReviewSnapshot) -> None:
             if page is None or int(page.group(1)) not in pages:
                 raise GuardRejected("action-unknown-page")
         elif kind == "open_queue_item":
-            record = snapshot.record(target) if _RECORD_ID.match(target) else None
+            record = snapshot.record(target) if _QUEUE_ID.match(target) else None
             if record is None:
                 raise GuardRejected("action-unknown-record")
             if not record.needs_you:
                 raise GuardRejected("action-record-needs-nothing")
+        elif kind == "open_review_item":
+            item = snapshot.review_item(target) if _REVIEW_ID.match(target) else None
+            if item is None:
+                raise GuardRejected("action-unknown-review-item")
+            if not item.needs_you:
+                raise GuardRejected("action-review-item-needs-nothing")
         else:
             raise GuardRejected("action-unknown-kind")
 
@@ -905,5 +952,6 @@ def check(draft: Draft, snapshot: ReviewSnapshot, *, by_model: bool = True) -> N
         raise GuardRejected("number-in-text")
     if by_model:
         _check_vocabulary(text, snapshot)
+    _check_value_framing(text)
     _check_structure(text, snapshot)
     _check_references(draft, snapshot)

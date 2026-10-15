@@ -19,6 +19,7 @@ from app.review.assistant.contract import (
     GroupEvidence,
     OpenPageAction,
     OpenQueueItemAction,
+    OpenReviewItemAction,
 )
 from app.review.assistant.placeholders import render
 from app.review.assistant.records import CountertopRecord, ReviewSnapshot
@@ -51,6 +52,20 @@ def _citation(snapshot: ReviewSnapshot, short_id: str) -> tuple[Citation, str]:
         return (
             Citation(kind="page", page_number=page, record_id=None, label=f"Page {page}"),
             f"Records for page {page}",
+        )
+    if short_id.startswith("R"):
+        item = snapshot.review_item(short_id)
+        if item is None:  # the guard refuses this before publishing; kept total for safety
+            raise ValueError("cannot publish a citation to an item the snapshot does not have")
+        where = "" if item.page_number is None else f"Page {item.page_number} · "
+        return (
+            Citation(
+                kind="review_item",
+                page_number=item.page_number,
+                record_id=item.record_id,
+                label=f"{where}{item.what}",
+            ),
+            "The review list",
         )
     record = snapshot.record(short_id)
     if record is None:  # the guard refuses this before publishing; kept total for safety
@@ -133,6 +148,23 @@ def publish(
                         kind="open_queue_item",
                         record_id=record.record_id,
                         label=f"Open {where} in the queue",
+                    )
+                )
+        elif kind == "open_review_item":
+            entry = snapshot.review_item(target)
+            if entry is not None:
+                what = (
+                    entry.what[:1].lower() + entry.what[1:]
+                    if entry.what[1:2].islower()
+                    else entry.what
+                )
+                where = "" if entry.page_number is None else f" on page {entry.page_number}"
+                actions.append(
+                    OpenReviewItemAction(
+                        kind="open_review_item",
+                        item_key=entry.record_id,
+                        page_number=entry.page_number,
+                        label=f"Open {what}{where}",
                     )
                 )
 
