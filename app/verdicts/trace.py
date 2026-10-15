@@ -36,7 +36,7 @@ from units.imperial import format_inches
 from units.measurement import Measurement
 from verdict.outcomes import Outcome
 from verdict.trace import CalculationTrace
-from workflow.distribution_narrative import explain_distribution
+from workflow.distribution_narrative import explain_distribution_with_table
 
 __all__ = ["abstention_trace", "calculation_trace", "render_value"]
 
@@ -94,8 +94,9 @@ def calculation_trace(trace: CalculationTrace, *, outcome: Outcome) -> dict[str,
         "operation_version": trace.operation_version,
         # Written now, from the live intermediates, because the stored ones are rendered as text
         # and re-parsing them to explain a decision would be a second implementation of the
-        # arithmetic. Empty for every operation that has no explanation of its own (#682).
-        "explanation": explain_distribution(dict(trace.intermediates)),
+        # arithmetic. Empty for every operation that has no explanation of its own (#682). A cabinet
+        # distribution adds the slide-6 table under its paragraph (#648).
+        "explanation": explain_distribution_with_table(dict(trace.intermediates)),
     }
 
 

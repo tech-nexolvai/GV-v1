@@ -691,3 +691,103 @@ def test_a_drawing_that_closes_but_distributes_wrongly_reports_a_real_delta() ->
     assert result.outcome is Outcome.FAIL
     assert dict(result.intermediates)["proposed_run_total"] == _inches(CAB_DIST_1.site_width)
     assert result.delta == _inches(2)
+
+
+# ---------------------------------------------------------------------------
+# #648, decided 2026-10-16: the uneven split is kept exact and flagged off the 1/16" grid
+# ---------------------------------------------------------------------------
+
+
+def _run_at_filler_limit(*, extra: Fraction, regulars: int) -> dict[str, object]:
+    """Fillers fixed at 2" (bounds 2"..2"), so all of `extra` reaches the regular cabinets.
+
+    `regulars` regular single-door cabinets, then one equipment cabinet at the end of the run.
+    """
+    cabinets = [_inches(24)] * regulars + [_inches(36)]
+    types = ["single_door"] * regulars + ["equipment"]
+    design_width = 4 + 24 * regulars + 36
+    share = extra / regulars
+    return {
+        "field_width": _inches(design_width + extra),
+        "design_width": _inches(design_width),
+        "design_fillers": [_inches(2), _inches(2)],
+        "proposed_fillers": [_inches(2), _inches(2)],
+        "design_cabinets": cabinets,
+        "proposed_cabinets": [_inches(24 + share)] * regulars + [_inches(36)],
+        "cabinet_type": types,
+        **WIDE_TYPE_BOUNDS,
+        "filler_min": _inches(2),
+        "filler_max": _inches(2),
+    }
+
+
+def test_a_share_finer_than_a_sixteenth_is_flagged_not_rounded() -> None:
+    """1/16" over two regular cabinets is 1/32" each: exact, but not a whole 1/16".
+
+    The client lead gave no rounding rule, so the program keeps the exact fraction and flags it
+    (the owner's decision, 2026-10-16). It never rounds to 1/16" on its own.
+    """
+    result = cabinet_run_distribution(**_run_at_filler_limit(extra=Fraction(1, 16), regulars=2))  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.REVIEW_REQUIRED
+    assert facts["condition"] == DistributionCondition.SHARE_DOES_NOT_DIVIDE.value
+    assert facts["share_per_regular_cabinet"] == _inches(Fraction(1, 32))
+    assert '1/16"' in result.comparison
+    assert "round" in str(facts["reviewer_action"])
+
+
+@pytest.mark.parametrize(
+    ("extra", "regulars"),
+    [(Fraction(1, 4), 2), (Fraction(3, 8), 3), (Fraction(1), 2), (Fraction(-3, 4), 3)],
+)
+def test_a_share_on_the_sixteenth_grid_is_computed_and_proposed(
+    extra: Fraction, regulars: int
+) -> None:
+    """1/8", 1/16" and 1/2" per cabinet are widths a drawing carries, so the split goes ahead."""
+    result = cabinet_run_distribution(**_run_at_filler_limit(extra=extra, regulars=regulars))  # type: ignore[arg-type]
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.PASS
+    assert facts["condition"] == DistributionCondition.CABINETS_ABSORB_REMAINDER.value
+    assert facts["share_per_regular_cabinet"] == _inches(extra / regulars)
+
+
+def test_any_count_and_order_of_regular_and_equipment_cabinets_splits_equally() -> None:
+    """Five cabinets, two of them fixed-width, in no particular order.
+
+    The fillers give 1" each (3" -> 2"), leaving 9" for the three regular cabinets: 3" off each.
+    The sink cabinet and the equipment cabinet keep their widths wherever they stand in the run.
+    """
+    arch = [_inches(30), _inches(24), _inches(36), _inches(27), _inches(24)]
+    types = ["sink_cabinet", "single_door", "equipment", "double_door", "drawer"]
+    expected = [_inches(30), _inches(21), _inches(36), _inches(24), _inches(21)]
+
+    result = cabinet_run_distribution(
+        field_width=_inches(136),
+        design_width=_inches(147),
+        design_fillers=[_inches(3), _inches(3)],
+        proposed_fillers=[_inches(2), _inches(2)],
+        design_cabinets=arch,
+        proposed_cabinets=expected,
+        cabinet_type=types,
+        **WIDE_TYPE_BOUNDS,
+        filler_min=_inches(2),
+        filler_max=_inches(3),
+    )
+
+    facts = dict(result.intermediates)
+    assert result.outcome is Outcome.PASS
+    assert facts["expected_cabinets"] == tuple(expected)
+    assert facts["regular_cabinets"] == (1, 3, 4)
+    assert facts["share_per_regular_cabinet"] == _inches(-3)
+
+
+def test_a_shop_drawing_that_already_matches_the_site_passes() -> None:
+    """Slide 12, scenario 5: nothing to correct, so the check reports a PASS."""
+    arguments = _distribution_arguments(CAB_DIST_2)
+
+    result = cabinet_run_distribution(**arguments)  # type: ignore[arg-type]
+
+    assert result.outcome is Outcome.PASS
+    assert result.delta == _inches(0)

@@ -67,8 +67,8 @@ _MESSAGES: dict[str, str] = {
         "the architect rather than a forced fix."
     ),
     DistributionCondition.SHARE_DOES_NOT_DIVIDE.value: (
-        "Dividing the difference equally does not land on a width a drawing can carry, so the "
-        "split is not settled by the rule. Confirm how it is apportioned."
+        'Dividing the difference equally does not land on a whole 1/16", and nothing is '
+        "rounded on its own. Confirm the widths."
     ),
     DistributionCondition.RUN_SHAPE_UNSUPPORTED.value: (
         "This run is a shape the check cannot compare — the parts on the two drawings do not line "
