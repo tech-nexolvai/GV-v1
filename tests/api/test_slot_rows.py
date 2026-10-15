@@ -79,6 +79,12 @@ def session(postgres_engine: Engine) -> Iterator[Session]:
         opened.close()
 
 
+def _without_removed(flags: list[str]) -> list[str]:
+    """`flags` without each `-name` and without every `name` a `-name` removes."""
+    removed = {flag[1:] for flag in flags if flag.startswith("-")}
+    return [flag for flag in flags if not flag.startswith("-") and flag not in removed]
+
+
 def _package_rows(
     session: Session,
     *,
@@ -100,7 +106,8 @@ def _package_rows(
     walls_confirmed: bool | tuple[int, ...] = False,
     unsealed_proposal: bool = True,
 ) -> tuple[UUID, UUID, dict[int, UUID]]:
-    """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot.
+    """`slot_flags(page_index, row_offset, slot)` adds flags (e.g. a `slot-box:`) to a slot; a
+    flag written `-name` removes `name` instead (e.g. `-ink:vendor`).
 
     `row_pages` are the page indexes (of 0 and 1) that get rows; `()` makes a run with none.
     `unsealed_proposal=False` leaves the unsealed slot with no form proposal, as the Claude-mode
@@ -195,25 +202,31 @@ def _package_rows(
                     unit="in",
                     polygon=[[0, 0], [10, 0], [10, 10], [0, 10]],
                     coordinate_space="image",
-                    ambiguity_flags=[
-                        "slot-reader",
-                        f"slot:{slot}",
-                        f"row-rank:{rank}",
-                        f"row-slot-count:{piece_count}",
-                        "ink:vendor",
-                        *(["row-hold:synthetic held row"] if page_index == held_page else []),
-                        *(
-                            ["check-hold:stone-short-of-ends"]
-                            if check_hold_all or page_index == check_hold_page
-                            else []
-                        ),
-                        *(
-                            [extra_hold]
-                            if page_index == 0 and row_offset == 0 and extra_hold is not None
-                            else []
-                        ),
-                        *(() if slot_flags is None else slot_flags(page_index, row_offset, slot)),
-                    ],
+                    ambiguity_flags=_without_removed(
+                        [
+                            "slot-reader",
+                            f"slot:{slot}",
+                            f"row-rank:{rank}",
+                            f"row-slot-count:{piece_count}",
+                            "ink:vendor",
+                            *(["row-hold:synthetic held row"] if page_index == held_page else []),
+                            *(
+                                ["check-hold:stone-short-of-ends"]
+                                if check_hold_all or page_index == check_hold_page
+                                else []
+                            ),
+                            *(
+                                [extra_hold]
+                                if page_index == 0 and row_offset == 0 and extra_hold is not None
+                                else []
+                            ),
+                            *(
+                                ()
+                                if slot_flags is None
+                                else slot_flags(page_index, row_offset, slot)
+                            ),
+                        ]
+                    ),
                     review_reason="synthetic held row" if page_index == held_page else None,
                     corroboration_status=(
                         None

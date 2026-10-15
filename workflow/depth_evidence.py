@@ -86,8 +86,12 @@ __all__ = [
     "DEPTH_READER_VERSION",
     "DEPTH_RULE_IDS",
     "DepthItemOperands",
+    "DepthReading",
     "depth_operands",
+    "item_proposals",
     "latest_depth_run",
+    "person_types",
+    "reading_linked",
 ]
 
 #: The five checks this module fills, per countertop.
@@ -251,7 +255,7 @@ def latest_depth_run(session: Session, revision_id: UUID) -> ExtractionRun | Non
     )
 
 
-def _item_proposals(session: Session, item_id: UUID) -> tuple[UUID | None, UUID | None]:
+def item_proposals(session: Session, item_id: UUID) -> tuple[UUID | None, UUID | None]:
     """The suggestion behind the item's current confirmation, and the item's drawing view."""
     later = aliased(PartConfirmation)
     row = session.execute(
@@ -270,7 +274,7 @@ def _item_proposals(session: Session, item_id: UUID) -> tuple[UUID | None, UUID 
 
 
 @dataclass(frozen=True)
-class _Reading:
+class DepthReading:
     row: ObservationCandidate
     flags: frozenset[str]
 
@@ -346,7 +350,7 @@ def current_link(session: Session, link: ItemViewLink) -> ItemViewLink:
         link = later
 
 
-def _linked(session: Session, reading: _Reading, proposal_id: UUID) -> bool:
+def reading_linked(session: Session, reading: DepthReading, proposal_id: UUID) -> bool:
     """Whether the reading's view is tied to this countertop by its link as it stands now."""
     link_id = next(
         (f.removeprefix(LINK_PREFIX) for f in reading.flags if f.startswith(LINK_PREFIX)), None
@@ -365,7 +369,7 @@ def _linked(session: Session, reading: _Reading, proposal_id: UUID) -> bool:
     return link.part_proposal_id == proposal_id and link.page_id == reading.row.page_id
 
 
-def _person_types(session: Session, row: ObservationCandidate) -> list[CanonicalObservation]:
+def person_types(session: Session, row: ObservationCandidate) -> list[CanonicalObservation]:
     """Every observation a person confirmed from this reading, or from either reader's own row of
     it: a person's confirmation is never ignored."""
     ids = [
@@ -451,7 +455,7 @@ def _signed(packet: Mapping[str, object]) -> bool:
     return packet.get("packet_sha256") == actual.hexdigest()
 
 
-def answers_on_record(session: Session, reading: _Reading) -> bool:
+def answers_on_record(session: Session, reading: DepthReading) -> bool:
     """Whether both readers of the Claude pair answered this very number in the reader's run.
 
     Each answer must be an `ok` call to the number question under the reading's question id, on its
@@ -542,7 +546,7 @@ def reader_supports(session: Session, row: ObservationCandidate) -> list[Observa
 
 
 def _qualified_canonical(
-    session: Session, reading: _Reading, semantic: str
+    session: Session, reading: DepthReading, semantic: str
 ) -> CanonicalObservation | None:
     """The qualified observation of a code+AI reading, made once and found again after."""
     row = reading.row
@@ -649,7 +653,7 @@ class _Person:
     """A person's confirmation of one reading of this countertop, on any reading of the set."""
 
     canonical: CanonicalObservation
-    reading: _Reading
+    reading: DepthReading
 
     @property
     def value(self) -> Fraction:
@@ -664,8 +668,8 @@ def _decide(
     session: Session,
     name: str,
     semantic: str,
-    mine: Sequence[_Reading],
-    unplaced: Sequence[_Reading],
+    mine: Sequence[DepthReading],
+    unplaced: Sequence[DepthReading],
     people: Sequence[_Person],
     notes: list[str],
     run_id: UUID,
@@ -795,11 +799,11 @@ def _decide(
     return ("missing", NOTHING.format(what=what, reason=" ".join(views[:2]) if views else NO_VIEW))
 
 
-def _readings(session: Session, run: ExtractionRun) -> list[_Reading]:
+def _readings(session: Session, run: ExtractionRun) -> list[DepthReading]:
     return [
         reading
         for reading in (
-            _Reading(row, frozenset(row.ambiguity_flags or ()))
+            DepthReading(row, frozenset(row.ambiguity_flags or ()))
             for row in session.scalars(
                 select(ObservationCandidate)
                 .where(ObservationCandidate.extraction_run_id == run.id)
@@ -826,7 +830,7 @@ def depth_operands(
     runs = depth_runs(session, revision_id)
     if not runs:
         return DepthItemOperands(missing=NOT_READ.format(what=first_what))
-    proposal_id, view_id = _item_proposals(session, item_id)
+    proposal_id, view_id = item_proposals(session, item_id)
     if proposal_id is None or view_id is None:
         return DepthItemOperands(missing=NOT_BALAS.format(what=first_what))
     failed = [run for run in runs if _failed(session, run)]
@@ -849,7 +853,7 @@ def depth_operands(
         )
     run = good[0]
     readings = _readings(session, run)
-    mine = [r for r in readings if _linked(session, r, proposal_id)]
+    mine = [r for r in readings if reading_linked(session, r, proposal_id)]
     unplaced = [r for r in readings if f"{UNPLACED_PREFIX}{proposal_id}" in r.flags]
     # Notes on a view that names this countertop but whose link does not hold count as unplaced.
     mine_ids = {r.row.id for r in mine}
@@ -865,8 +869,8 @@ def depth_operands(
         _Person(canonical, reading)
         for earlier in good
         for reading in (readings if earlier is run else _readings(session, earlier))
-        if _linked(session, reading, proposal_id)
-        for canonical in _person_types(session, reading.row)
+        if reading_linked(session, reading, proposal_id)
+        for canonical in person_types(session, reading.row)
     ]
 
     shared = countertops_by_view(session, revision_id).get(view_id, ())

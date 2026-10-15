@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from app.api.dependencies import get_session
+from app.api.slot_rows import SlotRowReviewIn, review_slot_row
 from app.auth import Principal, Role, authenticate
 from app.config import Settings
 from app.db.session import session_factory
@@ -334,7 +335,6 @@ def test_a_change_on_one_row_asks_only_that_row_again(
     if change == "value":
         # A person fixes one of the row's readings (#1339): a correction on its live result.
         from app.review.evidence_actions import correct_candidate_reading
-        from app.review.session import open_session
         from app.review.wall_cases import latest_width_findings
         from workflow.row_answers import own_slot_labels
         from workflow.slot_row_scope import slot_rows
@@ -355,9 +355,24 @@ def test_a_change_on_one_row_asks_only_that_row_again(
     elif change == "walls":
         _save_all_row_widths(session, project_id, package_id, anchors[0], wall_config="back_only")
     else:
-        # Nothing new from a person (#1177; since #1339 widths are confirmed, not typed): the
-        # re-run's results are the same, so every decision carries.
-        pass
+        # A new decision record superseding the last, with the same content (#1177): a row's
+        # decision is compared by what it says, not by the record that holds it. Since #1339 a
+        # row's decision holds only its walls, so the same wall choice is saved again.
+        _save_all_row_widths(session, project_id, package_id, anchors[0], wall_config="back_only")
+        _run_current_checks(session, package_id, tmp_path)
+        _decide_everything(session, revision.id)
+        assert approval_readiness(session, revision.id).blocking_findings == 0
+        decisions = session.query(SlotRowReviewDecision).count()
+        review_slot_row(
+            _principal(project_id),
+            _principal(project_id),
+            session,
+            project_id,
+            package_id,
+            anchors[0],
+            SlotRowReviewIn(wall_config="back_only"),
+        )
+        assert session.query(SlotRowReviewDecision).count() == decisions + 1
 
     _run_current_checks(session, package_id, tmp_path)
     if change == "the same values again":

@@ -24,6 +24,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from fractions import Fraction
 from typing import Any, Final
 from uuid import UUID
 
@@ -45,6 +46,7 @@ from app.models.drawing import (
 from app.models.evidence import (
     ArchitectPairingRecord,
     ArchitectViewMatchRecord,
+    CanonicalObservation,
     EvidenceSupportingCandidate,
     ItemClassification,
     LayoutConfirmation,
@@ -551,6 +553,9 @@ class _Chains:
     confirms_a_correction: frozenset[UUID]
     """Confirms of a reading a correction produced: it keeps the AI's span, but its value is the
     person's, so the AI's text is never its answer (the correction is its own case)."""
+    answered_again: frozenset[UUID] = frozenset()
+    """Corrections a later person's answer about the same label replaced with another value (a fix,
+    then "the AI was right after all", #1339), whichever path wrote that answer."""
 
 
 def _evidence_chains(session: Session) -> _Chains:
@@ -593,7 +598,73 @@ def _evidence_chains(session: Session) -> _Chains:
             continue
         groups[first].append(row.id)
     superseded = {action for chain in groups.values() for action in chain[:-1]}
-    return _Chains(superseded=frozenset(superseded), confirms_a_correction=frozenset(confirms))
+    return _Chains(
+        superseded=frozenset(superseded),
+        confirms_a_correction=frozenset(confirms),
+        answered_again=_answered_again(session),
+    )
+
+
+def _answered_again(session: Session) -> frozenset[UUID]:
+    """Each correction whose label a person answered again later with another value.
+
+    The label is the corrected observation's primary candidate, and the answers are the person's
+    `HUMAN_CONFIRMED` observations citing it as primary, of the same type. When the newest of them
+    is not the correction's own and holds another value, the correction no longer stands.
+    """
+    primary = EvidenceSupportingCandidate.role == "primary"
+    corrections = session.execute(
+        select(
+            ReviewAction.id,
+            EvidenceSupportingCandidate.candidate_id,
+            CanonicalObservation.id,
+            CanonicalObservation.semantic_type,
+        )
+        .join(CorrectionLedgerEntry, CorrectionLedgerEntry.review_action_id == ReviewAction.id)
+        .join(
+            CanonicalObservation, CanonicalObservation.id == ReviewAction.resulting_observation_id
+        )
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .where(primary)
+    ).all()
+    if not corrections:
+        return frozenset()
+    newest: dict[tuple[UUID, str], tuple[datetime, UUID, Fraction]] = {}
+    for label, observation, semantic, when, numerator, denominator in session.execute(
+        select(
+            EvidenceSupportingCandidate.candidate_id,
+            CanonicalObservation.id,
+            CanonicalObservation.semantic_type,
+            CanonicalObservation.created_at,
+            CanonicalObservation.value_numerator,
+            CanonicalObservation.value_denominator,
+        )
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.canonical_observation_id == CanonicalObservation.id,
+        )
+        .where(
+            primary,
+            CanonicalObservation.status == "HUMAN_CONFIRMED",
+            EvidenceSupportingCandidate.candidate_id.in_({row[1] for row in corrections}),
+        )
+    ):
+        answer = (when, observation, Fraction(numerator, denominator))
+        key = (label, semantic)
+        if key not in newest or answer[:2] > newest[key][:2]:
+            newest[key] = answer
+    replaced: set[UUID] = set()
+    for action, label, resulting, semantic in corrections:
+        standing = newest.get((label, semantic))
+        if standing is None or standing[1] == resulting:
+            continue
+        own = session.get(CanonicalObservation, resulting)
+        if own is not None and standing[2] != Fraction(own.value_numerator, own.value_denominator):
+            replaced.add(action)
+    return frozenset(replaced)
 
 
 def _ledger(reader: _Reader) -> list[Candidate]:
@@ -606,7 +677,10 @@ def _ledger(reader: _Reader) -> list[Candidate]:
     for entry, actor in rows:
         agent, span, question, why = _reading(reader, entry.canonical_observation_id)
         page_sha, page_number = _page_facts(reader, None if span is None else span.page_id)
-        replaced = entry.review_action_id in reader.chains.superseded
+        replaced = (
+            entry.review_action_id in reader.chains.superseded
+            or entry.review_action_id in reader.chains.answered_again
+        )
         if replaced:
             question, why = None, SUPERSEDED.format(what="reading")
         out.append(

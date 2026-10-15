@@ -6,8 +6,9 @@ correction ledger before the caller's transaction commits.  Nothing here commits
 caller owns one transaction containing the entire decision.
 
 A held AI reading (one the checks did not use because the two AI readers did not seal it) is
-confirmed or fixed from the reading itself, for the finding's own countertop row or countertop only
-(`confirm_candidate_reading`, `correct_candidate_reading`, #1339).
+confirmed or fixed from the reading itself, for the finding's own countertop row or countertop only,
+while its result waits for a person (`confirm_candidate_reading`, `correct_candidate_reading`,
+#1339). A depth or sink reading is confirmed once and never fixed there.
 
 Source: ``docs/DESIGN_PRODUCT.md`` section 4 and issues #230, #1339.
 Verification: ``tests/review/test_evidence_actions.py``, ``tests/review/test_held_reading_actions.py``.
@@ -16,6 +17,7 @@ Verification: ``tests/review/test_evidence_actions.py``, ``tests/review/test_hel
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
@@ -25,7 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
 from app.auth import Action, Principal
-from app.evidence.confirm import ConfirmationRefused, observation_from_candidate
+from app.evidence.confirm import ConfirmationRefused, RefusalReason, observation_from_candidate
 from app.evidence.sides import ReadingSides, SideRefusal
 from app.lifecycle.closed import CLOSED_STATES, closed_reason
 from app.models.evidence import (
@@ -38,19 +40,24 @@ from app.models.package import PackageRevision
 from app.models.review import ReviewAction, ReviewActionKind, ReviewSession
 from app.models.verdicts import CheckRun, Finding, FindingEvidence
 from app.review.ledger import record_correction
+from app.review.requirements import NOTE_OUTCOMES
+from app.review.review_items import under_gv_markup, vendor_ink_only
 from app.review.session import refuse_if_superseded
 from evidence.canonical import CorroborationLane, EvidenceStatus
+from units.imperial import format_inches
 from units.measurement import Unit
+from units.normalise import plain_marks
 from vocabulary.semantic_types import DocumentRole
 from workflow.depth_evidence import (
     DEPTH_FIELDS,
     DEPTH_READER_FLAG,
     FIELD_PREFIX,
     QUALIFIED,
-    _item_proposals,
-    _linked,
-    _Reading,
+    DepthReading,
     depth_runs,
+    item_proposals,
+    person_types,
+    reading_linked,
 )
 from workflow.row_answers import own_slot_labels, width_semantic
 from workflow.slot_row_scope import candidate_is_sealed, slot_rows
@@ -324,6 +331,22 @@ def confirmed_for_same_evidence(
 # `correct_evidence` above cannot reach it. These two answer it from the reading itself, the AI's own
 # label (an `observation_candidates` row), and only for the finding's own countertop row or
 # countertop. A label with no AI reading is checked by hand, never typed (confirm-only, 2026-10-15).
+#
+# **An answer is a review action on the finding**, from "the AI's reading" (one canonical
+# observation per label, minted by the first answer and reused by every later one) to the person's
+# `HUMAN_CONFIRMED` value, so the correction rate counts confirmations as well as fixes and the
+# answers about one label form one chain. Neither verb decides the finding; the next check run uses
+# the value and code decides PASS or FAIL:
+#
+# - a fix writes a `correct`, which blocks its finding until the re-run
+#   (`app/review/carry_over.decision_records`);
+# - a confirmation writes a `confirm` with no note only while the result waits for a person
+#   (`REVIEW_REQUIRED` or `NOT_FOUND`), where a confirm without a note never counts as a decision
+#   (`app/review/requirements.needs_note`). On a result code already decided (PASS or FAIL, e.g.
+#   after a fix the person now takes back), a `confirm` would read as the person standing behind
+#   that PASS or FAIL (sign-off, carried decisions, Smriti's confirmed FAILs), so none is written
+#   there: the confirmation is a new input, and sign-off waits for the re-run that uses it
+#   (`app/review/approval`, a person's confirmation no review action produced).
 
 
 class HeldReadingRefusal(StrEnum):
@@ -335,9 +358,11 @@ class HeldReadingRefusal(StrEnum):
     NOT_A_HELD_ITEM = "not_a_held_item"
     #: Both AI readers sealed it (or code qualified it): it already counts, nothing is held.
     ALREADY_COUNTS = "already_counts"
-    #: The AI read no number here, or GV's markup covers it: check it by hand; nothing is typed.
+    #: The AI read no number here, or the number is not positively the vendor's one label (GV's
+    #: markup, a second label, ink never checked): check it by hand; nothing is typed.
     NO_AI_READING = "no_ai_reading"
-    #: Not an inch reading: inches decide, and mm is never converted into a decision.
+    #: Not an inch reading, or a fix typed in millimetres: inches decide, and mm is never converted
+    #: into a decision.
     NOT_INCHES = "not_inches"
     #: The reading is not on the vendor's drawing (or which drawing it is on is not confirmed).
     NOT_THE_VENDORS_DRAWING = "not_the_vendors_drawing"
@@ -349,6 +374,39 @@ class HeldReadingRefusal(StrEnum):
     BAD_VALUE = "bad_value"
     #: The revision is signed off, sent back, replaced or cancelled: nothing more is recorded on it.
     REVISION_CLOSED = "revision_closed"
+    #: The value the person was shown is not the AI's stored reading this would record.
+    SHOWN_VALUE_DIFFERS = "shown_value_differs"
+    #: A depth or sink reading: confirmed once here, never fixed here (newest-wins is #1360).
+    DEPTH_CONFIRM_ONCE = "depth_confirm_once"
+    #: The page was read before its transform was recorded: the reading cannot be placed.
+    CANNOT_PLACE = "cannot_place"
+    #: The reading could not be normalised into an observation.
+    NOT_NORMALISABLE = "not_normalisable"
+
+
+#: Why a depth or sink reading takes one confirmation here and no fix (#1339 review). The depth
+#: check holds whenever two people's answers differ, or a person's differs from the AI's value on
+#: the same reading, and answers are append-only: a fix here, or a second answer, would hold the
+#: countertop's depth for good. Newest-wins for depth is issue #1360.
+DEPTH_CONFIRM_ONCE_DETAIL = (
+    "Depth and sink readings can only be confirmed once in this screen, and are not fixed here; "
+    "to fix one or change an answer, use the advanced depth card"
+)
+
+#: A fix typed in millimetres (`520 mm`, `520mm`, `520 millimetres`): refused, never converted.
+_MILLIMETRES = re.compile(r"mm|millim", re.IGNORECASE)
+
+#: How a refusal to mint an observation is told (`app/evidence/confirm.RefusalReason`).
+_MINT_REFUSALS: dict[RefusalReason, HeldReadingRefusal] = {
+    RefusalReason.NO_SUCH_CANDIDATE: HeldReadingRefusal.NOT_THIS_ITEM,
+    RefusalReason.UNKNOWN_TYPE: HeldReadingRefusal.NOT_NORMALISABLE,
+    RefusalReason.NO_TRANSFORM: HeldReadingRefusal.CANNOT_PLACE,
+    RefusalReason.NOT_NORMALISABLE: HeldReadingRefusal.NOT_NORMALISABLE,
+    RefusalReason.ALREADY_CONFIRMED: HeldReadingRefusal.ALREADY_ANSWERED,
+    RefusalReason.VIEW_ROLE_UNCONFIRMED: HeldReadingRefusal.NOT_THE_VENDORS_DRAWING,
+    RefusalReason.NOT_IN_ONE_VIEW: HeldReadingRefusal.NOT_THE_VENDORS_DRAWING,
+    RefusalReason.REVIEWER_MARKUP: HeldReadingRefusal.NO_AI_READING,
+}
 
 
 class HeldReadingRefused(EvidenceActionRefused):
@@ -364,16 +422,18 @@ class HeldReadingRefused(EvidenceActionRefused):
 class ReadingDecision:
     """What one person's answer about a held reading wrote.
 
-    `resulting` is the person's `HUMAN_CONFIRMED` observation citing the label. A fix also wrote
-    `original` (the AI's reading, `REJECTED`) and `action` (a `correct` review action on the
-    finding, with its correction-ledger row); a confirmation writes neither, so it decides nothing
-    on the finding: the next check run uses it.
+    `original` is the AI's reading of the label as a canonical observation (`RAW_CANDIDATE` when
+    the label's first answer was a confirmation, `REJECTED` when it was a fix; reused by every later
+    answer about the label). `resulting` is the person's `HUMAN_CONFIRMED` observation citing the
+    label. `action` is the `confirm` or `correct` review action on the finding (original →
+    resulting); a fix also wrote its correction-ledger row. A confirmation through a result code
+    already decided writes no action (`None`): see the section's comment.
     """
 
     candidate: ObservationCandidate
     resulting: CanonicalObservation
-    original: CanonicalObservation | None = None
-    action: ReviewAction | None = None
+    original: CanonicalObservation
+    action: ReviewAction | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +441,8 @@ class _HeldLabel:
     candidate: ObservationCandidate
     semantic_type: str
     value: Fraction
+    #: A countertop's depth or sink reading (else a width label of a countertop row).
+    depth: bool
 
 
 def _sitting(
@@ -451,12 +513,12 @@ def _countertop_label(db: Session, finding: Finding, candidate: ObservationCandi
     view's link as it stands now (the depth checks' own rule, `workflow/depth_evidence.py`)."""
     flags = frozenset(candidate.ambiguity_flags or ())
     runs = {run.id for run in depth_runs(db, finding.package_revision_id)}
-    proposal_id, _view = _item_proposals(db, finding.scope_item_id)  # type: ignore[arg-type]
+    proposal_id, _view = item_proposals(db, finding.scope_item_id)  # type: ignore[arg-type]
     if (
         DEPTH_READER_FLAG not in flags
         or candidate.extraction_run_id not in runs
         or proposal_id is None
-        or not _linked(db, _Reading(candidate, flags), proposal_id)
+        or not reading_linked(db, DepthReading(candidate, flags), proposal_id)
     ):
         raise HeldReadingRefused(
             HeldReadingRefusal.NOT_THIS_ITEM,
@@ -474,8 +536,25 @@ def _countertop_label(db: Session, finding: Finding, candidate: ObservationCandi
             HeldReadingRefusal.ALREADY_COUNTS,
             "both AI readers and code already qualified this reading, so it already counts",
         )
+    if person_types(db, candidate):
+        # Any person's answer on this reading (or either reader's own row of it), from this screen
+        # or the advanced depth card: a second one could only hold the depth for good.
+        raise HeldReadingRefused(HeldReadingRefusal.DEPTH_CONFIRM_ONCE, DEPTH_CONFIRM_ONCE_DETAIL)
     assert field is not None
     return field
+
+
+def _vendors_own_number(flags: frozenset[str], *, depth: bool) -> bool:
+    """Whether the label's value is positively the vendor's own number, by W1's rule.
+
+    A width label: exactly `app/review/review_items.vendor_ink_only` (checked as vendor ink and no
+    other ink, no second label, no unchecked ink, no GV mark), the rule the review list uses to show
+    a guess at all. A depth or sink reading carries no ink flag: the depth reader checks the ink
+    itself and writes a value it saw GV's ink on with no number (`state:held`), so for it the rule
+    is `under_gv_markup` (any GV mark or any ink that is not the vendor's), which every flag the
+    reader may add later still meets.
+    """
+    return not under_gv_markup(flags) if depth else vendor_ink_only(flags)
 
 
 def _held_label(db: Session, finding: Finding, candidate_id: UUID) -> _HeldLabel:
@@ -484,21 +563,22 @@ def _held_label(db: Session, finding: Finding, candidate_id: UUID) -> _HeldLabel
     if candidate is None:
         raise HeldReadingRefused(HeldReadingRefusal.NOT_THIS_ITEM, "no such reading")
     if finding.scope_row_candidate_id is not None:
-        semantic_type = _row_label(db, finding, candidate)
+        semantic_type, depth = _row_label(db, finding, candidate), False
     elif finding.scope_item_id is not None:
-        semantic_type = _countertop_label(db, finding, candidate)
+        semantic_type, depth = _countertop_label(db, finding, candidate), True
     else:
         raise HeldReadingRefused(
             HeldReadingRefusal.NOT_A_HELD_ITEM,
             "this result is not about one countertop row or one countertop",
         )
-    flags = set(candidate.ambiguity_flags or ())
-    if "reviewer-markup" in flags or "ink:gv" in flags:
+    flags = frozenset(candidate.ambiguity_flags or ())
+    if not _vendors_own_number(flags, depth=depth):
         # GV's markup is the answer key, never a reading: the vendor's own number is checked by hand.
         raise HeldReadingRefused(
             HeldReadingRefusal.NO_AI_READING,
-            "GV's markup covers this number, so there is no AI reading of the vendor's own number "
-            "to confirm; check it by hand",
+            "this number is not positively the vendor's own label (GV's markup, a second label, or "
+            "ink that was never checked is on it), so there is no AI reading of it to confirm or "
+            "fix; check it by hand",
         )
     if candidate.value_numerator is None or candidate.value_denominator is None:
         raise HeldReadingRefused(
@@ -525,11 +605,11 @@ def _held_label(db: Session, finding: Finding, candidate_id: UUID) -> _HeldLabel
             HeldReadingRefusal.NOT_THE_VENDORS_DRAWING,
             f"this reading is not on the vendor's drawing: {detail}",
         )
-    return _HeldLabel(candidate, semantic_type, value)
+    return _HeldLabel(candidate, semantic_type, value, depth)
 
 
 def _answers_about(db: Session, candidate: ObservationCandidate) -> list[CanonicalObservation]:
-    """Every observation a person's answer about this label wrote, newest first."""
+    """Every observation an answer about this label wrote, newest first."""
     return list(
         db.scalars(
             select(CanonicalObservation)
@@ -555,15 +635,57 @@ def _newest_answer(answers: list[CanonicalObservation], semantic_type: str) -> F
     )
 
 
-def _observe(
-    db: Session, label: _HeldLabel, status: EvidenceStatus, actor: str
+def _ai_reading(
+    db: Session,
+    label: _HeldLabel,
+    answers: list[CanonicalObservation],
+    status: EvidenceStatus,
+    actor: str,
 ) -> CanonicalObservation:
+    """The AI's reading of the label as one canonical observation: the one an earlier answer about
+    it minted, else a new one with `status` (`RAW_CANDIDATE` for a confirmation, `REJECTED` for a
+    fix; the evidence gate seals neither)."""
+    earlier = [
+        answer
+        for answer in answers
+        if answer.semantic_type == label.semantic_type
+        and answer.status in (EvidenceStatus.RAW_CANDIDATE.value, EvidenceStatus.REJECTED.value)
+    ]
+    if earlier:
+        return earlier[-1]  # the first minted (answers are newest first)
     made = observation_from_candidate(
         db, label.candidate, semantic_type=label.semantic_type, status=status, actor=actor
     )
     if isinstance(made, ConfirmationRefused):
-        raise HeldReadingRefused(HeldReadingRefusal.NOT_THE_VENDORS_DRAWING, made.detail)
+        raise HeldReadingRefused(
+            _MINT_REFUSALS.get(made.reason, HeldReadingRefusal.NOT_NORMALISABLE), made.detail
+        )
     return made
+
+
+def _act(
+    db: Session,
+    sitting: ReviewSession,
+    finding: Finding,
+    principal: Principal,
+    kind: ReviewActionKind,
+    original: CanonicalObservation,
+    resulting: CanonicalObservation,
+    note: str | None = None,
+) -> ReviewAction:
+    action = ReviewAction(
+        review_session_id=sitting.id,
+        finding_id=finding.id,
+        package_revision_id=finding.package_revision_id,
+        action=kind.value,
+        actor=principal.id,
+        note=note,
+        original_observation_id=original.id,
+        resulting_observation_id=resulting.id,
+    )
+    db.add(action)
+    db.flush()
+    return action
 
 
 def confirm_candidate_reading(
@@ -573,28 +695,53 @@ def confirm_candidate_reading(
     review_session_id: UUID,
     finding_id: UUID,
     candidate_id: UUID,
+    expected_value: Fraction,
 ) -> ReadingDecision:
     """A person confirms the AI's own reading the checks held back (#1339).
 
-    Writes one `HUMAN_CONFIRMED` canonical observation citing the held label, the shape
-    `app/evidence/confirm.py` mints (the reading's own value, never re-entered; its side from
-    `ReadingSides`), with the person on its audit event. No review action: the finding is not
-    decided here; the next check run uses the confirmed value and code decides PASS or FAIL.
-    Refused unless the label is on the finding's own countertop row (or tied to its own
-    countertop), is held, has an AI reading in inches, and lies on the vendor's drawing. A second
-    confirmation of the same answer is refused; after a fix it records the AI's value as the newest
-    answer. Nothing is committed; on a refusal nothing is written.
+    `expected_value` (required, keyword) is the exact value the screen showed the person, in
+    inches. The confirmation records the label's own stored value, never one re-entered; when the
+    two differ (the screen's guess came from the PDF text or the other reader), nothing is written
+    and the person is told to use Fix.
+
+    Writes, in the caller's transaction: the AI's reading as a canonical observation (once per
+    label; `RAW_CANDIDATE`), the person's `HUMAN_CONFIRMED` copy of it citing the label (its side
+    from `ReadingSides`), and, while the result waits for a person, a `confirm` review action on the
+    finding with no note, which decides nothing there (none on a result code already decided): the
+    next check run uses the value and code decides PASS or FAIL.
+
+    Refused unless the label is on the finding's own countertop row
+    (or tied to its own countertop), is held, has an AI reading in inches that is positively the
+    vendor's own number (W1's rule), and lies on the vendor's drawing. A second confirmation of the
+    same answer is refused; after a fix it records the AI's value as the newest answer. A depth or
+    sink reading takes one answer only. Nothing is committed; on a refusal nothing is written.
     """
-    _sitting(db, principal, review_session_id, finding_id)
-    finding = db.get_one(Finding, finding_id)
+    if not isinstance(expected_value, Fraction):
+        raise TypeError("expected_value must be the exact Fraction the screen showed")
+    sitting, finding = _sitting(db, principal, review_session_id, finding_id)
     label = _held_label(db, finding, candidate_id)
-    if _newest_answer(_answers_about(db, label.candidate), label.semantic_type) == label.value:
+    if expected_value != label.value:
+        raise HeldReadingRefused(
+            HeldReadingRefusal.SHOWN_VALUE_DIFFERS,
+            f"you were shown {format_inches(expected_value)}\", but the AI's stored reading of "
+            f'this label is {format_inches(label.value)}"; confirming would record '
+            f'{format_inches(label.value)}", so nothing was saved. If the drawing says '
+            f'{format_inches(expected_value)}", use Fix',
+        )
+    answers = _answers_about(db, label.candidate)
+    if _newest_answer(answers, label.semantic_type) == label.value:
         raise HeldReadingRefused(
             HeldReadingRefusal.ALREADY_ANSWERED, "a person already confirmed this reading"
         )
     with db.begin_nested():
-        resulting = _observe(db, label, EvidenceStatus.HUMAN_CONFIRMED, principal.id)
-    return ReadingDecision(label.candidate, resulting)
+        original = _ai_reading(db, label, answers, EvidenceStatus.RAW_CANDIDATE, principal.id)
+        resulting = _new_observation(db, original, value=None)
+        action = (
+            _act(db, sitting, finding, principal, ReviewActionKind.CONFIRM, original, resulting)
+            if finding.outcome in NOTE_OUTCOMES
+            else None
+        )
+    return ReadingDecision(label.candidate, resulting, original, action)
 
 
 def correct_candidate_reading(
@@ -607,17 +754,20 @@ def correct_candidate_reading(
     corrected_value: str,
     note: str | None = None,
 ) -> ReadingDecision:
-    """A person fixes the AI's own held reading (#1339): it says X, the drawing says Y.
+    """A person fixes the AI's own held reading of a countertop row's width (#1339): it says X, the
+    drawing says Y.
 
-    Writes four records in the caller's transaction: the AI's reading as a `REJECTED` canonical
-    observation (one per label, reused by a later fix), the person's value as a `HUMAN_CONFIRMED`
-    one citing the same label, a `correct` review action on the finding (original → resulting,
-    with `note`, e.g. "AI misread" or "the vendor drew it wrong"), and its correction-ledger row.
-    `corrected_value` is typed with its unit and read by the review screen's own parser
-    (`app/api/review._corrected_inches`): inches only, exact, above zero. Only an AI reading can be
-    fixed; with none, the label is checked by hand. The same refusals as
-    `confirm_candidate_reading`, plus a fix to the AI's own value (that is a confirmation) or to the
-    answer already standing. Nothing is committed; on a refusal nothing is written.
+    Writes, in the caller's transaction: the AI's reading as a canonical observation (once per
+    label, reused by every later answer; `REJECTED` when a fix is its first answer), the person's
+    value as a `HUMAN_CONFIRMED` one citing the same label, a `correct` review action on the finding
+    (original → resulting, with `note`, e.g. "AI misread" or "the vendor drew it wrong"), and its
+    correction-ledger row. `corrected_value` is typed with its unit, inches or feet and inches only
+    (millimetres are refused, never converted), and read by the review screen's own parser
+    (`app/api/review._corrected_inches`): exact, above zero. Only an AI reading can be fixed; with
+    none, the label is checked by hand. A depth or sink reading is never fixed here (use the
+    advanced depth card). The same refusals as `confirm_candidate_reading`, plus a fix to the AI's
+    own value (that is a confirmation) or to the answer already standing. Nothing is committed; on
+    a refusal nothing is written.
 
     **`REJECTED`, not `CONFLICTING`, for the AI's reading.** The database's provenance trigger
     (`alembic/versions/0006_evidence_plane.py`) accepts `CONFLICTING` only with a supporting *and*
@@ -632,20 +782,20 @@ def correct_candidate_reading(
 
     sitting, finding = _sitting(db, principal, review_session_id, finding_id)
     label = _held_label(db, finding, candidate_id)
+    if label.depth:
+        raise HeldReadingRefused(HeldReadingRefusal.DEPTH_CONFIRM_ONCE, DEPTH_CONFIRM_ONCE_DETAIL)
+    if _MILLIMETRES.search(plain_marks(corrected_value or "")):
+        raise HeldReadingRefused(
+            HeldReadingRefusal.NOT_INCHES,
+            'the fix is in millimetres; give it in inches (25 1/2") or feet and inches '
+            "(2'-1 1/2\"): inches decide, and a value converted from mm is never exact",
+        )
     answers = _answers_about(db, label.candidate)
     # A savepoint: a refusal below leaves nothing behind, whatever the caller does next.
     with db.begin_nested():
-        rejected_reading = next(
-            (
-                answer
-                for answer in answers
-                if answer.status == EvidenceStatus.REJECTED.value
-                and answer.semantic_type == label.semantic_type
-            ),
-            None,
-        ) or _observe(db, label, EvidenceStatus.REJECTED, principal.id)
+        original = _ai_reading(db, label, answers, EvidenceStatus.REJECTED, principal.id)
         try:
-            corrected = _corrected_inches(db, rejected_reading.id, corrected_value)
+            corrected = _corrected_inches(db, original.id, corrected_value)
         except HTTPException as refused:
             raise HeldReadingRefused(HeldReadingRefusal.BAD_VALUE, str(refused.detail)) from None
         if corrected == label.value:
@@ -657,24 +807,22 @@ def correct_candidate_reading(
             raise HeldReadingRefused(
                 HeldReadingRefusal.ALREADY_ANSWERED, "a person already gave this value"
             )
-        resulting = _new_observation(db, rejected_reading, value=corrected)
-        action = ReviewAction(
-            review_session_id=sitting.id,
-            finding_id=finding.id,
-            package_revision_id=finding.package_revision_id,
-            action=ReviewActionKind.CORRECT.value,
-            actor=principal.id,
+        resulting = _new_observation(db, original, value=corrected)
+        action = _act(
+            db,
+            sitting,
+            finding,
+            principal,
+            ReviewActionKind.CORRECT,
+            original,
+            resulting,
             note=(note or "").strip()[:1000] or None,
-            original_observation_id=rejected_reading.id,
-            resulting_observation_id=resulting.id,
         )
-        db.add(action)
-        db.flush()
         record_correction(
             db,
             review_action_id=action.id,
-            canonical_observation_id=rejected_reading.id,
-            original=_canonical_value(rejected_reading),
+            canonical_observation_id=original.id,
+            original=_canonical_value(original),
             corrected=_canonical_value(resulting),
         )
-    return ReadingDecision(label.candidate, resulting, rejected_reading, action)
+    return ReadingDecision(label.candidate, resulting, original, action)

@@ -416,7 +416,8 @@ def _row_values(
             return None
         return crops.for_reading(row, candidates.get(position), recorded_input)
 
-    saved = {} if row.decision is None else row.decision.measurements
+    # A width once typed on the row's decision fills nothing since #1339 (confirm-only), so it is
+    # never shown as a value: only what the check used, or a sealed reading, is.
     trace = {} if finding is None else finding.trace
     overall_input = verdict_inputs.get("countertop_width")
     overall = (
@@ -438,12 +439,6 @@ def _row_values(
         )
         if overall is None:
             overall_crop = None
-    if overall is None and isinstance(saved.get("countertop_width"), dict):
-        item = saved["countertop_width"]
-        try:
-            overall = Fraction(int(item["numerator"]), int(item["denominator"]))
-        except (KeyError, ValueError, TypeError, ZeroDivisionError):
-            pass
     pieces: list[CountertopPieceOut] = []
     for index in range(row.piece_count):
         recorded_input = verdict_inputs.get(f"piece_widths[{index}]")
@@ -453,15 +448,9 @@ def _row_values(
             else _trace_value(trace, f"piece_widths[{index}]") if finding is not None else None
         )
         candidate = candidates.get(index)
-        typed = saved.get(f"piece_widths:{index}")
-        if recorded is None and isinstance(typed, dict):
-            try:
-                recorded = Fraction(int(typed["numerator"]), int(typed["denominator"]))
-            except (KeyError, ValueError, TypeError, ZeroDivisionError):
-                recorded = None
         if recorded is None and candidate is not None and candidate_is_sealed(candidate):
             recorded = candidate_value(candidate)
-        source, kind = _source_and_kind(candidate, isinstance(typed, dict) and recorded is not None)
+        source, kind = _source_and_kind(candidate, False)
         if recorded_input is not None:
             source = "typed" if recorded_input.evidence_status == "HUMAN_CONFIRMED" else "sealed"
         pieces.append(

@@ -170,11 +170,19 @@ def observation_from_candidate(
     (`app/review/evidence_actions.py`, #1339), which keep their own history of answers and so do not
     take the once-only check above. The side comes from `ReadingSides` exactly as before, and the
     value is the reading's own, never re-entered. `status` is `HUMAN_CONFIRMED` for a person's
-    confirmation, or `REJECTED` for the AI reading a person has just corrected (found invalid: the
-    gate never seals it); the person who answered is on the audit event either way.
+    confirmation, or, for the AI's reading a person's answer is recorded against (the original of
+    their review action), `REJECTED` when they corrected it (found invalid) or `RAW_CANDIDATE` when
+    they confirmed it (one unverified route read it); the gate seals neither. The person who
+    answered is on the audit event either way.
     """
-    if status not in (EvidenceStatus.HUMAN_CONFIRMED, EvidenceStatus.REJECTED):
-        raise ValueError("a person's answer mints a HUMAN_CONFIRMED or REJECTED observation only")
+    if status not in (
+        EvidenceStatus.HUMAN_CONFIRMED,
+        EvidenceStatus.REJECTED,
+        EvidenceStatus.RAW_CANDIDATE,
+    ):
+        raise ValueError(
+            "a person's answer mints a HUMAN_CONFIRMED, REJECTED or RAW_CANDIDATE observation only"
+        )
     page = session.get(Page, row.page_id)
     run = session.get(ExtractionRun, row.extraction_run_id)
     if page is None or run is None:

@@ -61,7 +61,7 @@ from workflow.architect_pairing_records import (
 )
 from workflow.countertop_runs import published_wall_layouts
 from workflow.layout_proposals import WALL_INK_FLAG, WALL_WORDS_FLAG
-from workflow.row_answers import row_hold_after_people
+from workflow.row_answers import person_answers, row_hold_after_people
 from workflow.slot_row_scope import (
     SlotRow,
     candidate_is_sealed,
@@ -233,7 +233,9 @@ def _row_out(
         candidate_by_position[position] = candidate
 
     decision = row.decision
-    saved = {} if decision is None else decision.measurements
+    # A width a person gave is their answer about the row's own held label (#1339). A width once
+    # typed on the row's decision fills nothing any more, so it is not shown as the reviewer's.
+    answers = person_answers(session, row)
     values: list[SlotRowValueOut] = []
     for position, key, label in (
         (None, "countertop_width", "Overall countertop width"),
@@ -243,17 +245,11 @@ def _row_out(
         ),
     ):
         selected_candidate: ObservationCandidate | None = candidate_by_position.get(position)
-        saved_value = saved.get(key)
         proposed = candidate_value(selected_candidate) if selected_candidate is not None else None
-        saved_exact = None
-        if isinstance(saved_value, dict):
-            try:
-                if saved_value.get("unit") == "in":
-                    saved_exact = Fraction(
-                        int(saved_value["numerator"]), int(saved_value["denominator"])
-                    )
-            except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                saved_exact = None
+        answer = answers.get(position)
+        saved_exact = (
+            None if answer is None else Fraction(answer.value_numerator, answer.value_denominator)
+        )
         sealed = (
             selected_candidate is not None
             and candidate_is_sealed(selected_candidate)

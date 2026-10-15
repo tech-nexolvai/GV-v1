@@ -17,9 +17,11 @@ All synthetic: invented values and names, no model call.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -43,6 +45,8 @@ from app.models import (
     ViewRole,
 )
 from app.models.verdicts import Finding, VerdictInput
+from app.review.approval import _revisions_with_unchecked_inputs
+from app.review.carry_over import decision_holds, decision_records
 from app.review.evidence_actions import (
     HeldReadingRefusal,
     HeldReadingRefused,
@@ -50,6 +54,7 @@ from app.review.evidence_actions import (
     correct_candidate_reading,
 )
 from app.review.session import open_session
+from eval.correction_rate import correction_rate
 from evidence.canonical import Authority, EvidenceStatus
 from storage.local import LocalStore
 from tests.api.test_slot_rows import _package_rows, _reader_support, _run_current_checks
@@ -147,6 +152,7 @@ def test_a_held_reading_waits_until_a_person_confirms_it_then_code_decides(
         review_session_id=_review_session_id(session, package_id),
         finding_id=before.id,
         candidate_id=held,
+        expected_value=Fraction(20),
     )
     session.commit()  # the database's deferred provenance checks run here
 
@@ -160,9 +166,29 @@ def test_a_held_reading_waits_until_a_person_confirms_it_then_code_decides(
         )
     ).all()
     assert cited == [held]
-    # A confirmation decides nothing on the finding: no review action, no ledger row.
-    assert decision.action is None
-    assert session.query(ReviewAction).count() == 0
+    # A confirm review action from the AI's reading (RAW_CANDIDATE, citing the label) to the
+    # person's value, with no note and no ledger row: it is counted by the correction rate, and it
+    # decides nothing on the finding (no note on a waiting result, so sign-off still waits).
+    action = decision.action
+    assert action is not None
+    assert (action.action, action.finding_id, action.actor, action.note) == (
+        "confirm",
+        before.id,
+        REVIEWER,
+        None,
+    )
+    assert action.original_observation_id == decision.original.id
+    assert action.resulting_observation_id == decision.resulting.id
+    assert decision.original.status == EvidenceStatus.RAW_CANDIDATE.value
+    assert session.query(ReviewAction).count() == 1
+    assert session.query(CorrectionLedgerEntry).count() == 0
+    records = decision_records(session, [before.id])
+    assert not decision_holds(before, records, when=datetime.now(UTC))
+    # The person's value is a new input the checks have not used: sign-off waits for the re-run.
+    revision = _revision(session, package_id)
+    assert revision.id in _revisions_with_unchecked_inputs(session, [revision.id])
+    (rate,) = correction_rate(session, window=timedelta(days=1)).values()
+    assert (rate.numerator, rate.denominator) == (0, 1)
 
     after = _width_finding(session, package_id, held, tmp_path)
     assert after.outcome == "PASS", after.reason
@@ -209,6 +235,7 @@ def test_a_reading_both_ais_sealed_is_not_a_held_reading(session: Session, tmp_p
             review_session_id=_review_session_id(session, package_id),
             finding_id=finding.id,
             candidate_id=overall.id,
+            expected_value=Fraction(1),
         )
     assert refused.value.reason is HeldReadingRefusal.ALREADY_COUNTS
     assert session.query(CanonicalObservation).filter_by(status="HUMAN_CONFIRMED").count() == 0
@@ -225,7 +252,7 @@ def test_a_held_label_with_no_ai_reading_cannot_be_confirmed_or_fixed(
     # usable, and both actions are refused.
     sitting = _review_session_id(session, package_id)
     for act in (confirm_candidate_reading, correct_candidate_reading):
-        kwargs = {"corrected_value": '21"'} if act is correct_candidate_reading else {}
+        kwargs = _answer_kwargs(act)
         with pytest.raises(HeldReadingRefused):
             act(
                 session,
@@ -248,6 +275,7 @@ def test_confirming_twice_is_refused(session: Session, tmp_path: Path) -> None:
         review_session_id=sitting,
         finding_id=finding.id,
         candidate_id=anchors[0],
+        expected_value=Fraction(20),
     )
     with pytest.raises(HeldReadingRefused) as refused:
         confirm_candidate_reading(
@@ -256,6 +284,7 @@ def test_confirming_twice_is_refused(session: Session, tmp_path: Path) -> None:
             review_session_id=sitting,
             finding_id=finding.id,
             candidate_id=anchors[0],
+            expected_value=Fraction(20),
         )
     assert refused.value.reason is HeldReadingRefusal.ALREADY_ANSWERED
 
@@ -269,7 +298,7 @@ def test_nothing_is_answered_on_a_signed_off_revision(session: Session, tmp_path
     session.flush()
 
     for act in (confirm_candidate_reading, correct_candidate_reading):
-        kwargs = {"corrected_value": '21"'} if act is correct_candidate_reading else {}
+        kwargs = _answer_kwargs(act)
         with pytest.raises(HeldReadingRefused) as refused:
             act(
                 session,
@@ -337,13 +366,16 @@ def test_a_fix_writes_all_four_records_and_the_check_uses_the_persons_value(
 
 
 def test_the_newest_answer_wins(session: Session, tmp_path: Path) -> None:
-    """Input: fixed to 21" (FAIL), then the person says the AI's 20" was right after all. Outcome:
-    fixing to the AI's own value is refused (that is a confirmation), the confirmation is
-    accepted, and the check uses the newest answer: PASS. Every answer stays on record."""
+    """Input: fixed to 21", then, while the result still waits, the person says the AI's 20" was
+    right after all. Outcome: fixing to the AI's own value is refused (that is a confirmation), the
+    confirmation is accepted, and the check uses the newest answer: PASS. Every answer stays on
+    record, both answers hang off one AI reading (one chain), and Smriti skips the replaced fix."""
+    from eval.smriti.export import export_candidates
+
     project_id, package_id, anchors = _held_rows(session)
     finding = _width_finding(session, package_id, anchors[0], tmp_path)
     sitting = _review_session_id(session, package_id)
-    correct_candidate_reading(
+    fixed = correct_candidate_reading(
         session,
         principal=_reviewer(project_id),
         review_session_id=sitting,
@@ -352,8 +384,6 @@ def test_the_newest_answer_wins(session: Session, tmp_path: Path) -> None:
         corrected_value='21"',
     )
     session.commit()
-    assert _width_finding(session, package_id, anchors[0], tmp_path).outcome == "FAIL"
-    finding = _width_finding(session, package_id, anchors[0], tmp_path)
     with pytest.raises(HeldReadingRefused) as same:
         correct_candidate_reading(
             session,
@@ -375,18 +405,118 @@ def test_the_newest_answer_wins(session: Session, tmp_path: Path) -> None:
         )
     assert again.value.reason is HeldReadingRefusal.ALREADY_ANSWERED
 
-    confirm_candidate_reading(
+    confirmed = confirm_candidate_reading(
         session,
         principal=_reviewer(project_id),
         review_session_id=sitting,
         finding_id=finding.id,
         candidate_id=anchors[0],
+        expected_value=Fraction(20),
     )
     session.commit()
 
+    assert confirmed.original.id == fixed.original.id
     assert _width_finding(session, package_id, anchors[0], tmp_path).outcome == "PASS"
     assert session.query(CanonicalObservation).filter_by(status="HUMAN_CONFIRMED").count() == 2
     assert session.query(CorrectionLedgerEntry).count() == 1
+    assert session.query(ReviewAction).count() == 2
+    session.commit()  # the export opens its own read-only transaction
+    exported = export_candidates(session, database="synthetic").candidates
+    session.rollback()
+    by_table = {
+        candidate.candidate_id: candidate
+        for candidate in exported
+        if candidate.table in {"correction_ledger", "review_actions"}
+    }
+    (ledger,) = [c for c in by_table.values() if c.table == "correction_ledger"]
+    assert ledger.kind == "superseded"
+    assert confirmed.action is not None
+    assert by_table[f"review_actions:{confirmed.action.id}"].kind == "confirmed"
+
+
+def test_taking_back_a_fix_after_code_decided_on_it(session: Session, tmp_path: Path) -> None:
+    """Input: the held label fixed to 21", the check re-run (code decides FAIL on 21"), then the
+    person confirms the AI's 20" through that FAIL. Outcome: accepted as the newest answer, with no
+    review action on the decided FAIL (a confirm there would read as the person standing behind
+    it); sign-off waits for the re-run, which decides PASS; Smriti skips the replaced fix."""
+    from eval.smriti.export import export_candidates
+
+    project_id, package_id, anchors = _held_rows(session)
+    finding = _width_finding(session, package_id, anchors[0], tmp_path)
+    sitting = _review_session_id(session, package_id)
+    correct_candidate_reading(
+        session,
+        principal=_reviewer(project_id),
+        review_session_id=sitting,
+        finding_id=finding.id,
+        candidate_id=anchors[0],
+        corrected_value='21"',
+    )
+    session.commit()
+    decided = _width_finding(session, package_id, anchors[0], tmp_path)
+    assert decided.outcome == "FAIL"
+    actions = session.query(ReviewAction).count()
+
+    taken_back = confirm_candidate_reading(
+        session,
+        principal=_reviewer(project_id),
+        review_session_id=sitting,
+        finding_id=decided.id,
+        candidate_id=anchors[0],
+        expected_value=Fraction(20),
+    )
+    session.commit()
+
+    assert taken_back.action is None
+    assert session.query(ReviewAction).count() == actions
+    revision = _revision(session, package_id)
+    assert revision.id in _revisions_with_unchecked_inputs(session, [revision.id])
+    exported = export_candidates(session, database="synthetic").candidates
+    session.rollback()
+    (ledger,) = [c for c in exported if c.table == "correction_ledger"]
+    assert ledger.kind == "superseded"
+    assert _width_finding(session, package_id, anchors[0], tmp_path).outcome == "PASS"
+
+
+def test_confirm_records_only_the_value_the_person_was_shown(
+    session: Session, tmp_path: Path
+) -> None:
+    """Input: the held label's PDF text and one reader say 21", the other reader 20", and the stored
+    reading is 20". The screen showed 21". Outcome: Confirm with the shown 21" is refused and
+    nothing is written (it would record 20" as the person's answer); Confirm with 20" is accepted.
+    """
+    project_id, package_id, anchors = _held_rows(
+        session,
+        slot_flags=_held_slot_flags(
+            'reader:pdf-text-layer:21"', 'reader:reader-a:21"', 'reader:reader-b:20"'
+        ),
+    )
+    finding = _width_finding(session, package_id, anchors[0], tmp_path)
+    sitting = _review_session_id(session, package_id)
+
+    with pytest.raises(HeldReadingRefused) as refused:
+        confirm_candidate_reading(
+            session,
+            principal=_reviewer(project_id),
+            review_session_id=sitting,
+            finding_id=finding.id,
+            candidate_id=anchors[0],
+            expected_value=Fraction(21),
+        )
+    assert refused.value.reason is HeldReadingRefusal.SHOWN_VALUE_DIFFERS
+    assert "use Fix" in refused.value.detail
+    assert _person_answers(session) == 0
+    assert session.query(ReviewAction).count() == 0
+
+    decision = confirm_candidate_reading(
+        session,
+        principal=_reviewer(project_id),
+        review_session_id=sitting,
+        finding_id=finding.id,
+        candidate_id=anchors[0],
+        expected_value=Fraction(20),
+    )
+    assert Fraction(decision.resulting.value_numerator, decision.resulting.value_denominator) == 20
 
 
 @pytest.mark.parametrize("typed", ["21", "21 cm", '0"', '-1"', '163/8"', "about 21"])
@@ -416,6 +546,128 @@ def test_a_fix_takes_inches_only_through_the_review_parser(
     assert session.query(ReviewAction).count() == 0
 
 
+@pytest.mark.parametrize("typed", ["520 mm", "520mm", "520 MM", "520 millimetres"])
+def test_a_fix_in_millimetres_is_refused(session: Session, tmp_path: Path, typed: str) -> None:
+    """Input: a fix typed in millimetres. Outcome: refused as not inches (never converted into a
+    decision: 520 mm would become 2600/127 in), and nothing is left behind."""
+    project_id, package_id, anchors = _held_rows(session)
+    finding = _width_finding(session, package_id, anchors[0], tmp_path)
+    sitting = _review_session_id(session, package_id)
+
+    with pytest.raises(HeldReadingRefused) as refused:
+        correct_candidate_reading(
+            session,
+            principal=_reviewer(project_id),
+            review_session_id=sitting,
+            finding_id=finding.id,
+            candidate_id=anchors[0],
+            corrected_value=typed,
+        )
+    assert refused.value.reason is HeldReadingRefusal.NOT_INCHES
+    assert _person_answers(session) == 0
+    assert session.query(ReviewAction).count() == 0
+
+
+# -- GV's markup and untrusted ink: W1's rule ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("added", "removed"),
+    [
+        (["reviewer-markup"], []),
+        (["gv-tick"], []),
+        (["ink:gv"], ["ink:vendor"]),
+        (["ink-unchecked"], []),
+        (["two-labels"], []),
+        ([], ["ink:vendor"]),
+    ],
+    ids=["gv-markup", "gv-tick", "gv-ink", "ink-unchecked", "two-labels", "ink-never-checked"],
+)
+def test_a_value_not_positively_the_vendors_is_never_confirmed_or_fixed(
+    session: Session, tmp_path: Path, added: list[str], removed: list[str]
+) -> None:
+    """Input: the held label under GV's markup, with GV's ink, with unchecked ink, with a second
+    label, or with no ink check at all. Outcome: confirm and fix are both refused (check it by
+    hand), and nothing is written. The rule is W1's `vendor_ink_only`, not a copy of it."""
+    project_id, package_id, anchors = _held_rows(
+        session, slot_flags=_held_slot_flags(*added, *(f"-{flag}" for flag in removed))
+    )
+    finding = _width_finding(session, package_id, anchors[0], tmp_path)
+    sitting = _review_session_id(session, package_id)
+
+    for act in (confirm_candidate_reading, correct_candidate_reading):
+        with pytest.raises(HeldReadingRefused) as refused:
+            act(
+                session,
+                principal=_reviewer(project_id),
+                review_session_id=sitting,
+                finding_id=finding.id,
+                candidate_id=anchors[0],
+                **_answer_kwargs(act),
+            )
+        assert refused.value.reason is HeldReadingRefusal.NO_AI_READING
+        assert "by hand" in refused.value.detail
+    assert _person_answers(session) == 0
+    assert session.query(ReviewAction).count() == 0
+
+
+def test_an_answer_on_a_label_under_gv_markup_never_fills_the_row(
+    session: Session, tmp_path: Path
+) -> None:
+    """Input: a HUMAN_CONFIRMED 20" citing the row's own held label, written by another path (the
+    older type confirmation), on a label flagged as GV's markup. Outcome: the row still waits: the
+    width check's own reader re-checks W1's rule on the cited label (defence in depth)."""
+    from app.evidence.confirm import observation_from_candidate
+
+    _project_id, package_id, anchors = _held_rows(
+        session, slot_flags=_held_slot_flags("reviewer-markup")
+    )
+    held = session.get_one(ObservationCandidate, anchors[0])
+    made = observation_from_candidate(
+        session,
+        held,
+        semantic_type=SemanticType.COUNTERTOP_PIECE_WIDTH.value,
+        status=EvidenceStatus.HUMAN_CONFIRMED,
+        actor=REVIEWER,
+    )
+    assert isinstance(made, CanonicalObservation)
+    session.commit()
+
+    assert _width_finding(session, package_id, anchors[0], tmp_path).outcome == "REVIEW_REQUIRED"
+
+
+def test_a_refusal_to_place_the_reading_names_its_own_reason(
+    session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Input: the reading's page has no recorded transform, or it cannot be normalised. Outcome:
+    refused with that reason (not "not the vendor's drawing")."""
+    import app.review.evidence_actions as actions
+    from app.evidence.confirm import ConfirmationRefused, RefusalReason
+
+    project_id, package_id, anchors = _held_rows(session)
+    finding = _width_finding(session, package_id, anchors[0], tmp_path)
+    sitting = _review_session_id(session, package_id)
+    for why, expected in (
+        (RefusalReason.NO_TRANSFORM, HeldReadingRefusal.CANNOT_PLACE),
+        (RefusalReason.NOT_NORMALISABLE, HeldReadingRefusal.NOT_NORMALISABLE),
+    ):
+        monkeypatch.setattr(
+            actions,
+            "observation_from_candidate",
+            lambda *_a, _why=why, **_k: ConfirmationRefused(_why, "synthetic refusal"),
+        )
+        with pytest.raises(HeldReadingRefused) as refused:
+            confirm_candidate_reading(
+                session,
+                principal=_reviewer(project_id),
+                review_session_id=sitting,
+                finding_id=finding.id,
+                candidate_id=anchors[0],
+                expected_value=Fraction(20),
+            )
+        assert refused.value.reason is expected
+
+
 # -- ownership -------------------------------------------------------------------------------------
 
 
@@ -428,7 +680,7 @@ def test_another_rows_reading_is_refused(session: Session, tmp_path: Path) -> No
 
     for candidate_id in (anchors[1], other.id):
         for act in (confirm_candidate_reading, correct_candidate_reading):
-            kwargs = {"corrected_value": '21"'} if act is correct_candidate_reading else {}
+            kwargs = _answer_kwargs(act)
             with pytest.raises(HeldReadingRefused) as refused:
                 act(
                     session,
@@ -491,6 +743,7 @@ def test_a_row_with_another_hold_stays_held_after_its_readings_are_confirmed(
         review_session_id=_review_session_id(session, package_id),
         finding_id=finding.id,
         candidate_id=anchors[0],
+        expected_value=Fraction(20),
     )
     session.flush()
 
@@ -542,6 +795,7 @@ def test_the_walls_of_a_row_people_completed_can_be_chosen(
         review_session_id=_review_session_id(session, package_id),
         finding_id=finding.id,
         candidate_id=anchors[0],
+        expected_value=Fraction(20),
     )
     session.commit()
     saved = review_slot_row(
@@ -589,6 +843,7 @@ def test_on_a_combined_sheet_only_a_reading_on_the_vendors_drawing_is_confirmed(
             review_session_id=_review_session_id(session, package_id),
             finding_id=finding.id,
             candidate_id=anchors[0],
+            expected_value=Fraction(20),
         )
 
     if confirmed:
@@ -610,10 +865,11 @@ def test_a_countertops_depth_reading_is_confirmed_only_for_its_own_countertop(
     """Input: a depth read by drawn length alone (waiting for a person) on one countertop, and a
     second countertop on the same drawing. Outcome: the confirmation is refused through the other
     countertop's result and accepted through its own; the depth check then uses it."""
-    from tests.workflow.test_depth_evidence import CT010, _Set
+    from tests.workflow.test_depth_evidence import CT010, _findings, _Set
     from tests.workflow.test_reading_parts import _confirmed
     from vocabulary.part_kinds import PartKind
     from workflow.depth_evidence import CONFIRM_ONLY
+    from workflow.stages import DatabaseStages
 
     store = LocalStore(root=tmp_path / "store", ticket_secret=b"synthetic-test")
     sheet = _Set(session, store)
@@ -651,8 +907,23 @@ def test_a_countertops_depth_reading_is_confirmed_only_for_its_own_countertop(
                 review_session_id=sitting,
                 finding_id=finding.id,
                 candidate_id=reading.id,
+                expected_value=Fraction(25),
             )
         assert refused.value.reason is HeldReadingRefusal.NOT_THIS_ITEM
+
+    # A fix of a depth reading is never taken here (the depth check would hold for good).
+    with pytest.raises(HeldReadingRefused) as fixed:
+        correct_candidate_reading(
+            session,
+            principal=principal,
+            review_session_id=sitting,
+            finding_id=own.id,
+            candidate_id=reading.id,
+            corrected_value='24"',
+        )
+    assert fixed.value.reason is HeldReadingRefusal.DEPTH_CONFIRM_ONCE
+    assert "advanced depth card" in fixed.value.detail
+    assert _person_answers(session) == 0
 
     decision = confirm_candidate_reading(
         session,
@@ -660,14 +931,119 @@ def test_a_countertops_depth_reading_is_confirmed_only_for_its_own_countertop(
         review_session_id=sitting,
         finding_id=own.id,
         candidate_id=reading.id,
+        expected_value=Fraction(25),
     )
     assert decision.resulting.semantic_type == CT010
+    assert decision.action is not None and decision.action.action == "confirm"
+    # One answer only: a second confirmation or a fix after it is refused, nothing more written.
+    answers = session.query(CanonicalObservation).count()
+    for act, extra in (
+        (confirm_candidate_reading, {"expected_value": Fraction(25)}),
+        (correct_candidate_reading, {"corrected_value": '24"'}),
+    ):
+        with pytest.raises(HeldReadingRefused) as again:
+            act(
+                session,
+                principal=principal,
+                review_session_id=sitting,
+                finding_id=own.id,
+                candidate_id=reading.id,
+                **extra,
+            )
+        assert again.value.reason is HeldReadingRefusal.DEPTH_CONFIRM_ONCE
+    assert session.query(CanonicalObservation).count() == answers
     session.commit()
     operand = sheet.operands().operands["countertop_depth"]
     assert operand.status is EvidenceStatus.HUMAN_CONFIRMED
+    # The checks again (the rulebook and the countertop's run decision are already in place), with
+    # the project's cabinet depth and overhang: 24" + 1" is the confirmed 25".
+    _project_settings(session, sheet.revision, cabinet_depth=24, countertop_overhang=1)
+    DatabaseStages(
+        store, discriminators={"wall_config": "back_left_right"}, depth_reader=True
+    ).run_checks(session, sheet.revision.id)
+    (after,) = [
+        f
+        for f in _findings(session, sheet.revision)["CT-DEPTH-001"]
+        if f.scope_item_id == sheet.item
+    ]
+    assert after.outcome == "PASS", after.reason
 
 
 # -- helpers ---------------------------------------------------------------------------------------
+
+
+def _project_settings(session: Session, revision: PackageRevision, **inches: int) -> None:
+    """Project settings a person typed, in inches (invented values)."""
+    from sqlalchemy import func
+
+    from app.models import Package
+    from app.models.parameters import ParameterSet as StoredSet
+    from app.models.parameters import to_rows
+    from rules.parameters import ParameterLayer, ParameterSet, ParameterValue, Provenance
+    from rules.schema import Quantity
+    from units.measurement import Unit
+
+    package = session.get_one(Package, revision.package_id)
+    newest = session.scalar(
+        select(func.max(StoredSet.version)).where(
+            StoredSet.project_id == package.project_id,
+            StoredSet.layer == ParameterLayer.PROJECT.value,
+        )
+    )
+    stored, rows = to_rows(
+        ParameterSet(
+            project_id=str(package.project_id),
+            layer=ParameterLayer.PROJECT,
+            version=(newest or 0) + 1,
+            parameters={
+                name: ParameterValue(
+                    value=Quantity(value=Fraction(value), unit=Unit.INCH),
+                    provenance=Provenance.GC_CLIENT,
+                    set_by=REVIEWER,
+                    set_at=datetime(2026, 10, 3, tzinfo=UTC),
+                )
+                for name, value in inches.items()
+            },
+        ),
+        package_revision_id=None,
+    )
+    session.add(stored)
+    session.add_all(rows)
+    session.flush()
+
+
+def _person_answers(session: Session) -> int:
+    """Observations a person's answer wrote: theirs, and the AI's reading it is recorded against."""
+    return (
+        session.query(CanonicalObservation)
+        .filter(
+            CanonicalObservation.status.in_(
+                [
+                    EvidenceStatus.HUMAN_CONFIRMED.value,
+                    EvidenceStatus.RAW_CANDIDATE.value,
+                    EvidenceStatus.REJECTED.value,
+                ]
+            )
+        )
+        .count()
+    )
+
+
+def _held_slot_flags(*extra: str) -> Callable[[int, int, str], list[str]]:
+    """`_claude_partial`, plus `extra` on the held label (page 1's piece 1) only."""
+
+    def flags(page_index: int, row_offset: int, slot: str) -> list[str]:
+        own = list(extra) if page_index == 0 and slot == "0" else []
+        return [*_claude_partial(page_index, row_offset, slot), *own]
+
+    return flags
+
+
+def _answer_kwargs(act: object, *, fix: str = '21"') -> dict[str, Any]:
+    """The extra keyword each action takes: the value shown (confirm) or the fix typed (fix)."""
+    if act is correct_candidate_reading:
+        return {"corrected_value": fix}
+    return {"expected_value": Fraction(20)}
 
 
 def _region(left: str, right: str) -> dict[str, object]:

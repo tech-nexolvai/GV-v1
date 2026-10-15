@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Subquery, func, or_, select, union_all
+from sqlalchemy import Subquery, and_, func, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from app.audit.events import AuditCategory, emit
@@ -56,7 +56,7 @@ from app.models.package import Package, PackageRevision, PackageState, PackageSt
 from app.models.parameters import ParameterSet
 from app.models.review import Approval, ApprovedFinding, ReviewAction, ReviewSession
 from app.models.runs import ExtractionRun, TaskRun, WorkflowRun
-from app.models.verdicts import CheckRun, Finding
+from app.models.verdicts import CheckRun, Finding, FindingEvidence
 from app.review.carry_over import DecisionRecords, decision_holds, decision_records
 from app.review.no_countertop import (
     PagesBlockingSignOff,
@@ -287,9 +287,10 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
     - a new reading of the countertop rows (#1206, "Read the unread pages" on this revision), or a
       new depth and sink reading (#1308, "Read depths again"): the checks have not seen what it
       read;
-    - a reading a reviewer confirmed (`confirm_candidate`): HUMAN_CONFIRMED evidence that no review
-      action produced. An evidence confirm/correct writes one too, but it is a decision on its
-      finding, already governed by `decision_holds` and the correction rule, so it is not counted
+    - a reading a reviewer confirmed (`confirm_candidate`, or an answer about a held reading,
+      #1339): HUMAN_CONFIRMED evidence that no evidence action produced. An evidence confirm/correct
+      (of the finding's own evidence) writes one too, but it is a decision on its finding, already
+      governed by `decision_holds` and the correction rule, so it is not counted
       again here.
 
     Each branch is filtered to `revision_ids`, so the union is one bounded statement.
@@ -309,8 +310,19 @@ def _inputs_recorded(revision_ids: Collection[UUID]) -> Subquery:
         .join(on_page, on_page.c.page_id == DrawingView.page_id)
         .subquery()
     )
-    produced_by_action = select(ReviewAction.resulting_observation_id).where(
-        ReviewAction.resulting_observation_id.is_not(None)
+    # Only an evidence action (its original is the finding's own evidence) is a decision on its
+    # finding. A person's answer about a held reading (#1339) cites a reading the finding never
+    # used, so it is a new input like any confirmation: sign-off waits for the re-run that uses it.
+    produced_by_action = (
+        select(ReviewAction.resulting_observation_id)
+        .join(
+            FindingEvidence,
+            and_(
+                FindingEvidence.finding_id == ReviewAction.finding_id,
+                FindingEvidence.canonical_observation_id == ReviewAction.original_observation_id,
+            ),
+        )
+        .where(ReviewAction.resulting_observation_id.is_not(None))
     )
     branches = (
         select(ParameterSet.package_revision_id, ParameterSet.created_at).where(

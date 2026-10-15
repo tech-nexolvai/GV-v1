@@ -36,6 +36,7 @@ from app.models.evidence import (
     EvidenceSupportingCandidate,
     ObservationCandidate,
 )
+from app.review.review_items import vendor_ink_only
 from evidence.canonical import CorroborationLane, EvidenceStatus
 from rules.semantic_types import DocumentRole, SemanticType
 from units.measurement import Unit
@@ -153,7 +154,8 @@ def own_slot_labels(row: SlotRow) -> dict[int | None, ObservationCandidate]:
 def person_answers(session: Session, row: SlotRow) -> dict[int | None, CanonicalObservation]:
     """For each held label of this row, the newest answer a person gave about it (#1339).
 
-    An answer is a `HUMAN_CONFIRMED` observation citing this row's own label at that position, of
+    Only a held label whose value is positively the vendor's own number (`vendor_ink_only`) is
+    answered. An answer is a `HUMAN_CONFIRMED` observation citing this row's own label at that position, of
     that position's width type, on the label's own page and drawing, the vendor's side, in inches
     and above zero. Only the newest such answer counts. A sealed label is never answered here (its
     readers' seal is its evidence), and nothing citing another row's label is even looked at.
@@ -163,6 +165,10 @@ def person_answers(session: Session, row: SlotRow) -> dict[int | None, Canonical
         candidate.id: position
         for position, candidate in labels.items()
         if not candidate_is_sealed(candidate)
+        # Only a label whose value is positively the vendor's own number takes an answer (W1's
+        # rule, `vendor_ink_only`): an answer citing a label under GV's markup, with two labels or
+        # with unchecked ink, from any path, never fills the row (defence in depth, #1339 review).
+        and vendor_ink_only(candidate.ambiguity_flags or ())
     }
     if not held:
         return {}
