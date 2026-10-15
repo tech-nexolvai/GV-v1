@@ -167,8 +167,10 @@ def countertop_scopes(session: Session, revision_id: UUID) -> tuple[CountertopSc
     **Only a countertop a person stands by** (review of #1248): one a person confirmed, or one a
     person confirmed or withdrew a run beneath. Code's own countertop item (#1244) is not a scope
     on its own: it would take its page from the page's countertop row and ask for a run nobody
-    was asked about, hiding the row's finding. Code's items change no finding until a person
-    decides a run beneath one.
+    was asked about, hiding the row's finding. Code's items create no scope until a person decides
+    a run beneath one. They do count as countertops of the package (#1297,
+    `workflow/several_countertops.py`), so they can hold the six whole-package depth and sink
+    results, never decide one: the safe direction.
     """
     decided = session.scalar(
         select(CountertopRunDecision.id)
