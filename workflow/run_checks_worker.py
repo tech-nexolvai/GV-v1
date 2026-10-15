@@ -10,8 +10,17 @@ once, beside the run it was meant to follow, and both would write findings for t
 **The fix is the engine's own concurrency key.** The workflow is declared with one concurrency group
 per revision (`input.package_revision_id`), a limit of one, and the strategy that queues
 (`GROUP_ROUND_ROBIN`) rather than one that cancels. So at most one run per revision is active; every
-other run for that revision waits its turn, and none is dropped: a follow-up must still run, because it
-is the one that reads the answer the person just gave. Runs for different revisions are not held up.
+other run for that revision waits its turn, for up to 12 hours, rather than being cancelled: a
+follow-up must still run, because it is the one that reads the answer the person just gave. Runs for
+different revisions are not held up.
+
+**Both timeouts are stated, because the SDK's defaults would undo the queue.** A task's
+`schedule_timeout` defaults to 5 minutes, and a run that has not *started* by then is cancelled. A run
+waiting behind the per-revision limit has not started, so under the default a queue of a few answers
+would cancel the newest run, the one reading the last answer, after its outbox row was already marked
+delivered: stale findings, and nobody told. `execution_timeout` defaults to 60 seconds, too close to a
+real check run (about 38 s on a full drawing set, 13 Oct) to leave any headroom. See
+`QUEUED_RUN_WAITS_UP_TO` and `CHECK_RUN_TAKES_UP_TO`.
 
 **The task is thin.** It runs `workflow/sutradhar.py:run_checks`, the same function the local worker
 runs, in one transaction, keyed by the outbox row that asked (the dispatcher puts the row id in the
@@ -23,6 +32,7 @@ Verification: `tests/workflow/test_run_checks_worker.py`
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
@@ -36,6 +46,8 @@ if TYPE_CHECKING:  # pragma: no cover - annotations only, keeps the gRPC stack o
     from workflow.sutradhar import StagesFactory
 
 __all__ = [
+    "CHECK_RUN_TAKES_UP_TO",
+    "QUEUED_RUN_WAITS_UP_TO",
     "REVISION_KEY",
     "RUN_CHECKS_WORKFLOW",
     "RunChecksInput",
@@ -51,6 +63,15 @@ RUN_CHECKS_WORKFLOW: Final = "run_checks"
 #: outbox payload, so the revision id is there as the API wrote it.
 REVISION_KEY: Final = "input.package_revision_id"
 
+#: How long a run may wait for its turn before the engine cancels it (SDK default: 5 minutes). Generous
+#: on purpose: a run waits behind every earlier run for its revision, and a cancelled run is an answer
+#: the checks never read.
+QUEUED_RUN_WAITS_UP_TO: Final = timedelta(hours=12)
+
+#: How long one check run may take once started (SDK default: 60 seconds). A full drawing set's checks
+#: took about 38 s on 13 Oct; 30 minutes leaves ample room for a slow box or a bigger set.
+CHECK_RUN_TAKES_UP_TO: Final = timedelta(minutes=30)
+
 
 class RunChecksInput(BaseModel):
     """What a check run is asked with: `app/api/measurements.py:_run_checks_payload`, unchanged."""
@@ -61,7 +82,7 @@ class RunChecksInput(BaseModel):
 
 
 def one_run_per_revision() -> ConcurrencyExpression:
-    """At most one active run per revision; the rest wait in a queue, oldest first.
+    """At most one active run per revision; the rest wait their turn in a queue.
 
     `GROUP_ROUND_ROBIN` is the strategy that queues: a run over the limit waits, and the engine takes
     the groups in turn. The cancelling strategies (`CANCEL_IN_PROGRESS`, `CANCEL_NEWEST`) would drop a
@@ -108,7 +129,11 @@ def register_run_checks(
         concurrency=one_run_per_revision(),
     )
 
-    @workflow.task(name=RUN_CHECKS_WORKFLOW)
+    @workflow.task(
+        name=RUN_CHECKS_WORKFLOW,
+        schedule_timeout=QUEUED_RUN_WAITS_UP_TO,
+        execution_timeout=CHECK_RUN_TAKES_UP_TO,
+    )
     def run(payload: RunChecksInput, ctx: Any) -> dict[str, object]:
         with unit_of_work(factory) as session:
             return dict(

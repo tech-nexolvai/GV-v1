@@ -11,6 +11,7 @@ still runs one revision's check runs one after the other.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -26,6 +27,8 @@ from app.db.session import session_factory
 from app.models import OutboxEntry
 from tests.app.postgres_fixture import alembic_config
 from workflow.run_checks_worker import (
+    CHECK_RUN_TAKES_UP_TO,
+    QUEUED_RUN_WAITS_UP_TO,
     REVISION_KEY,
     RUN_CHECKS_WORKFLOW,
     RunChecksInput,
@@ -130,6 +133,11 @@ def test_run_checks_is_declared_with_one_queued_run_per_revision() -> None:
     assert concurrency.is_tenant_scoped is False
     assert one_run_per_revision() == concurrency
     assert [task["name"] for task in workflow.tasks] == ["run_checks"]
+    # Stated, not the SDK's defaults: 5 minutes to start would cancel a run waiting its turn (the
+    # newest, reading the last answer), and 60 seconds to finish leaves no room for a real run.
+    (task,) = workflow.tasks
+    assert task["schedule_timeout"] == QUEUED_RUN_WAITS_UP_TO == timedelta(hours=12)
+    assert task["execution_timeout"] == CHECK_RUN_TAKES_UP_TO == timedelta(minutes=30)
 
 
 def test_the_name_is_the_one_the_outbox_enqueues() -> None:
