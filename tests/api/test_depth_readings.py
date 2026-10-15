@@ -858,3 +858,59 @@ def test_the_job_s_settings_are_asked_once_not_on_every_countertop_s_card(
         for item in (sheet.item, other)
     ]
     assert sorted(asked) == [[], ["cabinet_depth", "countertop_overhang"]]
+
+
+# -- a countertop row's own held result (#1201) ---------------------------------------------------
+
+
+def test_a_countertop_row_s_own_result_lists_what_was_read_for_that_row_only(
+    session: Session, store: LocalStore
+) -> None:
+    """Since #1201 a countertop row gets its own held depth result. It lists what the reader read
+    for the countertop suggested from that row, as the whole-package result did, and never offers
+    to confirm it there. Another row's result lists nothing of it."""
+    from app.models import PartProposalRow
+    from tests.workflow.test_several_countertops import _blank_page, _slot_rows
+
+    sheet = _Set(session, store)
+    other_page = _blank_page(sheet, 1)
+    _slot_rows(sheet, [sheet.page, other_page])
+    anchors = {
+        row.page_id: row
+        for row in session.scalars(
+            select(ObservationCandidate).where(
+                ObservationCandidate.ambiguity_flags.contains(["slot:0"])
+            )
+        )
+    }
+    mine, theirs = anchors[sheet.page.id], anchors[other_page.id]
+    session.add(
+        PartProposalRow(
+            part_proposal_id=sheet.proposal,
+            row_candidate_id=mine.id,
+            slot_index=None,
+            extraction_run_id=mine.extraction_run_id,
+            kind_named=True,
+        )
+    )
+    session.flush()
+    sheet.reading(CT010, 24, QUALIFIED, link=sheet.link())
+    _publish_rulebook(session)
+    snapshots = _snapshots(session)
+    items = [
+        _Item(uuid4(), sheet.revision.id, rule_id, snapshots[rule_id], outcome, None, row.id)
+        for rule_id in ("CT-DEPTH-001", "CT-SINK-CUTOUT-WIDTH-001")
+        for row, outcome in ((mine, Outcome.REVIEW_REQUIRED), (theirs, Outcome.REVIEW_REQUIRED))
+    ]
+
+    answers = depth_readings_for(session, items)
+
+    depth_mine, depth_theirs, sink_mine, sink_theirs = items
+    lines = [line.model_dump() for line in answers[depth_mine.id]]
+    assert [(line["countertop"], line["state"], line["value"]) for line in lines] == [
+        ("Countertop 1 on page 1", "read", '24"')
+    ]
+    assert not any(line.get("can_confirm") for line in lines)
+    # Only what was read: nothing for the sink; and nothing of it on the other row's result.
+    assert depth_theirs.id not in answers and sink_mine.id not in answers
+    assert sink_theirs.id not in answers

@@ -342,8 +342,10 @@ def test_a_decision_that_breaks_a_contract_gate_is_held(
 def test_coverage_faults_are_left_to_the_report(session: Session, tmp_path: Path) -> None:
     """A rule with no result is about the run, not one result: nothing to hold."""
     revision_id, _anchors = _rows(session, tmp_path)
-    _finding, run = _live_for(session, revision_id, "CT-DEPTH-001")
-    run.superseded_at = run.created_at
+    # Every result of the rule: since #1201 each countertop row has its own.
+    for _finding, run, rule in _live(session, revision_id):
+        if rule == "CT-DEPTH-001":
+            run.superseded_at = run.created_at
     session.flush()
 
     assert hold_unsafe_decisions(session, revision_id).held == ()

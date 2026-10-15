@@ -440,6 +440,10 @@ from workflow.reading_watch import (
 from workflow.redline_outputs import render_evidence_grounded_redline
 from workflow.review import ENGINE_VERSION, PageResult
 from workflow.several_countertops import (
+    WHOLE_PACKAGE_RULE_IDS,
+    CountertopHolds,
+    also_reason,
+    countertop_holds,
     hold_for_several,
     hold_for_unchecked,
     package_countertops,
@@ -7807,22 +7811,116 @@ class DatabaseStages:
         # whole-package result is touched, and only ever toward REVIEW_REQUIRED.
         countertops = package_countertops(session, package_revision_id)
 
-        def whole_package(finding: Finding) -> Finding:
-            return hold_for_several(finding, countertops, depth_reader=self._depth_reader)
+        def record_own(holds: CountertopHolds, rule: Rule) -> int:
+            """Each countertop's own held result (#1201), scoped to it, with no value at all."""
+            for countertop, held in holds.own:
+                scope = countertop.scope
+                assert scope is not None  # `countertop_holds` leaves an unscoped one over
+                record_finding(
+                    session,
+                    package_revision_id=package_revision_id,
+                    finding=held,
+                    operands={},
+                    parameter_set_ids=cited,
+                    defaults_set_id=defaults_set_id,
+                    defaults_canonical_json=defaults_canonical_json,
+                    missing=_declared_inputs(rule),
+                    scope_item_id=scope[0],
+                    scope_row_candidate_id=scope[1],
+                    scope_label=countertop.name,
+                )
+            return len(holds.own)
+
+        def record_whole_package(
+            finding: Finding,
+            rule: Rule,
+            *,
+            operands: Mapping[str, VerdictOperand],
+            given: bool,
+            missing: Mapping[str, str] | None = None,
+        ) -> int:
+            """Write a whole-package result; return how many results were written.
+
+            **One result per countertop (#1201).** For one of the six depth and sink checks on a
+            package with several countertops, each countertop gets its own held result instead,
+            saying what it waits for (`countertop_holds`). The whole-package result is written too,
+            held (#1297), only where it still says something: `given`, a value was given for the
+            whole package (typed, or a reading confirmed), which it shows; or a countertop that
+            cannot have a result of its own, which it names. Any other result: written unchanged.
+            """
+            if finding.rule_id not in WHOLE_PACKAGE_RULE_IDS or not countertops.several:
+                record_finding(
+                    session,
+                    package_revision_id=package_revision_id,
+                    finding=finding,
+                    operands=operands,
+                    parameter_set_ids=cited,
+                    defaults_set_id=defaults_set_id,
+                    defaults_canonical_json=defaults_canonical_json,
+                    missing=missing,
+                )
+                return 1
+            holds = countertop_holds(
+                rule_id=finding.rule_id,
+                severity=finding.severity,
+                snapshot_id=finding.snapshot_id,
+                engine_version=ENGINE_VERSION,
+                countertops=countertops.countertops,
+                depth_reader=self._depth_reader,
+                # What the check lacks beyond the drawn values (a setting, a wall layout): the same
+                # on every countertop's own result (#1201 review).
+                also=also_reason(finding, (rule.inputs or {}).keys()),
+            )
+            count = record_own(holds, rule)
+            if not given and not holds.left:
+                return count
+            held = hold_for_several(
+                finding, countertops, depth_reader=self._depth_reader, left=holds.left
+            )
+            record_finding(
+                session,
+                package_revision_id=package_revision_id,
+                finding=held,
+                operands=operands,
+                parameter_set_ids=cited,
+                defaults_set_id=defaults_set_id,
+                defaults_canonical_json=defaults_canonical_json,
+                missing=missing,
+            )
+            return count + 1
 
         def hold_unchecked(snapshot: RuleSnapshot) -> int:
-            """With the reader on, a held whole-package result for any countertop none of this
-            check's per-countertop results is for, so it is never left with no result (#1297)."""
+            """With the reader on, a held result for each countertop none of this check's
+            per-countertop results is for, so it is never left with no result (#1297). On a package
+            with several countertops each gets its own (#1201); one that cannot is named on one held
+            whole-package result."""
+            if snapshot.rule.id not in DEPTH_RULE_IDS:
+                return 0
+            unchecked = countertops.without(
+                {subject.item_id for subject in countertop_subjects or ()}
+            )
+            count = 0
+            if countertops.several:
+                holds = countertop_holds(
+                    rule_id=snapshot.rule.id,
+                    severity=snapshot.rule.severity,
+                    snapshot_id=snapshot.snapshot_id,
+                    engine_version=ENGINE_VERSION,
+                    countertops=unchecked,
+                    depth_reader=self._depth_reader,
+                )
+                count = record_own(holds, snapshot.rule)
+                unchecked = holds.left
             held = hold_for_unchecked(
                 rule_id=snapshot.rule.id,
                 severity=snapshot.rule.severity,
                 snapshot_id=snapshot.snapshot_id,
                 engine_version=ENGINE_VERSION,
                 countertops=countertops,
-                scoped_item_ids={subject.item_id for subject in countertop_subjects or ()},
+                unchecked=unchecked,
             )
             if held is None:
-                return 0
+                return count
             record_finding(
                 session,
                 package_revision_id=package_revision_id,
@@ -7833,7 +7931,7 @@ class DatabaseStages:
                 defaults_canonical_json=defaults_canonical_json,
                 missing=_declared_inputs(snapshot.rule),
             )
-            return 1
+            return count + 1
 
         if self._depth_reader:
             # The five depth and sink checks, one per countertop, from the depth reader's readings
@@ -7915,22 +8013,16 @@ class DatabaseStages:
                     continue
                 if countertop_subjects is not None and abstention.rule_id in scoped_rules:
                     if not countertop_subjects:
-                        record_finding(
-                            session,
-                            package_revision_id=package_revision_id,
-                            finding=whole_package(
-                                replace(
-                                    _unresolved(snapshot, abstention),
-                                    outcome=Outcome.NOT_FOUND,
-                                    reason="No live confirmed countertop run remains for this check.",
-                                )
+                        written += record_whole_package(
+                            replace(
+                                _unresolved(snapshot, abstention),
+                                outcome=Outcome.NOT_FOUND,
+                                reason="No live confirmed countertop run remains for this check.",
                             ),
+                            snapshot.rule,
                             operands={},
-                            parameter_set_ids=cited,
-                            defaults_set_id=defaults_set_id,
-                            defaults_canonical_json=defaults_canonical_json,
+                            given=False,
                         )
-                        written += 1
                     for scoped_subject in countertop_subjects:
                         scoped_evidence = evidence_operands(
                             session,
@@ -7973,16 +8065,9 @@ class DatabaseStages:
                     if countertop_subjects:
                         written += hold_unchecked(snapshot)
                     continue
-                record_finding(
-                    session,
-                    package_revision_id=package_revision_id,
-                    finding=whole_package(_unresolved(snapshot, abstention)),
-                    operands={},
-                    parameter_set_ids=cited,
-                    defaults_set_id=defaults_set_id,
-                    defaults_canonical_json=defaults_canonical_json,
+                written += record_whole_package(
+                    _unresolved(snapshot, abstention), snapshot.rule, operands={}, given=False
                 )
-                written += 1
 
             # **Sealed evidence, before anything a caller supplied (#530).** This is the link that
             # was missing: until now the only way a rule got an operand was for somebody to type the
@@ -8016,25 +8101,19 @@ class DatabaseStages:
                     else (None,)
                 )
                 if not subjects:
-                    record_finding(
-                        session,
-                        package_revision_id=package_revision_id,
-                        finding=whole_package(
-                            Finding(
-                                rule_id=rule_id,
-                                outcome=Outcome.NOT_FOUND,
-                                severity=applicable.snapshot.rule.severity,
-                                reason="No live confirmed countertop run remains for this check.",
-                                snapshot_id=applicable.snapshot.snapshot_id,
-                                engine_version=ENGINE_VERSION,
-                            )
+                    written += record_whole_package(
+                        Finding(
+                            rule_id=rule_id,
+                            outcome=Outcome.NOT_FOUND,
+                            severity=applicable.snapshot.rule.severity,
+                            reason="No live confirmed countertop run remains for this check.",
+                            snapshot_id=applicable.snapshot.snapshot_id,
+                            engine_version=ENGINE_VERSION,
                         ),
+                        applicable.snapshot.rule,
                         operands={},
-                        parameter_set_ids=cited,
-                        defaults_set_id=defaults_set_id,
-                        defaults_canonical_json=defaults_canonical_json,
+                        given=False,
                     )
-                    written += 1
                 for subject in subjects:
                     scoped = subject is not None
                     selected = (
@@ -8145,7 +8224,16 @@ class DatabaseStages:
                         ),
                     )
                     if not scoped:
-                        finding = whole_package(finding)
+                        written += record_whole_package(
+                            finding,
+                            applicable.snapshot.rule,
+                            operands=supplied,
+                            # A value given for the whole package, used or held: the
+                            # whole-package result shows it, held (#1297, #1201).
+                            given=bool(supplied) or bool(selected.ambiguous.get(rule_id)),
+                            missing=_declared_inputs(applicable.snapshot.rule),
+                        )
+                        continue
                     record_finding(
                         session,
                         package_revision_id=package_revision_id,

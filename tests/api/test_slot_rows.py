@@ -405,7 +405,36 @@ def test_reviewer_can_correct_a_typed_width_with_a_new_immutable_snapshot(
     assert decisions[-1].supersedes_id == prior_id
 
 
+def _row_holds(session: Session, revision_id: UUID) -> set[UUID]:
+    """Each countertop row's own live depth and sink results (#1201): on a package with several
+    countertops every row has a held result of each of the six checks. Their own tests are in
+    `tests/workflow/test_one_result_per_countertop.py`; the width tests here leave them out."""
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
+
+    return set(
+        session.scalars(
+            select(Finding.id)
+            .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+            .where(
+                Finding.package_revision_id == revision_id,
+                Finding.scope_row_candidate_id.is_not(None),
+                CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id.in_(WHOLE_PACKAGE_RULE_IDS),
+            )
+        )
+    )
+
+
 def _run_current_checks(session: Session, package_id: UUID, root: Path) -> list[Finding]:
+    """The rows' own width and architect results after a check run. Since #1201 a row also has
+    its own held result of each depth and sink check on a package with several countertops; those
+    are left out here (`tests/workflow/test_one_result_per_countertop.py` checks them)."""
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
+
     revision = session.query(PackageRevision).filter_by(package_id=package_id).one()
     DatabaseStages(
         store=LocalStore(root=root / "store", ticket_secret=b"synthetic-test")
@@ -414,10 +443,13 @@ def _run_current_checks(session: Session, package_id: UUID, root: Path) -> list[
         session.execute(
             select(Finding)
             .join(CheckRun, CheckRun.id == Finding.check_run_id)
+            .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+            .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
             .where(
                 Finding.package_revision_id == revision.id,
                 Finding.scope_row_candidate_id.is_not(None),
                 CheckRun.superseded_at.is_(None),
+                RuleDefinition.rule_id.not_in(WHOLE_PACKAGE_RULE_IDS),
             )
         ).scalars()
     )

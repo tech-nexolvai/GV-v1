@@ -55,7 +55,7 @@ from datetime import datetime
 from typing import Final, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, func, or_, select, tuple_
+from sqlalchemy import ColumnElement, Select, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from app.lifecycle.carry_forward import known_content
@@ -450,6 +450,9 @@ def pages_blocking_sign_off(
                     Finding.package_revision_id.in_(applied),
                     Finding.scope_row_candidate_id.in_(split_records),
                     CheckRun.superseded_at.is_(None),
+                    # A split page's own depth and sink holds (#1201) do not check it: only its
+                    # width result does, as before them.
+                    CheckRun.id.not_in(held_depth_and_sink_runs()),
                 )
             ).all()
         )
@@ -465,6 +468,23 @@ def pages_blocking_sign_off(
             countertops_checked=countertops_checked(product),
         )
     return result
+
+
+def held_depth_and_sink_runs() -> Select[UUID]:
+    """The check runs of the six depth and sink checks (#1201), as a subquery. On a package with
+    several countertops each countertop row has a held result of each; such a result is about the
+    row's depth and sink, never its width, so it does not count where a row's result means its
+    width was checked (a split page here, a carried wall answer in `app/lifecycle/carry_forward`).
+    """
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from workflow.several_countertops import WHOLE_PACKAGE_RULE_IDS
+
+    return (
+        select(CheckRun.id)
+        .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+        .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+        .where(RuleDefinition.rule_id.in_(WHOLE_PACKAGE_RULE_IDS))
+    )
 
 
 def pages_words(numbers: Sequence[int]) -> str:
