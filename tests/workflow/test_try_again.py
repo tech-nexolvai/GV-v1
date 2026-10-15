@@ -334,7 +334,7 @@ def test_a_split_line_choice_is_tried_again_on_only_the_two_lines_and_settled_on
     events = Events()
     result, attempts = _read(page, readers, frozenset({REKHA_READERS_AGREE}), activity=events)
 
-    (opus_try, sonnet_try) = sorted(readers.tie_break_requests)
+    opus_try, sonnet_try = sorted(readers.tie_break_requests)
     assert {model for model, _ in readers.tie_break_requests} == {OPUS, SONNET}
     assert opus_try[1] == sonnet_try[1], "both readers see the same try picture"
     tie_breaks = [a for a in attempts if a.prompt_id == ROW_TIEBREAK_PROMPT_ID]
@@ -900,7 +900,8 @@ def test_a_realistic_cap_funds_a_try_pair_at_its_worst_case(pages: int) -> None:
 
 def test_a_line_and_not_among_the_lines_is_tried_with_the_other_numbered_lines() -> None:
     """One reader names line 1, the other says none of the lines is the row: one line is in
-    dispute, so the tie-break is not made; the numbered lines are shown, and both now name line 1."""
+    dispute, so the tie-break is not made; the numbered lines are shown, and both now name line 1.
+    """
     page = _two_row_page()
     readers = TryReaders(
         page,

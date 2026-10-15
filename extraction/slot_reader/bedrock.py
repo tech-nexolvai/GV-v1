@@ -324,8 +324,7 @@ ROW_TIEBREAK_PROMPT: Final = (
     "view. It is NOT a wall-to-wall or room dimension, NOT a row inside a plan (top) view or a "
     "section view, and NOT the architect's small drawing. A box around a line that carries no "
     "printed numbers - for example the outline of the stone top itself - or around a row of "
-    "material tags is never the piece row.\n"
-    + ROW_PROMPT[ROW_PROMPT.index("Answer fields:") :]
+    "material tags is never the piece row.\n" + ROW_PROMPT[ROW_PROMPT.index("Answer fields:") :]
 )
 
 

@@ -1705,9 +1705,7 @@ def _after_reading_events(
                 code = (
                     "not-sealed"
                     if index in offered
-                    else "row-held"
-                    if result.row_hold is not None
-                    else "not-offered"
+                    else "row-held" if result.row_hold is not None else "not-offered"
                 )
             else:
                 reason = outcome.reason_code or ""
