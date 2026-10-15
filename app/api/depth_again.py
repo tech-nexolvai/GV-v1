@@ -16,8 +16,11 @@ and the reader, then the checks again (`DatabaseStages.read_depths_again`).
 Claude readers and stored answers reused must be on, and the set must be with the reviewer (not
 being read or checked, not signed off). It is also refused when a call had no price, or when the
 set's AI budget is used up while a question has no stored answer: it could only stop part way.
-`GET` says how much of the budget is left (the worker's own cap). One request at a time per set. Audited as a reviewer
-action, and only someone who may start a review may ask.
+`GET` says two amounts plainly (#1328): the most this request may spend (the worker's own cap,
+under the Claude readers' ceiling) and what the drawing set's whole AI budget has left. They are
+different numbers: after a run that spent $0.29 under a $1.50 ceiling, the first is $1.50 again
+and the second is $0.29 lower. One request at a time per set. Audited as a reviewer action, and
+only someone who may start a review may ask.
 
 This module reads nothing and imports no reader (`tests/api/test_no_heavy_work.py`).
 
@@ -46,11 +49,12 @@ from workflow.depth_again import (
     ALREADY_ASKED,
     READ_DEPTHS_AGAIN_WORKFLOW,
     SpendLimits,
-    budget_left_usd,
     estimate,
     last_request,
     refusal,
+    request_cap_usd,
     request_waiting,
+    set_budget_left,
 )
 from workflow.depth_evidence import DEPTH_RULE_IDS
 from workflow.outbox import enqueue
@@ -97,10 +101,17 @@ class ReadDepthsAgainStatusOut(BaseModel):
         description="The checks the depth and sink reader fills: the action is offered on these.",
     )
     estimate: DepthsAgainEstimateOut | None = None
-    budget_left_usd: str | None = Field(
+    request_cap_usd: str | None = Field(
         default=None,
-        description="What the depth and sink reader may still spend on this set, in US dollars "
-        "rounded down to the cent: the worker's own spend cap. Spending stops there.",
+        description="The most one request may spend, in US dollars rounded down to the cent: the "
+        "worker's own spend cap (the Claude readers' ceiling, held under what the set's AI budget "
+        "has left). A limit per request, not the money left: it is the same again after a run "
+        "that spent less than it.",
+    )
+    set_budget_left_usd: str | None = Field(
+        default=None,
+        description="What this drawing set's whole AI budget has left, in US dollars rounded "
+        "down to the cent: its budget less everything its AI readers spent.",
     )
     last: DepthsAgainLastOut | None = None
 
@@ -174,12 +185,14 @@ def depths_again_status(
         )
     why = _why_not(session, settings, revision)
     shown = estimate(session, revision.id)
+    limits = _limits(settings)
     return ReadDepthsAgainStatusOut(
         switched_on=True,
         can_ask=why is None,
         refused=why,
         checks=sorted(DEPTH_RULE_IDS),
-        budget_left_usd=str(budget_left_usd(session, revision.id, _limits(settings))),
+        request_cap_usd=str(request_cap_usd(session, revision.id, limits)),
+        set_budget_left_usd=str(set_budget_left(session, revision.id, limits)),
         estimate=DepthsAgainEstimateOut(
             pages=shown.pages,
             countertops=shown.countertops,

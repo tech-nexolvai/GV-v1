@@ -16,8 +16,11 @@ and what became of the last request.
 
 * **The same safeguards as the reader's first run.** Only with `GV_DEPTH_READER` and the Claude
   readers on, with stored answers reused (`GV_READER_REUSE_ANSWERS`): an identical question takes
-  its stored answer at no cost. The spend cap is the reader's own: what the drawing set's AI budget
-  has left. Every call is recorded through the call ledger under the reader's own extraction run.
+  its stored answer at no cost. The spend cap is the reader's own: the Claude readers' ceiling, held
+  under what the drawing set's AI budget has left (`request_cap_usd`); what the set has left is
+  said too (`set_budget_left`, #1328). Every call is recorded through the call ledger under the
+  reader's own extraction run, and the status counts a question as paid when the request made its
+  call, as reused only when the answer was paid for before (`_spent_by_request`, #1328).
 * **A run of its own, per request.** The reading is recorded under the match stage's task run, as a
   run whose `config_hash` ends with `;again=<the request's outbox id>` (`again_hash`). A redelivered
   request finds its run and reads nothing again; a new request is a new run, newest wins, and the
@@ -36,7 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Final, Literal
 from uuid import UUID
 
@@ -58,13 +61,19 @@ from app.models import (
 )
 from app.models.evidence import ObservationCandidate
 from app.models.package import package_product
-from app.models.runs import ModelInvocation, ModelInvocationOutcome
+from app.models.runs import (
+    REUSED_FROM_KEY,
+    ExtractionRun,
+    ModelInvocation,
+    ModelInvocationOutcome,
+    TaskRun,
+)
 from rules.semantic_types import ProductType
 from vocabulary.part_kinds import PartKind
 from workflow.ai_budget import AiBudget
 from workflow.bala_items import BALA_SOURCE
 from workflow.depth_evidence import RUN_FAILED, depth_runs
-from workflow.set_spend import depth_cap_usd, revision_spend
+from workflow.set_spend import depth_cap_usd, revision_spend, set_budget_left_usd
 from workflow.slot_row_scope import (
     budget_limit,
     latest_slot_reader_run,
@@ -74,6 +83,7 @@ from workflow.slot_row_scope import (
 __all__ = [
     "AGAIN_MARK",
     "ALREADY_ASKED",
+    "LEDGER_KEY_MARK",
     "NEEDS_CLAUDE",
     "NEEDS_REUSE",
     "READ_DEPTHS_AGAIN_WORKFLOW",
@@ -83,12 +93,14 @@ __all__ = [
     "DepthsAgainRefused",
     "SpendLimits",
     "again_hash",
-    "budget_left_usd",
     "countertops_by_drawing",
     "estimate",
     "last_request",
     "refusal",
+    "request_cap_usd",
+    "request_ledger_tag",
     "request_waiting",
+    "set_budget_left",
 ]
 
 #: The outbox work "Read depths again" enqueues: `DatabaseStages.read_depths_again`.
@@ -164,15 +176,26 @@ class SpendLimits:
     claude_ceiling_usd: Decimal | None
 
 
-def budget_left_usd(session: Session, revision_id: UUID, limits: SpendLimits) -> Decimal:
-    """What the depth and sink reader may still spend on this set, in dollars, rounded down to the
-    cent: the worker's own cap."""
-    left = depth_cap_usd(
+def request_cap_usd(session: Session, revision_id: UUID, limits: SpendLimits) -> Decimal:
+    """The most one "Read depths again" request may spend on this set, in dollars, rounded down to
+    the cent: the worker's own cap (the Claude readers' ceiling, held under what the set's AI budget
+    has left). It is a limit per request, not the money left: after a run that spent $0.29 under a
+    $1.50 ceiling it is $1.50 again (#1328), so it is never shown as "left"."""
+    cap = depth_cap_usd(
         session,
         revision_id,
         budget=limits.budget,
         fixed_usd=limits.fixed_usd,
         claude_ceiling_usd=limits.claude_ceiling_usd,
+    )
+    return cap.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
+def set_budget_left(session: Session, revision_id: UUID, limits: SpendLimits) -> Decimal:
+    """What this drawing set's whole AI budget has left, in dollars, rounded down to the cent
+    (#1328): the same budget and spend the worker's cap is made from (`workflow.set_spend`)."""
+    left = set_budget_left_usd(
+        session, revision_id, budget=limits.budget, fixed_usd=limits.fixed_usd
     )
     return left.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
@@ -187,6 +210,17 @@ class DepthsAgainRefused(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.plain_reason = reason
+
+
+#: What every call-ledger run's task key holds after its stage's key
+#: (`workflow.reading_watch.ledger_key_prefix`, which this module may not import: it is heavy).
+LEDGER_KEY_MARK: Final = ":reader-calls:"
+
+
+def request_ledger_tag(request: str) -> str:
+    """What a request's call-ledger runs carry in their key, after `LEDGER_KEY_MARK` (#1328): the
+    calls it paid for are found by its id (`_request_calls`)."""
+    return f"again={request}:"
 
 
 def again_hash(base_hash: str, request: str) -> str:
@@ -226,7 +260,7 @@ def refusal(
     _spent, unpriced = revision_spend(session, revision.id)
     if unpriced or budget_limit(session, revision.id) == "unpriced":
         return UNPRICED
-    if budget_left_usd(session, revision.id, limits) <= 0:
+    if request_cap_usd(session, revision.id, limits) <= 0:
         shown = estimate(session, revision.id)
         if shown.questions_high > shown.stored_answers:
             return BUDGET_USED_UP
@@ -415,6 +449,124 @@ def estimate(session: Session, revision_id: UUID) -> DepthsAgainEstimate:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Spent:
+    """What one request's depth reading asked, and what it paid for (#1328)."""
+
+    asked: int
+    """Questions asked (each reader once; a retry of the same question is not another)."""
+    reused: int
+    """Of those, answered by an answer paid for before the request: no cost to it."""
+    paid: int
+    """Of those, asked of a model during the request: paid for."""
+    paid_micros: int
+    """What the request's calls cost, retries included, in millionths of a dollar."""
+    not_sent: int
+    """Of those, never sent: refused by the budget or the provider account before any answer."""
+
+
+#: A reader row that records an attempt never sent: refused by the budget or the provider account,
+#: with no answer and no cost (`workflow.stages._CAUSED_FAILURES`). Neither reused nor paid for.
+_NOT_SENT: Final = frozenset(
+    {ModelInvocationOutcome.BUDGET_REFUSED.value, ModelInvocationOutcome.ACCOUNT_REFUSED.value}
+)
+
+
+def _request_calls(session: Session, request: str) -> dict[UUID, int | None]:
+    """The calls a request paid for, by id, with their cost: the rows of the call-ledger runs whose
+    key carries the request's tag (`request_ledger_tag`), across every try of the request."""
+    return {
+        row_id: cost
+        for row_id, cost in session.execute(
+            select(ModelInvocation.id, ModelInvocation.cost_micros)
+            .join(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
+            .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+            .where(
+                TaskRun.idempotency_key.contains(
+                    f"{LEDGER_KEY_MARK}{request_ledger_tag(request)}", autoescape=True
+                )
+            )
+        )
+    }
+
+
+def _spent_by_request(session: Session, run_id: UUID, *, request: str) -> _Spent:
+    """Split a request's questions into reused, paid and not asked, by the call ledger (#1328).
+
+    A row of the run that names another row (`reused_from`) is either a stored answer reused or
+    the $0 twin of a call the request made itself: the call ledger writes each attempt the moment
+    it returns, and the stage then writes a twin naming it (`workflow/reading_watch.py`). Both have
+    the same shape, so the row named tells them apart, **by the request's id, never by time**: a
+    call in a ledger run tagged with this request (`request_ledger_tag`; an earlier try of the same
+    request included, since the request paid for it) was paid for by the request; any other is a
+    stored answer, reused at no cost, even one another reading paid for while this request waited.
+    A row naming nothing is a paid call the stage wrote itself. An attempt the budget or the
+    provider account refused before it was sent is "not asked", whether it is a twin or not. Each
+    call is counted once, and a retry of a question (attempt 2 or later) is no extra question,
+    though its cost counts.
+
+    A request read before this tag existed has no tagged ledger run, so its new calls count as
+    reused; asking again counts them rightly (every answer is then a stored one, at no cost).
+    """
+    request_calls = _request_calls(session, request)
+    rows = session.execute(
+        select(
+            func.coalesce(ModelInvocation.reader_attempt_number, 1),
+            ModelInvocation.reader_question_packet,
+            ModelInvocation.cost_micros,
+            ModelInvocation.outcome,
+        )
+        .where(ModelInvocation.extraction_run_id == run_id)
+        .order_by(ModelInvocation.created_at, ModelInvocation.id)
+    ).all()
+    asked = reused = paid = paid_micros = not_sent = 0
+    counted_calls: set[UUID] = set()
+    for attempt, packet, cost, outcome in rows:
+        first = attempt == 1
+        asked += first
+        if outcome in _NOT_SENT:
+            not_sent += first
+            continue
+        if not (isinstance(packet, dict) and REUSED_FROM_KEY in packet):
+            paid += first
+            paid_micros += cost or 0
+            continue
+        try:
+            target: UUID | None = UUID(str(packet[REUSED_FROM_KEY]))
+        except ValueError:
+            target = None
+        if target is None or target not in request_calls or target in counted_calls:
+            reused += first
+            continue
+        counted_calls.add(target)
+        paid += first
+        paid_micros += request_calls[target] or 0
+    return _Spent(asked=asked, reused=reused, paid=paid, paid_micros=paid_micros, not_sent=not_sent)
+
+
+def _dollars(amount_micros: int) -> str:
+    """Micros as dollars to the cent; a paid amount under a cent says so rather than "$0.00"."""
+    if 0 < amount_micros < 5_000:
+        return "less than $0.01"
+    shown = (Decimal(amount_micros) / 1_000_000).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"${shown}"
+
+
+def _counted(spent: _Spent) -> str:
+    """The plain count a request's status gives: questions, reused at no cost, and paid for."""
+    counted = (
+        f"{spent.asked} {'question' if spent.asked == 1 else 'questions'}, "
+        f"{spent.reused} answered from stored answers at no cost"
+    )
+    if spent.paid or spent.paid_micros:
+        counted += (
+            f", {spent.paid} asked of the AI readers and paid for ({_dollars(spent.paid_micros)})"
+        )
+    if spent.not_sent:
+        counted += f", {spent.not_sent} not asked"
+    return counted
+
+
 type _State = Literal["waiting", "not_read", "read", "stopped", "failed"]
 
 
@@ -492,17 +644,7 @@ def last_request(session: Session, revision_id: UUID) -> DepthsAgain | None:
         return told("waiting", "Waiting to start, or reading now.")
     failed = _failed_reason(session, run.id)
     refused = _refused(session, run.id)
-    asked, _answered = _asked(session, run.id)
-    reused = sum(
-        1
-        for packet in session.scalars(
-            select(ModelInvocation.reader_question_packet).where(
-                ModelInvocation.extraction_run_id == run.id
-            )
-        )
-        if isinstance(packet, dict) and "reused_from" in packet
-    )
-    counted = f"{asked} questions, {reused} answered from stored answers at no cost"
+    counted = _counted(_spent_by_request(session, run.id, request=str(entry.id)))
     kept = (
         " The earlier complete reading is still used."
         if failed is not None
