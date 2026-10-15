@@ -378,6 +378,7 @@ def test_the_snapshot_is_the_countertop_screens_records_unchanged(  # type: igno
     from app.review.approval import approval_readiness
     from app.review.assistant.guard import check
     from app.review.assistant.records_only import answer_for_question
+    from app.review.review_items import review_items_for_revision
     from tests.api.test_slot_rows import _package_rows, _run_current_checks, _save_all_row_widths
     from tests.app.postgres_fixture import alembic_config
 
@@ -396,10 +397,24 @@ def test_the_snapshot_is_the_countertop_screens_records_unchanged(  # type: igno
         screen = _countertop_results_for_revision(session, package_id, revision)
         readiness = approval_readiness(session, revision.id)
         snapshot = load_snapshot(session, project_id, package_id, revision)
+        listed = review_items_for_revision(
+            session, project_id=project_id, package_id=package_id, revision=revision
+        )
     finally:
         session.close()
 
     assert snapshot.checks_have_run is True
+    # The simple review list (#1352) is the list's own, entry for entry.
+    assert snapshot.review_header is not None
+    assert snapshot.review_header.open == listed.header.open
+    assert snapshot.review_header.not_checked == listed.header.not_checked
+    assert sorted(item.record_id for item in snapshot.review_items) == sorted(
+        [
+            *(item.key for item in listed.items),
+            *(item.key for item in listed.failures),
+            *(item.key for item in listed.not_checked),
+        ]
+    )
     assert len(snapshot.countertops) == len(screen.items) > 0
     for record, item in zip(snapshot.countertops, screen.items, strict=True):
         assert record.record_id == str(item.row_id)

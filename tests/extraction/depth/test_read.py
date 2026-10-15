@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from fractions import Fraction
+from typing import Final
 from uuid import UUID
 
 import pytest
@@ -36,6 +37,8 @@ from extraction.depth.read import (
     PreparedPage,
     PreparedView,
     ValueReading,
+    _closeup_box,
+    _markup_in_closeup,
     decide_view_kind,
     depth_reader_enabled,
     label_areas,
@@ -59,8 +62,9 @@ from extraction.depth.view_kind import (
 )
 from extraction.geometry.dimension_lines import Axis
 from extraction.geometry.rows import Box, InkLine
-from extraction.ink import InkAt, InkClass
+from extraction.ink import InkAt, InkClass, InkLabel, PageInk
 from extraction.slot_reader.seal import ReaderAnswer
+from extraction.stamp_text import ColouredPath
 from tests.extraction.depth.test_spans import (
     VIEW,
     d,
@@ -875,8 +879,14 @@ def test_two_stones_in_one_plan_hold_every_depth_first() -> None:
 
 
 def test_reviewers_ink_away_from_the_label_does_not_hold_it() -> None:
+    # The depth's label is printed text equal to the reading: the label check alone decides. (A
+    # number confirmed only by its drawn length is held by GV's ink anywhere in its close-up, #1348.)
     view = prepared()
-    depth_area = view.label_areas[number_of(view, Axis.VERTICAL, 100, 196)]
+    depth = number_of(view, Axis.VERTICAL, 100, 196)
+    depth_area = view.label_areas[depth]
+    lanes = dict(view.lanes)
+    lanes[depth] = TextLane(depth, ('24"',), Fraction(24), "reads exactly")
+    view = replace(view, lanes=lanes)
     page = page_of(view)
 
     def ink_at(box: tuple[int, int, int, int]) -> InkAt:
@@ -980,3 +990,126 @@ def test_two_stones_dimensioned_as_one_chain_never_confirm_a_depth() -> None:
     assert not found.usable and "different lengths from the wall" in found.reason
     # Nothing there can be confirmed, so the chain's links are not paid for.
     assert not any(a.key.endswith(f":n{links[0]}") for a in readers.asked)
+
+
+# --- #1348: a number confirmed only by its drawn length, with GV's ink in the close-up ---------
+#
+# The depth's label (pen strokes: no printed text) is read from a close-up 48 x 120 pt round its
+# line. GV's correction is written beside the label, inside the close-up but clear of the label's
+# own area, and differs from the drawn 24" by under 1/8": both readers read it, and the drawn
+# length agrees. Only the close-up check can catch it.
+
+GV_BESIDE: Final = (64, 140, 73, 148)
+"""A made-up GV correction right of the depth's label area (38 to 62 pt), inside its close-up."""
+
+
+def gv_ink(*, word: bool = True, tick: bool = False) -> PageInk:
+    labels = (InkLabel("24 1/16", GV_BESIDE, InkClass.GV),) if word else ()
+    paths = (
+        (
+            ColouredPath(
+                lines=((64, 140, 67, 146), (67, 146, 73, 134)),
+                areas=(),
+                rings=(),
+                even_odd=False,
+                tick=True,
+            ),
+        )
+        if tick
+        else ()
+    )
+    return PageInk(dpi=72, labels=labels, paths=paths, stamps=())
+
+
+def read_with_ink(view: PreparedView, readers: FakeReaders, page_ink: PageInk) -> DepthReading:
+    page = replace(page_of(view), ink_at=page_ink.at)
+    return read_depth([page], ask=readers, fraction_bar=GEOMETRY)
+
+
+def test_gv_ink_beside_a_drawn_length_only_number_holds_it() -> None:
+    view = prepared()
+    depth = number_of(view, Axis.VERTICAL, 100, 196)
+    area = view.label_areas[depth]
+    page_ink = gv_ink()
+    # The label's own area holds only the vendor's ink: the label check alone would let it through.
+    assert page_ink.at((int(area.x0), int(area.top), int(area.x1), int(area.bottom))).ink is (
+        InkClass.VENDOR
+    )
+
+    found = values(read_with_ink(view, with_depth(FakeReaders(view), '24 1/16"'), page_ink))[CT010]
+
+    assert not found.usable and found.inches is None and found.confirmed_by is None
+    assert found.agreed_inches == Fraction(385, 16)
+    assert "GV's markup is in the close-up the readers saw" in found.reason
+    assert "reviewer wrote 24 1/16" in found.reason
+    assert "only this number's drawn length confirms it" in found.reason
+
+
+def test_without_gv_ink_the_same_number_is_still_confirm_only() -> None:
+    view = prepared()
+    found = values(
+        read_with_ink(view, with_depth(FakeReaders(view), '24 1/16"'), gv_ink(word=False))
+    )[CT010]
+
+    assert found.usable and found.inches == Fraction(385, 16)
+    assert found.confirmed_by == "drawn-length-only"
+
+
+def test_gv_tick_alone_in_the_close_up_holds_a_drawn_length_only_number_too() -> None:
+    view = prepared()
+    found = values(
+        read_with_ink(view, with_depth(FakeReaders(view), '24"'), gv_ink(word=False, tick=True))
+    )[CT010]
+
+    assert not found.usable
+    assert "GV's tick is in the close-up the readers saw" in found.reason
+    assert "reviewer wrote" not in found.reason
+
+
+def test_gv_ink_in_the_close_up_leaves_a_vector_text_number_as_it_was() -> None:
+    # Code holds the printed text to equal the reading exactly: GV's number beside it cannot pass.
+    view = prepared()
+    readers = FakeReaders(view)
+    depth = readers.spans["depth"]
+    lanes = dict(view.lanes)
+    lanes[depth] = TextLane(depth, ('24"',), Fraction(24), "reads exactly")
+
+    found = values(read_with_ink(replace(view, lanes=lanes), readers, gv_ink()))[CT010]
+
+    assert found.usable and found.inches == Fraction(24)
+    assert found.confirmed_by == "vector-text"
+
+
+def test_unknown_ink_in_the_close_up_holds_a_drawn_length_only_number() -> None:
+    # Whose ink the page holds could not be read: the label check holds it first, and the close-up
+    # check would hold it too; never usable.
+    view = prepared()
+    page = replace(page_of(view), ink_at=None)
+    depth = view.span(number_of(view, Axis.VERTICAL, 100, 196))
+    reason = _markup_in_closeup(page, depth, MEASURED_DEPTH_READER_SETTINGS)
+    assert reason is not None and "could not be read" in reason
+    found = values(
+        read_depth([page], ask=with_depth(FakeReaders(view), '24"'), fraction_bar=GEOMETRY)
+    )[CT010]
+    assert not found.usable
+
+
+@pytest.mark.parametrize("ink_class", [InkClass.GV, InkClass.COVERED])
+def test_any_gv_ink_class_in_the_close_up_holds_a_drawn_length_only_number(
+    ink_class: InkClass,
+) -> None:
+    # GV's ink in the depth's close-up only, not on its label's own area: written beside it, or a
+    # GV fill over part of the close-up. Either is GV's.
+    view = prepared()
+    depth = number_of(view, Axis.VERTICAL, 100, 196)
+    close = _closeup_box(view.span(depth), MEASURED_DEPTH_READER_SETTINGS)
+    closeup = (int(close.x0), int(close.top), int(close.x1), int(close.bottom))
+
+    def ink_at(box: tuple[int, int, int, int]) -> InkAt:
+        return InkAt(ink_class if box == closeup else InkClass.VENDOR, "")
+
+    page = replace(page_of(view), ink_at=ink_at)
+    found = values(
+        read_depth([page], ask=with_depth(FakeReaders(view), '24"'), fraction_bar=GEOMETRY)
+    )[CT010]
+    assert not found.usable and "GV's markup is in the close-up" in found.reason

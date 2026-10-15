@@ -19,6 +19,11 @@ citations are the records the placeholders name, in order); starts a sentence th
 record's facts without naming it with "On page N," so every fact sentence carries its subject;
 capitalises a fill that starts a sentence and lower-cases one that does not.
 
+**A review-list entry (#1352)** is `R1`, `R2` …: `{R1.page}`, `{R1.what}` (names), `{R1.why}`
+(sentence) and `{R1.guess}` (noun phrase: "the best guess to confirm, 12 1/2 (both AI readers
+wrote it)", only when the item has one). The list's header counts are `{count.review_open}`,
+`{count.review_failures}` and `{count.review_not_checked}`, offered only when the list was read.
+
 An unknown placeholder (an id the records do not have, or a field that record does not hold) is
 `UnknownPlaceholder`.
 """
@@ -30,13 +35,19 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from app.review.assistant.records import CountertopRecord, FindingRecord, ReviewSnapshot
+from app.review.assistant.records import (
+    CountertopRecord,
+    FindingRecord,
+    ReviewItemRecord,
+    ReviewSnapshot,
+)
 
 __all__ = [
     "COUNT_FIELDS",
     "KINDS",
     "OUTCOME_PHRASES",
     "PLACEHOLDER",
+    "REVIEW_COUNT_FIELDS",
     "Rendered",
     "Slot",
     "UnknownPlaceholder",
@@ -54,7 +65,7 @@ __all__ = [
 
 #: `{C1.page}`, `{C1.piece.2}`, `{count.needs_you}`, `{signoff.status}`.
 PLACEHOLDER: Final = re.compile(r"\{([A-Za-z]+[0-9]*)\.([a-z_]+)(?:\.([0-9]{1,3}))?\}")
-_RECORD_KEY: Final = re.compile(r"^[CFP][0-9]+$")
+_RECORD_KEY: Final = re.compile(r"^[CFPR][0-9]+$")
 #: A sentence ends at . or ? before a capital letter or a placeholder, or at a line break.
 SENTENCE_BREAK: Final = re.compile(r"(?<=[.?!])\s+(?=[A-Z{])|\n+")
 
@@ -70,6 +81,8 @@ COUNT_FIELDS: Final = (
     "countertops",
     "checks",
 )
+#: The simple review list's header counts (#1352): offered only when the list was read.
+REVIEW_COUNT_FIELDS: Final = ("review_open", "review_failures", "review_not_checked")
 
 #: The grammatical kind of every field, as the prompt shows it.
 KINDS: Final[Mapping[str, str]] = {
@@ -95,6 +108,9 @@ KINDS: Final[Mapping[str, str]] = {
     "no_countertop": "sentence",
     "second_row": "sentence",
     "status": "clause",
+    "what": "name",
+    "why": "sentence",
+    "guess": "noun phrase",
 }
 _NAMES: Final = frozenset({"page", "label", "check"})
 
@@ -236,12 +252,27 @@ _COUNT_WORDS: Final[Mapping[str, tuple[str, str, str]]] = {
     ),
     "countertops": ("countertop", "countertops", "no countertop"),
     "checks": ("other check", "other checks", "no other check"),
+    "review_open": (
+        "item in the review list still waits for you",
+        "items in the review list still wait for you",
+        "no item in the review list waits for you",
+    ),
+    "review_failures": (
+        "failed result needs your Agree",
+        "failed results need your Agree",
+        "no failed result is listed",
+    ),
+    "review_not_checked": (
+        "check could not run and is printed NOT CHECKED",
+        "checks could not run and are printed NOT CHECKED",
+        "no check is listed as not checked",
+    ),
 }
 
 
 def _count(snapshot: ReviewSnapshot, field: str) -> str | None:
     words = _COUNT_WORDS.get(field)
-    if words is None:
+    if words is None or (field in REVIEW_COUNT_FIELDS and field not in snapshot.totals):
         return None
     return _plural(snapshot.totals.get(field, 0), *words)
 
@@ -404,6 +435,32 @@ def _page_value(snapshot: ReviewSnapshot, page: int, field: str, index: int | No
     return None
 
 
+_GUESS_SOURCES: Final[Mapping[str, str]] = {
+    "pdf_text": "from the PDF's own text",
+    "agreed_text": "both AI readers wrote it",
+    "suggestion": "the stored suggestion",
+}
+
+
+def _review_item_value(item: ReviewItemRecord, field: str, index: int | None) -> str | None:
+    """An entry of the review list. The guess is a suggestion to confirm, never a value."""
+    if index is not None:
+        return None
+    guess = item.best_guess
+    values: Mapping[str, Callable[[], str | None]] = {
+        "page": lambda: None if item.page_number is None else f"page {item.page_number}",
+        "what": lambda: item.what,
+        "why": lambda: item.why,
+        "guess": lambda: (
+            None
+            if guess is None
+            else f"the best guess to confirm, {guess.display} ({_GUESS_SOURCES[guess.source]})"
+        ),
+    }
+    getter = values.get(field)
+    return None if getter is None else getter()
+
+
 def value_of(snapshot: ReviewSnapshot, slot: Slot) -> str:
     """The text a placeholder stands for, or `UnknownPlaceholder`."""
     value: str | None = None
@@ -413,6 +470,9 @@ def value_of(snapshot: ReviewSnapshot, slot: Slot) -> str:
         value = _signoff(snapshot) if slot.field == "status" and slot.index is None else None
     elif slot.key.startswith("P") and _RECORD_KEY.match(slot.key):
         value = _page_value(snapshot, int(slot.key[1:]), slot.field, slot.index)
+    elif slot.key.startswith("R") and _RECORD_KEY.match(slot.key):
+        item = snapshot.review_item(slot.key)
+        value = None if item is None else _review_item_value(item, slot.field, slot.index)
     elif _RECORD_KEY.match(slot.key):
         record = snapshot.record(slot.key)
         if isinstance(record, CountertopRecord):
@@ -444,6 +504,7 @@ _COUNTERTOP_FIELDS: Final = (
     "decision",
     "needs_you",
 )
+_REVIEW_ITEM_FIELDS: Final = ("page", "what", "why", "guess")
 _FINDING_FIELDS: Final = (
     "page",
     "check",
@@ -480,7 +541,12 @@ def record_fields(snapshot: ReviewSnapshot) -> dict[str, list[str]]:
         ]
         if held:
             fields[f"P{page}"] = held
-    fields["count"] = list(COUNT_FIELDS)
+    for entry in snapshot.review_items:
+        fields[entry.id] = [name for name in _REVIEW_ITEM_FIELDS if _held(snapshot, entry.id, name)]
+    fields["count"] = [
+        *COUNT_FIELDS,
+        *(name for name in REVIEW_COUNT_FIELDS if name in snapshot.totals),
+    ]
     fields["signoff"] = ["status"]
     return fields
 
@@ -559,11 +625,11 @@ def dropped_sentence(part: str, template: str, snapshot: ReviewSnapshot) -> bool
 def _with_subject(part: str, header_keys: set[str], snapshot: ReviewSnapshot) -> str:
     """A sentence stating one record's facts without naming it starts "On page N," (code's)."""
     in_part = slots(part)
-    keys = {slot.key for slot in in_part if slot.is_record and slot.key[0] in "CF"}
+    keys = {slot.key for slot in in_part if slot.is_record and slot.key[0] in "CFR"}
     if len(keys) != 1:
         return part
     key = next(iter(keys))
-    named = any(slot.key == key and slot.field in ("page", "label") for slot in in_part)
+    named = any(slot.key == key and slot.field in ("page", "label", "what") for slot in in_part)
     if named or key in header_keys or not _held(snapshot, key, "page"):
         return part
     if any(slot.key == key and slot.field == "outcome" for slot in in_part):

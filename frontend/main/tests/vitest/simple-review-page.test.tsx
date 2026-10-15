@@ -232,4 +232,31 @@ describe('SimpleReviewPage (#1343)', () => {
     expect(document.activeElement).toBe(box);
     box.remove();
   });
+  it('without an Open PDFs hook, O opens both drawings side by side at the item (#1355)', async () => {
+    server.use(
+      http.get(`${API}/pages`, () =>
+        HttpResponse.json({
+          package_revision_id: 'rev-1',
+          revision_number: 2,
+          combined_set: false,
+          pages_without_pictures: 2,
+          documents: [
+            { document_id: 'doc-v', document_version_id: 'docv-vendor', kind: 'shop', side: 'vendor', file_name: 'sample-shop.pdf', page_count: 5, pages: [] },
+            { document_id: 'doc-a', document_version_id: 'docv-arch', kind: 'architectural', side: 'architect', file_name: 'sample-arch.pdf', page_count: 14, pages: [] },
+          ],
+        }),
+      ),
+    );
+    render(<SimpleReviewPage packageId="pkg-demo" pictures={pictures} assistantAvailable={false} onOpenAdvanced={vi.fn()} />);
+    await screen.findByTestId('ai-read-line');
+    const user = userEvent.setup();
+    await user.keyboard('j');
+    await user.keyboard('o');
+    const dialog = await screen.findByRole('dialog', { name: 'Both drawings' });
+    expect(dialog.textContent).toContain('Opened at Overall countertop width');
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Vendor/ })).getByTestId('page-counter').textContent).toBe('3 / 5'));
+    expect(within(screen.getByRole('region', { name: /Architect/ })).getByTestId('page-counter').textContent).toBe('12 / 14');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
 });

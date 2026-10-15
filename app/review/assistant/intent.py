@@ -19,8 +19,9 @@ are taken off each. A clause is a request when it:
   dismiss, sign off, override, waive; Spanish, French and German "approve") not followed by a noun
   such as "status", "rate", "summary", "log", "readiness";
 - starts with a weaker verb (mark, pass, fail, set, change, confirm, clear, resolve, decide,
-  record, flag, close, release, tick) followed by what it would act on (page 4, it, this, the
-  result, everything);
+  record, flag, close, release, tick; and the simple review screen's fix, correct, agree, settle,
+  #1352) followed by what it would act on (page 4, it, this, the result, the guess, the number,
+  the failure, everything);
 - or the message says "mark/set/change/make/turn … as/to pass/green/approved", "make page 4
   pass", "page 4 should be marked as passed", or "I'd like page 4 accepted".
 
@@ -71,6 +72,7 @@ _NOUN_AFTER: Final = re.compile(
 )
 _WEAK: Final = re.compile(
     r"^(?:pass|fail|set|change|confirm|clear|resolve|decide|record|flag|except|release|"
+    r"fix|correct|agree(?: with| to| on)?|settle|"
     r"close out|close|tick|check off|ok|okay|finali[sz]e|complete|update|treat|consider|put|"
     r"push|let|bump|ignore|skip|note|log|save|give|call|move|count|flip)\b"
 )
@@ -78,11 +80,56 @@ _WEAK: Final = re.compile(
 _TARGET: Final = re.compile(
     r"^\s*(?:page|sheet|pg|p\d+|it|this|that|these|those|them|everything|all|both|"
     r"the (?:package|item|items|row|rows|result|results|finding|findings|check|checks|"
-    r"countertop|countertops|sink|hold|wall|walls|outcome|review|whole|rest|reading)|"
+    r"countertop|countertops|sink|hold|wall|walls|outcome|review|whole|rest|reading|"
+    r"guess|guesses|best guess|number|numbers|value|values|width|widths|failure|failures|"
+    r"group|not checked)|"
     r"as (?:pass|fail|ok|okay|approved|accepted|done|resolved|correct|right))\b|^\s*\d+\s*$"
 )
+#: Verbs that accept a number on the reviewer's behalf (#1354): "use the guess", "go with the
+#: best guess", "type 42 1/2 for page 7". Only with a number-like target, so "take me to page 7"
+#: and "keep it short" stay questions.
+_TAKE: Final = re.compile(
+    r"^(?:use|take|keep|pick|choose|select|apply|enter|type|trust|adopt|go with|stick with|"
+    r"lock in|lock|accept)\b"
+)
+#: Only describing words may sit between the verb and what it acts on ("the AI's best guess",
+#: "piece 2 width", "the overall countertop width"), never "me", "to", "of", "for" …
+_GAP: Final = (
+    r"(?:the |this |that |these |those |its |their |an? |ai's |the ai's |vendor's |my )?"
+    r"(?:(?:best|first|second|third|last|next|top|overall|countertop|piece|row|held|printed|"
+    r"failed|open|same|ai|suggested|proposed|recommended|agreed|\d+(?: \d+)*) ){0,3}"
+)
+_VALUE_WORDS: Final = (
+    r"(?:guess|guesses|number|numbers|value|values|width|widths|reading|readings|dimension|"
+    r"dimensions|figure|figures|suggestion|suggestions)"
+)
+#: "go with what the readers agreed on", "use what the AI suggested": the readers' or the AI's
+#: number, named by what they did with it.
+_WHAT_THEY_READ: Final = (
+    r"what (?:the |both |two |its |their )?(?:\w+ )?(?:readers?|ai|model|machine|system)\b"
+    r"(?: \w+)? (?:agreed|agree|suggested|suggests|suggest|proposed|picked|chose|read|reads|"
+    r"said|says|found|guessed|thinks?|came up with)\b"
+)
+#: What an accept verb ("use", "take", "type" …) must act on to be a command: a number, an
+#: entry's id, or a value word that ends the clause or is followed by where it is ("on page 7").
+#: Items are not numbers here: "select the item on page 7 for me" asks to navigate.
+_NUMBER_TARGET: Final = re.compile(
+    rf"^\s*(?:\d|r\d+\b|{_WHAT_THEY_READ}|"
+    rf"{_GAP}{_VALUE_WORDS}(?:\s*$|\s+(?:on|for|at|from|of|as)\b))"
+)
+#: What the simple review screen's own verbs ("confirm", "fix", "agree" …) must act on: a number,
+#: an entry's id, or a value, item, failure or check, with only describing words before it.
+_ITEM_TARGET: Final = re.compile(
+    rf"^\s*(?:\d|r\d+\b|{_GAP}(?:{_VALUE_WORDS[3:-1]}|item|items|failure|failures|check|"
+    r"checks|result|results)\b)"
+)
+#: The simple review screen's own actions (#1352): with a number-like target they are commands
+#: ("confirm 42 1/2 on page 7", "confirm piece 2 width", "confirm R1", "fix the first item").
+_ITEM_VERBS: Final = frozenset({"confirm", "fix", "correct", "agree", "settle"})
 #: A weak verb alone ("pass", "fail", "close") is a command too.
-_BARE_WEAK: Final = frozenset({"pass", "fail", "close", "ok", "okay", "confirm"})
+_BARE_WEAK: Final = frozenset(
+    {"pass", "fail", "close", "ok", "okay", "confirm", "fix", "agree", "settle"}
+)
 #: "mark it done", "mark page 7 passed": marking as an outcome (plain "mark the walls" annotates).
 _MARK_DONE: Final = re.compile(
     r"\bmark\s+(?:it|this|that|them|everything|all|page \d+|sheet \d+|p\d+|\d+)?\s*(?:as\s+)?"
@@ -162,7 +209,8 @@ _WALL_WORDS: Final = re.compile(r"\b(?:walls?|layout|island|ends?|back)\b")
 _MARK_AS: Final = re.compile(
     r"\b(?:mark|set|change|make|flag|turn|switch|move|record)\b.{0,60}?\b(?:as|to|into)\s+"
     r"(?:a\s+)?(?:pass(?:ed)?|fail(?:ed)?|ok(?:ay)?|approved|accepted|rejected|dismissed|done|"
-    r"resolved|correct|right|looks right|green|good|red)\b"
+    r"resolved|correct|right|looks right|green|good|red|confirmed|fixed|agreed|settled|"
+    r"checked)\b"
 )
 _MAKE_IT: Final = re.compile(
     r"\b(?:make|turn|let)\s+(?:page \d+|sheet \d+|p\d+|it|this|that|them|everything|all)\s+"
@@ -183,6 +231,10 @@ _JUDGING: Final = re.compile(
     r"reject|dismiss|sign off)\b"
     r"|\bshould (?:i|we|it|this|that|page \d+|sheet \d+|p\d+) (?:approve|accept|pass|fail|"
     r"reject|dismiss|sign off|be (?:approved|accepted|passed|failed|rejected|dismissed))\b"
+    r"|\bshould (?:i|we) (?:just )?(?:confirm|agree|fix|correct|settle|use|take|trust|go with|"
+    r"keep|pick|choose|type|enter)\b"
+    r"|\b(?:do|would) you (?:think|say|recommend|suggest)\b.*\b(?:confirm|agree|fix|"
+    r"correct|settle|use|trust)\b"
     r"|\b(?:do|would) you (?:think|say|recommend|suggest)\b.*\b(?:pass|fail|approve|accept|"
     r"reject|dismiss|approved|accepted)\b"
     r"|\bwould you (?:approve|accept|pass|fail|reject|sign off)\b"
@@ -233,6 +285,9 @@ def _clause_is_request(clause: str, message: str = "") -> bool:
     clause = _strip_openers(clause)
     if not clause or _QUESTION_START.match(clause):
         return False
+    take = _TAKE.match(clause)
+    if take is not None and _NUMBER_TARGET.match(clause[take.end() :]):
+        return True
     strong = _STRONG.match(clause)
     if strong is not None:
         return _NOUN_AFTER.match(clause[strong.end() :]) is None
@@ -244,6 +299,13 @@ def _clause_is_request(clause: str, message: str = "") -> bool:
         return weak.group(0) in _BARE_WEAK
     if _PHRASAL_UP.match(rest):
         return False
+    verb = weak.group(0)
+    if (
+        verb.split()[0] in _ITEM_VERBS
+        and _ITEM_TARGET.match(rest)
+        and (verb != "confirm" or not _STATEMENT.search(rest))
+    ):
+        return True
     if weak.group(0) == "confirm":
         if _WALL_WORDS.search(rest):
             return re.search(r"\b(?:is|are|as|to)\b", rest) is not None

@@ -15,6 +15,14 @@ from fractions import Fraction
 from uuid import UUID, uuid4
 
 from app.review.assistant.records import ReviewSnapshot, build_snapshot
+from app.review.review_items import (
+    BestGuessOut,
+    FailureOut,
+    NotCheckedOut,
+    ReviewHeaderOut,
+    ReviewItemOut,
+    ReviewItemsOut,
+)
 from app.schemas.visual_ui import (
     AgreementFactsOut,
     ArchitectResultOut,
@@ -254,4 +262,112 @@ def empty_snapshot() -> ReviewSnapshot:
             findings=(),
             checks_have_run=False,
         )
+    )
+
+
+# --- the simple review list (#1352): made-up items, W1's own shapes --------------------------------
+
+ITEM_GUESS_KEY = "number:00000000-0000-4000-8000-0000000000c1"
+ITEM_BY_HAND_KEY = "number:00000000-0000-4000-8000-0000000000c2"
+ITEM_DONE_KEY = "result:00000000-0000-4000-8000-0000000000c3"
+FAILURE_KEY = f"failure:{FINDING_FAIL}"
+NOT_CHECKED_KEY = f"not-checked:{FINDING_SINK}"
+GUESS_WHY = "The two AI readers wrote different numbers for this piece."
+
+
+def review_list(*, gv_words_in_why: bool = False) -> ReviewItemsOut:
+    """Page 4: a held width number with a best guess, a failure. Page 7: a number to check by
+    hand (no guess). Page 9: an answered item. Page 5: a sink check that did not run."""
+    why = GUESS_WHY + ("; reviewer wrote 31 1/2" if gv_words_in_why else "")
+    return ReviewItemsOut(
+        package_id=PACKAGE,
+        revision_id=REVISION,
+        revision_number=1,
+        header=ReviewHeaderOut(
+            pages_read=6,
+            numbers=12,
+            confirmed_by_ai=9,
+            checked_by_you=1,
+            open=3,
+            failures=1,
+            not_checked=1,
+            rechecking=0,
+            can_finalise=False,
+            blocked_reason="3 items still need you.",
+        ),
+        items=[
+            ReviewItemOut(
+                key=ITEM_GUESS_KEY,
+                kind="number",
+                page=4,
+                row_label="Sample run A",
+                what="Width of piece 2",
+                best_guess=BestGuessOut(
+                    text="12 1/2", value=exact(Fraction(25, 2)), source="agreed_text"
+                ),
+                why=why,
+                actions=["confirm", "fix"],
+                status="open",
+                finding_id=FINDING_FAIL,
+            ),
+            ReviewItemOut(
+                key=ITEM_BY_HAND_KEY,
+                kind="number",
+                page=7,
+                row_label="Sample run B",
+                what="Width of piece 1",
+                best_guess=None,
+                why="GV's markup covers this number, so it is checked by hand.",
+                actions=["confirm", "fix"],
+                status="open",
+                finding_id=FINDING_HELD,
+            ),
+            ReviewItemOut(
+                key=ITEM_DONE_KEY,
+                kind="other_result",
+                page=9,
+                what="Countertop width",
+                why="Held for a person's check.",
+                actions=[],
+                status="done",
+                decided_by="Sample Reviewer",
+                finding_id=FINDING_PASS,
+            ),
+        ],
+        failures=[
+            FailureOut(
+                key=FAILURE_KEY,
+                finding_id=FINDING_FAIL,
+                rule_id="CT-WIDTH-001",
+                page=4,
+                row_label="Sample run A",
+                why=FAIL_REASON,
+                actions=["agree"],
+                status="open",
+            )
+        ],
+        not_checked=[
+            NotCheckedOut(
+                key=NOT_CHECKED_KEY,
+                finding_id=FINDING_SINK,
+                rule_id="CT-SINK-CUTOUT-WIDTH-001",
+                check="Sink cut-out width",
+                page=5,
+                why=SINK_REASON,
+                status="open",
+            )
+        ],
+        unaccounted=[],
+    )
+
+
+def snapshot_with_review_list(**kwargs: bool) -> ReviewSnapshot:
+    given = Inputs()
+    return build_snapshot(
+        given.countertops,
+        given.readiness,
+        given.findings,
+        given.decisions,
+        checks_have_run=given.checks_have_run,
+        review_items=review_list(**kwargs),
     )

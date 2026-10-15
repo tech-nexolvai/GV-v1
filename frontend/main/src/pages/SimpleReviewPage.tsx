@@ -4,8 +4,7 @@ import { MessageSquare, MoreHorizontal, SlidersHorizontal } from 'lucide-react';
 import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
 import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
-import { agreeAction, disagreeAction, orderItems, pointsOf, proposedWall, summarize } from '@/lib/review-items';
-import type { ViewerTarget } from '@/lib/drawing-viewer';
+import { agreeAction, disagreeAction, orderItems, proposedWall, summarize } from '@/lib/review-items';
 import type { AssistantRecords } from '@/lib/assistant';
 import { AssistantPanel, type AssistantNavigation } from '@/components/assistant/assistant-panel';
 import { HeaderActions } from '@/components/shell/ShellHeader';
@@ -20,8 +19,8 @@ import { FinalBar } from '@/components/simple-review/final-bar';
 import { LoadError, NothingNeedsYou, ReviewSkeleton, UnaccountedBanner } from '@/components/simple-review/states';
 import { PicturesProvider, type PictureLoader } from '@/components/simple-review/item-pictures';
 
-// Until the dual PDF viewer (U3) lands, "Open PDFs" opens the existing drawing viewer at the spot.
-const DrawingViewerSheet = lazy(() => import('@/components/drawing/drawing-viewer').then((m) => ({ default: m.DrawingViewerSheet })));
+// "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
+const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
 
 /**
  * The cloud PDF hooks (W4b, #1340). `draft` null: the server cannot make a draft yet, and the button
@@ -40,8 +39,8 @@ export interface SimpleReviewPageProps {
   pictures?: PictureLoader;
   cloud?: CloudPdfHooks;
   /**
-   * "Open PDFs" (O). The dual PDF viewer (U3) plugs in here: `item` is the spot to open both
-   * documents at, null for the whole set. Without it the existing drawing viewer opens.
+   * "Open PDFs" (O): `item` is the spot to open both documents at, null for the whole set. Without
+   * it the side-by-side viewer (U3, #1355) opens.
    */
   onOpenPdfs?: (item: ReviewItem | null) => void;
   /** The old tabs and wizard, `#/review/<id>/advanced`. */
@@ -87,34 +86,6 @@ function errorWords(error: unknown): string {
     if (error.status === 409) return `This item changed since you opened it, so the list was reloaded. Look again, then Retry. (${error.message})`;
   }
   return error instanceof Error ? error.message : String(error);
-}
-
-/** What the viewer's pill says: the item's own state, or "All pages" for the whole set. */
-function viewerWord(item: ReviewItem | null): Pick<ViewerTarget, 'tone' | 'glyph' | 'word'> {
-  if (item === null) return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: 'All pages' };
-  if (item.status === 'open') return { tone: 'review', glyph: 'REVIEW_REQUIRED', word: 'Needs you' };
-  return { tone: 'missing', glyph: 'NO_APPLICABLE_RULE', word: item.status === 'rechecking' ? 'Re-checking' : 'Checked' };
-}
-
-function viewerTarget(item: ReviewItem | null, fallbackPage: number): ViewerTarget {
-  const vendor = item?.vendor_ref ?? null;
-  const architect = item?.architect_ref?.location ?? null;
-  return {
-    key: item?.key ?? 'set',
-    label: item ? item.what : 'All pages',
-    page: vendor?.page_number ?? item?.page ?? fallbackPage,
-    documentVersionId: vendor?.document_version_id ?? null,
-    outline: pointsOf(vendor),
-    findingId: item?.finding_id ?? null,
-    ...viewerWord(item),
-    needsYou: item?.status === 'open',
-    row: null,
-    marks: [],
-    second: architect
-      ? { key: `arch:${architect.page_id}`, label: `Architect page ${architect.page_number}`, heading: `Architect page ${architect.page_number}`, page: architect.page_number, documentVersionId: architect.document_version_id, region: null }
-      : null,
-    showSecond: architect !== null,
-  };
 }
 
 function isTyping(target: EventTarget | null): boolean {
@@ -174,7 +145,7 @@ export function SimpleReviewPage({
   const [errors, setErrors] = useState<Record<string, SaveError>>({});
   const [draft, setDraft] = useState<CloudState>({ status: 'idle' });
   const [final, setFinal] = useState<CloudState>({ status: 'idle' });
-  const [viewer, setViewer] = useState<{ opening: number; target: ViewerTarget } | null>(null);
+  const [viewer, setViewer] = useState<{ opening: number; item: ReviewItem | null } | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(() => assistantAvailable && typeof window !== 'undefined' && window.matchMedia('(min-width: 1440px)').matches);
   const [assistantMounted, setAssistantMounted] = useState(assistantOpen);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -322,8 +293,8 @@ export function SimpleReviewPage({
 
   const openPdfs = useCallback((item: ReviewItem | null) => {
     if (onOpenPdfs) onOpenPdfs(item);
-    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, target: viewerTarget(item, ordered[0]?.page ?? 1) }));
-  }, [onOpenPdfs, ordered]);
+    else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item }));
+  }, [onOpenPdfs]);
 
   async function runCloud(kind: 'draft' | 'final') {
     const hook = kind === 'draft' ? cloud.draft : cloud.final;
@@ -578,15 +549,7 @@ export function SimpleReviewPage({
 
       {viewer && project !== null && (
         <Suspense fallback={null}>
-          <DrawingViewerSheet
-            target={viewer.target}
-            opening={viewer.opening}
-            rows={[]}
-            projectId={project}
-            packageId={packageId}
-            onTargetChange={(target) => setViewer((now) => (now ? { ...now, target } : now))}
-            onClose={() => setViewer(null)}
-          />
+          <DualPdfViewer key={viewer.opening} projectId={project} packageId={packageId} item={viewer.item} onClose={() => setViewer(null)} />
         </Suspense>
       )}
     </PicturesProvider>
