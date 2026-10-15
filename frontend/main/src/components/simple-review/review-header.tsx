@@ -1,11 +1,11 @@
-import { FileStack, FileText, Loader2 } from 'lucide-react';
+import { FileStack, FileText, Loader2, RotateCcw } from 'lucide-react';
 
 import type { ReviewItemsHeader } from '@/api/review-items';
 import { Button } from '@/components/ui/button';
 import { Kbd } from './words';
 
-/** Where a requested cloud PDF is: nothing asked yet, being made, or a named failure. */
-export type CloudState = { status: 'idle' } | { status: 'working' } | { status: 'error'; message: string };
+/** Where a requested draft cloud PDF is: nothing asked yet, being made, downloaded, or a named failure. */
+export type CloudState = { status: 'idle' } | { status: 'working' } | { status: 'ready' } | { status: 'error'; message: string };
 
 function Count({ value }: { value: number }) {
   return <span className="num font-medium text-foreground">{value}</span>;
@@ -30,7 +30,7 @@ export function ReviewHeader({
   revision: number | null;
   header: ReviewItemsHeader;
   onOpenPdfs: () => void;
-  /** Null until the draft cloud PDF exists on this server (W4b): the button says so instead of hiding. */
+  /** Ask for the draft cloud PDF (W4b); null when it cannot be asked for here: the button says so instead of hiding. */
   onDraftCloud: (() => void) | null;
   draft: CloudState;
 }) {
@@ -85,16 +85,34 @@ export function ReviewHeader({
           variant="outline"
           onClick={onDraftCloud ?? undefined}
           disabled={onDraftCloud === null || working}
-          title={onDraftCloud === null ? 'The draft cloud PDF is not available on this server yet.' : 'A draft with every item marked as it stands now. Not signed off.'}
+          title={onDraftCloud === null ? 'The draft cloud PDF cannot be asked for here: no project is configured.' : 'A draft with every item marked as it stands now. Not signed off.'}
         >
           {working ? <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none" /> : <FileText aria-hidden="true" />}
           {working ? 'Making draft…' : 'Draft cloud PDF'}
         </Button>
       </div>
-      {draft.status === 'error' && (
-        <p role="alert" className="text-[13px] text-outcome-fail-fg sm:basis-full">
-          The draft cloud PDF could not be made: {draft.message}
+      {working && (
+        <p role="status" className="text-[13px] text-muted-foreground sm:basis-full">
+          Making the draft cloud PDF. This takes a minute; it downloads by itself when ready.
         </p>
+      )}
+      {draft.status === 'ready' && (
+        <p role="status" className="text-[13px] text-muted-foreground sm:basis-full">
+          Draft cloud PDF downloaded. It is not signed off.
+        </p>
+      )}
+      {draft.status === 'error' && (
+        <div className="flex flex-wrap items-center gap-2 sm:basis-full">
+          <p role="alert" className="text-[13px] text-outcome-fail-fg">
+            The draft cloud PDF could not be made: {draft.message}
+          </p>
+          {onDraftCloud && (
+            <Button size="sm" variant="outline" onClick={onDraftCloud}>
+              <RotateCcw aria-hidden="true" />
+              Retry
+            </Button>
+          )}
+        </div>
       )}
     </header>
   );

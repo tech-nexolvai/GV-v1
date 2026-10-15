@@ -3,6 +3,7 @@ import { MessageSquare, MoreHorizontal, SlidersHorizontal } from 'lucide-react';
 
 import { getPackage, ApiError, downloadPagePicture } from '@/api/client';
 import { projectId as configuredProjectId } from '@/api/config';
+import { liveDraftCloudApi, makeDraftCloud, type DraftCloudApi } from '@/api/draft-cloud';
 import { liveFinalCloudApi, type FinalCloudApi } from '@/api/final-cloud';
 import { apiUrl, liveReviewItemsApi, NOT_CHECKED_GROUP, PAGES_GROUP, type ActionExtra, type ItemAction, type ReviewFailure, type ReviewItem, type ReviewItemsApi, type ReviewItemsOut } from '@/api/review-items';
 import { agreeAction, disagreeAction, leftWords, openNoCountertopPages, orderItems, proposedWall, summarize, whereWord } from '@/lib/review-items';
@@ -29,22 +30,16 @@ import type { ViewerItem } from '@/components/simple-review/dual-pdf-viewer';
 // "Open PDFs" opens both full drawings side by side (U3, #1355), loaded only when first opened.
 const DualPdfViewer = lazy(() => import('@/components/simple-review/dual-pdf-viewer').then((m) => ({ default: m.DualPdfViewer })));
 
-/**
- * The draft cloud PDF hook (W4b, #1340). `draft` null: the server cannot make a draft yet, and the
- * button says so. The final cloud PDF is `finalCloud` (#1368): the existing sign-off, then the
- * signed files.
- */
-export interface CloudPdfHooks {
-  draft: (() => Promise<void>) | null;
-}
-
 export interface SimpleReviewPageProps {
   packageId: string;
   /** The read and write calls (W1 + W3). Tests pass their own; the app uses the live ones. */
   api?: ReviewItemsApi;
   /** How a stored picture becomes an image. Tests and screenshots pass their own. */
   pictures?: PictureLoader;
-  cloud?: CloudPdfHooks;
+  /** The draft cloud PDF (W4b, #1340): ask, wait, download (#1394). Tests pass their own. */
+  cloud?: DraftCloudApi;
+  /** How often a draft being made is asked about again. Tests pass 0. */
+  draftPollMs?: number;
   /** Sign-off and the final cloud PDF (#1368). Tests pass their own. */
   finalCloud?: FinalCloudApi;
   /** The architect view match and pairing reads behind an architect question (#1368). */
@@ -151,7 +146,8 @@ export function SimpleReviewPage({
   packageId,
   api = liveReviewItemsApi,
   pictures,
-  cloud = { draft: null },
+  cloud = liveDraftCloudApi,
+  draftPollMs,
   finalCloud = liveFinalCloudApi,
   architect = liveArchitectLoader,
   recorded = liveRecordedNumbers,
@@ -427,14 +423,30 @@ export function SimpleReviewPage({
     else setViewer((now) => ({ opening: (now?.opening ?? 0) + 1, item: at, failure }));
   }
 
+  // The newest draft ask: an older one (or one from a closed page) stops waiting and saves nothing.
+  const draftAsk = useRef(0);
+  useEffect(() => () => {
+    draftAsk.current += 1;
+  }, []);
+
+  /** Ask for the draft cloud PDF, wait while the worker makes it, then save it (#1394). */
   async function runDraft() {
-    if (cloud.draft === null) return;
+    if (project === null || draft.status === 'working') return;
+    const ask = ++draftAsk.current;
     setDraft({ status: 'working' });
     try {
-      await cloud.draft();
-      setDraft({ status: 'idle' });
+      const blob = await makeDraftCloud(cloud, project, packageId, { pollMs: draftPollMs, stillWanted: () => ask === draftAsk.current });
+      if (blob === null || ask !== draftAsk.current) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `gv-review-${packageId}-draft-cloud.pdf`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setDraft({ status: 'ready' });
     } catch (error) {
-      setDraft({ status: 'error', message: errorWords(error) });
+      // The server's own reason ("Run the checks first."), never the item-save wording.
+      if (ask === draftAsk.current) setDraft({ status: 'error', message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -657,7 +669,7 @@ export function SimpleReviewPage({
                   revision={title?.revision ?? data.revision_number}
                   header={data.header}
                   onOpenPdfs={() => openPdfs(opened)}
-                  onDraftCloud={cloud.draft ? () => void runDraft() : null}
+                  onDraftCloud={project !== null ? () => void runDraft() : null}
                   draft={draft}
                 />
                 {data.unaccounted.length > 0 && <UnaccountedBanner count={data.unaccounted.length} onOpenAdvanced={onOpenAdvanced} />}
@@ -732,7 +744,7 @@ export function SimpleReviewPage({
                 <div className="flex-1" />
                 <FinalBar
                   summary={summary}
-                  left={leftWords(data)}
+                  left={leftWords(data.header)}
                   api={finalCloud}
                   projectId={project}
                   packageId={packageId}

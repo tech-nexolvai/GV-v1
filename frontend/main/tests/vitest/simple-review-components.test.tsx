@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ReviewHeader } from '@/components/simple-review/review-header';
@@ -56,11 +57,22 @@ describe('ReviewHeader', () => {
     expect(screen.getByTestId('accuracy-line').textContent).toContain('AI right on 11 (3%)');
   });
 
+  it('a draft being made says so; a failed one is named with Retry (#1394)', async () => {
+    const onDraft = vi.fn();
+    const { rerender } = render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'working' }} />);
+    expect((screen.getByRole('button', { name: /Making draft/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('status').textContent).toContain('Making the draft cloud PDF');
+    rerender(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={onDraft} draft={{ status: 'error', message: 'Run the checks first.' }} />);
+    expect(screen.getByRole('alert').textContent).toBe('The draft cloud PDF could not be made: Run the checks first.');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onDraft).toHaveBeenCalledTimes(1);
+  });
+
   it('a draft that cannot be made yet is named, not hidden', () => {
     render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={null} draft={{ status: 'idle' }} />);
     const button = screen.getByRole('button', { name: /Draft cloud PDF/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(button.title).toMatch(/not available/i);
+    expect(button.title).toMatch(/cannot be asked for/i);
   });
 });
 
@@ -362,16 +374,35 @@ describe('FinalBar (#1368)', () => {
   }
   function renderBar(source = data, api = finalApi(), approved = false) {
     const onSigned = vi.fn();
-    render(<FinalBar summary={summarize(source)} left={leftWords(source)} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={approved} onSigned={onSigned} />);
+    render(<FinalBar summary={summarize(source)} left={leftWords(source.header)} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={approved} onSigned={onSigned} />);
     return { api, onSigned };
   }
 
-  it("stays locked while the server says so: its reason, and what is left in counts", () => {
-    renderBar();
+  it("stays locked while the server says so, in plain words with the header's counts (#1394)", () => {
+    const technical = reviewItems((draft) => {
+      draft.header.open = 9;
+      draft.header.not_checked = 54;
+      draft.header.rechecking = 0;
+      draft.header.blocked_reason = '61 findings still need a valid reviewer decision or a check rerun after correction.';
+    });
+    renderBar(technical);
     const button = screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(screen.getByRole('status').textContent).toBe('6 items still need you.');
-    expect(screen.getByText('6 items to answer · 2 wrong results to agree · 6 checks not run · 1 item re-checking')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toBe('9 items need you · 54 not checked');
+    expect(screen.queryByText(/valid reviewer decision/)).toBeNull();
+  });
+
+  it('under StrictMode the sign-off dialog still names the signer and can be confirmed (#1394)', async () => {
+    const api = finalApi();
+    render(
+      <StrictMode>
+        <FinalBar summary={summarize(allSettled())} left={[]} api={api} projectId="proj-demo" packageId="pkg-demo" revision={2} approved={false} onSigned={vi.fn()} />
+      </StrictMode>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create final cloud PDF' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Sign off and create the final cloud PDF?' });
+    expect(await within(dialog).findByText('Sample Reviewer')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Sign off and create' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('follows the server even when the screen shows nothing open', () => {
@@ -380,7 +411,9 @@ describe('FinalBar (#1368)', () => {
     settled.header.blocked_reason = 'The checks are running again.';
     renderBar(settled);
     expect((screen.getByRole('button', { name: 'Create final cloud PDF' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole('status').textContent).toBe('The checks are running again.');
+    // No count says what is left, so the server's own reason explains it.
+    expect(screen.getByRole('status').textContent).toBe('Not ready for sign-off yet.');
+    expect(screen.getByText('The checks are running again.')).toBeTruthy();
   });
 
   it('unlocked: confirms the sign-off first, then signs, makes the PDF and offers the download', async () => {

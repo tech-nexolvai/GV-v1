@@ -11,6 +11,18 @@ import type { Rect, Size, View } from '@/lib/drawing-viewer';
 export type Side = 'vendor' | 'architect';
 export type Pages = Record<Side, number>;
 
+const FILE_WORDS: Record<Side, string> = { vendor: 'Vendor drawing', architect: 'Architect drawing' };
+
+/**
+ * The file a pane shows (#1394): its uploaded name, else (a file stored before names were kept,
+ * #1174) the side and its page count. Never "No file" while a file is shown.
+ */
+export function fileWords(side: Side, doc: { file_name?: string | null; page_count: number }): string {
+  const name = doc.file_name?.trim();
+  if (name) return name;
+  return `${FILE_WORDS[side]} · ${doc.page_count} ${doc.page_count === 1 ? 'page' : 'pages'}`;
+}
+
 export interface Nav {
   pages: Pages;
   counts: Pages;
