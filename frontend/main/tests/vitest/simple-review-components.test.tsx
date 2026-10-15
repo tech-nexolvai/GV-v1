@@ -29,7 +29,7 @@ describe('ReviewHeader', () => {
     render(<ReviewHeader title="Sample Stoneworks" revision={2} header={data.header} onOpenPdfs={() => {}} onDraftCloud={() => {}} draft={{ status: 'idle' }} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Sample Stoneworks' })).toBeTruthy();
     const line = screen.getByTestId('ai-read-line');
-    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 settled by both AIs (89%) · 17 need you');
+    expect(line.textContent).toBe('AI read 12 pages · 148 numbers · 131 settled by both AIs (89%) · 17 not settled by the AIs');
     expect(within(line).getByText('148').className).toContain('num');
     expect(screen.getByRole('button', { name: /Open PDFs/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Draft cloud PDF/ })).toBeTruthy();

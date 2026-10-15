@@ -132,6 +132,7 @@ export default function App() {
           packageId={packageId}
           onOpenAdvanced={() => navigate({ page: 'review', packageId, advanced: true })}
           onTitleChange={(vendor, revisionNumber) => setReviewTitle({ packageId, title: vendor, revision: revisionNumber })}
+          onNeedYouChange={(count) => setLiveNeedYou(count === null ? null : { packageId, count })}
         />
       )}
 
