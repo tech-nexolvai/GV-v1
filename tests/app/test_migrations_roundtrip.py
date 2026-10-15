@@ -15,7 +15,7 @@ from tests.app.postgres_fixture import alembic_config
 from tests.workflow.test_stages import _publish_rulebook, _revision
 from workflow.stages import DatabaseStages
 
-pytest_plugins = ("postgres_fixture",)
+pytest_plugins = ("tests.app.postgres_fixture",)
 
 
 def test_initial_migration_and_current_metadata_have_no_difference(

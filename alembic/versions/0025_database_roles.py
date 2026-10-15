@@ -55,16 +55,23 @@ depends_on: str | Sequence[str] | None = None
 #: database runs this, and only the first can create them.
 #:
 #: The `EXISTS` check alone is not enough. Two connections can both pass it and then one fails on the
-#: `CREATE`, so `duplicate_object` is caught as well — the check keeps the common path quiet and the
-#: handler makes it correct. Belt and braces here rather than a comment promising nothing runs
-#: concurrently, which is the sort of promise a later `pytest -n auto` breaks silently.
+#: `CREATE` — the check keeps the common path quiet and the handler makes it correct. Belt and braces
+#: here rather than a comment promising nothing runs concurrently, which is the sort of promise a later
+#: `pytest -n auto` breaks silently.
+#:
+#: **Both errors, not one (#1293).** Which error the loser gets depends on timing. If the winner has
+#: committed, `CREATE ROLE` sees the role and raises `duplicate_object`. If the winner has not, the loser
+#: waits on the winner's uncommitted row in `pg_authid` and, once it commits, fails on the catalog's unique
+#: index instead: `unique_violation` on `pg_authid_rolname_index`. Only the first was caught, and #1289's
+#: first CI run, four workers migrating at once, hit the second. Either way the role now exists, which is
+#: all this statement wants. `tests/app/test_worker_databases.py` forces the second case on a made-up role.
 CREATE_ROLE = """
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
         CREATE ROLE {role} NOLOGIN;
     END IF;
-EXCEPTION WHEN duplicate_object THEN
+EXCEPTION WHEN duplicate_object OR unique_violation THEN
     NULL;
 END
 $$;
