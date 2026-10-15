@@ -433,8 +433,6 @@ def test_a_list_naming_one_person_twice_is_refused(
         "Perplexlty",
         "Mlnimax",
         "Ciaude",
-        "iiama",
-        "Fabie",
         "Halku",
         "KImi",
         "Gernini",
@@ -443,6 +441,17 @@ def test_a_list_naming_one_person_twice_is_refused(
         "Reviewer Ciaude",
         "Ciaudebot",
         "Gernlni",
+        "ClaucIe",
+        "CIaucIe",
+        "Open-Al",
+        "Open'Al",
+        "Gem-lni",
+        "Clau-cle",
+        "Kiml",
+        "Klmi",
+        "Reviewer Klmi",
+        "LIama",
+        "FabIe",
     ],
 )
 def test_an_l_for_i_a_split_kimi_or_a_letter_pair_look_alike_is_refused(name: str) -> None:
@@ -469,9 +478,22 @@ def test_an_l_for_i_a_split_kimi_or_a_letter_pair_look_alike_is_refused(name: st
         "D'Souza",
         "Sai Talbot",
         "Mila Ma",
+        "Fabien",
+        "Fabienne",
+        "Lilamani",
+        "Lila-Mae",
+        "Mary-Lou",
+        "Kalpana",
+        "Malini",
+        "Ilina",
     ],
 )
 def test_real_names_still_pass_the_look_alike_readings(name: str) -> None:
+    assert not_a_person(name) is None
+
+
+@pytest.mark.parametrize("name", ["Kai", "Gim", "Glim", "Al"])
+def test_only_kimi_among_the_short_tokens_is_read_as_a_look_alike(name: str) -> None:
     assert not_a_person(name) is None
 
 

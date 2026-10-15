@@ -45,15 +45,21 @@ refused (`not_a_person`), on both lists and as the confirmer typed on the review
   refused anywhere.
 * **a look-alike of a long AI name, within one word (#1292).** In a sans-serif font a lowercase
   "l" passes for an "i" ("OpenAl", "Gemlni", "Ciaude"), and some letter pairs pass for one letter:
-  "rn" for "m" ("Gernini"), "cl" for "d" ("Claucle"), "vv" for "w" ("Qvven"). So within each word
-  (a run of letters, split at spaces, hyphens and apostrophes only), "i" and "l" are read both
-  ways (every mix) and each pair is read as its letter or as itself, and the word is refused if it
-  then holds a long AI name (`_LOOK_ALIKE_NAMES`: `_AI_NAMES` without "aibot" and "botai", so
-  "Talbot" passes). It is never done across words ("Lila Mae" squashed would hold "llama") nor for
-  the short tokens ("Gim" would read as "glm").
+  "rn" for "m" ("Gernini"), "cl" or "cI" for "d" ("Claucle", "ClaucIe"), "vv" for "w" ("Qvven").
+  So within each word (split at spaces only; hyphens and apostrophes inside it are dropped, so
+  "Open-Al" and "Clau-cle" are caught), "i" and "l" are read both ways (every mix) and each pair
+  is read as its letter or as itself, and the word is refused if it then holds a long AI name
+  (`_LOOK_ALIKE_NAMES`). It is never done across spaces ("Lila Mae" squashed would hold "llama").
+  Left out of this reading, because real names hold their look-alikes: "aibot" and "botai"
+  ("Talbot"), "fable" ("Fabien", "Fabienne") and "llama" ("Lilamani", "Hilama", "Villiamar");
+  these stay refused as written and through the capital-I reading ("LIama", "FabIe"), but a
+  lowercase "iiama" or "Fabie" passes. Of the short tokens only "kimi" is read this way, and only
+  as a whole word ("Kiml", "Klmi"); "ai" and "glm" are not ("Al", "Gim" pass).
 
 **Known cost:** a few real names hold a distinctive model name and are refused: "Claudette",
-"Haikuo", "Gemma", "Kimi", and any name holding "argon" or "grok". Such a person is listed under a
+"Haikuo", "Gemma", "Kimi", any name holding "argon" or "grok", and a hyphenated name joining a part
+ending "hal" to one starting "ku" ("Vishal-Kurt" reads as "haiku"; with a space it passes; no
+established hyphenated name in the dictionary does this). Such a person is listed under a
 plain-letters variant of their name (for example a nickname, or a surname alone), the same one they
 type on the review page.
 
@@ -166,14 +172,21 @@ _AI_NAMES: Final = (
     "sonnet",
 )
 #: How each letter of an AI name may be written so that it looks the same (#1292): "i" and "l"
-#: either way, "m" as "rn", "d" as "cl", "w" as "vv".
-_LOOK_ALIKES: Final = {"i": "[il]", "l": "[il]", "m": "(?:m|rn)", "d": "(?:d|cl)", "w": "(?:w|vv)"}
+#: either way, "m" as "rn", "d" as "cl" (or "cI"), "w" as "vv".
+_LOOK_ALIKES: Final = {
+    "i": "[il]",
+    "l": "[il]",
+    "m": "(?:m|rn)",
+    "d": "(?:d|c[il])",
+    "w": "(?:w|vv)",
+}
 #: The long AI names also refused as a look-alike within one word (#1292), each as a pattern that
-#: reads every mix of `_LOOK_ALIKES`. "aibot" and "botai" are left out, so "Talbot" passes.
+#: reads every mix of `_LOOK_ALIKES`. Left out, because real names hold their look-alikes:
+#: "aibot" and "botai" ("Talbot"), "fable" ("Fabien") and "llama" ("Lilamani", "Villiamar").
 _LOOK_ALIKE_NAMES: Final = tuple(
     (ai, re.compile("".join(_LOOK_ALIKES.get(char, char) for char in ai)))
     for ai in _AI_NAMES
-    if ai not in {"aibot", "botai"}
+    if ai not in {"aibot", "botai", "fable", "llama"}
 )
 #: Short tokens that name an AI, an agent or a program, refused as whole words only (after the
 #: normalisation; split at spaces, hyphens, apostrophes and capitals: "ReviewBot", "AIReviewer"),
@@ -191,6 +204,8 @@ _READINGS: Final = {"1": ("l", "i"), "I": ("I", "l")}
 _WORDS: Final = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 #: A run of letters: one word, split only at what is not a letter (spaces, hyphens, apostrophes).
 _LETTER_RUNS: Final = re.compile(r"[A-Za-z]+")
+#: "kimi" written with an "l" for an "i" ("Kiml", "Klmi"), matched as a whole word only (#1292).
+_KIMI_LOOK_ALIKE: Final = re.compile(r"k[il]m[il]")
 
 #: A candidate's `actor_status`: a name on the list; a name not on it (or no list); code (never a
 #: candidate, so only seen when asking); or a v1 file, made before anyone was checked.
@@ -264,10 +279,11 @@ def _words(spelling: str) -> set[str]:
 
 
 def _look_alikes(name: str) -> set[str]:
-    """The long AI names a word of this name looks like (#1292): within each run of letters, "i"
-    and "l" read both ways and "rn", "cl", "vv" read as "m", "d", "w" (`_LOOK_ALIKES`)."""
+    """The long AI names a word of this name looks like (#1292): within each word (split at spaces
+    only, everything but letters dropped), "i" and "l" read both ways and "rn", "cl", "vv" read as
+    "m", "d", "w" (`_LOOK_ALIKES`)."""
     base = name.translate(_SWAPS).replace("1", "l")
-    words = [word.casefold() for word in _LETTER_RUNS.findall(base)]
+    words = [re.sub(r"[^a-z]", "", word.casefold()) for word in base.split()]
     return {ai for word in words for ai, pattern in _LOOK_ALIKE_NAMES if pattern.search(word)}
 
 
@@ -278,7 +294,10 @@ def _ai_inside(name: str) -> list[str]:
         compact = re.sub(r"[^a-z]", "", spelling.casefold())
         found.update(ai for ai in _AI_NAMES if ai in compact)
         unsplit = {word.casefold() for word in _LETTER_RUNS.findall(spelling)}
-        found.update((_words(spelling) | unsplit) & _MACHINE_WORDS)
+        whole = _words(spelling) | unsplit
+        found.update(whole & _MACHINE_WORDS)
+        if any(_KIMI_LOOK_ALIKE.fullmatch(word) for word in whole):
+            found.add("kimi")
     return sorted(found)
 
 
