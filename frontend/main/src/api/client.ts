@@ -1169,6 +1169,27 @@ export function getCompanySettings() {
   return request<CompanySettings>('/company-settings');
 }
 
+/**
+ * Company settings → Projects (#1341): each of your projects' own values, what each is for, the value
+ * in use and where it comes from, and the project's sink card. Only projects you belong to.
+ */
+export type ProjectsSettings = Get<'/api/v1/company-settings/projects'>;
+export type ProjectSettings = ProjectsSettings['projects'][number];
+export type ProjectSetting = ProjectSettings['settings'][number];
+export type ProjectValueIn = components['schemas']['ProjectValueIn'];
+
+export function getProjectSettings() {
+  return request<ProjectsSettings>('/company-settings/projects');
+}
+
+/**
+ * Record a project's own values; every one not sent stays as it was. Reviewers and admins in the
+ * project may save; anyone else gets the same "Not found" every authorisation failure gives.
+ */
+export function saveProjectSettings(projectId: string, values: ProjectValueIn[]) {
+  return send<ProjectSettings>(`/company-settings/projects/${projectId}`, { values });
+}
+
 /** The sink this project's sink checks use (#1181); `sink` is null until one is entered. */
 export type ProjectSink = Get<'/api/v1/projects/{project_id}/sink'>;
 export type SinkEntry = components['schemas']['SinkEntryIn'];

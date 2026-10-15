@@ -28,6 +28,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/company-settings/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each of your projects' own settings, the value in use and where it comes from
+         * @description Only the projects the caller belongs to: every other project is invisible (ADR-0006).
+         */
+        get: operations["read_project_settings_api_v1_company_settings_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/company-settings/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a project's own values; every value not sent stays as it was
+         * @description A new version of the project's layer — the one Measurements writes — carrying the rest forward.
+         *
+         *     Everything is checked before anything is stored: a name no published check reads, the sink's
+         *     sizes (the sink card's), a bare number, a zero size or a missing source refuses the whole save.
+         */
+        post: operations["save_project_settings_api_v1_company_settings_projects__project_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations": {
         parameters: {
             query?: never;
@@ -1545,6 +1588,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/review-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List exactly what a person must check on the newest revision, read-only
+         * @description Items to answer, FAIL results to agree with, and the checks that could not run.
+         *
+         *     Every blocking result is in exactly one of `items`, `failures` and `not_checked`, and every
+         *     page that blocks sign-off is one item; `unaccounted` names anything that is not, and must be
+         *     empty. Nothing here decides or records anything.
+         */
+        get: operations["review_items_api_v1_projects__project_id__packages__package_id__review_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/review-sessions": {
         parameters: {
             query?: never;
@@ -2724,6 +2791,15 @@ export interface components {
             supersedes_id: string | null;
         };
         /**
+         * ArchitectRefOut
+         * @description Where the architect's matching number is, or why there is none.
+         */
+        ArchitectRefOut: {
+            location?: components["schemas"]["RowLocation"] | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
          * ArchitectRegionOut
          * @description One architect's drawing on a page: where the viewer zooms the architect side to.
          */
@@ -3047,6 +3123,25 @@ export interface components {
             version: string;
         };
         /**
+         * BestGuessOut
+         * @description What the AI or the file suggests a held number is. Shown to confirm, never a value.
+         */
+        BestGuessOut: {
+            /**
+             * Source
+             * @description `pdf_text`: the PDF's own text for the label. `agreed_text`: both AI readers wrote it identically, but a guard held it. `suggestion`: the stored suggestion.
+             * @enum {string}
+             */
+            source: "pdf_text" | "agreed_text" | "suggestion";
+            /**
+             * Text
+             * @description The guess as written, e.g. `42 1/2"`.
+             */
+            text: string;
+            /** @description The exact inches, when the text is a plain dimension. */
+            value?: components["schemas"]["ExactValueOut"] | null;
+        };
+        /**
          * BlankPageProofOut
          * @description What code checked on the PDF to prove a listed page has nothing drawn on it (#1195), and
          *     what it found: a title or divider page. Each count is of what the page holds.
@@ -3303,6 +3398,16 @@ export interface components {
             default?: string | null;
             /** Models */
             models: components["schemas"]["ChatModelChoice"][];
+        };
+        /** CheckOut */
+        CheckOut: {
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @description The check's plain name, as the rulebook gives it.
+             */
+            name: string;
         };
         /**
          * CheckPlanOut
@@ -4306,6 +4411,40 @@ export interface components {
             package_revision_id: string;
         };
         /**
+         * FailureOut
+         * @description A FAIL result: it will be clouded as wrong, and needs one Agree.
+         */
+        FailureOut: {
+            /** Actions */
+            actions: string[];
+            countertop?: components["schemas"]["CountertopItemRefOut"] | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Key */
+            key: string;
+            /** Page */
+            page?: number | null;
+            /** Row Label */
+            row_label?: string | null;
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "open" | "done" | "rechecking";
+            vendor_ref?: components["schemas"]["RowLocation"] | null;
+            /** Why */
+            why: string;
+        };
+        /**
          * FillerDistributionRequest
          * @description Inputs for the deterministic filler-first distribution proposal.
          *
@@ -5148,6 +5287,42 @@ export interface components {
             pages: components["schemas"]["NoCountertopPageIn"][];
         };
         /**
+         * NotCheckedOut
+         * @description A check that could not run because nothing was read for it.
+         */
+        NotCheckedOut: {
+            /**
+             * Check
+             * @description The check in plain words.
+             */
+            check: string;
+            countertop?: components["schemas"]["CountertopItemRefOut"] | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
+            /**
+             * Finding Id
+             * Format: uuid
+             */
+            finding_id: string;
+            /** Key */
+            key: string;
+            /** Page */
+            page?: number | null;
+            /** Row Label */
+            row_label?: string | null;
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "open" | "done" | "rechecking";
+            /** Why */
+            why: string;
+        };
+        /**
          * NotPartReason
          * @description Why a person said a suggested piece is not a part (#1246, phase 5 decision 6).
          *
@@ -5858,10 +6033,136 @@ export interface components {
             published_checks: number;
             value: components["schemas"]["ProductType"];
         };
+        /**
+         * ProjectSettingOut
+         * @description One setting as a project uses it: what it is for, which checks read it, and the value in use.
+         */
+        ProjectSettingOut: {
+            /**
+             * Applies
+             * @description True when a check for one of this project's products reads it (or the project has no drawing set with a stated product yet). False: still settable, but no drawing set of this project is checked with it — the cabinet width limits on a countertop-only job.
+             */
+            applies: boolean;
+            /**
+             * Cabinet Width Limit
+             * @description One of the six cabinet width limits.
+             */
+            cabinet_width_limit: boolean;
+            /**
+             * Checks
+             * @description The published checks that read it.
+             */
+            checks: components["schemas"]["CheckOut"][];
+            /**
+             * Company Value
+             * @description GV's standard, or null where GV set none.
+             */
+            company_value: string | null;
+            /**
+             * In Use
+             * @description What this project's checks use now, or null: those checks then wait.
+             */
+            in_use: string | null;
+            /** In Use From */
+            in_use_from: ("rulebook" | "company" | "project") | null;
+            /**
+             * Label
+             * @description The setting's plain name.
+             */
+            label: string;
+            /** Name */
+            name: string;
+            project_value: components["schemas"]["ProjectValueOut"] | null;
+            /**
+             * Purpose
+             * @description What the setting is for, in one sentence.
+             */
+            purpose: string | null;
+            /**
+             * Rulebook Default
+             * @description The default the rulebook carries from GV's checklist, or null.
+             */
+            rulebook_default: string | null;
+            /**
+             * Sources
+             * @description Where a value may honestly come from; the person picks when there are several.
+             */
+            sources: components["schemas"]["SourceChoiceOut"][];
+        };
+        /** ProjectSettingsOut */
+        ProjectSettingsOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Product Types
+             * @description The products this project's drawing sets are for, as stated at upload.
+             */
+            product_types: string[];
+            /** Settings */
+            settings: components["schemas"]["ProjectSettingOut"][];
+            /** @description The project's sink card, or null until entered. */
+            sink: components["schemas"]["SinkEntryOut"] | null;
+            /**
+             * Version
+             * @description The project layer's current version, or null.
+             */
+            version: number | null;
+        };
         /** ProjectSinkOut */
         ProjectSinkOut: {
             /** @description Null until a sink is entered for the project. */
             sink: components["schemas"]["SinkEntryOut"] | null;
+        };
+        /** ProjectValueIn */
+        ProjectValueIn: {
+            /** Name */
+            name: string;
+            /** Reference */
+            reference?: string | null;
+            /** @description Needed only where the setting allows more than one source. */
+            source?: components["schemas"]["Provenance"] | null;
+            /**
+             * Value
+             * @description With its unit — `1"`, `25 mm`. A bare number is refused.
+             */
+            value: string;
+        };
+        /**
+         * ProjectValueOut
+         * @description The project's own value for one setting, and who set it.
+         */
+        ProjectValueOut: {
+            /** Reference */
+            reference: string | null;
+            /**
+             * Set At
+             * Format: date-time
+             */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /**
+             * Source
+             * @description Where the person said it came from (#827).
+             */
+            source: string;
+            /** Text */
+            text: string;
+        };
+        /** ProjectValuesIn */
+        ProjectValuesIn: {
+            /** Values */
+            values: components["schemas"]["ProjectValueIn"][];
+        };
+        /** ProjectsSettingsOut */
+        ProjectsSettingsOut: {
+            /** Projects */
+            projects: components["schemas"]["ProjectSettingsOut"][];
         };
         /**
          * ProposedFieldOut
@@ -6101,6 +6402,13 @@ export interface components {
              * @description The depth and sink reader's switch (GV_DEPTH_READER). Off, the action is not offered at all.
              */
             switched_on: boolean;
+        };
+        /** ReaderTextOut */
+        ReaderTextOut: {
+            /** Reader */
+            reader: string;
+            /** Text */
+            text: string;
         };
         /**
          * ReadingActivityItemOut
@@ -6581,6 +6889,144 @@ export interface components {
              * Format: uuid
              */
             scope_id: string;
+        };
+        /** ReviewHeaderOut */
+        ReviewHeaderOut: {
+            /** Blocked Reason */
+            blocked_reason?: string | null;
+            /** Can Finalise */
+            can_finalise: boolean;
+            /**
+             * Checked By You
+             * @description Items, failures and not-checked results a person decided.
+             */
+            checked_by_you: number;
+            /**
+             * Confirmed By Ai
+             * @description Of those, numbers both AI readers settled.
+             */
+            confirmed_by_ai: number;
+            /** Failures */
+            failures: number;
+            /** Not Checked */
+            not_checked: number;
+            /**
+             * Numbers
+             * @description Width numbers on the countertop rows read.
+             */
+            numbers: number;
+            /**
+             * Open
+             * @description Items and failures still waiting for a person.
+             */
+            open: number;
+            /**
+             * Pages Read
+             * @description Vendor pages the reader looked at for a countertop.
+             */
+            pages_read: number;
+            /**
+             * Rechecking
+             * @description Items waiting for the next check run.
+             */
+            rechecking: number;
+        };
+        /**
+         * ReviewItemOut
+         * @description One question a person answers.
+         */
+        ReviewItemOut: {
+            /**
+             * Actions
+             * @description What a person may do now; empty once answered.
+             */
+            actions: string[];
+            architect_ref?: components["schemas"]["ArchitectRefOut"] | null;
+            /** @description Null when the AI has no guess: the item is then checked by hand, no typing. */
+            best_guess?: components["schemas"]["BestGuessOut"] | null;
+            /** Candidate Id */
+            candidate_id?: string | null;
+            countertop?: components["schemas"]["CountertopItemRefOut"] | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
+            /** Finding Id */
+            finding_id?: string | null;
+            /**
+             * Key
+             * @description Stable key for this question.
+             */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "number" | "countertop_by_hand" | "wall_choice" | "no_countertop_page" | "architect" | "depth_reading" | "other_result";
+            /**
+             * Page
+             * @description 1-based vendor page number.
+             */
+            page: number | null;
+            /** Readers */
+            readers?: components["schemas"]["ReaderTextOut"][];
+            /** Row Id */
+            row_id?: string | null;
+            /** Row Label */
+            row_label?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "open" | "done" | "rechecking";
+            vendor_ref?: components["schemas"]["RowLocation"] | null;
+            /**
+             * What
+             * @description What is being checked, in plain words.
+             */
+            what: string;
+            /**
+             * Why
+             * @description Why a person is asked, in plain words.
+             */
+            why: string;
+            /**
+             * Zoom Ref
+             * @description API path (under the API prefix) of a close-up PNG from the vendor-only page.
+             */
+            zoom_ref?: string | null;
+        };
+        /** ReviewItemsOut */
+        ReviewItemsOut: {
+            /** Failures */
+            failures: components["schemas"]["FailureOut"][];
+            header: components["schemas"]["ReviewHeaderOut"];
+            /** Items */
+            items: components["schemas"]["ReviewItemOut"][];
+            /** Not Checked */
+            not_checked: components["schemas"]["NotCheckedOut"][];
+            /**
+             * Not Checked Note
+             * @default These depth and sink checks did not run: nothing was read for them (the depth and sink reader is off, or read nothing here). They are printed NOT CHECKED.
+             */
+            not_checked_note: string;
+            /**
+             * Package Id
+             * Format: uuid
+             */
+            package_id: string;
+            /**
+             * Revision Id
+             * Format: uuid
+             */
+            revision_id: string;
+            /** Revision Number */
+            revision_number: number;
+            /**
+             * Unaccounted
+             * @description Must be empty. Anything here is a blocking result the list did not place once.
+             */
+            unaccounted: components["schemas"]["UnaccountedOut"][];
         };
         /** ReviewPageOut */
         ReviewPageOut: {
@@ -7600,6 +8046,13 @@ export interface components {
             /** Y */
             y: string;
         };
+        /** SourceChoiceOut */
+        SourceChoiceOut: {
+            /** Guidance */
+            guidance: string;
+            /** Value */
+            value: string;
+        };
         /**
          * SourceOut
          * @description One source a setting may come from, and what choosing it means (#827).
@@ -7785,6 +8238,23 @@ export interface components {
             source: string;
             /** Value */
             value: string;
+        };
+        /**
+         * UnaccountedOut
+         * @description A blocking result or page the list failed to place exactly once. Must never happen.
+         */
+        UnaccountedOut: {
+            /** Finding Id */
+            finding_id?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "finding" | "page";
+            /** Page */
+            page?: number | null;
+            /** Why */
+            why: string;
         };
         /**
          * UploadConfirmation
@@ -8265,6 +8735,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompanySettingsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_project_settings_api_v1_company_settings_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectsSettingsOut"];
+                };
+            };
+        };
+    };
+    save_project_settings_api_v1_company_settings_projects__project_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectValuesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSettingsOut"];
                 };
             };
             /** @description Validation Error */
@@ -10464,6 +10989,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RequiredInputsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_items_api_v1_projects__project_id__packages__package_id__review_items_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewItemsOut"];
                 };
             };
             /** @description Validation Error */
