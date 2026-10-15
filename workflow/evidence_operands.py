@@ -351,6 +351,11 @@ class EvidenceOperands:
     """The order-compared inputs (`position_sensitive_inputs`) of each rule that labelled readings
     exist for and were withheld from, keyed by rule id (#1205). An input missing here had none, so
     the check says where to enter it rather than why readings were not used."""
+    depth_confirmed_for: dict[str, frozenset[UUID | None]] = field(default_factory=dict)
+    """Revision-wide only: for each rule held because a person confirmed a depth reader's reading
+    (`ONE_COUNTERTOPS_READING`), the countertop suggestions those readings are tied to now (`None`:
+    tied to none). Reported, never used here: a row's own check (#1390) reads it to tell one
+    countertop's value from a value given for the whole package."""
 
     def merge(
         self, rule_id: str, supplied: Mapping[str, VerdictOperand]
@@ -488,6 +493,7 @@ def evidence_operands(
     operands: dict[str, dict[str, VerdictOperand]] = {}
     ambiguous: dict[str, dict[str, str]] = {}
     with_readings: dict[str, frozenset[str]] = {}
+    depth_confirmed_for: dict[str, frozenset[UUID | None]] = {}
     for rule in rules:
         ordered = position_sensitive_inputs(rule)
         # Whether anything was labelled for each order-compared run (#1205), before it is withheld.
@@ -504,6 +510,11 @@ def evidence_operands(
             if depth_confirmed.get(_need(selector)) and name not in withheld and name not in ordered
         }
         if held_by_name:
+            depth_confirmed_for[rule.id] = frozenset(
+                _now_tied_to(session, proposal, link_id)
+                for rows in held_by_name.values()
+                for proposal, _page, link_id in rows
+            )
             why = ONE_COUNTERTOPS_READING.format(
                 countertops=_countertop_names(
                     session,
@@ -619,6 +630,7 @@ def evidence_operands(
         missing=missing,
         notes=selected.notes,
         with_readings=with_readings,
+        depth_confirmed_for=depth_confirmed_for,
     )
 
 

@@ -92,6 +92,7 @@ __all__ = [
     "latest_depth_run",
     "person_types",
     "reading_linked",
+    "suggestion_depth_operands",
 ]
 
 #: The five checks this module fills, per countertop.
@@ -814,16 +815,21 @@ def _readings(session: Session, run: ExtractionRun) -> list[DepthReading]:
     ]
 
 
-def depth_operands(
-    session: Session, revision_id: UUID, rule: Rule, item_id: UUID
-) -> DepthItemOperands:
-    """One countertop's operands for one of the five checks, or why each input is withheld."""
-    inputs = {
+def _depth_inputs(rule: Rule) -> dict[str, str]:
+    """The rule's vendor-side inputs the depth reader reads, by name: their semantic types."""
+    return {
         name: getattr(selector.semantic_type, "value", str(selector.semantic_type))
         for name, selector in (rule.inputs or {}).items()
         if getattr(selector.source, "value", str(selector.source)) == DocumentRole.SHOP.value
         and getattr(selector.semantic_type, "value", str(selector.semantic_type)) in DEPTH_FIELDS
     }
+
+
+def depth_operands(
+    session: Session, revision_id: UUID, rule: Rule, item_id: UUID
+) -> DepthItemOperands:
+    """One countertop's operands for one of the five checks, or why each input is withheld."""
+    inputs = _depth_inputs(rule)
     if not inputs:
         return DepthItemOperands()
     first_what = DEPTH_FIELDS[next(iter(inputs.values()))]
@@ -833,6 +839,36 @@ def depth_operands(
     proposal_id, view_id = item_proposals(session, item_id)
     if proposal_id is None or view_id is None:
         return DepthItemOperands(missing=NOT_BALAS.format(what=first_what))
+    return _suggestion_operands(session, revision_id, inputs, runs, proposal_id, view_id)
+
+
+def suggestion_depth_operands(
+    session: Session, revision_id: UUID, rule: Rule, proposal_id: UUID, view_id: UUID
+) -> DepthItemOperands:
+    """The same operands for one of Bala's countertop suggestions on its vendor drawing, with no
+    item (#1390, `workflow/depth_rows.py`): the readings tied to that suggestion's views, exactly as
+    `depth_operands` reads them for the item a person confirmed from it. The caller has already
+    established, on two judgments, that the suggestion is this countertop row's and the only
+    countertop on its drawing; this reads, qualifies and withholds the values exactly as above."""
+    inputs = _depth_inputs(rule)
+    if not inputs:
+        return DepthItemOperands()
+    first_what = DEPTH_FIELDS[next(iter(inputs.values()))]
+    runs = depth_runs(session, revision_id)
+    if not runs:
+        return DepthItemOperands(missing=NOT_READ.format(what=first_what))
+    return _suggestion_operands(session, revision_id, inputs, runs, proposal_id, view_id)
+
+
+def _suggestion_operands(
+    session: Session,
+    revision_id: UUID,
+    inputs: Mapping[str, str],
+    runs: Sequence[ExtractionRun],
+    proposal_id: UUID,
+    view_id: UUID,
+) -> DepthItemOperands:
+    """One countertop suggestion's operands, from the readings tied to it (`depth_operands`)."""
     failed = [run for run in runs if _failed(session, run)]
     good = [run for run in runs if run not in failed]
     if not good:

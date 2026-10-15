@@ -125,6 +125,7 @@ def record_finding(
     scope_label: str | None = None,
     architect_pairing: EffectivePairing | None = None,
     architect_matched_view: MatchedView | None = None,
+    row_depth_suggestion: UUID | None = None,
 ) -> FindingRow:
     """Write one decision: its run, the operands it was computed from, and the finding itself.
 
@@ -142,6 +143,12 @@ def record_finding(
 
     `architect_matched_view` (#1167) is the view of the architect's own file matched with the row,
     when it has one: the named dimension may then also lie in that one view, and nowhere else.
+
+    `row_depth_suggestion` (#1390) is the countertop suggestion a row's own depth and sink check
+    reads (`workflow/depth_rows.py`, behind `GV_DEPTH_PER_ROW`). It is the one thing that lets a
+    depth reader's value support a row-scoped finding: both judgments are re-read here (the row's
+    one live countertop suggestion is this one, alone on its drawing), and then only a value on the
+    row's own page, by a reading tied to that suggestion now, is accepted (`_row_depth_reading`).
     """
     snapshot_row = session.execute(
         select(RuleSnapshotRow).where(RuleSnapshotRow.snapshot_id == finding.snapshot_id)
@@ -156,6 +163,21 @@ def record_finding(
         raise EvidenceMissing("a finding cannot name both a confirmed item and a slot-reader row")
     if architect_pairing is not None and scope_row_candidate_id is None:
         raise EvidenceMissing("an architect pairing belongs to one countertop row's finding")
+    if row_depth_suggestion is not None and (
+        scope_row_candidate_id is None or architect_pairing is not None
+    ):
+        raise EvidenceMissing("a row's own depth check belongs to one countertop row's finding")
+    if row_depth_suggestion is not None:
+        # Both judgments, re-read here rather than trusted from the caller (#1390): the row still
+        # has exactly this one live countertop suggestion, alone on its drawing.
+        from workflow.depth_rows import depth_rows
+
+        judged = depth_rows(session, package_revision_id).row(scope_row_candidate_id)
+        if judged is None or judged.proposal_id != row_depth_suggestion:
+            raise EvidenceMissing(
+                "this countertop row is not checked on its own now: the AI readers and code do not "
+                "both say which countertop it is, or its drawing does not hold it alone"
+            )
     if architect_matched_view is not None and architect_pairing is None:
         raise EvidenceMissing("a matched architect view supports a row only through its pairing")
     if (scope_item_id is None and scope_row_candidate_id is None) != (scope_label is None):
@@ -307,6 +329,8 @@ def record_finding(
                 ):
                     same_row = True
                     break
+            if not same_row and row_depth_suggestion is not None:
+                same_row = _row_depth_reading(session, observation, row_depth_suggestion)
             if not same_row:
                 raise EvidenceMissing("drawing evidence is not supported by this countertop row")
     elif any(operand.row_review_decision_id is not None for operand in operands.values()):
@@ -464,6 +488,48 @@ def _paired_architect(
     refusal = architect_candidate_refusal(session, None, supporter)
     if refusal is not None:
         raise EvidenceMissing(f"the paired architect dimension cannot be used: {refusal}")
+
+
+def _row_depth_reading(
+    session: Session,
+    observation: CanonicalObservation,
+    suggestion: UUID,
+) -> bool:
+    """Whether a depth reader's reading supports this value for the row's own depth check (#1390):
+    a reading behind the value (or behind a reader's own row of it) is a depth reader's, tied to the
+    row's suggestion by its view's link as it stands now (`depth_evidence.reading_linked`).
+
+    `record_finding` has already re-read both judgments (the suggestion is the row's one live
+    countertop suggestion, alone on its drawing) and held the value itself to the row's own page and
+    document; `reading_linked` holds the reading to its link's page. So no page is compared here."""
+    from workflow.depth_evidence import DEPTH_READER_FLAG, DepthReading, reading_linked
+
+    for supporter in session.scalars(
+        select(ObservationCandidate)
+        .join(
+            EvidenceSupportingCandidate,
+            EvidenceSupportingCandidate.candidate_id == ObservationCandidate.id,
+        )
+        .where(EvidenceSupportingCandidate.canonical_observation_id == observation.id)
+    ):
+        flags = frozenset(supporter.ambiguity_flags or ())
+        reading = supporter
+        if DEPTH_READER_FLAG not in flags:
+            parent = next(
+                (f.removeprefix("supports:") for f in flags if f.startswith("supports:")), None
+            )
+            try:
+                found = None if parent is None else session.get(ObservationCandidate, UUID(parent))
+            except ValueError:
+                found = None
+            if found is None:
+                continue
+            reading, flags = found, frozenset(found.ambiguity_flags or ())
+        if DEPTH_READER_FLAG in flags and reading_linked(
+            session, DepthReading(reading, flags), suggestion
+        ):
+            return True
+    return False
 
 
 def _cause_for(outcome: Outcome) -> str:

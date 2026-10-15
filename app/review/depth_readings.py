@@ -65,6 +65,7 @@ from app.models.evidence import (
     ObservationCandidate,
 )
 from app.models.runs import ExtractionRun
+from app.models.verdicts import Finding
 from app.schemas.findings import DepthReadingOut
 from app.verdicts.rulebook import UnreadableSnapshot, from_row
 from evidence.canonical import EvidenceStatus
@@ -90,6 +91,7 @@ from workflow.depth_evidence import (
     VIEW_NOTE,
     depth_runs,
 )
+from workflow.depth_rows import DepthRows, depth_rows, row_check_proposal
 from workflow.item_plan import live_countertops
 
 __all__ = [
@@ -418,6 +420,22 @@ def _row_proposals(session: Session, row_ids: set[UUID]) -> dict[UUID, UUID]:
     return {row: next(iter(ids)) for row, ids in found.items() if len(ids) == 1}
 
 
+def _row_checks(session: Session, finding_ids: set[UUID]) -> dict[UUID, UUID]:
+    """Each of these results that is a countertop row's own check on two judgments (#1390), with
+    the countertop suggestion it was checked for (`workflow/depth_rows.ROW_CHECK_NOTE`). One query,
+    or none."""
+    if not finding_ids:
+        return {}
+    found: dict[UUID, UUID] = {}
+    for finding_id, notes in session.execute(
+        select(Finding.id, Finding.notes).where(Finding.id.in_(finding_ids))
+    ).all():
+        proposal = row_check_proposal(notes)
+        if proposal is not None:
+            found[finding_id] = proposal
+    return found
+
+
 def _labels(
     session: Session, revision_id: UUID, proposals: set[UUID]
 ) -> tuple[dict[UUID, str], dict[UUID, int], dict[UUID, UUID], set[UUID]]:
@@ -624,6 +642,12 @@ def depth_readings_for(
     confirmed there (that result is not the countertop's own check). A result that decided, or
     any other check, gets nothing; so does every result of a revision the reader never read. A fixed
     number of queries per revision, whatever the number of countertops.
+
+    **A countertop row's own check on two judgments** (#1390, `GV_DEPTH_PER_ROW`; its notes say so,
+    `workflow/depth_rows.ROW_CHECK_NOTE`) is read like a countertop's own result: a line for every
+    value, and Confirm offered only while the row's two judgments still hold now for the same
+    suggestion (`workflow/depth_rows.depth_rows`, read once per revision that has one). The confirm
+    path re-checks it (`app/review/evidence_actions.confirm_candidate_reading`).
     """
     waiting = [
         item for item in items if item.rule_id in DEPTH_RULE_IDS and item.outcome in _WAITING
@@ -633,6 +657,20 @@ def depth_readings_for(
     row_proposal = _row_proposals(
         session, {i.scope_row_candidate_id for i in waiting if i.scope_row_candidate_id is not None}
     )
+    # A row's own check on two judgments (#1390) says so in its notes; nothing else does, so with
+    # `GV_DEPTH_PER_ROW` off this is empty and every row result is read as before.
+    row_checks = _row_checks(
+        session, {item.id for item in waiting if item.scope_row_candidate_id is not None}
+    )
+    judged: dict[UUID, DepthRows] = {}
+
+    def row_holds(revision_id: UUID, row_id: UUID, proposal: UUID) -> bool:
+        """Whether the row's two judgments still hold now for this suggestion (`depth_rows`)."""
+        if revision_id not in judged:
+            judged[revision_id] = depth_rows(session, revision_id)
+        found = judged[revision_id].row(row_id)
+        return found is not None and found.proposal_id == proposal
+
     answers: dict[UUID, list[DepthReadingOut]] = {}
     fields = _rule_fields(session, {item.rule_snapshot_id for item in waiting})
     for revision_id in sorted({item.package_revision_id for item in waiting}, key=str):
@@ -664,7 +702,19 @@ def depth_readings_for(
                     )
             elif item.scope_row_candidate_id is not None:
                 proposal = row_proposal.get(item.scope_row_candidate_id)
-                if proposal is not None:
+                own = row_checks.get(item.id)
+                if proposal is not None and own is not None and own == proposal:
+                    # The row's own check on two judgments (#1390, `GV_DEPTH_PER_ROW`): every
+                    # value it reads, and Confirm only while both judgments still hold now.
+                    lines = _countertop_lines(
+                        reading,
+                        proposal,
+                        wanted,
+                        labels.get(proposal, "This countertop"),
+                        every_field=True,
+                        may_confirm=row_holds(revision_id, item.scope_row_candidate_id, proposal),
+                    )
+                elif proposal is not None:
                     lines = _countertop_lines(
                         reading,
                         proposal,
