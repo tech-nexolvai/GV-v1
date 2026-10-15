@@ -227,6 +227,37 @@ describe('walls proposed but not confirmed (#1329 review)', () => {
   });
 });
 
+describe('a reviewer\'s choice on a row between side panels (#1332)', () => {
+  // The API keeps "between panels" as the source (it says where the field cut goes) and flags who chose.
+  const panels = (chosen: boolean) => ({
+    config: chosen ? 'back_only' : null,
+    label: chosen ? 'no field cut: the stone stops at panels' : null,
+    source: 'between panels' as const,
+    line: chosen ? 'no field cut: the stone stops at panels — chosen by a synthetic reviewer' : null,
+    chosen_by_reviewer: chosen,
+  });
+
+  it('chosen after an every-case run: no per-case list and the usual "—" until the checks run again', async () => {
+    const user = userEvent.setup();
+    const chosen = row('b', { outcome: 'REVIEW_REQUIRED', wall_layout: panels(true), wall_cases: MIXED });
+    expect(neededAcrossWalls(chosen)).toBeNull();
+    expect(neededAcrossWalls(row('b', { wall_layout: panels(true), wall_cases: SHORT }))).toBeNull();
+    render(<CountertopTable rows={[chosen]} actions={ACTIONS} />);
+    expect(needed('b')).toBe('—');
+    expect(difference('b')).toBe('—');
+    await user.click(within(cells('b')[0]).getByRole('button', { name: 'Show details' }));
+    expect(document.querySelector('[data-slot="countertop-table"] td [data-slot="needed-per-wall-case"]')).toBeNull();
+  });
+
+  it('not chosen yet: the per-case list is still shown', async () => {
+    const user = userEvent.setup();
+    render(<CountertopTable rows={[row('b', { outcome: 'REVIEW_REQUIRED', wall_layout: panels(false), wall_cases: MIXED })]} actions={ACTIONS} />);
+    expect(difference('b')).toBe('walls needed');
+    await user.click(within(cells('b')[0]).getByRole('button', { name: 'Show details' }));
+    expect(document.querySelectorAll('[data-slot="countertop-table"] td [data-slot="needed-per-wall-case"] li')).toHaveLength(5);
+  });
+});
+
 describe('"same" needs every case to have the row\'s recorded result (#1329 review)', () => {
   it('a FAIL row with one passing case is not shown as wrong for every case', () => {
     const across = neededAcrossWalls(row('f', { outcome: 'FAIL', wall_cases: MIXED }));

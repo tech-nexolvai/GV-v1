@@ -596,6 +596,9 @@ def _wall(
             source = "drawing clues"
         elif source_flag in (READERS_WALL_SOURCE, "drawing-and-readers") and sealed is not None:
             source = "both readers"
+    # "Between panels" says where the stone stops, so it is the source the row shows; whether a
+    # reviewer chose the walls is kept apart, so their choice never reads as a proposal (#1332).
+    chosen_by_reviewer = source == "reviewer"
     if between_panels:
         source = "between panels"
     return WallLayoutOut(
@@ -610,6 +613,7 @@ def _wall(
         ),
         carried_by=None if origin is None or source != "reviewer" else origin.given_by,
         carried_given_at=None if origin is None or source != "reviewer" else origin.given_at,
+        chosen_by_reviewer=chosen_by_reviewer,
     )
 
 

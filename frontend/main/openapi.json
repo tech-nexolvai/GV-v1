@@ -12437,6 +12437,11 @@
             "description": "When the carried answer was originally given.",
             "title": "Carried Given At"
           },
+          "chosen_by_reviewer": {
+            "description": "True when a reviewer chose the walls (#1332). Usually `source` says `reviewer`; on a row whose stone stops between side panels `source` stays `between panels` (it says where the field cut goes), and this flag is the one place that says who chose.",
+            "title": "Chosen By Reviewer",
+            "type": "boolean"
+          },
           "config": {
             "anyOf": [
               {
