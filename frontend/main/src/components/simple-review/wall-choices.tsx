@@ -46,11 +46,14 @@ function ChoiceResult({ choice }: { choice: WallChoice }) {
 export function WallChoices({
   item,
   busy,
+  saving = null,
   onChoose,
 }: {
   item: ReviewItem;
-  /** True while a wall choice is being saved. */
+  /** True while an answer to this item is being saved: every choice waits. */
   busy: boolean;
+  /** The layout being saved (clicked, or picked with the C key): only its card spins. */
+  saving?: string | null;
   onChoose: (layout: string) => void;
 }) {
   const choices = item.wall_choices ?? [];
@@ -75,8 +78,8 @@ export function WallChoices({
               result={<ChoiceResult choice={choice} />}
               proposal={choice.proposed ? 'the AI readers' : null}
               leadsTo="The walls are recorded, and the width check runs again with them."
-              disabled={!open}
-              busy={busy && choice.proposed}
+              disabled={!open || busy}
+              busy={busy && saving === choice.layout}
               showKey={choice.proposed && open}
               onChoose={() => onChoose(choice.layout)}
             />
