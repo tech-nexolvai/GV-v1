@@ -67,11 +67,13 @@ from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
 from app.review.wall_cases import unavailable_reason
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
+from app.verdicts.rulebook import snapshot_store
+from rules.schema import Applicability
+from rules.semantic_types import SemanticType
 from units.imperial import format_inches, parse_imperial
 from verdict.outcomes import Outcome
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
 from vocabulary.wall_layouts import wall_case_words
-from workflow.countertop_runs import published_wall_layouts
 from workflow.slot_row_scope import SlotRow, candidate_is_sealed, slot_rows
 from workflow.wall_cases import is_every_wall_case
 
@@ -618,7 +620,7 @@ def review_items_for_revision(
     def layouts() -> tuple[str, ...]:
         """The published wall layouts, read once and only when a wall choice needs them."""
         if not published:
-            published.append(published_wall_layouts(session))
+            published.append(_published_wall_layouts(session))
         return published[0]
 
     def actions(kind: str, status: Status) -> list[str]:
@@ -1006,6 +1008,18 @@ def _width_items(
             **common,  # type: ignore[arg-type]
         )
     ]
+
+
+def _published_wall_layouts(session: Session) -> tuple[str, ...]:
+    """The wall layouts the published width check offers, from the rulebook alone (the same
+    reading as the wall review's choices); empty when it offers none."""
+    snapshot = snapshot_store(session).latest(WIDTH_RULE)
+    if snapshot is None or not isinstance(snapshot.rule.applicability, Applicability):
+        return ()
+    applicability = snapshot.rule.applicability
+    if applicability.discriminator != SemanticType.WALL_CONFIG.value:
+        return ()
+    return tuple(variant.when for variant in applicability.variants)
 
 
 def _walls_only_open(result: CountertopResultOut, row: SlotRow | None, finding: Finding) -> bool:
