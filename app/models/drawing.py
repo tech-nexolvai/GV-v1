@@ -1003,6 +1003,85 @@ class PartProposalRow(Base, TimestampedUUID, Immutable):
     )
 
 
+#: What kind of view a link says it is (`item_view_links.view_kind`). The depth reader writes only
+#: `plan` and `section` (a side view is read as a section); the others are for a person's link.
+ITEM_VIEW_KINDS: Final = ("plan", "section", "side", "elevation", "detail")
+#: Who judged a link: both AI readers and code agreeing on the view's kind (`code+ais`), or a person.
+ITEM_VIEW_JUDGES: Final = ("code+ais", "person")
+ITEM_VIEW_KIND_VALUES = ", ".join(f"'{kind}'" for kind in ITEM_VIEW_KINDS)
+ITEM_VIEW_JUDGE_VALUES = ", ".join(f"'{judge}'" for judge in ITEM_VIEW_JUDGES)
+
+
+class ItemViewLink(Base, TimestampedUUID, Immutable):
+    """Which countertop a plan or section view of a vendor drawing shows (#1290).
+
+    The depth and sink reader (`workflow/depth_reader.py`) reads a countertop's depth, sink cut-out
+    and front offset on a plan or a section, which is a different view from the front view Bala's
+    countertop came from. This row ties one such view to one of Bala's countertop suggestions
+    (`part_proposal_id`), so a reading on the view can fill only that countertop's checks
+    (`workflow/depth_evidence.py`) and never another's.
+
+    **Only where code can tell which countertop it is.** The reader links a view only when its kind
+    is settled by both AI readers and code, and the vendor drawing holding it holds exactly one
+    countertop. A drawing with two countertops links none of its views: their readings are held,
+    with the reason, on each of those countertops.
+
+    **Append-only**: a person's correction is a new row (`judged_by = 'person'`), never an edit.
+    Unique per countertop, page and region, so asking again finds the link already there.
+    """
+
+    __tablename__ = "item_view_links"
+
+    part_proposal_id: Mapped[UUID] = mapped_column(
+        ForeignKey("part_proposals.id", ondelete="RESTRICT"), index=True
+    )
+    """Bala's countertop suggestion the view shows (the item, before or after a person confirms it)."""
+
+    page_id: Mapped[UUID] = mapped_column(ForeignKey("pages.id", ondelete="RESTRICT"))
+
+    region: Mapped[dict[str, object]] = mapped_column(JSONB)
+    """The view's outline in stored page space, `{"space": "stored", "points": [[x, y], ...]}`, with
+    each coordinate as text, the shape a part's extent has."""
+
+    view_kind: Mapped[str] = mapped_column(String(16))
+    """`plan`, `section`, `side`, `elevation` or `detail` (`ITEM_VIEW_KINDS`)."""
+
+    heading_text: Mapped[str | None] = mapped_column(String(300), default=None)
+    """The vendor's heading under the view, as printed, or `NULL` where none was found."""
+
+    judged_by: Mapped[str] = mapped_column(String(16))
+    """`code+ais` (both readers and code named the view's kind) or `person`."""
+
+    extraction_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("extraction_runs.id", ondelete="RESTRICT"), index=True, default=None
+    )
+    """The depth-reader run that made the link; required unless a person made it."""
+
+    __table_args__ = (
+        CheckConstraint(f"view_kind IN ({ITEM_VIEW_KIND_VALUES})", name="item_view_link_kind"),
+        CheckConstraint(f"judged_by IN ({ITEM_VIEW_JUDGE_VALUES})", name="item_view_link_judge"),
+        CheckConstraint(
+            "judged_by = 'person' OR extraction_run_id IS NOT NULL", name="item_view_link_run"
+        ),
+        # Containment rather than `region->>'space' = 'stored'`: a missing key makes that NULL, and
+        # a check that evaluates to NULL passes.
+        CheckConstraint(
+            """region @> '{"space": "stored"}'::jsonb""", name="item_view_link_region_stored"
+        ),
+        CheckConstraint(
+            "heading_text IS NULL OR heading_text !~ '^[[:space:]]*$'",
+            name="item_view_link_heading_not_blank",
+        ),
+        Index(
+            "uq_item_view_links_item_page_region",
+            "part_proposal_id",
+            "page_id",
+            text("md5(region::text)"),
+            unique=True,
+        ),
+    )
+
+
 class VendorPagePicture(Base, TimestampedUUID, Immutable):
     """A full vendor-only page image prepared for reviewer placement (#948).
 
