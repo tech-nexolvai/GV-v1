@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.review.chat_models import ChatModelChoice
@@ -162,6 +162,10 @@ class Settings(BaseSettings):
     # matched. The API reads the same switch to offer "Read depths again" (#1308) only when it is
     # on. Off by default; unset or empty is off, as the worker reads it.
     depth_reader: bool = False
+    # The item pictures (#1322): the vendor's drawing of one countertop item, zoomed, with boxes
+    # only on numbered lines (`workflow/item_pictures.py`). Built behind `GV_ITEM_PICTURES` and
+    # shown to no reader yet. Off by default; unset or empty is off, as the worker reads it.
+    item_pictures: bool = False
     # A re-run reuses a reader's stored answer to the identical question (same document version,
     # model, prompt id, pictures and packet) instead of asking again (#1112): $0 and repeatable.
     # Off for a proof run that must ask every question again.
@@ -264,12 +268,13 @@ class Settings(BaseSettings):
             )
         return ",".join(sorted(set(names)))
 
-    @field_validator("depth_reader", mode="before")
+    @field_validator("depth_reader", "item_pictures", mode="before")
     @classmethod
-    def _depth_switch_as_the_worker_reads_it(cls, value: object) -> object:
-        """`GV_DEPTH_READER` read exactly as the worker reads it
-        (`extraction.depth.read.depth_reader_enabled`, which this module may not import): unset or
-        empty is off, and an unknown word is refused, never read as on."""
+    def _switch_as_the_worker_reads_it(cls, value: object, info: ValidationInfo) -> object:
+        """`GV_DEPTH_READER` and `GV_ITEM_PICTURES` read exactly as the worker reads them
+        (`extraction.depth.read.depth_reader_enabled`, `workflow.item_pictures.
+        item_pictures_enabled`, which this module may not import): unset or empty is off, and an
+        unknown word is refused, never read as on."""
         if not isinstance(value, str):
             return value
         raw = value.strip().lower()
@@ -277,7 +282,8 @@ class Settings(BaseSettings):
             return False
         if raw in ("1", "true", "on", "yes"):
             return True
-        raise ValueError(f"GV_DEPTH_READER must be true or false, not {raw!r}")
+        name = "GV_" + (info.field_name or "").upper()
+        raise ValueError(f"{name} must be true or false, not {raw!r}")
 
     @field_validator("run_edge_tolerance")
     @classmethod
