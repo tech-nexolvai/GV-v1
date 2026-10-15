@@ -797,6 +797,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/packages/{package_id}/draft-cloud": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where the newest draft cloud PDF request stands
+         * @description Reads records only; asking never renders anything.
+         */
+        get: operations["draft_status_api_v1_projects__project_id__packages__package_id__draft_cloud_get"];
+        put?: never;
+        /**
+         * Ask the worker for a draft cloud PDF (before sign-off)
+         * @description Queue a draft of the current revision, or answer with the request already waiting.
+         *
+         *     `409` while the revision has no results in force: there is nothing to cloud yet. `409` once
+         *     the review is signed off, too: a draft is for before sign-off, and the signed cloud PDF is the
+         *     file that stands for a signed review (`GET .../redline.pdf`).
+         */
+        post: operations["request_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/packages/{package_id}/draft-cloud.pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the newest draft cloud PDF (not signed off)
+         * @description The newest request's draft, as stored; `409` while it is not ready.
+         */
+        get: operations["download_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/packages/{package_id}/evidence/{canonical_observation_id}/crop": {
         parameters: {
             query?: never;
@@ -4116,6 +4164,39 @@ export interface components {
             source_artifact_id: string;
             /** Storage Key */
             storage_key: string;
+        };
+        /**
+         * DraftCloudOut
+         * @description Where the newest draft cloud PDF request of a package stands.
+         */
+        DraftCloudOut: {
+            /** Asked At */
+            asked_at?: string | null;
+            /**
+             * Bytes
+             * @description Only when `status` is `ready`.
+             */
+            bytes?: number | null;
+            /**
+             * Findings
+             * @description Only when `status` is `ready`: how many results the draft covers.
+             */
+            findings?: number | null;
+            /**
+             * Reason
+             * @description Only when `status` is `failed`: why, in plain words.
+             */
+            reason?: string | null;
+            /**
+             * Request Id
+             * @description The newest request; null when none was made.
+             */
+            request_id?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_requested" | "preparing" | "ready" | "failed";
         };
         /**
          * DrawingChangeOut
@@ -9829,6 +9910,102 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PresignedUpload"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_status_api_v1_projects__project_id__packages__package_id__draft_cloud_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftCloudOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftCloudOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                package_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
                 };
             };
             /** @description Validation Error */

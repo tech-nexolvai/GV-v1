@@ -4175,6 +4175,87 @@
         "title": "DocumentVersionOut",
         "type": "object"
       },
+      "DraftCloudOut": {
+        "description": "Where the newest draft cloud PDF request of a package stands.",
+        "properties": {
+          "asked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asked At"
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when `status` is `ready`.",
+            "title": "Bytes"
+          },
+          "findings": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when `status` is `ready`: how many results the draft covers.",
+            "title": "Findings"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only when `status` is `failed`: why, in plain words.",
+            "title": "Reason"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest request; null when none was made.",
+            "title": "Request Id"
+          },
+          "status": {
+            "enum": [
+              "not_requested",
+              "preparing",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "DraftCloudOut",
+        "type": "object"
+      },
       "DrawingChangeOut": {
         "description": "One drawing compared between the two revisions.",
         "properties": {
@@ -16051,6 +16132,167 @@
         "summary": "Register a document and get an upload ticket",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/draft-cloud": {
+      "get": {
+        "description": "Reads records only; asking never renders anything.",
+        "operationId": "draft_status_api_v1_projects__project_id__packages__package_id__draft_cloud_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftCloudOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Where the newest draft cloud PDF request stands",
+        "tags": [
+          "approvals"
+        ]
+      },
+      "post": {
+        "description": "Queue a draft of the current revision, or answer with the request already waiting.\n\n`409` while the revision has no results in force: there is nothing to cloud yet. `409` once\nthe review is signed off, too: a draft is for before sign-off, and the signed cloud PDF is the\nfile that stands for a signed review (`GET .../redline.pdf`).",
+        "operationId": "request_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftCloudOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask the worker for a draft cloud PDF (before sign-off)",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/packages/{package_id}/draft-cloud.pdf": {
+      "get": {
+        "description": "The newest request's draft, as stored; `409` while it is not ready.",
+        "operationId": "download_draft_api_v1_projects__project_id__packages__package_id__draft_cloud_pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download the newest draft cloud PDF (not signed off)",
+        "tags": [
+          "approvals"
         ]
       }
     },
