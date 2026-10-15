@@ -26,6 +26,8 @@ import pariksha_library
 import pariksha_row_review_page as page_script
 
 REPO = Path(__file__).resolve().parents[2]
+PERSON = "Mira Testperson"
+"""An invented person on the invented local confirmers list."""
 PAGE_A = "a" * 64
 PAGE_B = "b" * 64
 LINE = {"y": 40, "x0": 20, "x1": 160}
@@ -169,6 +171,9 @@ def test_the_page_has_one_card_per_keyed_line_answer_with_the_picture_first(
     # Each box on the whole picture can be clicked to name a different line.
     assert len(re.findall(r'data-box="\d"', first_card)) == 2
     assert "Claude-made" in html
+    # The confirmer types their name; the copied answers carry it.
+    assert 'id="who"' in html and "confirmed_by: who.value.trim()" in html
+    assert "box keyed" in first_card
     # Written once.
     assert _page(setup, out) == 2
 
@@ -181,9 +186,21 @@ def test_the_page_is_never_written_inside_a_git_checkout(tmp_path: Path) -> None
     assert not inside.exists()
 
 
-def _answers(setup: dict[str, Any], *answers: dict[str, Any]) -> Path:
+@pytest.fixture(autouse=True)
+def confirmers(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The invented local confirmers list (`GV_SMRITI_CONFIRMERS`), outside any repository."""
+    path = tmp_path_factory.mktemp("people") / "confirmers.json"
+    path.write_text(json.dumps({"format": "smriti-confirmers/1", "confirmers": [PERSON]}))
+    monkeypatch.setenv("GV_SMRITI_CONFIRMERS", str(path))
+    return path
+
+
+def _answers(setup: dict[str, Any], *answers: dict[str, Any], typed: str | None = PERSON) -> Path:
     path = Path(setup["library"]).parent / "answers.json"
-    path.write_text(json.dumps({"format": page_script.ANSWERS_FORMAT, "answers": list(answers)}))
+    document: dict[str, Any] = {"format": page_script.ANSWERS_FORMAT, "answers": list(answers)}
+    if typed is not None:
+        document["confirmed_by"] = typed
+    path.write_text(json.dumps(document))
     return path
 
 
@@ -201,7 +218,7 @@ def _answer(setup: dict[str, Any], page: str, said: str, **extra: Any) -> dict[s
     }
 
 
-def _apply(setup: dict[str, Any], answers: Path, *extra: str) -> int:
+def _apply(setup: dict[str, Any], answers: Path, *extra: str, who: str = PERSON) -> int:
     return page_script.main(
         [
             "apply",
@@ -212,7 +229,7 @@ def _apply(setup: dict[str, Any], answers: Path, *extra: str) -> int:
             "--row-boxes",
             str(setup["boxes"]),
             "--who",
-            "anant",
+            who,
             "--day",
             "2026-01-02",
             *extra,
@@ -233,7 +250,7 @@ def test_a_yes_marks_the_truth_confirmed_in_every_key_that_holds_it(tmp_path: Pa
         key = read_key(Path(entry.path))
         assert isinstance(key, AnswerKey)
         confirmed = {case.question.page_sha256: case.confirmed_by for case in key.cases}
-        assert confirmed[PAGE_A] == "anant"
+        assert confirmed[PAGE_A] == PERSON
         assert confirmed.get(PAGE_B, "") == ""  # "not sure" changes nothing
         assert "1 of" in entry.confirmed_by
     # The old key files stay as they were: a key is never edited in place.
@@ -258,7 +275,7 @@ def test_a_different_line_or_a_no_replaces_the_truth_and_says_who(tmp_path: Path
     assert by_page[PAGE_A].truth == RowTruth(
         box=None, kind="row", at=RowAt.of(CABINETS["y"], CABINETS["x0"], CABINETS["x1"])
     )
-    assert by_page[PAGE_A].confirmed_by == "anant"
+    assert by_page[PAGE_A].confirmed_by == PERSON
     assert "box 1" in by_page[PAGE_A].source
     assert by_page[PAGE_B].truth == RowTruth(box=None, kind="not_among_boxes")
     assert by_page[PAGE_B].picture_sha256 == setup["shas"][PAGE_B]
@@ -287,3 +304,53 @@ def test_malformed_answers_are_refused(tmp_path: Path, broken: dict[str, Any]) -
     answer = {**_answer(setup, PAGE_A, "yes"), **broken}
 
     assert _apply(setup, _answers(setup, answer)) == 2
+
+
+def _nothing_written(setup: dict[str, Any]) -> bool:
+    return not list(Path(setup["first"]).parent.glob("*.confirmed-*.json"))
+
+
+@pytest.mark.parametrize("name", ["Claude Opus", "codex-agent", "claude", "C1aude"])
+def test_an_ai_never_confirms_even_when_typed_on_the_page(tmp_path: Path, name: str) -> None:
+    setup = _setup(tmp_path)
+    answers = _answers(setup, _answer(setup, PAGE_A, "yes"), typed=name)
+
+    assert _apply(setup, answers, who=name) == 2
+    assert _nothing_written(setup)
+
+
+def test_a_name_not_on_the_confirmers_list_or_no_list_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    setup = _setup(tmp_path)
+    stranger = _answers(setup, _answer(setup, PAGE_A, "yes"), typed="Olu Unlisted")
+    assert _apply(setup, stranger, who="Olu Unlisted") == 2
+
+    listed = _answers(setup, _answer(setup, PAGE_A, "yes"))
+    monkeypatch.delenv("GV_SMRITI_CONFIRMERS")
+    assert _apply(setup, listed) == 2
+    assert _nothing_written(setup)
+
+
+def test_who_must_be_the_name_typed_on_the_page_and_is_required(tmp_path: Path) -> None:
+    setup = _setup(tmp_path)
+    typed_by_someone_else = _answers(setup, _answer(setup, PAGE_A, "yes"), typed="Olu Unlisted")
+    assert _apply(setup, typed_by_someone_else) == 2
+    untyped = _answers(setup, _answer(setup, PAGE_A, "yes"), typed=None)
+    assert _apply(setup, untyped) == 2
+    assert _nothing_written(setup)
+    with pytest.raises(SystemExit):
+        page_script.main(["apply", "--answers", str(untyped), "--library", str(setup["library"])])
+
+
+def test_a_different_line_that_the_tolerance_cannot_name_alone_is_refused(tmp_path: Path) -> None:
+    setup = _setup(tmp_path)
+    boxes = json.loads(Path(setup["boxes"]).read_text())
+    for picture in boxes["pictures"]:
+        picture["boxes"] = [CABINETS, LINE, {**CABINETS, "y": CABINETS["y"] + 0.5}]
+    Path(setup["boxes"]).write_text(json.dumps(boxes))
+
+    answers = _answers(setup, _answer(setup, PAGE_A, "other_line", box=1))
+
+    assert _apply(setup, answers) == 2
+    assert _nothing_written(setup)

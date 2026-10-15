@@ -16,15 +16,20 @@ refused; the same answer in several keys is one countertop, named by each.
   answer or decision, so they never count). REVIEW_REQUIRED, NOT_FOUND and the rest are "held":
   not decided.
 * **The line**: the box the readers agreed on (the finding's row candidate, `row-choice:N`) on the
-  picture the page's row question showed, against the keyed line through the box map
+  picture of **that row's own question**: the stored row question whose candidates include the
+  row (`row-choice-candidate:`), or else the one row question about that page in the finding's
+  own package revision. Exactly one picture, or "cannot tell": never a picture found elsewhere in
+  the database. Then against the keyed line through the box map
   (`eval/pariksha/row_geometry.py`): `right`, `wrong`, or `unknown` when the picture's boxes are
   not proven (never counted right).
 * **The numbers**: each verdict input of the finding whose span (`slot-box:` of its supporting
   candidate) a number key (Akshara) answers with exactly one case, compared in inches with the
   key's printed texts (`read_label`). A number no key covers is counted, not judged.
-* **Right** = decided automatically, on the keyed line, and no keyed number differs. **Wrong** =
-  decided automatically on another line, with a keyed number that differs, or on a page keyed "no
-  countertop". Unknown otherwise. A held countertop is neither.
+* **Right** = decided automatically, on the keyed line, and **every** number it used is keyed and
+  right. **Right line, numbers not keyed** is counted apart: the line is right and no keyed number
+  differs, but at least one number has no key, so whether the PASS or FAIL itself is right is not
+  checked. **Wrong** = decided automatically on another line, with a keyed number that differs, or
+  on a page keyed "no countertop". Cannot tell otherwise. A held countertop is none of these.
 
 Nothing is written to the run's database: findings are read in a read-only transaction.
 
@@ -60,6 +65,7 @@ __all__ = [
     "render_countertops",
     "score_countertops",
     "stored_row_pages",
+    "width_finding_revision",
 ]
 
 #: The countertop width rule: its finding is the countertop's decision.
@@ -209,6 +215,14 @@ def _line_on(
     truth = keyed.truth
     if finding.row_choice is None:
         return "unknown", "the finding's row names no agreed box"
+    if len(finding.pictures) != 1:
+        return "unknown", (
+            "the finding's own reading recorded no row picture for this row"
+            if not finding.pictures
+            else f"the finding's own reading recorded {len(finding.pictures)} row pictures for "
+            "this row; which one it chose on is not knowable"
+        )
+    (shown_picture,) = finding.pictures
     if truth.at is None:
         if truth.kind == "not_among_boxes":
             return "wrong", "the key says the countertop's line has no box, but a box was decided"
@@ -216,12 +230,9 @@ def _line_on(
             return "unknown", "the key's box number belongs to another picture"
         same = finding.row_choice == truth.box
         return ("right" if same else "wrong"), f"box {finding.row_choice}, the key's is {truth}"
-    page = finding.page_sha256
-    shown = [] if row_boxes is None else [p for p in finding.pictures if row_boxes.get(p, page)]
-    if len(shown) != 1 or row_boxes is None:
+    picture = None if row_boxes is None else row_boxes.get(shown_picture, finding.page_sha256)
+    if picture is None:
         return "unknown", "no box geometry for the picture the row question showed"
-    picture = row_boxes.get(shown[0], page)
-    assert picture is not None
     here = on_picture(truth.at, picture, keyed.tolerance)  # type: ignore[arg-type]
     if isinstance(here, str):
         return "unknown", here
@@ -241,6 +252,7 @@ def _score_one(
     is_countertop = keyed.truth.kind != "no_countertop"
     automatic = [f for f in findings if f.outcome in AUTOMATIC_OUTCOMES]
     outcome = ", ".join(sorted({f.outcome for f in findings})) or "none"
+    numbers_total = sum(len(f.numbers) for f in automatic)
     common = {
         "page_sha256": keyed.question.page_sha256,
         "question_id": keyed.question.question_id,
@@ -249,7 +261,7 @@ def _score_one(
         "is_countertop": is_countertop,
         "automatic": bool(automatic),
         "outcome": outcome,
-        "numbers_total": sum(len(f.numbers) for f in automatic),
+        "numbers_total": numbers_total,
     }
     if not automatic:
         why = (
@@ -283,8 +295,15 @@ def _score_one(
     if "wrong" in states or wrong_numbers:
         right: bool | None = False
         line = "wrong" if "wrong" in states else ("unknown" if "unknown" in states else "right")
-    elif states == {"right"}:
+    elif states == {"right"} and numbers_total and keyed_numbers == numbers_total:
         right, line = True, "right"
+    elif states == {"right"}:
+        # The right line, but a number has no key: the PASS or FAIL itself is not checked.
+        right, line = None, "right"
+        notes.append(
+            f"{numbers_total - keyed_numbers} of {numbers_total} number(s) not keyed, so whether "
+            f"this {outcome} is right is not checked"
+        )
     else:
         right, line = None, "unknown"
     return CountertopLine(
@@ -331,8 +350,13 @@ def score_countertops(
         "keyed_countertops": len(countertops),
         "automatic": len(automatic),
         "automatic_right": sum(1 for line in automatic if line.right is True),
+        "automatic_right_line_numbers_not_keyed": sum(
+            1 for line in automatic if line.right is None and line.line == "right"
+        ),
         "automatic_wrong": sum(1 for line in automatic if line.right is False),
-        "automatic_unknown": sum(1 for line in automatic if line.right is None),
+        "automatic_unknown": sum(
+            1 for line in automatic if line.right is None and line.line != "right"
+        ),
         "keyed_no_countertop": len(others),
         "no_countertop_decided": sum(1 for line in others if line.automatic),
         "keyed_not_in_run": len(keyed_all) - len(in_run),
@@ -345,11 +369,14 @@ def render_countertops(card: CountertopScorecard, names: Mapping[str, str] | Non
     totals = card.totals
     text_lines = [
         f"keyed countertops: {totals['keyed_countertops']}",
+        f"  decided automatically: {totals['automatic']} of {totals['keyed_countertops']}",
+        f"    right (right line, every number keyed and right): {totals['automatic_right']}",
         (
-            f"  decided automatically: {totals['automatic']} of {totals['keyed_countertops']}"
-            f"  (right: {totals['automatic_right']}, wrong: {totals['automatic_wrong']}, "
-            f"cannot tell: {totals['automatic_unknown']})"
+            "    right line, numbers not keyed (whether the PASS or FAIL is right is NOT "
+            f"checked): {totals['automatic_right_line_numbers_not_keyed']}"
         ),
+        f"    wrong: {totals['automatic_wrong']}",
+        f"    cannot tell: {totals['automatic_unknown']}",
         (
             f"pages keyed 'no countertop': {totals['keyed_no_countertop']}"
             f"  (a countertop decided there anyway: {totals['no_countertop_decided']})"
@@ -367,6 +394,13 @@ def render_countertops(card: CountertopScorecard, names: Mapping[str, str] | Non
     for line in sorted(card.lines, key=natural):
         where = where_of(line)
         verdict = {True: "RIGHT", False: "WRONG", None: "-"}[line.right]
+        if line.automatic and line.right is None:
+            verdict = (
+                f"RIGHT LINE, NUMBERS NOT KEYED: whether this {line.outcome} is right is not "
+                "checked"
+                if line.line == "right"
+                else "CANNOT TELL"
+            )
         numbers = (
             f", numbers keyed {line.numbers_keyed} of {line.numbers_total}"
             if line.automatic and line.is_countertop
@@ -418,14 +452,26 @@ def _flag(flags: object, prefix: str) -> str | None:
     return None
 
 
-def _row_pictures(session: Session) -> dict[str, tuple[str, ...]]:
-    """Each page's numbered row pictures, from the stored row questions."""
-    from app.models.runs import ModelInvocation
+@dataclass(frozen=True, slots=True)
+class _RowQuestion:
+    page_sha256: str
+    candidate_ids: frozenset[str]
+    pictures: frozenset[str]
+
+
+def _row_questions(session: Session, package_revision_id: UUID) -> list[_RowQuestion]:
+    """The stored row questions of one package revision's own readings (never another's)."""
+    from app.models.runs import ExtractionRun, ModelInvocation, TaskRun, WorkflowRun
     from eval.pariksha.stored import prompt_family
 
-    pictures: dict[str, set[str]] = defaultdict(set)
+    found: list[_RowQuestion] = []
     for prompt_id, packet in session.execute(
-        select(ModelInvocation.prompt_id, ModelInvocation.reader_question_packet).where(
+        select(ModelInvocation.prompt_id, ModelInvocation.reader_question_packet)
+        .join(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
+        .join(TaskRun, TaskRun.id == ExtractionRun.task_run_id)
+        .join(WorkflowRun, WorkflowRun.id == TaskRun.workflow_run_id)
+        .where(
+            WorkflowRun.package_revision_id == package_revision_id,
             ModelInvocation.reader_question_packet.is_not(None),
             ModelInvocation.prompt_id.startswith(f"{_ROW_FAMILY}-v"),
         )
@@ -434,17 +480,73 @@ def _row_pictures(session: Session) -> dict[str, tuple[str, ...]]:
             continue
         page = packet.get("source_page_sha256")
         images = packet.get("images")
+        candidates = packet.get("candidate_ids")
         if not isinstance(page, str) or not isinstance(images, Mapping):
             continue
-        for image in images.values():
-            if isinstance(image, Mapping) and isinstance(image.get("sha256"), str):
-                pictures[page].add(str(image["sha256"]))
-    return {page: tuple(sorted(found)) for page, found in pictures.items()}
+        found.append(
+            _RowQuestion(
+                page_sha256=page,
+                candidate_ids=frozenset(
+                    str(c) for c in (candidates if isinstance(candidates, list) else ())
+                ),
+                pictures=frozenset(
+                    str(image["sha256"])
+                    for image in images.values()
+                    if isinstance(image, Mapping) and isinstance(image.get("sha256"), str)
+                ),
+            )
+        )
+    return found
 
 
-def stored_row_pages(session: Session) -> frozenset[str]:
-    """The pages the database's runs asked a row question about: the pages they read for a row."""
-    return frozenset(_row_pictures(session))
+def _own_pictures(
+    questions: Sequence[_RowQuestion], page_sha256: str, row_candidate: str | None
+) -> tuple[str, ...]:
+    """The picture(s) of the row question that made this row: by the row's own candidate id when
+    it carries one, else every row question about the page in the same revision."""
+    if row_candidate is not None:
+        asked = [q for q in questions if row_candidate in q.candidate_ids]
+    else:
+        asked = [q for q in questions if q.page_sha256 == page_sha256]
+    return tuple(sorted({picture for q in asked for picture in q.pictures}))
+
+
+def width_finding_revision(session: Session, package_revision_id: UUID | None = None) -> UUID:
+    """The package revision whose width findings are scored: the one named, or the database's
+    only one (several are refused, with the list)."""
+    from app.models.rules import RuleDefinition, RuleSnapshot
+    from app.models.verdicts import CheckRun, Finding
+
+    session.execute(text("SET TRANSACTION READ ONLY"))
+    revisions = sorted(
+        set(
+            session.scalars(
+                select(Finding.package_revision_id)
+                .join(CheckRun, CheckRun.id == Finding.check_run_id)
+                .join(RuleSnapshot, RuleSnapshot.id == CheckRun.rule_snapshot_id)
+                .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
+                .where(RuleDefinition.rule_id == WIDTH_RULE)
+            )
+        ),
+        key=str,
+    )
+    if package_revision_id is not None:
+        if package_revision_id not in revisions:
+            raise ValueError(f"package revision {package_revision_id} holds no width finding")
+        return package_revision_id
+    if not revisions:
+        raise ValueError("this database holds no width finding")
+    if len(revisions) > 1:
+        raise ValueError(
+            f"{len(revisions)} package revisions hold width findings "
+            f"({', '.join(str(r) for r in revisions)}); name the one to score"
+        )
+    return revisions[0]
+
+
+def stored_row_pages(session: Session, package_revision_id: UUID) -> frozenset[str]:
+    """The pages this revision's own readings asked a row question about."""
+    return frozenset(q.page_sha256 for q in _row_questions(session, package_revision_id))
 
 
 def _finding_numbers(session: Session, check_run_id: UUID) -> tuple[FindingNumber, ...]:
@@ -489,16 +591,16 @@ def _finding_numbers(session: Session, check_run_id: UUID) -> tuple[FindingNumbe
 def load_countertop_findings(
     session: Session, *, package_revision_id: UUID | None = None
 ) -> tuple[CountertopFinding, ...]:
-    """Each countertop row's first width finding in one package revision, read-only."""
+    """Each countertop row's first width finding in one package revision, read-only, with the
+    picture(s) of that row's own question in that revision."""
     from app.models.document import Page
     from app.models.evidence import ObservationCandidate
     from app.models.rules import RuleDefinition, RuleSnapshot
     from app.models.verdicts import CheckRun, Finding
 
-    session.execute(text("SET TRANSACTION READ ONLY"))
+    revision = width_finding_revision(session, package_revision_id)
     rows = session.execute(
         select(
-            Finding.package_revision_id,
             Finding.scope_row_candidate_id,
             Finding.outcome,
             Finding.reason,
@@ -512,21 +614,13 @@ def load_countertop_findings(
         .join(RuleDefinition, RuleDefinition.id == RuleSnapshot.rule_definition_id)
         .join(ObservationCandidate, ObservationCandidate.id == Finding.scope_row_candidate_id)
         .join(Page, Page.id == ObservationCandidate.page_id)
-        .where(RuleDefinition.rule_id == WIDTH_RULE)
+        .where(RuleDefinition.rule_id == WIDTH_RULE, Finding.package_revision_id == revision)
         .order_by(Finding.created_at, Finding.id)
     ).all()
-    revisions = sorted({row.package_revision_id for row in rows}, key=str)
-    if package_revision_id is not None:
-        rows = [row for row in rows if row.package_revision_id == package_revision_id]
-    elif len(revisions) > 1:
-        raise ValueError(
-            f"{len(revisions)} package revisions hold width findings "
-            f"({', '.join(str(r) for r in revisions)}); name the one to score"
-        )
     first: dict[UUID | None, Any] = {}
     for row in rows:
         first.setdefault(row.scope_row_candidate_id, row)
-    pictures = _row_pictures(session)
+    questions = _row_questions(session, revision)
     findings: list[CountertopFinding] = []
     for row in first.values():
         choice = _flag(row.ambiguity_flags, "row-choice:")
@@ -537,7 +631,11 @@ def load_countertop_findings(
                 outcome=row.outcome,
                 reason=row.reason or "",
                 row_choice=int(choice) if choice and choice.isdigit() and int(choice) else None,
-                pictures=pictures.get(row.content_hash, ()),
+                pictures=_own_pictures(
+                    questions,
+                    row.content_hash,
+                    _flag(row.ambiguity_flags, "row-choice-candidate:"),
+                ),
                 numbers=_finding_numbers(session, row.check_run_id),
             )
         )

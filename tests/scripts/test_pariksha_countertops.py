@@ -83,9 +83,14 @@ def test_the_script_prints_and_writes_the_countertop_scorecard(
 
     printed = capsys.readouterr().out
     assert "decided automatically: 1 of 1" in printed
+    # The database's password is never printed.
+    assert engine.url.password and f":{engine.url.password}@" not in printed
     written = json.loads(out.read_text())
-    assert written["totals"]["automatic_right"] == 1
-    assert written["lines"][0]["right"] is True
+    # The right line, but the FAIL's numbers have no key: counted apart, never "right".
+    assert written["totals"]["automatic_right_line_numbers_not_keyed"] == 1
+    assert written["totals"]["automatic_right"] == 0
+    assert written["lines"][0]["line"] == "right" and written["lines"][0]["right"] is None
+    assert "NOT checked" in printed
     inside = REPO / "countertops-should-not-exist.json"
     assert pariksha_countertops.main([*command, str(inside)]) == 2
     assert not inside.exists()

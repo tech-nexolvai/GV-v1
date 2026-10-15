@@ -42,6 +42,7 @@ from eval.pariksha.countertops import (
     render_countertops,
     score_countertops,
     stored_row_pages,
+    width_finding_revision,
 )
 from eval.pariksha.keys import AnswerKey, KeyFormatError, read_key
 from eval.pariksha.row_geometry import RowBoxesError, read_row_boxes
@@ -80,8 +81,9 @@ def _main(args: argparse.Namespace) -> int:
     try:
         with Session(engine) as session:
             try:
-                findings = load_countertop_findings(session, package_revision_id=args.revision)
-                read_pages = stored_row_pages(session)
+                revision = width_finding_revision(session, args.revision)
+                findings = load_countertop_findings(session, package_revision_id=revision)
+                read_pages = stored_row_pages(session, revision)
                 names = {
                     content_hash: f"page {index + 1}"
                     for index, content_hash in session.execute(
@@ -104,7 +106,9 @@ def _main(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("x") as handle:
         handle.write(json.dumps(card_document(card), indent=1) + "\n")
-    print(f"countertops of {args.db}: {len(findings)} countertop row(s) with a width finding")
+    # Never the URL itself: it can carry the database password.
+    shown = _database_url(args.db).render_as_string(hide_password=True)
+    print(f"countertops of {shown}: {len(findings)} countertop row(s) with a width finding")
     print(render_countertops(card, names))
     print(f"  written: {out}")
     return 0

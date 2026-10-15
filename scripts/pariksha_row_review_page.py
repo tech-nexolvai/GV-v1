@@ -19,11 +19,16 @@ as on Smriti's page (#1278):
    "The right line has no box" or "Not sure". After "A different line": click its box.
 
 A card whose picture cannot be found, or whose boxes are not proven, says so and has no buttons.
-Answers are kept in the browser while working; **Copy answers** gives the `pariksha-row-answers/1`
-text to save to a file for `apply`.
+Answers are kept in the browser while working; **Copy answers** (only once a name is typed in "Your
+name") gives the `pariksha-row-answers/1` text, carrying that typed name, to save to a file for
+`apply`.
 
-**apply** turns the answers into new key versions (a key is never edited in place): a Yes marks the
-case `confirmed_by: <who>`; a different line or a No replaces the answer and marks who; Not sure
+**apply** turns the answers into new key versions (a key is never edited in place). **Who confirms**
+follows Smriti's rule (`eval.smriti.confirm.who_confirms`): `--who` is required (no default), must be
+the name typed on the page, must be plainly a person (never an AI, an agent or code, however
+spelled), and must be on the local confirmers list that `GV_SMRITI_CONFIRMERS` names; with no list,
+nobody confirms. Then a Yes marks the case `confirmed_by: <who>`; a different line (only when its box is the one box within the key's tolerance) or a No replaces
+the answer and marks who; Not sure
 changes nothing. Every answer names the truth it was shown, and one the key no longer holds is
 refused. With `--update-library` the list's entries are replaced by the new versions (the old list
 is kept beside it).
@@ -34,7 +39,7 @@ is kept beside it).
 
     python scripts/pariksha_row_review_page.py apply --answers ~/gv-local/keys/review/<answers>.json \\
         --library ~/gv-local/keys/library.json --row-boxes ~/gv-local/keys/<box map>.json \\
-        [--who anant] [--update-library]
+        --who "<the name typed on the page>" [--update-library]   # GV_SMRITI_CONFIRMERS must be set
 
 The page, the answers and the keys hold client pictures and values: written under `~/gv-local/`,
 once, never inside a git working tree. No model call; databases are only read.
@@ -82,9 +87,12 @@ from eval.pariksha.row_geometry import (
     PictureBoxes,
     RowBoxes,
     RowBoxesError,
+    matching_boxes,
     on_picture,
     read_row_boxes,
 )
+from eval.smriti.actors import ReviewersFileError, confirmers_from_environment
+from eval.smriti.confirm import ConfirmationRefused, who_confirms
 from eval.smriti.library import (
     Library,
     LibraryEntry,
@@ -102,6 +110,7 @@ SAID: Final = ("yes", "other_line", "no_countertop", "not_among_boxes", "unsure"
 _ANSWER_FIELDS: Final = frozenset(
     {"page_sha256", "question_id", "shown_truth", "picture_sha256", "said", "box", "note"}
 )
+_ANSWERS_HEADER: Final = frozenset({"format", "confirmed_by", "answers"})
 _CLOSE_UP_WIDTH: Final = 1000
 
 
@@ -444,6 +453,9 @@ img { width:100%; height:auto; border:1px solid var(--line); border-radius:6px; 
 .card.picking .whole .box { border-color:var(--other); cursor:pointer; background:rgba(42,91,215,.08); }
 .card.picking .whole .box span { display:inline; position:absolute; left:-1.6em; top:-0.2em;
   background:var(--other); color:#fff; font-size:13px; padding:0 5px; border-radius:6px; }
+.whole .box.keyed { border:3px solid #f5c400; box-shadow:0 0 0 2px #000; }
+.whole .box.keyed span { display:inline; position:absolute; left:-1.6em; top:-0.2em;
+  background:#f5c400; color:#000; font-size:13px; padding:0 5px; border-radius:6px; }
 .whole .box.on { border:3px solid var(--other); background:rgba(42,91,215,.18); }
 .whole .box.on span { display:inline; position:absolute; left:-1.6em; top:-0.2em;
   background:var(--other); color:#fff; font-size:13px; padding:0 5px; border-radius:6px; }
@@ -461,6 +473,8 @@ button.on { background:var(--other); border-color:var(--other); color:#fff; }
 .status { color:var(--muted); font-size:15px; margin:4px 0; }
 details { margin-top:10px; color:var(--muted); font-size:14px; }
 code { font-size:13px; word-break:break-all; }
+.bar input { font:inherit; padding:6px 10px; border-radius:8px; border:1px solid var(--line);
+  background:var(--card); color:var(--ink); }
 .copy { background:var(--accent); color:#fff; border-color:var(--accent); }
 textarea#out { width:100%; min-height:160px; display:none; font:13px monospace; }
 @media (max-width:600px) { main { padding:12px; } .verdict button { padding:10px 18px; } }
@@ -519,7 +533,12 @@ _SCRIPT: Final = """
     paint(card);
   });
   count();
+  var who = document.getElementById("who");
+  who.value = state.confirmed_by || "";
+  who.addEventListener("input", function () { state.confirmed_by = who.value; save(); });
   document.getElementById("copy").addEventListener("click", function () {
+    var told = document.getElementById("copied");
+    if (!who.value.trim()) { told.textContent = "Type your name at the top first."; who.focus(); return; }
     var answers = [];
     cards.forEach(function (card) {
       var a = state[card.getAttribute("data-case")] || {}, s = said(a); if (s === null) return;
@@ -529,10 +548,10 @@ _SCRIPT: Final = """
       if (s === "other_line") out.box = a.box;
       answers.push(out);
     });
-    var text = JSON.stringify({ format: META.answers_format, answers: answers }, null, 1);
+    var text = JSON.stringify({ format: META.answers_format, confirmed_by: who.value.trim(),
+      answers: answers }, null, 1);
     var area = document.getElementById("out"); area.style.display = "block"; area.value = text;
     area.select();
-    var told = document.getElementById("copied");
     function done(ok) { told.textContent = ok ? "Copied " + answers.length + " answers." :
       "Select the text below and copy it."; }
     if (navigator.clipboard) { navigator.clipboard.writeText(text).then(function () { done(true); },
@@ -554,6 +573,7 @@ def build_page(cards: Sequence[tuple[_Card, _Shown, str]], *, day: str) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>Line Check</title><style>{_STYLE}</style></head><body>"
         '<div class="bar"><b>Line check</b><span id="done"></span>'
+        '<label>Your name <input id="who" autocomplete="off"></label>'
         '<button class="copy" id="copy">Copy answers</button><span id="copied" aria-live="polite">'
         "</span></div><main>"
         "<h1>Which line is the countertop's?</h1>"
@@ -561,7 +581,7 @@ def build_page(cards: Sequence[tuple[_Card, _Shown, str]], *, day: str) -> str:
         "each card was made by Claude, and the AI being tested is also Claude, so please check "
         "each one yourself. Look at the picture, then click <b>Yes</b> if the yellow line is the "
         "countertop's line of numbers, <b>No</b> if it is not, or <b>A different line</b> and then "
-        "click the right box. When you are done, press <b>Copy answers</b> (top) and paste the "
+        "click the right box. When you are done, type your name and press <b>Copy answers</b> (top) and paste the "
         f"text into a file for Claude. Made {_e(day)}; your clicks are kept in this browser until "
         "you copy them.</p>"
         f'{"".join(sections)}<textarea id="out" aria-label="answers to copy"></textarea></main>'
@@ -643,6 +663,17 @@ class _Answer:
     box: int | None
 
 
+def _typed_name(path: Path) -> str:
+    """The name typed on the page, as the answers file carries it."""
+    data = json.loads(path.expanduser().read_text())
+    typed = data.get("confirmed_by") if isinstance(data, Mapping) else None
+    if not isinstance(typed, str) or not typed.strip():
+        raise Refused(
+            "the answers carry no confirmer's name: type your name on the page before Copy answers"
+        )
+    return typed.strip()
+
+
 def _read_answers(path: Path) -> list[_Answer]:
     try:
         data = json.loads(path.expanduser().read_text())
@@ -650,6 +681,9 @@ def _read_answers(path: Path) -> list[_Answer]:
         raise Refused(f"{path}: {error}") from error
     if not isinstance(data, Mapping) or data.get("format") != ANSWERS_FORMAT:
         raise Refused(f"{path} is not a {ANSWERS_FORMAT} file")
+    extra = sorted(set(data) - _ANSWERS_HEADER)
+    if extra:
+        raise Refused(f"unknown field(s) in the answers file: {', '.join(extra)}")
     raw = data.get("answers")
     if not isinstance(raw, list) or not raw:
         raise Refused("answers must be a non-empty list")
@@ -713,9 +747,17 @@ def _new_case(
                 f"{key.name} names no row by geometry; convert it first "
                 "(scripts/pariksha_row_boxes.py convert)"
             )
+        line = picture.boxes[answer.box - 1]
+        found = matching_boxes(line, picture, key.row_tolerance_pt)
+        if found != (answer.box,):
+            raise Refused(
+                f"{answer.question}: box {answer.box}'s line is within the key's "
+                f"{key.row_tolerance_pt} pt of boxes {', '.join(map(str, found))}; the key could "
+                "not name it alone, so it is not written"
+            )
         changed = replace(
             case,
-            truth=RowTruth(box=None, kind="row", at=picture.boxes[answer.box - 1]),
+            truth=RowTruth(box=None, kind="row", at=line),
             picture_sha256=None,
         )
     said = (
@@ -728,11 +770,16 @@ def _new_case(
 
 
 def _apply(args: argparse.Namespace) -> int:
-    who = args.who.strip()
-    if not who:
-        raise Refused("--who must name the person")
-    day = args.day or datetime.now(UTC).date().isoformat()
     answers = _read_answers(args.answers)
+    typed = _typed_name(args.answers)
+    if args.who.strip().casefold() != typed.casefold():
+        raise Refused(
+            f"--who {args.who.strip()!r} is not the name typed on the page ({typed!r}); the person "
+            "who clicked is the one who confirms"
+        )
+    # Smriti's rule: only a person on the local confirmers list, never an AI, an agent or code.
+    who = who_confirms(typed, confirmers_from_environment())
+    day = args.day or datetime.now(UTC).date().isoformat()
     holders = _holders(args)
     row_boxes = read_row_boxes(args.row_boxes) if args.row_boxes else RowBoxes(pictures={})
     by_question = {answer.question: answer for answer in answers}
@@ -854,7 +901,11 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--out", type=Path, help="the page (default under ~/gv-local)")
         else:
             command.add_argument("--answers", type=Path, required=True)
-            command.add_argument("--who", default="anant", help="who answered (default anant)")
+            command.add_argument(
+                "--who",
+                required=True,
+                help="the person who answered: the name typed on the page, on the confirmers list",
+            )
             command.add_argument("--update-library", action="store_true")
     return parser
 
@@ -872,6 +923,8 @@ def main(argv: list[str] | None = None) -> int:
         LibraryError,
         RowBoxesError,
         FileExistsError,
+        ConfirmationRefused,
+        ReviewersFileError,
     ) as error:
         print(f"pariksha line check: {error}", file=sys.stderr)
         return REFUSED

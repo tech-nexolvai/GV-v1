@@ -222,6 +222,10 @@ def test_who_confirmed_a_case_is_kept_and_changes_the_hash() -> None:
     assert confirmed.sha256 != plain.sha256
     with pytest.raises(KeyFormatError, match="confirmed_by"):
         _rows_key(_case(answer={"row_at": LINE}, confirmed_by=" "), tolerance=1)
+    # Only a person confirms: never an AI, an agent or code, however it is spelled.
+    for machine in ("Claude Opus", "codex-agent", "C1aude", "code:converter"):
+        with pytest.raises(KeyFormatError, match="only a person confirms"):
+            _rows_key(_case(answer={"row_at": LINE}, confirmed_by=machine), tolerance=1)
 
 
 # --- the box map -----------------------------------------------------------------------------

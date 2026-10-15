@@ -129,11 +129,15 @@ def _line(card: Any, page: str) -> Any:
     return line
 
 
+KEYED_SPAN = (FindingNumber(operand="piece_widths[0]", inches=Fraction(3, 4), slot_box=SPAN),)
+
+
 def test_an_automatic_decision_on_the_keyed_line_is_right_and_a_held_one_is_not_decided() -> None:
     card = score_countertops(
         [_rows_key(A={"row_at": LINE}, B={"row_at": LINE})],
-        [_finding(), _finding(PAGE_B, "REVIEW_REQUIRED", picture=PICTURE_B)],
+        [_finding(numbers=KEYED_SPAN), _finding(PAGE_B, "REVIEW_REQUIRED", picture=PICTURE_B)],
         row_boxes=_boxes(),
+        label_keys=[_label_key(['3/4"'])],
     )
 
     decided, held = _line(card, PAGE_A), _line(card, PAGE_B)
@@ -144,6 +148,7 @@ def test_an_automatic_decision_on_the_keyed_line_is_right_and_a_held_one_is_not_
         "keyed_countertops": 2,
         "automatic": 1,
         "automatic_right": 1,
+        "automatic_right_line_numbers_not_keyed": 0,
         "automatic_wrong": 0,
         "automatic_unknown": 0,
         "keyed_no_countertop": 0,
@@ -207,7 +212,11 @@ def test_a_keyed_number_that_differs_makes_the_decision_wrong_and_unkeyed_ones_a
 
     assert (_line(right, PAGE_A).numbers_keyed, _line(right, PAGE_A).numbers_wrong) == (1, 0)
     assert _line(right, PAGE_A).numbers_total == 2
-    assert _line(right, PAGE_A).right is True
+    # The right line and no keyed number wrong, but one number has no key: not called right.
+    assert (_line(right, PAGE_A).line, _line(right, PAGE_A).right) == ("right", None)
+    assert "1 of 2 number(s) not keyed" in _line(right, PAGE_A).why
+    assert right.totals["automatic_right_line_numbers_not_keyed"] == 1
+    assert right.totals["automatic_right"] == 0
     assert (_line(wrong, PAGE_A).numbers_wrong, _line(wrong, PAGE_A).right) == (1, False)
     assert "piece_widths[0]" in _line(wrong, PAGE_A).why
 
@@ -259,7 +268,34 @@ def test_the_rendered_scorecard_states_the_honest_metric_in_plain_words() -> Non
 
     text = render_countertops(card)
     assert "decided automatically: 1 of 2" in text
-    assert "right: 1" in text and "wrong: 0" in text
+    assert "right (right line, every number keyed and right): 0" in text
+    assert (
+        "right line, numbers not keyed (whether the PASS or FAIL is right is NOT checked): 1"
+        in (text)
+    )
+    assert "whether this FAIL is right is not checked" in text
+    assert "wrong: 0" in text
+
+
+def test_a_finding_with_no_single_picture_of_its_own_cannot_be_told() -> None:
+    for pictures in ((), (PICTURE_A, PICTURE_B)):
+        finding = CountertopFinding(
+            page_sha256=PAGE_A,
+            label="Countertop row on page 1",
+            outcome="FAIL",
+            reason="invented",
+            row_choice=2,
+            pictures=pictures,
+            numbers=KEYED_SPAN,
+        )
+        card = score_countertops(
+            [_rows_key(A={"row_at": LINE})],
+            [finding],
+            row_boxes=_boxes(),
+            label_keys=[_label_key(['3/4"'])],
+        )
+        assert (_line(card, PAGE_A).line, _line(card, PAGE_A).right) == ("unknown", None)
+        assert "row picture" in _line(card, PAGE_A).why
 
 
 # --- read from a stored run ------------------------------------------------------------------
@@ -402,7 +438,9 @@ def _add_number(
     session.flush()
 
 
-def _add_row_question(session: Session, run: Any, version: Any, picture: str) -> None:
+def _add_row_question(
+    session: Session, run: Any, version: Any, picture: str, candidates: list[str] | None = None
+) -> None:
     from app.models.runs import ModelInvocation
 
     session.add(
@@ -425,7 +463,7 @@ def _add_row_question(session: Session, run: Any, version: Any, picture: str) ->
                 "page_index": 0,
                 "source_page_sha256": "1" * 64,
                 "prompt_id": "slot-row-choice-v5",
-                "candidate_ids": [str(uuid4()), str(uuid4())],
+                "candidate_ids": candidates or [str(uuid4()), str(uuid4())],
                 "candidate_count": 2,
                 "packet_sha256": "p" * 8,
                 "images": {"numbered_vendor_view": {"sha256": picture, "storage_key": None}},
@@ -443,14 +481,24 @@ def test_the_stored_run_gives_each_row_its_first_width_finding_before_any_person
     revision, version, page, run = _scaffold(session)  # its page hash is "1" * 64
     snapshot = _width_rule(session)
     start = datetime(2026, 1, 1, tzinfo=UTC)
-    first_row = _row_candidate(session, version, page, run, ["slot-reader", "row-choice:2"])
+    asked = [str(uuid4()), str(uuid4())]
+    first_row = _row_candidate(
+        session,
+        version,
+        page,
+        run,
+        ["slot-reader", "row-choice:2", f"row-choice-candidate:{asked[1]}"],
+    )
     second_row = _row_candidate(session, version, page, run, ["slot-reader", "row-rank:1"])
     # The first row was held, then passed once a person answered: only the first counts.
     _add_finding(session, revision, snapshot, first_row, "REVIEW_REQUIRED", start)
     _add_finding(session, revision, snapshot, first_row, "PASS", start + timedelta(seconds=9))
     failed = _add_finding(session, revision, snapshot, second_row, "FAIL", start)
     _add_number(session, failed, version, page, run, Fraction(3, 4))
-    _add_row_question(session, run, version, PICTURE_A)
+    _add_row_question(session, run, version, PICTURE_A, asked)
+    # Another revision asked about a page with the same hash on another picture: never used.
+    _other_revision, other_version, _other_page, other_run = _scaffold(session)
+    _add_row_question(session, other_run, other_version, PICTURE_B)
     session.commit()
 
     findings = load_countertop_findings(session)

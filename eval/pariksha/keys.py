@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from eval.architect_reader import KeyPage, key_pages
+from eval.smriti.actors import not_a_person
 from extraction.slot_reader.seal import normalise_text
 
 __all__ = [
@@ -352,6 +353,14 @@ def _case(agent: str, data: object, index: int) -> KeyCase:
         raise KeyFormatError(
             f"{where}: confirmed_by must name who confirmed it, not {confirmed_by!r}"
         )
+    if isinstance(confirmed_by, str) and confirmed_by.strip():
+        # Only a person confirms an answer: never an AI, an agent or code (the AI under test is
+        # Claude, so its own confirmation would grade itself right; Smriti's rule, #1321).
+        why = not_a_person(confirmed_by.strip())
+        if why is not None:
+            raise KeyFormatError(
+                f"{where}: confirmed_by {confirmed_by!r} {why}; only a person confirms a case"
+            )
     return KeyCase(
         question=QuestionIdentity(family=family, page_sha256=page, question_id=question_id),
         truth=truth,

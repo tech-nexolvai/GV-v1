@@ -30,6 +30,13 @@ stored before #1108 was drawn in an earlier colour set (`EARLIER_PALETTES`), and
 A picture that cannot be drawn again exactly gets no boxes, with the reason, and its questions are
 "not asked" for a geometry key: never guessed from the pixels.
 
+**New picture code needs its own proof.** The proof covers exactly the picture code it redraws
+(`_numbered_rows_png`, today's colours and `EARLIER_PALETTES`). A run that shows other pictures,
+such as the item pictures of the drawing-context plan (PR-B, `workflow/item_pictures.py`), gets a
+box map only once its own picture code is redrawn here byte for byte in the same way (or once its
+question packets record each box's line). Until then its geometry cases are "not asked", never
+matched by a guess.
+
 **Never chosen between.** On a picture where two boxes lie within the tolerance of the keyed line,
 the case is not asked, with both box numbers named; on one where no box does, the right answer is
 "not among the boxes" (and the pair is then split, as the product sends it to a person).
