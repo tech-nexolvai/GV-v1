@@ -27,7 +27,8 @@ const ON: ReadDepthsAgainStatus = {
   can_ask: true,
   refused: null,
   checks: ['CT-DEPTH-001', 'CT-SINK-CUTOUT-WIDTH-001'],
-  budget_left_usd: '2.97',
+  request_cap_usd: '1.50',
+  set_budget_left_usd: '2.71',
   estimate: {
     pages: 3,
     countertops: 2,
@@ -70,7 +71,7 @@ beforeEach(() => {
 
 describe('Read depths again (#1308)', () => {
   it('is not shown when the depth and sink reader is switched off', async () => {
-    vi.mocked(getReadDepthsAgain).mockResolvedValue({ switched_on: false, can_ask: false, refused: null, checks: [], estimate: null, budget_left_usd: null, last: null });
+    vi.mocked(getReadDepthsAgain).mockResolvedValue({ switched_on: false, can_ask: false, refused: null, checks: [], estimate: null, request_cap_usd: null, set_budget_left_usd: null, last: null });
     render(<NeedsValues finding={finding('CT-DEPTH-001')} packageId="package-1" onSaved={() => {}} />);
 
     await vi.waitFor(() => expect(getReadDepthsAgain).toHaveBeenCalledWith('project-1', 'package-1'));
@@ -97,7 +98,11 @@ describe('Read depths again (#1308)', () => {
     expect(dialog.textContent).toContain('This costs money');
     expect(dialog.textContent).toContain('At least 12 to 24 questions');
     expect(dialog.textContent).toContain('2 countertops on 3 pages');
-    expect(dialog.textContent).toContain("Spending stops at this drawing set's AI budget: $2.97 left.");
+    // #1328: the most this request may spend and what the set's whole budget has left, each said
+    // plainly: the per-request cap was shown as "left" and read as the set's money.
+    expect(dialog.textContent).toContain('This request may spend up to $1.50.');
+    expect(dialog.textContent).toContain('This drawing set has $2.71 of its AI budget left.');
+    expect(dialog.textContent).not.toContain('$1.50 left');
 
     await user.click(screen.getByRole('button', { name: 'Read depths again (costs money)' }));
 
@@ -142,6 +147,19 @@ describe('Read depths again (#1308)', () => {
 
     expect((await screen.findByRole('alert')).textContent).toBe('This drawing set is being read or checked right now.');
     expect(screen.getByRole('dialog', { name: 'Read depths again?' })).toBeTruthy();
+  });
+
+  it('says only what the server knows about the money', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getReadDepthsAgain).mockResolvedValue({ ...ON, request_cap_usd: null, set_budget_left_usd: null });
+    render(<NeedsValues finding={finding('CT-DEPTH-001')} packageId="package-1" onSaved={() => {}} />);
+
+    await user.click(await screen.findByRole('button', { name: 'Read depths again…' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Read depths again?' });
+    expect(dialog.textContent).toContain("Spending stops at this drawing set's AI budget.");
+    expect(dialog.textContent).not.toContain('may spend up to');
+    expect(dialog.textContent).not.toContain('of its AI budget left');
   });
 
   it('says exactly how many when an earlier reading counted them', () => {

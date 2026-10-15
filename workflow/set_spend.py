@@ -28,6 +28,7 @@ __all__ = [
     "remaining_claude_budget",
     "revision_page_count",
     "revision_spend",
+    "set_budget_left_usd",
 ]
 
 #: Recorded calls that are not reading spend (#1221), by prompt family: every version of the
@@ -104,6 +105,40 @@ def remaining_claude_budget(
     return min(requested_usd, remaining)
 
 
+def _set_budget_micros(
+    session: Session, package_revision_id: UUID, *, budget: AiBudget, fixed_usd: Decimal | None
+) -> int:
+    """The drawing set's whole AI budget, in micros: the fixed amount stated for a set, or else
+    its page-scaled budget for all its pages."""
+    return (
+        micros(fixed_usd)
+        if fixed_usd is not None
+        else micros(budget.for_pages(revision_page_count(session, package_revision_id)))
+    )
+
+
+def set_budget_left_usd(
+    session: Session,
+    package_revision_id: UUID,
+    *,
+    budget: AiBudget,
+    fixed_usd: Decimal | None,
+) -> Decimal:
+    """What the drawing set's whole AI budget has left (#1328): its budget less everything its
+    readers spent, never below nothing. Nothing while a call has no price, as for the cap.
+
+    Not what one request may spend: that is `depth_cap_usd`, which is also held under the Claude
+    readers' ceiling. A run that spent $0.29 under a $1.50 ceiling may still spend $1.50 next time,
+    while this goes down by $0.29."""
+    budget_micros = _set_budget_micros(
+        session, package_revision_id, budget=budget, fixed_usd=fixed_usd
+    )
+    spent_micros, unpriced = revision_spend(session, package_revision_id)
+    if unpriced:
+        return Decimal(0)
+    return Decimal(max(0, budget_micros - spent_micros)) / Decimal(1_000_000)
+
+
 def depth_cap_usd(
     session: Session,
     package_revision_id: UUID,
@@ -115,11 +150,10 @@ def depth_cap_usd(
     """What the depth and sink reader may still spend on this set (#1290, #1308): the smaller of
     the Claude readers' configured ceiling and what the set's AI budget has left (its page-scaled
     budget for all its pages, or the fixed amount stated, less everything its readers spent).
-    Nothing while a call has no price. The worker's cap and the API's "budget left" are this."""
-    budget_micros = (
-        micros(fixed_usd)
-        if fixed_usd is not None
-        else micros(budget.for_pages(revision_page_count(session, package_revision_id)))
+    Nothing while a call has no price. The worker's cap and the API's "this request may spend up
+    to" are this; what the set has left is `set_budget_left_usd` (#1328)."""
+    budget_micros = _set_budget_micros(
+        session, package_revision_id, budget=budget, fixed_usd=fixed_usd
     )
     spent_micros, unpriced = revision_spend(session, package_revision_id)
     whole = Decimal(budget_micros) / 1_000_000

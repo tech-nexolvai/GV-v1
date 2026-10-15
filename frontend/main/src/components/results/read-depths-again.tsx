@@ -4,8 +4,10 @@
  *
  * Shown only when the server says the reader is switched on (`GV_DEPTH_READER`) and the check is one
  * the reader fills. It costs money, so it always asks first: what will be read, about how many
- * questions, how many already have a stored answer (free), and that spending stops at the drawing
- * set's AI budget, with what is left of it in dollars. Refused requests and the last request's outcome are said in the server's words.
+ * questions, how many already have a stored answer (free), and the money in two plain numbers (#1328):
+ * the most this request may spend (the worker's cap) and what the drawing set's whole AI budget has left.
+ * The cap alone was once shown as "left", and read as the set's money. Refused requests and the last
+ * request's outcome are said in the server's words.
  * Nothing here decides a check: the checks run again once the depths are read.
  */
 import { useEffect, useState } from 'react';
@@ -124,16 +126,24 @@ export function ReadDepthsAgain({ packageId, checkId }: { packageId: string; che
               <p className="text-xs text-muted-foreground">{estimate.basis}</p>
             </div>
           )}
-          <p className="text-sm font-medium" data-slot="read-depths-again-cost">
-            This costs money: every new question is a paid AI call. Spending stops at this drawing set&apos;s AI budget
-            {status.budget_left_usd != null ? (
-              <>
-                : <span className="num">${status.budget_left_usd}</span> left.
-              </>
-            ) : (
-              '.'
+          <div className="flex flex-col gap-1 text-sm" data-slot="read-depths-again-cost">
+            <p className="font-medium">
+              This costs money: every new question is a paid AI call.{' '}
+              {status.request_cap_usd == null && status.set_budget_left_usd == null && (
+                <>Spending stops at this drawing set&apos;s AI budget.</>
+              )}
+            </p>
+            {status.request_cap_usd != null && (
+              <p data-slot="read-depths-again-request-cap">
+                This request may spend up to <span className="num">${status.request_cap_usd}</span>.
+              </p>
             )}
-          </p>
+            {status.set_budget_left_usd != null && (
+              <p data-slot="read-depths-again-set-left">
+                This drawing set has <span className="num">${status.set_budget_left_usd}</span> of its AI budget left.
+              </p>
+            )}
+          </div>
           {error && (
             <p role="alert" className="text-sm text-outcome-fail-fg">
               {error}

@@ -242,7 +242,7 @@ def test_switched_on_it_shows_an_estimate_queues_once_and_audits_who_asked(
     assert set(shown["estimate"]) >= {"questions_low", "questions_high", "stored_answers", "basis"}
     assert "CT-DEPTH-001" in shown["checks"]
     # No page and nothing spent: the page-scaled budget's minimum is left (the worker's own cap).
-    assert shown["budget_left_usd"] == "3.00"
+    assert shown["request_cap_usd"] == shown["set_budget_left_usd"] == "3.00"
 
     answer = _ask(session, revision)
 
@@ -375,7 +375,7 @@ def test_a_call_with_no_price_is_refused_with_the_reason(session: Session) -> No
     answer = _ask(session, revision)
 
     assert shown["can_ask"] is False and shown["refused"] == UNPRICED
-    assert shown["budget_left_usd"] == "0.00"
+    assert shown["request_cap_usd"] == shown["set_budget_left_usd"] == "0.00"
     assert answer.status_code == 409 and answer.json()["message"] == UNPRICED
     assert _rows(session) == []
 
@@ -456,7 +456,7 @@ def _worker_cap(session: Session, stages: DatabaseStages, revision_id: UUID) -> 
     return str(cap.quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
 
-def test_the_budget_left_shown_is_the_worker_s_own_cap(
+def test_the_request_cap_shown_is_the_worker_s_own_cap(
     session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fixed $40 for a set with the admin's maximum at $25: the screen showed $40 left while
@@ -466,7 +466,8 @@ def test_the_budget_left_shown_is_the_worker_s_own_cap(
 
     shown = _status(session, sheet.revision, OVER_THE_MAXIMUM).json()
 
-    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "25.00"
+    assert shown["request_cap_usd"] == _worker_cap(session, worker, sheet.revision.id) == "25.00"
+    assert shown["set_budget_left_usd"] == "40.00"
     assert shown["can_ask"] is True
 
     # More than the ceiling spent already, less than the set's $40: the ceiling is what one
@@ -474,7 +475,8 @@ def test_the_budget_left_shown_is_the_worker_s_own_cap(
     _spent_reading_the_set(session, sheet, 30_000_000)
     shown = _status(session, sheet.revision, OVER_THE_MAXIMUM).json()
 
-    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "10.00"
+    assert shown["request_cap_usd"] == _worker_cap(session, worker, sheet.revision.id) == "10.00"
+    assert shown["set_budget_left_usd"] == "10.00"
     assert shown["can_ask"] is True
 
 
@@ -493,9 +495,72 @@ def test_a_used_up_budget_is_refused_up_front_with_the_worker_s_own_reason(
     with pytest.raises(DepthsAgainRefused) as refused:
         worker.read_depths_again(session, sheet.revision.id, str(uuid4()))
 
-    assert shown["budget_left_usd"] == _worker_cap(session, worker, sheet.revision.id) == "0.00"
+    assert shown["request_cap_usd"] == _worker_cap(session, worker, sheet.revision.id) == "0.00"
+    assert shown["set_budget_left_usd"] == "0.00"
     assert shown["can_ask"] is False
     assert answer.status_code == 409
     assert shown["refused"] == answer.json()["message"] == refused.value.plain_reason
     assert refused.value.plain_reason == BUDGET_USED_UP
     assert _rows(session) == []
+
+
+def _paid_through_the_ledger(session: Session, sheet: Any, micros: int) -> None:
+    """A depth reading's paid calls as the call ledger records them: a ledger run of the set's
+    workflow run, one priced row per call (#1328)."""
+    from workflow.reading_watch import LEDGER_EXTRACTOR, LEDGER_TASK_TYPE
+
+    workflow_run = session.get_one(TaskRun, sheet.run.task_run_id).workflow_run_id
+    task = TaskRun(
+        workflow_run_id=workflow_run,
+        idempotency_key=f"synthetic:reader-calls:{uuid4().hex}",
+        task_type=LEDGER_TASK_TYPE,
+        attempt=1,
+        outcome="recorded",
+    )
+    session.add(task)
+    session.flush()
+    run = ExtractionRun(
+        task_run_id=task.id,
+        extractor=LEDGER_EXTRACTOR,
+        extractor_version="call-ledger-v1",
+        config_hash="calls-of:synthetic",
+    )
+    session.add(run)
+    session.flush()
+    for share in (micros // 2, micros - micros // 2):
+        session.add(
+            ModelInvocation(
+                extraction_run_id=run.id,
+                model_id=CLAUDE_PAIR[0],
+                prompt_id="depth-view-kind-v1",
+                template_id="depth-view-kind-v1",
+                input_tokens=10,
+                output_tokens=5,
+                latency_ms=1,
+                outcome="ok",
+                cost_micros=share,
+            )
+        )
+    session.flush()
+
+
+def test_after_a_paid_run_it_says_what_a_request_may_spend_and_what_the_set_has_left(
+    session: Session, store: LocalStore
+) -> None:
+    """#1328: after $0.29 was spent under a $1.50 ceiling, "budget left" showed $1.50 again: it
+    was the per-request cap. Both are said now, each from the worker's own functions."""
+    sheet = _read_set(session, store)
+    ceiling = {**ON, "claude_reader_budget_usd": Decimal("1.50")}
+    worker = _stages(store, _MustNotBeCalled(), ceiling=Decimal("1.50"))
+
+    before = _status(session, sheet.revision, ceiling).json()
+    assert before["request_cap_usd"] == _worker_cap(session, worker, sheet.revision.id) == "1.50"
+    assert before["set_budget_left_usd"] == "3.00"
+
+    _paid_through_the_ledger(session, sheet, 290_108)
+    after = _status(session, sheet.revision, ceiling).json()
+
+    # One request may still spend up to the ceiling; the drawing set has $0.29 less of its budget.
+    assert after["request_cap_usd"] == _worker_cap(session, worker, sheet.revision.id) == "1.50"
+    assert after["set_budget_left_usd"] == "2.70"
+    assert "budget_left_usd" not in after

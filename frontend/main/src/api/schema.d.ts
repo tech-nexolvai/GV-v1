@@ -6005,11 +6005,6 @@ export interface components {
          * @description Whether "Read depths again" is offered on this set, and what it would do.
          */
         ReadDepthsAgainStatusOut: {
-            /**
-             * Budget Left Usd
-             * @description What the depth and sink reader may still spend on this set, in US dollars rounded down to the cent: the worker's own spend cap. Spending stops there.
-             */
-            budget_left_usd?: string | null;
             /** Can Ask */
             can_ask: boolean;
             /**
@@ -6024,6 +6019,16 @@ export interface components {
              * @description Why it cannot be asked now.
              */
             refused?: string | null;
+            /**
+             * Request Cap Usd
+             * @description The most one request may spend, in US dollars rounded down to the cent: the worker's own spend cap (the Claude readers' ceiling, held under what the set's AI budget has left). A limit per request, not the money left: it is the same again after a run that spent less than it.
+             */
+            request_cap_usd?: string | null;
+            /**
+             * Set Budget Left Usd
+             * @description What this drawing set's whole AI budget has left, in US dollars rounded down to the cent: its budget less everything its AI readers spent.
+             */
+            set_budget_left_usd?: string | null;
             /**
              * Switched On
              * @description The depth and sink reader's switch (GV_DEPTH_READER). Off, the action is not offered at all.

@@ -55,9 +55,10 @@ from workflow.depth_again import (
     UNPRICED,
     DepthsAgainRefused,
     SpendLimits,
-    budget_left_usd,
     estimate,
     last_request,
+    request_cap_usd,
+    set_budget_left,
 )
 from workflow.depth_evidence import CLAUDE_PAIR, CONFIRM_ONLY, DEPTH_EXTRACTOR
 from workflow.stages import DatabaseStages
@@ -483,10 +484,9 @@ def test_a_used_up_budget_still_reads_when_every_answer_is_stored_and_pays_nothi
     assert paying.calls == 4
     # Then everything the set may spend is spent, and every question has a stored answer.
     _spent_reading_the_set(session, sheet, 50_000_000)
-    left = budget_left_usd(
-        session, sheet.revision.id, SpendLimits(AiBudget(), fixed_usd=None, claude_ceiling_usd=None)
-    )
-    assert left == 0
+    limits = SpendLimits(AiBudget(), fixed_usd=None, claude_ceiling_usd=None)
+    assert request_cap_usd(session, sheet.revision.id, limits) == 0
+    assert set_budget_left(session, sheet.revision.id, limits) == 0
     shown = estimate(session, sheet.revision.id)
     assert (shown.questions_high, shown.stored_answers) == (4, 4)
     paid_before = _paid_calls(session)
@@ -719,6 +719,259 @@ def test_the_status_of_a_request_says_what_happened(
     told = last_request(session, sheet.revision.id)
     assert told is not None and told.state == "read"
     assert "2 questions" in told.sentence
+
+
+class _SameSessionLedger:
+    """The call ledger (`workflow.reading_watch.CallLedger`) written in the test's own session.
+
+    The real ledger writes each paid call in a transaction of its own, which needs the workflow run
+    committed; the test's session never commits. This one writes the same rows, under a ledger run
+    of the stage's workflow run, when the stage asks which calls the ledger holds: so the stage
+    writes the $0 twin of each paid call exactly as it does in a real run (#1328)."""
+
+    def __init__(self, stages: DatabaseStages, session: Session, task_run_id: UUID) -> None:
+        self._stages = stages
+        self._session = session
+        self._task_run_id = task_run_id
+        self._attempts: list[Any] = []
+        self._ledgered: dict[int, UUID] = {}
+        self._lock = threading.Lock()
+
+    def record(self, attempt: Any) -> None:
+        with self._lock:
+            self._attempts.append(attempt)
+
+    def snapshot(self) -> tuple[Any, ...]:
+        with self._lock:
+            return tuple(self._attempts)
+
+    def ledgered_in(self, session: Session) -> dict[int, UUID]:
+        from app.runs.invocations import record as record_model_invocation
+        from workflow.reading_watch import LEDGER_EXTRACTOR, LEDGER_TASK_TYPE, ledger_key_prefix
+
+        paid = [
+            (position, attempt)
+            for position, attempt in enumerate(self.snapshot())
+            if attempt.reused_from is None and position not in self._ledgered
+        ]
+        if paid:
+            stage = session.get_one(TaskRun, self._task_run_id)
+            task = TaskRun(
+                workflow_run_id=stage.workflow_run_id,
+                idempotency_key=f"{ledger_key_prefix(stage.idempotency_key)}{uuid4().hex}",
+                task_type=LEDGER_TASK_TYPE,
+                attempt=1,
+                outcome="recorded",
+            )
+            session.add(task)
+            session.flush()
+            run = ExtractionRun(
+                task_run_id=task.id,
+                extractor=LEDGER_EXTRACTOR,
+                extractor_version="call-ledger-v1",
+                config_hash="calls-of:synthetic",
+            )
+            session.add(run)
+            session.flush()
+            for position, attempt in paid:
+                row = record_model_invocation(
+                    session, self._stages._reader_invocation(run.id, attempt)
+                )
+                self._ledgered[position] = row.id
+        return dict(self._ledgered)
+
+
+def _ledgered_stages(
+    store: LocalStore, clients: object, monkeypatch: pytest.MonkeyPatch
+) -> DatabaseStages:
+    """`_stages` whose paid calls go through the call ledger, as in a real run."""
+    stages = _stages(store, clients)
+
+    def ledger(
+        self: DatabaseStages, session: Session, task_run_id: UUID, *, reader_version: str
+    ) -> _SameSessionLedger:
+        del reader_version
+        return _SameSessionLedger(self, session, task_run_id)
+
+    monkeypatch.setattr(DatabaseStages, "_call_ledger", ledger)
+    return stages
+
+
+def _asked_through_the_outbox(
+    session: Session, stages: DatabaseStages, sheet: _Set
+) -> tuple[UUID, dict[str, object]]:
+    """A request queued, then run by the worker and handed over, as the outbox does."""
+    from workflow.outbox import enqueue
+
+    request = enqueue(
+        session,
+        workflow=READ_DEPTHS_AGAIN_WORKFLOW,
+        payload={"package_revision_id": str(sheet.revision.id)},
+    )
+    session.flush()
+    result = stages.read_depths_again(session, sheet.revision.id, str(request))
+    row = session.get_one(OutboxEntry, request)
+    row.attempts, row.dispatched_at = 1, func.now()
+    session.flush()
+    return request, result
+
+
+def _ledger_cost(session: Session, after: OutboxEntry) -> int:
+    """What the call ledger's rows written since `after` was asked cost, in micros."""
+    from workflow.reading_watch import LEDGER_EXTRACTOR
+
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(ModelInvocation.cost_micros), 0))
+            .join(ExtractionRun, ExtractionRun.id == ModelInvocation.extraction_run_id)
+            .where(
+                ExtractionRun.extractor == LEDGER_EXTRACTOR,
+                ModelInvocation.created_at >= after.created_at,
+            )
+        )
+        or 0
+    )
+
+
+def test_the_status_counts_a_new_paid_call_as_paid_not_as_a_stored_answer(
+    session: Session, store: LocalStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1328: the call ledger writes each paid call at once and the stage then writes a $0 twin
+    naming it, the same shape as a reused stored answer. The status counted every twin as reused:
+    a run that paid for 29 of 79 questions said all 79 were answered at no cost."""
+    sheet = _read_set(session, store)
+    _view_kind_reading(monkeypatch, sheet, views=2)
+    first_clients = _Answering()
+    _asked_through_the_outbox(session, _ledgered_stages(store, first_clients, monkeypatch), sheet)
+    assert first_clients.calls == 4
+    (first,) = _again_runs(session, sheet)
+    twins = session.scalars(
+        select(ModelInvocation).where(ModelInvocation.extraction_run_id == first.id)
+    ).all()
+    assert len(twins) == 4 and all(row.cost_micros == 0 for row in twins)
+    assert all("reused_from" in (row.reader_question_packet or {}) for row in twins)
+
+    told = last_request(session, sheet.revision.id)
+    assert told is not None and told.state == "read"
+    assert "4 questions, 0 answered from stored answers at no cost" in told.sentence
+    assert "4 asked of the AI readers and paid for" in told.sentence
+
+    # A second request asks the same four questions and two new ones: four stored answers reused
+    # at no cost, two new paid calls.
+    _view_kind_reading(monkeypatch, sheet, views=3)
+    second_clients = _Answering()
+    request, _ = _asked_through_the_outbox(
+        session, _ledgered_stages(store, second_clients, monkeypatch), sheet
+    )
+    assert second_clients.calls == 2
+    cost = _ledger_cost(session, session.get_one(OutboxEntry, request))
+    assert cost > 0
+
+    told = last_request(session, sheet.revision.id)
+    assert told is not None and told.state == "read"
+    from workflow.depth_again import _dollars
+
+    assert told.sentence == (
+        "Depths read again: 6 questions, 4 answered from stored answers at no cost, "
+        f"2 asked of the AI readers and paid for ({_dollars(cost)})."
+    )
+
+
+def test_each_new_call_is_paid_once_and_a_call_made_before_the_request_is_reused(
+    session: Session, store: LocalStore
+) -> None:
+    """`_spent_by_request` by its rows: a stage-paid row, a twin of a new call, a second question
+    answered by that same new call, a stored answer from before the request, and an attempt the
+    budget refused before it was sent."""
+    from datetime import timedelta
+
+    from workflow.depth_again import _spent_by_request
+
+    sheet = _read_set(session, store)
+    asked_at = sheet.run.created_at
+
+    def row(run: ExtractionRun, *, cost: int, made: object, **extra: Any) -> ModelInvocation:
+        added = ModelInvocation(
+            extraction_run_id=run.id,
+            model_id=CLAUDE_PAIR[0],
+            prompt_id="depth-view-kind-v1",
+            template_id="depth-view-kind-v1",
+            input_tokens=0 if cost == 0 else 10,
+            output_tokens=0 if cost == 0 else 5,
+            latency_ms=0,
+            outcome=extra.pop("outcome", "ok"),
+            cost_micros=cost,
+            created_at=made,
+            **extra,
+        )
+        session.add(added)
+        session.flush()
+        return added
+
+    before = row(sheet.run, cost=40_000, made=asked_at - timedelta(hours=1))
+    new_call = row(sheet.run, cost=25_000, made=asked_at + timedelta(seconds=5))
+    reading = ExtractionRun(
+        task_run_id=sheet.run.task_run_id,
+        extractor=DEPTH_EXTRACTOR,
+        extractor_version="synthetic",
+        config_hash="synthetic;again=x",
+    )
+    session.add(reading)
+    session.flush()
+    later = asked_at + timedelta(seconds=10)
+
+    def naming(target: ModelInvocation) -> dict[str, Any]:
+        return {
+            "reader_question_packet": {"packet_sha256": "a" * 64, "reused_from": str(target.id)}
+        }
+
+    row(reading, cost=30_000, made=later)  # a paid call the stage wrote itself
+    row(reading, cost=0, made=later, **naming(new_call))  # the twin of a new call
+    row(reading, cost=0, made=later, **naming(new_call))  # the same new call answers again
+    row(reading, cost=0, made=later, **naming(before))  # a stored answer from before
+    row(reading, cost=0, made=later, outcome="budget_refused", rejection_reason="SpendCapExceeded")
+
+    spent = _spent_by_request(session, reading.id, since=asked_at)
+
+    assert (spent.asked, spent.reused, spent.paid, spent.not_sent) == (5, 2, 2, 1)
+    assert spent.paid_micros == 30_000 + 25_000
+
+
+def test_a_request_that_paid_for_nothing_says_so() -> None:
+    from workflow.depth_again import _counted, _dollars, _Spent
+
+    assert _counted(_Spent(asked=4, reused=4, paid=0, paid_micros=0, not_sent=0)) == (
+        "4 questions, 4 answered from stored answers at no cost"
+    )
+    assert _counted(_Spent(asked=79, reused=50, paid=29, paid_micros=290_108, not_sent=0)) == (
+        "79 questions, 50 answered from stored answers at no cost, 29 asked of the AI readers "
+        "and paid for ($0.29)"
+    )
+    assert _counted(_Spent(asked=3, reused=1, paid=1, paid_micros=150, not_sent=1)) == (
+        "3 questions, 1 answered from stored answers at no cost, 1 asked of the AI readers and "
+        "paid for (less than $0.01), 1 not asked"
+    )
+    assert _dollars(0) == "$0.00"
+
+
+def test_both_money_numbers_after_a_paid_run(session: Session, store: LocalStore) -> None:
+    """#1328: "budget left" showed the per-request cap, $1.50 again after $0.29 was spent. The
+    request may still spend up to the ceiling; the drawing set has $0.29 less left."""
+    from workflow.set_spend import revision_page_count
+
+    sheet = _read_set(session, store)
+    limits = SpendLimits(AiBudget(), fixed_usd=None, claude_ceiling_usd=Decimal("1.50"))
+    whole = AiBudget().for_pages(revision_page_count(session, sheet.revision.id))
+    assert whole > Decimal("1.79")
+    assert request_cap_usd(session, sheet.revision.id, limits) == Decimal("1.50")
+    assert set_budget_left(session, sheet.revision.id, limits) == whole
+
+    _spent_reading_the_set(session, sheet, 290_108)
+
+    assert request_cap_usd(session, sheet.revision.id, limits) == Decimal("1.50")
+    assert set_budget_left(session, sheet.revision.id, limits) == (
+        whole - Decimal("0.290108")
+    ).quantize(Decimal("0.01"), rounding="ROUND_DOWN")
 
 
 def _any_snapshot(session: Session) -> UUID:
