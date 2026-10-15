@@ -410,6 +410,7 @@ def _request_signed_exports(
                 ReviewAction.created_at <= approval.created_at,
                 # A person's answer about a held reading is not a decision on its finding (#1367);
                 # the cloud marks draw it from its reading, never as this result's disposition.
+                # A second safety net: sign-off already waits for the re-run an answer needs.
                 decision_rows(),
             )
             .order_by(ReviewAction.created_at)

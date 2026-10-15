@@ -29,7 +29,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from alembic.script import ScriptDirectory
@@ -44,7 +44,12 @@ from app.models import ReviewAction
 from app.models.review import TAGS_CHECK, ReviewActionKind, ReviewActionTag
 from app.models.verdicts import Finding
 from app.review.approval import _unaddressed
-from app.review.carry_over import decision_holds, decision_records
+from app.review.carry_over import (
+    DecisionRecords,
+    EffectiveDecision,
+    decision_holds,
+    decision_records,
+)
 from app.review.evidence_actions import ReadingDecision, confirm_candidate_reading
 from app.review.requirements import needs_note
 from app.review.reviewer_marks import reviewer_marks_for
@@ -330,3 +335,40 @@ def test_the_decision_before_an_answer_through_a_fail_stays_the_one_in_force(
     words = [mark.words for mark in marks]
     assert not any("FAIL agreed" in said for said in words), words
     assert any("Dismissed by" in said for said in words), words
+
+
+@pytest.mark.parametrize(
+    ("outcome", "note"), [("FAIL", None), ("PASS", None), ("REVIEW_REQUIRED", NOTE)]
+)
+def test_decision_holds_never_counts_an_answer_even_handed_one(
+    outcome: str, note: str | None
+) -> None:
+    """`decision_holds` itself, without the database: records that (wrongly) name a tagged answer as
+    the decision never hold, even where an untagged confirm with the same note would."""
+    revision, finding_id = uuid4(), uuid4()
+    finding = Finding(id=finding_id, package_revision_id=revision, outcome=outcome)
+
+    def confirm(tags: list[str]) -> ReviewAction:
+        return ReviewAction(
+            id=uuid4(),
+            finding_id=finding_id,
+            package_revision_id=revision,
+            action="confirm",
+            actor=REVIEWER,
+            note=note,
+            tags=tags,
+        )
+
+    def holds(action: ReviewAction) -> bool:
+        records = DecisionRecords(
+            decisions={finding_id: EffectiveDecision(action, None)},
+            carried={},
+            corrected=frozenset(),
+            own_actions={finding_id: (action,)},
+            grants={},
+        )
+        return decision_holds(finding, records, when=_now())
+
+    assert holds(confirm([]))
+    assert not holds(confirm([HELD]))
+    assert not holds(confirm([HELD, DRAWN]))

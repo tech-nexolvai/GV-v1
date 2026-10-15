@@ -342,13 +342,14 @@ def confirmed_for_same_evidence(
 #
 # - a fix writes a `correct`, which blocks its finding until the re-run
 #   (`app/review/carry_over.decision_records`);
-# - a confirmation writes a `confirm` with no note only while the result waits for a person
-#   (`REVIEW_REQUIRED` or `NOT_FOUND`), where a confirm without a note never counts as a decision
-#   (`app/review/requirements.needs_note`). On a result code already decided (PASS or FAIL, e.g.
-#   after a fix the person now takes back), a `confirm` would read as the person standing behind
-#   that PASS or FAIL (sign-off, carried decisions, Smriti's confirmed FAILs), so none is written
-#   there: the confirmation is a new input, and sign-off waits for the re-run that uses it
-#   (`app/review/approval`, a person's confirmation no review action produced).
+# - a confirmation writes a `confirm` with no note on any live result, waiting, PASS or FAIL (e.g.
+#   after a fix the person now takes back), tagged `held-reading-answer` (#1367; plus
+#   `drawn-length-disagreed` where the label's drawn length disagreed). The tag keeps every reader of
+#   review actions as decisions from taking it as one (sign-off, carried decisions, Smriti's
+#   confirmed FAILs: `ReviewAction.is_decision`), so it never stands behind a PASS or FAIL nor
+#   settles a waiting result, while the correction rate counts it. The confirmation is a new input,
+#   and sign-off waits for the re-run that uses it (`app/review/approval`: its original is not the
+#   finding's evidence).
 
 
 class HeldReadingRefusal(StrEnum):
