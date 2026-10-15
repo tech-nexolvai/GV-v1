@@ -736,9 +736,9 @@ def _decide(
                             earlier=_inches(value), what=what, now=_text(reading.agreed)
                         ),
                     )
-        held = conflict(value)
-        if held is not None:
-            return held
+        clash = conflict(value)
+        if clash is not None:
+            return clash
         operand = _sealed(session, confirmed[0].canonical, name)
         if operand is not None:
             notes.append(
@@ -751,9 +751,9 @@ def _decide(
     confirm = [r for r in for_field if CONFIRM_ONLY in r.flags and r.value is not None]
     chosen = next((r.value for r in (*qualified, *confirm) if r.value is not None), None)
     if chosen is not None:
-        held = conflict(chosen)
-        if held is not None:
-            return held
+        clash = conflict(chosen)
+        if clash is not None:
+            return clash
     if qualified:
         reading = qualified[0]
         if not answers_on_record(session, reading):
@@ -872,9 +872,10 @@ def depth_operands(
     shared = countertops_by_view(session, revision_id).get(view_id, ())
     notes: list[str] = [f"Depth reader run {run.id}; countertop suggestion {proposal_id}."]
     if runs[0] is not run:
-        why = sorted({r.reason for r in _readings(session, runs[0]) if RUN_FAILED in r.flags})
+        failures = sorted({r.reason for r in _readings(session, runs[0]) if RUN_FAILED in r.flags})
         notes.append(
-            f"A later depth reading (run {runs[0].id}) failed ({' '.join(why[:1]) or 'no reason'}); "
+            f"A later depth reading (run {runs[0].id}) failed "
+            f"({' '.join(failures[:1]) or 'no reason'}); "
             "this earlier one is used."
         )
     operands: dict[str, VerdictOperand] = {}
