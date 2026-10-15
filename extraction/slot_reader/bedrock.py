@@ -107,6 +107,7 @@ __all__ = [
     "ROW_PROMPT",
     "ROW_PROMPT_ID",
     "ROW_PROMPT_IDS",
+    "ROW_TIEBREAK_FRAMING",
     "ROW_TIEBREAK_PROMPT",
     "ROW_TIEBREAK_PROMPT_ID",
     "ArchMatchAnswer",
@@ -173,9 +174,9 @@ ROW_TIEBREAK_PROMPT_ID: Final = "slot-row-tiebreak-v1"
 """The line finder's try-again question (#1309), asked of both readers only when a try-again gate
 is switched on: the first row question split, or Rekha's gate stopped the line both chose. The
 picture shows only some of the numbered boxes, each keeping its number and colour from the first
-picture (a close-up of the part of the sheet around them, or each box in a panel of its own). The
-task, rules, answer fields, examples and shape are `slot-row-choice-v5`'s, word for word; a box that
-was not shown counts as unsure (`read_row_choice`)."""
+picture (a close-up of the part of the sheet around them, or each box in a panel of its own). Every
+sentence of `slot-row-choice-v5` is kept word for word, with only the try's framing added before its
+task (`ROW_TIEBREAK_FRAMING`); a box that was not shown counts as unsure (`read_row_choice`)."""
 CLAUDE_SPAN_PROMPT_ID: Final = "claude-slot-span-v5"
 """v5 (#1213): the wording the demo-test measured (2026-10-13), asked with new pictures
 (`workflow/slot_reader.py`): Picture 1 is the drawing around the row with the span boxed, and
@@ -320,20 +321,20 @@ ROW_PROMPT: Final = (
 )
 
 
-#: The try-again row question (`ROW_TIEBREAK_PROMPT_ID`): its own opening (a second, closer look at
-#: only some of the numbered boxes, keeping their numbers), then the row question's task, rules,
-#: answer fields, examples and shape word for word (`ROW_PROMPT` from "Task:", `slot-row-choice-v5`).
+#: The try-again row question (`ROW_TIEBREAK_PROMPT_ID`): the row question word for word
+#: (`ROW_PROMPT`, `slot-row-choice-v5`), with only the try's framing added before its task: a second,
+#: closer look at only some of the numbered boxes, which keep their numbers; pick one you can see.
 #: Pinned by its SHA-256 (`tests/extraction/slot_reader/test_try_again.py`): a change to the row
 #: question changes this text too, and then needs a new id.
+ROW_TIEBREAK_FRAMING: Final = (
+    "This is a second, closer look at the same sheet: only some of its numbered boxes are shown, "
+    "either as a close-up of the part of the sheet around them or each box in a panel of its own "
+    "cut from the sheet around it. Each box keeps its number and colour from the whole sheet, so "
+    "the numbers shown may skip some. Answer only with the number of a box you can see. "
+)
 ROW_TIEBREAK_PROMPT: Final = (
-    "This is part of a vendor's cabinet shop drawing sheet. The vendor drew it in black ink. A "
-    "reviewer may have marked it up: red or blue text, yellow boxes, clouds and small green or "
-    "purple ticks are the reviewer's markup, not the vendor's; ignore them. "
-    "This is a second, closer look: only some of the numbered coloured boxes from the whole sheet "
-    "are shown, either as a close-up of the part of the sheet around them or each box in a panel "
-    "of its own cut from the sheet around it. Each box keeps its number and colour from the whole "
-    "sheet, so the numbers shown may skip some. Each box's number is in the filled square of the "
-    "same colour just left of it. Answer only with the number of a box you can see. "
+    ROW_PROMPT[: ROW_PROMPT.index("Task:")]
+    + ROW_TIEBREAK_FRAMING
     + ROW_PROMPT[ROW_PROMPT.index("Task:") :]
 )
 

@@ -275,10 +275,10 @@ def test_a_stored_tie_break_answer_is_read_by_the_same_code() -> None:
 
 #: The tie-break question's exact wording, pinned: a change to it (or to the row question it
 #: shares its rules with) needs a new prompt id, so a stored answer is never reused for another text.
-TIE_BREAK_SHA256 = "7f3a557bf87ac98410fa02333f34ed6781a4fb20ab427afff99be1f9f7fe9fb1"
+TIE_BREAK_SHA256 = "528609935a8c4ae700b6fb7e1e790b3a75be896847f9549e22ce375b0541f1ce"
 
 
-def test_the_tie_break_wording_is_pinned_and_shares_the_v5_row_rules() -> None:
+def test_the_tie_break_wording_is_pinned_and_keeps_every_v5_sentence() -> None:
     import hashlib
 
     from extraction.slot_reader.bedrock import ROW_PROMPT
@@ -287,7 +287,11 @@ def test_the_tie_break_wording_is_pinned_and_shares_the_v5_row_rules() -> None:
         ROW_PROMPT_ID == "slot-row-choice-v5" and ROW_TIEBREAK_PROMPT_ID == "slot-row-tiebreak-v1"
     )
     assert hashlib.sha256(ROW_TIEBREAK_PROMPT.encode()).hexdigest() == TIE_BREAK_SHA256
-    assert ROW_TIEBREAK_PROMPT.endswith(ROW_PROMPT[ROW_PROMPT.index("Task:") :])
+    from extraction.slot_reader.bedrock import ROW_TIEBREAK_FRAMING
+
+    # Every sentence of v5 kept word for word (its colour list too); only the framing is added.
+    assert ROW_TIEBREAK_PROMPT.replace(ROW_TIEBREAK_FRAMING, "", 1) == ROW_PROMPT
+    assert ROW_TIEBREAK_PROMPT.index(ROW_TIEBREAK_FRAMING) == ROW_PROMPT.index("Task:")
     assert "its two outer ticks are the stone top's two ends" in ROW_TIEBREAK_PROMPT
     # v4's sentence, which ended at "under it.", is never asked again.
     assert "fillers under it. A box around" not in ROW_TIEBREAK_PROMPT

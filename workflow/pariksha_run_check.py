@@ -152,6 +152,7 @@ __all__ = [
     "gate_tally",
     "run_check",
     "try_again_faults",
+    "try_seal_is_paired",
     "try_tally",
 ]
 
@@ -1521,14 +1522,22 @@ def try_tally(
     session: Session, package_revision_id: UUID
 ) -> dict[tuple[Agent, str], tuple[int, int]]:
     """Per agent and gate (#1309): on how many items its stop was tried again, and how many of
-    them a try settled. Reads only."""
+    them a try settled: the item passed every check after it (a number is sealed on the record; a
+    line was read). A pair that agreed but a later check rejected is not counted as helped. Reads
+    only."""
     counts: dict[tuple[Agent, str], list[int]] = {}
-    for _candidate, records in _tried_items(session, package_revision_id):
-        for gate in dict.fromkeys(record.gate for record in records):
-            mine = [record for record in records if record.gate == gate]
-            per = counts.setdefault((_TRY_AGENTS[mine[0].agent], gate), [0, 0])
+    for candidate, records in _tried_items(session, package_revision_id):
+        flags = candidate.ambiguity_flags or ()
+        # A row's anchor can carry the line finder's tries and its own number's tries.
+        settled = {
+            "akshara": candidate_is_sealed(candidate),
+            "rekha": "slot-reader-row-choice" not in flags,
+        }
+        for agent, gate in dict.fromkeys((record.agent, record.gate) for record in records):
+            mine = [record for record in records if (record.agent, record.gate) == (agent, gate)]
+            per = counts.setdefault((_TRY_AGENTS[agent], gate), [0, 0])
             per[0] += 1
-            per[1] += any(record.helped for record in mine)
+            per[1] += settled[agent] and any(record.helped for record in mine)
     return {key: (tried, helped) for key, (tried, helped) in counts.items()}
 
 
@@ -1559,35 +1568,45 @@ def gate_tally(session: Session, package_revision_id: UUID) -> tuple[GateCount, 
     )
 
 
+def try_seal_is_paired(flags: Iterable[str]) -> bool:
+    """Whether a sealed reading with the number reader's tries rests on exactly two try answers,
+    from two different readers, of one try that helped (#1309), and on no first-round reader. The
+    file's own text is a witness beside the readers, never one of the try's answers."""
+    flags = tuple(flags)
+    records = [record for record in try_records_in(flags) if record.agent == "akshara"]
+    answers = [
+        flag.removeprefix(TRY_ANSWER_FLAG).rsplit(":", 1)
+        for flag in flags
+        if flag.startswith(TRY_ANSWER_FLAG)
+    ]
+    readers = {
+        flag.removeprefix("reader-id:")
+        for flag in flags
+        if flag.startswith("reader-id:") and flag != f"reader-id:{TEXT_LAYER}"
+    }
+    models = {answer[0] for answer in answers if len(answer) == 2}
+    tries = {answer[1] for answer in answers if len(answer) == 2}
+    helped = {str(record.attempt) for record in records if record.helped}
+    return (
+        len(answers) == 2
+        and len(models) == 2
+        and len(tries) == 1
+        and tries <= helped
+        and (not readers or readers == models)
+    )
+
+
 def try_again_faults(session: Session, package_revision_id: UUID) -> list[RunCheckItem]:
-    """Every sealed reading with try-again flags whose seal does not rest on exactly two try
-    answers, from two different readers, of one try that helped (#1309): a first-round answer and
-    a try answer must never be mixed. Reads only."""
+    """Every sealed reading with the number reader's try flags whose seal does not rest on two
+    answers to one try that helped, from two different readers (`try_seal_is_paired`, #1309): a
+    first-round answer and a try answer must never be mixed. Reads only."""
     items: list[RunCheckItem] = []
     for candidate, records in _tried_items(session, package_revision_id):
         if not any(record.agent == "akshara" for record in records):
             continue
         if not candidate_is_sealed(candidate):
             continue
-        flags = candidate.ambiguity_flags or ()
-        answers = [
-            flag.removeprefix(TRY_ANSWER_FLAG).rsplit(":", 1)
-            for flag in flags
-            if flag.startswith(TRY_ANSWER_FLAG)
-        ]
-        readers = {
-            flag.removeprefix("reader-id:") for flag in flags if flag.startswith("reader-id:")
-        }
-        models = {answer[0] for answer in answers if len(answer) == 2}
-        tries = {answer[1] for answer in answers if len(answer) == 2}
-        helped = {str(record.attempt) for record in records if record.helped}
-        if (
-            len(answers) == 2
-            and len(models) == 2
-            and len(tries) == 1
-            and tries <= helped
-            and (not readers or readers == models)
-        ):
+        if try_seal_is_paired(candidate.ambiguity_flags or ()):
             continue
         items.append(
             RunCheckItem(

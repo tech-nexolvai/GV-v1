@@ -531,13 +531,54 @@ def test_the_drawn_length_still_rejects_a_pair_a_try_settled() -> None:
         return '36"'  # both agree on the try, on a width the drawing does not draw
 
     page = _page()
-    result, _attempts = _read(page, TryReaders(page, span=span), frozenset({AKSHARA_SEAL}))
+    events = Events()
+    result, _attempts = _read(
+        page, TryReaders(page, span=span), frozenset({AKSHARA_SEAL}), activity=events
+    )
 
     (label,) = result.slots[1].labels
-    assert [record.outcome for record in label.try_again] == ["helped"]
     assert label.outcome.reason_code == "drawn-length" and label.outcome.value is None
     assert 1 in result.vetoed
     assert 1 not in {proposal.slot_index for proposal in result.mapping.proposals}
+    # The pair agreed, but the item did not settle: the try did not help (#1309 review), and the
+    # screen never says it did.
+    assert [record.outcome for record in label.try_again] == ["not-helped"]
+    told = [(e.kind.value, e.code, e.attempt) for e in events.events if e.item == "p0:slot1:0"]
+    assert told == [
+        ("stopped", "readers-differ", None),
+        ("trying_again", "readers-differ", 1),
+        ("try_again_result", "not-helped", 1),
+        ("stopped", "drawn-length", None),
+    ]
+
+
+def test_helped_is_counted_only_for_an_item_that_settled(session: Any) -> None:
+    from workflow.pariksha_run_check import gate_tally
+
+    def span(model: str, owner: int | None, first: bool) -> str | None:
+        if owner != 1:
+            return TEXTS.get(owner, '2"')
+        if first:
+            return '24"' if model == OPUS else '25"'
+        return '36"'
+
+    revision, version, page_row, run = _scaffold(session)
+    page = replace(_page(), page_id=page_row.id, document_version_id=version.id)
+    result, _attempts = _read(page, TryReaders(page, span=span), frozenset({AKSHARA_SEAL}))
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    session.flush()
+    seal = next(
+        count
+        for count in gate_tally(session, revision.id)
+        if (count.agent.value, count.gate) == ("Akshara", "seal")
+    )
+    assert (seal.tried_again, seal.helped) == (1, 0)
 
 
 def test_only_the_readers_own_disagreement_or_doubt_is_tried_again() -> None:
@@ -948,3 +989,173 @@ def test_both_no_countertop_or_a_missing_reader_is_never_tried_again() -> None:
         readers = TryReaders(page, rows=rows)
         result, _attempts = _read(page, readers)
         assert readers.tie_break_requests == [] and result.row_try_again == ()
+
+
+# --- review fixes (#1309 review, 2026-10-15) ---------------------------------------------------------
+
+
+def _three_row_page() -> SlotPage:
+    page = _page()
+    first = page.rows.candidates.rows.candidates[0]
+    return _with_rows(page, (first, replace(first, rank=2), replace(first, rank=3)))
+
+
+def test_a_settled_try_keeps_the_first_rounds_second_countertop(session: Any) -> None:
+    """Both readers name box 3 as a second countertop in the first round; the try picture shows only
+    lines 1 and 2, and settles on 1. Box 3 is still recorded, so several-countertops still holds."""
+    from workflow.slot_row_scope import slot_rows_and_unchosen_pages
+
+    def rows(model: str) -> Mapping[str, object]:
+        return {"row": 1 if model == OPUS else 2, "kind": "row", "also": [3], "why": "invented"}
+
+    revision, version, page_row, run = _scaffold(session)
+    page = replace(_three_row_page(), page_id=page_row.id, document_version_id=version.id)
+    readers = TryReaders(page, rows=rows, tie_break=lambda _m, _png: _row(1))
+    result, attempts = _read(page, readers, frozenset({REKHA_READERS_AGREE}))
+
+    shown = {
+        tuple(a.question_packet["shown_rows"])
+        for a in attempts
+        if a.prompt_id == ROW_TIEBREAK_PROMPT_ID
+    }
+    assert shown == {(1, 2)}, "box 3 was not in the try picture"
+    assert result.row_choice_number == 1 and result.row_try_again[0].helped
+    assert {(OPUS, 3), (SONNET, 3)} <= set(result.row_choice_also)
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    session.flush()
+    (row,), _unchosen = slot_rows_and_unchosen_pages(session, revision.id)
+    assert {box for _model, box in row.also} == {3}
+
+
+def test_a_missing_reader_is_never_tried_even_when_the_other_was_unsure() -> None:
+    page = _page()
+    readers = TryReaders(
+        page,
+        span=lambda m, o, f: ((UNSURE if m == OPUS else None) if o == 0 else TEXTS.get(o, '2"')),
+    )
+    result, _attempts = _read(page, readers, frozenset({AKSHARA_SEAL}))
+    assert result.slots[0].labels[0].outcome.reason_code == "unsure"
+    assert readers.tries() == [] and result.slots[0].labels[0].try_again == ()
+
+
+def test_a_text_label_is_probed_with_its_own_reading() -> None:
+    """A label the file prints as text: probed with that text, it would seal, so it may be tried;
+    the old fixed `1"` probe disagreed with the file's own text and never let it be tried."""
+    from extraction.slot_reader.runs import Lane
+    from extraction.slot_reader.seal import ReaderAnswer
+    from workflow.slot_reader import _only_the_readers_hold
+
+    page = _page()
+    plan = plan_slots(
+        page.rows.candidates.rows,
+        page.rows.ink,
+        settings=E2_CROP_SETTINGS,
+        row_settings=MEASURED_SETTINGS,
+    )
+    label = next(
+        label
+        for owner in plan.slots
+        for label in owner.labels
+        if label.lane is Lane.TEXT and label.text == '24"'
+    )
+    configured = _runtime(TryReaders(page))
+    ink = None if page.ink is None else page.ink.at(_pixels(page.rows, label.crop, page.rendered))
+    answers = [
+        ReaderAnswer(OPUS, '24"', readable=True, no_dimension=False, stacked=False, combined=False),
+        ReaderAnswer(
+            SONNET, '26"', readable=True, no_dimension=False, stacked=False, combined=False
+        ),
+    ]
+    assert _only_the_readers_hold(page, plan, label, ink, configured, answers)
+    # The fixed `1"` the probe used before never agreed with the file's own text.
+    from workflow.slot_reader import _seal
+
+    fixed = [replace(answer, text='1"') for answer in answers]
+    assert _seal(page, plan, label, fixed, ink, configured).reason_code == "readers-differ"
+
+
+def test_the_unpaired_check_ignores_the_files_own_text() -> None:
+    from workflow.pariksha_run_check import try_seal_is_paired
+
+    helped = "try-again:akshara:seal:readers-differ:closer-look-2x:helped"
+    paired = [helped, f"try-again-answer:{OPUS}:1", f"try-again-answer:{SONNET}:1"]
+    assert try_seal_is_paired([*paired, f"reader-id:{OPUS}", f"reader-id:{SONNET}"])
+    assert try_seal_is_paired(
+        [*paired, "reader-id:pdf-text-layer", f"reader-id:{OPUS}", f"reader-id:{SONNET}"]
+    )
+    assert not try_seal_is_paired([helped, f"try-again-answer:{OPUS}:1", f"reader-id:{OPUS}"])
+    # A line finder's helped try on the same anchor never pairs a number's seal.
+    assert not try_seal_is_paired(
+        [
+            "try-again:rekha:two-readers-agree:readers-differ:tie-break-disputed-lines:helped",
+            f"try-again-answer:{OPUS}:1",
+            f"try-again-answer:{SONNET}:1",
+        ]
+    )
+
+
+def test_a_try_asked_after_one_was_skipped_is_told_as_try_1() -> None:
+    page = _stopped_line_page()
+    readers = TryReaders(page, rows=lambda _m: _row(1), tie_break=lambda _m, _png: _row(1))
+    events = Events()
+    result, _attempts = _read(
+        page, readers, frozenset({REKHA_PRINTED_NUMBERS, REKHA_OTHER_LINES}), activity=events
+    )
+    told = [
+        (e.kind.value, e.change, e.attempt)
+        for e in events.events
+        if e.kind.value in ("trying_again", "try_again_result")
+    ]
+    assert told == [
+        ("trying_again", "other-numbered-lines", 1),
+        ("try_again_result", None, 1),
+        ("trying_again", "each-line-alone", 2),
+        ("try_again_result", None, 2),
+    ]
+    from app.runs.reading_activity import EventKind, event_line
+    from workflow.pariksha_gates import Agent
+
+    line = event_line(Agent.REKHA, EventKind.TRY_AGAIN_RESULT, "not-helped", None, 1, 2)
+    assert line == "Page 1: try 2 didn't help; it waits for you."
+    assert [record.change for record in result.row_try_again] == [
+        "other-numbered-lines",
+        "each-line-alone",
+    ]
+
+
+def test_every_label_of_a_piece_keeps_its_tries_on_the_record(session: Any) -> None:
+    from sqlalchemy import select
+
+    from app.models.evidence import ObservationCandidate
+
+    revision, version, page_row, run = _scaffold(session)
+    page = replace(_page(), page_id=page_row.id, document_version_id=version.id)
+    result, _attempts = _read(page, TryReaders(page), frozenset({AKSHARA_SEAL}))
+    other = TryRecord("akshara", "seal", "unsure", "closer-look-2x", "not-helped")
+    owner = result.slots[0]
+    extra = replace(owner.labels[0], try_again=(other,), try_answers=())
+    result = replace(
+        result, slots=(replace(owner, labels=(*owner.labels, extra)), *result.slots[1:])
+    )
+    persist_slot_readings(
+        session,
+        package_revision_id=revision.id,
+        extraction_run_id=run.id,
+        reader_ids=(OPUS, SONNET),
+        results=[result],
+    )
+    session.flush()
+    flags = next(
+        candidate.ambiguity_flags
+        for candidate in session.scalars(
+            select(ObservationCandidate).where(ObservationCandidate.extraction_run_id == run.id)
+        )
+        if "slot:0" in (candidate.ambiguity_flags or ())
+    )
+    assert other.flag in flags

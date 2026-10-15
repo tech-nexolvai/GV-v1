@@ -37,7 +37,9 @@ readers' own disagreement or doubt, both readers are asked again up to three sma
 (`extraction/slot_reader/try_again.py`), stopping at the first try that settles the item. A try
 settles it only on the new pair, through the same agreement, gate, seal and drawn-length veto; the
 tries spend at most a tenth of the reading's cap, with a stop of their own that never stops the
-reading (`_rekha_tries`, `_akshara_tries`).
+reading (`_rekha_tries`, `_akshara_tries`). That tenth is also spent from the reading's own cap, and
+the line finder's tries come before the numbers are read: on a reading near its cap, the main
+reading's budget stop can come up to a tenth of the cap sooner than with no gate on.
 
 Source: issues #987, #992, #1051, #1086, #1309 · Verification: `tests/workflow/test_slot_reader.py`,
 `tests/workflow/test_try_again.py`
@@ -1573,6 +1575,34 @@ def _page_line_events(
     events.add(number, Agent.REKHA, item, EventKind.STOPPED, code, document_version_id=document)
 
 
+def _settled_tries(owner: OwnerResult) -> OwnerResult:
+    """A try is `helped` only when it settled its label (#1309): its pair sealed it AND every later
+    check of the reading kept it sealed. A pair the drawn length rejects is `not-helped`, and the
+    label waits for the person with the veto's reason, as any other."""
+    labels: list[LabelResult] = []
+    for label in owner.labels:
+        tries = label.try_again
+        if tries and tries[-1].helped and label.outcome.state is not LabelState.SEALED:
+            label = replace(
+                label, try_again=(*tries[:-1], replace(tries[-1], outcome=TryOutcome.NOT_HELPED))
+            )
+        labels.append(label)
+    return replace(owner, labels=tuple(labels))
+
+
+def _next_try(records: Sequence[TryRecord]) -> int:
+    """The number the next try of an item is told by (#1309): one more than the tries asked."""
+    asked = sum(record.outcome in (TryOutcome.HELPED, TryOutcome.NOT_HELPED) for record in records)
+    return min(MAX_TRIES, asked + 1)
+
+
+def _tries_made(records: Sequence[TryRecord]) -> int:
+    """How many of an item's tries were asked (#1309): the number a person reads ("try 2"), which
+    skips a try that was not asked (too large to zoom); at least 1."""
+    asked = sum(record.outcome in (TryOutcome.HELPED, TryOutcome.NOT_HELPED) for record in records)
+    return max(1, min(MAX_TRIES, asked))
+
+
 def _try_events(
     agent: str,
     tried: Sequence[tuple[SlotPage, str, str, str, int, TryRecord | None]],
@@ -1677,15 +1707,28 @@ def _after_reading_events(
                 if outcome.label_index is not None
                 else set()
             )
-            tries = (
-                owner.labels[outcome.label_index].try_again
-                if outcome.label_index is not None
-                else ()
-            )
-            helped = any(record.helped for record in tries)
-            if sealed and index in offered and len(sources) in (0, 2):
-                if helped:
+            label = owner.labels[outcome.label_index] if outcome.label_index is not None else None
+            tries = () if label is None else label.try_again
+            if tries and (label is None or not label.try_answers):
+                # Told `stopped` before it was tried again, and each try's result as it came: no
+                # try settled it, so it waits as told (#1309).
+                continue
+            passed = sealed and index in offered and len(sources) in (0, 2)
+            if tries:
+                # A try's pair sealed this label: its result is told now, once every check has
+                # run on it, `helped` only when it passed them all (`_settled_tries`).
+                told.add(
+                    number,
+                    Agent.AKSHARA,
+                    item,
+                    EventKind.TRY_AGAIN_RESULT,
+                    tries[-1].outcome,
+                    attempt=_tries_made(tries),
+                    document_version_id=document,
+                )
+                if passed and tries[-1].helped:
                     continue
+            elif passed:
                 told.add(
                     number,
                     Agent.AKSHARA,
@@ -1694,9 +1737,6 @@ def _after_reading_events(
                     "sealed",
                     document_version_id=document,
                 )
-                continue
-            if tries and not helped:
-                # Told `stopped` before it was tried again; its tries' results follow it (#1309).
                 continue
             if sealed:
                 code = (
@@ -2088,13 +2128,21 @@ def read_slot_pages(
             if runtime.claude_row_reader and page.page_index in row_ids
             else []
         )
+        first_also: tuple[tuple[str, int], ...] = ()
         if page.page_index in row_settled:
-            # A try settled the line (#1309): the page is read on the try's pair, never a mix.
+            # A try settled the line (#1309): the page is read on the try's pair, never a mix. A
+            # second countertop's box either round named is kept (a try picture may not show it):
+            # it is listed, never read, and is never a reason to drop a hold.
+            first_also = _row_kinds_and_also(readers, asked_rows)[1]
             asked_rows = row_settled[page.page_index]
         row_picks[page.page_index] = _row_picks(readers, asked_rows)
         row_kinds[page.page_index], row_also[page.page_index] = _row_kinds_and_also(
             readers, asked_rows
         )
+        if first_also:
+            row_also[page.page_index] = tuple(
+                dict.fromkeys((*first_also, *row_also[page.page_index]))
+            )
         candidates = page_rows[page.page_index].candidates[:6]
         row_choice, row_number, selected_row, gate = _choose_row(
             page, asked_rows, candidates, runtime
@@ -2429,6 +2477,9 @@ def read_slot_pages(
                 ]
             )
         slots, overall, vetoed = _veto_by_drawn_length(slots, overall)
+        if label_tries:
+            slots = tuple(_settled_tries(item) for item in slots)
+            overall = None if overall is None else _settled_tries(overall)
         mapping = map_row(
             None if overall is None else overall.outcome,
             [
@@ -2794,8 +2845,17 @@ def _rekha_tries(
             asked_now[index] = (key, shown)
         if not batch:
             continue
+        # Each try is told by the number of tries actually asked on the item (`_next_try`).
+        shown_as = {index: _next_try(records[index]) for index in asked_now}
         trying: list[tuple[SlotPage, str, str, str, int, TryRecord | None]] = [
-            (pending[index].page, _row_key(index), pending[index].because, change, attempt, None)
+            (
+                pending[index].page,
+                _row_key(index),
+                pending[index].because,
+                change,
+                shown_as[index],
+                None,
+            )
             for index in asked_now
         ]
         _tell(activity, functools.partial(_try_events, "rekha", trying))
@@ -2816,7 +2876,9 @@ def _rekha_tries(
                     settled[index] = new
             record = TryRecord("rekha", tried.gate, tried.because, change, outcome)
             records[index].append(record)
-            results.append((tried.page, _row_key(index), tried.because, change, attempt, record))
+            results.append(
+                (tried.page, _row_key(index), tried.because, change, shown_as[index], record)
+            )
         _tell(activity, functools.partial(_try_events, "rekha", results))
     return (
         settled,
@@ -2831,15 +2893,30 @@ def _only_the_readers_hold(
     label: PlannedLabel,
     ink: InkAt | None,
     runtime: SlotReaderRuntime,
+    present: Sequence[ReaderAnswer],
 ) -> bool:
-    """Whether the label would seal if both readers agreed on a plain number (#1309): none of code's
-    own guards (reviewer ink or ink not checked, a row or slot in doubt, a stacked fraction, the
-    edge, crowding) holds it. Asking again cannot change those, so such a label is never tried."""
-    probe = [
-        ReaderAnswer(model, '1"', readable=True, no_dimension=False, stacked=False, combined=False)
-        for model in runtime.form.reader_ids
-    ]
-    return _seal(page, plan, label, probe, ink, runtime).reason_code is None
+    """Whether the label would seal if both readers agreed on its own reading (#1309): none of
+    code's own guards (reviewer ink or ink not checked, a row or slot in doubt, a stacked fraction,
+    the edge, crowding, a text that is not a plain dimension) holds it. Asking again cannot change
+    those, so such a label is never tried.
+
+    The readings probed are the label's own: the file's text for a text label, and each reader's
+    usable text. Only when there is none (both unsure or unreadable) is a plain number probed, so
+    code's guards alone decide."""
+    texts = [
+        *((label.text,) if label.lane is Lane.TEXT and label.text else ()),
+        *(answer.text for answer in present if answer.usable),
+    ] or ['1"']
+    for text in dict.fromkeys(texts):
+        probe = [
+            ReaderAnswer(
+                model, text, readable=True, no_dimension=False, stacked=False, combined=False
+            )
+            for model in runtime.form.reader_ids
+        ]
+        if _seal(page, plan, label, probe, ink, runtime).reason_code is None:
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2935,8 +3012,19 @@ def _akshara_tries(
             for position, item in enumerate(result.labels):
                 code = item.outcome.reason_code
                 key = _key(page.page_index, owner.index, position)
-                if code not in AKSHARA_TRY_CODES or not _only_the_readers_hold(
-                    page, plan, item.label, crops[key][2], runtime
+                present = [
+                    answer
+                    for model in readers
+                    if isinstance(answer := answers.get((key, model)), ReaderAnswer)
+                ]
+                # Both readers answered, whatever they said: a missing reader is never tried
+                # again, even when the other one was unsure (whose code comes first).
+                if (
+                    code not in AKSHARA_TRY_CODES
+                    or len(present) != len(readers)
+                    or not _only_the_readers_hold(
+                        page, plan, item.label, crops[key][2], runtime, present
+                    )
                 ):
                     continue
                 pending.append(
@@ -2967,8 +3055,8 @@ def _akshara_tries(
             pictures = _number_try_pictures(tried, change, box_px, crop_px, readers)
             if pictures is None:
                 record = TryRecord("akshara", "seal", tried.because, change, TryOutcome.CANNOT_ZOOM)
+                told.append((tried.page, tried.key, tried.because, change, _next_try(made), record))
                 made.append(record)
-                told.append((tried.page, tried.key, tried.because, change, attempt, record))
                 continue
             png, upright = pictures
             view_png = _row_area_png(tried.page.rendered, _row_x_px(tried.page, tried.plan), box_px)
@@ -3014,9 +3102,10 @@ def _akshara_tries(
             _tell(activity, functools.partial(_try_events, "akshara", told))
         if not batch:
             continue
+        shown_number = {key: _next_try(records[tried.key]) for key, tried in asked_now.items()}
         trying = [
-            (tried.page, tried.key, tried.because, change, attempt, None)
-            for tried in asked_now.values()
+            (tried.page, tried.key, tried.because, change, shown_number[key], None)
+            for key, tried in asked_now.items()
         ]
         _tell(activity, functools.partial(_try_events, "akshara", trying))
         replies = ask(batch)
@@ -3048,7 +3137,12 @@ def _akshara_tries(
                     settled_on[tried.key] = tuple(f"{reply.model_id}:{attempt}" for reply in new)
             record = TryRecord("akshara", "seal", tried.because, change, outcome)
             records[tried.key].append(record)
-            results.append((tried.page, tried.key, tried.because, change, attempt, record))
+            if outcome != TryOutcome.HELPED:
+                # A pair that sealed is told once every check has run on it
+                # (`_after_reading_events`): the drawn length may still reject it.
+                results.append(
+                    (tried.page, tried.key, tried.because, change, shown_number[key], record)
+                )
         _tell(activity, functools.partial(_try_events, "akshara", results))
     return {key: (tuple(made), settled_on.get(key, ())) for key, made in records.items() if made}
 
@@ -3779,6 +3873,13 @@ def persist_slot_readings(
                 flags.append(_box_flag("crop-box", chosen.crop_px))
                 flags.extend(chosen.outcome.flags)
                 flags.extend(_label_try_flags(chosen))
+                # Every other label of the piece keeps its tries on the record too (#1309).
+                flags.extend(
+                    record.flag
+                    for label in owner.labels
+                    if label is not chosen
+                    for record in label.try_again
+                )
                 flags.extend(f"reader-id:{source}" for source, _text in chosen.outcome.reader_texts)
                 if chosen.outcome.ink is not None:
                     flags.append(f"ink:{chosen.outcome.ink.value}")

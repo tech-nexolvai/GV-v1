@@ -364,10 +364,11 @@ _NUMBER_STOPS: Final[dict[str, str]] = {
 def _result_line(code: str, attempt: int | None, role: str) -> str:
     try_ = f"try {attempt}" if attempt is not None else "trying again"
     if code == "helped":
-        return f"{try_} helped; {role}'s two AIs now agree."
+        # Told only for an item a try settled: both AIs agreed on the new pair AND it passed every
+        # check after that (#1309). A pair a later check rejected is told `not-helped`.
+        return f"{try_} helped: {role}'s two AIs now agree, and it passed every check."
     if code == "not-helped":
-        if attempt is not None and attempt < READING_EVENT_MAX_ATTEMPTS:
-            return f"{try_} didn't help."
+        # Newest only when no further try followed it: the item waits (#1309 review).
         return f"{try_} didn't help; it waits for you."
     if code == "allowance-used":
         return "not tried again: the try-again allowance for this set is used up. It waits for you."

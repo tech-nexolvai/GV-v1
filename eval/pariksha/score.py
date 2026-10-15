@@ -635,9 +635,11 @@ def _score_pairs(
         reused += sum(1 for attempt in matched.attempts if attempt.reused)
         note = ""
         tried = _last_try(agent, matched, index) if with_try_again else None
-        if tried is not None and judged.outcome == held_outcome:
+        if tried is not None:
             # The item was tried again (#1309): it is judged on the last try's pair alone, never on
-            # a mix of rounds; what both rounds cost is counted.
+            # a mix of rounds; what both rounds cost is counted. Whatever the first round's pair
+            # was: a line both readers agreed on that Rekha's gate stopped is tried too, and the
+            # scorer cannot run the gate, so the try is what the product went on.
             keyed.add(tried.identity)
             after = _pair(case, tried, readers, held_outcome)
             older_shape += after.read.older_shape
@@ -712,16 +714,16 @@ def _score_pairs(
     if with_try_again:
         tried_count = sum(try_outcomes.values())
         metrics["try_again_tried"] = _rate(
-            "try_again_tried", tried_count, asked, "held cases the run tried again (#1309)"
+            "try_again_tried", tried_count, asked, "cases the run tried again (#1309)"
         )
         metrics["try_again_helped"] = _rate(
-            "try_again_helped", try_outcomes[AGREED_RIGHT], tried_count, "held -> agreed right"
+            "try_again_helped", try_outcomes[AGREED_RIGHT], tried_count, "a try -> agreed right"
         )
         metrics["try_again_new_wrong"] = _rate(
             "try_again_new_wrong",
             try_outcomes[AGREED_WRONG],
             tried_count,
-            "held -> agreed wrong: a new wrong answer",
+            "a try -> agreed wrong: a wrong answer",
         )
     unkeyed = sum(1 for question in run.questions if question.identity not in keyed)
     metrics["unkeyed_questions"] = _rate(
@@ -766,7 +768,7 @@ def score_akshara(
 ) -> Scorecard:
     """The number reader's scorecard: per reader and per pair, and cost per question.
 
-    `with_try_again` (#1309) judges each held case on the last try the run asked of it."""
+    `with_try_again` (#1309) judges each case the run tried again on the last try it asked."""
     return _score_pairs(
         "akshara",
         key,
@@ -789,7 +791,8 @@ def score_rekha(
 ) -> Scorecard:
     """The row choice's scorecard: agreed-right, agreed-wrong and split; per reader.
 
-    `with_try_again` (#1309) judges each split case on the last try the run asked of it."""
+    `with_try_again` (#1309) judges each case the run tried again (split, or a line Rekha's gate
+    stopped) on the last try the run asked of it."""
     return _score_pairs(
         "rekha",
         key,

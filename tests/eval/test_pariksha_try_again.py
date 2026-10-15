@@ -302,3 +302,36 @@ def test_a_stored_runs_tries_are_read_only_with_the_option(session: Any) -> None
         ("slot-row-choice", "p0:row-choice"),
         ("slot-row-tiebreak", "p0:row-choice:again1"),
     ]
+
+
+def test_a_line_rekhas_gate_stopped_is_judged_on_its_try_too() -> None:
+    """Both readers agreed on line 1 and Rekha's gate stopped it (the scorer cannot see the gate),
+    so the run tried again: the try's line is what the product went on, right or newly wrong."""
+    key = _row_key({"p1:row-choice": {"box": 2}})
+
+    def run(try_box: int) -> Any:
+        return _run(
+            _question(
+                "p1:row-choice",
+                _ok(OPUS, _row(1)),
+                _ok(SONNET, _row(1)),
+                family="slot-row-choice",
+                prompt_id="slot-row-choice-v5",
+            ),
+            _try(
+                "p1:row-choice:again2",
+                _ok(OPUS, _row(try_box)),
+                _ok(SONNET, _row(try_box)),
+                family="slot-row-tiebreak",
+            ),
+        )
+
+    assert _outcomes(score_rekha(key, run(1), code_version="abc1234")) == {
+        "p1:row-choice": AGREED_WRONG
+    }
+    right = score_rekha(key, run(2), code_version="abc1234", with_try_again=True)
+    assert _outcomes(right) == {"p1:row-choice": AGREED_RIGHT}
+    wrong = score_rekha(key, run(1), code_version="abc1234", with_try_again=True)
+    assert _outcomes(wrong) == {"p1:row-choice": AGREED_WRONG}
+    assert wrong.metrics["try_again_new_wrong"].numerator == 1
+    assert "again2" in wrong.cases[0].note
