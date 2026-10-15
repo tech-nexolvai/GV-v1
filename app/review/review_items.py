@@ -10,7 +10,8 @@ write, no guess.
   per reading, so each can be confirmed on its own), a countertop to check by hand
   (`countertop_by_hand`: the row itself was held, or its held numbers have no AI guess), a wall
   choice, a page listed with no countertop, an architect question, a depth or sink reading to
-  confirm, or any other result that waits for a person (`other_result`).
+  confirm (`depth_reading`, one per reading, #1360; one `rechecking` item once a person confirmed
+  it, until the re-check), or any other result that waits for a person (`other_result`).
 * `failures`: FAIL results. Each stays blocking and needs one Agree (Anant, decision 2).
 * `not_checked`: the depth and sink checks that could not run because nothing was read for them
   (Anant, decision 1: one quiet group). Each names the Company settings fields its run also lacked
@@ -52,7 +53,8 @@ each number's own status should be read from it.
 **Reader texts** come from the reading's own record (`reader:<model>:<text>` on the candidate), so
 nothing under `extraction/` is imported (`tests/api/test_no_heavy_work.py`).
 
-Source: issue #1338. Verification: `tests/api/test_review_items.py`.
+Source: issues #1338, #1360. Verification: `tests/api/test_review_items.py`,
+`tests/api/test_review_item_depth.py`.
 """
 
 from __future__ import annotations
@@ -72,19 +74,26 @@ from sqlalchemy.orm import Session
 
 from app.models import CheckRun, Finding, PackageRevision, RuleDefinition, RuleSnapshot
 from app.models.drawing import VendorPagePicture
-from app.models.evidence import ItemClassification, ObservationCandidate
+from app.models.evidence import (
+    CanonicalObservation,
+    EvidenceSupportingCandidate,
+    ItemClassification,
+    ObservationCandidate,
+)
 from app.review.approval import readiness_and_decisions
 from app.review.depth_readings import depth_readings_for
 from app.review.requirements import BLOCKING_OUTCOMES
 from app.review.row_location import RowLocation
 from app.review.waiting_values import missing_settings_for, settings_set_now
 from app.review.wall_cases import unavailable_reason
+from app.schemas.findings import DepthReadingOut
 from app.schemas.visual_ui import CountertopItemRefOut, CountertopResultOut, ExactValueOut
 from app.verdicts.rulebook import snapshot_store
 from rules.required_inputs import categories_for
 from rules.schema import Applicability
 from rules.semantic_types import SemanticType
 from units.imperial import format_inches, parse_imperial
+from verdict.operands import EvidenceStatus
 from verdict.outcomes import Outcome
 from vocabulary.cabinet_categories import CABINET_CATEGORY_LABELS, CabinetCategory
 from vocabulary.reviewer_reasons import finding_reviewer_reason, reviewer_reason
@@ -643,6 +652,103 @@ class _DepthItem:
     scope_row_candidate_id: UUID | None
 
 
+#: The view a depth or sink value was read on, as the item's sentence names it.
+_ON_VIEW: Final[Mapping[str, str]] = {
+    "plan": "the plan view",
+    "section": "the section",
+    "side": "the side view",
+    "front": "the front view",
+    "detail": "the detail view",
+}
+
+
+def _depth_item(
+    line: DepthReadingOut,
+    *,
+    finding: Finding,
+    what: str,
+    page: int | None,
+    countertop: CountertopItemRefOut | None,
+    row_label: str | None,
+    state: Status,
+    decided_by: str | None,
+    decided_at: datetime | None,
+    sole: bool,
+) -> ReviewItemOut:
+    """One depth or sink reading to confirm (#1360): its value is exactly what a Confirm records.
+
+    Confirm is offered only where the advanced depth card offers it (`can_confirm`: the countertop's
+    own result, alone on its drawing, with the reading's picture, not answered yet, #1296). "Not
+    this" records the whole result as not checked (Anant, 2026-10-16), so it is offered only when
+    the result is one countertop's own and this is its one reading open (`sole`): never on a result
+    covering several countertops, and never to settle another reading unseen."""
+    stored = None if line.value is None else _parsed(line.value)
+    on = _ON_VIEW.get(line.view or "", "the drawing")
+    offered = [
+        *(["confirm"] if line.can_confirm else []),
+        *(["not_this"] if sole else []),
+    ]
+    if sole:
+        ask = "Confirm it once, or say it is not this value (the check is then not checked)."
+    elif line.can_confirm:
+        ask = (
+            "Confirm each reading of this check on its own; to say one is not this value, use the "
+            "advanced depth card."
+        )
+    else:
+        ask = "Answer it on the advanced depth card."
+    return ReviewItemOut(
+        key=f"depth:{finding.id}:{line.candidate_id}",
+        kind="depth_reading",
+        page=page if page is not None else line.page_number,
+        countertop=countertop,
+        row_label=row_label or line.countertop,
+        what=what,
+        best_guess=(
+            None
+            if stored is None
+            else BestGuessOut(
+                text=f'{format_inches(stored)}"', value=_exact(stored), source="agreed_text"
+            )
+        ),
+        why=(
+            f"Both AI readers read {line.value} for the {line.label.lower()} on {on}, but only "
+            f"its drawn length checks it. {ask}"
+        ),
+        actions=offered if state == "open" else [],
+        status=state,
+        decided_by=decided_by,
+        decided_at=decided_at,
+        finding_id=finding.id,
+        row_id=finding.scope_row_candidate_id,
+        candidate_id=line.candidate_id,
+    )
+
+
+def _confirmed_at(session: Session, candidate_ids: Iterable[UUID]) -> dict[UUID, datetime]:
+    """When a person last confirmed each reading (its newest HUMAN_CONFIRMED observation), from
+    this screen or the advanced depth card. A result made before that waits for the re-check that
+    uses it (#1360); one made after it has used it."""
+    ids = list(set(candidate_ids))
+    if not ids:
+        return {}
+    newest: dict[UUID, datetime] = {}
+    for candidate_id, created_at in session.execute(
+        select(EvidenceSupportingCandidate.candidate_id, CanonicalObservation.created_at)
+        .join(
+            CanonicalObservation,
+            CanonicalObservation.id == EvidenceSupportingCandidate.canonical_observation_id,
+        )
+        .where(
+            EvidenceSupportingCandidate.candidate_id.in_(ids),
+            CanonicalObservation.status == EvidenceStatus.HUMAN_CONFIRMED.value,
+        )
+    ).all():
+        if candidate_id not in newest or created_at > newest[candidate_id]:
+            newest[candidate_id] = created_at
+    return newest
+
+
 def _slot(candidate: object) -> int | None | Literal[-1]:
     raw = next(
         (flag.removeprefix("slot:") for flag in _flags(candidate) if flag.startswith("slot:")), ""
@@ -777,6 +883,16 @@ def review_items_for_revision(
         ],
     )
 
+    confirmed_at = _confirmed_at(
+        session,
+        (
+            line.candidate_id
+            for lines in depth_lines.values()
+            for line in lines
+            if line.state == "confirmed" and line.candidate_id is not None
+        ),
+    )
+
     # The settings each depth and sink check was missing when it ran (#1373): from the rule as run
     # and the settings versions it cited, never from the reason's words. Only fields on Company
     # settings are listed; the sink's sizes live on its card.
@@ -843,10 +959,36 @@ def review_items_for_revision(
             )
             continue
         if rule_id in DEPTH_AND_SINK_RULES:
+            lines = depth_lines.get(finding.id, [])
             to_confirm = [
-                line for line in depth_lines.get(finding.id, []) if line.state == "to_confirm"
+                line
+                for line in lines
+                if line.state == "to_confirm" and line.candidate_id is not None
             ]
             if to_confirm:
+                items.extend(
+                    _depth_item(
+                        line,
+                        finding=finding,
+                        what=DEPTH_AND_SINK_RULES[rule_id],
+                        page=page,
+                        countertop=countertop,
+                        row_label=row_label,
+                        state=state,
+                        decided_by=decided_by,
+                        decided_at=decided_at,
+                        sole=finding.scope_item_id is not None and len(to_confirm) == 1,
+                    )
+                    for line in to_confirm
+                )
+            elif state == "open" and any(
+                line.state == "confirmed"
+                and line.candidate_id in confirmed_at
+                and confirmed_at[line.candidate_id] > finding.created_at
+                for line in lines
+            ):
+                # A person confirmed its reading here; the result waits for the re-check that uses
+                # it. Never "Not checked": something was read, and a person answered it (#1360).
                 items.append(
                     ReviewItemOut(
                         key=f"depth:{finding.id}",
@@ -855,13 +997,9 @@ def review_items_for_revision(
                         countertop=countertop,
                         row_label=row_label,
                         what=DEPTH_AND_SINK_RULES[rule_id],
-                        why="The two AI readers agree, but only the drawn length checks it: "
-                        + "; ".join(line.label for line in to_confirm)
-                        + ".",
-                        actions=actions("depth_reading", state),
-                        status=state,
-                        decided_by=decided_by,
-                        decided_at=decided_at,
+                        why="A person confirmed the reading; the checks run again to use it.",
+                        actions=[],
+                        status="rechecking",
                         finding_id=finding.id,
                         row_id=finding.scope_row_candidate_id,
                     )

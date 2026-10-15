@@ -103,6 +103,15 @@ def open_items(
     """Sort the live results into the front page's lists, from stored rows and sign-off readiness."""
     readiness = approval_readiness(session, package_revision_id)
     blocking = set(readiness.blocking_finding_ids)
+    # The standing decision on each result: a person's "Not this" on a depth or sink reading makes
+    # its check NOT CHECKED (#1360).
+    standing = {
+        decided.finding_id: decided.actions[-1]
+        for decided in live_decisions(
+            session, [(finding, definition.rule_id) for finding, _r, _s, definition in rows]
+        )
+        if decided.actions
+    }
     failures: list[OpenItem] = []
     person: list[OpenItem] = []
     not_checked: list[OpenItem] = []
@@ -111,7 +120,7 @@ def open_items(
         item = OpenItem(_label(finding, definition.rule_id), _reason(finding))
         if finding.outcome == Outcome.FAIL.value:
             failures.append(item)
-        elif is_not_checked(finding.outcome, item.reason):
+        elif is_not_checked(finding.outcome, item.reason, standing.get(finding.id)):
             # Settling a check that never ran does not make it checked (decision 1): still
             # printed NOT CHECKED, with who settled it said.
             if finding.outcome != Outcome.NO_APPLICABLE_RULE.value and finding.id not in blocking:
